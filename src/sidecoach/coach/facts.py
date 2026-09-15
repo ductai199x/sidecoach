@@ -13,9 +13,26 @@ from collections.abc import Sequence
 
 import chess
 
+from sidecoach.analysis import positional
 from sidecoach.analysis.engine import san_line
 from sidecoach.coach.disclosure import PositionFacts
 from sidecoach.events import Analysis, MotifTag
+
+# The best move's idea, as a square-free strategic theme the coach may teach at the theme
+# level: it orients toward the plan without naming the move. Keyed by the idea's kind.
+_PLAN_THEME: dict[str, str] = {
+    "castle": "getting your king to safety",
+    "rescue": "getting a piece out of danger",
+    "develop": "finishing your development",
+    "outpostMove": "planting a knight on an outpost",
+    "centralise": "centralising a piece",
+    "takeFile": "taking the open file",
+    "centre": "fighting for the centre",
+    "pushPasser": "pushing your passed pawn",
+    "activate": "activating your worst-placed piece",
+    "space": "gaining space on the flank",
+    "simplify": "trading down to convert your material",
+}
 
 # Tactical tags a coach would name as the theme, most specific first. Everything that a
 # move merely is (capture, check, quietMove) says nothing about the idea and is left out.
@@ -266,11 +283,39 @@ def facts_from_analysis(
     best = _to_move(best_uci) if best_uci else None
     if best is not None and best not in board.legal_moves:
         best = None
+    phase = phase_of(board, in_book)
+    us = board.turn
 
+    # A tactic is the headline only when it is the point: a decisive or forced position, or
+    # one where the best move plays into the very squares the tactic is on. A pin that happens
+    # to sit on the board while the plan is elsewhere is incidental, and teaching it would
+    # point the player away from the real idea, so its focus and description are withheld.
     theme = theme_of(analysis.tags)
-    region = region_of(theme.squares) if theme else None
-    focus = list(theme.squares) if theme else []
-    tactic = describe_tactic(board, theme.name, theme.squares, best) if theme else None
+    best_squares = {best.from_square, best.to_square} if best is not None else set()
+    tactic_squares = {chess.parse_square(s) for s in theme.squares} if theme else set()
+    tactic_relevant = theme is not None and (
+        analysis.decisive or analysis.only_move or bool(best_squares & tactic_squares)
+    )
+    region = region_of(theme.squares) if tactic_relevant and theme else None
+    focus = list(theme.squares) if tactic_relevant and theme else []
+    tactic = (
+        describe_tactic(board, theme.name, theme.squares, best)
+        if tactic_relevant and theme
+        else None
+    )
+    theme_text = dict(THEMES)[theme.name] if tactic_relevant and theme else None
+
+    # The idea half: the strategic point of the best move (a square-free theme), and the few
+    # most instructive static features. The plan only competes for the theme slot when no
+    # tactic leads, so the coach is never handed two headlines at once.
+    plan: str | None = None
+    if best is not None:
+        worst = positional.worst_piece_square(board, us)
+        idea = positional.best_move_idea(board, best, us, phase=phase, worst=worst)
+        if idea is not None and not tactic_relevant:
+            plan = _PLAN_THEME.get(idea.kind)
+    ideas = [fact.text for fact in positional.top_features(board, us, phase=phase, limit=2)]
+
     piece: str | None = None
     if best is not None:
         moving = board.piece_at(best.from_square)
@@ -302,16 +347,18 @@ def facts_from_analysis(
     return PositionFacts(
         fen=board.fen(),
         side_to_move="white" if board.turn == chess.WHITE else "black",
-        phase=phase_of(board, in_book),
+        phase=phase,
         material=material_text(board),
         last_move=last_move,
         decisive=analysis.decisive,
         only_move=analysis.only_move,
-        theme=dict(THEMES)[theme.name] if theme else None,
+        theme=theme_text,
         region=region,
         piece=piece,
         focus=focus,
         tactic=tactic,
+        plan=plan,
+        ideas=ideas,
         candidates=candidates,
         threats=threats,
         line=line,

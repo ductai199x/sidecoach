@@ -59,7 +59,10 @@ PERSONA = (
 RULES = (
     "Rules you must follow.\n"
     "1. Say only what the fact sheet supports. Never guess at moves, threats, plans or "
-    "evaluations that are not on it, and never invent what a piece attacks or defends.\n"
+    "evaluations that are not on it, and never invent what a piece attacks or defends. When "
+    "the sheet gives a plan (a strategic idea) or ideas (features of the position), those are "
+    "yours to teach: when there is no tactic, build the lesson around them, so the player "
+    "learns the idea and not only the combination. Ground every word in the sheet.\n"
     "2. Never name a move, a destination square or a piece unless the fact sheet lists it. "
     "If the sheet gives a theme, you may name the theme; a region, you may point at the "
     "region; nothing more. Describe a move only in the words given for it; do not say what "
@@ -610,7 +613,7 @@ class Coach:
         """The turn's instruction to the model, and the template used if it fails."""
         facts = position.facts
         assert facts is not None
-        theme = facts.theme or "the position"
+        theme = facts.theme or facts.plan or "the position"
         region = facts.region or "the whole board"
         if trigger is Trigger.DECISIVE_QUESTION:
             return (

@@ -61,6 +61,14 @@ class PositionFacts(BaseModel):
     # The theme as a finished sentence, grounded on the board: "the knight on d3 is pinned
     # to the queen on d7 by the rook on d1". Given at the piece level and above, like focus.
     tactic: str | None = None
+    # The strategic idea behind the best move, as a square-free theme ("finishing your
+    # development", "converting your extra material"). Given from the theme level, since it
+    # orients without naming the move. This is how the coach teaches ideas, not just tactics.
+    plan: str | None = None
+    # The most instructive static features of the position ("your rook holds the open e-file",
+    # "you are up material, so trade and convert"), in the coach's words. From the region
+    # level: they describe what is on the board, not the move to find.
+    ideas: list[str] = Field(default_factory=list)
     candidates: list[str] = Field(default_factory=list)
     threats: list[str] = Field(default_factory=list)
     line: list[str] = Field(default_factory=list)
@@ -80,11 +88,13 @@ _ALWAYS: tuple[str, ...] = (
 _BY_LEVEL: dict[DisclosureLevel, tuple[str, ...]] = {
     DisclosureLevel.SILENT: (),
     DisclosureLevel.QUESTION: (),
-    DisclosureLevel.THEME: ("theme",),
-    DisclosureLevel.REGION: ("theme", "region"),
-    DisclosureLevel.PIECE: ("theme", "region", "piece", "focus", "tactic"),
+    DisclosureLevel.THEME: ("theme", "plan"),
+    DisclosureLevel.REGION: ("theme", "plan", "ideas", "region"),
+    DisclosureLevel.PIECE: ("theme", "plan", "ideas", "region", "piece", "focus", "tactic"),
     DisclosureLevel.CANDIDATE: (
         "theme",
+        "plan",
+        "ideas",
         "region",
         "piece",
         "focus",
@@ -94,6 +104,8 @@ _BY_LEVEL: dict[DisclosureLevel, tuple[str, ...]] = {
     ),
     DisclosureLevel.LINE: (
         "theme",
+        "plan",
+        "ideas",
         "region",
         "piece",
         "focus",

@@ -25,6 +25,7 @@ from typing import Literal, Protocol
 
 import chess
 
+from sidecoach.analysis.positional import is_passed
 from sidecoach.coach.disclosure import PositionFacts
 from sidecoach.coach.facts import CANDIDATE_MARGIN, PIECE_NAMES
 from sidecoach.events import Line
@@ -1061,6 +1062,77 @@ def check_draft(
         reason = _move_problem(board, match.group(1).replace("0", "O"))
         if reason:
             add(match.group(0), reason)
+    for phrase, reason in _strategic_problems(text, board):
+        add(phrase, reason)
+    return problems
+
+
+# A file called open or half-open, in either word order ("the open e-file", "the e-file is
+# open"). A pawn called passed, by square or by file, in either order.
+_OPEN_FILE = re.compile(
+    r"\b(?:(?P<k1>open|half[-\s]?open)\s+(?P<f1>[a-h])[-\s]?file"
+    r"|(?P<f2>[a-h])[-\s]?file\s+(?:is|are|remains?)\s+(?:now\s+)?(?P<k2>open|half[-\s]?open))\b",
+    re.IGNORECASE,
+)
+_PASSED = re.compile(
+    r"\bpassed\s+pawn\s+on\s+(?P<sq1>[a-h][1-8])"
+    r"|\bpawn\s+on\s+(?P<sq2>[a-h][1-8])\s+(?:is|are)\s+(?:a\s+|now\s+)*passed"
+    r"|\bpassed\s+(?P<file1>[a-h])[-\s]?pawn"
+    r"|\b(?P<file2>[a-h])[-\s]?pawn\s+(?:is|are)\s+(?:a\s+|now\s+)*passed",
+    re.IGNORECASE,
+)
+
+
+def _file_squares(file_index: int) -> list[chess.Square]:
+    return [chess.square(file_index, rank) for rank in range(8)]
+
+
+def _strategic_problems(text: str, board: chess.Board) -> list[tuple[str, str]]:
+    """Concrete strategic claims the board contradicts: a file said open that has pawns, a
+    pawn said passed that an enemy pawn still holds up. Only clear, checkable contradictions
+    are flagged; a fuzzy claim (space, king safety, activity) is left alone.
+    """
+    us = board.turn
+    problems: list[tuple[str, str]] = []
+    for match in _OPEN_FILE.finditer(text):
+        kind = (match.group("k1") or match.group("k2")).lower().replace(" ", "").replace("-", "")
+        letter = (match.group("f1") or match.group("f2")).lower()
+        pawns = [board.piece_at(sq) for sq in _file_squares(ord(letter) - ord("a"))]
+        ours = any(p and p.piece_type == chess.PAWN and p.color == us for p in pawns)
+        theirs = any(p and p.piece_type == chess.PAWN and p.color != us for p in pawns)
+        if kind == "open" and (ours or theirs):
+            problems.append((match.group(0), f"the {letter}-file is not open; a pawn stands on it"))
+        elif kind == "halfopen" and ours:
+            problems.append(
+                (
+                    match.group(0),
+                    f"the {letter}-file is not half-open for you; you have a pawn there",
+                )
+            )
+    for match in _PASSED.finditer(text):
+        square_name = match.group("sq1") or match.group("sq2")
+        letter = match.group("file1") or match.group("file2")
+        if square_name:
+            square = chess.parse_square(square_name.lower())
+            piece = board.piece_at(square)
+            if (
+                piece is not None
+                and piece.piece_type == chess.PAWN
+                and not is_passed(board, square)
+            ):
+                problems.append(
+                    (match.group(0), f"the pawn on {square_name.lower()} is not passed")
+                )
+        elif letter:
+            ours = [
+                sq
+                for sq in _file_squares(ord(letter.lower()) - ord("a"))
+                if board.piece_type_at(sq) == chess.PAWN and board.color_at(sq) == us
+            ]
+            if ours and not any(is_passed(board, sq) for sq in ours):
+                problems.append(
+                    (match.group(0), f"your {letter.lower()}-pawn is not a passed pawn")
+                )
     return problems
 
 

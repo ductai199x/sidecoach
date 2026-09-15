@@ -94,6 +94,34 @@ def test_near_equal_candidates_are_all_named() -> None:
     assert facts_from_analysis(board, analysis).candidates == ["e4", "d4"]
 
 
+def test_an_incidental_tactic_is_demoted_and_the_strategic_plan_leads() -> None:
+    # A pin sits on the e-file but the best move (Bf1-e2, developing) has nothing to do with
+    # it and the position is not decisive, so the tactic is withheld and the plan takes over.
+    fen = "r1bqk2r/pppp1ppp/2n2n2/2b1p3/4P3/2NP1N2/PPP2PPP/R1BQKB1R w KQkq - 0 9"
+    board = chess.Board(fen)
+    analysis = _analysis(
+        fen,
+        lines=[Line(moves=["f1e2"], depth=12, expected_score=0.40)],
+        decisive=False,
+        only_move=False,
+        tags=[MotifTag(name="pin", squares=["e5", "e4", "e1"], move=None)],
+    )
+    facts = facts_from_analysis(board, analysis)
+    assert facts.theme is None and facts.focus == [] and facts.tactic is None
+    assert facts.plan == "finishing your development"
+    assert facts.ideas, "the position's static features are given as ideas"
+
+
+def test_a_decisive_tactic_still_leads_and_no_plan_competes() -> None:
+    board = chess.Board(SCHOLAR)
+    analysis = _analysis(
+        SCHOLAR, tags=[MotifTag(name="mateIn1", squares=["f7", "e8"], move="h5f7")]
+    )
+    facts = facts_from_analysis(board, analysis, last_move="Nf6")
+    assert facts.theme == "a mating attack"  # decisive: the tactic is the point
+    assert facts.plan is None, "no second headline when a tactic leads"
+
+
 def test_theme_ranks_the_most_specific_tag_first() -> None:
     tags = [
         MotifTag(name="capture", squares=["e5"]),

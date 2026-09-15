@@ -576,6 +576,30 @@ def test_draft_verifies_a_skewer() -> None:
     assert problems[0].reason == "the rook on b2 does not skewer anything"
 
 
+def test_draft_flags_a_false_open_file_but_not_a_true_one() -> None:
+    # The d-file has no pawns (open); the e-file has the pawn on e2.
+    board = chess.Board("3rk3/8/8/8/8/8/4P3/3RK3 w - - 0 1")
+    assert check_draft("Your rook holds the open d-file.", board) == []
+    assert check_draft("The d-file is open.", board) == []
+    problems = check_draft("The e-file is open for you.", board)
+    assert len(problems) == 1 and "not open" in problems[0].reason
+    # Half-open: only an enemy pawn on the file is fine; a friendly pawn is not.
+    only_enemy = chess.Board("3rk3/3p4/8/8/8/8/8/3RK3 w - - 0 1")
+    assert check_draft("You have the half-open d-file.", only_enemy) == []
+    friendly = chess.Board("3rk3/8/8/8/8/8/3P4/3RK3 w - - 0 1")
+    problems = check_draft("The d-file is half-open for you.", friendly)
+    assert len(problems) == 1 and "not half-open" in problems[0].reason
+
+
+def test_draft_flags_a_false_passed_pawn_claim_in_either_word_order() -> None:
+    # Black to move: the a5 pawn is passed; the c6 pawn is not, the white c4 pawn is ahead.
+    board = chess.Board("4r1k1/2q2np1/2p5/p6Q/2P2R2/6PP/1r1R2K1/8 b - - 0 1")
+    assert check_draft("Your a-pawn is a passed pawn.", board) == []
+    assert check_draft("You have a passed pawn on a5.", board) == []
+    assert check_draft("Your c-pawn is a passed pawn.", board), "noun-then-adjective"
+    assert check_draft("You have a passed pawn on c6.", board), "adjective-then-noun"
+
+
 def test_draft_ambiguous_move() -> None:
     board = chess.Board(ITALIAN)
     board.push_san("d3")
