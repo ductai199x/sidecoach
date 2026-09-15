@@ -353,3 +353,17 @@ def test_the_opposition_is_named_in_king_and_pawn_endgames() -> None:
     # Not a pure king-and-pawn endgame (a rook is on): the opposition is not the battle.
     with_piece = chess.Board("8/8/4k3/8/4K3/8/4P3/4R3 w - - 0 1")
     assert P.opposition(with_piece, chess.WHITE) == []
+
+
+def test_key_squares_in_king_and_pawn_versus_king() -> None:
+    # White c4-pawn: its key squares are b6/c6/d6. The king on c6 holds one -> the pawn queens.
+    on_key = chess.Board("4k3/8/2K5/8/2P5/8/8/8 w - - 0 1")
+    assert kinds(P.key_squares(on_key, chess.WHITE)) == ["keySquare"]
+    assert "key square on c6" in P.key_squares(on_key, chess.WHITE)[0].text
+    # King not yet on a key square: the goal names the squares to march to.
+    off_key = chess.Board("4k3/8/8/8/2P5/8/2K5/8 w - - 0 1")
+    goal = P.key_squares(off_key, chess.WHITE)[0]
+    assert goal.kind == "keySquareGoal" and "b6, c6, d6" in goal.text
+    # A rook pawn has no winning key squares (the ending is usually a draw).
+    rook = chess.Board("4k3/8/2K5/8/P7/8/8/8 w - - 0 1")
+    assert P.key_squares(rook, chess.WHITE) == []

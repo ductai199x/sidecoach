@@ -219,6 +219,58 @@ def opposition(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     ]
 
 
+def _key_squares_of(pawn: chess.Square, us: chess.Color) -> list[chess.Square]:
+    """The king's key squares for a non-rook pawn: reach one and the pawn queens. The ranks
+    were checked against the Lichess tablebase -- two in front for a pawn on its 2nd-4th rank,
+    and both one and two in front once it reaches the 5th. A rook pawn has none (usually a draw)."""
+    pf, pr = chess.square_file(pawn), chess.square_rank(pawn)
+    if pf in (0, 7):
+        return []
+    if us == chess.WHITE:
+        ranks = [pr + 2] if pr <= 3 else [pr + 1, pr + 2]
+    else:
+        ranks = [pr - 2] if pr >= 4 else [pr - 1, pr - 2]
+    return [
+        chess.square(f, kr)
+        for kr in ranks
+        for f in (pf - 1, pf, pf + 1)
+        if 0 <= f <= 7 and 0 <= kr <= 7
+    ]
+
+
+def key_squares(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
+    """The king's key squares in a king-and-pawn-versus-king ending: reach one and the pawn
+    promotes. Only the clean textbook case -- your lone non-rook pawn, bare kings -- where the
+    rule is exact."""
+    if not _only_kings_and_pawns(board):
+        return []
+    ours = list(board.pieces(chess.PAWN, us))
+    if len(ours) != 1 or board.pieces(chess.PAWN, not us):
+        return []
+    keys = _key_squares_of(ours[0], us)
+    king = board.king(us)
+    if not keys or king is None:
+        return []
+    letter = _FILES[chess.square_file(ours[0])]
+    if king in keys:
+        return [
+            PositionalFact(
+                "keySquare",
+                f"your king holds a key square on {_name(king)} -- your {letter}-pawn promotes, so "
+                "push it through",
+                (_name(king), _name(ours[0])),
+            )
+        ]
+    names = ", ".join(_name(k) for k in sorted(keys))
+    return [
+        PositionalFact(
+            "keySquareGoal",
+            f"march your king to a key square ({names}) to force your {letter}-pawn through",
+            (_name(ours[0]), *(_name(k) for k in sorted(keys))),
+        )
+    ]
+
+
 # Space (Silman's rules of space): central manoeuvring room. Measured the way an engine counts
 # it -- the safe central squares behind your front, files c-f on your side, that no enemy pawn
 # attacks and your own pawn does not block -- which separates a real space edge from a symmetric
@@ -877,6 +929,7 @@ def features(
     facts += king_activity(board, us, phase=phase)
     facts += square_of_the_pawn(board, us, phase=phase)
     facts += opposition(board, us)
+    facts += key_squares(board, us)
     facts += material_plan(board, us)
     facts += worst_piece(board, us)
     return facts
@@ -1145,6 +1198,8 @@ _FEATURE_RANK: dict[str, int] = {
     "runningPawn": 1,
     "outrunPawn": 1,
     "passiveKing": 2,
+    "keySquare": 2,
+    "keySquareGoal": 2,
     "opposition": 2,
     "oppositionAgainst": 3,
     "iqpTarget": 3,
