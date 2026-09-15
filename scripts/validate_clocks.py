@@ -450,18 +450,21 @@ def validate(rec_dir: Path, verbose: bool = True) -> dict[str, object]:
             by_ply[landing.ply] = landing
     if started_at is not None:
         by_ply[0] = Landing(0, "start", started_at, False)
-    # Increment: the smallest standard increment covering the largest rise of a clock over
-    # a ply (a fast move keeps nearly all of it).
-    rises: list[int] = []
-    for ply in range(1, len(truth) + 1):
-        if ply not in by_ply or ply - 1 not in by_ply:
+    # The increment, from the jump itself: the mover's clock rises by it within a tick or
+    # two of their move landing. The mode over the plies ignores a takeback restoring a
+    # clock and the odd misread.
+    jumps: Counter[int] = Counter()
+    for ply, landing in by_ply.items():
+        if ply == 0:
             continue
         clock = white if ply % 2 == 1 else black
-        before = _idle_value(clock, range(by_ply[ply - 1].tick - 2, by_ply[ply - 1].tick + 1))
-        after = _after_value(clock, range(by_ply[ply].tick, by_ply[ply].tick + 6))
-        if before is not None and after is not None:
-            rises.append((after - before) // 1000)
-    inc = next((i for i in INCREMENTS if rises and i >= max(rises)), 0)
+        series = [clock[t] for t in range(landing.tick - 3, landing.tick + 9) if clock.get(t)]
+        for before, after in zip(series, series[1:], strict=False):
+            if before is not None and after is not None and after > before:
+                jumps[(after - before) // 1000] += 1
+    inc = jumps.most_common(1)[0][0] if jumps else 0
+    if inc not in INCREMENTS:
+        inc = min(INCREMENTS, key=lambda i: abs(i - inc))
     rows: list[tuple[int, str, float | None, float, str]] = []
     for ply in range(1, len(truth) + 1):
         target = truth[ply - 1]["time_ds"] / 10.0

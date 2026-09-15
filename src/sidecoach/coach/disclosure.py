@@ -54,6 +54,10 @@ class PositionFacts(BaseModel):
     theme: str | None = None
     region: str | None = None
     piece: str | None = None
+    # The squares that carry the theme: the pinner, the pinned piece and what it shields;
+    # the forking piece and its targets. Given only at the piece level and above, since
+    # before that they would give the answer away.
+    focus: list[str] = Field(default_factory=list)
     candidates: list[str] = Field(default_factory=list)
     threats: list[str] = Field(default_factory=list)
     line: list[str] = Field(default_factory=list)
@@ -75,9 +79,17 @@ _BY_LEVEL: dict[DisclosureLevel, tuple[str, ...]] = {
     DisclosureLevel.QUESTION: (),
     DisclosureLevel.THEME: ("theme",),
     DisclosureLevel.REGION: ("theme", "region"),
-    DisclosureLevel.PIECE: ("theme", "region", "piece"),
-    DisclosureLevel.CANDIDATE: ("theme", "region", "piece", "candidates", "threats"),
-    DisclosureLevel.LINE: ("theme", "region", "piece", "candidates", "threats", "line"),
+    DisclosureLevel.PIECE: ("theme", "region", "piece", "focus"),
+    DisclosureLevel.CANDIDATE: ("theme", "region", "piece", "focus", "candidates", "threats"),
+    DisclosureLevel.LINE: (
+        "theme",
+        "region",
+        "piece",
+        "focus",
+        "candidates",
+        "threats",
+        "line",
+    ),
 }
 
 

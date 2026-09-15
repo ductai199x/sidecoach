@@ -316,6 +316,60 @@ def test_the_fact_sheet_hides_by_level() -> None:
     assert "line: Qxf7#" in fact_sheet(facts, DisclosureLevel.LINE)
 
 
+def test_the_game_memory_carries_the_arc_into_the_prompt() -> None:
+    from sidecoach.coach.coach import GameMemory
+
+    memory = GameMemory()
+    memory.note_move(6, "opening", "material is level", "C50 Italian Game")
+    memory.note_move(24, "middlegame", "you are down a pawn", None)
+    block = memory.block()
+    assert "C50 Italian Game" in block and "move 12, middlegame" in block
+    assert "down a pawn" in block and "level" not in block
+    # A recurring missed idea is surfaced only once it has happened more than once.
+    memory.note_mistake(20, "a fork")
+    assert "missed more than once" not in memory.block()
+    memory.note_mistake(28, "a fork")
+    assert "a fork (2x)" in memory.block()
+
+
+def test_the_memory_reaches_the_model_and_grows_with_the_game() -> None:
+    coach, provider = _coach(["Careful here.", "That let it slip."])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6), 7.0)
+    _messages(coach)
+    assert "Game so far:" in provider.prompts[0][1][-1]["content"]
+    # A mistake in a themed position is remembered.
+    board = chess.Board(SCHOLAR)
+    move = board.parse_san("Bxf7+")
+    board.push(move)
+    coach.on_event(
+        MovePlayed(
+            game_id="g",
+            ply=7,
+            san="Bxf7+",
+            uci=move.uci(),
+            fen_before=SCHOLAR,
+            fen_after=board.fen(),
+            by_user=True,
+        ),
+        10.0,
+    )
+    coach.on_event(
+        MoveAssessment(
+            game_id="g",
+            ply=7,
+            uci=move.uci(),
+            expected_loss=0.45,
+            severity=Severity.BLUNDER,
+            best=["h5f7"],
+            label=Label.MISS,
+        ),
+        11.0,
+    )
+    _messages(coach)
+    assert coach.memory.missed.get("a mating attack") == 1
+
+
 def test_asking_before_anything_is_analysed_gets_an_honest_answer() -> None:
     coach, _ = _coach([])
     _start(coach)

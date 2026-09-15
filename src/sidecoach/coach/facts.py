@@ -196,6 +196,7 @@ def facts_from_analysis(
 
     theme = theme_of(analysis.tags)
     region = region_of(theme.squares) if theme else None
+    focus = list(theme.squares) if theme else []
     piece: str | None = None
     if best is not None:
         moving = board.piece_at(best.from_square)
@@ -235,6 +236,7 @@ def facts_from_analysis(
         theme=dict(THEMES)[theme.name] if theme else None,
         region=region,
         piece=piece,
+        focus=focus,
         candidates=candidates,
         threats=threats,
         line=line,
