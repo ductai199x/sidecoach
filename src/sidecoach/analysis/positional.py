@@ -539,6 +539,24 @@ def _piece_is_attacked(board: chess.Board, square: chess.Square, us: chess.Color
     return cheapest < mine or not defended
 
 
+def _prevents_threat(
+    board: chess.Board, after: chess.Board, threat: chess.Move, us: chess.Color
+) -> bool:
+    """Whether the move that led to `after` stops the opponent's threatened move.
+
+    Stopped when the threat is no longer a legal move at all, or when it was a capture of one
+    of your pieces that you now guard, so it can be met.
+    """
+    if threat not in after.legal_moves:
+        return True
+    if after.is_capture(threat):
+        target = threat.to_square
+        victim = after.piece_at(target)
+        if victim is not None and victim.color == us and after.attackers(us, target):
+            return True
+    return False
+
+
 def best_move_idea(
     board: chess.Board,
     move: chess.Move,
@@ -546,6 +564,7 @@ def best_move_idea(
     *,
     phase: str = "middlegame",
     worst: chess.Square | None = None,
+    threat: chess.Move | None = None,
 ) -> PositionalFact | None:
     """The strategic point of the engine's best move, in a coach's words, or None.
 
@@ -570,6 +589,18 @@ def best_move_idea(
         name = PIECE_NAMES[piece_type]
         return PositionalFact(
             "rescue", f"your {name} was in danger; moving to {to} brings it to safety", (to,)
+        )
+
+    if (
+        threat is not None
+        and not board.is_capture(move)
+        and not after.is_check()
+        and _prevents_threat(board, after, threat, us)
+    ):
+        return PositionalFact(
+            "prophylaxis",
+            "prophylaxis: this quietly stops your opponent's idea before you push your own plan",
+            (to,),
         )
 
     if (

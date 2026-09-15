@@ -23,6 +23,7 @@ from sidecoach.events import Analysis, MotifTag
 _PLAN_THEME: dict[str, str] = {
     "castle": "getting your king to safety",
     "rescue": "getting a piece out of danger",
+    "prophylaxis": "stopping your opponent's plan before your own",
     "activateKing": "activating your King in the endgame",
     "develop": "finishing your development",
     "outpostMove": "planting a knight on an outpost",
@@ -308,13 +309,29 @@ def facts_from_analysis(
     )
     theme_text = dict(THEMES)[theme.name] if tactic_relevant and theme else None
 
+    # The opponent's threat, as the coach would name it, and the move behind it: the engine's
+    # best reply after a pass. The threat move lets the best move be read as prophylaxis.
+    threats: list[str] = []
+    threat_move: chess.Move | None = None
+    if analysis.threats and not board.is_check():
+        passed = board.copy(stack=False)
+        passed.push(chess.Move.null())
+        for uci in analysis.threats:
+            move = _to_move(uci)
+            if move is not None and move in passed.legal_moves:
+                threats.append(passed.san(move))
+                if threat_move is None:
+                    threat_move = move
+
     # The idea half: the strategic point of the best move (a square-free theme), and the few
     # most instructive static features. The plan only competes for the theme slot when no
     # tactic leads, so the coach is never handed two headlines at once.
     plan: str | None = None
     if best is not None:
         worst = positional.worst_piece_square(board, us)
-        idea = positional.best_move_idea(board, best, us, phase=phase, worst=worst)
+        idea = positional.best_move_idea(
+            board, best, us, phase=phase, worst=worst, threat=threat_move
+        )
         if idea is not None and not tactic_relevant:
             plan = _PLAN_THEME.get(idea.kind)
     ideas = [fact.text for fact in positional.top_features(board, us, phase=phase, limit=2)]
@@ -334,15 +351,6 @@ def facts_from_analysis(
             move = _to_move(line.moves[0])
             if move is not None and move in board.legal_moves:
                 candidates.append(board.san(move))
-
-    threats: list[str] = []
-    if analysis.threats and not board.is_check():
-        passed = board.copy(stack=False)
-        passed.push(chess.Move.null())
-        for uci in analysis.threats:
-            move = _to_move(uci)
-            if move is not None and move in passed.legal_moves:
-                threats.append(passed.san(move))
 
     line = san_line(board, lines[0].moves, limit=8).split() if lines else []
     line = [token for token in line if not token.endswith(".") and not token.endswith("...")]

@@ -147,6 +147,26 @@ def test_endgame_king_activity_and_pawn_break_and_rook_behind_passer() -> None:
     assert P.best_move_idea(board, board.parse_san("Ra1"), chess.WHITE).kind == "rookBehindPasser"
 
 
+def test_prophylaxis_is_a_quiet_move_that_stops_the_opponent_s_threat() -> None:
+    # Black threatens ...Nxe4: the e4 pawn hangs to the f6 knight. Nc3 defends it -- prophylaxis,
+    # and it outranks the fact that Nc3 also develops.
+    board = chess.Board("r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 4")
+    threat = chess.Move.from_uci("f6e4")
+    idea = P.best_move_idea(
+        board, board.parse_san("Nc3"), chess.WHITE, phase="opening", threat=threat
+    )
+    assert idea is not None and idea.kind == "prophylaxis"
+    # A move that ignores the threat is not prophylaxis.
+    assert (
+        P.best_move_idea(board, board.parse_san("a3"), chess.WHITE, phase="opening", threat=threat)
+        is None
+    )
+    # With no threat supplied, Nc3 is read as ordinary development, not prophylaxis.
+    assert P.best_move_idea(board, board.parse_san("Nc3"), chess.WHITE, phase="opening").kind == (
+        "develop"
+    )
+
+
 def test_central_infiltration_is_not_called_centralising() -> None:
     # A knight dropping to c2 (rank 2) is infiltration, not a central strong square (c3-f6).
     board = chess.Board("4k3/8/8/8/8/1n6/8/4K3 b - - 0 1")
