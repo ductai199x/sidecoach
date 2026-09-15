@@ -228,35 +228,58 @@ def pawn_weaknesses(board: chess.Board, us: chess.Color) -> list[PositionalFact]
     return facts
 
 
-def isolated_d_pawn(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
-    """The isolated queen's pawn, named for both sides: a structure, not just a weak pawn.
+def isolated_d_pawn(
+    board: chess.Board, us: chess.Color, *, phase: str = "middlegame"
+) -> list[PositionalFact]:
+    """The isolated queen's pawn, named for both sides and by phase.
 
-    For its owner it is double-edged -- piece activity and open lines now, a target in the
-    endgame; for the other side it is something to blockade and trade down against.
+    For its owner the IQP is double-edged. In the middlegame its energy is an asset to attack
+    with -- the outposts the pawn supports, the c- and e-files for the rooks, the d-file break
+    -- and the plan is to keep pieces on. In an endgame that energy is spent and it is a target
+    to hold. For the other side the plan is the classic formula: blockade the square in front,
+    trade the minor pieces (which ends the owner's attack) and steer for the endgame.
     """
     facts: list[PositionalFact] = []
     for color in (not us, us):  # the enemy's IQP is the plan, so it comes first
         for square in _pawns_on_file(board, color, 3):
             if not is_isolated(board, square):
                 continue
+            name = _name(square)
+            file_, rank = chess.square_file(square), chess.square_rank(square)
+            ahead = rank + _forward(color)
+            front = _name(chess.square(file_, ahead))  # the square in front of the pawn
+            outposts = [
+                _name(chess.square(f, ahead)) for f in (file_ - 1, file_ + 1) if 0 <= f <= 7
+            ]
             if color == us:
-                facts.append(
-                    PositionalFact(
-                        "iqp",
-                        f"you have an isolated d-pawn on {_name(square)}, an IQP: it gives your "
-                        "pieces activity and the open c- and e-files now, but guard it -- in an "
-                        "endgame it becomes a target",
-                        (_name(square),),
+                if phase == "endgame":
+                    facts.append(
+                        PositionalFact(
+                            "iqp",
+                            f"your isolated d-pawn on {name} is a target now: its middlegame "
+                            "activity is spent, so hold it and trade rooks to ease the pressure",
+                            (name,),
+                        )
                     )
-                )
+                else:
+                    facts.append(
+                        PositionalFact(
+                            "iqp",
+                            f"your isolated d-pawn on {name}, an IQP: play on its energy -- the "
+                            f"{' and '.join(outposts)} outposts it supports, the c- and e-files "
+                            f"for your rooks, the break to {front} -- keep pieces on and go for "
+                            "the attack; it turns into a target only in an endgame",
+                            (name, *outposts),
+                        )
+                    )
             else:
                 facts.append(
                     PositionalFact(
                         "iqpTarget",
-                        f"their isolated d-pawn on {_name(square)}, an IQP, is a long-term "
-                        "target: blockade the square in front of it and trade pieces toward an "
-                        "endgame",
-                        (_name(square),),
+                        f"their isolated d-pawn on {name}, an IQP, is a long-term target: "
+                        f"blockade it on {front}, trade the minor pieces (that ends its attack) "
+                        "and steer for an endgame where it is just a weakness",
+                        (name, front),
                     )
                 )
     return facts
@@ -556,7 +579,7 @@ def features(
     if phase != "endgame":
         facts += development(board, us)
         facts += uncastled_king(board, us)
-    facts += isolated_d_pawn(board, us)
+    facts += isolated_d_pawn(board, us, phase=phase)
     facts += hanging_pawns(board, us)
     facts += pawn_weaknesses(board, us)
     facts += passed_pawns(board, us)

@@ -228,3 +228,20 @@ def test_an_equal_wing_and_a_crippled_doubled_majority_are_not_named() -> None:
     # named (the book's caution about crippled majorities).
     crippled = chess.Board("4k3/1pp5/8/8/8/2P5/1PP5/4K3 w - - 0 1")
     assert P.pawn_majority(crippled, chess.WHITE) == []
+
+
+def test_the_iqp_plan_is_named_by_side_and_phase() -> None:
+    # White has an isolated d4 pawn: a classic IQP.
+    board = chess.Board("r1bq1rk1/pp3ppp/2n1pn2/8/3P4/2N2N2/PP3PPP/R1BQ1RK1 w - - 0 10")
+    # Middlegame, owner: an asset -- the outposts it supports (c5, e5), keep pieces on to attack.
+    owner = P.isolated_d_pawn(board, chess.WHITE, phase="middlegame")[0]
+    assert "outpost" in owner.text and "keep pieces on" in owner.text
+    assert set(owner.squares) == {"d4", "c5", "e5"}
+    # Endgame, owner: the energy is spent, so it flips to a target to hold.
+    endgame = P.isolated_d_pawn(board, chess.WHITE, phase="endgame")[0]
+    assert "target" in endgame.text and "trade rooks" in endgame.text
+    assert owner.text != endgame.text
+    # The side facing it gets the blockade-and-trade plan, naming the blockade square (d5).
+    defender = P.isolated_d_pawn(board, chess.BLACK)[0]
+    assert "blockade it on d5" in defender.text and "trade the minor pieces" in defender.text
+    assert defender.squares == ("d4", "d5")
