@@ -26,6 +26,10 @@ class EngineSettings(BaseModel):
     movetime_ms: int = 300
     threads: int = 4
     hash_mb: int = 256
+    # Assessment runs to a fixed depth so that the position before a move and the position
+    # after it are measured the same way; a time limit would compare unequal searches.
+    depth: int = 18
+    pv_plies: int = 12
 
 
 class LLMSettings(BaseModel):
@@ -53,6 +57,7 @@ class CoachSettings(BaseModel):
     mistake: float = 0.10
     blunder: float = 0.20
     decisive_gap: float = 0.10
+    only_move_gap: float = 0.30
 
 
 class ProfileSettings(BaseModel):

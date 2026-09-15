@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
 import platform
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, cast
 
 import typer
 from rich.console import Console
@@ -18,7 +19,11 @@ from sidecoach.config import Settings, find_stockfish, load_settings
 from sidecoach.events import Region, Side
 
 if TYPE_CHECKING:
+    import chess
+
+    from sidecoach.analysis.annotator import Analyser, Book, Tagger
     from sidecoach.capture.base import CaptureBackend
+    from sidecoach.events import MoveAssessment
     from sidecoach.replay.recording import Recording
 
 app = typer.Typer(
@@ -66,13 +71,29 @@ def _check_engine(settings: Settings) -> tuple[str, str]:
     if path is None:
         return "missing", "run: uv run python scripts/fetch_stockfish.py"
     try:
-        import chess.engine
+        import chess
 
-        with chess.engine.SimpleEngine.popen_uci(str(path)) as engine:
-            name = engine.id.get("name", "unknown")
+        from sidecoach.analysis.engine import Engine
+
+        started = time.perf_counter()
+        with Engine(
+            path=path,
+            threads=settings.engine.threads,
+            hash_mb=settings.engine.hash_mb,
+            multipv=settings.engine.multipv,
+        ) as engine:
+            name = engine.name
+            lines = engine.analyse(chess.Board(), depth=settings.engine.depth)
+        took = (time.perf_counter() - started) * 1000.0
+        if not lines:
+            return "error", f"{name} returned no lines"
+        wdl = "win-draw-loss" if lines[0].wdl else "centipawns only"
+        return (
+            "ok",
+            f"{name}, depth {settings.engine.depth} in {took:.0f} ms, {wdl}",
+        )
     except Exception as exc:  # noqa: BLE001
         return "error", f"{path}: {exc}"
-    return "ok", f"{name} at {path}"
 
 
 def _check_llm(settings: Settings) -> tuple[str, str]:
@@ -603,6 +624,234 @@ def detect(
         console.print(f"annotated -> {out}")
 
 
+def _load_tagger() -> Tagger | None:
+    """The motif tagger, when it is built; the analysis runs without it until then."""
+    try:
+        module = importlib.import_module("sidecoach.analysis.motifs")
+    except ImportError:
+        return None
+    return cast("Tagger", module)
+
+
+def _load_book(settings: Settings) -> Book | None:
+    """The opening book, when the tables have been fetched."""
+    try:
+        from sidecoach.analysis.openings import OpeningBook
+    except ImportError:
+        return None
+    return OpeningBook.load(settings.data_dir / "openings")
+
+
+def _make_analyser(settings: Settings, *, depth: int | None = None) -> Analyser | None:
+    """An analyser with its engine running, or None when there is no engine to run."""
+    path = find_stockfish(settings)
+    if path is None:
+        return None
+    from sidecoach.analysis.annotator import open_analyser
+    from sidecoach.analysis.score import Thresholds
+
+    return open_analyser(
+        path,
+        depth=depth or settings.engine.depth,
+        multipv=settings.engine.multipv,
+        threads=settings.engine.threads,
+        hash_mb=settings.engine.hash_mb,
+        pv_plies=settings.engine.pv_plies,
+        thresholds=Thresholds.from_settings(settings.coach),
+        tagger=_load_tagger(),
+        book=_load_book(settings),
+    )
+
+
+_SEVERITY_COLOUR = {
+    "blunder": "red",
+    "mistake": "yellow",
+    "inaccuracy": "cyan",
+    "none": "green",
+}
+
+
+def _assessment_text(assessment: MoveAssessment, before: chess.Board) -> str:
+    """One line about a played move: what it cost, what was better, what it did.
+
+    The best move is named only for a move already played, which is what the disclosure
+    rules allow; the live position's own best line is never printed here.
+    """
+    from sidecoach.analysis.engine import san_line
+
+    colour = _SEVERITY_COLOUR.get(assessment.severity.value, "white")
+    parts = [f"loss {assessment.expected_loss:.2f}"]
+    if assessment.severity.value != "none":
+        parts.append(f"[{colour}]{assessment.severity.value}[/{colour}]")
+        best = san_line(before, assessment.best, limit=4)
+        if best:
+            parts.append(f"better: {best}")
+    tags = ", ".join(dict.fromkeys(tag.name for tag in assessment.tags))
+    if tags:
+        parts.append(f"[dim]{tags}[/dim]")
+    return "  ".join(parts)
+
+
+@app.command()
+def review(
+    pgn: Annotated[Path, typer.Argument(help="PGN file to annotate")],
+    depth: Annotated[int | None, typer.Option(help="Search depth per position")] = None,
+    game: Annotated[int, typer.Option(help="Which game in the file")] = 1,
+    side: Annotated[str, typer.Option(help="Whose moves to list: white, black, both")] = "both",
+    threats: Annotated[bool, typer.Option(help="Also ask what the opponent threatened")] = False,
+    quiet: Annotated[bool, typer.Option(help="Only the summary, no move table")] = False,
+    out: Annotated[Path | None, typer.Option(help="Write the assessments as JSON")] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Annotate a game from a PGN: what each move cost, and where the game turned.
+
+    Every position is searched to the same depth, so the loss of a move is the difference
+    between two comparable numbers. Losses are in expected score, where 1.0 is a win: a
+    0.20 loss is a blunder whatever the material on the board.
+    """
+    import chess
+    import chess.pgn
+
+    from sidecoach.analysis.annotator import GameAnnotator
+    from sidecoach.analysis.engine import Engine, san_line
+    from sidecoach.analysis.score import Thresholds
+
+    settings = load_settings(config)
+    path = find_stockfish(settings)
+    if path is None:
+        console.print("[red]no Stockfish[/red]; run: uv run python scripts/fetch_stockfish.py")
+        raise typer.Exit(1)
+    if not pgn.exists():
+        console.print(f"[red]no such file[/red] {pgn}")
+        raise typer.Exit(1)
+    wanted = side.lower()
+    if wanted not in ("white", "black", "both"):
+        console.print("[red]--side must be white, black, or both[/red]")
+        raise typer.Exit(1)
+
+    with pgn.open(encoding="utf-8") as handle:
+        parsed = None
+        for _ in range(game):
+            parsed = chess.pgn.read_game(handle)
+            if parsed is None:
+                break
+    if parsed is None:
+        console.print(f"[red]no game {game}[/red] in {pgn}")
+        raise typer.Exit(1)
+
+    moves = list(parsed.mainline_moves())
+    headers = parsed.headers
+    console.print(
+        f"[bold]{headers.get('White', '?')} vs {headers.get('Black', '?')}[/bold] "
+        f"{headers.get('Result', '*')}, {len(moves)} plies"
+    )
+    search_depth = depth or settings.engine.depth
+    engine = Engine(
+        path=path,
+        threads=settings.engine.threads,
+        hash_mb=settings.engine.hash_mb,
+        multipv=settings.engine.multipv,
+        pv_plies=settings.engine.pv_plies,
+    )
+    annotator = GameAnnotator(
+        engine=engine,
+        depth=search_depth,
+        multipv=settings.engine.multipv,
+        thresholds=Thresholds.from_settings(settings.coach),
+        tagger=_load_tagger(),
+        book=_load_book(settings),
+        with_threats=threats,
+    )
+    table = Table(box=None, pad_edge=False)
+    for column in ("move", "", "loss", "severity", "better", "motifs"):
+        table.add_column(column, overflow="fold")
+
+    board = parsed.board()
+    counts = {"inaccuracy": 0, "mistake": 0, "blunder": 0}
+    total_loss = {chess.WHITE: 0.0, chess.BLACK: 0.0}
+    plies = {chess.WHITE: 0, chess.BLACK: 0}
+    rows: list[dict[str, object]] = []
+    opening: str | None = None
+    started = time.perf_counter()
+    try:
+        with engine:
+            for ply, move in enumerate(moves, start=1):
+                mover = board.turn
+                san = board.san(move)
+                assessment, analysis = annotator.assess(
+                    headers.get("Site", "review"), board, move, ply
+                )
+                opening = analysis.opening or opening
+                total_loss[mover] += assessment.expected_loss
+                plies[mover] += 1
+                if assessment.severity.value in counts:
+                    counts[assessment.severity.value] += 1
+                show = wanted == "both" or (wanted == "white") == (mover == chess.WHITE)
+                number = board.fullmove_number
+                label = f"{number}." if mover == chess.WHITE else f"{number}..."
+                better = (
+                    san_line(board, assessment.best, limit=4)
+                    if assessment.severity.value != "none"
+                    else ""
+                )
+                tags = ", ".join(dict.fromkeys(tag.name for tag in assessment.tags))
+                rows.append(
+                    {
+                        "ply": ply,
+                        "san": san,
+                        "uci": assessment.uci,
+                        "loss": round(assessment.expected_loss, 4),
+                        "severity": assessment.severity.value,
+                        "best": assessment.best,
+                        "tags": [tag.model_dump() for tag in assessment.tags],
+                        "threats": analysis.threats,
+                        "decisive": analysis.decisive,
+                    }
+                )
+                if show and not quiet:
+                    colour = _SEVERITY_COLOUR.get(assessment.severity.value, "white")
+                    marker = "" if assessment.severity.value == "none" else "*"
+                    table.add_row(
+                        label,
+                        f"{san}{marker}",
+                        f"{assessment.expected_loss:.2f}",
+                        f"[{colour}]{assessment.severity.value}[/{colour}]"
+                        if assessment.severity.value != "none"
+                        else "",
+                        better,
+                        tags,
+                    )
+                board.push(move)
+    except KeyboardInterrupt:
+        console.print("[yellow]stopped[/yellow]")
+
+    if not quiet:
+        console.print(table)
+    if opening:
+        console.print(f"opening: {opening}")
+    for colour, name in ((chess.WHITE, "white"), (chess.BLACK, "black")):
+        if plies[colour]:
+            console.print(
+                f"{name}: {plies[colour]} moves, "
+                f"average loss {total_loss[colour] / plies[colour]:.3f}"
+            )
+    console.print(
+        f"[cyan]{counts['inaccuracy']} inaccuracies[/cyan], "
+        f"[yellow]{counts['mistake']} mistakes[/yellow], "
+        f"[red]{counts['blunder']} blunders[/red] "
+        f"at depth {search_depth} in {time.perf_counter() - started:.1f}s"
+    )
+    if out is not None:
+        import json
+
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps({"headers": dict(headers), "opening": opening, "moves": rows}, indent=1),
+            encoding="utf-8",
+        )
+        console.print(f"assessments -> {out}")
+
+
 @app.command()
 def watch(
     monitor: Annotated[
@@ -611,6 +860,7 @@ def watch(
     fps: Annotated[int, typer.Option(help="Capture rate")] = 10,
     record: Annotated[bool, typer.Option(help="Also record the session to disk")] = True,
     board: Annotated[bool, typer.Option(help="Print the board after every move")] = True,
+    analysis: Annotated[bool, typer.Option(help="Assess every move with the engine")] = True,
     seconds: Annotated[float | None, typer.Option(help="Stop after this long")] = None,
     out: Annotated[Path | None, typer.Option(help="Recording folder")] = None,
     config: ConfigOpt = None,
@@ -621,6 +871,9 @@ def watch(
     With --record (the default) the session is recorded so anything odd can be replayed
     with `sidecoach replay`, and every event is logged beside it. Keys while watching:
     r = you resign, d = draw agreed, n = new game (forget the current one), q = quit.
+
+    With --analysis the engine assesses each move once it is played, which is what the
+    disclosure rules allow; what to play in the position on the board is never printed.
     """
     import chess
 
@@ -629,6 +882,7 @@ def watch(
     from sidecoach.events import (
         GameEnded,
         GameStarted,
+        MoveAssessment,
         MovePlayed,
         Resync,
         Takeback,
@@ -656,6 +910,13 @@ def watch(
         + (f", recording to {folder}" if folder else ", not recording")
     )
     console.print("start a new game on the board; keys: r resign, d draw, n new game, q quit\n")
+
+    analyser = _make_analyser(settings) if analysis else None
+    if analysis and analyser is None:
+        console.print("[yellow]no Stockfish: moves will not be assessed[/yellow]")
+    # The position each move was played from, so its assessment can name a better move in
+    # the notation a person reads; dropped as soon as that assessment is printed.
+    assessed_from: dict[int, str] = {}
 
     locked = False
     bootstraps = 0
@@ -740,6 +1001,11 @@ def watch(
                     elif isinstance(event, MovePlayed):
                         after = chess.Board(event.fen_after)
                         before = chess.Board(event.fen_before)
+                        if analyser is not None:
+                            analyser.submit_move(
+                                event.game_id, before, chess.Move.from_uci(event.uci), event.ply
+                            )
+                            assessed_from[event.ply] = event.fen_before
                         number = before.fullmove_number
                         dots = "." if before.turn == chess.WHITE else "..."
                         who = "you" if event.by_user else "opponent"
@@ -753,11 +1019,25 @@ def watch(
                         console.print(f"[yellow]takeback[/yellow] {event.plies} ply")
                     elif isinstance(event, Resync):
                         console.print(f"[yellow]resync[/yellow]: {event.reason}")
+                        if analyser is not None:
+                            analyser.annotator.reset()
                     elif isinstance(event, GameEnded):
                         console.print(f"[bold]game over[/bold] {event.result} ({event.reason})")
                         if event.pgn:
                             games.append(event.pgn)
                             console.print(f"PGN: {event.pgn}")
+
+                if analyser is not None:
+                    for assessed in analyser.poll():
+                        if isinstance(assessed, MoveAssessment):
+                            fen = assessed_from.pop(assessed.ply, None)
+                            if fen is not None:
+                                console.print(
+                                    f"  [dim]ply {assessed.ply}[/dim] "
+                                    f"{_assessment_text(assessed, chess.Board(fen))}"
+                                )
+                        if log is not None:
+                            log.write(assessed.model_dump_json() + "\n")
 
                 now = time.monotonic()
                 if now - last_status >= 5.0:
