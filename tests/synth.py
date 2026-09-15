@@ -175,6 +175,47 @@ def bulky_pieces(
         cv2.circle(frame, centre, int(cell * radius), (0, 0, 0) if white else (210, 210, 210), 2)
 
 
+def blend_rect(
+    frame: np.ndarray,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    colour: tuple[int, int, int],
+    alpha: float,
+) -> None:
+    """Blend `colour` at `alpha` over the rectangle [x0, x1) x [y0, y1), in place."""
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(frame.shape[1], x1), min(frame.shape[0], y1)
+    if x1 <= x0 or y1 <= y0:
+        return
+    region = frame[y0:y1, x0:x1].astype(np.float32)
+    overlay = np.array(colour, dtype=np.float32)
+    frame[y0:y1, x0:x1] = np.clip((1.0 - alpha) * region + alpha * overlay, 0, 255).astype(
+        frame.dtype
+    )
+
+
+def blend_outline(
+    frame: np.ndarray,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    colour: tuple[int, int, int],
+    alpha: float,
+    thickness: int,
+    inset: int = 0,
+) -> None:
+    """Blend a square outline `thickness` pixels wide, `inset` pixels inside the rectangle
+    [x0, x1) x [y0, y1), in place: the way a site draws the outline of a hovered square."""
+    a, b, c, d = x0 + inset, y0 + inset, x1 - inset, y1 - inset
+    blend_rect(frame, a, b, c, b + thickness, colour, alpha)
+    blend_rect(frame, a, d - thickness, c, d, colour, alpha)
+    blend_rect(frame, a, b + thickness, a + thickness, d - thickness, colour, alpha)
+    blend_rect(frame, c - thickness, b + thickness, c, d - thickness, colour, alpha)
+
+
 def busy_background(width: int, height: int, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     coarse = rng.integers(40, 220, (height // 40 + 1, width // 40 + 1, 3), dtype=np.uint8)

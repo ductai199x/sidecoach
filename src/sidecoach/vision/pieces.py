@@ -4,23 +4,44 @@ Every game starts from a known position, which hands us labelled examples of all
 piece kinds on whatever theme is on screen. Recognition then works on silhouettes:
 
 1. Each cell's own background colour is the median of a ring just inside its border, so
-   highlights need no special handling and the hover outline chess.com draws around the
-   square under the cursor is skipped. A piece rarely reaches that ring.
+   highlights need no special handling and the thin hover outline chess.com draws around
+   the square under the cursor is skipped. A piece rarely reaches that ring.
 2. Foreground is every pixel far from that background, with enclosed pockets filled (a white
    piece on a light square differs from the square mostly by its outline) and a small
    opening applied so labels and anti-aliasing do not count.
 3. Each exemplar keeps its silhouette and the brightness profile of its core. A cell is
    matched against every exemplar of both colours on silhouette overlap (IoU, ignoring the
-   top-right corner where chess.com draws move-quality badges in bot games) minus a penalty
-   for brightness that differs from that exemplar's. Colour therefore comes from the nearest
-   reference rendering, not from a global threshold: some piece sets draw a white queen
-   whose interior is half black detail lines, which a threshold gets wrong.
+   top-right corner where chess.com draws move-quality badges in bot games, after moving
+   the cell's mask onto the exemplar's centroid so a lock a pixel or two off still matches
+   by shape) minus a penalty for brightness that differs from that exemplar's. Colour
+   therefore comes from the nearest reference rendering, not from a global threshold: some
+   piece sets draw a white queen whose interior is half black detail lines, which a
+   threshold gets wrong. Whether the piece has landed is judged separately, by how far its
+   centroid sits from the exemplar's.
 4. When no exemplar overlaps well, the cell is still reported as occupied, with the colour
    of the exemplar whose brightness is closest, which is enough for the reconciler to
    explain a move.
 
-A cell is also reported as highlighted when its background differs from the theme's light or
-dark square colour, which is how the reconciler sees chess.com's last-move highlight.
+What sits on top of the board is told apart by geometry, never by colour:
+
+- A tint (a last-move or selection highlight, the red of a check, a premove queue or a
+  right-click mark, in whatever hue a site or theme uses) shifts the cell's ring and the
+  deeper corner blocks of the cell in the same direction, leaving no corner pixel at the
+  square's own colour. The cell stays readable, with `highlighted` set and `tint` naming
+  the hue.
+- A foreign cell has its ring shifted but corners that are clean, in part at least, or
+  shifted another way: a hover outline thick enough to fill the ring, a capture ring, the
+  edge of something drawn over the square. It reads as unknown with `hover` set, so
+  nothing commits under it.
+- A cover is an opaque or translucent overlay confirmed by the neighbours: two adjacent
+  cells that share one background away from their square colours, or a block of six or
+  more cells that all fit one translucent tint (a dialog fading in). The cells it reaches
+  into read as covered too: unknown, never a hover, and the reconciler may keep their last
+  stable reading for a while. Next to a dialog-sized cover (a block, never a strip), cells
+  that read as junk are relabelled as covered, since nothing is dragged under a dialog.
+- A tint over half the board or more is no highlight but a theme this recogniser was not
+  built on; those cells read as unknown until the pipeline rebuilds it from a start
+  position.
 
 This is theme-specific by construction and needs no training. The learned classifier planned
 in DESIGN.md section 5.2 generalises across themes later and can be trained on the crops this
@@ -42,8 +63,20 @@ from sidecoach.vision.squares import CELL, BoardGeometry, is_light, square_at
 INNER = 0.08
 RING_SKIP = 0.05
 RING_BAND = 0.07
+# The four corner blocks between these insets sample the background deeper than the ring:
+# a piece is round-ish and covers at most one or two of them partially, a badge one. Deeper
+# is not an option: on the recorded games rooks and bishops reach blocks at 12% and beyond.
+CORNER_INSET = (0.10, 0.20)
 BG_TOLERANCE = 25.0
 HIGHLIGHT_TOLERANCE = 30.0
+# A tint shifts the ring and the corners the same way; an outline or an edge does not. Each
+# corner pixel is read on its own: clean (at the square colour), shifted like the ring, or
+# something else (a piece, a badge, a label), and a cell is foreign when a quarter of the
+# corner pixels that are one or the other are clean, or when too few are either.
+TINT_MIN_COSINE = 0.9
+TINT_MIN_CORNER_SHIFT = HIGHLIGHT_TOLERANCE / 2
+CORNER_CLEAN_MAX = 0.25
+CORNER_MIN_KNOWN = 0.2
 EMPTY_MAX_FRACTION = 0.04
 # Chess.com's legal-move hint dots cover about a tenth of a cell; the smallest piece, a pawn,
 # covers a third. Anything in between is reported as unknown, which carries no evidence.
@@ -55,6 +88,7 @@ _KERNEL = np.ones((3, 3), dtype=np.uint8)
 _CORE_KERNEL = np.ones((7, 7), dtype=np.uint8)
 
 Kind = Literal["empty", "piece", "unknown"]
+TintKind = Literal["none", "tint", "foreign"]
 
 
 @dataclass(frozen=True)
@@ -70,6 +104,9 @@ class CellReading:
     brightness: float = 0.0
     # Geometry, independent of any colour: whether the piece sits where a settled piece of
     # its kind sits, and whether the square carries the hover outline drawn during a drag.
+    # The default is True so a reading built by hand (tests, the reconciler's memory) counts
+    # as landed; `_reading` below defaults it to False and every branch of `_classify`
+    # decides it explicitly.
     settled: bool = True
     hover: bool = False
     offset: float = 0.0
@@ -81,7 +118,8 @@ class CellReading:
     covered: bool = False
     # The hue of a translucent tint over the square, when the cell is still readable:
     # "yellow" (a last-move or selection highlight), "red" (a premove queue square, a
-    # check, a right-click mark), or "other". None when the square shows its own colour.
+    # check, a right-click mark), or "other" (a green, blue or grey highlight on another
+    # site or theme). None when the square shows its own colour.
     tint: str | None = None
 
 
@@ -129,10 +167,10 @@ class Silhouette:
     background: np.ndarray
     centroid: tuple[float, float]
     hover: bool
-    # The inner patch the mask was taken from, and the background read from a deeper ring,
-    # which an overlay covers as well but a hover outline never reaches.
+    # The inner patch the mask was taken from, and the pixels of the four corner blocks,
+    # deeper than the ring: a tint reaches them, an outline does not.
     inner: np.ndarray
-    deep_background: np.ndarray
+    corner_pixels: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -141,11 +179,35 @@ class Exemplar:
     mask: np.ndarray
     brightness: float
     centroid: tuple[float, float]
+    # Centroid of the mask outside the badge corner, the reference a reading's mask is moved
+    # onto before overlap is measured, so a badge on either side moves nothing.
+    align_centroid: tuple[float, float]
 
 
 SETTLED_TOLERANCE = 0.08  # of a cell; a dragged piece follows the cursor, far off centre
+SETTLED_FLOOR_PX = 3.0  # source pixels: the lock itself is only good to about a pixel
 # A white outline over a light square differs from it by only about 50 levels.
 HOVER_TOLERANCE = 30.0
+# The outer band an outline starts in: deep enough for one drawn a pixel inside the edge at
+# 32-px cells, shallow enough that the base of a pawn on a small cell stays out of it.
+HOVER_BAND = 0.05  # of the cell
+# An outline covers a side end to end; the widest row of a piece that reaches the band
+# covers 0.85 of it on the recorded games.
+HOVER_LINE_FILL = 0.9
+# The outermost edge, judged as a whole by its median: chess.com's outline fills most of it.
+HOVER_EDGE = 0.04  # of the cell
+
+
+def settle_tolerance(cell_px: float | None) -> float:
+    """The landing tolerance in inner-patch units: a fraction of a cell, but never less
+    than a few source pixels, so a small cell does not turn lock jitter into a piece in
+    flight."""
+    if cell_px is None:
+        return SETTLED_TOLERANCE
+    inner_px = cell_px * (1.0 - 2.0 * INNER)
+    if inner_px <= 0:
+        return SETTLED_TOLERANCE
+    return max(SETTLED_TOLERANCE, SETTLED_FLOOR_PX / inner_px)
 
 
 def _badge_blind(size: int) -> np.ndarray:
@@ -177,6 +239,27 @@ def ring_median_color(
     return np.median(ring, axis=0)
 
 
+def corner_pixels(patch: np.ndarray, inset: tuple[float, float] = CORNER_INSET) -> np.ndarray:
+    """The pixels of the four corner blocks between the two insets, as an N by 3 array.
+
+    Deeper than the ring, so a thin hover outline never reaches them, yet where a piece
+    rarely is: a piece covers at most one or two corners partially and a badge one.
+    """
+    n = patch.shape[0]
+    outer = int(round(n * inset[0]))
+    inner = max(outer + 1, int(round(n * inset[1])))
+    blocks = (
+        patch[outer:inner, outer:inner],
+        patch[outer:inner, n - inner : n - outer],
+        patch[n - inner : n - outer, outer:inner],
+        patch[n - inner : n - outer, n - inner : n - outer],
+    )
+    pixels = np.concatenate([block.reshape(-1, patch.shape[2]) for block in blocks])
+    if pixels.shape[0] == 0:  # a patch too small to have corners inside its border
+        pixels = patch.reshape(-1, patch.shape[2])
+    return pixels.astype(np.float32)
+
+
 def _fill_enclosed(foreground: np.ndarray) -> np.ndarray:
     h, w = foreground.shape
     padded = np.zeros((h + 2, w + 2), dtype=np.uint8)
@@ -187,34 +270,64 @@ def _fill_enclosed(foreground: np.ndarray) -> np.ndarray:
 
 
 def _hover_outline(patch: np.ndarray, background: np.ndarray) -> bool:
-    """Whether the outermost border of the cell differs sharply from the cell's background.
+    """Whether an outline differing from the cell's background runs along all four sides.
 
-    Chess.com draws a thin bright outline around the square under the cursor during a drag.
-    The border ring used for the background skips this outer band, so it is measured here.
+    Chess.com draws a thin bright outline around the square under the cursor during a
+    drag, at the edge or a pixel inside it. It shows in one of two ways: the outermost
+    edge of the cell differs from the background as a whole (its median, on every side),
+    or one row of the outer band, at some depth, differs end to end on every side, which
+    is how a one-pixel outline drawn a pixel inside the edge looks. The band stops before
+    the ring the background is read from (a thicker outline fills that ring and is caught
+    as foreign instead) and before the base of a pawn on a small cell. A badge, a dialog
+    edge, a neighbour's colour let in by a lock a pixel off, or the blended boundary
+    between two squares, all mark one or two sides only, never all four; a piece reaching
+    the band never covers a side end to end. The weakest side of a real outline can be
+    faint, at small cells or where it is drawn a pixel narrower, so it only has to clear
+    half the tolerance while the others clear it.
     """
     n = patch.shape[0]
-    band = max(1, int(round(n * 0.04)))
-    sides = (
-        patch[:band].reshape(-1, patch.shape[2]),
-        patch[-band:].reshape(-1, patch.shape[2]),
-        patch[band:-band, :band].reshape(-1, patch.shape[2]),
-        patch[band:-band, -band:].reshape(-1, patch.shape[2]),
-    )
-    # An outline runs along all four sides; a badge or a dialog edge crossing the cell
-    # changes one or two sides only and leaves the others near zero. The weakest side of a
-    # real outline can be thin, at small cells or where the outline is drawn a pixel
-    # narrower, so it only has to clear half the tolerance while the median side clears it.
-    if any(side.shape[0] == 0 for side in sides):
+    band = max(1, int(round(n * HOVER_BAND)))
+    edge = max(1, int(round(n * HOVER_EDGE)))
+    if 2 * band >= n:
         return False  # a patch too small to have an outer band
-    distances = sorted(
-        float(
-            np.median(
-                np.linalg.norm(side.astype(np.float32) - background.astype(np.float32), axis=1)
-            )
-        )
-        for side in sides
-    )
-    return distances[0] > HOVER_TOLERANCE / 2 and distances[2] > HOVER_TOLERANCE
+    distance = np.linalg.norm(patch.astype(np.float32) - background.astype(np.float32), axis=2)
+    sides = (distance, distance[::-1], distance.T, distance.T[::-1])
+    strong: list[float] = []
+    weak: list[float] = []
+    medians: list[float] = []
+    for side in sides:
+        rows = side[:band, band : n - band]
+        strong.append(float((rows > HOVER_TOLERANCE).mean(axis=1).max()))
+        weak.append(float((rows > HOVER_TOLERANCE / 2).mean(axis=1).max()))
+        medians.append(float(np.median(side[:edge])))
+    strong.sort()
+    weak.sort()
+    medians.sort()
+    # Either the outermost edge differs from the background on every side, taken as a
+    # whole (an outline thick enough to fill most of it), or one row of the band does so
+    # end to end on every side (a thin outline a pixel inside the edge).
+    if medians[0] > HOVER_TOLERANCE / 2 and medians[2] > HOVER_TOLERANCE:
+        return True
+    return weak[0] >= HOVER_LINE_FILL and strong[1] >= HOVER_LINE_FILL
+
+
+def _centroid(mask: np.ndarray) -> tuple[float, float]:
+    """Centre of mass of a mask in units of its own size; the middle when it is empty."""
+    ys, xs = np.nonzero(mask)
+    if xs.size == 0:
+        return (0.5, 0.5)
+    n = mask.shape[0]
+    return (float(xs.mean()) / n, float(ys.mean()) / n)
+
+
+def _align_centroid(mask: np.ndarray) -> tuple[float, float]:
+    """Where a piece sits for alignment: the centroid of the mask outside the badge corner.
+
+    On the recorded games this lands within a pixel of the true shift of a moved lock
+    (mean 0.9 px, worst 2.7); the strokes of a coordinate label can pull it a pixel off,
+    which is why overlap is also measured in place and the better of the two is kept.
+    """
+    return _centroid(mask & _BADGE_BLIND)
 
 
 def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
@@ -239,13 +352,11 @@ def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
         sample = gray[sample_mask]
         luminance = float(np.median(sample))
         brightness = float((sample > 128).mean())
-        ys, xs = np.nonzero(mask)
-        centroid = (float(xs.mean()) / size, float(ys.mean()) / size)
+        centroid = _centroid(mask)
     # Chess.com's hover outline is about 5% of the cell wide and sits at its edge, so the
-    # ring the background is read from stays clean and serves as the reference. A deeper
-    # ring is read as well, for telling a covered cell from a hovered one; it is not used as
-    # the hover reference because a tall piece reaches into it and shifts its median.
-    deep_background = ring_median_color(patch, skip=RING_SKIP + RING_BAND)
+    # ring the background is read from stays clean and serves as the reference. The corner
+    # blocks are kept as well, for telling a tint (which reaches them) from an outline or
+    # an edge (which does not).
     hover = _hover_outline(patch, background)
     return Silhouette(
         mask.astype(bool),
@@ -256,7 +367,7 @@ def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
         centroid,
         hover,
         inner,
-        deep_background,
+        corner_pixels(patch),
     )
 
 
@@ -265,6 +376,7 @@ TINT_MIN_ALPHA = 0.2  # a translucent overlay this faint already spoils the piec
 TINT_ALPHA_SPREAD = 0.15  # the alpha read from each colour channel must agree
 TINT_MIN_CELLS = 6  # highlights and marks tint a few cells; a fading dialog tints a block
 TINT_BLOCK_FILL = 0.8  # of the block's bounding box; a dialog is a filled rectangle
+THEME_MIN_TINTED = 32  # one square colour re-themed tints half the board; no highlight does
 OVERLAY_SIDE_FILL = 0.9  # an overlay edge fills a whole side of the inner patch
 OVERLAY_BLOCK_FILL = 0.85  # an overlay corner is a solid rectangle
 
@@ -410,6 +522,25 @@ def overlay_reaches(sil: Silhouette, colour: np.ndarray) -> bool:
     return any(bool(corner.all()) for corner in corners)
 
 
+def _has_block(cells: np.ndarray) -> bool:
+    """Whether the marked cells hold a 2x2 block, as a dialog does and a strip does not."""
+    return bool((cells[:-1, :-1] & cells[1:, :-1] & cells[:-1, 1:] & cells[1:, 1:]).any())
+
+
+def shift_mask(mask: np.ndarray, dx: int, dy: int) -> np.ndarray:
+    """The mask moved right by `dx` and down by `dy` pixels, zero-filled at the edges."""
+    if dx == 0 and dy == 0:
+        return mask
+    h, w = mask.shape
+    out = np.zeros_like(mask)
+    if abs(dx) >= w or abs(dy) >= h:
+        return out
+    out[max(0, dy) : h + min(0, dy), max(0, dx) : w + min(0, dx)] = mask[
+        max(0, -dy) : h + min(0, -dy), max(0, -dx) : w + min(0, -dx)
+    ]
+    return out
+
+
 def iou(a: np.ndarray, b: np.ndarray, keep: np.ndarray = _BADGE_BLIND) -> float:
     a, b = a & keep, b & keep
     union = np.logical_or(a, b).sum()
@@ -427,14 +558,16 @@ class ThemeModel:
         return {e.symbol for e in self.exemplars}
 
     def highlight_kind(self, background: np.ndarray, row: int, col: int) -> str:
-        """ "none", "move", "red", or "foreign" for what changed a cell's background.
+        """The hue of a cell's background shift: "none", "move", "red", or "foreign".
 
-        Chess.com blends a translucent tint over the square, so the tint's hue is read from
-        the direction of the colour shift rather than from the blended colour itself. A
-        yellow-ish tint (last move, selection) never raises blue and never lowers green much;
-        a red right-click mark raises red while lowering green; anything else, such as the
-        white or grey of a dialog or tooltip drawn over the board, is foreign and the cell's
-        content cannot be read. Arrows are drawn shapes and never change a background.
+        A translucent tint blended over the square keeps its hue whatever the square
+        colour, so the hue is read from the direction of the shift rather than from the
+        blended colour itself. A yellow-ish tint (chess.com's last move and selection)
+        never raises blue and never lowers green much; a red one (a right-click mark, a
+        check, a premove queue) raises red while lowering green; anything else is foreign
+        to those two hues. This only names the tint. Whether the cell is readable at all
+        is decided by `tint_kind`, which compares the ring with the cell's corners, so a
+        green, blue or grey highlight on another site or theme reads fine as "other".
         """
         expected = self.light_bg if is_light(row, col) else self.dark_bg
         if expected is None:
@@ -449,22 +582,57 @@ class ThemeModel:
             return "move"
         return "foreign"
 
-    def _classify(self, sil: Silhouette, row: int, col: int, covered: bool) -> CellReading:
-        kind_of_tint = self.highlight_kind(sil.background, row, col)
-        highlighted = kind_of_tint == "move"
-        tint = {"move": "yellow", "red": "red"}.get(kind_of_tint)
-        if covered or kind_of_tint == "foreign":
-            # Something is drawn over this square; whatever the silhouette shows is not the
-            # board. No evidence either way. An opaque overlay confirmed by the neighbours
-            # cannot be a hover outline, however its edges cross the cell; an odd colour on
-            # a lone cell may still be a hovered square whose thick outline reached the
-            # ring, and that outline must keep blocking commits.
-            hover = (
-                not covered
-                and sil.hover
-                and self.highlight_kind(sil.deep_background, row, col) != "foreign"
-            )
-            return _reading(sil, "unknown", hover=hover, covered=covered)
+    def tint_kind(self, sil: Silhouette, row: int, col: int) -> tuple[TintKind, str | None]:
+        """Whether what shifted a cell's background is a readable tint, and its hue.
+
+        A tint blends one colour over the whole square, so the ring just inside the border
+        and the deeper corner blocks move away from the square colour in the same direction
+        (chess.com's radial check tint is stronger in the middle, still the same direction)
+        and no corner pixel is left at the square colour. A hover outline thick enough to
+        fill the ring, a capture ring, or the edge of something drawn over the square shifts
+        the ring while the corners stay clean, at least in part, or shift another way: that
+        is foreign, and the cell cannot be read. Corner pixels that are neither clean nor
+        shifted like the ring belong to a piece, a badge or a label and are not counted, so
+        a big piece on a highlighted square is still a highlighted square.
+        """
+        expected = self.light_bg if is_light(row, col) else self.dark_bg
+        if expected is None:
+            return "none", None
+        expected = expected.astype(np.float32)
+        shallow = sil.background.astype(np.float32) - expected
+        shallow_norm = float(np.linalg.norm(shallow))
+        if shallow_norm <= HIGHLIGHT_TOLERANCE:
+            return "none", None
+        shifts = sil.corner_pixels - expected
+        magnitudes = np.linalg.norm(shifts, axis=1)
+        clean = magnitudes <= TINT_MIN_CORNER_SHIFT
+        cosines = (shifts @ shallow) / (np.maximum(magnitudes, 1e-6) * shallow_norm)
+        shifted = ~clean & (cosines >= TINT_MIN_COSINE)
+        known = int(clean.sum()) + int(shifted.sum())
+        if known < CORNER_MIN_KNOWN * magnitudes.size:
+            return "foreign", None  # the corners show something else again
+        if int(clean.sum()) >= CORNER_CLEAN_MAX * known:
+            return "foreign", None  # the shift stops before the corners
+        hues = {"move": "yellow", "red": "red"}
+        return "tint", hues.get(self.highlight_kind(sil.background, row, col), "other")
+
+    def _classify(
+        self, sil: Silhouette, row: int, col: int, covered: bool, cell_px: float | None = None
+    ) -> CellReading:
+        kind_of_tint, tint = self.tint_kind(sil, row, col)
+        # Red is the colour of marks, checks and premove queues, never of a move, and the
+        # reconciler reads it from `tint`; any other hue is a highlight.
+        highlighted = kind_of_tint == "tint" and tint != "red"
+        if covered:
+            # An opaque overlay confirmed by the neighbours hides this cell: whatever the
+            # silhouette shows is not the board, no evidence either way, and never a hover,
+            # however the overlay's edges cross the cell.
+            return _reading(sil, "unknown", covered=True)
+        if kind_of_tint == "foreign":
+            # Something that is not a tint sits on the square: a hover outline thick enough
+            # to fill the ring, a capture ring, an edge. The silhouette is not the board,
+            # and a commit must wait until it is gone.
+            return _reading(sil, "unknown", hover=True)
         if sil.fraction <= EMPTY_MAX_FRACTION:
             return _reading(
                 sil,
@@ -478,9 +646,20 @@ class ThemeModel:
         if sil.fraction < PIECE_MIN_FRACTION or not self.exemplars:
             return _reading(sil, "unknown", highlighted=highlighted, hover=sil.hover, tint=tint)
 
+        # Overlap is measured with the mask moved onto the exemplar's centroid as well as in
+        # place, whichever fits better, so a lock a pixel or two off, or a piece drawn
+        # slightly off its square, still matches by shape and a centroid pulled off by
+        # something small on the square costs nothing; where the piece sits is judged by
+        # `offset` on its own.
+        align = _align_centroid(sil.mask)
+        size = sil.mask.shape[0]
         best_by_symbol: dict[str, tuple[float, float, Exemplar]] = {}
         for exemplar in self.exemplars:
             overlap = iou(sil.mask, exemplar.mask)
+            dx = int(round((exemplar.align_centroid[0] - align[0]) * size))
+            dy = int(round((exemplar.align_centroid[1] - align[1]) * size))
+            if dx or dy:
+                overlap = max(overlap, iou(shift_mask(sil.mask, dx, dy), exemplar.mask))
             score = overlap - BRIGHTNESS_WEIGHT * abs(sil.brightness - exemplar.brightness)
             previous = best_by_symbol.get(exemplar.symbol)
             if previous is None or score > previous[0]:
@@ -491,7 +670,7 @@ class ThemeModel:
         offset = float(
             np.hypot(sil.centroid[0] - exemplar.centroid[0], sil.centroid[1] - exemplar.centroid[1])
         )
-        settled = offset <= SETTLED_TOLERANCE and not sil.hover
+        settled = offset <= settle_tolerance(cell_px) and not sil.hover
         if overlap >= MIN_IOU and score - runner_up >= MIN_MARGIN:
             colour = Side.WHITE if symbol.isupper() else Side.BLACK
             return _reading(
@@ -515,6 +694,7 @@ class ThemeModel:
             colour=colour,
             confidence=0.5,
             highlighted=highlighted,
+            settled=False,  # a piece of no known kind is no evidence of a landed piece
             hover=sil.hover,
             offset=offset,
             guess=guess,
@@ -557,11 +737,35 @@ class ThemeModel:
             for r in range(8)
         ]
         covered = self.covered_cells(sils)
+        cell_px = geometry.cell_px
         readings = [
-            [self._classify(sils[r][c], r, c, bool(covered[r, c])) for c in range(8)]
+            [self._classify(sils[r][c], r, c, bool(covered[r, c]), cell_px) for c in range(8)]
             for r in range(8)
         ]
-        if int(covered.sum()) < TINT_MIN_CELLS:
+        tinted = sum(1 for row in readings for reading in row if reading.tint is not None)
+        if tinted >= THEME_MIN_TINTED:
+            # Highlights, marks and queues tint a few squares; a tint over half the board
+            # or more is a theme this recogniser was not built on (one or both square
+            # colours changed), and the silhouettes it reads on it are not evidence. The
+            # pipeline rebuilds the recogniser from the next start position it sees.
+            for r in range(8):
+                for c in range(8):
+                    reading = readings[r][c]
+                    if reading.tint is not None:
+                        readings[r][c] = replace(
+                            reading,
+                            kind="unknown",
+                            symbol=None,
+                            colour=None,
+                            confidence=0.0,
+                            highlighted=False,
+                            settled=False,
+                            guess=None,
+                            tint=None,
+                        )
+        if int(covered.sum()) < TINT_MIN_CELLS or not _has_block(covered):
+            # A strip of covered cells is a tooltip over one rank or file, not a dialog:
+            # the user may well be dragging next to it, and that drag must stay visible.
             return readings
         # Next to a dialog-sized overlay, a cell that does not read cleanly is a cell the
         # overlay's edge cuts through: a strip of dialog over a piece reads as the wrong
@@ -605,8 +809,12 @@ class ThemeModel:
         A cursor, a hover outline, or a badge on one cell of the start frame would
         otherwise become that piece's exemplar for the whole game, and the king and the
         queen have one cell each. So every cell must show a plausible piece: enough
-        foreground, centred, no hover outline. Pieces with several cells (the pawns, the
-        pairs) are fused by majority vote, which keeps one odd cell from spoiling them.
+        foreground, centred, no hover outline. The eight pawns are fused by majority vote,
+        which one odd pawn cannot sway. A pair (knights, bishops, rooks) has no majority:
+        its two silhouettes must agree, on overlap and on centroid, to be fused (their
+        union); when they do not, the member closer to the other colour's fused pair of
+        the same type is kept on its own, since every piece set draws both colours from
+        one silhouette, and when that pair disagrees as well the frame is refused.
         """
         start = chess.Board()
         light_bgs: list[np.ndarray] = []
@@ -622,18 +830,26 @@ class ThemeModel:
                 if not _plausible_exemplar(sil):
                     return None
                 samples.setdefault(piece.symbol(), []).append(sil)
-        model = cls()
+        fused: dict[str, Exemplar] = {}
+        disagreeing: list[str] = []
         for symbol, sils in samples.items():
-            votes = np.mean([sil.mask for sil in sils], axis=0)
-            mask = votes >= 0.5
-            if float(mask.mean()) < PIECE_MIN_FRACTION:
+            if len(sils) == 2 and not _pair_agrees(sils[0], sils[1]):
+                disagreeing.append(symbol)
+                continue
+            fused[symbol] = _fuse(symbol, sils)
+        for symbol in disagreeing:
+            reference = fused.get(symbol.swapcase())
+            if reference is None:
+                return None  # both colours' pairs are spoiled; the next start frame gets a chance
+            reference_mask = reference.mask
+            best = max(samples[symbol], key=lambda sil: iou(sil.mask, reference_mask))
+            fused[symbol] = _fuse(symbol, [best])
+        model = cls()
+        for symbol in samples:
+            exemplar = fused[symbol]
+            if float(exemplar.mask.mean()) < PIECE_MIN_FRACTION:
                 return None
-            brightness = float(np.median([sil.brightness for sil in sils]))
-            centroid = (
-                float(np.median([sil.centroid[0] for sil in sils])),
-                float(np.median([sil.centroid[1] for sil in sils])),
-            )
-            model.exemplars.append(Exemplar(symbol, mask, brightness, centroid))
+            model.exemplars.append(exemplar)
         model.light_bg = np.median(np.array(light_bgs), axis=0)
         model.dark_bg = np.median(np.array(dark_bgs), axis=0)
         gap = float(np.linalg.norm(model.light_bg - model.dark_bg))
@@ -647,6 +863,12 @@ EXEMPLAR_MAX_FRACTION = 0.9
 # business (a pawn's centre of mass lies well below the centre, a king's near it).
 EXEMPLAR_MAX_SIDEWAYS = 0.12  # of a cell
 EXEMPLAR_MAX_VERTICAL = 0.28  # of a cell
+# Two cells of one piece kind on a clean start frame overlap at 0.89 or better and sit
+# within 0.043 of a cell of each other on the recorded games (rooks, whose cells carry the
+# coordinate labels and a box a pixel narrower, are the worst); a white strip 18% of the
+# cell tall over one of them moves its centroid by 0.06 or more and 0.075 at 24%.
+PAIR_MIN_IOU = 0.8
+PAIR_MAX_CENTROID = 0.06  # of a cell
 
 
 def _plausible_exemplar(sil: Silhouette) -> bool:
@@ -659,6 +881,25 @@ def _plausible_exemplar(sil: Silhouette) -> bool:
     )
 
 
+def _pair_agrees(a: Silhouette, b: Silhouette) -> bool:
+    """Whether two cells of one piece kind show the same silhouette in the same place."""
+    distance = float(np.hypot(a.centroid[0] - b.centroid[0], a.centroid[1] - b.centroid[1]))
+    return iou(a.mask, b.mask) >= PAIR_MIN_IOU and distance <= PAIR_MAX_CENTROID
+
+
+def _fuse(symbol: str, sils: list[Silhouette]) -> Exemplar:
+    """One exemplar from the silhouettes of the cells holding this piece kind: the pixels
+    at least half of them share (the union of a pair), the median brightness and centroid."""
+    votes = np.mean([sil.mask for sil in sils], axis=0)
+    mask = votes >= 0.5
+    brightness = float(np.median([sil.brightness for sil in sils]))
+    centroid = (
+        float(np.median([sil.centroid[0] for sil in sils])),
+        float(np.median([sil.centroid[1] for sil in sils])),
+    )
+    return Exemplar(symbol, mask, brightness, centroid, _align_centroid(mask))
+
+
 def occupancy(frame: np.ndarray, geometry: BoardGeometry) -> np.ndarray:
     """8x8 foreground fractions, the cheap occupancy signal."""
     grid = np.zeros((8, 8), dtype=np.float32)
@@ -668,17 +909,30 @@ def occupancy(frame: np.ndarray, geometry: BoardGeometry) -> np.ndarray:
     return grid
 
 
-def looks_like_start_position(frame: np.ndarray, geometry: BoardGeometry) -> bool:
+def _start_shaped(occupied: np.ndarray) -> bool:
     """Rows 0, 1, 6, 7 occupied and rows 2 to 5 empty, allowing one stray cell.
 
     One move away from the start already differs in two cells, so the allowance is a single
     cell for a badge, a hover outline, or a cursor.
     """
-    grid = occupancy(frame, geometry)
-    occupied = grid >= PIECE_MIN_FRACTION
     expected = np.zeros((8, 8), dtype=bool)
     expected[[0, 1, 6, 7], :] = True
     return int((occupied != expected).sum()) <= 1
+
+
+def looks_like_start_position(frame: np.ndarray, geometry: BoardGeometry) -> bool:
+    """Whether the frame's occupancy has the shape of the start position."""
+    return _start_shaped(occupancy(frame, geometry) >= PIECE_MIN_FRACTION)
+
+
+def start_shaped(readings: list[list[CellReading]]) -> bool:
+    """`looks_like_start_position` from readings already taken, by the same rule, so a
+    frame that has been classified need not be silhouetted a second time."""
+    occupied = np.array(
+        [[reading.fg_fraction >= PIECE_MIN_FRACTION for reading in row] for row in readings],
+        dtype=bool,
+    )
+    return _start_shaped(occupied)
 
 
 def orientation_from_start(frame: np.ndarray, geometry: BoardGeometry) -> Side:

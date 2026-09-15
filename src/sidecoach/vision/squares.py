@@ -56,7 +56,11 @@ class BoardGeometry:
         x1, y1 = min(width, x1), min(height, y1)
         if x1 - x0 < 2 or y1 - y0 < 2:
             return np.zeros((size, size, frame.shape[2]), dtype=frame.dtype)
-        return cv2.resize(frame[y0:y1, x0:x1], (size, size), interpolation=cv2.INTER_AREA)
+        # INTER_AREA averages pixels when shrinking but degenerates to nearest-neighbour
+        # when enlarging; a small cell blown up to the working size needs interpolation.
+        shrinking = x1 - x0 >= size and y1 - y0 >= size
+        interpolation = cv2.INTER_AREA if shrinking else cv2.INTER_LINEAR
+        return cv2.resize(frame[y0:y1, x0:x1], (size, size), interpolation=interpolation)
 
     def crops(self, frame: np.ndarray, size: int = CELL) -> np.ndarray:
         """All 64 cells as an array of shape (8, 8, size, size, channels)."""

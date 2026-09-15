@@ -5,14 +5,43 @@ import pytest
 
 from sidecoach.events import Region, Side
 from sidecoach.vision.pieces import (
+    CELL,
+    HIGHLIGHT_TOLERANCE,
+    HOVER_TOLERANCE,
     ThemeModel,
+    iou,
     looks_like_start_position,
     orientation_from_start,
+    overlay_reaches,
+    silhouette,
+    start_shaped,
+    translucent_cover,
 )
 from sidecoach.vision.squares import BoardGeometry, row_col, square_at
-from tests.synth import synthetic_board
+from tests.synth import DARK, LIGHT, blend_outline, blend_rect, draw_piece, synthetic_board
 
 GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
+
+
+def _start_model(**kwargs) -> ThemeModel:
+    model = ThemeModel.from_start_position(synthetic_board(**kwargs), GEOM, Side.WHITE)
+    assert model is not None
+    return model
+
+
+def _every_piece_reads(
+    readings: list[list], board: chess.Board, bottom: Side, *, settled: bool = True
+) -> list[str]:
+    """Squares whose reading is not the piece there (exact and, if asked, settled)."""
+    off = []
+    for r in range(8):
+        for c in range(8):
+            piece = board.piece_at(square_at(r, c, bottom))
+            expected = piece.symbol() if piece else None
+            reading = readings[r][c]
+            if reading.symbol != expected or (piece and settled and not reading.settled):
+                off.append(chess.square_name(square_at(r, c, bottom)))
+    return off
 
 
 def test_square_mapping_round_trips_both_orientations() -> None:
@@ -124,13 +153,111 @@ def test_bootstrap_fuses_pawns_so_one_odd_pawn_does_not_spoil_them() -> None:
     r, c = row_col(chess.E2, Side.WHITE)
     x0, y0, x1, y1 = GEOM.cell_box(r, c)
     odd = frame.copy()
-    cv2.circle(odd, (x1 - 10, y0 + 10), 7, (40, 40, 220), -1)  # a badge in the corner
+    # A badge in the top-left corner, which silhouette comparison does not ignore (only
+    # the top-right corner is blind), so it is fusion that has to remove it.
+    cv2.circle(odd, (x0 + 10, y0 + 10), 7, (40, 40, 220), -1)
+    spoiled = silhouette(GEOM.crop(odd, r, c, size=2 * CELL)).mask
+    clean_pawn = silhouette(GEOM.crop(frame, r, c, size=2 * CELL)).mask
+    assert spoiled[:12, :12].any() and not clean_pawn[:12, :12].any()
     model = ThemeModel.from_start_position(odd, GEOM, Side.WHITE)
     assert model is not None
+    exemplar = next(e for e in model.exemplars if e.symbol == "P")
+    assert not exemplar.mask[:12, :12].any(), "the badge survived fusion"
     clean = model.classify_frame(frame, GEOM)
     for square in (chess.A2, chess.E2, chess.H2):
         r, c = row_col(square, Side.WHITE)
         assert clean[r][c].symbol == "P" and clean[r][c].settled
+
+
+def _with_strip(frame: np.ndarray, square: chess.Square, height: float) -> np.ndarray:
+    """A white strip `height` of the cell tall across the top of `square`'s cell."""
+    r, c = row_col(square, Side.WHITE)
+    x0, y0, x1, y1 = GEOM.cell_box(r, c)
+    out = frame.copy()
+    out[y0 : y0 + int(round((y1 - y0) * height)), x0:x1] = (255, 255, 255)
+    return out
+
+
+@pytest.mark.parametrize("height", [0.18, 0.24])
+def test_bootstrap_does_not_fuse_a_spoiled_knight_with_its_pair(height: float) -> None:
+    """A tooltip strip over b1 at bootstrap: refuse the frame, or keep g1's knight alone."""
+    frame = synthetic_board()
+    spoiled = _with_strip(frame, chess.B1, height)
+    assert looks_like_start_position(spoiled, GEOM)
+    model = ThemeModel.from_start_position(spoiled, GEOM, Side.WHITE)
+    if model is None:
+        return  # refused; the next start frame gets a chance
+    exemplar = next(e for e in model.exemplars if e.symbol == "N")
+    assert not exemplar.mask[:4].any(), "the strip became part of the knight"
+    clean = model.classify_frame(frame, GEOM)
+    for square in (chess.B1, chess.G1):
+        r, c = row_col(square, Side.WHITE)
+        assert clean[r][c].symbol == "N" and clean[r][c].settled, clean[r][c]
+
+
+def test_bootstrap_refuses_a_frame_where_both_colours_pairs_are_spoiled() -> None:
+    frame = synthetic_board()
+    spoiled = _with_strip(_with_strip(frame, chess.B1, 0.24), chess.G8, 0.24)
+    assert ThemeModel.from_start_position(spoiled, GEOM, Side.WHITE) is None
+
+
+def test_start_shaped_from_readings_matches_the_frame_rule() -> None:
+    model = _start_model()
+    one_move = chess.Board()
+    one_move.push_san("e4")
+    r, c = row_col(chess.D1, Side.WHITE)
+    x0, y0, x1, y1 = GEOM.cell_box(r, c)
+    queen_erased = synthetic_board()
+    queen_erased[y0:y1, x0:x1] = LIGHT
+    for frame in (synthetic_board(), synthetic_board(board=one_move), queen_erased):
+        assert start_shaped(model.classify_frame(frame, GEOM)) == looks_like_start_position(
+            frame, GEOM
+        )
+    assert start_shaped(model.classify_frame(queen_erased, GEOM))
+    assert not start_shaped(model.classify_frame(synthetic_board(board=one_move), GEOM))
+
+
+def test_degenerate_inputs() -> None:
+    assert iou(np.zeros((CELL, CELL), dtype=bool), np.zeros((CELL, CELL), dtype=bool)) == 0.0
+
+    frame = synthetic_board()
+    r, c = row_col(chess.E2, Side.WHITE)
+    pawn = silhouette(GEOM.crop(frame, r, c, size=2 * CELL))
+    assert pawn.mask.any()
+    assert not overlay_reaches(pawn, np.array([0.0, 255.0, 0.0], dtype=np.float32))
+    r, c = row_col(chess.E4, Side.WHITE)
+    empty = silhouette(GEOM.crop(frame, r, c, size=2 * CELL))
+    assert not empty.mask.any()
+    assert not overlay_reaches(empty, np.array(LIGHT, dtype=np.float32))
+
+    backgrounds = np.zeros((8, 8, 3), dtype=np.float32)
+    expected = np.zeros((8, 8, 3), dtype=np.float32)
+    shifted = np.zeros((8, 8), dtype=bool)
+    assert not translucent_cover(backgrounds, expected, shifted).any()
+
+    # One member of a pair with no foreground at all: the frame is refused, not fused.
+    r, c = row_col(chess.B1, Side.WHITE)
+    x0, y0, x1, y1 = GEOM.cell_box(r, c)
+    erased = frame.copy()
+    erased[y0:y1, x0:x1] = LIGHT
+    assert silhouette(GEOM.crop(erased, r, c, size=2 * CELL)).fraction == 0.0
+    assert ThemeModel.from_start_position(erased, GEOM, Side.WHITE) is None
+
+
+def test_a_board_retinted_all_over_is_a_theme_not_a_highlight() -> None:
+    """The recogniser of the previous game reads a re-themed board as unknown, so the
+    pipeline rebuilds it rather than taking the new theme for a highlighted start position."""
+    model = _start_model()
+    retinted = synthetic_board(light=(181, 217, 240), dark=(99, 136, 181))
+    readings = model.classify_frame(retinted, GEOM)
+    assert all(reading.kind == "unknown" for row in readings for reading in row)
+    assert all(reading.tint is None and not reading.hover for row in readings for reading in row)
+    # A few tinted cells stay highlights.
+    later = chess.Board()
+    move = later.push_san("e4")
+    readings = model.classify_frame(synthetic_board(board=later, highlight=move), GEOM)
+    r, c = row_col(chess.E4, Side.WHITE)
+    assert readings[r][c].symbol == "P" and readings[r][c].tint == "yellow"
 
 
 def test_a_line_of_marked_squares_is_not_an_overlay() -> None:
@@ -157,6 +284,129 @@ def test_a_tiny_patch_reads_without_nan() -> None:
         warnings.simplefilter("error")
         sil = silhouette(np.full((2, 2, 3), 120, dtype=np.uint8))
     assert np.all(np.isfinite(sil.background)) and not sil.hover and sil.fraction == 0.0
+
+
+def test_recognition_survives_a_lock_a_pixel_off() -> None:
+    """Exemplars built at one lock, readings taken at another a pixel or a tenth of a pixel
+    of pitch away, which is what the tracker guarantees: every piece still reads exact and
+    settled, because overlap is measured with the mask moved onto the exemplar and the
+    settle tolerance has a floor of a few source pixels."""
+    cell = 43
+    geometry = BoardGeometry(Region(300, 120, 8 * cell, 8 * cell), float(cell))
+    model = ThemeModel.from_start_position(synthetic_board(cell=cell), geometry, Side.WHITE)
+    assert model is not None
+    later = chess.Board()
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "O-O", "d5", "exd5", "Nxd5"):
+        later.push_san(san)
+    frame = synthetic_board(board=later, cell=cell)
+    for dx, dy, pitch in ((1, 1, 43.0), (0, 0, 43.1), (1, 1, 43.1), (-1, -1, 42.9)):
+        off_lock = BoardGeometry(Region(300 + dx, 120 + dy, 8 * cell, 8 * cell), pitch)
+        readings = model.classify_frame(frame, off_lock)
+        assert not _every_piece_reads(readings, later, Side.WHITE), (dx, dy, pitch)
+    # Twice the guaranteed error: still exact by shape, landing is another matter.
+    for dx, dy, pitch in ((2, 2, 43.0), (0, 0, 43.3)):
+        off_lock = BoardGeometry(Region(300 + dx, 120 + dy, 8 * cell, 8 * cell), pitch)
+        readings = model.classify_frame(frame, off_lock)
+        assert not _every_piece_reads(readings, later, Side.WHITE, settled=False), (dx, dy, pitch)
+
+
+@pytest.mark.parametrize("cell", [43, 32])
+@pytest.mark.parametrize("thickness", [1, 2, 3, 4])
+@pytest.mark.parametrize("inset", [0, 1])
+def test_hover_outline_of_any_thickness_is_seen(cell: int, thickness: int, inset: int) -> None:
+    """A thin outline through the outer band test, a thick one through the foreign rule,
+    on both square colours, with and without a piece; and a lock a pixel or two off does
+    not turn a neighbour's edge into a hover."""
+    geometry = BoardGeometry(Region(300, 120, 8 * cell, 8 * cell), float(cell))
+    model = ThemeModel.from_start_position(synthetic_board(cell=cell), geometry, Side.WHITE)
+    assert model is not None
+    board = chess.Board(None)
+    board.set_piece_at(chess.E4, chess.Piece.from_symbol("N"))  # light square
+    board.set_piece_at(chess.B4, chess.Piece.from_symbol("b"))  # dark square
+    frame = synthetic_board(board=board, cell=cell)
+    # Light with a piece, dark with a piece, light empty, dark empty; none adjacent, since
+    # only one square is ever hovered and two outlined neighbours would look like a cover.
+    outlined = (chess.E4, chess.B4, chess.G2, chess.C7)
+    hovered = frame.copy()
+    for square in outlined:
+        x0, y0, x1, y1 = geometry.cell_box(*row_col(square, Side.WHITE))
+        blend_outline(hovered, x0, y0, x1, y1, (255, 255, 255), 1.0, thickness, inset)
+    readings = model.classify_frame(hovered, geometry)
+    for square in outlined:
+        r, c = row_col(square, Side.WHITE)
+        assert readings[r][c].hover, (square, readings[r][c])
+        if board.piece_at(square) is not None:
+            assert not readings[r][c].settled, (square, readings[r][c])
+    for dx, dy in ((1, 1), (2, 2), (-2, 1)):
+        off_lock = BoardGeometry(Region(300 + dx, 120 + dy, 8 * cell, 8 * cell), float(cell))
+        readings = model.classify_frame(frame, off_lock)
+        false_hovers = [(r, c) for r in range(8) for c in range(8) if readings[r][c].hover]
+        assert not false_hovers, (dx, dy, false_hovers)
+
+
+TINTS = {
+    "yellow": (0, 255, 255),
+    "red": (0, 0, 255),
+    "green": (76, 182, 129),
+    "teal": (128, 128, 0),
+}
+OUTLINE_WHITE = (255, 255, 255)
+RING_GREY = (40, 40, 40)
+
+
+@pytest.mark.parametrize("alpha", [0.3, 0.5, 0.7])
+@pytest.mark.parametrize("overlay", [*TINTS, "outline", "ring"])
+@pytest.mark.parametrize("piece", [None, "N", "b"])
+def test_tints_of_any_hue_read_through_and_outlines_read_foreign(
+    overlay: str, alpha: float, piece: str | None
+) -> None:
+    """A translucent tint of any colour leaves the cell readable, named by hue when it is
+    yellow or red; an outline or a ring at the edge, which shifts the ring but not the
+    corners, reads as a hover, unknown when it is thick enough to fill the ring."""
+    model = _start_model()
+    for square in (chess.E4, chess.D4):  # a light and a dark square
+        r, c = row_col(square, Side.WHITE)
+        square_colour = LIGHT if (r + c) % 2 == 0 else DARK
+        x0, y0, x1, y1 = GEOM.cell_box(r, c)
+        frame = synthetic_board(board=chess.Board(None))
+        if overlay in TINTS:
+            colour = TINTS[overlay]
+            blend_rect(frame, x0, y0, x1, y1, colour, alpha)
+        elif overlay == "outline":
+            colour = OUTLINE_WHITE
+            blend_outline(frame, x0, y0, x1, y1, colour, alpha, thickness=3, inset=1)
+        else:
+            colour = RING_GREY
+            blend_outline(frame, x0, y0, x1, y1, colour, alpha, thickness=8, inset=0)
+        if piece is not None:
+            draw_piece(frame, (x0 + x1) // 2, (y0 + y1) // 2, 64, piece)
+        reading = model.classify_frame(frame, GEOM)[r][c]
+        shift = alpha * float(np.linalg.norm(np.array(colour) - np.array(square_colour)))
+        if overlay in TINTS:
+            assert not reading.hover, reading
+            if piece is None:
+                assert reading.kind == "empty", reading
+            else:
+                assert reading.symbol == piece and reading.settled, reading
+            if shift > HIGHLIGHT_TOLERANCE:
+                hue = overlay if overlay in ("yellow", "red") else "other"
+                assert reading.tint == hue, reading
+                assert reading.highlighted == (overlay != "red")
+            else:
+                assert reading.tint is None and not reading.highlighted, reading
+        elif overlay == "outline":
+            # A thin outline leaves the ring clean, so the piece still reads, unsettled.
+            if shift > HOVER_TOLERANCE:
+                assert reading.hover, reading
+                assert piece is None or not reading.settled, reading
+            if piece is not None:
+                assert reading.symbol == piece, reading
+        else:
+            # A ring thick enough to fill the shallow ring hides the cell's content.
+            if shift > HIGHLIGHT_TOLERANCE:
+                assert reading.kind == "unknown" and reading.hover, reading
+            elif piece is not None:
+                assert reading.symbol == piece, reading
 
 
 @pytest.mark.parametrize("cell", [64, 48, 40, 32])

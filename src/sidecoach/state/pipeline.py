@@ -16,28 +16,13 @@ from sidecoach.events import Event, GameEnded, GameStarted, Region, Side
 from sidecoach.state.reconcile import Readings, Reconciler
 from sidecoach.vision.board_detect import BoardCandidate
 from sidecoach.vision.pieces import (
-    PIECE_MIN_FRACTION,
     ThemeModel,
     looks_like_start_position,
     orientation_from_start,
+    start_shaped,
 )
 from sidecoach.vision.squares import BoardGeometry, square_at
 from sidecoach.vision.tracker import BoardTracker
-
-
-def _start_shaped(readings: Readings) -> bool:
-    """Rows 0, 1, 6, 7 occupied and rows 2 to 5 empty, allowing one stray cell.
-
-    The same rule as `looks_like_start_position`, computed from readings already taken
-    instead of from the frame again.
-    """
-    off = 0
-    for r in range(8):
-        expected = r in (0, 1, 6, 7)
-        for c in range(8):
-            occupied = readings[r][c].fg_fraction >= PIECE_MIN_FRACTION
-            off += int(occupied != expected)
-    return off <= 1
 
 
 @dataclass
@@ -92,7 +77,7 @@ class GamePipeline:
                 # fresh recogniser.
                 self._readings = self.model.classify_frame(frame, geometry)
                 self._readings_key = key
-                self._start_on_screen = _start_shaped(self._readings) and not self._reads_as_start(
+                self._start_on_screen = start_shaped(self._readings) and not self._reads_as_start(
                     self._readings
                 )
             else:
