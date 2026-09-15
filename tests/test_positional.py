@@ -302,3 +302,23 @@ def test_pawn_pointing_names_the_wing_only_in_a_closed_centre() -> None:
     italian = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 0 3")
     assert P.pawn_pointing(italian, chess.WHITE) == []
     assert P.pawn_pointing(chess.Board(), chess.WHITE) == []
+
+
+def test_a_backward_pawn_is_a_weakness_only_on_a_half_open_file() -> None:
+    # White d3 is backward (its advance is held by the black c5 pawn). Black has no d-pawn, so
+    # the file is half-open and the pawn is a real target.
+    board = chess.Board("4k3/8/8/2p5/2P1P3/3P4/8/4K3 w - - 0 1")
+    assert P.is_backward(board, chess.D3)
+    assert any("backward d-pawn" in f.text for f in P.pawn_weaknesses(board, chess.BLACK))
+    # A black d-pawn on the file shields it: still backward, but no longer attackable down the
+    # file, so it is not named a weakness.
+    shielded = chess.Board("4k3/3p4/8/2p5/2P1P3/3P4/8/4K3 w - - 0 1")
+    assert P.is_backward(shielded, chess.D3)
+    assert not any("backward d-pawn" in f.text for f in P.pawn_weaknesses(shielded, chess.BLACK))
+
+
+def test_doubled_pawns_name_the_half_open_file_they_hand_the_owner() -> None:
+    # White has doubled c-pawns (c2, c3) and no b-pawn: the b-file is half-open for the rooks.
+    board = chess.Board("4k3/8/8/8/8/2P5/P1P3PP/4K3 w - - 0 1")
+    doubled = [f for f in P.pawn_weaknesses(board, chess.WHITE) if "doubled" in f.text]
+    assert doubled and "half-open b-file" in doubled[0].text

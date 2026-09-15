@@ -258,17 +258,22 @@ def pawn_weaknesses(board: chess.Board, us: chess.Color) -> list[PositionalFact]
 
     def note(color: chess.Color, kind: str) -> None:
         target = color == them
+        attacker = not color
         for square in sorted(board.pieces(chess.PAWN, color)):
-            letter = _FILES[chess.square_file(square)]
+            file_ = chess.square_file(square)
+            letter = _FILES[file_]
             # A lone d-pawn is the isolated queen's pawn, its own structure (`isolated_d_pawn`).
-            if is_isolated(board, square) and chess.square_file(square) != 3:
+            if is_isolated(board, square) and file_ != 3:
                 text = (
                     f"their isolated {letter}-pawn on {_name(square)} is a target to pile up on"
                     if target
                     else f"your isolated {letter}-pawn on {_name(square)} needs pieces to defend it"
                 )
                 facts.append(PositionalFact(kind, text, (_name(square),)))
-            elif is_backward(board, square):
+            elif is_backward(board, square) and not _pawns_on_file(board, attacker, file_):
+                # A backward pawn is a real weakness only on a half-open file, where the enemy's
+                # rooks can get at it; behind an enemy pawn on the file it cannot be attacked, so
+                # it is not named (Silman: nothing is weak if you cannot hit it).
                 text = (
                     f"their backward {letter}-pawn on {_name(square)} is a lasting target"
                     if target
@@ -277,11 +282,25 @@ def pawn_weaknesses(board: chess.Board, us: chess.Color) -> list[PositionalFact]
                 facts.append(PositionalFact(kind, text, (_name(square),)))
         for file_, squares in _doubled_files(board, color):
             letter = _FILES[file_]
-            text = (
-                f"their doubled {letter}-pawns are a lasting weakness to work against"
-                if target
-                else f"your doubled {letter}-pawns are a long-term weakness"
+            # Doubled pawns are not purely a weakness: the file the capture vacated is half-open
+            # for the owner's rooks. Name that compensation on your own; the enemy's stay targets.
+            half_open = next(
+                (
+                    _FILES[f]
+                    for f in (file_ - 1, file_ + 1)
+                    if 0 <= f <= 7 and not _pawns_on_file(board, color, f)
+                ),
+                None,
             )
+            if target:
+                text = f"their doubled {letter}-pawns are a lasting weakness to work against"
+            elif half_open is not None:
+                text = (
+                    f"your doubled {letter}-pawns are a long-term weakness, though they give "
+                    f"your rooks the half-open {half_open}-file"
+                )
+            else:
+                text = f"your doubled {letter}-pawns are a long-term weakness"
             facts.append(PositionalFact(kind, text, tuple(_name(s) for s in squares)))
 
     note(them, "targetPawn")
