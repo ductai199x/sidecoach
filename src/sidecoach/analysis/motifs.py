@@ -632,9 +632,11 @@ def _exposed_king(view: chess.Board, mover: chess.Color) -> MotifTag | None:
     """The enemy king has lost its pawn shelter and the mover has force bearing on it.
 
     Shelter is counted one pawn per file over the three files around the king, one or two
-    ranks in front. At most one such pawn, a queen or a rook among at least three attacking
-    pieces (bare rook-and-knight endings are not attacks), and at least two squares of the
-    king's ring under fire.
+    ranks in front. At most one such pawn, at least two of the mover's pieces actually
+    attacking the king's ring (one of them a queen or rook), and at least two ring squares
+    under fire. Counting pieces on the ring rather than pieces on the board is what keeps an
+    opening king that just pushed a pawn from looking besieged. The theme ranks low, so a
+    sharper motif in the same position wins out.
     """
     enemy = not mover
     king = view.king(enemy)
@@ -657,13 +659,21 @@ def _exposed_king(view: chess.Board, mover: chess.Color) -> MotifTag | None:
                 break
     if shelter > 1:
         return None
-    attackers = (chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT)
-    heavy = view.pieces(chess.QUEEN, mover) or view.pieces(chess.ROOK, mover)
-    force = sum(len(view.pieces(piece_type, mover)) for piece_type in attackers)
-    if not heavy or force < 3:
-        return None
-    hit = [s for s in chess.SquareSet(chess.BB_KING_ATTACKS[king]) if view.is_attacked_by(mover, s)]
+    ring = chess.SquareSet(chess.BB_KING_ATTACKS[king])
+    hit = [s for s in ring if view.is_attacked_by(mover, s)]
     if len(hit) < 2:
+        return None
+    # The force has to be bearing on the king's ring, not merely present on the board: an
+    # opening king that has just lost a pawn is not exposed while every piece is still at home.
+    ring_attackers: set[chess.Square] = set()
+    has_heavy = False
+    for square in ring:
+        for attacker in view.attackers(mover, square):
+            piece_type = view.piece_type_at(attacker)
+            if piece_type in (chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT):
+                ring_attackers.add(attacker)
+                has_heavy = has_heavy or piece_type in (chess.QUEEN, chess.ROOK)
+    if len(ring_attackers) < 2 or not has_heavy:
         return None
     return _tag("exposedKing", [king, *hit])
 
