@@ -24,6 +24,16 @@ dev = [
     "ruff>=0.6",
     "pyright>=1.1.380",
 ]
+# The voice extras are heavy (onnxruntime) and optional: `uv sync --group voice`. Without
+# them the coach runs silent -- the Kokoro provider reports the extras missing and no-ops.
+voice = [
+    "kokoro-onnx>=0.4",
+    "sounddevice>=0.5",
+]
+# The desktop panel: a native window over a local web UI, `uv sync --group panel`.
+panel = [
+    "pywebview>=5.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.11.29,<0.12.0"]

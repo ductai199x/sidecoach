@@ -73,6 +73,20 @@ class ProfileSettings(BaseModel):
     rating_high: int = 1400
 
 
+class VoiceSettings(BaseModel):
+    # Off by default: the coach is silent until voice is turned on (a CLI flag, the panel).
+    enabled: bool = False
+    # "kokoro" (Kokoro-82M via kokoro-onnx, on the CPU) or "null" (silent). Unknown names
+    # degrade to silent rather than failing -- voice never takes the session down.
+    provider: str = "kokoro"
+    # Any Kokoro voice id (am_*/af_*/bm_*/bf_*); af_sarah is an American female voice.
+    voice: str = "af_sarah"
+    speed: float = 1.0
+    lang: str = "en-us"
+    # Where the Kokoro model files live; defaults to <data_dir>/models/kokoro when unset.
+    model_dir: str | None = None
+
+
 class Settings(BaseModel):
     data_dir: Path = Path("data")
     tools_dir: Path = Path("tools")
@@ -81,6 +95,13 @@ class Settings(BaseModel):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     coach: CoachSettings = Field(default_factory=CoachSettings)
     profile: ProfileSettings = Field(default_factory=ProfileSettings)
+    voice: VoiceSettings = Field(default_factory=VoiceSettings)
+
+    def voice_model_dir(self) -> Path:
+        """Where the Kokoro model files live: the configured path, else under data_dir."""
+        if self.voice.model_dir:
+            return Path(self.voice.model_dir)
+        return self.data_dir / "models" / "kokoro"
 
 
 def load_dotenv(path: str | os.PathLike[str] = ".env") -> dict[str, str]:
