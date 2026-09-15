@@ -119,3 +119,35 @@ def test_single_king_premove_still_waits_for_the_opponent() -> None:
     board.push_san("Kg6")
     board.push_san("Kc6")
     assert feed(board, 3) == ["Kg6", "Kc6"]
+
+
+def test_queue_route_follows_the_red_squares_not_the_shortest_way() -> None:
+    """Queued a3 then a4: the red squares say two steps, so the ply count stays right."""
+    fen = "8/5k2/8/8/8/8/P7/2K5 b - - 0 1"
+    model, rec, board = _reconciler_at(fen)
+    ts = 1.0
+
+    def feed(shown: chess.Board, marks: tuple[chess.Square, ...], frames: int) -> list[str]:
+        nonlocal ts
+        played: list[str] = []
+        for _ in range(frames):
+            ts += 0.1
+            frame = synthetic_board(board=shown, red_marks=marks)
+            events = rec.update(model.classify_frame(frame, GEOM), ts)
+            assert not [e for e in events if isinstance(e, Resync)]
+            played += [e.san for e in events if isinstance(e, MovePlayed)]
+        return played
+
+    # The queue forms: the pawn is drawn on a4, its square and the two steps tinted red.
+    shown = _displayed(board, chess.A2, chess.A4, "P")
+    assert feed(shown, (chess.A2, chess.A3, chess.A4), 2) == []
+    # The bot moves; the site plays a3 and keeps drawing the pawn on a4.
+    board.push_san("Kf6")
+    board.push_san("a3")
+    shown = _displayed(board, chess.A3, chess.A4, "P")
+    assert feed(shown, (chess.A3, chess.A4), 3) == ["Kf6", "a3"]
+    # The bot moves again; the site plays a4 and the queue is done.
+    board.push_san("Ke6")
+    board.push_san("a4")
+    assert feed(board, (), 4) == ["Ke6", "a4"]
+    assert rec.board.turn == chess.BLACK and rec.board.board_fen() == board.board_fen()

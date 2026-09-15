@@ -12,16 +12,32 @@ from dataclasses import dataclass, field
 import chess
 import numpy as np
 
-from sidecoach.events import Event, GameEnded, GameStarted, Side
-from sidecoach.state.reconcile import Readings, Reconciler, exact
+from sidecoach.events import Event, GameEnded, GameStarted, Region, Side
+from sidecoach.state.reconcile import Readings, Reconciler
 from sidecoach.vision.board_detect import BoardCandidate
 from sidecoach.vision.pieces import (
+    PIECE_MIN_FRACTION,
     ThemeModel,
     looks_like_start_position,
     orientation_from_start,
 )
 from sidecoach.vision.squares import BoardGeometry, square_at
 from sidecoach.vision.tracker import BoardTracker
+
+
+def _start_shaped(readings: Readings) -> bool:
+    """Rows 0, 1, 6, 7 occupied and rows 2 to 5 empty, allowing one stray cell.
+
+    The same rule as `looks_like_start_position`, computed from readings already taken
+    instead of from the frame again.
+    """
+    off = 0
+    for r in range(8):
+        expected = r in (0, 1, 6, 7)
+        for c in range(8):
+            occupied = readings[r][c].fg_fraction >= PIECE_MIN_FRACTION
+            off += int(occupied != expected)
+    return off <= 1
 
 
 @dataclass
@@ -36,6 +52,10 @@ class GamePipeline:
     _start_seen: int = 0
     _start_on_screen: bool = False
     _readings: Readings | None = None
+    # The geometry the readings were taken with, and whether a changed frame went unread
+    # because the lock was in doubt: either means the next verified frame is read again.
+    _readings_key: tuple[Region, float] | None = None
+    _unread_change: bool = False
 
     def process(
         self, frame: np.ndarray, ts: float, changed: bool = True, frame_id: int | None = None
@@ -49,37 +69,45 @@ class GamePipeline:
         self.board = self.tracker.update(frame)
         if self.board is None or not self.tracker.verified:
             # No board, or a lock the frame did not validate: readings taken from an
-            # unverified geometry would be noise for the reconciler.
+            # unverified geometry would be noise for the reconciler. Whatever changed in
+            # this frame is still unread.
+            self._unread_change = self._unread_change or changed
             return []
         geometry = BoardGeometry(self.board.region, self.board.cell_px)
+        key = (self.board.region, round(self.board.cell_px, 2))
+        changed = (
+            changed or self._unread_change or self._readings is None or key != self._readings_key
+        )
+        self._unread_change = False
         events: list[Event] = []
         rebuilt = False
-        classified = False
-        if changed or self._readings is None:
-            self._start_on_screen = looks_like_start_position(frame, geometry)
-            if self._start_on_screen and self.model is not None:
+        if changed:
+            if self.model is not None:
                 # The current recogniser reading the frame as this game's start position
                 # means the user browsed back to it, or the next game has the same theme and
-                # orientation; the reconciler tells those apart. Only a frame it cannot read
-                # that way, a new theme or the colours swapped, needs a fresh recogniser.
+                # orientation; the reconciler tells those apart. Only a start-shaped frame
+                # it cannot read that way, a new theme or the colours swapped, needs a
+                # fresh recogniser.
                 self._readings = self.model.classify_frame(frame, geometry)
-                classified = True
-                if self._reads_as_start(self._readings):
-                    self._start_on_screen = False
-        if not self._start_on_screen:
-            self._start_seen = 0
-        else:
-            self._start_seen += 1
-        if changed or self._readings is None:
-            if self._should_bootstrap():
-                before = self.bootstraps
-                events.extend(self._bootstrap(frame, geometry))
-                rebuilt = self.bootstraps != before
-            if self.model is None:
-                return events
-            if rebuilt or not classified:
+                self._readings_key = key
+                self._start_on_screen = _start_shaped(self._readings) and not self._reads_as_start(
+                    self._readings
+                )
+            else:
+                self._start_on_screen = looks_like_start_position(frame, geometry)
+        self._start_seen = self._start_seen + 1 if self._start_on_screen else 0
+        if self._should_bootstrap():
+            # Decided on every verified tick, changed or not, so that a start position
+            # stored on one tick and left unchanged for the next few still counts.
+            before = self.bootstraps
+            events.extend(self._bootstrap(frame, geometry))
+            rebuilt = self.bootstraps != before
+            if rebuilt and self.model is not None:
                 self._readings = self.model.classify_frame(frame, geometry)
-        if self.reconciler is None or self._readings is None:
+                self._readings_key = key
+                # The new recogniser reads this frame as its own start position.
+                self._start_on_screen = False
+        if self.model is None or self.reconciler is None or self._readings is None:
             return self._stamp(events, ts, frame_id)
         was_started = self.reconciler.started
         events += self.reconciler.update(self._readings, ts)
@@ -96,12 +124,22 @@ class GamePipeline:
             self._rebuild_model(frame, geometry)
         return self._stamp(events, ts, frame_id)
 
+    def end_game(
+        self, result: str, reason: str, ts: float, frame_id: int | None = None
+    ) -> list[Event]:
+        """End the game on the user's word, stamped like every other event."""
+        if self.reconciler is None:
+            return []
+        return self._stamp(self.reconciler.end(result, reason), ts, frame_id)
+
     def reset(self) -> None:
         """Forget the game and the recogniser; the next start position bootstraps again."""
         self.model = None
         self.reconciler = None
         self.bottom = None
         self._readings = None
+        self._readings_key = None
+        self._unread_change = False
         self._start_seen = 0
         self._start_on_screen = False
 
@@ -113,31 +151,34 @@ class GamePipeline:
         return events
 
     def _reads_as_start(self, readings: Readings) -> bool:
-        """Whether the current recogniser reads the frame as the start position it was built on."""
+        """Whether the recogniser reads the frame as the start position it was built on.
+
+        Nothing may contradict the start (a piece read as another, an empty square where a
+        piece belongs, a piece where none belongs), bar one cell for a badge or a lifted
+        piece; and most of the board must be readable at all, since a new theme reads as
+        unknown almost everywhere without contradicting anything.
+        """
         assert self.bottom is not None
         start = chess.Board()
-        off = 0
+        contradictions = 0
+        unknown = 0
         for r in range(8):
             for c in range(8):
                 reading = readings[r][c]
+                if reading.kind == "unknown":
+                    unknown += 1
+                    continue
                 piece = start.piece_at(square_at(r, c, self.bottom))
                 if piece is None:
-                    good = reading.kind == "empty"
+                    bad = reading.kind == "piece" and reading.symbol is not None
                 else:
-                    good = exact(reading) and reading.symbol == piece.symbol() and reading.settled
-                if not good:
-                    off += 1
-        return off <= 1
+                    bad = reading.kind == "empty" or (
+                        reading.symbol is not None and reading.symbol != piece.symbol()
+                    )
+                contradictions += int(bad)
+        return unknown < 32 and contradictions <= 1
 
     def _should_bootstrap(self) -> bool:
-        if (
-            self.model is not None
-            and self.reconciler is not None
-            and not self.reconciler.board.move_stack
-            and self.reconciler.base_fen == chess.STARTING_FEN
-        ):
-            # This game has not started yet; the start position on screen is its own.
-            return False
         return self._start_on_screen and self._start_seen >= self.start_frames_needed
 
     @property
@@ -160,17 +201,17 @@ class GamePipeline:
         return True
 
     def _bootstrap(self, frame: np.ndarray, geometry: BoardGeometry) -> list[Event]:
-        ending = (
-            self.reconciler is not None
-            and self.reconciler.board.move_stack
-            and not self.reconciler.finished
-        )
         previous = self.reconciler
         if not self._rebuild_model(frame, geometry):
             return []
         assert self.bottom is not None
+        if previous is not None and not previous.in_progress and not previous.finished:
+            # The game has not begun: the board was flipped, or re-themed, while the start
+            # position was up (paired as black after watching the pre-game board). The
+            # same game goes on, seen from the other side.
+            return previous.reorient(self.bottom)
         events: list[Event] = []
-        if ending and previous is not None:
+        if previous is not None and previous.in_progress and not previous.finished:
             events.append(
                 GameEnded(
                     game_id=previous.game_id,

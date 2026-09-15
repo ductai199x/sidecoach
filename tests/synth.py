@@ -153,6 +153,28 @@ def render_board(
             )
 
 
+def bulky_pieces(
+    frame: np.ndarray,
+    x0: int,
+    y0: int,
+    cell: int,
+    board: chess.Board,
+    bottom: Side = Side.WHITE,
+    *,
+    radius: float = 0.47,
+) -> None:
+    """Redraw every piece of `board` as a disc of `radius` cells, so it reaches the cell's
+    border ring: the coarse checker score of such a board drops well below an empty one's."""
+    for square, piece in board.piece_map().items():
+        r, c = row_col(square, bottom)
+        white = piece.symbol().isupper()
+        centre = (x0 + c * cell + cell // 2, y0 + r * cell + cell // 2)
+        cv2.circle(
+            frame, centre, int(cell * radius), (245, 245, 245) if white else (35, 35, 35), -1
+        )
+        cv2.circle(frame, centre, int(cell * radius), (0, 0, 0) if white else (210, 210, 210), 2)
+
+
 def busy_background(width: int, height: int, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     coarse = rng.integers(40, 220, (height // 40 + 1, width // 40 + 1, 3), dtype=np.uint8)

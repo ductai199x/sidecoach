@@ -19,6 +19,7 @@ from sidecoach.events import Region, Side
 
 if TYPE_CHECKING:
     from sidecoach.capture.base import CaptureBackend
+    from sidecoach.replay.recording import Recording
 
 app = typer.Typer(
     help="Sidecoach: vision-first chess coaching companion.",
@@ -316,17 +317,15 @@ def _read_truth(truth_pgn: Path) -> list[str]:
 
 
 def _replay_moves(
-    rec: object, truth_pgn: Path | None = None, scored_game: int = 1, scale: float = 1.0
+    rec: Recording, truth_pgn: Path | None = None, scored_game: int = 1, scale: float = 1.0
 ) -> None:
     """Run the game pipeline over a recording and, if a truth PGN exists, score one game."""
     import chess
     import cv2
 
     from sidecoach.events import GameEnded, GameStarted, MovePlayed, Resync, Takeback
-    from sidecoach.replay.recording import Recording
     from sidecoach.state.pipeline import GamePipeline
 
-    assert isinstance(rec, Recording)
     truth = _read_truth(truth_pgn) if truth_pgn is not None else []
     truth_placements: list[str] = []
     if truth:
@@ -520,7 +519,8 @@ def cells(
 ) -> None:
     """Print cell readings for chosen squares over a tick range and save their crops.
 
-    Flags after the symbol: * highlighted, ~ hover outline, ! not settled (off centre).
+    Flags after the symbol: * highlighted, ~ hover outline, ! not settled (off centre),
+    # covered by an overlay; ?X is the best guess when no symbol is asserted.
     """
     import chess
     import cv2
@@ -553,10 +553,13 @@ def cells(
             reading = readings[r][c]
             flags = ("*" if reading.highlighted else "") + ("~" if reading.hover else "")
             flags += "" if reading.settled else "!"
+            flags += "#" if reading.covered else ""
+            guess = f"?{reading.guess}" if reading.guess and not reading.symbol else ""
+            tint = f" tint={reading.tint}" if reading.tint else ""
             parts.append(
-                f"{chess.square_name(sq)}={reading.kind}:{reading.symbol or '-'}{flags} "
+                f"{chess.square_name(sq)}={reading.kind}:{reading.symbol or '-'}{guess}{flags} "
                 f"fg={reading.fg_fraction:.2f} off={reading.offset:.2f} "
-                f"conf={reading.confidence:.2f}"
+                f"conf={reading.confidence:.2f}{tint}"
             )
             cv2.imwrite(
                 str(folder / f"t{tick.frame_id:05d}_{chess.square_name(sq)}.png"),
@@ -663,12 +666,14 @@ def watch(
     games: list[str] = []
 
     def user_result(resigned: bool) -> str:
-        if not resigned:
+        if not resigned or pipe.reconciler is None:
             return "1/2-1/2"
-        return "0-1" if pipe.bottom == Side.WHITE else "1-0"
+        return "0-1" if pipe.reconciler.user_side == Side.WHITE else "1-0"
 
     try:
         with KeyReader() as keys:
+            if not keys.enabled:
+                console.print("[yellow]no terminal on stdin: keys are off[/yellow]")
             for frame_id, ts, frame in capture_loop(cap, region, fps, max_seconds=seconds):
                 gate.region = board_gate(pipe.board, region.w, region.h)
                 if recorder is not None:
@@ -699,12 +704,11 @@ def watch(
                 if key == "q":
                     console.print("quit")
                     break
-                if key in ("r", "d") and pipe.reconciler is not None:
+                if key in ("r", "d"):
                     reason = "user resigned" if key == "r" else "draw agreed"
-                    events += pipe.reconciler.end(user_result(key == "r"), reason)
+                    events += pipe.end_game(user_result(key == "r"), reason, ts, frame_id)
                 elif key == "n":
-                    if pipe.reconciler is not None:
-                        events += pipe.reconciler.end("*", "abandoned by the user")
+                    events += pipe.end_game("*", "abandoned by the user", ts, frame_id)
                     pipe.reset()
                     console.print("[yellow]forgot the game; waiting for a start position[/yellow]")
 

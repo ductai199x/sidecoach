@@ -27,6 +27,11 @@ class KeyReader:
                 self._enabled = False
         return self
 
+    @property
+    def enabled(self) -> bool:
+        """Whether keys can be read at all: stdin is a terminal the reader could open."""
+        return self._enabled
+
     def __exit__(self, *exc: object) -> None:
         if self._posix_state is not None:
             termios = importlib.import_module("termios")

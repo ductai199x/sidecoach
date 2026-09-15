@@ -1,14 +1,40 @@
+import json
+import logging
 from pathlib import Path
 
+import cv2
 import numpy as np
+import pytest
 
 from sidecoach.events import MovePlayed, Region
-from sidecoach.replay.recording import Recorder, Recording, frames_differ
+from sidecoach.replay.recording import (
+    Recorder,
+    Recording,
+    concat_recordings,
+    frames_differ,
+    shrink_recording,
+)
+
+LOGGER = "sidecoach.replay.recording"
 
 
 def _frame(seed: int, shape: tuple[int, int, int] = (48, 64, 3)) -> np.ndarray:
     rng = np.random.default_rng(seed)
     return rng.integers(0, 256, shape, dtype=np.uint8)
+
+
+def _record(folder: Path, frames: list[np.ndarray]) -> Recording:
+    """A recording of `frames` at 10 fps with no keyframes, so only changes are stored."""
+    region = Region(0, 0, frames[0].shape[1], frames[0].shape[0])
+    recorder = Recorder(folder, monitor=0, region=region, fps=10, keyframe_interval_s=None)
+    for i, frame in enumerate(frames):
+        recorder.write(frame, ts=float(i) / 10)
+    recorder.close()
+    return Recording(folder)
+
+
+def _half(frame: np.ndarray) -> np.ndarray:
+    return cv2.resize(frame, (32, 24), interpolation=cv2.INTER_AREA)
 
 
 def test_frames_differ_threshold() -> None:
@@ -145,9 +171,11 @@ def test_change_gate_matches_the_recorder(tmp_path: Path) -> None:
     outside[0:3, 0:3] = 0  # outside the gate
     frames = [base, base, outside, edited, edited, base]
     times = [0.0, 0.1, 0.2, 0.3, 0.4, 2.0]  # the last one is a keyframe by time
-    recorded = [recorder.write(f, ts).stored is not None for f, ts in zip(frames, times)]
+    recorded = [
+        recorder.write(f, ts).stored is not None for f, ts in zip(frames, times, strict=True)
+    ]
     recorder.close()
-    live = [gate.changed(f, ts) for f, ts in zip(frames, times)]
+    live = [gate.changed(f, ts) for f, ts in zip(frames, times, strict=True)]
     assert recorded == live == [True, False, False, True, False, True]
 
 
@@ -167,3 +195,134 @@ def test_off_frame_board_gates_on_the_whole_frame() -> None:
     a, b = _frame(1), _frame(2)
     assert gate.changed(a, 0.0)  # the first frame
     assert gate.changed(b, 0.1)  # a different frame must still count as a change
+
+
+def test_concat_joins_shrunk_copies_and_keeps_their_size_and_scale(tmp_path: Path) -> None:
+    a, b = _frame(1), _frame(2)
+    _record(tmp_path / "full", [a, a, b, b])
+    half = shrink_recording(tmp_path / "full", tmp_path / "half", 0.5)
+    assert (half.meta.width, half.meta.height, half.meta.scale) == (32, 24, 0.5)
+
+    joined = concat_recordings([(tmp_path / "half", None, None)] * 2, tmp_path / "joined")
+    assert (joined.meta.width, joined.meta.height) == (half.meta.width, half.meta.height)
+    assert joined.meta.scale == 0.5
+    assert [t.frame_id for t in joined.ticks] == list(range(8))
+    assert [t.stored for t in joined.ticks] == [0, None, 1, None, 2, None, 3, None]
+    frames = [f for _, f in joined.frames()]
+    assert len(frames) == 8
+    assert np.array_equal(frames[4], _half(a))
+    assert np.array_equal(frames[7], _half(b))
+
+    quarter = shrink_recording(tmp_path / "half", tmp_path / "quarter", 0.5)
+    assert (quarter.meta.width, quarter.meta.height, quarter.meta.scale) == (16, 12, 0.25)
+
+
+def test_concat_refuses_parts_of_different_size_or_scale(tmp_path: Path) -> None:
+    _record(tmp_path / "full", [_frame(1)])
+    shrink_recording(tmp_path / "full", tmp_path / "half", 0.5)
+    parts: list[tuple[Path, int | None, int | None]] = [
+        (tmp_path / "full", None, None),
+        (tmp_path / "half", None, None),
+    ]
+    with pytest.raises(ValueError, match="parts must share frame size and scale"):
+        concat_recordings(parts, tmp_path / "joined")
+
+
+def test_concat_copies_the_stored_flags_and_renumbers_ticks(tmp_path: Path) -> None:
+    a, b, c = _frame(1), _frame(2), _frame(3)
+    _record(tmp_path / "rec", [a, a, b, b, c])  # stored 0, None, 1, None, 2
+    parts = [(tmp_path / "rec", 1, 3), (tmp_path / "rec", None, None)]
+    joined = concat_recordings(parts, tmp_path / "joined")
+    assert [t.frame_id for t in joined.ticks] == list(range(8))
+    assert [t.ts for t in joined.ticks] == [0.1, 0.2, 0.3, 0.0, 0.1, 0.2, 0.3, 0.4]
+    # The first tick of each part is stored even where the source repeated a frame; the
+    # rest repeat exactly where the source did.
+    assert [t.stored for t in joined.ticks] == [0, 1, None, 2, None, 3, None, 4]
+    frames = [f for _, f in joined.frames()]
+    assert np.array_equal(frames[0], a)
+    assert np.array_equal(frames[2], b)
+    assert np.array_equal(frames[7], c)
+
+
+def test_shrink_trim_keeps_source_tick_ids_and_stores_its_first_tick(tmp_path: Path) -> None:
+    a, b, c = _frame(1), _frame(2), _frame(3)
+    _record(tmp_path / "full", [a, a, b, b, c])  # stored 0, None, 1, None, 2
+    small = shrink_recording(tmp_path / "full", tmp_path / "trim", 0.5, first=1, last=3)
+    assert [(t.frame_id, t.ts, t.stored) for t in small.ticks] == [
+        (1, 0.1, 0),
+        (2, 0.2, 1),
+        (3, 0.3, None),
+    ]
+    frames = [f for _, f in small.frames()]
+    assert np.array_equal(frames[0], _half(a))
+    assert np.array_equal(frames[1], _half(b))
+    assert np.array_equal(frames[2], _half(b))
+
+
+def test_partial_final_index_line_is_skipped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _record(tmp_path / "rec", [_frame(1), _frame(1), _frame(2)])
+    index = tmp_path / "rec" / "index.jsonl"
+    with index.open("a", encoding="utf-8") as f:
+        f.write('{"frame_id": 3, "ts": 0.3, "sto')  # the session was killed mid-line
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        rec = Recording(tmp_path / "rec")
+    assert [t.frame_id for t in rec.ticks] == [0, 1, 2]
+    assert "incomplete final line 4" in caplog.text
+    assert len(list(rec.frames())) == 3
+
+
+def test_corrupt_middle_index_line_is_an_error(tmp_path: Path) -> None:
+    _record(tmp_path / "rec", [_frame(1), _frame(1), _frame(2)])
+    index = tmp_path / "rec" / "index.jsonl"
+    lines = index.read_text(encoding="utf-8").splitlines()
+    lines[1] = '{"frame_id": 1, "ts": 0.1, "sto'
+    index.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="corrupt index line 2"):
+        Recording(tmp_path / "rec")
+
+
+def test_video_shorter_than_index_replays_what_exists(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    a, b = _frame(1), _frame(2)
+    _record(tmp_path / "rec", [a, a, b])  # stored 0, None, 1
+    index = tmp_path / "rec" / "index.jsonl"
+    with index.open("a", encoding="utf-8") as f:  # a hard kill lost the video's last frame
+        f.write(json.dumps({"frame_id": 3, "ts": 0.3, "stored": 2}) + "\n")
+        f.write(json.dumps({"frame_id": 4, "ts": 0.4, "stored": None}) + "\n")
+    rec = Recording(tmp_path / "rec")
+    assert len(rec.ticks) == 5
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        replayed = list(rec.frames())
+    assert [t.frame_id for t, _ in replayed] == [0, 1, 2]
+    assert np.array_equal(replayed[2][1], b)
+    assert "video ends before stored frame 2; 2 of 5 ticks dropped" in caplog.text
+
+
+class _RefusingWriter:
+    def write(self, frame: np.ndarray) -> bool:
+        return False
+
+
+def test_refused_write_leaves_the_gate_on_the_last_frame_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = Recorder(
+        tmp_path / "rec", monitor=0, region=Region(0, 0, 64, 48), fps=10, keyframe_interval_s=None
+    )
+    a, b = _frame(1), _frame(2)
+    assert recorder.write(a, 0.0).stored == 0
+    writer = recorder._writer
+    monkeypatch.setattr(recorder, "_writer", _RefusingWriter())
+    with pytest.raises(RuntimeError, match="refused frame 1"):
+        recorder.write(b, 0.1)
+    monkeypatch.setattr(recorder, "_writer", writer)
+    # `b` still differs from the last frame the video holds, so it is stored rather than
+    # skipped as a repeat of a frame that was never written.
+    assert recorder.write(b, 0.2).stored == 1
+    recorder.close()
+    rec = Recording(tmp_path / "rec")
+    assert [(t.frame_id, t.stored) for t in rec.ticks] == [(0, 0), (1, 1)]
+    assert np.array_equal(list(rec.frames())[1][1], b)

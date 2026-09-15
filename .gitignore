@@ -15,3 +15,6 @@ tools/
 sidecoach.toml
 .env
 *.log
+
+# Agent worktrees
+.claude/worktrees/

@@ -481,7 +481,7 @@ def test_illegal_commit_is_refused_not_fatal() -> None:
 
     rec = Reconciler(bottom=Side.WHITE)
     rec.start()
-    events = rec._commit(chess.Move.from_uci("d4g4"), None)
+    events = rec._commit(chess.Move.from_uci("d4g4"))
     assert len(events) == 1 and isinstance(events[0], Resync)
     assert rec.board.fen() == chess.Board().fen()
 
@@ -756,3 +756,231 @@ def test_user_can_end_the_game_by_resigning() -> None:
     assert len(events) == 1 and isinstance(events[0], GameEnded)
     assert events[0].result == "0-1" and events[0].pgn == "1. e4 e5"
     assert rec.finished and rec.end("0-1", "again") == []
+
+
+def test_takeback_with_a_quick_reply_is_not_told_as_retreats() -> None:
+    """Browse back two plies, play d4, the bot answers at once: a takeback, not Ng1 Nb8."""
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    ts = _play(model, rec, board, ["e4", "e5", "Nf3", "Nc6"])
+    earlier = chess.Board()
+    for san in ("e4", "e5"):
+        earlier.push_san(san)
+    for _ in range(2):
+        ts += 0.1
+        _feed(model, rec, earlier, Side.WHITE, ts)
+    assert rec.viewing == 2
+    earlier.push_san("d4")
+    earlier.push_san("exd4")
+    events = []
+    for _ in range(4):
+        ts += 0.1
+        events += _feed(model, rec, earlier, Side.WHITE, ts, highlight=earlier.peek())
+    takebacks = [e for e in events if isinstance(e, Takeback)]
+    assert len(takebacks) == 1 and takebacks[0].plies == 2
+    assert _played(events) == ["d4", "exd4"]
+    assert rec.pgn() == "1. e4 e5 2. d4 exd4"
+
+
+MIDDLEGAME = "rnbqkb1r/1p2pppp/p2p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 6"
+
+
+def test_start_position_after_a_resync_is_a_new_game() -> None:
+    model, rec = _setup()
+    rec.resync_hold_frames = 3
+    _feed(model, rec, chess.Board(), Side.WHITE, 0.0)
+    later = chess.Board(MIDDLEGAME)
+    events = []
+    for i in range(6):
+        events += _feed(model, rec, later, Side.WHITE, 0.1 + 0.1 * i)
+    assert any(isinstance(e, Resync) for e in events)
+    first_id = rec.game_id
+    events = []
+    for i in range(2):
+        events += _feed(model, rec, chess.Board(), Side.WHITE, 1.0 + 0.1 * i)
+    kinds = [type(e).__name__ for e in events if isinstance(e, GameEnded | GameStarted)]
+    assert kinds == ["GameEnded", "GameStarted"]
+    assert rec.game_id != first_id and rec.base_fen == chess.STARTING_FEN
+    fresh = chess.Board()
+    move = fresh.push_san("d4")
+    events = []
+    for i in range(2):
+        events += _feed(model, rec, fresh, Side.WHITE, 1.3 + 0.1 * i, highlight=move)
+    assert _played(events) == ["d4"] and rec.pgn() == "1. d4"
+
+
+def test_drag_frames_do_not_settle_the_side_to_move_after_a_resync() -> None:
+    """A premove dragged during the bot's turn is a hypothesis, not the turn."""
+    model, rec = _setup()
+    rec.resync_hold_frames = 3
+    _feed(model, rec, chess.Board(), Side.WHITE, 0.0)
+    pos = chess.Board(MIDDLEGAME.replace(" w ", " b "))
+    for i in range(5):
+        _feed(model, rec, pos, Side.WHITE, 0.1 + 0.1 * i)
+    assert rec.base_fen.split(" ")[0] == pos.board_fen() and rec.turn_unknown
+    for i in range(3):
+        drag = (chess.E4, chess.E5, 0.05, 0.05)
+        _feed(model, rec, pos, Side.WHITE, 0.6 + 0.1 * i, dragging=drag)
+    assert rec.turn_unknown
+    move = pos.push_san("b5")
+    events = []
+    for i in range(2):
+        events += _feed(model, rec, pos, Side.WHITE, 0.9 + 0.1 * i, highlight=move)
+    assert _played(events) == ["b5"]
+    assert not rec.turn_unknown and rec.board.turn == chess.WHITE
+
+
+def test_memory_of_covered_cells_expires_across_a_gap_in_frames() -> None:
+    model, rec = _setup()
+    board = chess.Board()
+    for i in range(3):
+        _feed(model, rec, board, Side.WHITE, 0.1 * i)
+    assert rec._last_seen  # the start position is remembered
+    _feed(model, rec, board, Side.WHITE, 0.3)
+    assert rec._last_seen  # a normal interval keeps it
+    _feed(model, rec, board, Side.WHITE, 5.0)
+    assert not rec._last_seen  # the board went unseen for seconds: forgotten
+
+
+def test_contradicted_memory_is_forgotten_at_once() -> None:
+    model, rec = _setup()
+    board = chess.Board()
+    for i in range(3):
+        _feed(model, rec, board, Side.WHITE, 0.1 * i)
+    d1 = row_col(chess.D1, Side.WHITE)
+    assert chess.D1 in rec._last_seen
+    moved = model.classify_frame(synthetic_board(board=board), GEOM)
+    moved[d1[0]][d1[1]] = CellReading("empty", None, None, 1.0, 0.0, 0.0, False)
+    rec.update(moved, 0.3)
+    assert chess.D1 not in rec._last_seen
+    covered = model.classify_frame(synthetic_board(board=board), GEOM)
+    covered[d1[0]][d1[1]] = CellReading("unknown", None, None, 0.0, 0.0, 0.0, False, covered=True)
+    assert chess.D1 not in rec._observe(covered)
+
+
+def test_resync_onto_a_mated_position_ends_the_game() -> None:
+    model, rec = _setup()
+    rec.resync_hold_frames = 3
+    _feed(model, rec, chess.Board(), Side.WHITE, 0.0)
+    mated = chess.Board("r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4")
+    events = []
+    for i in range(6):
+        events += _feed(model, rec, mated, Side.WHITE, 0.1 + 0.1 * i)
+    ended = [e for e in events if isinstance(e, GameEnded)]
+    assert len(ended) == 1 and ended[0].result == "1-0" and rec.finished
+
+
+def test_nothing_is_played_on_a_finished_game() -> None:
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    ts = _play(model, rec, board, ["f3", "e5", "g4", "Qh4#"])
+    assert rec.finished
+    game_id = rec.game_id
+    # Browsing back one ply and playing another move there is review, not the game.
+    earlier = board.copy()
+    earlier.pop()
+    for _ in range(2):
+        ts += 0.1
+        _feed(model, rec, earlier, Side.WHITE, ts)
+    assert rec.viewing == 3
+    move = earlier.push_san("Nc6")
+    events = []
+    for _ in range(6):
+        ts += 0.1
+        events += _feed(model, rec, earlier, Side.WHITE, ts, highlight=move)
+    assert not any(isinstance(e, MovePlayed | Takeback | GameEnded) for e in events)
+    assert rec.finished and rec.game_id == game_id
+    # After a resignation the board keeps moving; none of it is this game.
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    ts = _play(model, rec, board, ["e4", "e5"])
+    rec.end("0-1", "user resigned")
+    move = board.push_san("Nf3")
+    events = []
+    for _ in range(3):
+        ts += 0.1
+        events += _feed(model, rec, board, Side.WHITE, ts, highlight=move)
+    assert not any(isinstance(e, MovePlayed | GameEnded) for e in events)
+    for _ in range(2):
+        ts += 0.1
+        events += _feed(model, rec, chess.Board(), Side.WHITE, ts)
+    assert [type(e).__name__ for e in events if isinstance(e, GameEnded | GameStarted)] == [
+        "GameStarted"
+    ]
+
+
+def test_position_after_a_finished_game_starts_another_game() -> None:
+    model, rec = _setup()
+    rec.resync_hold_frames = 3
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    _play(model, rec, board, ["f3", "e5", "g4", "Qh4#"])
+    first_id = rec.game_id
+    later = chess.Board(MIDDLEGAME)
+    events = []
+    for i in range(6):
+        events += _feed(model, rec, later, Side.WHITE, 2.0 + 0.1 * i)
+    kinds = [type(e).__name__ for e in events if isinstance(e, GameStarted | Resync)]
+    assert kinds == ["GameStarted", "Resync"]
+    assert rec.game_id != first_id and not rec.finished
+
+
+def test_drag_over_the_previous_square_is_not_browsing() -> None:
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    ts = _play(model, rec, board, ["e4", "e5", "Nf3"])
+    for _ in range(3):
+        ts += 0.1
+        _feed(model, rec, board, Side.WHITE, ts, dragging=(chess.F3, chess.G1, 0.05, 0.05))
+    assert rec.viewing is None
+
+
+def test_queue_path_never_passes_through_the_en_passant_square() -> None:
+    rec = Reconciler(bottom=Side.WHITE, user_side=Side.WHITE)
+    rec.board = chess.Board("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2")
+    assert rec._queue_path(chess.E5, chess.D7, "P") is None
+    assert rec._queue_path(chess.E5, chess.E7, "P") is not None
+
+
+def test_arrows_over_empty_squares_do_not_stall_the_game() -> None:
+    """Three arrow-like readings on empty squares, stale, and a two-ply catch-up still commits."""
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    ts = _play(model, rec, board, ["e4", "e5"])
+    arrows = [row_col(sq, Side.WHITE) for sq in (chess.A3, chess.B3, chess.C3)]
+
+    def frame(highlight=None):
+        readings = model.classify_frame(synthetic_board(board=board, highlight=highlight), GEOM)
+        for r, c in arrows:
+            readings[r][c] = CellReading("piece", None, Side.WHITE, 0.5, 0.4, 240.0, settled=False)
+        return readings
+
+    for _ in range(8):
+        ts += 0.1
+        assert not _played(rec.update(frame(), ts))
+    board.push_san("Nf3")
+    move = board.push_san("Nc6")
+    events = []
+    for _ in range(4):
+        ts += 0.1
+        events += rec.update(frame(move), ts)
+    assert _played(events) == ["Nf3", "Nc6"]
+
+
+def test_think_time_comes_from_the_frame_timestamps() -> None:
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    events = []
+    ts = 0.0
+    for san in ("e4", "e5"):
+        move = board.push_san(san)
+        for _ in range(2):
+            ts += 0.1
+            events += _feed(model, rec, board, Side.WHITE, ts, highlight=move)
+    assert [e.think_ms for e in events if isinstance(e, MovePlayed)] == [200, 200]

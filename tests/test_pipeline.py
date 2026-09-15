@@ -1,3 +1,5 @@
+from typing import Any
+
 import chess
 
 from sidecoach.events import GameEnded, GameStarted, MovePlayed, Side
@@ -194,3 +196,126 @@ def test_reset_forgets_the_game_and_bootstraps_again() -> None:
         ts += 0.1
     assert any(isinstance(e, GameStarted) for e in events)
     assert pipe.bootstraps == 2
+
+
+def _start_frames(pipe: GamePipeline, ts: float, frames: int = 2, **kw) -> tuple[list, float]:
+    events = []
+    for _ in range(frames):
+        events += pipe.process(synthetic_board(board=chess.Board(), **kw), ts)
+        ts += 0.1
+    return events, ts
+
+
+def test_board_flipped_before_the_first_move_keeps_the_game() -> None:
+    """Watching the pre-game board as white, then paired as black: the board flips."""
+    pipe = GamePipeline()
+    events, ts = _start_frames(pipe, 0.0)
+    assert any(isinstance(e, GameStarted) for e in events)
+    assert pipe.bootstraps == 1 and pipe.bottom == Side.WHITE
+    assert pipe.reconciler is not None
+    game_id = pipe.reconciler.game_id
+    events, ts = _start_frames(pipe, ts, frames=4, bottom=Side.BLACK)
+    assert pipe.bootstraps == 2 and pipe.bottom == Side.BLACK
+    assert not any(isinstance(e, GameEnded) for e in events)
+    started = [e for e in events if isinstance(e, GameStarted)]
+    assert (
+        len(started) == 1 and started[0].game_id == game_id and started[0].user_side == Side.BLACK
+    )
+    board = chess.Board()
+    events = []
+    for san in ("e4", "e5"):
+        move = board.push_san(san)
+        for _ in range(2):
+            events += pipe.process(
+                synthetic_board(board=board, bottom=Side.BLACK, highlight=move), ts
+            )
+            ts += 0.1
+    assert _sans(events) == ["e4", "e5"]
+    assert pipe.reconciler.game_id == game_id
+
+
+def test_theme_changed_before_the_first_move_keeps_the_game() -> None:
+    pipe = GamePipeline()
+    _, ts = _start_frames(pipe, 0.0)
+    assert pipe.reconciler is not None
+    game_id = pipe.reconciler.game_id
+    theme: dict[str, Any] = {"light": BROWN_LIGHT, "dark": BROWN_DARK}
+    events, ts = _start_frames(pipe, ts, frames=4, **theme)
+    assert pipe.bootstraps == 2 and not any(isinstance(e, GameEnded) for e in events)
+    board = chess.Board()
+    events = []
+    move = board.push_san("d4")
+    for _ in range(2):
+        events += pipe.process(synthetic_board(board=board, highlight=move, **theme), ts)
+        ts += 0.1
+    assert _sans(events) == ["d4"] and pipe.reconciler.game_id == game_id
+
+
+def test_second_game_bootstraps_from_one_changed_tick() -> None:
+    """A new theme's start position stored once, then unchanged ticks, then a fast first move."""
+    pipe = GamePipeline()
+    board = chess.Board()
+    _, ts = _start_frames(pipe, 0.0)
+    for san in ("e4", "e5"):
+        move = board.push_san(san)
+        for _ in range(2):
+            pipe.process(synthetic_board(board=board, highlight=move), ts)
+            ts += 0.1
+    theme: dict[str, Any] = {"light": BROWN_LIGHT, "dark": BROWN_DARK}
+    fresh = synthetic_board(board=chess.Board(), **theme)
+    events = pipe.process(fresh, ts, changed=True)
+    ts += 0.1
+    for _ in range(3):
+        events += pipe.process(fresh, ts, changed=False)
+        ts += 0.1
+    assert pipe.bootstraps == 2
+    assert any(isinstance(e, GameEnded) for e in events)
+    assert any(isinstance(e, GameStarted) for e in events)
+    second = chess.Board()
+    move = second.push_san("d4")
+    events = []
+    for _ in range(2):
+        events += pipe.process(synthetic_board(board=second, highlight=move, **theme), ts)
+        ts += 0.1
+    assert _sans(events) == ["d4"]
+    assert pipe.reconciler is not None and pipe.reconciler.pgn() == "1. d4"
+
+
+def test_readings_are_retaken_after_the_lock_moves() -> None:
+    """A move and a window move in one changed tick, then only unchanged ticks."""
+    pipe = GamePipeline()
+    board = chess.Board()
+    _, ts = _start_frames(pipe, 0.0)
+    move = board.push_san("e4")
+    for _ in range(2):
+        pipe.process(synthetic_board(board=board, highlight=move), ts)
+        ts += 0.1
+    move = board.push_san("e5")
+    moved = synthetic_board(board=board, highlight=move, x0=330, y0=120)
+    events = pipe.process(moved, ts, changed=True)
+    ts += 0.1
+    for _ in range(12):
+        events += pipe.process(moved, ts, changed=False)
+        ts += 0.1
+    assert _sans(events) == ["e5"]
+
+
+def test_browsing_back_with_a_stray_reading_is_not_a_new_game() -> None:
+    """A junk reading on an empty square next to the start position: still this game."""
+    from sidecoach.vision.pieces import CellReading
+    from sidecoach.vision.squares import BoardGeometry
+
+    pipe = GamePipeline()
+    board = chess.Board()
+    _, ts = _start_frames(pipe, 0.0)
+    for san in ("e4", "e5", "Nf3"):
+        move = board.push_san(san)
+        for _ in range(2):
+            pipe.process(synthetic_board(board=board, highlight=move), ts)
+            ts += 0.1
+    assert pipe.model is not None and pipe.board is not None
+    geometry = BoardGeometry(pipe.board.region, pipe.board.cell_px)
+    readings = pipe.model.classify_frame(synthetic_board(board=chess.Board()), geometry)
+    readings[3][3] = CellReading("piece", None, Side.WHITE, 0.5, 0.4, 240.0, settled=False)
+    readings[0][4] = CellReading("piece", "k", Side.BLACK, 0.9, 0.4, 60.0, settled=False)
+    assert pipe._reads_as_start(readings)

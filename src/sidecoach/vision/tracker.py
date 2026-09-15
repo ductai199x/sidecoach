@@ -2,11 +2,14 @@
 
 Full detection costs over a second on a 1440p frame, so it runs only when there is no lock.
 While locked, every frame is validated with the cheap checker fit at the known region, which
-takes milliseconds. Every `refine_every` frames the boundaries are re-fitted with a wide
-search window, so a board that scrolled or was resized slightly is re-locked without a full
-search. A board that slid by exactly one cell still passes the checker fit, which is why the
-periodic re-fit exists. After `max_misses` consecutive failed validations the lock is dropped
-and full detection runs again.
+takes milliseconds. The fit reads the cells against the square colours the lock was taken
+with, in their polarity, and rejects a pattern that carries on outside the region, so a board
+that slid by a whole cell, or a window that moved, fails validation on the first frame; after
+`max_misses` consecutive failures the lock is dropped and detection runs again. What
+validation cannot see is sub-cell drift and a small resize: the ring medians read the same
+colours up to about a third of a cell of shift. Every `refine_every` frames the boundaries are
+therefore re-fitted with a wide search window, and the re-fit is adopted when it validates on
+its own and its boundary comb is clearly stronger than the one at the lock's geometry.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ class BoardTracker:
         max_misses: int = 3,
         refine_every: int = 10,
         refine_offset_cells: float = 1.6,
+        refit_gain: float = 1.1,
         redetect_backoff: int = 20,
         near_backoff: int = 3,
     ) -> None:
@@ -43,6 +47,7 @@ class BoardTracker:
         self.max_misses = max_misses
         self.refine_every = refine_every
         self.refine_offset_cells = refine_offset_cells
+        self.refit_gain = refit_gain
         self.redetect_backoff = redetect_backoff
         self.near_backoff = near_backoff
         self.board: BoardCandidate | None = None
@@ -83,13 +88,20 @@ class BoardTracker:
                     fit, contrast = fresh_fit, fresh_contrast
             if self._frames_since_refine >= self.refine_every:
                 self._frames_since_refine = 0
-                refined = refine(
+                refit = refine(
                     gray, candidate, offset_cells=self.refine_offset_cells, colours=self.colours
                 )
-                # A re-fit is adopted only when it validates on its own; otherwise the lock
-                # keeps its region and the fit it measured itself.
+                # A re-fit is adopted only when it validates on its own, and then only when
+                # this frame failed at the lock's geometry or the re-fit's boundary comb is
+                # clearly stronger than the comb at that geometry. The fit score cannot
+                # arbitrate: it is blind to shifts of up to a third of a cell, so a drifted
+                # geometry can still score 1.0 while the corrected one loses a cell to a
+                # badge. A re-fit that fails never costs the lock; the region and the fit it
+                # measured itself stand.
+                refined = refit.board
                 if self._passes(refined.fit, refined.contrast) and (
-                    refined.fit >= fit or not self._passes(fit, contrast)
+                    not self._passes(fit, contrast)
+                    or refit.strength > self.refit_gain * refit.reference
                 ):
                     candidate = refined
                     fit, contrast = refined.fit, refined.contrast
