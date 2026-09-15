@@ -58,6 +58,9 @@ class PositionFacts(BaseModel):
     # the forking piece and its targets. Given only at the piece level and above, since
     # before that they would give the answer away.
     focus: list[str] = Field(default_factory=list)
+    # The theme as a finished sentence, grounded on the board: "the knight on d3 is pinned
+    # to the queen on d7 by the rook on d1". Given at the piece level and above, like focus.
+    tactic: str | None = None
     candidates: list[str] = Field(default_factory=list)
     threats: list[str] = Field(default_factory=list)
     line: list[str] = Field(default_factory=list)
@@ -79,13 +82,22 @@ _BY_LEVEL: dict[DisclosureLevel, tuple[str, ...]] = {
     DisclosureLevel.QUESTION: (),
     DisclosureLevel.THEME: ("theme",),
     DisclosureLevel.REGION: ("theme", "region"),
-    DisclosureLevel.PIECE: ("theme", "region", "piece", "focus"),
-    DisclosureLevel.CANDIDATE: ("theme", "region", "piece", "focus", "candidates", "threats"),
+    DisclosureLevel.PIECE: ("theme", "region", "piece", "focus", "tactic"),
+    DisclosureLevel.CANDIDATE: (
+        "theme",
+        "region",
+        "piece",
+        "focus",
+        "tactic",
+        "candidates",
+        "threats",
+    ),
     DisclosureLevel.LINE: (
         "theme",
         "region",
         "piece",
         "focus",
+        "tactic",
         "candidates",
         "threats",
         "line",

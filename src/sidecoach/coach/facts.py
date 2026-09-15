@@ -138,6 +138,60 @@ def region_of(squares: Sequence[str]) -> str | None:
     return f"{where}, around {anchor}"
 
 
+def describe_tactic(
+    board: chess.Board, name: str, squares: Sequence[str], best_move: chess.Move | None = None
+) -> str | None:
+    """A theme's focus squares as a true sentence, or None when the board does not bear it.
+
+    Some themes are static on the board in front of the player (a pin, a loose piece);
+    others are made by the best move (a fork the move creates). So the description is tried
+    on the current board first, then on the board after `best_move`, and only returned when
+    every square it names holds the piece it claims.
+    """
+    frames = [board]
+    if best_move is not None and best_move in board.legal_moves:
+        after = board.copy(stack=False)
+        after.push(best_move)
+        frames.append(after)
+    for frame in frames:
+        text = _tactic_on(frame, name, squares)
+        if text is not None:
+            return text
+    return None
+
+
+def _tactic_on(board: chess.Board, name: str, squares: Sequence[str]) -> str | None:
+    sqs = [chess.parse_square(s) for s in squares]
+    pieces = [board.piece_at(sq) for sq in sqs]
+
+    def named(i: int) -> str:
+        piece = pieces[i]
+        assert piece is not None
+        return f"the {PIECE_NAMES[piece.piece_type]} on {squares[i]}"
+
+    # A pin or skewer aligns three pieces: an enemy attacker, then two of the mover's own.
+    # The tagger already checked the geometry; here we only confirm the colours still hold,
+    # so a description is never built from pieces that have changed hands.
+    aligned = (
+        len(sqs) >= 3
+        and all(pieces[:3])
+        and pieces[0].color != pieces[1].color  # type: ignore[union-attr]
+        and pieces[1].color == pieces[2].color  # type: ignore[union-attr]
+    )
+    if name in ("pin", "absolutePin") and aligned:
+        return f"{named(1)} is pinned to {named(2)} by {named(0)}"
+    elif name == "skewer" and aligned:
+        return f"{named(0)} skewers {named(1)} and {named(2)} behind it"
+    elif name == "fork" and len(sqs) >= 3 and pieces[0] and all(pieces[1:]):
+        targets = " and ".join(named(i) for i in range(1, len(sqs)))
+        return f"{named(0)} forks {targets}"
+    elif name in ("hangingPiece", "trappedPiece") and pieces and pieces[0]:
+        return f"{named(0)} is {'loose' if name == 'hangingPiece' else 'trapped'}"
+    elif name in ("discoveredAttack", "capturingDefender") and len(sqs) >= 2 and all(pieces[:2]):
+        return f"{named(0)} bears on {named(1)}"
+    return None
+
+
 def ascii_board(board: chess.Board) -> str:
     """The position as a labelled grid, which a language model reads far better than a FEN.
 
@@ -216,6 +270,7 @@ def facts_from_analysis(
     theme = theme_of(analysis.tags)
     region = region_of(theme.squares) if theme else None
     focus = list(theme.squares) if theme else []
+    tactic = describe_tactic(board, theme.name, theme.squares, best) if theme else None
     piece: str | None = None
     if best is not None:
         moving = board.piece_at(best.from_square)
@@ -256,6 +311,7 @@ def facts_from_analysis(
         region=region,
         piece=piece,
         focus=focus,
+        tactic=tactic,
         candidates=candidates,
         threats=threats,
         line=line,

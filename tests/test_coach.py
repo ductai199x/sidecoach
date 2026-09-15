@@ -284,7 +284,7 @@ def test_a_good_move_earns_two_words_without_the_model() -> None:
 
 
 def test_the_draft_checker_can_veto_a_false_claim() -> None:
-    def checker(text: str, board: chess.Board) -> list[str]:
+    def checker(text: str, board: chess.Board, after: Sequence[chess.Board] = ()) -> list[str]:
         return ["the rook on f7 is not there"] if "rook on f7" in text else []
 
     provider = ScriptedProvider(["Your rook on f7 is strong.", "Your king is safe for now."])

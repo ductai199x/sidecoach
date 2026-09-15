@@ -533,6 +533,49 @@ def test_draft_flags_a_hanging_piece_called_safe() -> None:
     assert check_draft("Your knight on f3 is safe.", chess.Board(ITALIAN)) == []
 
 
+def test_draft_accepts_a_relative_pin() -> None:
+    # Black knight d3 is pinned to the black queen d7 by the white rook d1 (a relative pin,
+    # not to the king). The old king-only test rejected these; the general one must not.
+    board = chess.Board("1r2r1k1/3q1pp1/2p5/p3P2Q/2P5/1P1n3P/6P1/3R1RK1 w - - 1 29")
+    assert check_draft("The knight on d3 is pinned to the queen.", board) == []
+    # The white rook on d1 is not pinned: the queen's line to it is blocked by the knight.
+    problems = check_draft("Your rook on d1 is pinned.", board)
+    assert len(problems) == 1 and problems[0].reason == "the rook on d1 is not pinned"
+
+
+def test_draft_verifies_a_fork() -> None:
+    # A real fork: the knight on f6 hits both the queen on e8 and the king on g8.
+    real = chess.Board("4q1k1/8/5N2/8/8/8/8/7K b - - 0 1")
+    assert check_draft("The knight on f6 forks the queen and king.", real) == []
+    # A knight that forks nothing is flagged.
+    lone = chess.Board("4k3/8/8/8/8/5N2/8/4K3 w - - 0 1")
+    problems = check_draft("The knight on f3 forks two pieces.", lone)
+    assert len(problems) == 1
+    assert problems[0].reason == "the knight on f3 does not fork two pieces"
+
+
+def test_draft_accepts_a_fork_the_best_move_creates() -> None:
+    # The fork is not on the board in front of the player: Nd5-f6 makes it. With the
+    # after-best-move frame supplied, naming it is not faulted; without it, it is.
+    before = chess.Board("4q1k1/8/8/3N4/8/8/8/7K w - - 0 1")
+    after = before.copy(stack=False)
+    after.push_san("Nf6")
+    assert check_draft("The knight on f6 forks the queen and king.", before, after=[after]) == []
+    problems = check_draft("The knight on f6 forks the queen and king.", before)
+    assert problems and problems[0].text == "knight on f6"
+
+
+def test_draft_verifies_a_skewer() -> None:
+    # White rook b2 skewers the black queen b7 to the black rook b8 behind it.
+    real = chess.Board("1r6/1q6/8/8/8/8/1R6/K6k w - - 0 1")
+    assert check_draft("White's rook on b2 skewers the queen and rook.", real) == []
+    # With nothing behind the queen there is no skewer.
+    none_behind = chess.Board("8/1q6/8/8/8/8/1R6/K6k w - - 0 1")
+    problems = check_draft("The rook on b2 skewers two pieces.", none_behind)
+    assert len(problems) == 1
+    assert problems[0].reason == "the rook on b2 does not skewer anything"
+
+
 def test_draft_ambiguous_move() -> None:
     board = chess.Board(ITALIAN)
     board.push_san("d3")

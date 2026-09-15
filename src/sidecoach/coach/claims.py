@@ -865,55 +865,155 @@ _TACTIC = re.compile(
     rf"(?:(?P<colour>{_COLOUR_WORDS})\s+)?(?P<piece>{_PIECE_WORD})s?\s+(?:on|at)\s+"
     r"(?P<square>[a-h][1-8])\s+"
     r"(?:(?:is|was|are|were)\s+(?:now\s+)?|,\s*(?:which\s+)?(?:is|was)\s+|now\s+)?"
-    r"(?P<state>pinned|hanging|undefended|unprotected|loose|en\s*prise|trapped|safe)",
+    r"(?P<state>pinned|hanging|undefended|unprotected|loose|en\s*prise|trapped|safe|"
+    r"forks?|forking|skewers?|skewering)",
     re.IGNORECASE,
 )
+# The tagger's own piece values, so a fork and a skewer are judged the way it judges them.
+_VALUE: dict[chess.PieceType, int] = {
+    chess.PAWN: 1,
+    chess.KNIGHT: 3,
+    chess.BISHOP: 3,
+    chess.ROOK: 5,
+    chess.QUEEN: 9,
+    chess.KING: 100,
+}
+
+
+def _pin_line(board: chess.Board, square: chess.Square) -> chess.Square | None:
+    """The friendly piece a piece on `square` shields, or None if it shields nothing.
+
+    A pin, absolute or relative: an enemy slider attacks `square` along a line, and the next
+    piece past it on that line is a friendly piece worth more (the king counts as most). This
+    is the tagger's own test, so a true pin to the queen is not called false.
+    """
+    piece = board.piece_at(square)
+    if piece is None:
+        return None
+    for attacker in board.attackers(not piece.color, square):
+        slider = board.piece_at(attacker)
+        if slider is None or slider.piece_type not in (chess.BISHOP, chess.ROOK, chess.QUEEN):
+            continue
+        if chess.square_distance(attacker, square) == 0:
+            continue
+        df = _sign(chess.square_file(square) - chess.square_file(attacker))
+        dr = _sign(chess.square_rank(square) - chess.square_rank(attacker))
+        file_, rank_ = chess.square_file(square) + df, chess.square_rank(square) + dr
+        while 0 <= file_ <= 7 and 0 <= rank_ <= 7:
+            behind = chess.square(file_, rank_)
+            occupant = board.piece_at(behind)
+            if occupant is not None:
+                if (
+                    occupant.color == piece.color
+                    and _VALUE[occupant.piece_type] > _VALUE[piece.piece_type]
+                ):
+                    return behind
+                break
+            file_ += df
+            rank_ += dr
+    return None
+
+
+def _sign(n: int) -> int:
+    return (n > 0) - (n < 0)
+
+
+def _fork_targets(board: chess.Board, square: chess.Square) -> list[chess.Square]:
+    """Enemy pieces a fork on `square` would win: worth as much as the forker, or the king."""
+    piece = board.piece_at(square)
+    if piece is None:
+        return []
+    own_value = _VALUE[piece.piece_type]
+    targets = []
+    for target in board.attacks(square):
+        other = board.piece_at(target)
+        if other is None or other.color == piece.color:
+            continue
+        if other.piece_type == chess.KING or _VALUE[other.piece_type] >= own_value:
+            targets.append(target)
+        elif not board.attackers(other.color, target):
+            targets.append(target)  # an undefended lesser piece is still worth the fork
+    return targets
 
 
 def _tactic_problem(board: chess.Board, square_name: str, state: str) -> str | None:
-    """Whether the board bears out a tactical adjective claimed of a piece.
+    """Whether the board bears out a tactic claimed of a piece; None when it does or might.
 
-    Only the claims a coach makes to explain a move, and only when they are plainly false:
-    a pin that is not there, a piece called loose that is defended, a piece called safe
-    that hangs. The exchange is not evaluated, so "safe" is only faulted when the piece is
-    attacked and not defended at all; a claim the board merely does not settle is left.
+    Only plainly false claims are faulted: a pin that is not there (to any piece, not only
+    the king), a piece called loose that is defended, a piece called safe that hangs, a fork
+    or skewer the piece does not make. The exchange is not evaluated, so "safe" is faulted
+    only when the piece is attacked and not defended at all.
     """
     square = chess.parse_square(square_name.lower())
     piece = board.piece_at(square)
     if piece is None:
         return f"{square_name} is empty"
-    state = state.lower().replace(" ", "")
+    name = PIECE_NAMES[piece.piece_type]
+    state = state.lower().replace(" ", "").rstrip("s")
     attackers = board.attackers(not piece.color, square)
     defenders = board.attackers(piece.color, square)
     if state == "pinned":
-        if not board.is_pinned(piece.color, square):
-            return f"the {PIECE_NAMES[piece.piece_type]} on {square_name} is not pinned"
+        if _pin_line(board, square) is None:
+            return f"the {name} on {square_name} is not pinned"
     elif state in ("hanging", "undefended", "unprotected", "loose", "enprise"):
         if not attackers:
-            return f"nothing attacks the {PIECE_NAMES[piece.piece_type]} on {square_name}"
+            return f"nothing attacks the {name} on {square_name}"
         if defenders:
-            return f"the {PIECE_NAMES[piece.piece_type]} on {square_name} is defended"
+            return f"the {name} on {square_name} is defended"
     elif state == "safe":
         if attackers and not defenders:
-            return (
-                f"the {PIECE_NAMES[piece.piece_type]} on {square_name} is attacked and undefended"
-            )
+            return f"the {name} on {square_name} is attacked and undefended"
     elif state == "trapped" and not attackers:
-        return f"nothing is attacking the {PIECE_NAMES[piece.piece_type]} on {square_name}"
+        return f"nothing is attacking the {name} on {square_name}"
+    elif state in ("fork", "forking"):
+        if len(_fork_targets(board, square)) < 2:
+            return f"the {name} on {square_name} does not fork two pieces"
+    elif state in ("skewer", "skewering"):
+        # A skewer is a pin the other way round: the enemy piece behind is worth less.
+        hits = [t for t in board.attacks(square) if _behind_is_enemy(board, square, t, piece.color)]
+        if not hits:
+            return f"the {name} on {square_name} does not skewer anything"
     return None
 
 
-def check_draft(text: str, board: chess.Board) -> list[DraftProblem]:
+def _behind_is_enemy(
+    board: chess.Board, frm: chess.Square, through: chess.Square, mover: chess.Color
+) -> bool:
+    """Whether, past an enemy piece on `through`, the same line holds another enemy piece."""
+    occupant = board.piece_at(through)
+    if occupant is None or occupant.color == mover:
+        return False
+    df = _sign(chess.square_file(through) - chess.square_file(frm))
+    dr = _sign(chess.square_rank(through) - chess.square_rank(frm))
+    if df == 0 and dr == 0:
+        return False
+    file_, rank_ = chess.square_file(through) + df, chess.square_rank(through) + dr
+    while 0 <= file_ <= 7 and 0 <= rank_ <= 7:
+        behind = board.piece_at(chess.square(file_, rank_))
+        if behind is not None:
+            return behind.color != mover
+        file_ += df
+        rank_ += dr
+    return False
+
+
+def check_draft(
+    text: str, board: chess.Board, *, after: Sequence[chess.Board] = ()
+) -> list[DraftProblem]:
     """Everything concrete in a coach draft that the board contradicts. Empty means clean.
 
     A "<piece> on <square>" phrase must match the board, colour word included ("your" is
-    the side to move). A tactical adjective claimed of such a piece (pinned, hanging, safe)
-    must hold on the board. A move must be playable: legal now, or legal for the opponent
+    the side to move). A tactic claimed of such a piece (pinned, hanging, safe, a fork, a
+    skewer) must hold on the board, or on one of the `after` positions, which are the boards
+    after the best move: a fork the best move creates is real even though the current board
+    does not show it yet. A move must be playable: legal now, or legal for the opponent
     after a pass, since a coach may name a threat. Bare squares are never flagged; a coach
     may point at one.
     """
     problems: list[DraftProblem] = []
     seen: set[str] = set()
+    frames = [board, *after]
+    us = board.turn
 
     def add(phrase: str, reason: str) -> None:
         if phrase not in seen:
@@ -922,21 +1022,30 @@ def check_draft(text: str, board: chess.Board) -> list[DraftProblem]:
 
     for pattern in (_PIECE_ON, _SQUARE_PIECE):
         for match in pattern.finditer(text):
-            reason = _placement_problem(
-                board, match.group("colour"), match.group("piece"), match.group("square")
-            )
-            if reason:
-                add(match.group(0), reason)
+            # A placement is wrong only when it is wrong on every frame: a piece the best
+            # move puts on a square is really there in the line the coach explains.
+            reasons = [
+                _placement_problem(
+                    frame, match.group("colour"), match.group("piece"), match.group("square"), us
+                )
+                for frame in frames
+            ]
+            if all(reasons):
+                add(match.group(0), reasons[0] or "")
 
     for match in _TACTIC.finditer(text):
-        placement = _placement_problem(
-            board, match.group("colour"), match.group("piece"), match.group("square")
-        )
-        if placement:
-            continue  # the piece is wrong; the placement check already flagged it
-        reason = _tactic_problem(board, match.group("square"), match.group("state"))
-        if reason:
-            add(match.group(0), reason)
+        square, state = match.group("square"), match.group("state")
+        present = [
+            _placement_problem(frame, None, match.group("piece"), square, us) for frame in frames
+        ]
+        if all(present):
+            continue  # the piece is on that square on no frame; the placement loop has it
+        reasons = [_tactic_problem(frame, square, state) for frame in frames]
+        if any(reason is None for reason in reasons):
+            continue
+        clean = next((r for r in reasons if r), None)
+        if clean:
+            add(match.group(0), clean)
 
     for token in _TOKEN_SPLIT.split(text):
         match = _SAN_TOKEN.fullmatch(token)
@@ -956,34 +1065,45 @@ def check_draft(text: str, board: chess.Board) -> list[DraftProblem]:
 
 
 def _placement_problem(
-    board: chess.Board, colour_word: str | None, piece_word: str, square_name: str
+    board: chess.Board,
+    colour_word: str | None,
+    piece_word: str,
+    square_name: str,
+    us: chess.Color | None = None,
 ) -> str | None:
+    """Whether a "<colour> <piece> on <square>" claim holds. `us` fixes whose "your" is.
+
+    Across the current board and the board after the best move, whose turn it is flips, but
+    "your" always means the player being coached, so `us` is passed rather than read from
+    the frame.
+    """
+    if us is None:
+        us = board.turn
     square = chess.parse_square(square_name.lower())
     piece = board.piece_at(square)
     wanted = _PIECE_WORDS[piece_word.lower()]
     if piece is None:
         return f"{square_name} is empty"
     if piece.piece_type != wanted:
-        pos = _Position(board, board.turn)
-        held = f"{pos.side(piece.color)} {PIECE_NAMES[piece.piece_type]}"
+        held = f"{'your' if piece.color == us else 'their'} {PIECE_NAMES[piece.piece_type]}"
         return f"{square_name} holds {held}, not a {piece_word.lower()}"
     if colour_word is None:
         return None
     word = colour_word.lower()
     if word == "your":
-        expected: chess.Color = board.turn
+        expected: chess.Color = us
     elif word.startswith("white"):
         expected = chess.WHITE
     elif word.startswith("black"):
         expected = chess.BLACK
     else:
-        expected = not board.turn
+        expected = not us
     if piece.color == expected:
         return None
     if word.startswith(("white", "black")):
         actual = "white's" if piece.color == chess.WHITE else "black's"
         return f"the {piece_word.lower()} on {square_name} is {actual}, not {word}"
-    if piece.color == board.turn:
+    if piece.color == us:
         return f"the {piece_word.lower()} on {square_name} is yours, not your opponent's"
     return f"the {piece_word.lower()} on {square_name} is your opponent's, not yours"
 

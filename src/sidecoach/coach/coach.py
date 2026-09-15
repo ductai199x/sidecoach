@@ -153,6 +153,25 @@ class _Request:
     game_id: str
 
 
+def _after_best(request: _Request) -> list[chess.Board]:
+    """The board after the engine's best move, so a tactic that move makes reads as real.
+
+    A fork or pin the recommended move creates is not on the board in front of the player;
+    the draft checker is handed this extra frame so it does not fault the coach for naming a
+    piece on the square the best move will put it on.
+    """
+    best = request.facts.line or request.facts.candidates
+    if not best:
+        return []
+    try:
+        move = request.board.parse_san(best[0])
+    except ValueError:
+        return []
+    after = request.board.copy(stack=False)
+    after.push(move)
+    return [after]
+
+
 class Speaker:
     """Runs the model on a worker thread and checks what it says.
 
@@ -164,7 +183,7 @@ class Speaker:
         self,
         provider: LLMProvider,
         *,
-        draft_check: Callable[[str, chess.Board], list[str]] | None = None,
+        draft_check: Callable[[str, chess.Board, Sequence[chess.Board]], list[str]] | None = None,
     ) -> None:
         self.provider = provider
         self.draft_check = draft_check
@@ -264,7 +283,7 @@ class Speaker:
     def _problems(self, text: str, request: _Request) -> list[str]:
         found = [f"withheld {item}" for item in leak_check(text, request.facts, request.level)]
         if self.draft_check is not None:
-            found += self.draft_check(text, request.board)
+            found += self.draft_check(text, request.board, _after_best(request))
         return found
 
     def _run(self) -> None:
@@ -360,7 +379,7 @@ class Coach:
         provider: LLMProvider,
         *,
         policy: InterjectionPolicy | None = None,
-        draft_check: Callable[[str, chess.Board], list[str]] | None = None,
+        draft_check: Callable[[str, chess.Board, Sequence[chess.Board]], list[str]] | None = None,
         claims: Callable[[str, chess.Board, PositionFacts | None], list[str]] | None = None,
     ) -> None:
         self.policy = policy or InterjectionPolicy()

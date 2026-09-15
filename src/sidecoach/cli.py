@@ -885,15 +885,16 @@ class _Coaching:
             self.coach = None
 
 
-def _draft_check() -> Callable[[str, chess.Board], list[str]] | None:
+def _draft_check() -> Callable[[str, chess.Board, Sequence[chess.Board]], list[str]] | None:
     """The board check over the coach's draft, when the claims module is built."""
     try:
         claims = importlib.import_module("sidecoach.coach.claims")
     except ImportError:
         return None
 
-    def check(text: str, board: chess.Board) -> list[str]:
-        return [f"{item.text}: {item.reason}" for item in claims.check_draft(text, board)]
+    def check(text: str, board: chess.Board, after: Sequence[chess.Board] = ()) -> list[str]:
+        problems = claims.check_draft(text, board, after=after)
+        return [f"{item.text}: {item.reason}" for item in problems]
 
     return check
 
