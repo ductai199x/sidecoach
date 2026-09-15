@@ -174,10 +174,16 @@ class GameMemory:
         if opening:
             self.opening = opening
 
-    def note_mistake(self, ply: int, theme: str | None) -> None:
+    def note_mistake(self, ply: int, theme: str | None, plan: str | None = None) -> None:
+        """Record what the player missed: the tactic if there was one, else the strategic idea.
+
+        So the memory learns habits, not only tactics -- a player who keeps overlooking
+        development or leaving the king in the centre builds up a count the coach can name.
+        """
         self.last_mistake_ply = ply
-        if theme:
-            self.missed[theme] = self.missed.get(theme, 0) + 1
+        idea = theme or plan
+        if idea:
+            self.missed[idea] = self.missed.get(idea, 0) + 1
 
     def block(self) -> str:
         move_no = (self.plies + 1) // 2
@@ -610,7 +616,7 @@ class Coach:
         if trigger is None:
             return
         if event.severity is not Severity.NONE:
-            self.memory.note_mistake(event.ply, before.facts.theme)
+            self.memory.note_mistake(event.ply, before.facts.theme, before.facts.plan)
         before.disclosure.apply(Unlock.MOVE_PLAYED)
         # A lecture is only for a move that actually cost something. A move below the
         # inaccuracy line gets a word: a nod when it lost almost nothing, a light touch

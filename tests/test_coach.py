@@ -364,6 +364,10 @@ def test_the_game_memory_carries_the_arc_into_the_prompt() -> None:
     assert "missed more than once" not in memory.block()
     memory.note_mistake(28, "a fork")
     assert "a fork (2x)" in memory.block()
+    # A strategic lapse is recorded too, from the plan when there is no tactic to miss.
+    memory.note_mistake(30, None, "finishing your development")
+    memory.note_mistake(34, None, "finishing your development")
+    assert "finishing your development (2x)" in memory.block()
 
 
 def test_the_memory_reaches_the_model_and_grows_with_the_game() -> None:
