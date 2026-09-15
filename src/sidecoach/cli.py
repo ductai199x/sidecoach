@@ -906,7 +906,9 @@ def _claims_check(provider: object) -> Callable[[str, chess.Board, object], list
         return None
 
     def check(text: str, board: chess.Board, facts: object) -> list[str]:
-        found = claims.extract_claims(text, board, provider)
+        # Reasoning off: the local model spends the whole budget thinking otherwise, and
+        # the claims come out the same in a fifth of the time.
+        found = claims.extract_claims(text, board, provider, thinking=False)
         verdicts = claims.verify_claims(found, board, facts=facts)
         return [f"{v.claim.text!r}: {v.result}, {v.reason}" for v in verdicts]
 

@@ -40,6 +40,7 @@ from sidecoach.events import (
     GameStarted,
     MoveAssessment,
     MovePlayed,
+    Severity,
     Side,
     Trigger,
 )
@@ -444,11 +445,17 @@ class Coach:
         if trigger is None:
             return
         before.disclosure.apply(Unlock.MOVE_PLAYED)
-        if trigger is Trigger.POST_MOVE and event.expected_loss < TRIVIAL_LOSS:
-            # A good move earns a word, not a paragraph, and a word needs no model.
-            self._queue_plain(
-                trigger, f"{move.san}: good.", ts, ply=before.ply, level=DisclosureLevel.LINE
-            )
+        # A lecture is only for a move that actually cost something. A move below the
+        # inaccuracy line gets a word: a nod when it lost almost nothing, a light touch
+        # otherwise. Neither needs the model, and neither interrupts with a question.
+        if trigger is Trigger.POST_MOVE and event.severity is Severity.NONE:
+            assert before.facts is not None
+            best = before.facts.candidates[0] if before.facts.candidates else None
+            if event.expected_loss < TRIVIAL_LOSS or best is None or best == move.san:
+                text = f"{move.san}: good."
+            else:
+                text = f"{move.san} is fine; {best} was a touch sharper."
+            self._queue_plain(trigger, text, ts, ply=before.ply, level=DisclosureLevel.LINE)
             return
         self._speak(trigger, before, DisclosureLevel.LINE, ts, assessment=event, played=move)
 

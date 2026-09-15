@@ -2,6 +2,7 @@ import json
 import os
 import time
 from collections.abc import Sequence
+from typing import Any
 
 import chess
 import pytest
@@ -9,6 +10,8 @@ import pytest
 from sidecoach.coach.claims import (
     Claim,
     ClaimKind,
+    EngineLike,
+    Verdict,
     check_draft,
     extract_claims,
     verify_claims,
@@ -32,7 +35,7 @@ class FakeProvider:
     def __init__(self, reply: str, *, fail: bool = False) -> None:
         self.reply = reply
         self.fail = fail
-        self.calls: list[dict[str, object]] = []
+        self.calls: list[dict[str, Any]] = []
 
     def healthcheck(self) -> tuple[bool, str]:
         return True, "fake"
@@ -79,8 +82,14 @@ def claim(
     return Claim(kind=ClaimKind(kind), subject=subject, target=target, move=move, text=text)
 
 
-def verdict(board: chess.Board, one: Claim, **kwargs: object):  # noqa: ANN202
-    verdicts = verify_claims([one], board, **kwargs)  # type: ignore[arg-type]
+def verdict(
+    board: chess.Board,
+    one: Claim,
+    *,
+    facts: PositionFacts | None = None,
+    engine: EngineLike | None = None,
+) -> Verdict:
+    verdicts = verify_claims([one], board, facts=facts, engine=engine)
     assert len(verdicts) == 1
     return verdicts[0]
 
@@ -122,12 +131,11 @@ def test_extract_asks_for_thinking_at_low_temperature_with_the_position() -> Non
     extract_claims("the pawn is hanging", chess.Board(ITALIAN), provider)
     call = provider.calls[0]
     assert call["thinking"] is True
-    assert call["temperature"] <= 0.2  # type: ignore[operator]
-    system = call["system"]
-    assert isinstance(system, str) and "JSON" in system and '"hanging"' in system
-    messages = call["messages"]
-    assert isinstance(messages, list) and messages[0]["role"] == "user"
-    assert ITALIAN in messages[0]["content"] and "the pawn is hanging" in messages[0]["content"]
+    assert call["temperature"] <= 0.2
+    assert "JSON" in call["system"] and '"hanging"' in call["system"]
+    message = call["messages"][0]
+    assert message["role"] == "user"
+    assert ITALIAN in message["content"] and "the pawn is hanging" in message["content"]
 
 
 def test_extract_from_code_fences() -> None:
@@ -157,6 +165,34 @@ def test_extract_returns_nothing_on_garbage_or_failure() -> None:
     assert extract_claims("...", board, FakeProvider("[1, 2, 3]")) == []
     assert extract_claims("...", board, FakeProvider("[]", fail=True)) == []
     assert extract_claims("   ", board, FakeProvider(json.dumps(CANNED))) == []
+
+
+class RunawayProvider(FakeProvider):
+    """Reasoning eats the whole budget with thinking on, as the local model sometimes does."""
+
+    def chat(
+        self,
+        system: str,
+        messages: Sequence[ChatMessage],
+        *,
+        max_tokens: int = 1500,
+        temperature: float = 0.7,
+        thinking: bool = False,
+    ) -> Completion:
+        completion = super().chat(
+            system, messages, max_tokens=max_tokens, temperature=temperature, thinking=thinking
+        )
+        return Completion(text="") if thinking else completion
+
+
+def test_extract_retries_without_thinking_when_reasoning_eats_the_budget() -> None:
+    provider = RunawayProvider(json.dumps(CANNED))
+    claims = extract_claims("...", chess.Board(ITALIAN), provider)
+    assert len(claims) == 3
+    assert [call["thinking"] for call in provider.calls] == [True, False]
+    provider = RunawayProvider(json.dumps(CANNED))
+    assert extract_claims("...", chess.Board(ITALIAN), provider, thinking=False)
+    assert [call["thinking"] for call in provider.calls] == [False]
 
 
 def test_extract_strips_a_leaked_think_block() -> None:
@@ -327,9 +363,7 @@ def test_my_own_threat_is_checked_now() -> None:
 
 def test_threat_uses_the_engine_line_when_facts_have_it() -> None:
     board = chess.Board(ITALIAN)
-    facts = PositionFacts(
-        fen=board.fen(), side_to_move="white", phase="opening", threats=["Nxe4"]
-    )
+    facts = PositionFacts(fen=board.fen(), side_to_move="white", phase="opening", threats=["Nxe4"])
     v = verdict(board, claim("threatens", "they", "e4"), facts=facts)
     assert v.result == "true" and "the engine's main threat is Nxe4" in v.reason
     v = verdict(board, claim("threatens", "they", "my bishop on c4"), facts=facts)

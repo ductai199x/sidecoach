@@ -46,8 +46,10 @@ SEARCH_CELLS = 1.3
 # A box is a run of near-constant colour along the column just inside its right edge.
 BOX_HEIGHT_CELLS = (0.15, 0.9)
 BOX_WIDTH_CELLS = (0.6, 3.5)
-ROW_STEP_TOLERANCE = 6.0
-FILL_TOLERANCE = 10.0
+# The box interior is flat colour; a dark box on a dark page differs from it by only ten
+# grey levels, so the tolerances stay well under that.
+ROW_STEP_TOLERANCE = 4.0
+FILL_TOLERANCE = 4.0
 MIN_CONTRAST = 60.0
 INK_ON = 0.35
 # A glyph run wider than this fraction of the line height holds two touching glyphs.
@@ -127,11 +129,13 @@ def find_box(gray: np.ndarray, x_right: float, rows: tuple[int, int], cell: floa
     if c1 - c0 < 1 or c0 < 0 or c1 > width or r1 - r0 < 4:
         return None
     band = gray[r0:r1, c0:c1].astype(np.float32)
-    profile = band.mean(axis=1)
+    profile = np.median(band, axis=1)  # the median ignores a rounded corner in one column
     steady = np.abs(np.diff(profile)) <= ROW_STEP_TOLERANCE
-    # A run of steady rows [a, b) where every step inside the run is small.
+    # steady[i] says rows i and i + 1 match, so a run of it from s to e - 1 is the row
+    # span [s, e + 1) of one flat colour.
     best: tuple[float, ClockBox] | None = None
-    for a, b in _runs(np.concatenate(([True], steady))):
+    for s_, e_ in _runs(steady):
+        a, b = s_, e_ + 1
         span = b - a
         if not BOX_HEIGHT_CELLS[0] * cell <= span <= BOX_HEIGHT_CELLS[1] * cell:
             continue

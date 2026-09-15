@@ -28,7 +28,7 @@ import chess
 from sidecoach.coach.disclosure import PositionFacts
 from sidecoach.coach.facts import CANDIDATE_MARGIN, PIECE_NAMES
 from sidecoach.events import Line
-from sidecoach.llm.base import LLMProvider
+from sidecoach.llm.base import ChatMessage, LLMProvider
 
 
 class ClaimKind(StrEnum):
@@ -90,50 +90,72 @@ of claims, so a coach can check each one against the board before agreeing.
 Reply with the JSON array only: no prose, no code fences, no keys other than these. Each \
 element is an object:
 - "kind": one of "attacks", "defends", "threatens", "hanging", "safe", "best", "plan", "other"
-- "subject": the actor as the student named it ("my knight", "the bishop", "f3", "I", \
-"they"); null if none
-- "target": what it acts on, as the student named it ("e5", "the pawn", "their queen", \
-"my king"); null if none
-- "move": a move in standard algebraic notation, or null. For "best" it is the move judged. \
-For "threatens" it is the threatened move, if the student named one. For "attacks", \
-"defends", "hanging" and "safe" it is the move the student is weighing when the claim is \
-about the position after that move ("Nf3 defends d4").
-- "text": the student's own words the claim came from
+- "subject": the actor, in the student's words ("my knight", "the bishop", "f3", "I", \
+"they"); null when the kind has no actor
+- "target": what it acts on, in the student's words ("e5", "the pawn", "their queen", \
+"my king"); null when there is none
+- "move": a move in standard algebraic notation, or null
+- "text": the clause the claim came from, copied verbatim
 
-Kinds:
-- attacks: a piece attacks a square or a piece ("my knight hits e5")
-- defends: a piece defends a square or a piece ("the bishop covers d4")
-- threatens: the opponent threatens something ("they are threatening my rook"; subject \
-"they"), or the student does ("I threaten mate on f7"; subject "I")
-- hanging: a piece is undefended or can be taken for free ("the pawn is hanging")
-- safe: a piece or square cannot be taken ("my knight is safe there")
-- best: a move is the best move or a good move ("Nf3 is best", "I want to play Bb5")
-- plan: a strategic intention that no single move settles ("push the h-pawn")
-- other: anything else about the game
+Kinds, with where the words go:
+- attacks: a piece attacks a square or a piece ("my knight hits e5"): subject the piece, \
+target the square or piece
+- defends: a piece defends a square or a piece ("the bishop covers d4"): same as attacks
+- threatens: the opponent threatens something ("they are threatening my rook") or the \
+student does ("I threaten mate on f7"): subject "they" or "I", target the thing threatened, \
+move the threatened move if one was named
+- hanging: a piece is undefended or can be taken for free ("the pawn is hanging"): subject \
+null, target the piece
+- safe: a piece or square cannot be taken ("my knight is safe there"): subject null, target \
+the piece or square
+- best: a move is the best move or a good move ("Nf3 is best", "I want to play Bb5"): \
+subject null, target null, move the move
+- plan: a strategic intention that no single move settles ("push the h-pawn"): subject and \
+target null
+- other: anything else about the game: subject and target null
 
-Keep the student's own words for subject and target; do not turn "my knight" into a square. \
-One sentence can hold several claims. The student is the side to move: "my" and "I" are the \
-student, "your" and "their" the opponent. Return [] when nothing said is about the position.
+For attacks, defends, hanging and safe, "move" is the move the student is weighing when the \
+claim is about the position after that move ("Nf3 defends d4"), else null.
+
+Keep the student's own words; do not turn "my knight" into a square, and do not check the \
+claims yourself. One sentence can hold several claims. The student is the side to move: "my" \
+and "I" are the student, "your" and "their" the opponent. Return [] when nothing said is \
+about the position. Decide quickly; the closest kind is good enough.
 """
 
 _FENCE = re.compile(r"```[A-Za-z]*\s*(.*?)```", re.DOTALL)
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
-def extract_claims(text: str, board: chess.Board, provider: LLMProvider) -> list[Claim]:
-    """The claims in `text`, as the LLM reads them. Never raises; a failed call yields none."""
+def extract_claims(
+    text: str,
+    board: chess.Board,
+    provider: LLMProvider,
+    *,
+    thinking: bool = True,
+    max_tokens: int = 4000,
+) -> list[Claim]:
+    """The claims in `text`, as the LLM reads them. Never raises; a failed call yields none.
+
+    Measured 2026-09-15 on the local Qwen 3.8 27B: with thinking off the three claims in a
+    typical sentence come back in about 5 s; with thinking on the model reasons for some
+    3000 tokens first, about 50 s, and a smaller budget is eaten whole by the reasoning and
+    returns no text at all. When that happens the call is retried once with thinking off,
+    so a runaway costs time but never the claims.
+    """
     if not text.strip():
         return []
     side = "white" if board.turn == chess.WHITE else "black"
     user = f"Side to move: {side} (the student).\nFEN: {board.fen()}\n\nStudent: {text.strip()}"
+    messages: list[ChatMessage] = [{"role": "user", "content": user}]
     try:
         completion = provider.chat(
-            EXTRACT_SYSTEM,
-            [{"role": "user", "content": user}],
-            max_tokens=2000,
-            temperature=0.1,
-            thinking=True,
+            EXTRACT_SYSTEM, messages, max_tokens=max_tokens, temperature=0.1, thinking=thinking
         )
+        if thinking and not completion.text.strip():
+            completion = provider.chat(
+                EXTRACT_SYSTEM, messages, max_tokens=max_tokens, temperature=0.1, thinking=False
+            )
     except Exception:  # noqa: BLE001
         return []
     return parse_claims(completion.text)
