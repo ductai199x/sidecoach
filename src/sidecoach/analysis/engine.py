@@ -19,12 +19,14 @@ from pathlib import Path
 import chess
 import chess.engine
 
+from sidecoach.analysis.score import expected_score
 from sidecoach.events import Line
 
 # A principal variation can run thirty plies; nobody reads that far and events stay small.
 DEFAULT_PV_PLIES = 12
 # python-chess's model for turning centipawns into win-draw-loss when an engine will not.
 WDL_MODEL = "sf"
+DEFAULT_SCORE_MODEL = "human"
 
 
 class EngineUnavailable(RuntimeError):
@@ -44,6 +46,8 @@ class Engine:
     hash_mb: int = 256
     multipv: int = 4
     pv_plies: int = DEFAULT_PV_PLIES
+    # How a line's score becomes an expected score; see `analysis.score.expected_score`.
+    score_model: str = DEFAULT_SCORE_MODEL
     _engine: chess.engine.SimpleEngine | None = field(default=None, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _wdl_from_engine: bool = field(default=False, init=False, repr=False)
@@ -113,7 +117,7 @@ class Engine:
         with self._lock:
             infos = self._analyse_with_restart(board, limit, wanted)
         plies = pv_plies if pv_plies is not None else self.pv_plies
-        lines = [_line(info, board, plies) for info in infos]
+        lines = [_line(info, board, plies, self.score_model) for info in infos]
         return [line for line in lines if line.moves]
 
     def _analyse_with_restart(
@@ -131,7 +135,7 @@ class Engine:
         raise AssertionError("unreachable")
 
 
-def _line(info: chess.engine.InfoDict, board: chess.Board, pv_plies: int) -> Line:
+def _line(info: chess.engine.InfoDict, board: chess.Board, pv_plies: int, model: str) -> Line:
     score = info.get("score")
     if score is None:
         return Line(moves=[], depth=0, expected_score=0.5)
@@ -141,13 +145,14 @@ def _line(info: chess.engine.InfoDict, board: chess.Board, pv_plies: int) -> Lin
         pov_wdl = score.wdl(model=WDL_MODEL, ply=board.ply())
     wdl = pov_wdl.pov(board.turn)
     pv = info.get("pv") or []
+    numbers = (wdl.wins, wdl.draws, wdl.losses)
     return Line(
         moves=[move.uci() for move in pv[:pv_plies]],
         depth=int(info.get("depth", 0)),
-        expected_score=wdl.expectation(),
+        expected_score=expected_score(model, relative.score(), relative.mate(), numbers),
         score_cp=relative.score(),
         mate=relative.mate(),
-        wdl=(wdl.wins, wdl.draws, wdl.losses),
+        wdl=numbers,
     )
 
 

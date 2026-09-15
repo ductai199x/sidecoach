@@ -30,6 +30,9 @@ class EngineSettings(BaseModel):
     # after it are measured the same way; a time limit would compare unequal searches.
     depth: int = 18
     pv_plies: int = 12
+    # "human" turns centipawns into expected score on a curve fitted to games between
+    # people; "engine" uses Stockfish's own win-draw-loss, which is 1.0 from a knight up.
+    score_model: str = "human"
 
 
 class LLMSettings(BaseModel):

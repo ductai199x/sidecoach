@@ -9,6 +9,7 @@ Pure functions over engine lines, so they are cheap to test and carry no engine.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -18,6 +19,40 @@ from sidecoach.config import CoachSettings
 from sidecoach.events import Line, Severity
 
 DRAW = 0.5
+# Lichess's curve from centipawns to winning chances, fitted to games between people.
+# Stockfish's own win-draw-loss numbers answer a different question: how often Stockfish
+# beats Stockfish from here, which is 100% from a knight up and says nothing about the rest
+# of a club game. A coach needs the human curve, where a knight up is about 0.88 and the
+# moves that follow can still cost something.
+HUMAN_K = 0.00368208
+CP_CAP = 1000
+
+
+def human_expected_score(score_cp: int | None, mate: int | None) -> float:
+    """Expected score for the side to move, on the curve fitted to human games."""
+    if mate is not None:
+        return 1.0 if mate > 0 else 0.0
+    if score_cp is None:
+        return DRAW
+    capped = max(-CP_CAP, min(CP_CAP, score_cp))
+    return 1.0 / (1.0 + math.exp(-HUMAN_K * capped))
+
+
+def engine_expected_score(wdl: tuple[int, int, int] | None) -> float:
+    """Expected score from the engine's own win-draw-loss numbers: (W + D/2) / 1000."""
+    if wdl is None or sum(wdl) == 0:
+        return DRAW
+    wins, draws, _ = wdl
+    return (wins + draws / 2) / sum(wdl)
+
+
+def expected_score(
+    model: str, score_cp: int | None, mate: int | None, wdl: tuple[int, int, int] | None
+) -> float:
+    """Expected score under the named model: "human" (the default) or "engine"."""
+    if model == "engine":
+        return engine_expected_score(wdl)
+    return human_expected_score(score_cp, mate)
 
 
 @dataclass(frozen=True)

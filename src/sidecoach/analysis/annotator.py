@@ -335,6 +335,7 @@ def open_analyser(
     hash_mb: int,
     pv_plies: int,
     thresholds: Thresholds,
+    score_model: str = "human",
     tagger: Tagger | None = None,
     book: Book | None = None,
     make_engine: Callable[..., Engine] = Engine,
@@ -348,6 +349,7 @@ def open_analyser(
         hash_mb=hash_mb,
         multipv=multipv,
         pv_plies=pv_plies,
+        score_model=score_model,
     )
     engine.open()
     annotator = GameAnnotator(

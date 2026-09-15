@@ -652,6 +652,7 @@ def _make_analyser(settings: Settings, *, depth: int | None = None) -> Analyser 
 
     return open_analyser(
         path,
+        score_model=settings.engine.score_model,
         depth=depth or settings.engine.depth,
         multipv=settings.engine.multipv,
         threads=settings.engine.threads,
@@ -752,6 +753,7 @@ def review(
         hash_mb=settings.engine.hash_mb,
         multipv=settings.engine.multipv,
         pv_plies=settings.engine.pv_plies,
+        score_model=settings.engine.score_model,
     )
     annotator = GameAnnotator(
         engine=engine,

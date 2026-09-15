@@ -14,7 +14,10 @@ from sidecoach.analysis.engine import Engine, san_line
 from sidecoach.analysis.score import (
     Thresholds,
     best_gap,
+    engine_expected_score,
     eval_loss,
+    expected_score,
+    human_expected_score,
     is_decisive,
     is_only_move,
     position_score,
@@ -167,11 +170,42 @@ def test_lines_come_back_from_the_movers_point_of_view(engine: Engine) -> None:
     lines = engine.analyse(board, depth=DEPTH)
     assert lines and lines[0].expected_score > 0.5, "black is to move and better"
     assert lines[0].wdl is not None and sum(lines[0].wdl) == 1000
-    assert lines[0].expected_score == pytest.approx(
-        (lines[0].wdl[0] + lines[0].wdl[1] / 2) / 1000, abs=1e-9
-    )
     assert lines[0].score_cp is not None and lines[0].score_cp > 0
     assert lines[0].depth >= DEPTH
+
+
+def test_the_human_curve_leaves_room_above_a_won_position() -> None:
+    """A knight up is not a hundred per cent, which is the whole reason for the curve."""
+    assert human_expected_score(0, None) == pytest.approx(0.5)
+    assert human_expected_score(100, None) == pytest.approx(0.591, abs=0.002)
+    knight_up = human_expected_score(545, None)
+    assert 0.8 < knight_up < 0.92, "still room to throw it away"
+    assert human_expected_score(545, None) < human_expected_score(900, None) < 1.0
+    assert human_expected_score(-545, None) == pytest.approx(1 - knight_up)
+    assert human_expected_score(None, 3) == 1.0 and human_expected_score(None, -3) == 0.0
+    # The engine's own numbers answer a different question and do saturate.
+    assert engine_expected_score((1000, 0, 0)) == 1.0
+    assert engine_expected_score((60, 935, 5)) == pytest.approx(0.5275)
+    assert engine_expected_score(None) == 0.5
+    assert expected_score("engine", 545, None, (1000, 0, 0)) == 1.0
+    assert expected_score("human", 545, None, (1000, 0, 0)) == pytest.approx(knight_up)
+
+
+@needs_engine
+def test_the_engine_model_can_be_asked_for_instead(engine: Engine) -> None:
+    board = chess.Board(BLACK_WINS)
+    human = engine.analyse(board, depth=DEPTH)[0]
+    assert engine.score_model == "human" and human.expected_score < 1.0
+    engine.score_model = "engine"
+    try:
+        strict = engine.analyse(board, depth=DEPTH)[0]
+    finally:
+        engine.score_model = "human"
+    assert strict.wdl is not None
+    assert strict.expected_score == pytest.approx(
+        (strict.wdl[0] + strict.wdl[1] / 2) / 1000, abs=1e-9
+    )
+    assert strict.expected_score > human.expected_score
 
 
 @needs_engine
