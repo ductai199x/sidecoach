@@ -99,6 +99,101 @@ def passed_pawns(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     return facts
 
 
+def _pawns_on_file(board: chess.Board, color: chess.Color, file_: int) -> list[chess.Square]:
+    return [sq for sq in board.pieces(chess.PAWN, color) if chess.square_file(sq) == file_]
+
+
+def is_isolated(board: chess.Board, square: chess.Square) -> bool:
+    """A pawn with no friendly pawn on either adjacent file: it can never be defended by one."""
+    pawn = board.piece_at(square)
+    if pawn is None or pawn.piece_type != chess.PAWN:
+        return False
+    file_ = chess.square_file(square)
+    return not any(
+        _pawns_on_file(board, pawn.color, f) for f in (file_ - 1, file_ + 1) if 0 <= f <= 7
+    )
+
+
+def is_backward(board: chess.Board, square: chess.Square) -> bool:
+    """A pawn its neighbours have advanced past, whose advance square an enemy pawn guards.
+
+    It cannot advance safely and no friendly pawn is placed to defend it forward, so it is a
+    lasting target on its half-open file, the way a coach means "backward pawn".
+    """
+    pawn = board.piece_at(square)
+    if pawn is None or pawn.piece_type != chess.PAWN:
+        return False
+    color = pawn.color
+    step = _forward(color)
+    file_, rank = chess.square_file(square), chess.square_rank(square)
+    if not 0 <= rank + step <= 7:
+        return False
+    advance = chess.square(file_, rank + step)
+    if not any(board.piece_type_at(a) == chess.PAWN for a in board.attackers(not color, advance)):
+        return False
+    neighbours = [
+        other
+        for f in (file_ - 1, file_ + 1)
+        if 0 <= f <= 7
+        for other in _pawns_on_file(board, color, f)
+    ]
+    if not neighbours:
+        return False  # no neighbours at all is isolated, a different weakness
+    # If any neighbour is behind or level, it can come up to defend, so the pawn is not backward.
+    return all((chess.square_rank(other) - rank) * step > 0 for other in neighbours)
+
+
+def _doubled_files(board: chess.Board, color: chess.Color) -> list[tuple[int, list[chess.Square]]]:
+    out = []
+    for file_ in range(8):
+        pawns = _pawns_on_file(board, color, file_)
+        if len(pawns) >= 2:
+            out.append((file_, sorted(pawns)))
+    return out
+
+
+def pawn_weaknesses(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
+    """Structural pawn weaknesses, the enemy's first (targets), then your own (cautions).
+
+    Isolated, backward and doubled pawns, in a coach's words with the pawn's square, so a
+    weakness can be named instead of hand-waved at. Enemy weaknesses come first because a
+    target to attack is a plan; your own are a caution.
+    """
+    them = not us
+    facts: list[PositionalFact] = []
+
+    def note(color: chess.Color, kind: str) -> None:
+        target = color == them
+        for square in sorted(board.pieces(chess.PAWN, color)):
+            letter = _FILES[chess.square_file(square)]
+            if is_isolated(board, square):
+                text = (
+                    f"their isolated {letter}-pawn on {_name(square)} is a target to pile up on"
+                    if target
+                    else f"your isolated {letter}-pawn on {_name(square)} needs pieces to defend it"
+                )
+                facts.append(PositionalFact(kind, text, (_name(square),)))
+            elif is_backward(board, square):
+                text = (
+                    f"their backward {letter}-pawn on {_name(square)} is a lasting target"
+                    if target
+                    else f"your backward {letter}-pawn on {_name(square)} is a long-term weakness"
+                )
+                facts.append(PositionalFact(kind, text, (_name(square),)))
+        for file_, squares in _doubled_files(board, color):
+            letter = _FILES[file_]
+            text = (
+                f"their doubled {letter}-pawns are a lasting weakness to work against"
+                if target
+                else f"your doubled {letter}-pawns are a long-term weakness"
+            )
+            facts.append(PositionalFact(kind, text, tuple(_name(s) for s in squares)))
+
+    note(them, "targetPawn")
+    note(us, "weakPawn")
+    return facts
+
+
 def open_files(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     """Open and half-open files that one of your rooks or queens already stands on."""
     facts: list[PositionalFact] = []
@@ -181,6 +276,44 @@ def outposts(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     return facts
 
 
+def bishop_pair(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
+    """You keep both bishops while the opponent does not: an edge in an open position."""
+    ours = board.pieces(chess.BISHOP, us)
+    theirs = board.pieces(chess.BISHOP, not us)
+    if len(ours) >= 2 and len(theirs) < 2:
+        return [
+            PositionalFact(
+                "bishopPair",
+                "you have the bishop pair, so keep the position open where you can",
+                tuple(_name(sq) for sq in sorted(ours)),
+            )
+        ]
+    return []
+
+
+def bad_bishop(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
+    """A bishop hemmed in by a wall of your own pawns fixed on its colour of square."""
+    facts: list[PositionalFact] = []
+    for square in sorted(board.pieces(chess.BISHOP, us)):
+        light = (chess.square_file(square) + chess.square_rank(square)) % 2 == 1
+        blockers = sum(
+            1
+            for pawn in board.pieces(chess.PAWN, us)
+            if ((chess.square_file(pawn) + chess.square_rank(pawn)) % 2 == 1) == light
+        )
+        mobility = sum(1 for target in board.attacks(square) if board.color_at(target) != us)
+        if blockers >= 4 and mobility <= 3:
+            facts.append(
+                PositionalFact(
+                    "badBishop",
+                    f"your bishop on {_name(square)} is hemmed in by your own pawns; "
+                    "trading it or freeing it is worth thinking about",
+                    (_name(square),),
+                )
+            )
+    return facts
+
+
 def development(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     """Minor pieces still on their home squares, and whether the king has castled."""
     home = [sq for sq in _HOME_MINORS[us] if board.piece_at(sq) and board.color_at(sq) == us]
@@ -220,14 +353,23 @@ def uncastled_king(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
 
 
 def worst_piece(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
-    """Your least active minor piece or rook: the one a plan should bring to life."""
+    """A developed minor or rook of yours that is nearly stuck: worth naming to bring to life.
+
+    A piece still on its home square is undeveloped, not passive, so it is left to
+    `development`; and the bar is one square or none, so a rook merely waiting behind its pawns
+    on a full board is not called out every move.
+    """
+    back = {chess.A1, chess.H1} if us == chess.WHITE else {chess.A8, chess.H8}
+    home = set(_HOME_MINORS[us]) | back
     worst: tuple[int, chess.Square] | None = None
     for piece_type in (chess.KNIGHT, chess.BISHOP, chess.ROOK):
         for square in board.pieces(piece_type, us):
+            if square in home:
+                continue
             mobility = sum(1 for target in board.attacks(square) if board.color_at(target) != us)
             if worst is None or mobility < worst[0]:
                 worst = (mobility, square)
-    if worst is None or worst[0] > 2:
+    if worst is None or worst[0] > 1:
         return []
     square = worst[1]
     return [
@@ -280,9 +422,12 @@ def features(
     if phase != "endgame":
         facts += development(board, us)
         facts += uncastled_king(board, us)
+    facts += pawn_weaknesses(board, us)
     facts += passed_pawns(board, us)
     facts += outposts(board, us)
     facts += open_files(board, us)
+    facts += bad_bishop(board, us)
+    facts += bishop_pair(board, us)
     facts += material_plan(board, us)
     facts += worst_piece(board, us)
     return facts
@@ -433,13 +578,17 @@ def best_move_idea(
 _FEATURE_RANK: dict[str, int] = {
     "uncastled": 0,
     "undeveloped": 1,
-    "passedPawn": 2,
-    "convert": 3,
-    "complicate": 3,
-    "outpost": 4,
-    "openFile": 5,
-    "passivePiece": 6,
-    "halfOpenFile": 7,
+    "targetPawn": 2,
+    "passedPawn": 3,
+    "convert": 4,
+    "complicate": 4,
+    "outpost": 5,
+    "badBishop": 6,
+    "openFile": 7,
+    "bishopPair": 8,
+    "weakPawn": 9,
+    "passivePiece": 10,
+    "halfOpenFile": 11,
 }
 
 

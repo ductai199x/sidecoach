@@ -108,6 +108,29 @@ def test_top_features_are_ranked_deduped_and_capped() -> None:
     assert len(set(kinds(top))) == len(kinds(top))
 
 
+def test_pawn_weaknesses_name_isolated_doubled_and_backward_pawns() -> None:
+    # White d4 pawn, no white c- or e-pawn: isolated.
+    board = chess.Board("4k3/8/8/8/3P4/8/8/4K3 w - - 0 1")
+    assert kinds(P.pawn_weaknesses(board, chess.WHITE)) == ["weakPawn"]
+    assert P.is_isolated(board, chess.D4)
+    # An enemy isolated pawn is a target, listed first.
+    board = chess.Board("4k3/8/8/3p4/8/8/8/4K3 w - - 0 1")
+    facts = P.pawn_weaknesses(board, chess.WHITE)
+    assert facts[0].kind == "targetPawn" and "target" in facts[0].text
+    # Backward: white d3 behind c4 and e4, its advance to d4 held by the black c5 pawn.
+    board = chess.Board("4k3/8/8/2p5/2P1P3/3P4/8/4K3 w - - 0 1")
+    assert P.is_backward(board, chess.D3)
+
+
+def test_bishop_pair_and_bad_bishop() -> None:
+    # White has both bishops, black has one: the pair.
+    board = chess.Board("2b1k3/8/8/8/8/8/8/2B1KB2 w - - 0 1")
+    assert kinds(P.bishop_pair(board, chess.WHITE)) == ["bishopPair"]
+    # A light-squared bishop on f1 walled in by four of its own pawns on light squares.
+    board = chess.Board("4k3/8/8/8/2P1P3/1P6/6P1/4KB2 w - - 0 1")
+    assert kinds(P.bad_bishop(board, chess.WHITE)) == ["badBishop"]
+
+
 def test_central_infiltration_is_not_called_centralising() -> None:
     # A knight dropping to c2 (rank 2) is infiltration, not a central strong square (c3-f6).
     board = chess.Board("4k3/8/8/8/8/1n6/8/4K3 b - - 0 1")
