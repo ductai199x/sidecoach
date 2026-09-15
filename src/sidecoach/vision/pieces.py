@@ -544,10 +544,46 @@ class ThemeModel:
             for r in range(8)
         ]
         covered = self.covered_cells(sils)
-        return [
+        readings = [
             [self._classify(sils[r][c], r, c, bool(covered[r, c])) for c in range(8)]
             for r in range(8)
         ]
+        if int(covered.sum()) < TINT_MIN_CELLS:
+            return readings
+        # Next to a dialog-sized overlay, a cell that does not read cleanly is a cell the
+        # overlay's edge cuts through: a strip of dialog over a piece reads as the wrong
+        # piece, unsettled, with a hover outline that would keep every commit blocked
+        # under the dialog. Nothing is being dragged while a dialog is up.
+        for r in range(8):
+            for c in range(8):
+                reading = readings[r][c]
+                junk = reading.hover or (
+                    reading.kind == "piece" and (not reading.settled or reading.symbol is None)
+                )
+                if not junk or covered[r, c]:
+                    continue
+                beside = any(
+                    covered[rr, cc]
+                    for rr in range(max(0, r - 1), min(8, r + 2))
+                    for cc in range(max(0, c - 1), min(8, c + 2))
+                )
+                if beside:
+                    readings[r][c] = CellReading(
+                        "unknown",
+                        None,
+                        None,
+                        0.0,
+                        reading.fg_fraction,
+                        reading.luminance,
+                        False,
+                        reading.background,
+                        reading.brightness,
+                        False,
+                        False,
+                        0.0,
+                        covered=True,
+                    )
+        return readings
 
     @classmethod
     def from_start_position(

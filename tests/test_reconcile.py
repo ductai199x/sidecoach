@@ -1,7 +1,7 @@
 import chess
 import numpy as np
 
-from sidecoach.events import GameStarted, MovePlayed, Region, Resync, Side, Takeback
+from sidecoach.events import GameEnded, GameStarted, MovePlayed, Region, Resync, Side, Takeback
 from sidecoach.state.reconcile import Reconciler, cell_agrees
 from sidecoach.vision.pieces import CellReading, ThemeModel
 from sidecoach.vision.squares import BoardGeometry, row_col
@@ -549,3 +549,82 @@ def test_badge_arriving_with_the_move_does_not_block_it() -> None:
     for i in range(8):
         events += rec.update(badge(model.classify_frame(frame, GEOM)), 2.0 + 0.1 * i)
     assert _played(events) == ["Qxf7#"]
+
+
+def test_story_seen_before_a_drag_is_extended_after_it() -> None:
+    """The king walk of the fourth game: two plies land, the user re-grabs the king at once.
+
+    Ke7 and Kxa5 are seen settled twice, then the king is dragged around for a while, the
+    bot answers Ke8 meanwhile, the king is dropped on b6 and grabbed again, and the board
+    is only quiet again after Kd7 and Kb7. From the committed position that is six plies
+    with the king back on b6, which no search finds. The story seen before the drag is
+    kept, the bot's reply confirms it from its own cells while the drag goes on, and the
+    quiet frames extend what is left.
+    """
+    fen = "8/3k4/1K6/pP2Bp1p/P4PpP/6P1/8/8 b - - 0 54"
+    model, rec = _setup()
+    _feed(model, rec, chess.Board(), Side.WHITE, 0.0)  # the game starts, then jump ahead
+    rec.board = chess.Board(fen)
+    rec._base_fen = fen
+    board = chess.Board(fen)
+    ts = 0.0
+    played: list[str] = []
+
+    def see(frames: int, dragging=None) -> None:
+        nonlocal ts
+        for _ in range(frames):
+            ts += 0.1
+            played.extend(_played(_feed(model, rec, board, Side.WHITE, ts, dragging=dragging)))
+
+    see(2)
+    board.push_san("Ke7")
+    board.push_san("Kxa5")
+    see(2)
+    assert played == []
+    see(3, dragging=(chess.A5, chess.B4, 0.1, -0.1))
+    see(2, dragging=(chess.A5, chess.A5, 0.1, -0.1))
+    assert played == [], "a drag is not a move"
+    board.push_san("Ke8")
+    see(6, dragging=(chess.A5, chess.A5, 0.1, -0.1))
+    assert played == ["Ke7", "Kxa5", "Ke8"], "the bot's reply confirms the story mid-drag"
+    board.push_san("Kb6")
+    see(1)
+    see(4, dragging=(chess.B6, chess.C7, 0.1, 0.1))
+    board.push_san("Kd7")
+    board.push_san("Kb7")
+    see(3)
+    assert played == ["Ke7", "Kxa5", "Ke8", "Kb6", "Kd7", "Kb7"]
+    assert rec.board.fen() == board.fen()
+
+
+def test_mate_settles_with_two_badge_cells_as_wildcards() -> None:
+    """After 67.Qg8+ Kh6 68.Qaf8#: the checkmate badge spoils h6 and spills into g6.
+
+    Both cells the king's move touched are junk, so the two-ply story can only be found
+    by letting the ignored stale cells stand in for exact readings.
+    """
+    fen = "Q5Q1/8/2K3k1/4Bp1p/5PpP/6P1/8/8 b - - 0 67"
+    model, rec = _setup()
+    rec.stale_after = 2
+    _feed(model, rec, chess.Board(), Side.WHITE, 0.0)
+    rec.board = chess.Board(fen)
+    rec._base_fen = fen
+    board = chess.Board(fen)
+    for i in range(2):
+        _feed(model, rec, board, Side.WHITE, 0.1 + 0.1 * i)
+    board.push_san("Kh6")
+    board.push_san("Qaf8#")
+
+    def badge(readings):
+        r, c = row_col(chess.H6, Side.WHITE)
+        readings[r][c] = CellReading("piece", "n", Side.BLACK, 0.4, 0.5, 60.0, settled=False)
+        r, c = row_col(chess.G6, Side.WHITE)
+        readings[r][c] = CellReading("piece", None, Side.BLACK, 0.5, 0.3, 90.0, settled=False)
+        return readings
+
+    frame = synthetic_board(board=board)
+    events = []
+    for i in range(8):
+        events += rec.update(badge(model.classify_frame(frame, GEOM)), 1.0 + 0.1 * i)
+    assert _played(events) == ["Kh6", "Qaf8#"]
+    assert any(isinstance(e, GameEnded) for e in events)

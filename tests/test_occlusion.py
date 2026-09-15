@@ -187,3 +187,13 @@ def test_fading_dialog_reads_as_covered_and_keeps_the_memory_clean() -> None:
         frame = with_dialog(final, dark=True, alpha=alpha)
         events += rec.update(model.classify_frame(frame, GEOM), 1.1 + 0.1 * i)
     assert [e.san for e in events if isinstance(e, MovePlayed)] == ["Qa5#"]
+
+
+def test_nothing_reads_as_hovered_under_a_dialog() -> None:
+    """A dialog edge cutting through a pawn must not pass for a drag in progress."""
+    clean = synthetic_board()
+    model = ThemeModel.from_start_position(clean, GEOM, Side.WHITE)
+    for dark in (False, True):
+        readings = model.classify_frame(with_dialog(clean, dark=dark), GEOM)
+        hovered = [(r, c) for r in range(8) for c in range(8) if readings[r][c].hover]
+        assert hovered == []

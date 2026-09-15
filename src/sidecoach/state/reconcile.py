@@ -48,6 +48,8 @@ Readings = list[list[CellReading]]
 Observation = dict[chess.Square, CellReading]
 Explanation = tuple[chess.Move, ...]
 PendingKey = tuple[object, ...]
+# Pending keys whose last element is a story of moves from the latest position.
+STORY_KEYS = ("moves", "moves-cautious", "premove")
 
 
 def touched_squares(board: chess.Board, move: chess.Move) -> set[chess.Square]:
@@ -81,6 +83,11 @@ def cell_agrees(reading: CellReading, piece: chess.Piece | None) -> bool:
     if reading.symbol is not None:
         return piece.symbol() == reading.symbol
     return True
+
+
+def is_junk(reading: CellReading) -> bool:
+    """A reading a badge or a ring leaves: an unsettled piece, or a piece of no known kind."""
+    return reading.kind == "piece" and (not reading.settled or reading.symbol is None)
 
 
 def exact(reading: CellReading) -> bool:
@@ -132,6 +139,12 @@ class Reconciler:
     # Position resync: adopt a fully readable, stable board that no move story explains.
     resync_hold_frames: int = 10
     max_stale_subset_cells: int = 4
+    # A pending story survives frames a drag blocks, up to this many, and may be extended
+    # by the moves that follow it, up to this many plies in all.
+    pending_max_age: int = 40
+    max_chain_plies: int = 8
+    max_queue_steps: int = 6
+    _pending_age: int = 0
     resync_max_soft: int = 2
     _base_fen: str = chess.STARTING_FEN
     _turn_unknown: bool = False
@@ -228,6 +241,7 @@ class Reconciler:
         self._resync_candidate = None
         self._last_seen = {}
         self._previous = {}
+        self._pending_age = 0
         return [
             GameStarted(game_id=self.game_id, user_side=self.user_side, start_fen=self.board.fen()),
             PositionChanged(game_id=self.game_id, fen=self.board.fen(), ply=0),
@@ -235,8 +249,19 @@ class Reconciler:
 
     # Explanations
 
-    def _path_explanations(self, obs: Observation, diff: set[chess.Square]) -> list[Explanation]:
-        """Sequences of up to `max_plies` legal moves explaining `diff`.
+    def _path_explanations(
+        self,
+        obs: Observation,
+        diff: set[chess.Square],
+        base: chess.Board | None = None,
+        wild: frozenset[chess.Square] = frozenset(),
+    ) -> list[Explanation]:
+        """Sequences of up to `max_plies` legal moves explaining `diff` from `base`.
+
+        `wild` cells are stale junk a badge left, ignored by the caller: a move may touch
+        them instead of an unexplained cell, and they need no exact reading, so that the
+        mating move still settles when the checkmate badge has made the king's square
+        unreadable.
 
         This is the catch-up for missed moves: the window was minimised, a dialog covered the
         board, or a badge hid a piece until the next move. Every move must touch a still
@@ -248,7 +273,7 @@ class Reconciler:
         """
         # A move touches at most four squares (castling), so more disagreements than that
         # times the depth cannot be a missed-move story.
-        if len(diff) < 3 or len(diff) > 4 * self.max_plies:
+        if len(diff) + len(wild) < 3 or len(diff) > 4 * self.max_plies:
             return []
 
         # Iterative deepening: the shortest story is searched exhaustively before any
@@ -277,27 +302,28 @@ class Reconciler:
                     if budget[0] <= 0:
                         return
                     touched = touched_squares(board, move)
-                    if not (touched & remaining):
+                    if not (touched & (remaining | wild)):
                         continue
-                    if not all(sq in obs and exact(obs[sq]) for sq in touched):
+                    if not all(sq in wild or (sq in obs and exact(obs[sq])) for sq in touched):
                         continue
                     after = board.copy(stack=False)
                     after.push(move)
                     path.append(move)
                     still = remaining - touched
                     if not still:
-                        if matches(after, obs, set(obs)):
+                        if matches(after, obs, set(obs) - wild):
                             solutions.append(tuple(path))
                     else:
                         search(after, still, path)
                     path.pop()
 
-            search(self.board, set(diff), [])
+            start = base if base is not None else self.board
+            search(start, set(diff), [])
             if not solutions:
                 continue
             finals: set[str] = set()
             for path in solutions:
-                board = self.board.copy(stack=False)
+                board = start.copy(stack=False)
                 for move in path:
                     board.push(move)
                 finals.add(board.board_fen() + " " + ("w" if board.turn else "b"))
@@ -324,7 +350,11 @@ class Reconciler:
         return earlier
 
     def _highlight_ok(
-        self, obs: Observation, moves: Explanation, base: chess.Board | None = None
+        self,
+        obs: Observation,
+        moves: Explanation,
+        base: chess.Board | None = None,
+        wild: frozenset[chess.Square] = frozenset(),
     ) -> bool:
         """Geometry evidence that `moves` are complete, independent of any colour.
 
@@ -350,6 +380,8 @@ class Reconciler:
             board.push(move)
         for sq in touched:
             reading = obs.get(sq)
+            if sq in wild:
+                continue
             if reading is not None and reading.kind == "piece" and not reading.settled:
                 return False
         return True
@@ -376,7 +408,29 @@ class Reconciler:
         # that have disagreed with an unchanged reading for a while: a badge or a ring on
         # one cell must not stall the game, but a stale cell may also hold a real move whose
         # commit was blocked for other reasons, so it is never dropped from the first try.
-        explained = self._explain(obs, diff, obs, think_ms, allow_paths=True)
+        # A drag in progress blocks every explanation without contradicting any. A story
+        # seen settled just before the drag stays pending through it, so that the frames
+        # after the drop can confirm or extend it; a quiet frame that fits nothing drops it.
+        blocked = self._hover_seen or any(
+            reading.kind == "piece" and not reading.settled for row in readings for reading in row
+        )
+        # Shortest story first: one move, then the pending story confirmed or extended,
+        # then a premove queue, then the opponent's move on its own, and only then a path
+        # of missed moves, which could otherwise explain a queue display or a drag with a
+        # longer story than what happened.
+        explained = self._explain(obs, diff, obs, think_ms, allow_paths=False)
+        if explained is not None:
+            return events + explained
+        extended = self._extend_pending(obs, diff, think_ms)
+        if extended is not None:
+            return events + extended
+        queued = self._explain_premove_queue(obs, diff, think_ms)
+        if queued is not None:
+            return events + queued
+        replied = self._explain_opponent_move(obs, think_ms)
+        if replied is not None:
+            return events + replied
+        explained = self._explain_paths(obs, diff, obs, think_ms)
         if explained is not None:
             return events + explained
         stale = (
@@ -390,23 +444,38 @@ class Reconciler:
             # cells are ignored one at a time, junk-looking readings first, then in pairs;
             # the rest of the disagreement must still be explained by legal moves, which is
             # what keeps a board that changed wholesale from being explained piecemeal.
-            for ignored in self._stale_subsets(stale, obs):
+            # Cells a badge has spoiled without contradicting the position (an occupied
+            # square of no known kind, or an unsettled piece) cannot be ignored as stale,
+            # yet they can be neither read exactly nor trusted as settled; in this retry
+            # they are wildcards alongside the ignored cells.
+            soft = frozenset(
+                sq
+                for sq, reading in obs.items()
+                if reading.kind == "piece" and (reading.symbol is None or not reading.settled)
+            )
+            subsets = self._stale_subsets(stale, obs)
+            # Soft wildcards only go with junk cells: ignoring a clean reading as well
+            # would let the search invent a story through the cells nobody can read.
+            attempts = [(sub, sub | soft) for sub in subsets if all(is_junk(obs[sq]) for sq in sub)]
+            attempts += [(sub, frozenset(sub)) for sub in subsets]
+            for ignored, wild in attempts:
                 fresh = diff - ignored
                 if not fresh:
                     continue
                 live_obs = {sq: r for sq, r in obs.items() if sq not in ignored}
                 explained = self._explain(
-                    live_obs, fresh, obs, think_ms, allow_paths=True, cautious=True
+                    live_obs, fresh, obs, think_ms, allow_paths=True, cautious=True, wild=wild
                 )
                 if explained is not None:
                     return events + explained
             if stale == diff and len(stale) < self.resync_cells:
-                # Only stale garbage differs from the latest position.
-                self._pending = None
+                # Only stale garbage differs from the latest position, unless a drag is
+                # what kept a real move from committing while its cells turned stale.
+                self._hold_pending(blocked)
                 self.viewing = None
                 return events + self._maybe_resync(diff)
 
-        self._pending = None
+        self._hold_pending(blocked)
 
         # New game: the start position is back on the board.
         if self.board.move_stack and len(obs) >= 48 and matches(chess.Board(), obs, set(obs)):
@@ -526,6 +595,7 @@ class Reconciler:
         *,
         allow_paths: bool,
         cautious: bool = False,
+        wild: frozenset[chess.Square] = frozenset(),
     ) -> list[Event] | None:
         """Events for one explanation of `diff`, or None when nothing fits.
 
@@ -537,7 +607,7 @@ class Reconciler:
         if self._turn_unknown and not self._resolve_turn(obs, diff):
             return None
         singles = single_explanations(self.board, obs, diff)
-        if len(singles) == 1 and self._highlight_ok(full_obs, singles[0]):
+        if len(singles) == 1 and self._highlight_ok(full_obs, singles[0], wild=wild):
             return self._settle(
                 ("moves", singles[0]), full_obs, self._commit_moves(singles[0], think_ms)
             )
@@ -576,11 +646,279 @@ class Reconciler:
                 )
 
         if allow_paths:
-            paths = self._path_explanations(obs, diff)
-            if len(paths) == 1 and self._highlight_ok(full_obs, paths[0]):
-                key = ("moves-cautious" if cautious else "moves", paths[0])
-                return self._settle(key, full_obs, self._commit_moves(paths[0], think_ms))
+            return self._explain_paths(obs, diff, full_obs, think_ms, cautious=cautious, wild=wild)
         return None
+
+    def _explain_paths(
+        self,
+        obs: Observation,
+        diff: set[chess.Square],
+        full_obs: Observation,
+        think_ms: int | None,
+        *,
+        cautious: bool = False,
+        wild: frozenset[chess.Square] = frozenset(),
+    ) -> list[Event] | None:
+        """A short path of missed moves explaining `diff`; see `_path_explanations`."""
+        if self._turn_unknown and not self._resolve_turn(obs, diff):
+            return None
+        paths = self._path_explanations(obs, diff, wild=wild)
+        if len(paths) == 1 and self._highlight_ok(full_obs, paths[0], wild=wild):
+            key = ("moves-cautious" if cautious else "moves", paths[0])
+            return self._settle(key, full_obs, self._commit_moves(paths[0], think_ms))
+        return None
+
+    def _hold_pending(self, blocked: bool) -> None:
+        """Keep the pending story through a blocked frame, drop it on a quiet one or when old."""
+        self._pending_age += 1
+        if not blocked or self._pending_age > self.pending_max_age:
+            self._pending = None
+
+    def _extend_pending(
+        self, obs: Observation, diff: set[chess.Square], think_ms: int | None
+    ) -> list[Event] | None:
+        """Explain the frame from the position the pending story leads to.
+
+        With premoves, two plies land in one frame and the next drag starts a fraction of
+        a second later, before the story has settled; by the time the board is quiet again
+        it is several plies further on, and a piece may have returned to a square it left,
+        which the missed-move search cannot express from the committed position. The
+        story seen just before the drag is a hypothesis; if the moves that follow it
+        explain the frame, the whole chain is what settles. An intermediate frame also
+        disambiguates transpositions the search alone would have to guess.
+        """
+        if self._pending is None or self._pending[0][0] not in STORY_KEYS:
+            return None
+        moves = self._pending[0][len(self._pending[0]) - 1]
+        assert isinstance(moves, tuple)
+        base = self.board.copy(stack=False)
+        for move in moves:
+            if move not in base.legal_moves:
+                return None
+            base.push(move)
+        if self.viewing is not None:
+            return None
+        diff_base = {sq for sq, r in obs.items() if not cell_agrees(r, base.piece_at(sq))}
+        if not diff_base:
+            # The frame shows the position the story leads to: one more frame of evidence.
+            if not self._highlight_ok(obs, moves):
+                return None
+            return self._settle(self._pending[0], obs, self._commit_moves(moves, think_ms))
+        singles = single_explanations(base, obs, diff_base)
+        if len(singles) == 1:
+            story = singles[0]
+        else:
+            paths = self._path_explanations(obs, diff_base, base)
+            if len(paths) != 1:
+                return None
+            story = paths[0]
+        combined = tuple(moves) + tuple(story)
+        if len(combined) > self.max_chain_plies or not self._highlight_ok(obs, combined):
+            return None
+        return self._settle(("moves", combined), obs, self._commit_moves(combined, think_ms))
+
+    def _explain_opponent_move(self, obs: Observation, think_ms: int | None) -> list[Event] | None:
+        """The opponent's move, committed whether or not the user is dragging.
+
+        A drag blocks the user's own moves, since a dragged piece is not a move, but it
+        cannot move the opponent's pieces. So the opponent's move commits from the cells
+        it touches alone, as long as they are settled and not under the cursor. It is read
+        from the position the pending story leads to when there is one: the story seen
+        just before the drag is then extended, not contradicted. Without this, a bot that
+        replies while the user is already dragging the next premove is seen only as a net
+        displacement once the board is quiet, and a queue of premoves advances one step
+        for every two or three the site executed.
+        """
+        if self.viewing is not None or self._turn_unknown:
+            return None
+        moves: tuple[chess.Move, ...] = ()
+        if self._pending is not None and self._pending[0][0] in STORY_KEYS:
+            pending_moves = self._pending[0][len(self._pending[0]) - 1]
+            assert isinstance(pending_moves, tuple)
+            moves = pending_moves
+        base = self.board.copy(stack=False)
+        for move in moves:
+            if move not in base.legal_moves:
+                return None
+            base.push(move)
+        user_colour = chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
+        bot_diff: set[chess.Square] = set()
+        for sq, reading in obs.items():
+            if cell_agrees(reading, base.piece_at(sq)):
+                continue
+            piece = base.piece_at(sq)
+            if (piece is not None and piece.color != user_colour) or (
+                reading.kind == "piece" and reading.colour not in (None, self.user_side)
+            ):
+                bot_diff.add(sq)
+        if base.turn == user_colour:
+            # The pending story ends with the opponent's move. The user's part of it was
+            # seen settled before the drag; the opponent's part is confirmed by its own
+            # cells, which the drag cannot touch.
+            if bot_diff or not moves or self._pending is None:
+                return None
+            before = self.board.copy(stack=False)
+            for move in moves[:-1]:
+                before.push(move)
+            for sq in touched_squares(before, moves[-1]):
+                reading = obs.get(sq)
+                if (
+                    reading is None
+                    or reading.hover
+                    or (reading.kind == "piece" and not reading.settled)
+                ):
+                    return None
+            return self._settle(self._pending[0], obs, self._commit_moves(moves, think_ms))
+        if not bot_diff:
+            return None
+        replies = single_explanations(base, obs, bot_diff)
+        if len(replies) != 1:
+            return None
+        reply = replies[0][0]
+        for sq in touched_squares(base, reply):
+            reading = obs.get(sq)
+            if (
+                reading is None
+                or reading.hover
+                or (reading.kind == "piece" and not reading.settled)
+            ):
+                return None
+        combined = moves + (reply,)
+        if len(combined) > self.max_chain_plies:
+            return None
+        return self._settle(("moves", combined), obs, self._commit_moves(combined, think_ms))
+
+    def _explain_premove_queue(
+        self, obs: Observation, diff: set[chess.Square], think_ms: int | None
+    ) -> list[Event] | None:
+        """Frames during a premove queue, which chess.com does not draw as a position.
+
+        While the opponent is to move, the user may queue several moves of one piece. The
+        site then draws that piece at the end of the queue and leaves its real square
+        empty, tints the queued squares, and executes the first queued move the moment the
+        opponent moves, without changing the picture; a queue the opponent's move makes
+        illegal is cleared and the piece snaps back. So during a queue the frame is the
+        true position with exactly one of the user's pieces displaced from its square to
+        the queue's end, and the queue itself is the unique shortest way for that piece to
+        get there. Each visible opponent move then commits together with the next queued
+        step, while the picture stays the same.
+        """
+        if self.viewing is not None or self._turn_unknown or self._hover_seen:
+            return None
+        user_colour = chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
+        shown: list[chess.Square] = []
+        gone: list[chess.Square] = []
+        for sq in diff:
+            reading = obs[sq]
+            piece = self.board.piece_at(sq)
+            users = piece is not None and piece.color == user_colour
+            if (
+                reading.kind == "piece"
+                and reading.symbol is not None
+                and reading.settled
+                and reading.colour == self.user_side
+                and not users
+            ):
+                shown.append(sq)
+            elif reading.kind == "empty" and users:
+                gone.append(sq)
+        if len(shown) != 1 or len(gone) != 1:
+            return None
+        target, origin = shown[0], gone[0]
+        symbol = obs[target].symbol
+        assert symbol is not None
+        path = self._queue_path(origin, target, symbol)
+        if path is None:
+            return None
+        rest = diff - {origin, target}
+        rest_obs = {sq: r for sq, r in obs.items() if sq not in (origin, target)}
+        if self.board.turn == user_colour:
+            # The opponent's move is already committed, so the queue's first step has
+            # executed; only the displaced piece may differ from the position.
+            if rest or path[0] not in self.board.legal_moves:
+                return None
+            if not self._highlight_ok(obs, (path[0],)):
+                return None
+            return self._settle(
+                ("premove", (path[0],)), obs, self._commit_moves((path[0],), think_ms)
+            )
+        if not rest:
+            # The queue formed or changed; nothing has happened on the board yet.
+            self._unexplained_frames = 0
+            return []
+        replies = single_explanations(self.board, rest_obs, rest)
+        if len(replies) != 1:
+            return None
+        reply = replies[0][0]
+        after = self.board.copy(stack=False)
+        after.push(reply)
+        if path[0] not in after.legal_moves:
+            return None
+        story = (reply, path[0])
+        if not self._highlight_ok(obs, story):
+            return None
+        return self._settle(("premove", story), obs, self._commit_moves(story, think_ms))
+
+    def _queue_path(
+        self, origin: chess.Square, target: chess.Square, symbol: str
+    ) -> tuple[chess.Move, ...] | None:
+        """The unique shortest sequence of moves taking the user's piece from origin to target.
+
+        Squares on the way must be empty; only the last step may capture. A pawn reaching
+        the last rank promotes to the piece drawn there, and a pawn still drawn there means
+        the choice is not made yet, so nothing is known. Several equally short ways, as a
+        king has across an open board, are an ambiguity and nothing is assumed.
+        """
+        piece = self.board.piece_at(origin)
+        if piece is None:
+            return None
+        promotion: int | None = None
+        if piece.piece_type != chess.PAWN and symbol.upper() != piece.symbol().upper():
+            return None
+        if piece.piece_type == chess.PAWN and symbol.upper() != "P":
+            if chess.square_rank(target) not in (0, 7):
+                return None
+            promotion = chess.Piece.from_symbol(symbol).piece_type
+        elif piece.piece_type == chess.PAWN and chess.square_rank(target) in (0, 7):
+            return None
+        scratch = self.board.copy(stack=False)
+        scratch.turn = piece.color
+        scratch.remove_piece_at(origin)
+        # Breadth-first over the piece's own moves, counting the shortest ways to each square.
+        frontier = [origin]
+        ways: dict[chess.Square, int] = {origin: 1}
+        parent: dict[chess.Square, chess.Move] = {}
+        depth = 0
+        while frontier and target not in ways and depth < self.max_queue_steps:
+            depth += 1
+            next_frontier: list[chess.Square] = []
+            for sq in frontier:
+                scratch.set_piece_at(sq, piece)
+                for move in scratch.generate_pseudo_legal_moves(chess.BB_SQUARES[sq]):
+                    to = move.to_square
+                    if to != target and scratch.piece_at(to) is not None:
+                        continue
+                    if to == target and move.promotion not in (None, promotion):
+                        continue
+                    if to in ways and to not in next_frontier:
+                        continue
+                    if to not in ways:
+                        ways[to] = 0
+                        next_frontier.append(to)
+                        parent[to] = move
+                    ways[to] += ways[sq]
+                scratch.remove_piece_at(sq)
+            frontier = next_frontier
+        if ways.get(target, 0) != 1:
+            return None
+        path: list[chess.Move] = []
+        sq = target
+        while sq != origin:
+            move = parent[sq]
+            path.append(move)
+            sq = move.from_square
+        path.reverse()
+        return tuple(path)
 
     # Settling and committing
 
@@ -592,6 +930,7 @@ class Reconciler:
             self._pending = (key, self._pending[1] + 1)
         else:
             self._pending = (key, 1)
+        self._pending_age = 0
         moves = key[len(key) - 1]
         assert isinstance(moves, tuple)
         needed = (
@@ -670,14 +1009,8 @@ class Reconciler:
         them; clean stale cells join only when the stale set is small enough to enumerate.
         """
 
-        def is_junk(sq: chess.Square) -> bool:
-            reading = obs[sq]
-            unsettled = reading.kind == "piece" and not reading.settled
-            nameless = reading.kind == "piece" and reading.symbol is None
-            return unsettled or nameless
-
-        junk = sorted(sq for sq in stale if is_junk(sq))
-        clean = sorted(sq for sq in stale if not is_junk(sq))
+        junk = sorted(sq for sq in stale if is_junk(obs[sq]))
+        clean = sorted(sq for sq in stale if not is_junk(obs[sq]))
         pool = junk if len(stale) > self.max_stale_subset_cells else junk + clean
         subsets: list[frozenset[chess.Square]] = [frozenset({sq}) for sq in pool]
         if self.resync_cells > 2:
