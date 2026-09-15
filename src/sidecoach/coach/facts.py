@@ -23,10 +23,13 @@ from sidecoach.events import Analysis, MotifTag
 _PLAN_THEME: dict[str, str] = {
     "castle": "getting your king to safety",
     "rescue": "getting a piece out of danger",
+    "activateKing": "activating your King in the endgame",
     "develop": "finishing your development",
     "outpostMove": "planting a knight on an outpost",
     "centralise": "centralising a piece",
     "takeFile": "taking the open file",
+    "rookBehindPasser": "getting your rook behind the passed pawn",
+    "break": "breaking open their pawn structure",
     "centre": "fighting for the centre",
     "pushPasser": "pushing your passed pawn",
     "activate": "activating your worst-placed piece",

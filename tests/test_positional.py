@@ -131,6 +131,22 @@ def test_bishop_pair_and_bad_bishop() -> None:
     assert kinds(P.bad_bishop(board, chess.WHITE)) == ["badBishop"]
 
 
+def test_endgame_king_activity_and_pawn_break_and_rook_behind_passer() -> None:
+    # Endgame: a passive King on the rim is named, and a King step toward the centre is the idea.
+    board = chess.Board("6k1/8/8/8/8/8/8/6K1 w - - 0 1")
+    assert kinds(P.king_activity(board, chess.WHITE, phase="endgame")) == ["passiveKing"]
+    board = chess.Board("8/8/8/8/8/8/4K3/6k1 w - - 0 1")
+    assert P.best_move_idea(board, board.parse_san("Kd3"), chess.WHITE, phase="endgame").kind == (
+        "activateKing"
+    )
+    # A pawn push that hits an enemy pawn is a break.
+    board = chess.Board("4k3/8/3p4/8/2P5/8/8/4K3 w - - 0 1")
+    assert P.best_move_idea(board, board.parse_san("c5"), chess.WHITE).kind == "break"
+    # A rook dropping behind a passed pawn is the classic rook-behind-passer idea.
+    board = chess.Board("4k3/8/8/P7/8/8/8/1R2K3 w - - 0 1")
+    assert P.best_move_idea(board, board.parse_san("Ra1"), chess.WHITE).kind == "rookBehindPasser"
+
+
 def test_central_infiltration_is_not_called_centralising() -> None:
     # A knight dropping to c2 (rank 2) is infiltration, not a central strong square (c3-f6).
     board = chess.Board("4k3/8/8/8/8/1n6/8/4K3 b - - 0 1")

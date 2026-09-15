@@ -306,8 +306,8 @@ def bad_bishop(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
             facts.append(
                 PositionalFact(
                     "badBishop",
-                    f"your bishop on {_name(square)} is hemmed in by your own pawns; "
-                    "trading it or freeing it is worth thinking about",
+                    f"your bishop on {_name(square)} is a bad bishop, blocked in by your own "
+                    "pawns; trading it or freeing it is worth thinking about",
                     (_name(square),),
                 )
             )
@@ -410,6 +410,31 @@ def material_plan(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     return []
 
 
+def _center_distance(square: chess.Square) -> int:
+    """Chebyshev distance from a square to the central d4-e5 box: 0 in the centre, 3 on the rim."""
+    file_, rank = chess.square_file(square), chess.square_rank(square)
+    return max(min(abs(file_ - 3), abs(file_ - 4)), min(abs(rank - 3), abs(rank - 4)))
+
+
+def king_activity(
+    board: chess.Board, us: chess.Color, *, phase: str = "middlegame"
+) -> list[PositionalFact]:
+    """In the endgame, a King left on the rim: it should be marching toward the centre."""
+    if phase != "endgame":
+        return []
+    king = board.king(us)
+    if king is None or _center_distance(king) < 3:
+        return []
+    return [
+        PositionalFact(
+            "passiveKing",
+            f"your King on {_name(king)} is passive; in the endgame the King is a fighting "
+            "piece, so bring it toward the centre",
+            (_name(king),),
+        )
+    ]
+
+
 def features(
     board: chess.Board, us: chess.Color, *, phase: str = "middlegame"
 ) -> list[PositionalFact]:
@@ -428,6 +453,7 @@ def features(
     facts += open_files(board, us)
     facts += bad_bishop(board, us)
     facts += bishop_pair(board, us)
+    facts += king_activity(board, us, phase=phase)
     facts += material_plan(board, us)
     facts += worst_piece(board, us)
     return facts
@@ -475,6 +501,33 @@ def _is_central_strong(board: chess.Board, square: chess.Square, us: chess.Color
     )
 
 
+def _rook_behind_passer(
+    after: chess.Board, rook_square: chess.Square, us: chess.Color
+) -> str | None:
+    """The coaching line if the rook has landed behind a passed pawn on its file, else None.
+
+    Behind means on the side the pawn came from -- the square the classic rule wants a rook,
+    to escort your own passer or to hold up the enemy's.
+    """
+    file_ = chess.square_file(rook_square)
+    rook_rank = chess.square_rank(rook_square)
+    for rank in range(8):
+        pawn = after.piece_at(chess.square(file_, rank))
+        if pawn is None or pawn.piece_type != chess.PAWN:
+            continue
+        if not is_passed(after, chess.square(file_, rank)):
+            continue
+        promotes_up = pawn.color == chess.WHITE
+        behind = rook_rank < rank if promotes_up else rook_rank > rank
+        if not behind:
+            continue
+        letter = _FILES[file_]
+        if pawn.color == us:
+            return f"put the rook behind your passed {letter}-pawn to escort it forward"
+        return f"put the rook behind their passed {letter}-pawn to hold it back"
+    return None
+
+
 def _piece_is_attacked(board: chess.Board, square: chess.Square, us: chess.Color) -> bool:
     """Whether an enemy piece attacks `square` and it is worth more than the cheapest attacker."""
     attackers = board.attackers(not us, square)
@@ -519,6 +572,17 @@ def best_move_idea(
             "rescue", f"your {name} was in danger; moving to {to} brings it to safety", (to,)
         )
 
+    if (
+        phase == "endgame"
+        and piece_type == chess.KING
+        and _center_distance(move.to_square) < _center_distance(move.from_square)
+    ):
+        return PositionalFact(
+            "activateKing",
+            f"march your King to {to}, toward the centre; in the endgame it is a strong piece",
+            (to,),
+        )
+
     if phase != "endgame" and piece_type in (chess.KNIGHT, chess.BISHOP):
         home = _HOME_MINORS[us]
         if move.from_square in home and not board.is_capture(move):
@@ -545,6 +609,22 @@ def best_move_idea(
         return PositionalFact(
             "takeFile", f"your rook takes the {file_letter}-file, where it has room to work", (to,)
         )
+
+    if piece_type == chess.ROOK:
+        behind = _rook_behind_passer(after, move.to_square, us)
+        if behind is not None:
+            return PositionalFact("rookBehindPasser", behind, (to,))
+
+    if piece_type == chess.PAWN and not board.is_capture(move):
+        enemy = not us
+        if any(
+            after.piece_type_at(target) == chess.PAWN and after.color_at(target) == enemy
+            for target in after.attacks(move.to_square)
+        ):
+            letter = _FILES[chess.square_file(move.to_square)]
+            return PositionalFact(
+                "break", f"the {letter}-pawn break challenges their pawns and opens lines", (to,)
+            )
 
     if _is_central_break(board, move, us):
         return PositionalFact("centre", f"strike in the centre with the pawn to {to}", (to,))
@@ -578,17 +658,18 @@ def best_move_idea(
 _FEATURE_RANK: dict[str, int] = {
     "uncastled": 0,
     "undeveloped": 1,
-    "targetPawn": 2,
-    "passedPawn": 3,
-    "convert": 4,
-    "complicate": 4,
-    "outpost": 5,
-    "badBishop": 6,
-    "openFile": 7,
-    "bishopPair": 8,
-    "weakPawn": 9,
-    "passivePiece": 10,
-    "halfOpenFile": 11,
+    "passiveKing": 2,
+    "targetPawn": 3,
+    "passedPawn": 4,
+    "convert": 5,
+    "complicate": 5,
+    "outpost": 6,
+    "badBishop": 7,
+    "openFile": 8,
+    "bishopPair": 9,
+    "weakPawn": 10,
+    "passivePiece": 11,
+    "halfOpenFile": 12,
 }
 
 
