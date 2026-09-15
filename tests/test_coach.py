@@ -246,6 +246,42 @@ def test_stuck_gives_a_hint_once_and_the_opponents_turn_is_silent() -> None:
     assert _messages(quiet) == []
 
 
+def test_a_good_move_earns_two_words_without_the_model() -> None:
+    coach, provider = _coach(["never used"])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    board = chess.Board(SCHOLAR)
+    move = board.parse_san("Qxf7#")
+    board.push(move)
+    coach.on_event(
+        MovePlayed(
+            game_id="g",
+            ply=7,
+            san="Qxf7#",
+            uci=move.uci(),
+            fen_before=SCHOLAR,
+            fen_after=board.fen(),
+            by_user=True,
+        ),
+        10.0,
+    )
+    coach.on_event(
+        MoveAssessment(
+            game_id="g",
+            ply=7,
+            uci=move.uci(),
+            expected_loss=0.0,
+            severity=Severity.NONE,
+            best=["h5f7"],
+            label=Label.BEST,
+        ),
+        11.0,
+    )
+    out = _messages(coach)
+    assert [m.text for m in out] == ["Qxf7#: good."]
+    assert provider.prompts == [], "no model call for a good move"
+
+
 def test_the_draft_checker_can_veto_a_false_claim() -> None:
     def checker(text: str, board: chess.Board) -> list[str]:
         return ["the rook on f7 is not there"] if "rook on f7" in text else []

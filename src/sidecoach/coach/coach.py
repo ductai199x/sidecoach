@@ -29,7 +29,7 @@ from sidecoach.coach.disclosure import (
     leak_check,
     visible_facts,
 )
-from sidecoach.coach.facts import facts_from_analysis
+from sidecoach.coach.facts import describe_move, facts_from_analysis
 from sidecoach.coach.policy import InterjectionPolicy
 from sidecoach.events import (
     Analysis,
@@ -56,7 +56,8 @@ RULES = (
     "evaluations that are not on it, and never invent what a piece attacks or defends.\n"
     "2. Never name a move, a destination square or a piece unless the fact sheet lists it. "
     "If the sheet gives a theme, you may name the theme; a region, you may point at the "
-    "region; nothing more.\n"
+    "region; nothing more. Describe a move only in the words given for it; do not say what "
+    "it attacks, pins, defends, threatens or controls unless the sheet says so.\n"
     "3. Before the player moves, ask rather than tell: one orienting question, no answer.\n"
     "4. Two to four sentences. One question at a time. Plain words; standard notation only "
     "for moves the sheet gives you.\n"
@@ -64,6 +65,8 @@ RULES = (
 )
 MAX_TRANSCRIPT = 12
 MAX_TOKENS = 220
+# A move that lost less than this gets a two-word confirmation, without the model.
+TRIVIAL_LOSS = 0.02
 
 
 @dataclass
@@ -117,7 +120,7 @@ class Speaker:
         self.failures = 0
         self.fallbacks = 0
         self.last_error: str | None = None
-        self._requests: queue.Queue[_Request | None] = queue.Queue()
+        self._requests: queue.Queue[_Request | Spoken | None] = queue.Queue()
         self._results: queue.SimpleQueue[Spoken] = queue.SimpleQueue()
         self._thread: threading.Thread | None = None
         self._busy = threading.Event()
@@ -140,6 +143,10 @@ class Speaker:
     def submit(self, request: _Request) -> None:
         self._requests.put(request)
 
+    def submit_ready(self, spoken: Spoken) -> None:
+        """A message that is already final; it goes out through the same queue, in order."""
+        self._requests.put(spoken)
+
     def run_pending(self) -> None:
         """Answer every queued request on the calling thread: for tests and for replay."""
         while True:
@@ -147,7 +154,9 @@ class Speaker:
                 request = self._requests.get_nowait()
             except queue.Empty:
                 return
-            if request is not None:
+            if isinstance(request, Spoken):
+                self._results.put(request)
+            elif request is not None:
                 self._results.put(self.speak_now(request))
 
     def poll(self) -> list[Spoken]:
@@ -214,7 +223,10 @@ class Speaker:
                 return
             self._busy.set()
             try:
-                self._results.put(self.speak_now(request))
+                if isinstance(request, Spoken):
+                    self._results.put(request)
+                else:
+                    self._results.put(self.speak_now(request))
             except Exception as exc:  # noqa: BLE001
                 self.failures += 1
                 self.last_error = f"{type(exc).__name__}: {exc}"
@@ -254,6 +266,14 @@ def unlock_for(text: str, board: chess.Board, candidates: Sequence[str]) -> Unlo
         if board.san(move) in candidates:
             return Unlock.USER_NAMED_MOVE
     return None
+
+
+def _in_words(board: chess.Board, san: str) -> str:
+    """A SAN move described in words, or the SAN itself if the board cannot play it."""
+    try:
+        return describe_move(board, board.parse_san(san))
+    except ValueError:
+        return san
 
 
 def fact_sheet(facts: PositionFacts, level: DisclosureLevel) -> str:
@@ -424,6 +444,12 @@ class Coach:
         if trigger is None:
             return
         before.disclosure.apply(Unlock.MOVE_PLAYED)
+        if trigger is Trigger.POST_MOVE and event.expected_loss < TRIVIAL_LOSS:
+            # A good move earns a word, not a paragraph, and a word needs no model.
+            self._queue_plain(
+                trigger, f"{move.san}: good.", ts, ply=before.ply, level=DisclosureLevel.LINE
+            )
+            return
         self._speak(trigger, before, DisclosureLevel.LINE, ts, assessment=event, played=move)
 
     def _latest_with_facts(self) -> _Position | None:
@@ -464,18 +490,20 @@ class Coach:
         )
         self.speaker.submit(request)
 
-    def _queue_plain(self, trigger: Trigger, text: str, ts: float) -> None:
-        self.spoken.append(
-            Spoken(
-                message=CoachMessage(
-                    text=text, level=DisclosureLevel.SILENT, trigger=trigger, game_id=self.game_id
-                ),
-                level=DisclosureLevel.SILENT,
-                problems=[],
-                attempts=0,
-            )
+    def _queue_plain(
+        self,
+        trigger: Trigger,
+        text: str,
+        ts: float,
+        *,
+        ply: int | None = None,
+        level: DisclosureLevel = DisclosureLevel.SILENT,
+    ) -> None:
+        """A message that needs no model; it queues behind whatever the model is writing."""
+        message = CoachMessage(
+            text=text, level=level, trigger=trigger, game_id=self.game_id, ply=ply
         )
-        self.speaker._results.put(self.spoken[-1])
+        self.speaker.submit_ready(Spoken(message=message, level=level, problems=[], attempts=0))
 
     def _instruction(
         self,
@@ -517,28 +545,23 @@ class Coach:
             best = facts.candidates[0] if facts.candidates else "another move"
             loss = assessment.expected_loss
             label = assessment.label.value if assessment.label else assessment.severity.value
+            words = _in_words(position.board, played.san)
+            better_words = _in_words(position.board, best) if facts.candidates else best
             if trigger is Trigger.POST_MISTAKE:
                 fallback = f"{played.san} cost you. {best} was better; the idea was {theme}."
                 instruction = (
-                    f"The player just played {played.san}, which was a {label} (it cost "
-                    f"{loss:.0%} of the game). The better move was {best}. Explain the "
-                    f"difference as a pattern to remember, in three sentences at most, then "
-                    f"ask one question that checks they see it."
+                    f"The player just played {played.san} ({words}), which was a {label}: it "
+                    f"cost {loss:.0%} of the game. The better move was {best} ({better_words}). "
+                    f"Explain the difference as a pattern to remember, in three sentences at "
+                    f"most, then ask one question that checks they see it."
                 )
             else:
-                if loss < 0.02:
-                    fallback = f"{played.san}: good."
-                    instruction = (
-                        f"The player just played {played.san}, a good move. One short sentence "
-                        f"of confirmation. No question."
-                    )
-                else:
-                    fallback = f"{played.san} was fine; {best} was a little tighter."
-                    instruction = (
-                        f"The player just played {played.san}, which was fine but not the "
-                        f"strongest ({best} was better, by a little). One or two sentences. "
-                        f"No lecture."
-                    )
+                fallback = f"{played.san} was fine; {best} was a little tighter."
+                instruction = (
+                    f"The player just played {played.san} ({words}), which was fine but not "
+                    f"the strongest: {best} ({better_words}) was better, by a little. One or "
+                    f"two sentences. No lecture."
+                )
             return instruction, fallback
         # An explicit ask.
         said = user_text or "hint"

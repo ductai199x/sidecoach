@@ -138,6 +138,38 @@ def region_of(squares: Sequence[str]) -> str | None:
     return f"{where}, around {anchor}"
 
 
+def describe_move(board: chess.Board, move: chess.Move) -> str:
+    """A move in words, so a model never has to guess which piece moved where.
+
+    "the knight from g1 to f3", "the bishop takes the knight on c6, giving check",
+    "castles kingside", "the pawn from e7 to e8, promoting to a queen".
+    """
+    if board.is_castling(move):
+        side = "kingside" if chess.square_file(move.to_square) > 4 else "queenside"
+        return "castles " + side
+    piece = board.piece_at(move.from_square)
+    name = PIECE_NAMES[piece.piece_type] if piece else "piece"
+    frm, to = chess.square_name(move.from_square), chess.square_name(move.to_square)
+    if board.is_capture(move):
+        taken = board.piece_at(move.to_square)
+        if board.is_en_passant(move):
+            what = "the pawn en passant"
+        else:
+            what = f"the {PIECE_NAMES[taken.piece_type]}" if taken else "a piece"
+        text = f"the {name} takes {what} on {to}"
+    else:
+        text = f"the {name} from {frm} to {to}"
+    if move.promotion:
+        text += f", promoting to a {PIECE_NAMES[move.promotion]}"
+    after = board.copy(stack=False)
+    after.push(move)
+    if after.is_checkmate():
+        text += ", checkmate"
+    elif after.is_check():
+        text += ", giving check"
+    return text
+
+
 def _to_move(uci: str) -> chess.Move | None:
     try:
         return chess.Move.from_uci(uci)

@@ -296,6 +296,7 @@ def replay(
     ] = 1.0,
     assess: Annotated[bool, typer.Option(help="Also run the engine over the moves found")] = False,
     coach: Annotated[bool, typer.Option(help="Also let the coach speak, as it would live")] = False,
+    depth: Annotated[int | None, typer.Option(help="Engine depth for --assess")] = None,
     config: ConfigOpt = None,
 ) -> None:
     """Summarise a recording, track the board through it, or reconstruct the game.
@@ -315,7 +316,7 @@ def replay(
     )
     if moves or pgn is not None:
         truth = pgn if pgn is not None else recording / "truth.pgn"
-        assessing = _Assessing(settings, assess or coach)
+        assessing = _Assessing(settings, assess or coach, depth=depth)
         coaching = _Coaching(settings, coach and assessing.on)
         try:
             _replay_moves(rec, truth if truth.exists() else None, game, scale, assessing, coaching)
@@ -480,10 +481,12 @@ def _replay_moves(
                 console.print(f"tick {tick.frame_id:5d} GameStarted")
     elapsed = time.perf_counter() - started
     if assessing is not None:
-        assessed = assessing.wait(indent="            ")
+        # The engine and the model fall behind a replay that runs faster than the game did;
+        # a replay waits for them, since nothing else is waiting on it.
+        assessed = assessing.wait(timeout=1800.0, indent="            ")
         if coaching is not None:
             coaching.events(assessed, time.monotonic())
-            coaching.wait(indent="            ")
+            coaching.wait(timeout=1800.0, indent="            ")
             if coaching.on:
                 console.print(f"            [dim]{coaching.summary()}[/dim]")
     # A game still in progress when the recording ends is reported as it stands; a finished
