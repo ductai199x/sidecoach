@@ -10,12 +10,15 @@ Two questions, two functions. `tags_for_move` answers "what does this move do", 
 mover's point of view. `tags_for_position` answers "what is in this position" for the side to
 move: the static features plus the tags of the engine's best move.
 
-Two rules keep the tags honest, because a coach who names a motif that is not worth acting on
-is worse than a coach who says nothing:
+The theme names are Lichess's, and so are the definitions: a motif is what Lichess would tag,
+not a stricter thing of our own. Two rules keep the tags honest:
 
-1. A tag that claims material has to gain material once defenders are counted. A pawn
-   shielding a defended knight is not a pin; a knight forking two rooks while a pawn can take
-   it is not a fork.
+1. A tag that claims material has to gain material once defenders are counted: a knight
+   forking two rooks while a pawn can take it is not a fork, and a loose piece must really be
+   undefended. But a pin, a skewer's front piece, or a discovered attack is a restriction or a
+   revealed line, not a material claim, so those follow the geometry the way Lichess does --
+   a piece is pinned when it cannot leave the line without exposing a more valuable one behind
+   it, whether or not that piece can be won.
 2. `tags_for_move` reports only what the move brought about. A pin the bishop was already
    making before the move is not something the move did, so castling does not inherit it.
    Those features still show up in `tags_for_position`, where they belong.
@@ -566,11 +569,14 @@ def _interference(
 
 
 def _trapped_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
-    """Enemy rooks or queens attacked by something cheaper with nowhere safe to go.
+    """An enemy piece attacked by something cheaper with nowhere safe to go.
 
-    Needs the enemy to move, so it is skipped whenever either king is in check: check
-    evasions would make every piece look trapped. One tag per piece, so a piece that was
-    already trapped before a move can be told apart from one the move just shut in.
+    Minor pieces count, not only rooks and queens: a knight or bishop hemmed in and hunted by
+    a pawn is trapped just as a rook is. A piece merely left undefended is caught as a loose
+    piece instead; trapped is the one with no square to flee to. Needs the enemy to move, so
+    it is skipped whenever either king is in check: check evasions would make every piece look
+    trapped. One tag per piece, so a piece that was already trapped before a move can be told
+    apart from one the move just shut in.
     """
     enemy = not mover
     enemy_king = view.king(enemy)
@@ -585,7 +591,7 @@ def _trapped_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
     trapped: list[MotifTag] = []
     for square in sorted(view.piece_map()):
         piece = view.piece_at(square)
-        if piece is None or piece.color != enemy or _value(piece.piece_type) < _ROOK:
+        if piece is None or piece.color != enemy or _value(piece.piece_type) < _MINOR:
             continue
         mine = _value(piece.piece_type)
         hunters = view.attackers(mover, square)
