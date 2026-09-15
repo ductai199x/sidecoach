@@ -37,7 +37,7 @@ target-version = "py312"
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.ruff.format]
-line-ending = "lf"
+line-ending = "native"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
