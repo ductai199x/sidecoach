@@ -197,3 +197,34 @@ def test_central_infiltration_is_not_called_centralising() -> None:
     assert not P._is_central_strong(board, chess.C2, chess.BLACK)
     # But a knight to d4 is a central strong square.
     assert P._is_central_strong(board, chess.D4, chess.BLACK)
+
+
+def test_a_wing_pawn_majority_is_named_as_the_side_to_play_on() -> None:
+    # White has a healthy 3-2 queenside majority (a,b,c vs a,b) and nothing on the kingside;
+    # Black has no majority anywhere. The plan is to advance it into a passed pawn.
+    board = chess.Board("4k3/pp6/8/8/8/8/PPP5/4K3 w - - 0 1")
+    facts = P.pawn_majority(board, chess.WHITE)
+    assert kinds(facts) == ["pawnMajority"]
+    assert "queenside" in facts[0].text
+    assert set(facts[0].squares) == {"a2", "b2", "c2"}
+    assert P.pawn_majority(board, chess.BLACK) == []
+    # It surfaces as one of the position's ideas the coach can teach.
+    assert "pawnMajority" in kinds(P.top_features(board, chess.WHITE, phase="endgame"))
+
+
+def test_a_kingside_two_to_one_majority_is_also_named() -> None:
+    board = chess.Board("4k3/7p/8/8/8/8/6PP/4K3 w - - 0 1")
+    facts = P.pawn_majority(board, chess.WHITE)
+    assert kinds(facts) == ["pawnMajority"] and "kingside" in facts[0].text
+    assert set(facts[0].squares) == {"g2", "h2"}
+
+
+def test_an_equal_wing_and_a_crippled_doubled_majority_are_not_named() -> None:
+    # Equal pawn counts on the queenside: no majority.
+    equal = chess.Board("4k3/pp6/8/8/8/8/PP6/4K3 w - - 0 1")
+    assert P.pawn_majority(equal, chess.WHITE) == []
+    # A 3-2 count that is a majority only because of doubled c-pawns cannot make a passer --
+    # more pawns, but not more advancing files than the enemy can blockade -- so it is not
+    # named (the book's caution about crippled majorities).
+    crippled = chess.Board("4k3/1pp5/8/8/8/2P5/1PP5/4K3 w - - 0 1")
+    assert P.pawn_majority(crippled, chess.WHITE) == []

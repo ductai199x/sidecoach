@@ -99,6 +99,39 @@ def passed_pawns(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     return facts
 
 
+# Wings for a pawn majority: the flanks, where a majority makes an outside passed pawn. The
+# centre files (d, e) are left out -- a central plus is about breaks and the passers the
+# other detectors already name, not about which wing to play on.
+_QUEENSIDE = (0, 1, 2)  # files a, b, c
+_KINGSIDE = (5, 6, 7)  # files f, g, h
+
+
+def pawn_majority(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
+    """A wing where you outnumber the opponent's pawns and can make a passed pawn.
+
+    Silman's "which side of the board to play on": a wing majority is your side, and the plan
+    is to advance it into a passed pawn. Only a healthy majority is named -- one with more
+    advancing files than the enemy has pawns to blockade -- so a majority crippled by doubled
+    pawns, which cannot make a passer, is never mistaken for a plan.
+    """
+    facts: list[PositionalFact] = []
+    them = not us
+    for name, files in (("queenside", _QUEENSIDE), ("kingside", _KINGSIDE)):
+        ours = [sq for sq in board.pieces(chess.PAWN, us) if chess.square_file(sq) in files]
+        theirs = sum(1 for sq in board.pieces(chess.PAWN, them) if chess.square_file(sq) in files)
+        distinct = len({chess.square_file(sq) for sq in ours})
+        if theirs >= 1 and len(ours) > theirs and distinct > theirs:
+            squares = tuple(_name(sq) for sq in sorted(ours))
+            facts.append(
+                PositionalFact(
+                    "pawnMajority",
+                    f"your {name} pawn majority: advance it to make a passed pawn",
+                    squares,
+                )
+            )
+    return facts
+
+
 def _pawns_on_file(board: chess.Board, color: chess.Color, file_: int) -> list[chess.Square]:
     return [sq for sq in board.pieces(chess.PAWN, color) if chess.square_file(sq) == file_]
 
@@ -527,6 +560,7 @@ def features(
     facts += hanging_pawns(board, us)
     facts += pawn_weaknesses(board, us)
     facts += passed_pawns(board, us)
+    facts += pawn_majority(board, us)
     facts += outposts(board, us)
     facts += open_files(board, us)
     facts += bad_bishop(board, us)
@@ -804,6 +838,7 @@ _FEATURE_RANK: dict[str, int] = {
     "passedPawn": 6,
     "iqp": 7,
     "hangingPawns": 8,
+    "pawnMajority": 9,
     "convert": 9,
     "complicate": 9,
     "outpost": 10,
