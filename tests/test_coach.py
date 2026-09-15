@@ -298,6 +298,39 @@ def test_the_draft_checker_can_veto_a_false_claim() -> None:
     assert coach.spoken[-1].attempts == 2 and coach.speaker.fallbacks == 0
 
 
+def test_verbalized_replies_parse_into_weighted_candidates() -> None:
+    from sidecoach.coach.coach import _parse_candidates, _sample_reply
+
+    raw = "[p=0.5] First reply here.\n[p=0.3] Second reply,\nwrapping on.\n[p=0.2] Third."
+    cands = _parse_candidates(raw)
+    assert [round(p, 2) for p, _ in cands] == [0.5, 0.3, 0.2]
+    assert cands[1][1] == "Second reply,\nwrapping on.", "a wrapped reply is kept whole"
+    # A reply with no markers is treated as a single candidate, so a plain model still works.
+    assert _parse_candidates("Just one plain reply.") == [(1.0, "Just one plain reply.")]
+    # A think block is stripped before parsing.
+    assert _parse_candidates("<think>hidden</think>\n[p=1] Clean.") == [(1.0, "Clean.")]
+    # Sampling from a single passed candidate is deterministic.
+    assert _sample_reply([(0.9, "only one")]) == "only one"
+
+
+def test_verbalized_sampling_keeps_the_checked_candidate() -> None:
+    # The model offers a leaky reply and a clean one in one distribution; VS keeps the clean
+    # one on the first attempt, no retry, no template.
+    def checker(text: str, board: chess.Board, after: Sequence[chess.Board] = ()) -> list[str]:
+        return ["the rook on f7 is not there"] if "rook on f7" in text else []
+
+    block = "[p=0.6] Your rook on f7 is strong.\n[p=0.4] Your king is safe for now."
+    provider = ScriptedProvider([block])
+    coach = Coach(
+        provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), draft_check=checker
+    )
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6), 7.0)
+    out = _messages(coach)
+    assert out[0].text == "Your king is safe for now."
+    assert coach.spoken[-1].attempts == 1 and coach.speaker.fallbacks == 0
+
+
 def test_the_fact_sheet_hides_by_level() -> None:
     facts = PositionFacts(
         fen=SCHOLAR,

@@ -15,6 +15,7 @@ hands in events and polls for messages, exactly as it does with the engine.
 from __future__ import annotations
 
 import queue
+import random
 import re
 import threading
 from collections.abc import Callable, Sequence
@@ -78,6 +79,62 @@ MAX_TRANSCRIPT = 16
 MAX_TOKENS = 220
 # A move that lost less than this gets a two-word confirmation, without the model.
 TRIVIAL_LOSS = 0.02
+# Verbalized sampling: how many candidate replies to ask for, and the room and warmth to
+# give the distribution. Warmer than a single reply on purpose, since a check filters them.
+VS_CANDIDATES = 4
+VS_MAX_TOKENS = 600
+VS_TEMPERATURE = 0.9
+VS_DIRECTIVE = (
+    "\n\nInstead of one reply, give FOUR different ways you could say this, varied in wording "
+    "and in the angle each takes, sampled from your full range rather than the single most "
+    "obvious phrasing. Put each on its own line as: [p=0.30] then the reply. Each reply obeys "
+    "every rule above and is two to four sentences on that one line. The p values are how "
+    "likely you would be to choose each; they need not sum to one."
+)
+_VS_MARKER = re.compile(r"\[\s*p?\s*=?\s*([0-9]*\.?[0-9]+)\s*\]\s*", re.IGNORECASE)
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _vs_wrap(messages: list[ChatMessage]) -> list[ChatMessage]:
+    """Append the verbalized-sampling directive to the final user turn."""
+    if not messages:
+        return messages
+    wrapped = list(messages)
+    last = dict(wrapped[-1])
+    last["content"] = str(last.get("content", "")) + VS_DIRECTIVE
+    wrapped[-1] = last  # type: ignore[assignment]
+    return wrapped
+
+
+def _parse_candidates(raw: str) -> list[tuple[float, str]]:
+    """The verbalized replies as (probability, text). A reply with no markers is one candidate.
+
+    The text of each candidate runs from its marker to the next, so a reply that wraps onto
+    another line is kept whole. A model that ignores the format still yields one usable reply.
+    """
+    cleaned = _THINK_BLOCK.sub("", raw).strip()
+    markers = list(_VS_MARKER.finditer(cleaned))
+    if not markers:
+        return [(1.0, cleaned)] if cleaned else []
+    out: list[tuple[float, str]] = []
+    for index, marker in enumerate(markers):
+        start = marker.end()
+        end = markers[index + 1].start() if index + 1 < len(markers) else len(cleaned)
+        text = cleaned[start:end].strip()
+        if not text:
+            continue
+        try:
+            prob = float(marker.group(1))
+        except ValueError:
+            prob = 0.0
+        out.append((prob, text))
+    return out
+
+
+def _sample_reply(passed: list[tuple[float, str]]) -> str:
+    """Sample one reply, weighted by its stated likelihood; ties and zeros still get a chance."""
+    weights = [max(prob, 0.01) for prob, _ in passed]
+    return random.choices([text for _, text in passed], weights=weights, k=1)[0]
 
 
 @dataclass
@@ -241,8 +298,15 @@ class Speaker:
                 return out
 
     def speak_now(self, request: _Request) -> Spoken:
-        """Generate, check, retry once, fall back. Synchronous; the worker calls this."""
-        messages = list(request.messages)
+        """Verbalized sampling: ask for several replies, keep a checked one, vary the voice.
+
+        A single reply collapses onto the one most typical phrasing, which is why the coach
+        repeated itself. Asking the model to verbalize a small distribution of replies (arxiv
+        2510.01171) recovers its range; the leak and board checks then filter that set, and a
+        reply is sampled by its own stated likelihood from those that pass. Because several are
+        offered at once, a clean one is usually among them, so the template is rarely needed.
+        """
+        messages = _vs_wrap(list(request.messages))
         problems: list[str] = []
         text = ""
         attempts = 0
@@ -250,24 +314,30 @@ class Speaker:
             attempts += 1
             try:
                 completion = self.provider.chat(
-                    request.system, messages, max_tokens=MAX_TOKENS, temperature=0.6
+                    request.system, messages, max_tokens=VS_MAX_TOKENS, temperature=VS_TEMPERATURE
                 )
-                text = completion.text.strip()
+                raw = completion.text
             except Exception as exc:  # noqa: BLE001
                 self.failures += 1
                 self.last_error = f"{type(exc).__name__}: {exc}"
-                text = ""
-            problems = self._problems(text, request) if text else ["empty reply"]
-            if not problems:
+                raw = ""
+            scored = [
+                (prob, candidate, self._problems(candidate, request))
+                for prob, candidate in _parse_candidates(raw)
+            ]
+            passed = [(prob, candidate) for prob, candidate, faults in scored if not faults]
+            if passed:
+                text, problems = _sample_reply(passed), []
                 break
+            problems = scored[0][2] if scored else ["empty reply"]
             messages = [
                 *messages,
-                {"role": "assistant", "content": text or "(no reply)"},
+                {"role": "assistant", "content": raw.strip() or "(no reply)"},
                 {
                     "role": "user",
                     "content": (
-                        "That reply is not allowed: " + "; ".join(problems) + ". "
-                        "Rewrite it without those, keeping to the fact sheet."
+                        "Those replies are not allowed: " + "; ".join(problems) + ". Give four "
+                        "fresh, varied replies that avoid those, keeping to the fact sheet."
                     ),
                 },
             ]
