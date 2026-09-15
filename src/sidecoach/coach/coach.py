@@ -214,6 +214,9 @@ class _Request:
     fallback: str
     ply: int
     game_id: str
+    # What the user said this turn, if anything. A square, piece or move the user named is
+    # not a leak for the coach to repeat back: confirming it reveals nothing they did not say.
+    user_text: str | None = None
 
 
 def _after_best(request: _Request) -> list[chess.Board]:
@@ -357,7 +360,10 @@ class Speaker:
         return Spoken(message=message, level=request.level, problems=problems, attempts=attempts)
 
     def _problems(self, text: str, request: _Request) -> list[str]:
-        found = [f"withheld {item}" for item in leak_check(text, request.facts, request.level)]
+        found = [
+            f"withheld {item}"
+            for item in leak_check(text, request.facts, request.level, said=request.user_text)
+        ]
         if self.draft_check is not None:
             found += self.draft_check(text, request.board, _after_best(request))
         return found
@@ -655,6 +661,7 @@ class Coach:
             fallback=fallback,
             ply=position.ply,
             game_id=self.game_id or "",
+            user_text=user_text,
         )
         self.speaker.submit(request)
 
@@ -756,10 +763,21 @@ class Coach:
             fallback = f"Think about {theme}."
         else:
             fallback = "What is your opponent's most dangerous idea here?"
-        return (
-            f'The player says: "{said}".{checks}\n\nAnswer them directly at the level the fact '
-            f"sheet allows. If they claimed something the board contradicts, correct it gently "
-            f"and specifically. If they asked for what the sheet does not give you, say you "
-            f"will not give that away yet and offer the next smaller nudge instead.",
-            fallback,
-        )
+        if level >= DisclosureLevel.LINE and _ASK_LINE.search(said) and facts.line:
+            directive = (
+                f"They asked to see the line: give it -- {' '.join(facts.line)} -- plainly, then "
+                "one short sentence on the idea behind it. Do not answer with a question."
+            )
+        elif level >= DisclosureLevel.CANDIDATE and _ASK_MOVE.search(said) and facts.candidates:
+            directive = (
+                f"They asked what to play: tell them plainly it is {facts.candidates[0]}, then one "
+                "short sentence on why. Do not answer with a question this time."
+            )
+        else:
+            directive = (
+                "Answer them directly at the level the fact sheet allows. If they claimed "
+                "something the board contradicts, correct it gently and specifically. If they "
+                "asked for what the sheet does not give you, say you will not give that away yet "
+                "and offer the next smaller nudge instead."
+            )
+        return f'The player says: "{said}".{checks}\n\n{directive}', fallback

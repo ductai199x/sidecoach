@@ -155,6 +155,7 @@ class Disclosure:
 _SQUARE_TOKEN = re.compile(r"[KQRBN]?[a-h]?[1-8]?x?([a-h][1-8])(?:=[QRBN])?[+#]?[!?]*")
 _TOKEN_SPLIT = re.compile(r"[^A-Za-z0-9+#=!?]+")
 _TRAILING_MARKS = re.compile(r"[+#!?]+$")
+_WORD_RE = re.compile(r"[a-z0-9=+#-]+")
 
 
 def squares_in(text: str) -> set[str]:
@@ -167,7 +168,9 @@ def squares_in(text: str) -> set[str]:
     return found
 
 
-def leak_check(text: str, facts: PositionFacts, level: DisclosureLevel) -> list[str]:
+def leak_check(
+    text: str, facts: PositionFacts, level: DisclosureLevel, *, said: str | None = None
+) -> list[str]:
     """Withheld items that `text` mentions. An empty list means the draft is clean.
 
     Below CANDIDATE the coach may not name any move at all, and may mention only squares
@@ -175,6 +178,9 @@ def leak_check(text: str, facts: PositionFacts, level: DisclosureLevel) -> list[
     volunteer moves on its own even when told not to, so this is not limited to the withheld
     facts. From CANDIDATE up only the withheld line is checked. Below PIECE the piece word
     from the facts is checked as well.
+
+    `said` is what the user asked this turn: a square, piece word or move they named is theirs
+    already, so confirming it back is not a leak and never faulted.
     """
     visible = visible_facts(facts, level)
     allowed_squares: set[str] = set()
@@ -183,6 +189,9 @@ def leak_check(text: str, facts: PositionFacts, level: DisclosureLevel) -> list[
             continue
         parts = value if isinstance(value, list) else [value]
         allowed_squares |= squares_in(" ".join(str(part) for part in parts))
+    said_squares = squares_in(said) if said else set()
+    said_words = set(_WORD_RE.findall(said.lower())) if said else set()
+    allowed_squares |= said_squares
 
     leaks: list[str] = []
 
@@ -198,7 +207,8 @@ def leak_check(text: str, facts: PositionFacts, level: DisclosureLevel) -> list[
             square = match.group(1)
             core = _TRAILING_MARKS.sub("", token)
             if core != square:
-                add(f"move {core}")
+                if core.lower() not in said_words:
+                    add(f"move {core}")
             elif square not in allowed_squares:
                 add(f"square {square}")
     elif level < DisclosureLevel.LINE:
@@ -213,6 +223,8 @@ def leak_check(text: str, facts: PositionFacts, level: DisclosureLevel) -> list[
 
     if level < DisclosureLevel.PIECE and facts.piece:
         piece_word = facts.piece.lower().split()[-1]
-        if re.search(rf"\b{re.escape(piece_word)}\b", text.lower()):
+        if piece_word not in said_words and re.search(
+            rf"\b{re.escape(piece_word)}\b", text.lower()
+        ):
             add(f"piece {piece_word}")
     return leaks

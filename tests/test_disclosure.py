@@ -108,3 +108,12 @@ def test_leak_check_flags_piece_below_piece_level() -> None:
 
 def test_leak_check_clean_question() -> None:
     assert leak_check("What is your opponent threatening right now?", facts(), L.QUESTION) == []
+
+
+def test_leak_check_allows_squares_and_pieces_the_user_named() -> None:
+    # The user asked about f7 and the knight; confirming them back is not a leak.
+    said = "Is my bishop on c4 attacking f7? And what is my knight doing?"
+    assert leak_check("Yes, your bishop hits f7.", facts(), L.QUESTION, said=said) == []
+    assert leak_check("Your knight is well placed.", facts(), L.QUESTION, said=said) == []
+    # A square or piece the user did not name is still withheld.
+    assert "square d5" in leak_check("Look at d5.", facts(), L.QUESTION, said=said)
