@@ -271,6 +271,53 @@ def key_squares(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     ]
 
 
+def _rook_and_pawn_vs_rook(board: chess.Board, us: chess.Color) -> bool:
+    """Exactly a rook-and-pawn versus rook ending: your K+R+one pawn against their K+R."""
+    them = not us
+
+    def n(piece_type: chess.PieceType, color: chess.Color) -> int:
+        return len(board.pieces(piece_type, color))
+
+    return (
+        n(chess.PAWN, us) == 1
+        and n(chess.PAWN, them) == 0
+        and n(chess.ROOK, us) == 1
+        and n(chess.ROOK, them) == 1
+        and n(chess.QUEEN, chess.WHITE) == 0
+        and n(chess.QUEEN, chess.BLACK) == 0
+        and n(chess.BISHOP, chess.WHITE) == 0
+        and n(chess.BISHOP, chess.BLACK) == 0
+        and n(chess.KNIGHT, chess.WHITE) == 0
+        and n(chess.KNIGHT, chess.BLACK) == 0
+    )
+
+
+def lucena(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
+    """The Lucena position: a won rook-and-pawn ending. Your king stands on the queening square
+    in front of a pawn on the seventh, the enemy king cut off, and you win by building a bridge.
+    Only for a non-rook pawn -- a rook pawn is won, if at all, by another method."""
+    if not _rook_and_pawn_vs_rook(board, us):
+        return []
+    pawn = next(iter(board.pieces(chess.PAWN, us)))
+    pf, pr = chess.square_file(pawn), chess.square_rank(pawn)
+    seventh = 6 if us == chess.WHITE else 1
+    promotion = chess.square(pf, 7 if us == chess.WHITE else 0)
+    king, defender = board.king(us), board.king(not us)
+    if pf in (0, 7) or pr != seventh or king is None or king != promotion or defender is None:
+        return []
+    if abs(chess.square_file(defender) - pf) < 1 or chess.square_distance(defender, pawn) < 2:
+        return []  # the enemy king is not cut off from the pawn
+    return [
+        PositionalFact(
+            "lucena",
+            f"a Lucena position: this rook-and-pawn ending is won -- build a bridge with your rook "
+            f"to shelter your king from the checks, then bring it out from in front of the "
+            f"{_FILES[pf]}-pawn",
+            (_name(king), _name(pawn)),
+        )
+    ]
+
+
 # Space (Silman's rules of space): central manoeuvring room. Measured the way an engine counts
 # it -- the safe central squares behind your front, files c-f on your side, that no enemy pawn
 # attacks and your own pawn does not block -- which separates a real space edge from a symmetric
@@ -930,6 +977,7 @@ def features(
     facts += square_of_the_pawn(board, us, phase=phase)
     facts += opposition(board, us)
     facts += key_squares(board, us)
+    facts += lucena(board, us)
     facts += material_plan(board, us)
     facts += worst_piece(board, us)
     return facts
@@ -1195,6 +1243,7 @@ def best_move_idea(
 _FEATURE_RANK: dict[str, int] = {
     "uncastled": 0,
     "undeveloped": 1,
+    "lucena": 1,
     "runningPawn": 1,
     "outrunPawn": 1,
     "passiveKing": 2,

@@ -367,3 +367,16 @@ def test_key_squares_in_king_and_pawn_versus_king() -> None:
     # A rook pawn has no winning key squares (the ending is usually a draw).
     rook = chess.Board("4k3/8/2K5/8/P7/8/8/8 w - - 0 1")
     assert P.key_squares(rook, chess.WHITE) == []
+
+
+def test_lucena_position_is_recognised_as_a_won_rook_ending() -> None:
+    # King on the queening square d8, pawn d7, enemy king cut off on the f-file: a Lucena win.
+    board = chess.Board("3K4/3P4/5k2/8/8/8/8/R6r w - - 0 1")
+    assert kinds(P.lucena(board, chess.WHITE)) == ["lucena"]
+    assert "build a bridge" in P.lucena(board, chess.WHITE)[0].text
+    # A rook pawn is not won by the bridge, so it is not flagged as a Lucena.
+    rook = chess.Board("K7/P7/2k5/8/8/8/8/R6r w - - 0 1")
+    assert P.lucena(rook, chess.WHITE) == []
+    # A queen on the board: not a pure rook-and-pawn ending.
+    with_queen = chess.Board("3K4/3P4/5k2/8/8/8/7q/R6r w - - 0 1")
+    assert P.lucena(with_queen, chess.WHITE) == []
