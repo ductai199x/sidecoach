@@ -96,6 +96,17 @@ def _check_engine(settings: Settings) -> tuple[str, str]:
         return "error", f"{path}: {exc}"
 
 
+def _check_openings(settings: Settings) -> tuple[str, str]:
+    from sidecoach.analysis.openings import OpeningBook
+
+    started = time.perf_counter()
+    book = OpeningBook.load(settings.data_dir / "openings")
+    if book is None:
+        return "missing", "run: uv run python scripts/fetch_openings.py"
+    took = (time.perf_counter() - started) * 1000.0
+    return "ok", f"{len(book)} named lines, loaded in {took:.0f} ms"
+
+
 def _check_llm(settings: Settings) -> tuple[str, str]:
     from sidecoach.llm.factory import make_provider
 
@@ -135,6 +146,7 @@ def doctor(config: ConfigOpt = None) -> None:
         ("Vision libs", *_check_vision_libs()),
         ("Video codec", *_check_video_codec()),
         ("Stockfish", *_check_engine(settings)),
+        ("Openings", *_check_openings(settings)),
         ("LLM", *_check_llm(settings)),
         ("Capture", *_check_capture()),
     ]
