@@ -177,6 +177,10 @@ class MoveAssessment(Event):
     severity: Severity
     best: list[str]
     tags: list[MotifTag] = Field(default_factory=list)
+    # The shallower of the two searches the loss was measured from. A position that hit the
+    # engine's time cap before reaching the depth asked for makes the comparison less
+    # exact, and a reader deciding whether to act on a small loss should know.
+    depth: int = 0
 
 
 # Coach and UI

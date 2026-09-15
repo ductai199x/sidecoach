@@ -33,6 +33,8 @@ class EngineSettings(BaseModel):
     # "human" turns centipawns into expected score on a curve fitted to games between
     # people; "engine" uses Stockfish's own win-draw-loss, which is 1.0 from a knight up.
     score_model: str = "human"
+    # A single position never takes longer than this, whatever depth was asked for.
+    max_seconds: float = 5.0
 
 
 class LLMSettings(BaseModel):

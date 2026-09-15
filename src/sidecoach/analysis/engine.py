@@ -48,6 +48,11 @@ class Engine:
     pv_plies: int = DEFAULT_PV_PLIES
     # How a line's score becomes an expected score; see `analysis.score.expected_score`.
     score_model: str = DEFAULT_SCORE_MODEL
+    # No single position may hold up a game. Some positions are pathologically slow to
+    # reach a given depth: a long forced mate with several lines to separate can take
+    # minutes, and one of those in a post-game review stalls the whole run. Whichever
+    # limit comes first wins, and the depth actually reached is reported on every line.
+    max_seconds: float | None = 5.0
     _engine: chess.engine.SimpleEngine | None = field(default=None, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _wdl_from_engine: bool = field(default=False, init=False, repr=False)
@@ -111,7 +116,10 @@ class Engine:
             return []
         if depth is None and time_s is None:
             raise ValueError("analyse needs a depth or a time limit")
-        limit = chess.engine.Limit(depth=depth, time=time_s)
+        capped = time_s
+        if depth is not None and self.max_seconds is not None:
+            capped = self.max_seconds if time_s is None else min(time_s, self.max_seconds)
+        limit = chess.engine.Limit(depth=depth, time=capped)
         wanted = multipv if multipv is not None else self.multipv
         wanted = max(1, min(wanted, board.legal_moves.count()))
         with self._lock:

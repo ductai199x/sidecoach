@@ -320,6 +320,36 @@ def test_assessment_carries_the_loss_the_best_line_and_the_tags() -> None:
     assert analysis.decisive and analysis.only_move, "the replies differ by 0.35"
 
 
+def test_the_assessment_says_how_deep_the_search_got() -> None:
+    """A position that hits the engine's time cap is measured shallower than asked."""
+    board = chess.Board()
+    after = board.copy()
+    after.push(chess.Move.from_uci("e2e4"))
+    fake = FakeEngine(
+        {
+            board.fen(): [Line(moves=["e2e4"], depth=18, expected_score=0.55)],
+            after.fen(): [Line(moves=["e7e5"], depth=11, expected_score=0.45)],
+        }
+    )
+    annotator = GameAnnotator(engine=fake, depth=18, with_threats=False)
+    assessment, _ = annotator.assess("g", board, chess.Move.from_uci("e2e4"), 1)
+    assert assessment.depth == 11, "the shallower of the two searches"
+
+
+@needs_engine
+def test_no_single_position_may_hold_up_a_game(engine: Engine) -> None:
+    """A knight endgame that takes minutes to reach depth 14 with four lines is cut short."""
+    slow = chess.Board("8/k7/2p3NP/8/1P1K2P1/2P5/3n4/8 b - - 2 50")
+    engine.max_seconds = 0.5
+    started = time.monotonic()
+    try:
+        lines = engine.analyse(slow, depth=40, multipv=4)
+    finally:
+        engine.max_seconds = 5.0
+    assert lines and time.monotonic() - started < 5.0
+    assert lines[0].depth < 40, "the depth asked for was not reached, and that is reported"
+
+
 def test_an_illegal_move_is_refused_rather_than_measured() -> None:
     annotator = GameAnnotator(engine=FakeEngine({}), depth=6, with_threats=False)
     with pytest.raises(ValueError, match="not legal"):

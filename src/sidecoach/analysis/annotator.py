@@ -72,6 +72,11 @@ class Measured:
     only_move: bool
     threats: list[str] = field(default_factory=list)
 
+    @property
+    def depth(self) -> int:
+        """How deep the search actually got, which the time cap can cut short."""
+        return self.lines[0].depth if self.lines else 0
+
 
 @dataclass
 class GameAnnotator:
@@ -145,6 +150,7 @@ class GameAnnotator:
             severity=severity(loss, self.thresholds),
             best=measured_before.lines[0].moves if measured_before.lines else [],
             tags=self._move_tags(before, move, measured_after),
+            depth=min(measured_before.depth, measured_after.depth or measured_before.depth),
         )
         return assessment, self.analysis_event(game_id, after, ply)
 
@@ -336,6 +342,7 @@ def open_analyser(
     pv_plies: int,
     thresholds: Thresholds,
     score_model: str = "human",
+    max_seconds: float | None = 5.0,
     tagger: Tagger | None = None,
     book: Book | None = None,
     make_engine: Callable[..., Engine] = Engine,
@@ -350,6 +357,7 @@ def open_analyser(
         multipv=multipv,
         pv_plies=pv_plies,
         score_model=score_model,
+        max_seconds=max_seconds,
     )
     engine.open()
     annotator = GameAnnotator(
