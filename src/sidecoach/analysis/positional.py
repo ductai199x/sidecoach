@@ -304,13 +304,14 @@ def hanging_pawns(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
             if _pawns_on_file(board, color, fa - 1) or _pawns_on_file(board, color, fb + 1):
                 continue
             pair = f"{_FILES[fa]}- and {_FILES[fb]}-pawns"
+            flanks = f"{_FILES[fa - 1]}- and {_FILES[fb + 1]}-files"
             if color == us:
                 facts.append(
                     PositionalFact(
                         "hangingPawns",
-                        f"your {pair} are hanging pawns: they hold the centre and can roll "
-                        "forward, but keep them mobile -- once they are fixed they turn into "
-                        "targets",
+                        f"your {pair} are hanging pawns: they hold the centre and give your "
+                        f"rooks the {flanks}; keep them mobile -- advancing one can fix an "
+                        "enemy pawn -- but once blockaded they are targets",
                         (_name(first), _name(second)),
                     )
                 )
@@ -318,8 +319,8 @@ def hanging_pawns(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
                 facts.append(
                     PositionalFact(
                         "hangingPawnsTarget",
-                        f"their {pair} are hanging pawns: press them so one has to advance and "
-                        "leaves a hole, or blockade the pair",
+                        f"their {pair} are hanging pawns: press them until one must advance and "
+                        "leaves a hole, or blockade the pair and work against the fixed pawn",
                         (_name(first), _name(second)),
                     )
                 )

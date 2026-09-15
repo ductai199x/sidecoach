@@ -245,3 +245,14 @@ def test_the_iqp_plan_is_named_by_side_and_phase() -> None:
     defender = P.isolated_d_pawn(board, chess.BLACK)[0]
     assert "blockade it on d5" in defender.text and "trade the minor pieces" in defender.text
     assert defender.squares == ("d4", "d5")
+
+
+def test_the_hanging_pawns_plan_names_the_flanking_files_for_both_sides() -> None:
+    # White has c4 and d4 hanging pawns; the flanking b- and e-files are the owner's to use.
+    board = chess.Board("r1bq1rk1/pp3ppp/2n1pn2/8/2PP4/5N2/P4PPP/R1BQ1RK1 w - - 0 11")
+    owner = P.hanging_pawns(board, chess.WHITE)[0]
+    assert owner.kind == "hangingPawns"
+    assert "b- and e-files" in owner.text and "keep them mobile" in owner.text
+    defender = P.hanging_pawns(board, chess.BLACK)[0]
+    assert defender.kind == "hangingPawnsTarget"
+    assert "blockade" in defender.text and "advance" in defender.text
