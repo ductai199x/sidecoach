@@ -277,10 +277,20 @@ def test_loose_pawns_are_not_hanging_pieces() -> None:
     assert "hangingPiece" not in tag_names(fen, "g1f3")
 
 
-def test_x_ray_through_a_rook_onto_a_loose_rook() -> None:
-    # Rd1 bears down the d-file through the rook on d5 onto the one on d8. Equal values, so
-    # it is neither a pin nor a skewer; the white rook is held by the king on c1.
-    assert position_names("3r2k1/8/8/3r4/8/8/8/2KR4 w - - 0 1") == ["xRayAttack"]
+def test_x_ray_is_a_slider_bearing_on_a_square_through_an_enemy_piece() -> None:
+    # Qxd8+ Rxd8 Rxd8#: the rook on d1 mates on d8, bearing down the file through the black
+    # rook on d5 the whole time; the line clears that rook off the file and the x-ray lands.
+    # Lichess tags this xRayAttack (it is also a back-rank mate in two).
+    fen = "3r2k1/1q3ppp/p3p3/Qp1r4/7P/P4P2/1PP3P1/1K1R3R w - - 0 22"
+    names = tag_names(fen, "a5d8", pv=["d5d8", "d1d8"])
+    assert "xRayAttack" in names
+    assert squares_of(fen, "a5d8", "xRayAttack", pv=["d5d8", "d1d8"]) == ["d8", "d5", "d1"]
+
+
+def test_a_slider_looking_through_a_piece_that_never_moves_is_no_x_ray() -> None:
+    # Rd1 looks through the d5 rook at d8, but the line never clears d5, so nothing is realized.
+    fen = "3r2k1/1q3ppp/p3p3/1p1r4/7P/P4P2/1PP3P1/1K1R3R w - - 0 22"
+    assert "xRayAttack" not in tag_names(fen, "h4h5", pv=["b5b4", "h5h6"])
 
 
 def test_interference_cuts_a_defender_off_its_charge() -> None:

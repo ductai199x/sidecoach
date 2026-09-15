@@ -464,14 +464,14 @@ def _hanging_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
 
 
 def _ray_motifs(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
-    """Pins, skewers and x-rays: one mover slider, one enemy piece, one enemy piece behind it.
+    """Pins and skewers: one mover slider, one enemy piece, one enemy piece behind it.
 
     A pin is geometric, the way Lichess tags it: an enemy piece with a more valuable enemy
     piece (or the king) directly behind it on the slider's line is pinned, whether or not the
     piece behind can be won, because the front piece cannot leave the line without exposing
-    it. Skewers and x-rays instead name a piece to go after, so those still require the piece
-    behind to be winnable, and a front piece that can simply take the slider for profit leaves
-    nothing to act on.
+    it. A skewer names a piece to go after, so it still requires the piece behind to be
+    winnable, and a front piece that can simply take the slider for profit leaves nothing to
+    act on. The x-ray is a line motif, not a static one, and lives in `_xray`.
     """
     enemy = not mover
     tags: list[MotifTag] = []
@@ -496,13 +496,11 @@ def _ray_motifs(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
                 continue
             if slider in view.attacks(front_sq) and _winnable(view, slider, front_value):
                 continue
-            behind_is_loose = _winnable(view, back_sq, cost, ignore=front_sq)
             if front_value > back_value:
                 must_move = _winnable(view, front_sq, cost)
+                behind_is_loose = _winnable(view, back_sq, cost, ignore=front_sq)
                 if must_move and behind_is_loose:
                     tags.append(_tag("skewer", squares))
-            elif front_value >= _MINOR and behind_is_loose:
-                tags.append(_tag("xRayAttack", squares))
     return tags
 
 
@@ -701,7 +699,7 @@ def _enemy_to_move(board: chess.Board, mover: chess.Color) -> chess.Board:
     return view
 
 
-_RAY_NAMES = ("pin", "absolutePin", "skewer", "xRayAttack")
+_RAY_NAMES = ("pin", "absolutePin", "skewer")
 
 
 def _static_key(tag: MotifTag) -> tuple[str, tuple[str, ...]]:
@@ -1034,6 +1032,71 @@ def _mating_pattern_tags(position: chess.Board) -> list[MotifTag]:
     return tags
 
 
+def _slider_reaches(
+    piece_type: chess.PieceType | None, frm: chess.Square, to: chess.Square
+) -> bool:
+    """Whether a slider of this type on `frm` moves along the straight line to `to`."""
+    same_rank = chess.square_rank(frm) == chess.square_rank(to)
+    same_file = chess.square_file(frm) == chess.square_file(to)
+    on_diag = abs(chess.square_file(frm) - chess.square_file(to)) == abs(
+        chess.square_rank(frm) - chess.square_rank(to)
+    )
+    if piece_type == chess.ROOK:
+        return same_rank or same_file
+    if piece_type == chess.BISHOP:
+        return on_diag
+    if piece_type == chess.QUEEN:
+        return same_rank or same_file or on_diag
+    return False
+
+
+def _xray_to(
+    board: chess.Board, mover: chess.Color, target: chess.Square
+) -> tuple[chess.Square, chess.Square] | None:
+    """A mover slider bearing on `target` through exactly one enemy piece: (slider, blocker)."""
+    for slider in _sliders(board, mover):
+        if not _slider_reaches(board.piece_type_at(slider), slider, target):
+            continue
+        between = chess.SquareSet(chess.between(slider, target))
+        blockers = [sq for sq in between if board.piece_at(sq) is not None]
+        if len(blockers) != 1:
+            continue
+        blocker = blockers[0]
+        if board.piece_at(blocker).color != mover:  # type: ignore[union-attr]
+            return slider, blocker
+    return None
+
+
+def _xray(
+    boards: list[chess.Board], played: Sequence[chess.Move], mover: chess.Color
+) -> MotifTag | None:
+    """Lichess's x-ray: a piece attacks a square through an enemy piece.
+
+    Read over the line, the way the sacrifice and clearance motifs are: a square the mover
+    captures or mates on was, at some earlier point in the line, borne on by a mover slider
+    through exactly one enemy piece, and by the time the square is taken that blocker has been
+    cleared off the ray. The blocker clearing is what turns a latent x-ray into a real one, so
+    a slider that merely looks through a piece that never moves is not called one.
+    """
+    for k in range(0, len(played), 2):  # the mover's own moves
+        move = played[k]
+        board_k = boards[k]
+        after_k = boards[k + 1] if k + 1 < len(boards) else None
+        if not (board_k.is_capture(move) or (after_k is not None and after_k.is_checkmate())):
+            continue
+        target = move.to_square
+        for j in range(0, k + 1, 2):  # a mover position at or before this move
+            found = _xray_to(boards[j], mover, target)
+            if found is None:
+                continue
+            slider, blocker = found
+            occupant = board_k.piece_at(blocker)
+            if occupant is not None and occupant.color != mover:
+                continue  # the blocker is still on the ray; the x-ray never opened
+            return _tag("xRayAttack", [target, blocker, slider], move)
+    return None
+
+
 # --- public API --------------------------------------------------------------------------
 
 
@@ -1064,6 +1127,7 @@ def tags_for_move(
     for tag in (
         _fork(after, move, mover, won_in_line=_mover_captures(boards, played, mover)),
         _discovered_attack(before, after, move, mover),
+        _xray(boards, played, mover),
         _interference(before, after, move, mover),
         _attacking_f2f7(before, after, move, mover),
         _sacrifice(boards, played, mover, mate_in),
