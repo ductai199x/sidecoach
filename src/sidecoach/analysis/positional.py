@@ -99,6 +99,67 @@ def passed_pawns(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     return facts
 
 
+# Space (Silman's rules of space): central manoeuvring room. Measured the way an engine counts
+# it -- the safe central squares behind your front, files c-f on your side, that no enemy pawn
+# attacks and your own pawn does not block -- which separates a real space edge from a symmetric
+# middlegame, where a naive "advanced pawns" count cannot (both sides' pawns cancel out).
+_CENTRAL_FILES = (2, 3, 4, 5)  # c, d, e, f
+SPACE_MARGIN = 3
+
+
+def _space_count(board: chess.Board, color: chess.Color) -> int:
+    ranks = (1, 2, 3) if color == chess.WHITE else (6, 5, 4)
+    enemy_pawn_attacks: set[chess.Square] = set()
+    for sq in board.pieces(chess.PAWN, not color):
+        enemy_pawn_attacks |= set(board.attacks(sq))
+    count = 0
+    for file_ in _CENTRAL_FILES:
+        for rank in ranks:
+            sq = chess.square(file_, rank)
+            piece = board.piece_at(sq)
+            if piece is not None and piece.piece_type == chess.PAWN and piece.color == color:
+                continue
+            if sq in enemy_pawn_attacks:
+                continue
+            count += 1
+    return count
+
+
+def space_plan(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
+    """A space advantage (avoid trades) or a cramp (seek them), when it is pronounced.
+
+    More room means keep pieces on and improve them -- a lasting plus; less room means trade a
+    pair to free the rest. Named only past a clear margin, so a roughly balanced middlegame is
+    never called cramped, and the evidence is your own advanced central pawns.
+    """
+    advantage = _space_count(board, us) - _space_count(board, not us)
+    advanced = (lambda r: r >= 3) if us == chess.WHITE else (lambda r: r <= 4)
+    pawns = sorted(
+        sq
+        for sq in board.pieces(chess.PAWN, us)
+        if chess.square_file(sq) in _CENTRAL_FILES and advanced(chess.square_rank(sq))
+    )
+    squares = tuple(_name(sq) for sq in pawns)
+    if advantage >= SPACE_MARGIN:
+        return [
+            PositionalFact(
+                "spaceAdvantage",
+                "you have more space: keep pieces on and improve your worst-placed one -- a "
+                "space edge is a lasting plus, so avoid trades",
+                squares,
+            )
+        ]
+    if advantage <= -SPACE_MARGIN:
+        return [
+            PositionalFact(
+                "spaceCramp",
+                "you are cramped for space: trade a pair of pieces to give the rest room",
+                squares,
+            )
+        ]
+    return []
+
+
 # Wings for a pawn majority: the flanks, where a majority makes an outside passed pawn. The
 # centre files (d, e) are left out -- a central plus is about breaks and the passers the
 # other detectors already name, not about which wing to play on.
@@ -580,6 +641,7 @@ def features(
     if phase != "endgame":
         facts += development(board, us)
         facts += uncastled_king(board, us)
+        facts += space_plan(board, us)
     facts += isolated_d_pawn(board, us, phase=phase)
     facts += hanging_pawns(board, us)
     facts += pawn_weaknesses(board, us)
@@ -865,6 +927,8 @@ _FEATURE_RANK: dict[str, int] = {
     "pawnMajority": 9,
     "convert": 9,
     "complicate": 9,
+    "spaceAdvantage": 10,
+    "spaceCramp": 11,
     "outpost": 10,
     "badBishop": 11,
     "openFile": 12,

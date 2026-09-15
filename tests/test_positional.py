@@ -256,3 +256,17 @@ def test_the_hanging_pawns_plan_names_the_flanking_files_for_both_sides() -> Non
     defender = P.hanging_pawns(board, chess.BLACK)[0]
     assert defender.kind == "hangingPawnsTarget"
     assert "blockade" in defender.text and "advance" in defender.text
+
+
+def test_space_advantage_and_cramp_are_named_past_a_clear_margin() -> None:
+    # King's Indian: White's c4/d4/e4 centre is a clear space advantage; Black is cramped.
+    kid = chess.Board("rnbq1rk1/ppp1ppbp/3p1np1/8/2PPP3/2N2N2/PP2BPPP/R1BQK2R b KQ - 0 6")
+    white = P.space_plan(kid, chess.WHITE)
+    assert kinds(white) == ["spaceAdvantage"] and "avoid trades" in white[0].text
+    assert set(white[0].squares) == {"c4", "d4", "e4"}
+    black = P.space_plan(kid, chess.BLACK)
+    assert kinds(black) == ["spaceCramp"] and "trade a pair" in black[0].text
+    # A symmetric position is neither cramped nor spacious.
+    assert P.space_plan(chess.Board(), chess.WHITE) == []
+    symmetric = chess.Board("rnbqkbnr/pp2pppp/8/2pp4/2PP4/8/PP2PPPP/RNBQKBNR w KQkq - 0 3")
+    assert P.space_plan(symmetric, chess.WHITE) == []
