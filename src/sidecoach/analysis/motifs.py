@@ -556,7 +556,7 @@ def _interference(
             piece = before.piece_at(guarded)
             if piece is None or piece.color != enemy:
                 continue
-            if _value(piece.piece_type) < _MINOR or piece.piece_type == chess.KING:
+            if piece.piece_type == chess.KING:
                 continue
             if not chess.BB_SQUARES[move.to_square] & chess.between(slider, guarded):
                 continue
