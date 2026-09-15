@@ -54,6 +54,7 @@ class GamePipeline:
         geometry = BoardGeometry(self.board.region, self.board.cell_px)
         events: list[Event] = []
         rebuilt = False
+        classified = False
         if changed or self._readings is None:
             self._start_on_screen = looks_like_start_position(frame, geometry)
             if self._start_on_screen and self.model is not None:
@@ -62,6 +63,7 @@ class GamePipeline:
                 # orientation; the reconciler tells those apart. Only a frame it cannot read
                 # that way, a new theme or the colours swapped, needs a fresh recogniser.
                 self._readings = self.model.classify_frame(frame, geometry)
+                classified = True
                 if self._reads_as_start(self._readings):
                     self._start_on_screen = False
         if not self._start_on_screen:
@@ -75,7 +77,7 @@ class GamePipeline:
                 rebuilt = self.bootstraps != before
             if self.model is None:
                 return events
-            if rebuilt or not self._start_on_screen:
+            if rebuilt or not classified:
                 self._readings = self.model.classify_frame(frame, geometry)
         if self.reconciler is None or self._readings is None:
             return self._stamp(events, ts, frame_id)

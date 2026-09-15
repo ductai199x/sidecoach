@@ -25,5 +25,12 @@ class MssCapture:
         bgra = np.asarray(shot)
         return np.ascontiguousarray(bgra[:, :, :3])
 
+    def reopen(self) -> None:
+        try:
+            self._sct.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self._sct = mss.mss()
+
     def close(self) -> None:
         self._sct.close()

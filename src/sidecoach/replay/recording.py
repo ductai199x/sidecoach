@@ -93,7 +93,10 @@ def board_gate(board: BoardCandidate | None, width: int, height: int) -> Region 
         return None
     pad = int(round(board.cell_px / 2))
     r = board.region
-    return clamp_region(Region(r.x - pad, r.y - pad, r.w + 2 * pad, r.h + 2 * pad), width, height)
+    gate = clamp_region(Region(r.x - pad, r.y - pad, r.w + 2 * pad, r.h + 2 * pad), width, height)
+    if gate.w == 0 or gate.h == 0:
+        return None  # the board lies off the frame; gate on the whole frame instead
+    return gate
 
 
 class ChangeGate:
@@ -123,12 +126,12 @@ class ChangeGate:
     def changed(self, frame: np.ndarray, ts: float) -> bool:
         if self._last is None or self._last.shape != frame.shape:
             due = True
-        elif self.region is not None and (self.region.w == 0 or self.region.h == 0):
-            due = False
         else:
             region = (
                 clamp_region(self.region, frame.shape[1], frame.shape[0]) if self.region else None
             )
+            if region is not None and (region.w == 0 or region.h == 0):
+                region = None  # an empty gate would store nothing; compare the whole frame
             due = frames_differ(self._last, frame, self.threshold, region, self.min_fraction) or (
                 self.keyframe_interval_s is not None
                 and ts - self._last_ts >= self.keyframe_interval_s

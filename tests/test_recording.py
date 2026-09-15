@@ -155,3 +155,15 @@ def test_zero_area_gate_never_changes() -> None:
     a = _frame(1)
     b = _frame(2)
     assert not frames_differ(a, b, region=Region(0, 0, 0, 10))
+
+
+def test_off_frame_board_gates_on_the_whole_frame() -> None:
+    from sidecoach.replay.recording import ChangeGate, board_gate
+    from sidecoach.vision.board_detect import BoardCandidate
+
+    off = BoardCandidate(Region(-700, 100, 512, 512), 64.0, 1.0, 50.0)
+    assert board_gate(off, 1280, 800) is None
+    gate = ChangeGate(region=Region(2000, 2000, 10, 10), keyframe_interval_s=None)
+    a, b = _frame(1), _frame(2)
+    assert gate.changed(a, 0.0)  # the first frame
+    assert gate.changed(b, 0.1)  # a different frame must still count as a change

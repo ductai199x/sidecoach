@@ -195,12 +195,20 @@ def _hover_outline(patch: np.ndarray, background: np.ndarray) -> bool:
         patch[band:-band, -band:].reshape(-1, patch.shape[2]),
     )
     # An outline runs along all four sides; a badge or a dialog edge crossing the cell
-    # changes one or two sides only, and must not pass for a drag.
-    for side in sides:
-        distance = np.linalg.norm(side.astype(np.float32) - background.astype(np.float32), axis=1)
-        if float(np.median(distance)) <= HOVER_TOLERANCE:
-            return False
-    return True
+    # changes one or two sides only and leaves the others near zero. The weakest side of a
+    # real outline can be thin, at small cells or where the outline is drawn a pixel
+    # narrower, so it only has to clear half the tolerance while the median side clears it.
+    if any(side.shape[0] == 0 for side in sides):
+        return False  # a patch too small to have an outer band
+    distances = sorted(
+        float(
+            np.median(
+                np.linalg.norm(side.astype(np.float32) - background.astype(np.float32), axis=1)
+            )
+        )
+        for side in sides
+    )
+    return distances[0] > HOVER_TOLERANCE / 2 and distances[2] > HOVER_TOLERANCE
 
 
 def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
@@ -620,14 +628,20 @@ class ThemeModel:
 
 
 EXEMPLAR_MAX_FRACTION = 0.9
-EXEMPLAR_MAX_OFFSET = 0.15  # of a cell, from the centre
+# A piece is drawn on the middle of its file; how high it sits in the square is its own
+# business (a pawn's centre of mass lies well below the centre, a king's near it).
+EXEMPLAR_MAX_SIDEWAYS = 0.12  # of a cell
+EXEMPLAR_MAX_VERTICAL = 0.28  # of a cell
 
 
 def _plausible_exemplar(sil: Silhouette) -> bool:
     """A piece drawn on its own square: enough foreground, centred, nothing over it."""
     if sil.hover or not PIECE_MIN_FRACTION <= sil.fraction <= EXEMPLAR_MAX_FRACTION:
         return False
-    return float(np.hypot(sil.centroid[0] - 0.5, sil.centroid[1] - 0.5)) <= EXEMPLAR_MAX_OFFSET
+    return (
+        abs(sil.centroid[0] - 0.5) <= EXEMPLAR_MAX_SIDEWAYS
+        and abs(sil.centroid[1] - 0.5) <= EXEMPLAR_MAX_VERTICAL
+    )
 
 
 def occupancy(frame: np.ndarray, geometry: BoardGeometry) -> np.ndarray:

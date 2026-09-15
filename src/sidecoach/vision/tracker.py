@@ -36,6 +36,7 @@ class BoardTracker:
         refine_every: int = 10,
         refine_offset_cells: float = 1.6,
         redetect_backoff: int = 20,
+        near_backoff: int = 3,
     ) -> None:
         self.min_fit = min_fit
         self.min_contrast = min_contrast
@@ -43,6 +44,7 @@ class BoardTracker:
         self.refine_every = refine_every
         self.refine_offset_cells = refine_offset_cells
         self.redetect_backoff = redetect_backoff
+        self.near_backoff = near_backoff
         self.board: BoardCandidate | None = None
         self.colours: Colours | None = None
         self.last_cell_px: float | None = None
@@ -50,6 +52,7 @@ class BoardTracker:
         self.detections = 0
         self._frames_since_refine = 0
         self._cooldown = 0
+        self._near_cooldown = 0
 
     @property
     def locked(self) -> bool:
@@ -103,28 +106,38 @@ class BoardTracker:
                 return self.board
             self.board = None
             self.colours = None
-        elif self._cooldown > 0:
-            # A full search costs over a second; without a board on screen, retrying every
-            # frame would stall capture, so failed searches back off for a few frames.
+        else:
+            # Without a board on screen, searching every frame would stall capture. The
+            # search near the last cell size is cheap and runs every few frames, so a
+            # window that comes back, or was covered for a moment, re-locks within a few
+            # frames; the full multi-scale search, which costs over a second at 1440p,
+            # backs off for longer.
             self._cooldown -= 1
-            return None
+            self._near_cooldown -= 1
+            if self._cooldown > 0 and (self.last_cell_px is None or self._near_cooldown > 0):
+                return None
 
-        boards = self._detect(gray)
+        boards = self._detect(gray, full=self._cooldown <= 0)
         self.misses = 0
         self._frames_since_refine = 0
         self.board = boards[0] if boards else None
         self.colours = (
             square_colours(gray, self.board.region, self.board.cell_px) if self.board else None
         )
-        self._cooldown = 0 if self.board else self.redetect_backoff
+        if self.board:
+            self._cooldown = self._near_cooldown = 0
+        else:
+            self._near_cooldown = self.near_backoff
+            if self._cooldown <= 0:
+                self._cooldown = self.redetect_backoff
         return self.board
 
-    def _detect(self, gray: np.ndarray) -> list[BoardCandidate]:
-        """Full detection, trying the last known cell size first.
+    def _detect(self, gray: np.ndarray, full: bool = True) -> list[BoardCandidate]:
+        """Detection, trying the last known cell size first.
 
         A window that was moved keeps its cell size, so a narrow scale search around it
-        re-locks in a fraction of the full multi-scale search. Only on failure, or when there
-        was no previous lock, does the full range run.
+        re-locks in a fraction of the full multi-scale search. Only on failure, and only
+        when `full` allows it, does the full range run.
         """
         self.detections += 1
         if self.last_cell_px is not None:
@@ -138,6 +151,8 @@ class BoardTracker:
             if near:
                 self.last_cell_px = near[0].cell_px
                 return near
+        if not full:
+            return []
         boards = detect_boards_gray(gray, min_fit=self.min_fit, min_contrast=self.min_contrast)
         if boards:
             self.last_cell_px = boards[0].cell_px

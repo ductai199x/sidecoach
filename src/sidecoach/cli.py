@@ -6,15 +6,19 @@ import platform
 import sys
 import time
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from sidecoach import __version__
+from sidecoach.capture.base import primary_monitor
 from sidecoach.config import Settings, find_stockfish, load_settings
-from sidecoach.events import Side
+from sidecoach.events import Region, Side
+
+if TYPE_CHECKING:
+    from sidecoach.capture.base import CaptureBackend
 
 app = typer.Typer(
     help="Sidecoach: vision-first chess coaching companion.",
@@ -93,7 +97,10 @@ def _check_capture() -> tuple[str, str]:
             cap.close()
     except Exception as exc:  # noqa: BLE001
         return "error", str(exc)
-    sizes = ", ".join(f"{i}: {m.w}x{m.h}" for i, m in enumerate(monitors))
+    primary = primary_monitor(monitors)
+    sizes = ", ".join(
+        f"{i}: {m.w}x{m.h}" + (" (primary)" if i == primary else "") for i, m in enumerate(monitors)
+    )
     return "ok", f"{len(monitors)} monitor(s) [{sizes}]; grab ok {frame.shape[1]}x{frame.shape[0]}"
 
 
@@ -149,9 +156,24 @@ def snap(
         cap.close()
 
 
+def _monitor_region(cap: CaptureBackend, monitor: int | None) -> tuple[int, Region]:
+    """The chosen monitor's index and region; the primary when none was chosen."""
+    monitors = cap.monitors()
+    if monitor is None:
+        monitor = primary_monitor(monitors)
+    if not 0 <= monitor < len(monitors):
+        console.print(
+            f"[red]no monitor {monitor}[/red]; {len(monitors)} found, see `sidecoach doctor`"
+        )
+        raise typer.Exit(1)
+    return monitor, monitors[monitor]
+
+
 @app.command()
 def record(
-    monitor: Annotated[int, typer.Option(help="Monitor index, see doctor")] = 0,
+    monitor: Annotated[
+        int | None, typer.Option(help="Monitor index, see doctor; default the primary")
+    ] = None,
     seconds: Annotated[float | None, typer.Option(help="Stop after this long")] = None,
     fps: Annotated[int, typer.Option(help="Capture rate")] = 10,
     keyframe: Annotated[float, typer.Option(help="Seconds between forced keyframes")] = 1.0,
@@ -159,7 +181,7 @@ def record(
     config: ConfigOpt = None,
 ) -> None:
     """Record a monitor to a lossless recording until Ctrl+C or --seconds."""
-    from sidecoach.capture.loop import capture_loop
+    from sidecoach.capture.loop import CaptureFailed, capture_loop
     from sidecoach.capture.mss_backend import MssCapture
     from sidecoach.replay.recording import Recorder, board_gate
     from sidecoach.vision.tracker import BoardTracker
@@ -170,7 +192,7 @@ def record(
     tracker = BoardTracker()
 
     try:
-        region = cap.monitors()[monitor]
+        monitor, region = _monitor_region(cap, monitor)
         board = tracker.update(cap.grab(region))
         change_region = board_gate(board, region.w, region.h)
         if board:
@@ -210,6 +232,9 @@ def record(
                     )
         except KeyboardInterrupt:
             pass
+        except CaptureFailed as exc:
+            print()
+            console.print(f"[red]capture failed:[/red] {exc}")
         finally:
             recorder.close()
             print()
@@ -577,7 +602,9 @@ def detect(
 
 @app.command()
 def watch(
-    monitor: Annotated[int, typer.Option(help="Monitor index, see doctor")] = 0,
+    monitor: Annotated[
+        int | None, typer.Option(help="Monitor index, see doctor; default the primary")
+    ] = None,
     fps: Annotated[int, typer.Option(help="Capture rate")] = 10,
     record: Annotated[bool, typer.Option(help="Also record the session to disk")] = True,
     board: Annotated[bool, typer.Option(help="Print the board after every move")] = True,
@@ -594,7 +621,7 @@ def watch(
     """
     import chess
 
-    from sidecoach.capture.loop import capture_loop
+    from sidecoach.capture.loop import CaptureFailed, capture_loop
     from sidecoach.capture.mss_backend import MssCapture
     from sidecoach.events import (
         GameEnded,
@@ -609,7 +636,7 @@ def watch(
 
     settings = load_settings(config)
     cap = MssCapture()
-    region = cap.monitors()[monitor]
+    monitor, region = _monitor_region(cap, monitor)
     pipe = GamePipeline()
     recorder: Recorder | None = None
     folder: Path | None = None
@@ -646,7 +673,15 @@ def watch(
                 gate.region = board_gate(pipe.board, region.w, region.h)
                 if recorder is not None:
                     recorder.change_region = gate.region
-                    changed = recorder.write(frame, ts).stored is not None
+                    try:
+                        changed = recorder.write(frame, ts).stored is not None
+                    except (ValueError, RuntimeError) as exc:
+                        # A display change or a full disk must not end the session; the
+                        # recording stops, the watching goes on.
+                        console.print(f"[red]recording stopped:[/red] {exc}")
+                        recorder.close()
+                        recorder = None
+                        changed = gate.changed(frame, ts)
                 else:
                     changed = gate.changed(frame, ts)
                 begun = time.perf_counter()
@@ -749,6 +784,10 @@ def watch(
                     pipeline_ms = []
     except KeyboardInterrupt:
         pass
+    except CaptureFailed as exc:
+        # The screen is gone for good (a display removed, a session that stays locked);
+        # the game so far is still reported below.
+        console.print(f"[red]capture failed:[/red] {exc}")
     finally:
         if recorder is not None:
             recorder.close()

@@ -1,6 +1,7 @@
 import chess
 import cv2
 import numpy as np
+import pytest
 
 from sidecoach.events import Region, Side
 from sidecoach.vision.pieces import (
@@ -156,3 +157,30 @@ def test_a_tiny_patch_reads_without_nan() -> None:
         warnings.simplefilter("error")
         sil = silhouette(np.full((2, 2, 3), 120, dtype=np.uint8))
     assert np.all(np.isfinite(sil.background)) and not sil.hover and sil.fraction == 0.0
+
+
+@pytest.mark.parametrize("cell", [64, 48, 40, 32])
+def test_recogniser_works_at_small_cell_sizes(cell: int) -> None:
+    """A board on a small screen: every cell is upscaled to the working patch size.
+
+    Thirty-two pixels a cell (a 256-pixel board) is the floor; below it the outline of a
+    black piece outweighs its fill and colours flip. A 1440p session stored at 720p has
+    43-pixel cells, a 1080p one 57.
+    """
+    geometry = BoardGeometry(Region(300, 120, 8 * cell, 8 * cell), float(cell))
+    start = synthetic_board(cell=cell)
+    assert looks_like_start_position(start, geometry)
+    model = ThemeModel.from_start_position(start, geometry, Side.WHITE)
+    assert model is not None, f"no recogniser at {cell} px cells"
+    later = chess.Board()
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "O-O", "d5", "exd5", "Nxd5"):
+        later.push_san(san)
+    readings = model.classify_frame(synthetic_board(board=later, cell=cell), geometry)
+    wrong = []
+    for r in range(8):
+        for c in range(8):
+            piece = later.piece_at(square_at(r, c, Side.WHITE))
+            expected = piece.symbol() if piece else None
+            if readings[r][c].symbol != expected:
+                wrong.append((r, c, expected, readings[r][c].symbol))
+    assert not wrong, wrong

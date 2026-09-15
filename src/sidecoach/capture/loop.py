@@ -11,6 +11,10 @@ from sidecoach.capture.base import CaptureBackend
 from sidecoach.events import Region
 
 
+class CaptureFailed(RuntimeError):
+    """The backend kept failing after every retry; the session cannot see the screen."""
+
+
 def capture_loop(
     backend: CaptureBackend,
     region: Region,
@@ -18,18 +22,44 @@ def capture_loop(
     *,
     max_seconds: float | None = None,
     stop: Callable[[], bool] | None = None,
+    grab_retries: int = 30,
+    retry_delay: float = 0.5,
 ) -> Iterator[tuple[int, float, np.ndarray]]:
+    """Frames at a fixed rate; a grab that fails is retried, not fatal.
+
+    A locked session, a sleeping monitor, or a display change makes the backend raise.
+    The capture is reopened and tried again every `retry_delay` seconds, up to
+    `grab_retries` times in a row before the error is raised; a session survives a screen
+    lock of a quarter minute and simply misses the frames.
+    """
+    if fps <= 0:
+        raise ValueError(f"fps must be positive, got {fps}")
     interval = 1.0 / fps
     started = time.monotonic()
     next_due = started
     frame_id = 0
+    failures = 0
     while True:
         now = time.monotonic()
         if max_seconds is not None and now - started >= max_seconds:
             return
         if stop is not None and stop():
             return
-        yield frame_id, now, backend.grab(region)
+        try:
+            frame = backend.grab(region)
+        except Exception as exc:  # noqa: BLE001
+            failures += 1
+            if failures > grab_retries:
+                raise CaptureFailed(f"{failures} grabs failed in a row: {exc}") from exc
+            try:
+                backend.reopen()
+            except Exception:  # noqa: BLE001
+                pass  # the next grab decides whether the capture is back
+            time.sleep(retry_delay)
+            next_due = time.monotonic()
+            continue
+        failures = 0
+        yield frame_id, now, frame
         frame_id += 1
         next_due += interval
         delay = next_due - time.monotonic()
