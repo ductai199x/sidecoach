@@ -116,7 +116,7 @@ def test_severity_names_the_thresholds() -> None:
     assert severity(0.20, t) is Severity.BLUNDER
     assert severity(0.9, t) is Severity.BLUNDER
     fitted = Thresholds()
-    assert (fitted.inaccuracy, fitted.mistake, fitted.blunder) == (0.04, 0.11, 0.28)
+    assert (fitted.inaccuracy, fitted.mistake, fitted.blunder) == (0.04, 0.10, 0.28)
 
 
 def test_eval_loss_is_measured_from_the_movers_side() -> None:

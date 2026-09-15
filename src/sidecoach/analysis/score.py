@@ -61,12 +61,12 @@ class Thresholds:
 
     The three severity lines were fitted to chess.com's review tallies over six of the
     user's games (671 plies, 2026-09-15): they put our inaccuracy, mistake, miss and blunder
-    counts at 55, 30, 25 and 10 against their 60, 38, 22 and 10. A blunder throws away more
+    counts at 55, 33, 29 and 9 against their 55, 38, 24 and 10. A blunder throws away more
     than a quarter of the game.
     """
 
     inaccuracy: float = 0.04
-    mistake: float = 0.11
+    mistake: float = 0.10
     blunder: float = 0.28
     decisive_gap: float = 0.10
     # An only move: everything else throws away this much. Wider than a decisive moment,
@@ -74,8 +74,7 @@ class Thresholds:
     only_move_gap: float = 0.30
     # Below this loss a move is "excellent" rather than merely "good".
     excellent: float = 0.02
-    # A position this far gone, either way, is decided: a sacrifice in it is not brilliant
-    # and the only move that keeps the win is not great, just the move.
+    # A position this far gone, either way, is decided: a sacrifice in it is not brilliant.
     decided: float = 0.90
 
     @classmethod
@@ -164,19 +163,25 @@ def label_move(
     brilliant and miss add. `opponent_erred` says the move before this one was a mistake
     or worse, so this move either took the chance (great, when it is the best move) or let
     it go (miss, whatever the size of the loss); `only_move` says everything else lost, so
-    finding it was great; a sound `sacrifice` is brilliant. None of that applies to an
-    `obvious` move (a recapture, or the only legal move) or in a decided position, where
-    keeping a won game is just the move, not a find.
+    finding it was great; a sound `sacrifice` is brilliant unless the position was already
+    decided, where giving material back is just technique. Neither great nor brilliant
+    applies to an `obvious` move (a recapture, a free capture nobody can take back, the
+    only legal move), nor in a lost position, where the best move changes nothing. A great
+    move in a won position stays great; chess.com's review awards it there and the user
+    reads that.
     """
-    if in_book:
-        return Label.BOOK
     flagged = loss >= thresholds.inaccuracy
-    decided = before_score >= thresholds.decided or before_score <= 1.0 - thresholds.decided
+    if in_book and not flagged:
+        # The opening tables hold dubious gambits too; a move that loses ground is judged
+        # by what it lost, whatever a book calls it. 1. e4 f5 is in the tables.
+        return Label.BOOK
+    won = before_score >= thresholds.decided
+    lost = before_score <= 1.0 - thresholds.decided
     if opponent_erred and flagged:
         return Label.MISS
     if not flagged:
-        if not obvious and not decided:
-            if sacrifice:
+        if not obvious and not lost:
+            if sacrifice and not won:
                 return Label.BRILLIANT
             if only_move or (opponent_erred and is_best):
                 return Label.GREAT

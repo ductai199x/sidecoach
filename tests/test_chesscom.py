@@ -183,6 +183,7 @@ def _label(
 
 def test_labels_follow_the_review_vocabulary() -> None:
     assert _label(0.0, in_book=True) is Label.BOOK
+    assert _label(0.14, in_book=True) is Label.MISTAKE, "a gambit in the tables still loses"
     assert _label(0.0, is_best=True) is Label.BEST
     assert _label(0.01) is Label.EXCELLENT
     assert _label(0.03) is Label.GOOD
@@ -205,8 +206,13 @@ def test_labels_follow_the_review_vocabulary() -> None:
     assert _label(0.0, only_move=True) is Label.GREAT
     assert _label(0.0, only_move=True, obvious=True) is Label.EXCELLENT
     assert _label(0.0, only_move=True, obvious=True, is_best=True) is Label.BEST
-    assert _label(0.0, only_move=True, before_score=0.95) is Label.EXCELLENT
     assert _label(0.0, opponent_erred=True, is_best=True, obvious=True) is Label.BEST
+    # A great move in a won position is still great; only brilliant needs a live game.
+    assert _label(0.0, only_move=True, before_score=0.95) is Label.GREAT
+    assert _label(0.0, opponent_erred=True, is_best=True, before_score=0.98) is Label.GREAT
+    # In a lost position the best move changes nothing: neither great nor brilliant.
+    assert _label(0.0, only_move=True, before_score=0.02, is_best=True) is Label.BEST
+    assert _label(0.0, sacrifice=True, before_score=0.02) is Label.EXCELLENT
     # A move as good as the engine's choice but not that choice is excellent, not best:
     # measured against chess.com's tallies, "best" is the engine's first choice only.
     assert _label(0.0) is Label.EXCELLENT

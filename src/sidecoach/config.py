@@ -60,7 +60,7 @@ class CoachSettings(BaseModel):
     persona: str = "warm_direct"
     # Fitted to chess.com's review tallies over six games; see analysis.score.Thresholds.
     inaccuracy: float = 0.04
-    mistake: float = 0.11
+    mistake: float = 0.10
     blunder: float = 0.28
     decisive_gap: float = 0.10
     only_move_gap: float = 0.30

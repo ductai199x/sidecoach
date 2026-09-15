@@ -94,9 +94,10 @@ class GameAnnotator:
     book: Book | None = None
     with_threats: bool = True
     _cache: dict[str, Measured] = field(default_factory=dict, init=False, repr=False)
-    # The last move assessed: game, ply, loss, and where it landed, so the next move knows
-    # whether the opponent just erred and whether it is merely taking back.
-    _previous: tuple[str, int, float, chess.Square] | None = field(
+    # The last move assessed: game, ply, loss, where it landed and whether it captured, so
+    # the next move knows whether the opponent just erred and whether it is merely taking
+    # back.
+    _previous: tuple[str, int, float, chess.Square, bool] | None = field(
         default=None, init=False, repr=False
     )
 
@@ -158,10 +159,17 @@ class GameAnnotator:
         if previous is not None and (previous[0] != game_id or previous[1] != ply - 1):
             previous = None  # another game, or a gap: the move before this one is unknown
         opponent_erred = previous is not None and previous[2] >= self.thresholds.mistake
+        # Taking back on the square the opponent just captured on. Taking a piece that
+        # merely moved there is not obvious: that is how a blunder gets punished.
         recapture = (
-            previous is not None and before.is_capture(move) and move.to_square == previous[3]
+            previous is not None
+            and previous[4]
+            and before.is_capture(move)
+            and move.to_square == previous[3]
         )
-        obvious = recapture or before.legal_moves.count() == 1
+        # A capture nobody can take back is a grab, not a find; a king's capture always is.
+        free_grab = before.is_capture(move) and not after.is_attacked_by(after.turn, move.to_square)
+        obvious = recapture or free_grab or before.legal_moves.count() == 1
         label = label_move(
             loss,
             self.thresholds,
@@ -173,7 +181,7 @@ class GameAnnotator:
             opponent_erred=opponent_erred,
             obvious=obvious,
         )
-        self._previous = (game_id, ply, loss, move.to_square)
+        self._previous = (game_id, ply, loss, move.to_square, before.is_capture(move))
         assessment = MoveAssessment(
             game_id=game_id,
             ply=ply,
