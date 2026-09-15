@@ -463,13 +463,12 @@ def _hanging_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
 def _ray_motifs(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
     """Pins, skewers and x-rays: one mover slider, one enemy piece, one enemy piece behind it.
 
-    Every one of them has to gain something, counting defenders, or it is not worth naming.
-    A pin needs the shielded piece to be the king, or to be winnable once the shield steps
-    aside. A skewer needs the front piece to be one the owner must move and the piece behind
-    to be winnable. An x-ray is the leftover equal-value case, and it too needs the piece
-    behind to be loose. Nothing is reported when the front piece can simply take the slider
-    for profit, because then there is no line to act on. A pawn on the pinning rook's own
-    file is skipped: it moves along the line anyway, so it is not restricted.
+    A pin is geometric, the way Lichess tags it: an enemy piece with a more valuable enemy
+    piece (or the king) directly behind it on the slider's line is pinned, whether or not the
+    piece behind can be won, because the front piece cannot leave the line without exposing
+    it. Skewers and x-rays instead name a piece to go after, so those still require the piece
+    behind to be winnable, and a front piece that can simply take the slider for profit leaves
+    nothing to act on.
     """
     enemy = not mover
     tags: list[MotifTag] = []
@@ -487,19 +486,15 @@ def _ray_motifs(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
                 continue
             squares = [slider, front_sq, back_sq]
             front_value, back_value = _value(front.piece_type), _value(back.piece_type)
-            if slider in view.attacks(front_sq) and _winnable(view, slider, front_value):
-                continue
-            behind_is_loose = _winnable(view, back_sq, cost, ignore=front_sq)
             if back_value > front_value:
-                on_file = chess.square_file(slider) == chess.square_file(front_sq)
-                if front.piece_type == chess.PAWN and on_file:
-                    continue
-                if not behind_is_loose:
-                    continue
                 tags.append(_tag("pin", squares))
                 if back.piece_type == chess.KING:
                     tags.append(_tag("absolutePin", squares))
-            elif front_value > back_value:
+                continue
+            if slider in view.attacks(front_sq) and _winnable(view, slider, front_value):
+                continue
+            behind_is_loose = _winnable(view, back_sq, cost, ignore=front_sq)
+            if front_value > back_value:
                 must_move = _winnable(view, front_sq, cost)
                 if must_move and back_value >= _MINOR and behind_is_loose:
                     tags.append(_tag("skewer", squares))

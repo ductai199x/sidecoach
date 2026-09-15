@@ -210,13 +210,14 @@ def test_relative_pin_against_the_queen() -> None:
     assert "pin" in position_names(standing)
 
 
-def test_a_pawn_shielding_a_defended_piece_is_not_a_pin() -> None:
-    # The Italian bishop on c4 looks through f7 to the knight on g8, but g8 is held by the
-    # rook on h8, so taking there is a bishop for a knight. Castling has nothing to do with
-    # the bishop either way.
+def test_a_pawn_is_pinned_to_the_piece_behind_it_even_if_it_cannot_be_won() -> None:
+    # The Italian bishop on c4 looks through the f7 pawn to the knight on g8: the pawn cannot
+    # advance without exposing the knight, so it is pinned, the way Lichess tags a pin, even
+    # though winning the knight would cost the bishop (the h8 rook holds g8). The pin is in
+    # the position; castling does not create it, so it is not a tag of the castling move.
     fen = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
+    assert "pin" in position_names(fen)
     assert "pin" not in tag_names(fen, "e1g1")
-    assert "pin" not in position_names(fen)
 
 
 def test_a_move_does_not_inherit_a_pin_that_was_already_there() -> None:
