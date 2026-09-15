@@ -382,6 +382,7 @@ def _replay_moves(
 
     from sidecoach.events import GameEnded, GameStarted, MovePlayed, Resync, Takeback
     from sidecoach.state.pipeline import GamePipeline
+    from sidecoach.vision.clock import ClockReader
 
     truth = _read_truth(truth_pgn) if truth_pgn is not None else []
     truth_placements: list[str] = []
@@ -391,7 +392,7 @@ def _replay_moves(
         for san in truth:
             replay_board.push_san(san)
             truth_placements.append(replay_board.board_fen())
-    pipe = GamePipeline()
+    pipe = GamePipeline(clock=ClockReader())
     games: list[tuple[str, str]] = []  # (pgn, final fen) of finished games
     bootstraps = 0
     truth_index = 0  # truth plies consumed for the scored game
@@ -1379,11 +1380,12 @@ def watch(
     from sidecoach.replay.recording import ChangeGate, Recorder, board_gate
     from sidecoach.state.pipeline import GamePipeline
     from sidecoach.ui.keys import KeyReader
+    from sidecoach.vision.clock import ClockReader
 
     settings = load_settings(config)
     cap = MssCapture()
     monitor, region = _monitor_region(cap, monitor)
-    pipe = GamePipeline()
+    pipe = GamePipeline(clock=ClockReader())
     recorder: Recorder | None = None
     folder: Path | None = None
     gate = ChangeGate(keyframe_interval_s=1.0)

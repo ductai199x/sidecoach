@@ -31,9 +31,10 @@ from sidecoach.coach.disclosure import (
     visible_facts,
 )
 from sidecoach.coach.facts import ascii_board, describe_move, facts_from_analysis
-from sidecoach.coach.policy import InterjectionPolicy
+from sidecoach.coach.policy import InterjectionPolicy, TimeControl, time_control_of
 from sidecoach.events import (
     Analysis,
+    ClockObservation,
     CoachMessage,
     DisclosureLevel,
     Event,
@@ -482,6 +483,7 @@ class Coach:
         self.memory = GameMemory()
         self.spoken: list[Spoken] = []
         self._current: _Position | None = None
+        self._clock_peak_ms: int | None = None
 
     # Lifecycle
 
@@ -506,6 +508,8 @@ class Coach:
             self._on_analysis(event, ts)
         elif isinstance(event, MoveAssessment):
             self._on_assessment(event, ts)
+        elif isinstance(event, ClockObservation):
+            self._on_clock(event, ts)
         elif isinstance(event, GameEnded):
             self._current = None
 
@@ -578,6 +582,30 @@ class Coach:
         self.memory = GameMemory()
         self._current = self.positions[0]
         self.policy.new_position(0, ts, user_to_move=self.user_to_move)
+        self._clock_peak_ms = None
+        self.policy.set_remaining(None)
+        self.policy.time_control = TimeControl.UNTIMED
+
+    def _on_clock(self, event: ClockObservation, ts: float) -> None:
+        """The screen's clock, when one is drawn. It scales the interjection cadence: the
+        stuck-hint threshold shrinks as the user's clock runs down, and the time control
+        decides which unprompted triggers fire at all (rapid gets everything, blitz only
+        brief feedback, bullet nothing). A missing, hidden, or unreadable clock never
+        reaches here, so the policy simply keeps its untimed defaults.
+        """
+        user_ms = event.white_ms if self.user_side == Side.WHITE else event.black_ms
+        if user_ms is not None:
+            self.policy.set_remaining(user_ms)
+        seen = [ms for ms in (event.white_ms, event.black_ms) if ms is not None]
+        if not seen:
+            return
+        peak = max(seen)
+        self._clock_peak_ms = (
+            peak if self._clock_peak_ms is None else max(self._clock_peak_ms, peak)
+        )
+        # The clock starts at its highest, so the peak seen approximates the initial time
+        # and thus the control's band; increment slack does not cross the coarse bands.
+        self.policy.time_control = time_control_of(self._clock_peak_ms)
 
     def _on_move(self, event: MovePlayed, ts: float) -> None:
         self.board = chess.Board(event.fen_after)

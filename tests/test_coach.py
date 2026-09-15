@@ -414,3 +414,35 @@ def test_asking_before_anything_is_analysed_gets_an_honest_answer() -> None:
     coach.ask("what should I play", 1.0)
     out = _messages(coach)
     assert len(out) == 1 and "not seen enough" in out[0].text
+
+
+def test_clock_scales_the_policy_and_a_new_game_resets_it() -> None:
+    """A ClockObservation feeds the interjection cadence: it bands the time control and
+    sets the user's remaining time; a new game clears it back to untimed until a clock is
+    seen again; and never seeing a clock leaves the policy on its untimed defaults."""
+    from sidecoach.coach.policy import TimeControl
+    from sidecoach.events import ClockObservation
+
+    coach, _ = _coach([])
+    coach.on_event(
+        GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.STARTING_FEN), 0.0
+    )
+    # Before any clock, the policy keeps its untimed default (every trigger fires).
+    assert coach.policy.time_control is TimeControl.UNTIMED
+    # A fresh 10+0 game: the peak clock bands it as rapid.
+    coach.on_event(ClockObservation(white_ms=600_000, black_ms=600_000, running=Side.WHITE), 1.0)
+    assert coach.policy.time_control is TimeControl.RAPID
+    # The user is White, so their remaining is White's; a low clock shrinks the stuck hint.
+    coach.on_event(ClockObservation(white_ms=50_000, black_ms=300_000, running=Side.WHITE), 2.0)
+    assert coach.policy._remaining_ms == 50_000
+    assert coach.policy.stuck_threshold() < coach.policy.settings.stuck_seconds
+    # A new game clears the clock back to untimed until one is seen again.
+    coach.on_event(
+        GameStarted(game_id="g2", user_side=Side.BLACK, start_fen=chess.STARTING_FEN), 3.0
+    )
+    assert coach.policy.time_control is TimeControl.UNTIMED
+    assert coach.policy._remaining_ms is None
+    # Now the user plays Black: their remaining is the black clock, and ~3 min is blitz.
+    coach.on_event(ClockObservation(white_ms=185_000, black_ms=180_000, running=Side.BLACK), 4.0)
+    assert coach.policy._remaining_ms == 180_000
+    assert coach.policy.time_control is TimeControl.BLITZ

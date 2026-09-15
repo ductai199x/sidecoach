@@ -12,9 +12,10 @@ from dataclasses import dataclass, field
 import chess
 import numpy as np
 
-from sidecoach.events import Event, GameEnded, GameStarted, Region, Side
+from sidecoach.events import ClockObservation, Event, GameEnded, GameStarted, Region, Side
 from sidecoach.state.reconcile import Readings, Reconciler
 from sidecoach.vision.board_detect import BoardCandidate
+from sidecoach.vision.clock import ClockReader, ClockReading
 from sidecoach.vision.pieces import (
     ThemeModel,
     looks_like_start_position,
@@ -23,6 +24,44 @@ from sidecoach.vision.pieces import (
 )
 from sidecoach.vision.squares import BoardGeometry, square_at
 from sidecoach.vision.tracker import BoardTracker
+
+# Clocks. A reading is bottom/top relative to the board; the side at the bottom is the user,
+# so the bottom box is the user's clock. chess.com draws white's box light and black's dark,
+# but the board orientation is the game's own truth, so the colours are keyed from `bottom`
+# rather than the box tint. Everything here tolerates a missing, hidden, or misread clock by
+# producing nothing: a bad clock costs the clock, never the session.
+CLOCK_MIN_CONFIDENCE = 0.4
+CLOCK_MAX_MS = 3 * 60 * 60 * 1000  # three hours; anything above is a misread, not a clock
+
+
+def _plausible_ms(ms: int | None) -> int | None:
+    return ms if ms is not None and 0 <= ms <= CLOCK_MAX_MS else None
+
+
+def clock_observation(reading: ClockReading | None, bottom: Side) -> ClockObservation | None:
+    """Map a bottom-relative clock reading to a colour-keyed observation, or None.
+
+    None whenever there is nothing trustworthy to report: no reading, confidence below the
+    floor, or both boxes unreadable (an untimed game, the clocks scrolled off screen, a
+    dialog drawn over them). A single unreadable box passes through as that side's time
+    being unknown, which the consumer treats as no update for that side.
+    """
+    if reading is None or reading.confidence < CLOCK_MIN_CONFIDENCE:
+        return None
+    top = _plausible_ms(reading.top_ms)
+    bottom_ms = _plausible_ms(reading.bottom_ms)
+    if top is None and bottom_ms is None:
+        return None
+    if bottom is Side.WHITE:
+        white_ms, black_ms = bottom_ms, top
+    else:
+        white_ms, black_ms = top, bottom_ms
+    running: Side | None = None
+    if reading.running == "bottom":
+        running = bottom
+    elif reading.running == "top":
+        running = Side.BLACK if bottom is Side.WHITE else Side.WHITE
+    return ClockObservation(white_ms=white_ms, black_ms=black_ms, running=running)
 
 
 @dataclass
@@ -33,6 +72,7 @@ class GamePipeline:
     reconciler: Reconciler | None = None
     bottom: Side | None = None
     board: BoardCandidate | None = None
+    clock: ClockReader | None = None
     bootstraps: int = 0
     _start_seen: int = 0
     _start_on_screen: bool = False
@@ -41,6 +81,8 @@ class GamePipeline:
     # because the lock was in doubt: either means the next verified frame is read again.
     _readings_key: tuple[Region, float] | None = None
     _unread_change: bool = False
+    # The last clock observation emitted, so an unchanged reading is not repeated.
+    _last_clock: tuple[int | None, int | None, Side | None] | None = None
 
     def process(
         self, frame: np.ndarray, ts: float, changed: bool = True, frame_id: int | None = None
@@ -51,6 +93,7 @@ class GamePipeline:
         stored frame; readings are then reused, but every tick still counts for the
         reconciler's timers and for the start-position count.
         """
+        fresh = changed  # this tick carries new pixels: the moment to sample the clock
         self.board = self.tracker.update(frame)
         if self.board is None or not self.tracker.verified:
             # No board, or a lock the frame did not validate: readings taken from an
@@ -67,6 +110,8 @@ class GamePipeline:
         )
         self._unread_change = False
         events: list[Event] = []
+        if fresh:
+            events += self._read_clock(frame, ts)
         rebuilt = False
         if changed:
             if self.model is not None:
@@ -129,6 +174,31 @@ class GamePipeline:
         self._unread_change = False
         self._start_seen = 0
         self._start_on_screen = False
+        self._last_clock = None
+        if self.clock is not None:
+            self.clock.reset()
+
+    def _read_clock(self, frame: np.ndarray, ts: float) -> list[Event]:
+        """A clock observation for this frame, or nothing.
+
+        Never raises, never reports a clock the board is not oriented for, and repeats
+        nothing: a missing, hidden, or misread clock simply produces no event, so the
+        coach's cadence falls back to its untimed defaults rather than breaking.
+        """
+        if self.clock is None or self.bottom is None or self.board is None:
+            return []
+        try:
+            reading = self.clock.read(frame, self.board, ts)
+            observation = clock_observation(reading, self.bottom)
+        except Exception:  # noqa: BLE001 - a clock must never take the pipeline down
+            return []
+        if observation is None:
+            return []
+        key = (observation.white_ms, observation.black_ms, observation.running)
+        if key == self._last_clock:
+            return []
+        self._last_clock = key
+        return [observation]
 
     @staticmethod
     def _stamp(events: list[Event], ts: float, frame_id: int | None) -> list[Event]:
@@ -181,6 +251,9 @@ class GamePipeline:
             return False  # something covered a piece; the next start frame gets a chance
         self.bottom = bottom
         self.model = model
+        self._last_clock = None
+        if self.clock is not None:
+            self.clock.reset()
         if self.reconciler is not None:
             self.reconciler.bottom = bottom
             self.reconciler.user_side = bottom
