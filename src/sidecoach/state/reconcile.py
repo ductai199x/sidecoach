@@ -45,6 +45,12 @@ from sidecoach.events import (
 from sidecoach.vision.pieces import CellReading
 from sidecoach.vision.squares import square_at
 
+
+def _turn_valid(board: chess.Board, turn: chess.Color) -> bool:
+    board.turn = turn
+    return board.is_valid()
+
+
 Readings = list[list[CellReading]]
 Observation = dict[chess.Square, CellReading]
 Explanation = tuple[chess.Move, ...]
@@ -609,26 +615,11 @@ class Reconciler:
         if self._resync_candidate[1] < self.resync_hold_frames:
             return []
 
-        board = self._placement(obs)
-        board.castling_rights = chess.BB_EMPTY
-        for colour, rank in ((chess.WHITE, 0), (chess.BLACK, 7)):
-            king = chess.Piece(chess.KING, colour)
-            rook = chess.Piece(chess.ROOK, colour)
-            if board.piece_at(chess.square(4, rank)) == king:
-                if board.piece_at(chess.square(7, rank)) == rook:
-                    board.castling_rights |= chess.BB_SQUARES[chess.square(7, rank)]
-                if board.piece_at(chess.square(0, rank)) == rook:
-                    board.castling_rights |= chess.BB_SQUARES[chess.square(0, rank)]
-        valid_turns = []
-        for turn in (chess.WHITE, chess.BLACK):
-            board.turn = turn
-            if board.is_valid():
-                valid_turns.append(turn)
-        if not valid_turns:
+        adopted = self._adopt_placement(self._placement(obs))
+        if adopted is None:
             self._resync_candidate = None
             return []
-        board.turn = valid_turns[0]
-        self._turn_unknown = len(valid_turns) > 1
+        board, self._turn_unknown = adopted
         events: list[Event] = []
         if self._finished:
             # The finished game is over for good; a position that appears after it is
@@ -657,6 +648,45 @@ class Reconciler:
             self._finished = True
             events.append(self._ended(board.result(), "game over on board"))
         return events
+
+    @staticmethod
+    def _adopt_placement(placement: chess.Board) -> tuple[chess.Board, bool] | None:
+        """A bare placement made into a position: castling rights assumed conservatively from
+        the king and rook home squares, and the turn from legality. Returns the board and
+        whether the turn is still unknown (both colours legal to move), or None if neither is.
+        Shared by the position resync and the cold start from the theme cache.
+        """
+        board = placement.copy(stack=False)
+        board.castling_rights = chess.BB_EMPTY
+        for colour, rank in ((chess.WHITE, 0), (chess.BLACK, 7)):
+            king = chess.Piece(chess.KING, colour)
+            rook = chess.Piece(chess.ROOK, colour)
+            if board.piece_at(chess.square(4, rank)) == king:
+                if board.piece_at(chess.square(7, rank)) == rook:
+                    board.castling_rights |= chess.BB_SQUARES[chess.square(7, rank)]
+                if board.piece_at(chess.square(0, rank)) == rook:
+                    board.castling_rights |= chess.BB_SQUARES[chess.square(0, rank)]
+        valid_turns = [turn for turn in (chess.WHITE, chess.BLACK) if _turn_valid(board, turn)]
+        if not valid_turns:
+            return None
+        board.turn = valid_turns[0]
+        return board, len(valid_turns) > 1
+
+    def start_from(self, placement: chess.Board) -> list[Event]:
+        """Begin a game from an arbitrary observed position -- a puzzle or a mid-game board read
+        cold from the theme cache -- rather than from the start. Rights and turn are assumed the
+        same way a position resync assumes them; the game continues normally from here."""
+        adopted = self._adopt_placement(placement)
+        if adopted is None:
+            return []
+        board, self._turn_unknown = adopted
+        self.board = board
+        self._base_fen = board.fen()
+        self._started = True
+        self._finished = False
+        self._last_commit_ts = self._ts
+        self.game_id = uuid.uuid4().hex[:8]
+        return [GameStarted(game_id=self.game_id, user_side=self.user_side, start_fen=board.fen())]
 
     def _placement(self, obs: Observation) -> chess.Board:
         board = chess.Board(None)

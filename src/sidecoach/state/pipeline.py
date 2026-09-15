@@ -25,6 +25,7 @@ from sidecoach.events import (
 from sidecoach.state.reconcile import Readings, Reconciler
 from sidecoach.vision.board_detect import BoardCandidate
 from sidecoach.vision.clock import ClockReader, ClockReading
+from sidecoach.vision.coordinates import learn_rank_labels, read_bottom_side
 from sidecoach.vision.pieces import (
     ThemeModel,
     looks_like_start_position,
@@ -32,6 +33,7 @@ from sidecoach.vision.pieces import (
     start_shaped,
 )
 from sidecoach.vision.squares import BoardGeometry, square_at
+from sidecoach.vision.theme_cache import ThemeCache, sample_palette
 from sidecoach.vision.tracker import BoardTracker
 
 # Clocks. A reading is bottom/top relative to the board; the side at the bottom is the user,
@@ -82,6 +84,7 @@ class GamePipeline:
     bottom: Side | None = None
     board: BoardCandidate | None = None
     clock: ClockReader | None = None
+    cache: ThemeCache | None = None
     bootstraps: int = 0
     _start_seen: int = 0
     _start_on_screen: bool = False
@@ -288,6 +291,9 @@ class GamePipeline:
             return False  # something covered a piece; the next start frame gets a chance
         self.bottom = bottom
         self.model = model
+        model.rank_labels = learn_rank_labels(frame, geometry, bottom)
+        if self.cache is not None:
+            self.cache.save(model)
         self._last_clock = None
         if self.clock is not None:
             self.clock.reset()
@@ -296,6 +302,73 @@ class GamePipeline:
             self.reconciler.user_side = bottom
         self.bootstraps += 1
         return True
+
+    def cold_start(
+        self, frame: np.ndarray, geometry: BoardGeometry, bottom: Side | None = None
+    ) -> list[Event]:
+        """Recognise the board cold from the theme cache and begin a game from the position on
+        it -- a puzzle or a mid-game board, with no move-0 bootstrap. `bottom` may be supplied
+        (the panel's flip control); otherwise it is read from the coordinate labels. Returns the
+        GameStarted, or [] when no cached theme matches or the orientation cannot be determined.
+        """
+        if self.cache is None:
+            return []
+        sampled = sample_palette(frame, geometry)
+        if sampled is None:
+            return []
+        model = self.cache.get(*sampled)
+        if model is None:
+            return []
+        if bottom is None:
+            bottom = read_bottom_side(frame, geometry, model.rank_labels)
+        if bottom is None:
+            return []  # coordinates are off; the caller supplies the orientation and retries
+        readings = model.classify_frame(frame, geometry)
+        placement = self._placement_from_readings(readings, bottom)
+        if placement is None:
+            return []
+        reconciler = Reconciler(bottom=bottom, user_side=bottom)
+        events = reconciler.start_from(placement)
+        if not events:
+            return []  # the placement is not a legal position; adopt nothing
+        # Only now, with a legal position begun, is the pipeline switched onto this theme.
+        self.model = model
+        self.bottom = bottom
+        self._readings = readings
+        self._readings_key = (
+            (self.board.region, round(self.board.cell_px, 2)) if self.board is not None else None
+        )
+        self.reconciler = reconciler
+        return events
+
+    @staticmethod
+    def _placement_from_readings(readings: Readings, bottom: Side) -> chess.Board | None:
+        """The classified board as a bare placement, or None unless it is a fully quiet,
+        fully readable position with both kings on it.
+
+        A cold read has no move history to lean on, so it must not adopt a board caught
+        mid-move: a lifted piece empties its square and floats over another with the drag's
+        hover outline, so a single frame read then would drop or misplace a piece (the c1
+        bishop that read empty while it was in flight over f4). Every square must therefore
+        be a settled piece or a settled empty with no hover and no unreadable cell -- the
+        same quiet-board bar the reconciler holds a commit to -- or the read is refused and
+        the caller retries on the next frame.
+        """
+        board = chess.Board(None)
+        for row in range(8):
+            for col in range(8):
+                reading = readings[row][col]
+                if reading.hover or reading.kind == "unknown" or not reading.settled:
+                    return None  # a piece in flight, or a cell that cannot be read cleanly
+                if reading.kind == "piece":
+                    if reading.symbol is None:
+                        return None  # a piece of no known kind: not a clean read
+                    board.set_piece_at(
+                        square_at(row, col, bottom), chess.Piece.from_symbol(reading.symbol)
+                    )
+        if board.king(chess.WHITE) is None or board.king(chess.BLACK) is None:
+            return None
+        return board
 
     def _bootstrap(self, frame: np.ndarray, geometry: BoardGeometry) -> list[Event]:
         previous = self.reconciler

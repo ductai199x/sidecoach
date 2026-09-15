@@ -552,6 +552,9 @@ class ThemeModel:
     exemplars: list[Exemplar] = field(default_factory=list)
     light_bg: np.ndarray | None = None
     dark_bg: np.ndarray | None = None
+    # Rank-digit exemplars (value -> glyph) learned from the start position, where the
+    # orientation is known; used to read the orientation cold from any board of this theme.
+    rank_labels: dict[int, np.ndarray] = field(default_factory=dict)
 
     @property
     def symbols(self) -> set[str]:
