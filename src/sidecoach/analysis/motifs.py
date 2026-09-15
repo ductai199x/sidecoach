@@ -651,15 +651,20 @@ def _sacrifice(
     comes straight back: measured that way, `2. Nf3` in the game of 2026-09-14 20:06 was a
     sacrifice. So the balance is read after the move and the opponent's answer to it.
 
-    Two points, so a pawn gambit does not count. "Still wins" is a mate for the mover, or
-    the material coming back by the end of the line: a piece given for nothing at all is a
-    blunder, and the assessment already says so.
+    Two points, so a pawn gambit does not count. The deficit must survive the mover's own
+    next move as well: a reply that captures and is taken straight back is a trade, and
+    measured after the reply alone, 5...d6 in a real game was a sacrifice because 6.Bxc6+
+    bxc6 followed. "Still wins" is a mate for the mover, or the material coming back by the
+    end of the line: a piece given for nothing at all is a blunder, and the assessment
+    already says so.
     """
     if len(played) < 2:
         return None
     start = _balance(boards[0], mover)
     answered = _balance(boards[2], mover) if len(boards) > 2 else _balance(boards[-1], mover)
     if start - answered < _SACRIFICE_THRESHOLD:
+        return None
+    if len(boards) > 3 and start - _balance(boards[3], mover) < _SACRIFICE_THRESHOLD:
         return None
     mating = mate_in is not None and mate_in > 0
     if not mating and _balance(boards[-1], mover) < start:

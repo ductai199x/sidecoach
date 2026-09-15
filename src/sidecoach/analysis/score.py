@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import chess
 
 from sidecoach.config import CoachSettings
-from sidecoach.events import Line, Severity
+from sidecoach.events import Label, Line, Severity
 
 DRAW = 0.5
 # Lichess's curve from centipawns to winning chances, fitted to games between people.
@@ -66,6 +66,11 @@ class Thresholds:
     # An only move: everything else throws away this much. Wider than a decisive moment,
     # since "there is one move here" is a stronger claim than "this move matters".
     only_move_gap: float = 0.30
+    # Below this loss a move is "excellent" rather than merely "good".
+    excellent: float = 0.02
+    # A position this far gone, either way, is decided: a sacrifice in it is not brilliant
+    # and the only move that keeps the win is not great, just the move.
+    decided: float = 0.90
 
     @classmethod
     def from_settings(cls, coach: CoachSettings) -> Thresholds:
@@ -75,6 +80,8 @@ class Thresholds:
             blunder=coach.blunder,
             decisive_gap=coach.decisive_gap,
             only_move_gap=coach.only_move_gap,
+            excellent=coach.excellent,
+            decided=coach.decided,
         )
 
 
@@ -130,6 +137,76 @@ def severity(loss: float, thresholds: Thresholds | None = None) -> Severity:
     if loss >= thresholds.inaccuracy:
         return Severity.INACCURACY
     return Severity.NONE
+
+
+def label_move(
+    loss: float,
+    thresholds: Thresholds,
+    *,
+    is_best: bool,
+    in_book: bool,
+    only_move: bool,
+    sacrifice: bool,
+    before_score: float,
+    opponent_erred: bool,
+    obvious: bool = False,
+) -> Label:
+    """What kind of move it was, in the vocabulary the user reads on chess.com.
+
+    Two axes. The loss says how good the move was: best, excellent, good, then the three
+    names for losing ground. The moment says whether it mattered, which is what great,
+    brilliant and miss add. `opponent_erred` says the move before this one was a mistake
+    or worse, so this move either took the chance (great, when it is the best move) or let
+    it go (miss, whatever the size of the loss); `only_move` says everything else lost, so
+    finding it was great; a sound `sacrifice` is brilliant. None of that applies to an
+    `obvious` move (a recapture, or the only legal move) or in a decided position, where
+    keeping a won game is just the move, not a find.
+    """
+    if in_book:
+        return Label.BOOK
+    flagged = loss >= thresholds.inaccuracy
+    decided = before_score >= thresholds.decided or before_score <= 1.0 - thresholds.decided
+    if opponent_erred and flagged:
+        return Label.MISS
+    if not flagged:
+        if not obvious and not decided:
+            if sacrifice:
+                return Label.BRILLIANT
+            if only_move or (opponent_erred and is_best):
+                return Label.GREAT
+        if is_best or loss == 0.0:
+            return Label.BEST
+        return Label.EXCELLENT if loss < thresholds.excellent else Label.GOOD
+    verdict = severity(loss, thresholds)
+    if verdict is Severity.BLUNDER:
+        return Label.BLUNDER
+    return Label.MISTAKE if verdict is Severity.MISTAKE else Label.INACCURACY
+
+
+# Lichess's per-move accuracy: 100 for no loss, falling off exponentially with the drop in
+# winning chances, on the same curve as `human_expected_score`.
+ACCURACY_A = 103.1668
+ACCURACY_K = 0.04354
+ACCURACY_C = 3.1669
+
+
+def move_accuracy(loss: float) -> float:
+    """0 to 100 for one move, from its loss in expected score."""
+    raw = ACCURACY_A * math.exp(-ACCURACY_K * loss * 100.0) - ACCURACY_C
+    return round(max(0.0, min(100.0, raw)), 2)
+
+
+def game_accuracy(accuracies: Sequence[float]) -> float | None:
+    """One number for a side's game: the mean of the per-move accuracies.
+
+    Lichess averages a volatility-weighted mean with a harmonic mean; the harmonic mean
+    collapses on a single move that flipped the game, which club games have, and against
+    chess.com's numbers on six of them the plain mean sat much closer. Chess.com's own
+    formula is not published, so the numbers will be near, not equal.
+    """
+    if not accuracies:
+        return None
+    return sum(accuracies) / len(accuracies)
 
 
 def best_gap(lines: Sequence[Line]) -> float | None:

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     import chess
 
     from sidecoach.analysis.annotator import Analyser, Book, Tagger
+    from sidecoach.analysis.chesscom import Overview
     from sidecoach.capture.base import CaptureBackend
     from sidecoach.events import MoveAssessment
     from sidecoach.replay.recording import Recording
@@ -771,6 +772,95 @@ _SEVERITY_COLOUR = {
     "inaccuracy": "cyan",
     "none": "green",
 }
+_LABEL_ORDER = (
+    "brilliant",
+    "great",
+    "best",
+    "excellent",
+    "good",
+    "book",
+    "inaccuracy",
+    "mistake",
+    "miss",
+    "blunder",
+)
+_LABEL_COLOUR = {
+    "brilliant": "bright_cyan",
+    "great": "blue",
+    "best": "green",
+    "excellent": "green",
+    "good": "green",
+    "book": "magenta",
+    "inaccuracy": "cyan",
+    "mistake": "yellow",
+    "miss": "yellow",
+    "blunder": "red",
+}
+# Labels worth a mark in the move table; the rest are the ordinary run of a game.
+_NOTABLE = {"brilliant", "great", "inaccuracy", "mistake", "miss", "blunder"}
+_QUIET_LABELS = {"best", "excellent", "good"}
+
+
+def _coloured(label: str) -> str:
+    colour = _LABEL_COLOUR.get(label, "white")
+    return f"[{colour}]{label}[/{colour}]"
+
+
+def _print_overview(
+    overview: Overview, labels: dict[bool, dict[str, int]], accuracies: dict[bool, list[float]]
+) -> None:
+    """Our tallies beside chess.com's, side by side."""
+    import chess
+
+    from sidecoach.analysis.score import game_accuracy
+
+    table = Table(box=None, pad_edge=False, title="tallies: ours / chess.com")
+    table.add_column("")
+    table.add_column("white", justify="right")
+    table.add_column("black", justify="right")
+    for key in _LABEL_ORDER:
+        ours_w = labels[chess.WHITE].get(key, 0)
+        ours_b = labels[chess.BLACK].get(key, 0)
+        theirs_w = overview.counts.get("white", {}).get(key)
+        theirs_b = overview.counts.get("black", {}).get(key)
+        if not any((ours_w, ours_b, theirs_w, theirs_b)):
+            continue
+        table.add_row(key, f"{ours_w} / {theirs_w}", f"{ours_b} / {theirs_b}")
+    ours = {side: game_accuracy(accuracies[side]) or 0.0 for side in (chess.WHITE, chess.BLACK)}
+    theirs = overview.accuracy
+    table.add_row(
+        "accuracy",
+        f"{ours[chess.WHITE]:.1f} / {theirs.get('white', '?')}",
+        f"{ours[chess.BLACK]:.1f} / {theirs.get('black', '?')}",
+    )
+    if overview.rating:
+        table.add_row(
+            "game rating",
+            f"- / {overview.rating.get('white', '?')}",
+            f"- / {overview.rating.get('black', '?')}",
+        )
+    console.print(table)
+
+
+def _print_agreement(agreements: list[tuple[str, str, str]]) -> None:
+    """How our labels line up with chess.com's on the moves either side flagged."""
+    if not agreements:
+        console.print("no labelled moves to compare")
+        return
+    same = sum(1 for _, ours, theirs in agreements if ours == theirs)
+    console.print(
+        f"\n[bold]agreement with chess.com[/bold]: {same} of {len(agreements)} "
+        f"labelled moves match exactly"
+    )
+    table = Table(box=None, pad_edge=False)
+    for column in ("move", "ours", "chess.com"):
+        table.add_column(column)
+    for move, ours, theirs in agreements:
+        if ours == theirs:
+            continue
+        table.add_row(move, _coloured(ours), _coloured(theirs))
+    if table.row_count:
+        console.print(table)
 
 
 def _assessment_text(assessment: MoveAssessment, before: chess.Board) -> str:
@@ -803,6 +893,10 @@ def review(
     threats: Annotated[bool, typer.Option(help="Also ask what the opponent threatened")] = False,
     quiet: Annotated[bool, typer.Option(help="Only the summary, no move table")] = False,
     out: Annotated[Path | None, typer.Option(help="Write the assessments as JSON")] = None,
+    compare: Annotated[
+        Path | None,
+        typer.Option(help="A saved chess.com review move list (.html or .json) to compare with"),
+    ] = None,
     config: ConfigOpt = None,
 ) -> None:
     """Annotate a game from a PGN: what each move cost, and where the game turned.
@@ -866,14 +960,38 @@ def review(
         book=_load_book(settings),
         with_threats=threats,
     )
+    reference: dict[int, object] = {}
+    overview: Overview | None = None
+    if compare is not None:
+        from sidecoach.analysis import chesscom
+
+        try:
+            loaded = chesscom.load(compare)
+            chesscom.verify(loaded.moves, moves)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            console.print(f"[red]cannot use {compare}[/red]: {exc}")
+            raise typer.Exit(1) from exc
+        reference = {item.ply: item for item in loaded.moves}
+        overview = loaded.overview
+        console.print(
+            f"comparing with {compare}: {len(loaded.moves)} plies listed"
+            + (", with the overview" if overview else "")
+        )
+
     table = Table(box=None, pad_edge=False)
-    for column in ("move", "", "loss", "severity", "better", "motifs"):
+    columns = ["move", "", "loss", "label", "better", "motifs"]
+    if reference:
+        columns.insert(4, "chess.com")
+    for column in columns:
         table.add_column(column, overflow="fold")
 
     board = parsed.board()
     counts = {"inaccuracy": 0, "mistake": 0, "blunder": 0}
     total_loss = {chess.WHITE: 0.0, chess.BLACK: 0.0}
     plies = {chess.WHITE: 0, chess.BLACK: 0}
+    accuracies: dict[bool, list[float]] = {chess.WHITE: [], chess.BLACK: []}
+    labels: dict[bool, dict[str, int]] = {chess.WHITE: {}, chess.BLACK: {}}
+    agreements: list[tuple[str, str, str]] = []  # move, ours, theirs
     rows: list[dict[str, object]] = []
     opening: str | None = None
     started = time.perf_counter()
@@ -888,11 +1006,18 @@ def review(
                 opening = analysis.opening or opening
                 total_loss[mover] += assessment.expected_loss
                 plies[mover] += 1
+                if assessment.accuracy is not None:
+                    accuracies[mover].append(assessment.accuracy)
+                ours = assessment.label.value if assessment.label else "?"
+                labels[mover][ours] = labels[mover].get(ours, 0) + 1
                 if assessment.severity.value in counts:
                     counts[assessment.severity.value] += 1
                 show = wanted == "both" or (wanted == "white") == (mover == chess.WHITE)
                 number = board.fullmove_number
                 label = f"{number}." if mover == chess.WHITE else f"{number}..."
+                theirs = getattr(reference.get(ply), "label", None)
+                if reference and (theirs is not None or ours in _NOTABLE):
+                    agreements.append((f"{label} {san}", ours, theirs or "unlabelled"))
                 better = (
                     san_line(board, assessment.best, limit=4)
                     if assessment.severity.value != "none"
@@ -910,21 +1035,31 @@ def review(
                         "tags": [tag.model_dump() for tag in assessment.tags],
                         "threats": analysis.threats,
                         "decisive": analysis.decisive,
+                        "label": ours,
+                        "accuracy": assessment.accuracy,
+                        "depth": assessment.depth,
+                        "chesscom": theirs,
+                        "before_score": round(annotator.measure(board).score, 4),
+                        "only_move": annotator.measure(board).only_move,
                     }
                 )
                 if show and not quiet:
-                    colour = _SEVERITY_COLOUR.get(assessment.severity.value, "white")
-                    marker = "" if assessment.severity.value == "none" else "*"
-                    table.add_row(
+                    colour = _LABEL_COLOUR.get(ours, "white")
+                    marker = "*" if ours in _NOTABLE else ""
+                    cells = [
                         label,
                         f"{san}{marker}",
                         f"{assessment.expected_loss:.2f}",
-                        f"[{colour}]{assessment.severity.value}[/{colour}]"
-                        if assessment.severity.value != "none"
-                        else "",
+                        f"[{colour}]{ours}[/{colour}]" if ours not in _QUIET_LABELS else "",
                         better,
                         tags,
-                    )
+                    ]
+                    if reference:
+                        theirs_colour = _LABEL_COLOUR.get(theirs or "", "white")
+                        cells.insert(
+                            4, f"[{theirs_colour}]{theirs}[/{theirs_colour}]" if theirs else ""
+                        )
+                    table.add_row(*cells)
                 board.push(move)
     except KeyboardInterrupt:
         console.print("[yellow]stopped[/yellow]")
@@ -933,12 +1068,25 @@ def review(
         console.print(table)
     if opening:
         console.print(f"opening: {opening}")
+    from sidecoach.analysis.score import game_accuracy
+
     for colour, name in ((chess.WHITE, "white"), (chess.BLACK, "black")):
         if plies[colour]:
-            console.print(
-                f"{name}: {plies[colour]} moves, "
-                f"average loss {total_loss[colour] / plies[colour]:.3f}"
+            accuracy = game_accuracy(accuracies[colour])
+            tally = ", ".join(
+                f"{labels[colour].get(key, 0)} {key}"
+                for key in _LABEL_ORDER
+                if labels[colour].get(key, 0)
             )
+            console.print(
+                f"{name}: {plies[colour]} moves, accuracy "
+                f"{accuracy if accuracy is not None else 0.0:.1f}, "
+                f"average loss {total_loss[colour] / plies[colour]:.3f}; {tally}"
+            )
+    if reference:
+        _print_agreement(agreements)
+    if overview is not None:
+        _print_overview(overview, labels, accuracies)
     console.print(
         f"[cyan]{counts['inaccuracy']} inaccuracies[/cyan], "
         f"[yellow]{counts['mistake']} mistakes[/yellow], "
@@ -954,6 +1102,54 @@ def review(
             encoding="utf-8",
         )
         console.print(f"assessments -> {out}")
+
+
+@app.command("import-reviews")
+def import_reviews(
+    page: Annotated[Path, typer.Argument(help="A saved chess.com page, any number of games")],
+    recordings: Annotated[Path | None, typer.Option(help="Folder of recordings")] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """File each review in a saved chess.com page beside the recording it belongs to.
+
+    The page is whatever was copied out of the browser's developer tools: move lists and
+    overview panels, several games one after another, in any order as long as each
+    overview comes before its move list. Each game is matched to a recording by replaying
+    its moves against that recording's truth PGN, and written there as chesscom.json,
+    which `review --compare` reads.
+    """
+    from sidecoach.analysis import chesscom
+
+    settings = load_settings(config)
+    folder = recordings or settings.data_dir / "recordings"
+    if not page.exists():
+        console.print(f"[red]no such file[/red] {page}")
+        raise typer.Exit(1)
+    games = chesscom.split_games(page.read_text(encoding="utf-8", errors="replace"))
+    console.print(f"{len(games)} game(s) in {page}")
+    truths: list[tuple[Path, list[chess.Move]]] = []
+    for pgn in sorted(folder.glob("*/truth.pgn")):
+        truths.append((pgn.parent, list(_read_moves(pgn))))
+    for index, game in enumerate(games, start=1):
+        homes = [home for home, truth in truths if chesscom.match_game(game, truth)]
+        summary = f"{len(game.moves)} plies, {sum(1 for m in game.moves if m.label)} labelled" + (
+            ", with overview" if game.overview else ", no overview"
+        )
+        if len(homes) != 1:
+            why = "matches no recording" if not homes else f"matches {len(homes)} recordings"
+            console.print(f"  game {index}: {summary}; [yellow]{why}[/yellow], skipped")
+            continue
+        target = homes[0] / "chesscom.json"
+        chesscom.save(game, target)
+        console.print(f"  game {index}: {summary} -> {target}")
+
+
+def _read_moves(pgn: Path) -> list[chess.Move]:
+    import chess.pgn
+
+    with pgn.open(encoding="utf-8") as handle:
+        game = chess.pgn.read_game(handle)
+    return list(game.mainline_moves()) if game is not None else []
 
 
 @app.command()

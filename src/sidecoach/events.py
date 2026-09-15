@@ -169,6 +169,27 @@ class Severity(StrEnum):
     BLUNDER = "blunder"
 
 
+class Label(StrEnum):
+    """What a played move was, in the vocabulary the user already reads on chess.com.
+
+    Severity says how much a move cost; the label says what kind of move it was, which
+    needs the move before it and the opening book as well: a miss is a chance the opponent
+    handed over and the mover did not take, a great move is one that took it or was the
+    only move, a brilliant move is a sound sacrifice, a book move is still in theory.
+    """
+
+    BOOK = "book"
+    BRILLIANT = "brilliant"
+    GREAT = "great"
+    BEST = "best"
+    EXCELLENT = "excellent"
+    GOOD = "good"
+    INACCURACY = "inaccuracy"
+    MISTAKE = "mistake"
+    MISS = "miss"
+    BLUNDER = "blunder"
+
+
 class MoveAssessment(Event):
     game_id: str
     ply: int
@@ -181,6 +202,9 @@ class MoveAssessment(Event):
     # engine's time cap before reaching the depth asked for makes the comparison less
     # exact, and a reader deciding whether to act on a small loss should know.
     depth: int = 0
+    label: Label | None = None
+    # Per-move accuracy on Lichess's curve, 0 to 100, so a game can be summed up.
+    accuracy: float | None = None
 
 
 # Coach and UI

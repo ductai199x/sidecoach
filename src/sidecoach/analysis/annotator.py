@@ -27,6 +27,8 @@ from sidecoach.analysis.score import (
     eval_loss,
     is_decisive,
     is_only_move,
+    label_move,
+    move_accuracy,
     position_score,
     severity,
 )
@@ -60,6 +62,8 @@ class Book(Protocol):
 
     def identify(self, moves: Sequence[chess.Move]) -> object | None: ...
 
+    def in_book(self, moves: Sequence[chess.Move]) -> bool: ...
+
 
 @dataclass
 class Measured:
@@ -90,10 +94,16 @@ class GameAnnotator:
     book: Book | None = None
     with_threats: bool = True
     _cache: dict[str, Measured] = field(default_factory=dict, init=False, repr=False)
+    # The last move assessed: game, ply, loss, and where it landed, so the next move knows
+    # whether the opponent just erred and whether it is merely taking back.
+    _previous: tuple[str, int, float, chess.Square] | None = field(
+        default=None, init=False, repr=False
+    )
 
     def reset(self) -> None:
         """Forget the cache; a new game shares no positions with the last one."""
         self._cache.clear()
+        self._previous = None
 
     def measure(self, board: chess.Board) -> Measured:
         key = board.fen()
@@ -142,15 +152,39 @@ class GameAnnotator:
         after.push(move)
         measured_after = self.measure(after)
         loss = eval_loss(measured_before.lines, move.uci(), measured_after.score)
+        tags = self._move_tags(before, move, measured_after)
+        best = measured_before.lines[0].moves if measured_before.lines else []
+        previous = self._previous
+        if previous is not None and (previous[0] != game_id or previous[1] != ply - 1):
+            previous = None  # another game, or a gap: the move before this one is unknown
+        opponent_erred = previous is not None and previous[2] >= self.thresholds.mistake
+        recapture = (
+            previous is not None and before.is_capture(move) and move.to_square == previous[3]
+        )
+        obvious = recapture or before.legal_moves.count() == 1
+        label = label_move(
+            loss,
+            self.thresholds,
+            is_best=bool(best) and best[0] == move.uci(),
+            in_book=self._in_book(after),
+            only_move=measured_before.only_move,
+            sacrifice=any(tag.name == "sacrifice" for tag in tags),
+            before_score=measured_before.score,
+            opponent_erred=opponent_erred,
+            obvious=obvious,
+        )
+        self._previous = (game_id, ply, loss, move.to_square)
         assessment = MoveAssessment(
             game_id=game_id,
             ply=ply,
             uci=move.uci(),
             expected_loss=loss,
             severity=severity(loss, self.thresholds),
-            best=measured_before.lines[0].moves if measured_before.lines else [],
-            tags=self._move_tags(before, move, measured_after),
+            best=best,
+            tags=tags,
             depth=min(measured_before.depth, measured_after.depth or measured_before.depth),
+            label=label,
+            accuracy=move_accuracy(loss),
         )
         return assessment, self.analysis_event(game_id, after, ply)
 
@@ -172,6 +206,14 @@ class GameAnnotator:
         return self.tagger.tags_for_move(
             before, move, pv=pv, mate_in=_mate_in(before, move, after.lines)
         )
+
+    def _in_book(self, board: chess.Board) -> bool:
+        """Whether the game is still in theory after this move; needs the moves that got here."""
+        if self.book is None or not board.move_stack:
+            return False
+        if board.root().fen() != chess.STARTING_FEN:
+            return False
+        return self.book.in_book(list(board.move_stack))
 
     def _opening(self, board: chess.Board) -> str | None:
         """The opening this game is in, when the board carries the moves that got here.

@@ -63,6 +63,8 @@ class CoachSettings(BaseModel):
     blunder: float = 0.20
     decisive_gap: float = 0.10
     only_move_gap: float = 0.30
+    excellent: float = 0.02
+    decided: float = 0.90
 
 
 class ProfileSettings(BaseModel):
