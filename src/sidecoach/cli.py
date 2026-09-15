@@ -381,7 +381,13 @@ def _replay_moves(rec: object, truth_pgn: Path | None = None, scored_game: int =
             elif isinstance(event, GameStarted):
                 console.print(f"tick {tick.frame_id:5d} GameStarted")
     elapsed = time.perf_counter() - started
-    if pipe.reconciler is not None and pipe.reconciler.board.move_stack:
+    # A game still in progress when the recording ends is reported as it stands; a finished
+    # one was already reported by its game-over event.
+    if (
+        pipe.reconciler is not None
+        and pipe.reconciler.board.move_stack
+        and not pipe.reconciler.finished
+    ):
         games.append((pipe.reconciler.pgn(), pipe.reconciler.board.fen()))
     if not games:
         console.print("[yellow]no start position seen; nothing reconstructed[/yellow]")
@@ -663,7 +669,11 @@ def watch(
         if recorder is not None:
             recorder.close()
         cap.close()
-    if pipe.reconciler is not None and pipe.reconciler.board.move_stack:
+    if (
+        pipe.reconciler is not None
+        and pipe.reconciler.board.move_stack
+        and not pipe.reconciler.finished
+    ):
         games.append(pipe.reconciler.pgn())
     for i, pgn in enumerate(games, start=1):
         console.print(f"\ngame {i} PGN: {pgn}")
