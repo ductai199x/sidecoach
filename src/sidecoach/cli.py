@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import platform
 import sys
 import time
@@ -18,12 +19,15 @@ from sidecoach.config import Settings, find_stockfish, load_settings
 from sidecoach.events import Region, Side
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
     import chess
 
     from sidecoach.analysis.annotator import Analyser, Book, Tagger
     from sidecoach.analysis.chesscom import Overview
     from sidecoach.capture.base import CaptureBackend
-    from sidecoach.events import MoveAssessment
+    from sidecoach.coach.coach import Coach
+    from sidecoach.events import Event, MoveAssessment
     from sidecoach.replay.recording import Recording
 
 app = typer.Typer(
@@ -291,6 +295,7 @@ def replay(
         float, typer.Option(help="Resize every frame by this factor before the pipeline")
     ] = 1.0,
     assess: Annotated[bool, typer.Option(help="Also run the engine over the moves found")] = False,
+    coach: Annotated[bool, typer.Option(help="Also let the coach speak, as it would live")] = False,
     config: ConfigOpt = None,
 ) -> None:
     """Summarise a recording, track the board through it, or reconstruct the game.
@@ -310,11 +315,13 @@ def replay(
     )
     if moves or pgn is not None:
         truth = pgn if pgn is not None else recording / "truth.pgn"
-        assessing = _Assessing(settings, assess)
+        assessing = _Assessing(settings, assess or coach)
+        coaching = _Coaching(settings, coach and assessing.on)
         try:
-            _replay_moves(rec, truth if truth.exists() else None, game, scale, assessing)
+            _replay_moves(rec, truth if truth.exists() else None, game, scale, assessing, coaching)
         finally:
             assessing.close()
+            coaching.close()
         return
     if not detect:
         return
@@ -362,6 +369,7 @@ def _replay_moves(
     scored_game: int = 1,
     scale: float = 1.0,
     assessing: _Assessing | None = None,
+    coaching: _Coaching | None = None,
 ) -> None:
     """Run the game pipeline over a recording and, if a truth PGN exists, score one game.
 
@@ -406,7 +414,12 @@ def _replay_moves(
                 f"{bottom} at the bottom"
             )
         if assessing is not None:
-            assessing.drain(indent="            ")
+            assessed = assessing.drain(indent="            ")
+            if coaching is not None:
+                coaching.events(events, tick.ts)
+                coaching.events(assessed, tick.ts)
+                coaching.tick(tick.ts)
+                coaching.drain(indent="            ")
         for event in events:
             # Decided per event: a game-over, a game-start, and the next game's first move
             # can share one tick.
@@ -467,7 +480,12 @@ def _replay_moves(
                 console.print(f"tick {tick.frame_id:5d} GameStarted")
     elapsed = time.perf_counter() - started
     if assessing is not None:
-        assessing.wait(indent="            ")
+        assessed = assessing.wait(indent="            ")
+        if coaching is not None:
+            coaching.events(assessed, time.monotonic())
+            coaching.wait(indent="            ")
+            if coaching.on:
+                console.print(f"            [dim]{coaching.summary()}[/dim]")
     # A game still in progress when the recording ends is reported as it stands; a finished
     # one was already reported by its game-over event.
     if (
@@ -734,14 +752,17 @@ class _Assessing:
             self.analyser.annotator.reset()
             self._from.clear()
 
-    def drain(self, log: TextIO | None = None, indent: str = "  ") -> None:
+    def drain(self, log: TextIO | None = None, indent: str = "  ") -> list[Event]:
+        """Print what the engine has finished, log it, and hand it back for the coach."""
         import chess
 
         from sidecoach.events import MoveAssessment
 
         if self.analyser is None:
-            return
+            return []
+        drained: list[Event] = []
         for assessed in self.analyser.poll():
+            drained.append(assessed)
             if isinstance(assessed, MoveAssessment):
                 fen = self._from.pop(assessed.ply, None)
                 if fen is not None:
@@ -749,21 +770,179 @@ class _Assessing:
                     console.print(f"{indent}[dim]ply {assessed.ply}[/dim] {text}")
             if log is not None:
                 log.write(assessed.model_dump_json() + "\n")
+        return drained
 
-    def wait(self, timeout: float = 30.0, log: TextIO | None = None, indent: str = "  ") -> None:
+    def wait(
+        self, timeout: float = 30.0, log: TextIO | None = None, indent: str = "  "
+    ) -> list[Event]:
         """Let the engine catch up at the end of a game, so nothing is lost on the way out."""
         if self.analyser is None:
-            return
+            return []
+        drained: list[Event] = []
         deadline = time.monotonic() + timeout
         while self.analyser.pending and time.monotonic() < deadline:
-            self.drain(log, indent)
+            drained += self.drain(log, indent)
             time.sleep(0.05)
-        self.drain(log, indent)
+        return drained + self.drain(log, indent)
 
     def close(self) -> None:
         if self.analyser is not None:
             self.analyser.close()
             self.analyser = None
+
+
+class _Coaching:
+    """The coach alongside a game: events in, messages out, the user's words in between.
+
+    Shared by the live watcher and by replay. The model runs on the coach's own worker
+    thread; messages are printed on the tick that finds them.
+    """
+
+    def __init__(self, settings: Settings, enabled: bool) -> None:
+        self.coach: Coach | None = None
+        self.log: TextIO | None = None
+        if not enabled:
+            return
+        from sidecoach.coach.coach import Coach
+        from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
+        from sidecoach.llm.factory import make_provider
+
+        try:
+            provider = make_provider(settings.llm)
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]no coach: {exc}[/yellow]")
+            return
+        ok, detail = provider.healthcheck()
+        if not ok:
+            console.print(f"[yellow]no coach: {detail}[/yellow]")
+            return
+        policy = InterjectionPolicy(
+            PolicySettings(stuck_seconds=settings.coach.stuck_seconds, quiet=settings.coach.quiet)
+        )
+        self.coach = Coach(
+            provider,
+            policy=policy,
+            draft_check=_draft_check(),
+            claims=_claims_check(provider),
+        )
+        self.coach.start()
+        console.print(f"[green]coach on[/green]: {provider.name}")
+
+    @property
+    def on(self) -> bool:
+        return self.coach is not None
+
+    def events(self, events: Sequence[Event], ts: float) -> None:
+        if self.coach is None:
+            return
+        for event in events:
+            try:
+                self.coach.on_event(event, ts)
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[red]coach error:[/red] {exc!r}")
+
+    def tick(self, ts: float) -> None:
+        if self.coach is not None:
+            self.coach.tick(ts)
+
+    def ask(self, text: str, ts: float) -> None:
+        if self.coach is not None:
+            self.coach.ask(text, ts)
+
+    def drain(self, indent: str = "") -> None:
+        if self.coach is None:
+            return
+        for message in self.coach.poll():
+            console.print(f"{indent}[bold cyan]coach:[/bold cyan] {message.text}")
+            if self.log is not None:
+                self.log.write(message.model_dump_json() + "\n")
+
+    def wait(self, timeout: float = 30.0, indent: str = "") -> None:
+        if self.coach is None:
+            return
+        deadline = time.monotonic() + timeout
+        while self.coach.speaker.pending and time.monotonic() < deadline:
+            self.drain(indent)
+            time.sleep(0.05)
+        self.drain(indent)
+
+    def summary(self) -> str:
+        if self.coach is None:
+            return ""
+        spoken = self.coach.spoken
+        leaks = sum(1 for item in spoken if item.problems)
+        return (
+            f"{len(spoken)} coach messages, {leaks} drafts caught by the checks, "
+            f"{self.coach.speaker.fallbacks} templates used"
+        )
+
+    def close(self) -> None:
+        if self.coach is not None:
+            self.coach.close()
+            self.coach = None
+
+
+def _draft_check() -> Callable[[str, chess.Board], list[str]] | None:
+    """The board check over the coach's draft, when the claims module is built."""
+    try:
+        claims = importlib.import_module("sidecoach.coach.claims")
+    except ImportError:
+        return None
+
+    def check(text: str, board: chess.Board) -> list[str]:
+        return [f"{item.text}: {item.reason}" for item in claims.check_draft(text, board)]
+
+    return check
+
+
+def _claims_check(provider: object) -> Callable[[str, chess.Board, object], list[str]] | None:
+    """The user's stated reasons, checked against the board, when the module is built."""
+    try:
+        claims = importlib.import_module("sidecoach.coach.claims")
+    except ImportError:
+        return None
+
+    def check(text: str, board: chess.Board, facts: object) -> list[str]:
+        found = claims.extract_claims(text, board, provider)
+        verdicts = claims.verify_claims(found, board, facts=facts)
+        return [f"{v.claim.text!r}: {v.result}, {v.reason}" for v in verdicts]
+
+    return check
+
+
+class _TypedLine:
+    """A question typed at the terminal while the watcher runs, one key per tick."""
+
+    def __init__(self) -> None:
+        self.buffer: str | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.buffer is not None
+
+    def open(self) -> None:
+        self.buffer = ""
+        console.print("[cyan]you:[/cyan] ", end="")
+
+    def feed(self, key: str) -> str | None:
+        """Add a key; the finished line when Enter is pressed."""
+        assert self.buffer is not None
+        if key in ("\r", "\n"):
+            print()
+            line, self.buffer = self.buffer, None
+            return line.strip()
+        if key in ("\x08", "\x7f"):
+            if self.buffer:
+                self.buffer = self.buffer[:-1]
+                print("\b \b", end="", flush=True)
+            return None
+        if key == "\x1b":
+            print()
+            self.buffer = None
+            return None
+        self.buffer += key
+        print(key, end="", flush=True)
+        return None
 
 
 _SEVERITY_COLOUR = {
@@ -1161,6 +1340,7 @@ def watch(
     record: Annotated[bool, typer.Option(help="Also record the session to disk")] = True,
     board: Annotated[bool, typer.Option(help="Print the board after every move")] = True,
     analysis: Annotated[bool, typer.Option(help="Assess every move with the engine")] = True,
+    coach: Annotated[bool, typer.Option(help="Coach through the local model")] = True,
     seconds: Annotated[float | None, typer.Option(help="Stop after this long")] = None,
     out: Annotated[Path | None, typer.Option(help="Recording folder")] = None,
     config: ConfigOpt = None,
@@ -1171,9 +1351,13 @@ def watch(
     With --record (the default) the session is recorded so anything odd can be replayed
     with `sidecoach replay`, and every event is logged beside it. Keys while watching:
     r = you resign, d = draw agreed, n = new game (forget the current one), q = quit.
+    With the coach on: h = a hint, m = ask for the move, l = ask for the line, and
+    : (colon) to type a question, Enter to send it.
 
     With --analysis the engine assesses each move once it is played, which is what the
     disclosure rules allow; what to play in the position on the board is never printed.
+    The coach sees only what the disclosure level lets it see, and every message is
+    checked before it is shown.
     """
     import chess
 
@@ -1211,6 +1395,9 @@ def watch(
     console.print("start a new game on the board; keys: r resign, d draw, n new game, q quit\n")
 
     assessing = _Assessing(settings, analysis)
+    coaching = _Coaching(settings, coach and assessing.on)
+    coaching.log = log
+    typed = _TypedLine()
 
     locked = False
     bootstraps = 0
@@ -1256,9 +1443,22 @@ def watch(
                 ticks_since_status += 1
 
                 key = keys.read()
+                if typed.active and key is not None:
+                    line = typed.feed(key)
+                    if line:
+                        coaching.ask(line, ts)
+                    key = None
                 if key == "q":
                     console.print("quit")
                     break
+                if key == ":" and coaching.on:
+                    typed.open()
+                elif key == "h":
+                    coaching.ask("hint", ts)
+                elif key == "m":
+                    coaching.ask("what should I play", ts)
+                elif key == "l":
+                    coaching.ask("show me the line", ts)
                 if key in ("r", "d"):
                     reason = "user resigned" if key == "r" else "draw agreed"
                     events += pipe.end_game(user_result(key == "r"), reason, ts, frame_id)
@@ -1316,7 +1516,10 @@ def watch(
                             games.append(event.pgn)
                             console.print(f"PGN: {event.pgn}")
 
-                assessing.drain(log)
+                coaching.events(events, ts)
+                coaching.events(assessing.drain(log), ts)
+                coaching.tick(ts)
+                coaching.drain()
 
                 now = time.monotonic()
                 if now - last_status >= 5.0:
@@ -1352,8 +1555,12 @@ def watch(
         # the game so far is still reported below.
         console.print(f"[red]capture failed:[/red] {exc}")
     finally:
-        assessing.wait(log=log)
+        coaching.events(assessing.wait(log=log), time.monotonic())
         assessing.close()
+        coaching.wait()
+        if coaching.on:
+            console.print(f"[dim]{coaching.summary()}[/dim]")
+        coaching.close()
         if recorder is not None:
             recorder.close()
         if log is not None:
