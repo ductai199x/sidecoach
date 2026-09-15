@@ -388,6 +388,66 @@ def hanging_pawns(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     return facts
 
 
+def _closed_center(board: chess.Board) -> bool:
+    """A locked centre: a central pawn ram, with both sides' d- and e-pawns committed forward.
+
+    The ram alone is not enough -- 1.e4 e5 rams on the e-file but the centre is wide open with
+    the d-pawns still home. A closed centre is a full, fixed one, so both sides must have
+    advanced both their d- and e-pawns off their home rank (the King's Indian, the French, the
+    Benoni), which is what forces the play onto the wings.
+    """
+    ram = any(
+        chess.square_rank(black_pawn) == chess.square_rank(white_pawn) + 1
+        for file_ in (3, 4)
+        for white_pawn in _pawns_on_file(board, chess.WHITE, file_)
+        for black_pawn in _pawns_on_file(board, chess.BLACK, file_)
+    )
+    if not ram:
+        return False
+    for color in (chess.WHITE, chess.BLACK):
+        home = 1 if color == chess.WHITE else 6
+        for file_ in (3, 4):  # both the d- and the e-pawn must be committed forward
+            pawns = _pawns_on_file(board, color, file_)
+            if not pawns or all(chess.square_rank(sq) == home for sq in pawns):
+                return False
+    return True
+
+
+def pawn_pointing(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
+    """With a closed centre, which wing to play on -- the way your pawns point.
+
+    Silman's rule of the closed centre: a leaning central pawn chain points to the wing where
+    you have space, and that is where you attack; push the pawn beside your most advanced
+    central pawn. It fires only with a locked centre and a chain that clearly leans, so a broad
+    front (the d- and e-pawns abreast, pointing nowhere) says nothing. On the textbook cases it
+    gives the right wing: the French Advance to the kingside, the King's Indian to the kingside
+    for Black (...f5), the Czech Benoni to the queenside.
+    """
+    if not _closed_center(board):
+        return []
+    d_pawns = _pawns_on_file(board, us, 3)
+    e_pawns = _pawns_on_file(board, us, 4)
+    if not d_pawns or not e_pawns:
+        return []
+    d_advance = max(chess.square_rank(sq) * _forward(us) for sq in d_pawns)
+    e_advance = max(chess.square_rank(sq) * _forward(us) for sq in e_pawns)
+    if e_advance > d_advance:
+        wing, push = "kingside", "f"
+    elif d_advance > e_advance:
+        wing, push = "queenside", "c"
+    else:
+        return []  # a broad front, leaning neither way
+    squares = tuple(_name(sq) for sq in sorted([*d_pawns, *e_pawns]))
+    return [
+        PositionalFact(
+            "pawnPointing",
+            f"the centre is closed, so play where your pawns point -- the {wing}; advance your "
+            f"{push}-pawn to open lines there",
+            squares,
+        )
+    ]
+
+
 def open_files(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     """Open and half-open files that one of your rooks or queens already stands on."""
     facts: list[PositionalFact] = []
@@ -665,6 +725,7 @@ def features(
         facts += development(board, us)
         facts += uncastled_king(board, us)
         facts += space_plan(board, us)
+        facts += pawn_pointing(board, us)
     facts += isolated_d_pawn(board, us, phase=phase)
     facts += hanging_pawns(board, us)
     facts += pawn_weaknesses(board, us)
@@ -948,6 +1009,7 @@ _FEATURE_RANK: dict[str, int] = {
     "iqp": 7,
     "hangingPawns": 8,
     "pawnMajority": 9,
+    "pawnPointing": 9,
     "convert": 9,
     "complicate": 9,
     "spaceAdvantage": 10,

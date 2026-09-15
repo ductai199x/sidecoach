@@ -285,3 +285,20 @@ def test_the_bad_bishop_names_its_three_cures() -> None:
     board = chess.Board("4k3/8/8/8/2P1P3/1P6/6P1/4KB2 w - - 0 1")
     text = P.bad_bishop(board, chess.WHITE)[0].text
     assert "trade it" in text and "off its colour" in text and "outside the pawn chain" in text
+
+
+def test_pawn_pointing_names_the_wing_only_in_a_closed_centre() -> None:
+    # French Advance: White's d4/e5 chain points to the kingside (push the f-pawn).
+    french = chess.Board("r1bqkbnr/pp3ppp/2n1p3/2ppP3/3P4/2N5/PPP2PPP/R1BQKBNR w KQkq - 0 5")
+    fact = P.pawn_pointing(french, chess.WHITE)[0]
+    assert fact.kind == "pawnPointing" and "kingside" in fact.text and "f-pawn" in fact.text
+    # King's Indian: Black's e5/d6 chain points to the kingside -- the ...f5 plan.
+    kid = chess.Board("r1bq1rk1/ppp2pbp/2np1np1/4p3/2PPP3/2N2N2/PP2BPPP/R1BQ1RK1 b - - 0 7")
+    assert "kingside" in P.pawn_pointing(kid, chess.BLACK)[0].text
+    # Czech Benoni: White's d5/e4 chain points to the queenside (push the c-pawn).
+    benoni = chess.Board("rnbqkb1r/pp3ppp/3p1n2/2pPp3/2P1P3/2N5/PP3PPP/R1BQKBNR w KQkq - 0 6")
+    assert "queenside" in P.pawn_pointing(benoni, chess.WHITE)[0].text
+    # An open centre with the d-pawns still home (1.e4 e5, Scholar's) says nothing.
+    italian = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 0 3")
+    assert P.pawn_pointing(italian, chess.WHITE) == []
+    assert P.pawn_pointing(chess.Board(), chess.WHITE) == []
