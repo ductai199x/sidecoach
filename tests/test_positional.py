@@ -109,17 +109,34 @@ def test_top_features_are_ranked_deduped_and_capped() -> None:
 
 
 def test_pawn_weaknesses_name_isolated_doubled_and_backward_pawns() -> None:
-    # White d4 pawn, no white c- or e-pawn: isolated.
-    board = chess.Board("4k3/8/8/8/3P4/8/8/4K3 w - - 0 1")
+    # White c4 pawn, no white b- or d-pawn: isolated. (A lone d-pawn is the IQP, tested apart.)
+    board = chess.Board("4k3/8/8/8/2P5/8/8/4K3 w - - 0 1")
     assert kinds(P.pawn_weaknesses(board, chess.WHITE)) == ["weakPawn"]
-    assert P.is_isolated(board, chess.D4)
-    # An enemy isolated pawn is a target, listed first.
-    board = chess.Board("4k3/8/8/3p4/8/8/8/4K3 w - - 0 1")
+    assert P.is_isolated(board, chess.C4)
+    # An enemy isolated pawn is a target, listed first. (A d-pawn would be the IQP instead.)
+    board = chess.Board("4k3/8/8/2p5/8/8/8/4K3 w - - 0 1")
     facts = P.pawn_weaknesses(board, chess.WHITE)
     assert facts[0].kind == "targetPawn" and "target" in facts[0].text
     # Backward: white d3 behind c4 and e4, its advance to d4 held by the black c5 pawn.
     board = chess.Board("4k3/8/8/2p5/2P1P3/3P4/8/4K3 w - - 0 1")
     assert P.is_backward(board, chess.D3)
+
+
+def test_isolated_queen_pawn_is_named_for_both_sides() -> None:
+    # White has an isolated d4 pawn (no c- or e-pawn): an IQP.
+    board = chess.Board("r1bq1rk1/pp3ppp/2n1pn2/8/3P4/2N2N2/PP3PPP/R1BQ1RK1 w - - 0 10")
+    assert P.is_isolated(board, chess.D4)
+    assert kinds(P.isolated_d_pawn(board, chess.WHITE)) == ["iqp"]
+    assert kinds(P.isolated_d_pawn(board, chess.BLACK)) == ["iqpTarget"]
+    # The generic weak-pawn detector leaves the d-pawn to the IQP feature.
+    assert "weakPawn" not in kinds(P.pawn_weaknesses(board, chess.WHITE))
+
+
+def test_hanging_pawns_are_the_central_pair_on_half_open_files() -> None:
+    # White c4 and d4 abreast, no b- or e-pawn beside them: hanging pawns.
+    board = chess.Board("r1bq1rk1/pp3ppp/2n1pn2/8/2PP4/5N2/P4PPP/R1BQ1RK1 w - - 0 11")
+    assert kinds(P.hanging_pawns(board, chess.WHITE)) == ["hangingPawns"]
+    assert kinds(P.hanging_pawns(board, chess.BLACK)) == ["hangingPawnsTarget"]
 
 
 def test_bishop_pair_and_bad_bishop() -> None:

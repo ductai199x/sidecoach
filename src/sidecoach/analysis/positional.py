@@ -166,7 +166,8 @@ def pawn_weaknesses(board: chess.Board, us: chess.Color) -> list[PositionalFact]
         target = color == them
         for square in sorted(board.pieces(chess.PAWN, color)):
             letter = _FILES[chess.square_file(square)]
-            if is_isolated(board, square):
+            # A lone d-pawn is the isolated queen's pawn, its own structure (`isolated_d_pawn`).
+            if is_isolated(board, square) and chess.square_file(square) != 3:
                 text = (
                     f"their isolated {letter}-pawn on {_name(square)} is a target to pile up on"
                     if target
@@ -191,6 +192,81 @@ def pawn_weaknesses(board: chess.Board, us: chess.Color) -> list[PositionalFact]
 
     note(them, "targetPawn")
     note(us, "weakPawn")
+    return facts
+
+
+def isolated_d_pawn(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
+    """The isolated queen's pawn, named for both sides: a structure, not just a weak pawn.
+
+    For its owner it is double-edged -- piece activity and open lines now, a target in the
+    endgame; for the other side it is something to blockade and trade down against.
+    """
+    facts: list[PositionalFact] = []
+    for color in (not us, us):  # the enemy's IQP is the plan, so it comes first
+        for square in _pawns_on_file(board, color, 3):
+            if not is_isolated(board, square):
+                continue
+            if color == us:
+                facts.append(
+                    PositionalFact(
+                        "iqp",
+                        f"you have an isolated d-pawn on {_name(square)}, an IQP: it gives your "
+                        "pieces activity and the open c- and e-files now, but guard it -- in an "
+                        "endgame it becomes a target",
+                        (_name(square),),
+                    )
+                )
+            else:
+                facts.append(
+                    PositionalFact(
+                        "iqpTarget",
+                        f"their isolated d-pawn on {_name(square)}, an IQP, is a long-term "
+                        "target: blockade the square in front of it and trade pieces toward an "
+                        "endgame",
+                        (_name(square),),
+                    )
+                )
+    return facts
+
+
+def hanging_pawns(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
+    """Two friendly pawns abreast on half-open files (the c- and d- or d- and e-pawns).
+
+    Mobile and space-giving while they can advance, a target once they are blockaded; named
+    for both sides. Only the central pairs count, not two flank pawns that happen to line up.
+    """
+    facts: list[PositionalFact] = []
+    for color in (not us, us):
+        rank = 3 if color == chess.WHITE else 4
+        pawns = sorted(
+            sq for sq in board.pieces(chess.PAWN, color) if chess.square_rank(sq) == rank
+        )
+        for first, second in zip(pawns, pawns[1:], strict=False):
+            fa, fb = chess.square_file(first), chess.square_file(second)
+            if fb != fa + 1 or not (fa >= 1 and fb <= 6):
+                continue
+            if _pawns_on_file(board, color, fa - 1) or _pawns_on_file(board, color, fb + 1):
+                continue
+            pair = f"{_FILES[fa]}- and {_FILES[fb]}-pawns"
+            if color == us:
+                facts.append(
+                    PositionalFact(
+                        "hangingPawns",
+                        f"your {pair} are hanging pawns: they hold the centre and can roll "
+                        "forward, but keep them mobile -- once they are fixed they turn into "
+                        "targets",
+                        (_name(first), _name(second)),
+                    )
+                )
+            else:
+                facts.append(
+                    PositionalFact(
+                        "hangingPawnsTarget",
+                        f"their {pair} are hanging pawns: press them so one has to advance and "
+                        "leaves a hole, or blockade the pair",
+                        (_name(first), _name(second)),
+                    )
+                )
     return facts
 
 
@@ -447,6 +523,8 @@ def features(
     if phase != "endgame":
         facts += development(board, us)
         facts += uncastled_king(board, us)
+    facts += isolated_d_pawn(board, us)
+    facts += hanging_pawns(board, us)
     facts += pawn_weaknesses(board, us)
     facts += passed_pawns(board, us)
     facts += outposts(board, us)
@@ -720,17 +798,21 @@ _FEATURE_RANK: dict[str, int] = {
     "uncastled": 0,
     "undeveloped": 1,
     "passiveKing": 2,
-    "targetPawn": 3,
-    "passedPawn": 4,
-    "convert": 5,
-    "complicate": 5,
-    "outpost": 6,
-    "badBishop": 7,
-    "openFile": 8,
-    "bishopPair": 9,
-    "weakPawn": 10,
-    "passivePiece": 11,
-    "halfOpenFile": 12,
+    "iqpTarget": 3,
+    "hangingPawnsTarget": 4,
+    "targetPawn": 5,
+    "passedPawn": 6,
+    "iqp": 7,
+    "hangingPawns": 8,
+    "convert": 9,
+    "complicate": 9,
+    "outpost": 10,
+    "badBishop": 11,
+    "openFile": 12,
+    "bishopPair": 13,
+    "weakPawn": 14,
+    "passivePiece": 15,
+    "halfOpenFile": 16,
 }
 
 

@@ -18,3 +18,6 @@ sidecoach.toml
 
 # Agent worktrees
 .claude/worktrees/
+
+# Reference material read at dev time only (books, annotations) -- never committed.
+refs/
