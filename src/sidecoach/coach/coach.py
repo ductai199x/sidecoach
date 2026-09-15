@@ -29,7 +29,7 @@ from sidecoach.coach.disclosure import (
     leak_check,
     visible_facts,
 )
-from sidecoach.coach.facts import describe_move, facts_from_analysis
+from sidecoach.coach.facts import ascii_board, describe_move, facts_from_analysis
 from sidecoach.coach.policy import InterjectionPolicy
 from sidecoach.events import (
     Analysis,
@@ -329,9 +329,18 @@ def _in_words(board: chess.Board, san: str) -> str:
 
 def fact_sheet(facts: PositionFacts, level: DisclosureLevel) -> str:
     visible = visible_facts(facts, level)
-    lines = ["Fact sheet:"]
+    board = chess.Board(facts.fen)
+    who = "White" if board.turn == chess.WHITE else "Black"
+    yours = facts.side_to_move
+    lines = [
+        "The position (white at the bottom, capitals are white):",
+        ascii_board(board),
+        f"{who} to move; you are {yours}.",
+        "",
+        "Fact sheet:",
+    ]
     for key, value in visible.items():
-        if value in (None, "", [], False):
+        if key in ("fen", "side_to_move") or value in (None, "", [], False):
             continue
         if isinstance(value, list):
             value = (

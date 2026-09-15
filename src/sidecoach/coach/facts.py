@@ -138,6 +138,25 @@ def region_of(squares: Sequence[str]) -> str | None:
     return f"{where}, around {anchor}"
 
 
+def ascii_board(board: chess.Board) -> str:
+    """The position as a labelled grid, which a language model reads far better than a FEN.
+
+    White is drawn at the bottom in the usual way, uppercase for white and lowercase for
+    black, a dot for an empty square, with rank numbers down the side and file letters
+    below, so a square named in the text matches a square in the diagram. This shows only
+    what the FEN already shows; it is a clearer rendering, not new information.
+    """
+    rows = []
+    for rank in range(7, -1, -1):
+        cells = []
+        for file in range(8):
+            piece = board.piece_at(chess.square(file, rank))
+            cells.append(piece.symbol() if piece else ".")
+        rows.append(f"{rank + 1} " + " ".join(cells))
+    rows.append("  a b c d e f g h")
+    return "\n".join(rows)
+
+
 def describe_move(board: chess.Board, move: chess.Move) -> str:
     """A move in words, so a model never has to guess which piece moved where.
 

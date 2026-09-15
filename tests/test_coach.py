@@ -119,8 +119,9 @@ def test_a_decisive_moment_earns_one_question_that_names_nothing() -> None:
     # The model was handed the position and nothing about the answer.
     _, messages = provider.prompts[0]
     sheet = messages[-1]["content"]
-    assert "fen:" in sheet and "decisive: True" in sheet
-    for secret in ("Qxf7", "f7", "mating", "queen", "h5f7"):
+    assert "White to move; you are white" in sheet and "decisive: True" in sheet
+    assert "a b c d e f g h" in sheet, "the position is drawn as a board"
+    for secret in ("Qxf7", "mating", "queen", "h5f7", "theme", "candidates"):
         assert secret not in sheet, secret
     # And a second question for the same position is not asked.
     coach.on_event(_mate_analysis(6), 8.0)
