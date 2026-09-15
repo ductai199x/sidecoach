@@ -170,14 +170,20 @@ def label_clusters(
 ) -> dict[int, str]:
     """Name every big cluster from the countdown, with no hand-labelled digit.
 
-    One digit renders as several clusters: the glyph lands on different sub-pixel offsets,
-    and light text on a dark box is bolder than dark text on a light one. So the labelling
-    works on the graph of clusters rather than on one exemplar per digit. Between two
-    stored frames of the same box less than `MAX_STEP_TICKS` apart, a seconds digit that
-    changed changed by exactly one, counting down. Those transitions are edges "one less
-    than"; a breadth-first walk over them labels every cluster modulo ten, and the rotation
-    is pinned by the tens-of-seconds position, which only ever shows 0 to 5. The colon is
-    the middle glyph of every five-glyph reading.
+    One digit renders as several clusters: a glyph lands on different sub-pixel offsets, and
+    light text on a dark box is bolder than dark text on a light one. So the labelling works
+    on the graph of clusters, not on one exemplar per digit, in three steps.
+
+    1. Between two stored frames of one box less than `MAX_STEP_TICKS` apart, a seconds
+       digit that changed fell by one. Those transitions are edges "one less than", and a
+       walk over them puts every cluster they touch on the countdown cycle, up to a
+       rotation shared by all of them.
+    2. A cluster the transitions never caught (a digit that only ever appears in the
+       minutes, say) is placed by how much it looks like the clusters already placed: a
+       whole component at once, at the rotation its glyphs agree best with them.
+    3. The rotation is pinned twice over: the seconds units digit rolls from 0 to 9 exactly
+       when the tens-of-seconds digit falls, and the tens-of-seconds digit is never above
+       5. The two must agree.
     """
     counts = Counter(labels)
     big = {k for k, n in counts.items() if n >= 0.002 * len(samples)}
@@ -186,80 +192,153 @@ def label_clusters(
         if sample.count == 5:
             readings[(sample.rec, sample.side)].setdefault(sample.tick, [-1] * 5)[sample.pos] = k
     colon = Counter(seq[2] for d in readings.values() for seq in d.values()).most_common(1)[0][0]
+
+    def transitions() -> list[tuple[list[int], list[int]]]:
+        out = []
+        for d in readings.values():
+            ticks = sorted(d)
+            for before, after in zip(ticks, ticks[1:], strict=False):
+                a, b = d[before], d[after]
+                if -1 not in a and -1 not in b and after - before <= MAX_STEP_TICKS:
+                    out.append((a, b))
+        return out
+
     steps: Counter[tuple[int, int]] = Counter()
-    tens_seen: Counter[int] = Counter()
-    for d in readings.values():
-        ticks = sorted(d)
-        for before, after in zip(ticks, ticks[1:], strict=False):
-            a, b = d[before], d[after]
-            if -1 in a or -1 in b or after - before > MAX_STEP_TICKS:
-                continue
-            if a[:4] == b[:4] and a[4] != b[4]:
-                steps[(a[4], b[4])] += 1  # b is one less than a
-        for seq in d.values():
-            tens_seen[seq[3]] += 1
-    # Keep an edge only when it is a cluster's dominant successor and was seen often.
+    for a, b in transitions():
+        if a[:4] == b[:4] and a[4] != b[4]:
+            steps[(a[4], b[4])] += 1  # b is one less than a
+    # Keep an edge only where it is a cluster's dominant successor and was seen often: two
+    # stored frames can straddle two ticks of the display, which would step by two.
     best_step: dict[int, tuple[int, int]] = {}
     for (a, b), n in steps.items():
         if a not in best_step or n > best_step[a][1]:
             best_step[a] = (b, n)
-    edges = [(a, b) for a, (b, n) in best_step.items() if n >= 5 and a in big and b in big]
     adjacency: dict[int, list[tuple[int, int]]] = defaultdict(list)
-    for a, b in edges:
-        adjacency[a].append((b, -1))
-        adjacency[b].append((a, +1))
-    order: dict[int, int] = {}
-    root = max((k for k in big if k != colon), key=lambda k: counts[k])
-    order[root] = 0
-    queue = [root]
-    while queue:
-        node = queue.pop(0)
-        for other, delta in adjacency[node]:
-            value = (order[node] + delta) % 10
-            if other in order:
-                if order[other] != value:
-                    raise SystemExit(f"countdown graph contradicts itself at cluster {other}")
-            else:
-                order[other] = value
-                queue.append(other)
-    # Pin the rotation: the tens-of-seconds digit is 0 to 5 and never 6 to 9.
-    rotations = [
-        r
-        for r in range(10)
-        if all((order[k] + r) % 10 <= 5 for k in tens_seen if k in order and tens_seen[k] >= 20)
-    ]
-    if len(rotations) != 1:
-        raise SystemExit(f"the tens-of-seconds digits pin {len(rotations)} rotations, not one")
-    names = {k: str((v + rotations[0]) % 10) for k, v in order.items()}
-    names[colon] = ":"
-    for k in sorted(big - set(names), key=lambda k: -counts[k]):
-        # A variant too rare to have its own transitions: nearest labelled centroid.
-        sims = sorted(
-            ((float(_unit(centroids[k]) @ _unit(centroids[j])), name) for j, name in names.items()),
+    for a, (b, n) in best_step.items():
+        if n >= 5 and a in big and b in big:
+            adjacency[a].append((b, -1))
+            adjacency[b].append((a, +1))
+
+    def component(root: int) -> dict[int, int]:
+        """Every cluster reachable from `root`, with its digit relative to root's."""
+        found = {root: 0}
+        queue = [root]
+        while queue:
+            node = queue.pop(0)
+            for other, delta in adjacency[node]:
+                value = (found[node] + delta) % 10
+                if other in found:
+                    if found[other] != value:
+                        raise SystemExit(f"countdown graph contradicts itself at cluster {other}")
+                else:
+                    found[other] = value
+                    queue.append(other)
+        return found
+
+    order = component(max(adjacency, key=lambda k: counts[k]))
+    if len(set(order.values())) != 10:
+        raise SystemExit(f"the countdown walk found {len(set(order.values()))} digits, not ten")
+
+    def similarity(k: int, digit: int) -> float:
+        return max(
+            (float(_unit(centroids[k]) @ _unit(centroids[j])) for j, v in order.items() if v == digit),
+            default=-1.0,
+        )
+
+    for k in sorted(big - {colon}, key=lambda k: -counts[k]):
+        if k in order:
+            continue
+        group = component(k) if k in adjacency else {k: 0}
+        scored = sorted(
+            (
+                (sum(counts[j] * similarity(j, (v + r) % 10) for j, v in group.items()), r)
+                for r in range(10)
+            ),
             reverse=True,
         )
-        other = next((score for score, name in sims if name != sims[0][1]), -1.0)
-        if sims[0][0] >= 0.8 and sims[0][0] - other >= 0.05:
-            names[k] = sims[0][1]
+        weight = sum(counts[j] for j in group)
+        (best, rot), (second, _) = scored[0], scored[1]
+        if best / weight >= 0.7 and (best - second) / weight >= 0.05:
+            order.update({j: (v + rot) % 10 for j, v in group.items()})
         else:
-            print(f"cluster {k} ({counts[k]} glyphs) unlabelled: best {sims[0]}, next {other:.2f}")
-    # Independent check: the tens-of-seconds digit counts 5, 4, 3, 2, 1, 0 and wraps to 5.
-    tens_steps: Counter[tuple[int, int]] = Counter()
+            print(
+                f"clusters {sorted(group)} ({weight} glyphs) unnamed: "
+                f"best {best / weight:.2f}, next {second / weight:.2f}"
+            )
+
+    # The rotation. The tens-of-seconds digit is never above 5, which leaves one rotation
+    # once all six of its digits have been seen. The rollovers check it: where the units
+    # digit fell by one and the tens digit changed with it, the tens either fell by one
+    # (the units rolled 0 to 9) or rose by one (the mover's clock took its increment).
+    tens: Counter[int] = Counter()
     for d in readings.values():
-        ticks = sorted(d)
-        for before, after in zip(ticks, ticks[1:], strict=False):
-            a, b = d[before], d[after]
-            if -1 in a or -1 in b or after - before > MAX_STEP_TICKS:
-                continue
-            if a[:3] == b[:3] and a[3] != b[3]:
-                tens_steps[(a[3], b[3])] += 1
-    bad = sum(
-        n
-        for (a, b), n in tens_steps.items()
-        if a in names and b in names and (int(names[a]) - 1) % 6 != int(names[b])
+        for seq in d.values():
+            if seq[3] in order:
+                tens[order[seq[3]]] += 1
+    allowed = [r for r in range(10) if all((v + r) % 10 <= 5 for v, n in tens.items() if n >= 20)]
+    if len(allowed) != 1:
+        raise SystemExit(f"the tens-of-seconds digits allow {allowed}, not one rotation")
+    rotation = allowed[0]
+    names = {k: str((v + rotation) % 10) for k, v in order.items()}
+    names[colon] = ":"
+    steps_seen: Counter[int] = Counter()
+    for a, b in transitions():
+        if a[:3] != b[:3] or a[3] == b[3] or a[3] not in names or b[3] not in names:
+            continue
+        if a[4] in names and b[4] in names and (int(names[a[4]]) - 1) % 10 == int(names[b[4]]):
+            steps_seen[(int(names[b[3]]) - int(names[a[3]])) % 6] += 1
+    good = steps_seen[5] + steps_seen[1]
+    print(
+        f"digits pinned at rotation {rotation}; of {sum(steps_seen.values())} one-second steps "
+        f"that changed the tens digit, {steps_seen[5]} rolled over and {steps_seen[1]} took an "
+        f"increment, {sum(steps_seen.values()) - good} neither"
     )
-    print(f"tens-of-seconds steps against the labels: {bad} of {sum(tens_steps.values())}")
     return names
+
+
+def build_templates(
+    samples: list[Sample], labels: list[int], names: dict[int, str], out: Path
+) -> None:
+    """Average the glyphs of each named cluster into templates and write them to `out`.
+
+    A label keeps one template per box polarity: light text on a dark box is drawn bolder
+    than dark text on a light one, and averaging the two blurs both.
+    """
+    groups: dict[tuple[str, bool], list[Sample]] = defaultdict(list)
+    for sample, k in zip(samples, labels, strict=True):
+        if k in names:
+            groups[(names[k], sample.light)].append(sample)
+    template_labels: list[str] = []
+    canvases: list[np.ndarray] = []
+    advances: list[float] = []
+    for (name, light), group in sorted(groups.items(), key=lambda kv: (kv[0][0], not kv[0][1])):
+        template_labels.append(name)
+        canvases.append(np.mean([s.canvas for s in group], axis=0))
+        advances.append(float(statistics.median(s.aspect for s in group)))
+        print(
+            f"  {name!r} on a {'light' if light else 'dark'} box: {len(group)} glyphs, "
+            f"advance {advances[-1]:.2f}"
+        )
+    # The tenths dot. These recordings are fifteen-minute games and no clock ever fell
+    # under a minute, so the dot was never drawn; it is the colon's lower dot, which is
+    # how chess.com draws it, and the reader also accepts a colon in the tenths place.
+    for i, name in enumerate(list(template_labels)):
+        if name == ":":
+            dot = canvases[i].copy()
+            dot[: GLYPH_H // 2] = 0.0
+            template_labels.append(".")
+            canvases.append(dot)
+            advances.append(advances[i])
+    templates = GlyphTemplates(
+        tuple(template_labels),
+        np.stack(canvases).astype(np.float32),
+        np.array(advances, np.float32),
+    )
+    templates.save(out)
+    print(
+        f"wrote {out} ({out.stat().st_size} bytes, {len(template_labels)} templates "
+        f"of {GLYPH_H}x{GLYPH_W})"
+    )
 
 
 def learn(rec_dirs: list[Path], out: Path) -> None:
@@ -271,31 +350,7 @@ def learn(rec_dirs: list[Path], out: Path) -> None:
     centroids, labels = cluster(samples)
     names = label_clusters(samples, centroids, labels)
     print("clusters:", {k: (names.get(k, "?"), n) for k, n in Counter(labels).most_common()})
-    by_key: dict[tuple[str, bool], list[Sample]] = defaultdict(list)
-    for sample, k in zip(samples, labels, strict=True):
-        if k in names:
-            by_key[(names[k], sample.light)].append(sample)
-    template_labels: list[str] = []
-    canvases: list[np.ndarray] = []
-    advances: list[float] = []
-    for (name, light), group in sorted(by_key.items(), key=lambda kv: (kv[0][0], not kv[0][1])):
-        template_labels.append(name)
-        canvases.append(np.mean([s.canvas for s in group], axis=0))
-        advances.append(float(statistics.median(s.aspect for s in group)))
-        print(f"  {name!r} {'light' if light else 'dark'} box: {len(group)} glyphs, advance {advances[-1]:.2f}")
-    # The tenths dot: the lower dot of the colon, at the baseline.
-    for i, name in enumerate(list(template_labels)):
-        if name == ":":
-            dot = canvases[i].copy()
-            dot[: GLYPH_H // 2] = 0.0
-            template_labels.append(".")
-            canvases.append(dot)
-            advances.append(advances[i])
-    templates = GlyphTemplates(
-        tuple(template_labels), np.stack(canvases).astype(np.float32), np.array(advances, np.float32)
-    )
-    templates.save(out)
-    print(f"wrote {out} ({out.stat().st_size} bytes, {len(template_labels)} templates of {GLYPH_H}x{GLYPH_W})")
+    build_templates(samples, labels, names, out)
 
 
 # Validation

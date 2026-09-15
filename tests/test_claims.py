@@ -499,6 +499,40 @@ def test_draft_accepts_a_threat_the_opponent_could_play() -> None:
     assert check_draft("They are threatening Nxe4 next move.", chess.Board(ITALIAN)) == []
 
 
+def test_draft_flags_a_fabricated_pin() -> None:
+    # After 9...h5 the bishop on b3 is not pinned; the coach must not say it is.
+    board = chess.Board("r1bq1rk1/2p2pp1/p1np1n2/1p2p2p/4P3/1BNP1N2/PPP2PPP/R1BQ1RK1 w - - 0 10")
+    problems = check_draft("Your bishop on b3 is now pinned by that line.", board)
+    assert len(problems) == 1 and problems[0].reason == "the bishop on b3 is not pinned"
+    # A real pin is not flagged: the rook on d2 shields its king from the rook on d8.
+    pin = chess.Board("3rk3/8/8/8/8/8/3R4/3K4 w - - 0 1")
+    assert check_draft("Your rook on d2 is pinned.", pin) == []
+
+
+def test_draft_flags_a_defended_piece_called_loose() -> None:
+    board = chess.Board("r1bq1rk1/2p2pp1/p1np1n2/1p2p2p/4P3/1BNP1N2/PPP2PPP/R1BQ1RK1 w - - 0 10")
+    problems = check_draft("Your knight on f3 is hanging.", board)
+    assert len(problems) == 1 and problems[0].reason == "nothing attacks the knight on f3"
+    # A truly hanging piece is not flagged: the rook on f2 hits the undefended knight on f4.
+    hang = chess.Board("4k3/8/8/8/5n2/8/5R2/4K3 w - - 0 1")
+    assert check_draft("Their knight on f4 is hanging.", hang) == []
+    # But an attacked piece with a defender is not hanging.
+    held = chess.Board("4k3/8/8/4p3/5n2/8/5R2/4K3 w - - 0 1")
+    problems = check_draft("Their knight on f4 is hanging.", held)
+    assert len(problems) == 1 and problems[0].reason == "the knight on f4 is defended"
+
+
+def test_draft_flags_a_hanging_piece_called_safe() -> None:
+    # Black to move; the black knight on f4 is attacked by the white rook on f2 and no one
+    # defends it, so "safe" is false.
+    board = chess.Board("4k3/8/8/8/5n2/8/5R2/4K3 b - - 0 1")
+    problems = check_draft("Your knight on f4 is safe.", board)
+    assert len(problems) == 1
+    assert problems[0].reason == "the knight on f4 is attacked and undefended"
+    # A quiet piece called safe passes: white's own knight on f3 in the Italian.
+    assert check_draft("Your knight on f3 is safe.", chess.Board(ITALIAN)) == []
+
+
 def test_draft_ambiguous_move() -> None:
     board = chess.Board(ITALIAN)
     board.push_san("d3")

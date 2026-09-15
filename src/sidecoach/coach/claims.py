@@ -859,13 +859,58 @@ _TOKEN_SPLIT = re.compile(r"[^A-Za-z0-9+#=!?]+")
 _CASTLE = re.compile(r"(?<![A-Za-z0-9-])(O-O-O|O-O|0-0-0|0-0)[+#]?(?![A-Za-z0-9-])")
 
 
+# A tactical adjective claimed of a piece on a square: "the bishop on b3 is pinned", "your
+# rook on d1 is hanging". The coach must not assert these unless the board bears them out.
+_TACTIC = re.compile(
+    rf"(?:(?P<colour>{_COLOUR_WORDS})\s+)?(?P<piece>{_PIECE_WORD})s?\s+(?:on|at)\s+"
+    r"(?P<square>[a-h][1-8])\s+"
+    r"(?:(?:is|was|are|were)\s+(?:now\s+)?|,\s*(?:which\s+)?(?:is|was)\s+|now\s+)?"
+    r"(?P<state>pinned|hanging|undefended|unprotected|loose|en\s*prise|trapped|safe)",
+    re.IGNORECASE,
+)
+
+
+def _tactic_problem(board: chess.Board, square_name: str, state: str) -> str | None:
+    """Whether the board bears out a tactical adjective claimed of a piece.
+
+    Only the claims a coach makes to explain a move, and only when they are plainly false:
+    a pin that is not there, a piece called loose that is defended, a piece called safe
+    that hangs. The exchange is not evaluated, so "safe" is only faulted when the piece is
+    attacked and not defended at all; a claim the board merely does not settle is left.
+    """
+    square = chess.parse_square(square_name.lower())
+    piece = board.piece_at(square)
+    if piece is None:
+        return f"{square_name} is empty"
+    state = state.lower().replace(" ", "")
+    attackers = board.attackers(not piece.color, square)
+    defenders = board.attackers(piece.color, square)
+    if state == "pinned":
+        if not board.is_pinned(piece.color, square):
+            return f"the {PIECE_NAMES[piece.piece_type]} on {square_name} is not pinned"
+    elif state in ("hanging", "undefended", "unprotected", "loose", "enprise"):
+        if not attackers:
+            return f"nothing attacks the {PIECE_NAMES[piece.piece_type]} on {square_name}"
+        if defenders:
+            return f"the {PIECE_NAMES[piece.piece_type]} on {square_name} is defended"
+    elif state == "safe":
+        if attackers and not defenders:
+            return (
+                f"the {PIECE_NAMES[piece.piece_type]} on {square_name} is attacked and undefended"
+            )
+    elif state == "trapped" and not attackers:
+        return f"nothing is attacking the {PIECE_NAMES[piece.piece_type]} on {square_name}"
+    return None
+
+
 def check_draft(text: str, board: chess.Board) -> list[DraftProblem]:
     """Everything concrete in a coach draft that the board contradicts. Empty means clean.
 
     A "<piece> on <square>" phrase must match the board, colour word included ("your" is
-    the side to move). A move must be playable: legal now, or legal for the opponent after
-    a pass, since a coach may name a threat. Bare squares are never flagged; a coach may
-    point at one.
+    the side to move). A tactical adjective claimed of such a piece (pinned, hanging, safe)
+    must hold on the board. A move must be playable: legal now, or legal for the opponent
+    after a pass, since a coach may name a threat. Bare squares are never flagged; a coach
+    may point at one.
     """
     problems: list[DraftProblem] = []
     seen: set[str] = set()
@@ -882,6 +927,16 @@ def check_draft(text: str, board: chess.Board) -> list[DraftProblem]:
             )
             if reason:
                 add(match.group(0), reason)
+
+    for match in _TACTIC.finditer(text):
+        placement = _placement_problem(
+            board, match.group("colour"), match.group("piece"), match.group("square")
+        )
+        if placement:
+            continue  # the piece is wrong; the placement check already flagged it
+        reason = _tactic_problem(board, match.group("square"), match.group("state"))
+        if reason:
+            add(match.group(0), reason)
 
     for token in _TOKEN_SPLIT.split(text):
         match = _SAN_TOKEN.fullmatch(token)
