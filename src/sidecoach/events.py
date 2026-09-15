@@ -1,0 +1,224 @@
+"""Typed events that connect the pipeline stages.
+
+Every stage consumes and emits these models and nothing else, so any stage can be replayed
+from a recording. Pixels never travel inside an event: a Frame carries the frame id and
+geometry, and the pixel buffer is looked up from the capture ring by id.
+"""
+
+from __future__ import annotations
+
+from enum import IntEnum, StrEnum
+from time import monotonic
+from typing import NamedTuple
+
+from pydantic import BaseModel, Field
+
+
+class Region(NamedTuple):
+    """Axis-aligned rectangle in screen pixels."""
+
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+class Event(BaseModel):
+    """Base event. `source_frame_id` is the frame an event ultimately derives from."""
+
+    ts: float = Field(default_factory=monotonic)
+    source_frame_id: int | None = None
+
+
+# Capture and vision
+
+
+class Frame(Event):
+    frame_id: int
+    monitor: int
+    region: Region
+    changed: bool = True
+
+
+class Side(StrEnum):
+    WHITE = "white"
+    BLACK = "black"
+
+
+class BoardLocated(Event):
+    monitor: int
+    region: Region
+    cell_px: float
+    fit_score: float
+
+
+class BoardLost(Event):
+    reason: str
+
+
+class SquareObservation(Event):
+    """Per-frame board reading. `placement` is the piece-placement field of a FEN."""
+
+    placement: str
+    bottom: Side
+    min_confidence: float
+
+
+class ClockObservation(Event):
+    white_ms: int | None = None
+    black_ms: int | None = None
+    running: Side | None = None
+
+
+class ScreenState(StrEnum):
+    LIVE_GAME = "live_game"
+    ANALYSIS = "analysis"
+    PUZZLES = "puzzles"
+    LESSON = "lesson"
+    LOBBY = "lobby"
+    GAME_OVER = "game_over"
+    UNKNOWN = "unknown"
+
+
+class ScreenStateChanged(Event):
+    state: ScreenState
+
+
+# State
+
+
+class GameStarted(Event):
+    game_id: str
+    user_side: Side
+    start_fen: str
+
+
+class PositionChanged(Event):
+    game_id: str
+    fen: str
+    ply: int
+
+
+class MovePlayed(Event):
+    game_id: str
+    ply: int
+    san: str
+    uci: str
+    fen_before: str
+    fen_after: str
+    by_user: bool
+    think_ms: int | None = None
+
+
+class Takeback(Event):
+    game_id: str
+    plies: int
+    fen: str
+
+
+class Resync(Event):
+    game_id: str
+    fen: str
+    reason: str
+
+
+class GameEnded(Event):
+    game_id: str
+    result: str
+    reason: str | None = None
+    pgn: str | None = None
+    final_fen: str | None = None
+
+
+# Analysis
+
+
+class Line(BaseModel):
+    """One engine line. `expected_score` is (W + 0.5 D) / 1000 from the mover's view."""
+
+    moves: list[str]
+    depth: int
+    expected_score: float
+    score_cp: int | None = None
+    mate: int | None = None
+    wdl: tuple[int, int, int] | None = None
+
+
+class MotifTag(BaseModel):
+    name: str
+    squares: list[str] = Field(default_factory=list)
+    move: str | None = None
+
+
+class Analysis(Event):
+    game_id: str
+    fen: str
+    ply: int
+    lines: list[Line]
+    decisive: bool
+    only_move: bool
+    threats: list[str] = Field(default_factory=list)
+    tags: list[MotifTag] = Field(default_factory=list)
+    opening: str | None = None
+
+
+class Severity(StrEnum):
+    NONE = "none"
+    INACCURACY = "inaccuracy"
+    MISTAKE = "mistake"
+    BLUNDER = "blunder"
+
+
+class MoveAssessment(Event):
+    game_id: str
+    ply: int
+    uci: str
+    expected_loss: float
+    severity: Severity
+    best: list[str]
+    tags: list[MotifTag] = Field(default_factory=list)
+
+
+# Coach and UI
+
+
+class DisclosureLevel(IntEnum):
+    SILENT = 0
+    QUESTION = 1
+    THEME = 2
+    REGION = 3
+    PIECE = 4
+    CANDIDATE = 5
+    LINE = 6
+
+
+class Trigger(StrEnum):
+    USER_ASK = "user_ask"
+    POST_MISTAKE = "post_mistake"
+    POST_MOVE = "post_move"
+    DECISIVE_QUESTION = "decisive_question"
+    STUCK = "stuck"
+    REVIEW = "review"
+
+
+class UserUtterance(Event):
+    text: str
+    source: str = "text"
+
+
+class CoachMessage(Event):
+    text: str
+    level: DisclosureLevel
+    trigger: Trigger
+    game_id: str | None = None
+    ply: int | None = None
+
+
+class ProfileEvidence(Event):
+    game_id: str
+    ply: int
+    phase: str
+    expected_loss: float
+    motif: str | None = None
+    cause: str | None = None
+    time_pressure: bool = False

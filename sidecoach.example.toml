@@ -1,0 +1,44 @@
+# Copy to sidecoach.toml (ignored by git) and edit. Every key is optional.
+
+data_dir = "data"
+tools_dir = "tools"
+
+[capture]
+fps = 10
+record_frames = true
+record_crops = true
+
+[engine]
+# stockfish_path = "tools/stockfish/stockfish-windows-x86-64-universal.exe"
+multipv = 4
+movetime_ms = 300
+threads = 4
+hash_mb = 256
+
+[llm]
+# "local" is LM Studio on this machine; "dashscope" is Alibaba Cloud Model Studio (US).
+# Unset model, base_url, api_key_env, and thinking_control use the provider defaults from
+# sidecoach.llm.factory. Keys come from .env (gitignored): DASHSCOPE_API_KEY=...
+provider = "local"
+# model = "qwen3.8-flash"        # dashscope: qwen3.8-max (default) or qwen3.8-flash
+# base_url = "http://localhost:1234/v1"
+# thinking_control = "prefill"    # prefill (LM Studio), param (DashScope), none
+# false suppresses reasoning; true lets the model reason before answering.
+thinking = false
+# Total output budget. Reasoning tokens count against it when thinking is on.
+max_output_tokens = 1500
+temperature = 0.7
+timeout_s = 60.0
+
+[coach]
+stuck_seconds = 45
+quiet = false
+persona = "warm_direct"
+inaccuracy = 0.05
+mistake = 0.10
+blunder = 0.20
+decisive_gap = 0.10
+
+[profile]
+rating_low = 1000
+rating_high = 1400

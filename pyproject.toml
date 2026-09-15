@@ -1,0 +1,47 @@
+[project]
+name = "sidecoach"
+version = "0.1.0"
+description = "Vision-first chess coaching companion: watches the screen, finds the board, coaches Socratically."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "chess>=1.11",
+    "numpy>=2.0",
+    "opencv-python>=4.10",
+    "mss>=9.0",
+    "pydantic>=2.8",
+    "httpx>=0.27",
+    "typer>=0.12",
+    "rich>=13.7",
+]
+
+[project.scripts]
+sidecoach = "sidecoach.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.6",
+    "pyright>=1.1.380",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.29,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.pyright]
+include = ["src", "tests", "scripts"]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
