@@ -322,3 +322,17 @@ def test_doubled_pawns_name_the_half_open_file_they_hand_the_owner() -> None:
     board = chess.Board("4k3/8/8/8/8/2P5/P1P3PP/4K3 w - - 0 1")
     doubled = [f for f in P.pawn_weaknesses(board, chess.WHITE) if "doubled" in f.text]
     assert doubled and "half-open b-file" in doubled[0].text
+
+
+def test_square_of_the_pawn_names_the_decisive_race() -> None:
+    # White a5-pawn, both kings on the kingside: Black's king is outside the a-pawn's square.
+    board = chess.Board("7k/8/8/P7/8/8/8/7K w - - 0 1")
+    facts = P.square_of_the_pawn(board, chess.WHITE, phase="endgame")
+    assert kinds(facts) == ["runningPawn"] and "a-pawn" in facts[0].text
+    # From Black's side, the same pawn outruns Black's king.
+    assert kinds(P.square_of_the_pawn(board, chess.BLACK, phase="endgame")) == ["outrunPawn"]
+    # A king inside the square catches the pawn: nothing decisive to say.
+    close = chess.Board("8/8/1k6/P7/8/8/8/7K w - - 0 1")
+    assert P.square_of_the_pawn(close, chess.WHITE, phase="endgame") == []
+    # Only fires in the endgame, where a lone king must chase a pawn.
+    assert P.square_of_the_pawn(board, chess.WHITE, phase="middlegame") == []

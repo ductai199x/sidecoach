@@ -99,6 +99,82 @@ def passed_pawns(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     return facts
 
 
+# The square of the pawn (endgame): can the defending king catch a running passed pawn on its
+# own? The rule matches the Lichess tablebase on pure races: the king catches it iff its
+# distance to the promotion square is within the pawn's moves to promote, plus one when the
+# defender is to move. Only the decisive verdicts are named -- a pawn that queens untouched, or
+# one that outruns the king -- so the coach never over-claims in a crowded middlegame.
+def _king_catches_pawn(
+    pawn: chess.Square, pawn_color: chess.Color, king: chess.Square, defender_to_move: bool
+) -> bool:
+    pf, pr = chess.square_file(pawn), chess.square_rank(pawn)
+    kf, kr = chess.square_file(king), chess.square_rank(king)
+    if pawn_color == chess.WHITE:
+        moves = (7 - pr) - (1 if pr == 1 else 0)
+        promotion_rank = 7
+    else:
+        moves = pr - (1 if pr == 6 else 0)
+        promotion_rank = 0
+    king_distance = max(abs(kf - pf), abs(kr - promotion_rank))
+    return king_distance <= moves + (1 if defender_to_move else 0)
+
+
+def _clear_run(board: chess.Board, square: chess.Square, us: chess.Color) -> bool:
+    """Every square ahead of the pawn on its file is empty: a clean run to promotion."""
+    step = _forward(us)
+    rank = chess.square_rank(square) + step
+    while 0 <= rank <= 7:
+        if board.piece_at(chess.square(chess.square_file(square), rank)) is not None:
+            return False
+        rank += step
+    return True
+
+
+def square_of_the_pawn(
+    board: chess.Board, us: chess.Color, *, phase: str = "middlegame"
+) -> list[PositionalFact]:
+    """Decisive passed-pawn races in the endgame: a pawn that queens untouched, or one that
+    outruns the enemy king. Gated to the endgame, where a lone king really must chase a pawn."""
+    if phase != "endgame":
+        return []
+    facts: list[PositionalFact] = []
+    them = not us
+    enemy_king, our_king = board.king(them), board.king(us)
+    if enemy_king is not None:
+        for sq in sorted(board.pieces(chess.PAWN, us)):
+            if (
+                is_passed(board, sq)
+                and _clear_run(board, sq, us)
+                and not _king_catches_pawn(sq, us, enemy_king, board.turn == them)
+            ):
+                letter = _FILES[chess.square_file(sq)]
+                facts.append(
+                    PositionalFact(
+                        "runningPawn",
+                        f"your passed {letter}-pawn on {_name(sq)} runs to queen on its own -- "
+                        "the enemy king is outside its square",
+                        (_name(sq),),
+                    )
+                )
+    if our_king is not None:
+        for sq in sorted(board.pieces(chess.PAWN, them)):
+            if (
+                is_passed(board, sq)
+                and _clear_run(board, sq, them)
+                and not _king_catches_pawn(sq, them, our_king, board.turn == us)
+            ):
+                letter = _FILES[chess.square_file(sq)]
+                facts.append(
+                    PositionalFact(
+                        "outrunPawn",
+                        f"their passed {letter}-pawn on {_name(sq)} is outside your king's "
+                        "square -- you cannot catch it alone, so stop it another way",
+                        (_name(sq),),
+                    )
+                )
+    return facts
+
+
 # Space (Silman's rules of space): central manoeuvring room. Measured the way an engine counts
 # it -- the safe central squares behind your front, files c-f on your side, that no enemy pawn
 # attacks and your own pawn does not block -- which separates a real space edge from a symmetric
@@ -755,6 +831,7 @@ def features(
     facts += bad_bishop(board, us)
     facts += bishop_pair(board, us)
     facts += king_activity(board, us, phase=phase)
+    facts += square_of_the_pawn(board, us, phase=phase)
     facts += material_plan(board, us)
     facts += worst_piece(board, us)
     return facts
@@ -1020,6 +1097,8 @@ def best_move_idea(
 _FEATURE_RANK: dict[str, int] = {
     "uncastled": 0,
     "undeveloped": 1,
+    "runningPawn": 1,
+    "outrunPawn": 1,
     "passiveKing": 2,
     "iqpTarget": 3,
     "hangingPawnsTarget": 4,
