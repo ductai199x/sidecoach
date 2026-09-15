@@ -270,3 +270,18 @@ def test_space_advantage_and_cramp_are_named_past_a_clear_margin() -> None:
     assert P.space_plan(chess.Board(), chess.WHITE) == []
     symmetric = chess.Board("rnbqkbnr/pp2pppp/8/2pp4/2PP4/8/PP2PPPP/RNBQKBNR w KQkq - 0 3")
     assert P.space_plan(symmetric, chess.WHITE) == []
+
+
+def test_the_bishop_pair_reads_the_openness_of_the_position() -> None:
+    # Open position (no central pawns): the pair is a live asset -- keep lines open.
+    open_pos = chess.Board("2b1k3/8/8/8/8/8/8/2B1KB2 w - - 0 1")
+    assert "position is open" in P.bishop_pair(open_pos, chess.WHITE)[0].text
+    # Closed centre (locked d/e pawns): the plan is to open lines to activate the pair.
+    closed = chess.Board("2b1k3/3pp3/8/8/8/8/3PP3/2B1KB2 w - - 0 1")
+    assert "closed" in P.bishop_pair(closed, chess.WHITE)[0].text
+
+
+def test_the_bad_bishop_names_its_three_cures() -> None:
+    board = chess.Board("4k3/8/8/8/2P1P3/1P6/6P1/4KB2 w - - 0 1")
+    text = P.bad_bishop(board, chess.WHITE)[0].text
+    assert "trade it" in text and "off its colour" in text and "outside the pawn chain" in text

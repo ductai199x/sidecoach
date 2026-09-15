@@ -470,19 +470,41 @@ def outposts(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     return facts
 
 
+def _center_pawn_count(board: chess.Board) -> int:
+    """Pawns of both colours on the d- and e-files: a simple read of how open the centre is."""
+    return sum(
+        1
+        for color in (chess.WHITE, chess.BLACK)
+        for sq in board.pieces(chess.PAWN, color)
+        if chess.square_file(sq) in (3, 4)
+    )
+
+
 def bishop_pair(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
-    """You keep both bishops while the opponent does not: an edge in an open position."""
+    """You keep both bishops while the opponent does not.
+
+    Silman's minor-piece rules: two bishops cover both colours, so the pair is an asset in an
+    open position; in a closed one it is dormant and the plan is to open lines to bring it to
+    life. The advice therefore reads the openness of the centre, it is not a fixed slogan.
+    """
     ours = board.pieces(chess.BISHOP, us)
     theirs = board.pieces(chess.BISHOP, not us)
-    if len(ours) >= 2 and len(theirs) < 2:
-        return [
-            PositionalFact(
-                "bishopPair",
-                "you have the bishop pair, so keep the position open where you can",
-                tuple(_name(sq) for sq in sorted(ours)),
-            )
-        ]
-    return []
+    if not (len(ours) >= 2 and len(theirs) < 2):
+        return []
+    centre = _center_pawn_count(board)
+    if centre <= 1:
+        text = (
+            "you have the bishop pair and the position is open -- the two bishops cover both "
+            "colours here, so keep lines open and don't trade one off"
+        )
+    elif centre >= 3:
+        text = (
+            "you have the bishop pair but the centre is closed -- open lines to bring the two "
+            "bishops to life"
+        )
+    else:
+        text = "you have the bishop pair, so keep the position open where you can"
+    return [PositionalFact("bishopPair", text, tuple(_name(sq) for sq in sorted(ours)))]
 
 
 def bad_bishop(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
@@ -500,8 +522,9 @@ def bad_bishop(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
             facts.append(
                 PositionalFact(
                     "badBishop",
-                    f"your bishop on {_name(square)} is a bad bishop, blocked in by your own "
-                    "pawns; trading it or freeing it is worth thinking about",
+                    f"your bishop on {_name(square)} is a bad bishop, blocked by your own "
+                    "pawns on its colour: trade it, push those pawns off its colour, or get it "
+                    "outside the pawn chain",
                     (_name(square),),
                 )
             )
