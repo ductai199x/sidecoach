@@ -7,7 +7,7 @@ import platform
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated, TextIO, cast
 
 import typer
 from rich.console import Console
@@ -278,15 +278,18 @@ def replay(
     scale: Annotated[
         float, typer.Option(help="Resize every frame by this factor before the pipeline")
     ] = 1.0,
+    assess: Annotated[bool, typer.Option(help="Also run the engine over the moves found")] = False,
     config: ConfigOpt = None,
 ) -> None:
     """Summarise a recording, track the board through it, or reconstruct the game.
 
     `--scale` replays the same frames smaller or larger, which is how size invariance is
-    tested without storing another copy of the recording.
+    tested without storing another copy of the recording. `--assess` runs the engine
+    alongside, which is how the live watcher's wiring is exercised without a game on screen.
     """
     from sidecoach.replay.recording import Recording
 
+    settings = load_settings(config)
     rec = Recording(recording)
     console.print(
         f"{recording}: monitor {rec.meta.monitor} {rec.meta.width}x{rec.meta.height} "
@@ -295,7 +298,11 @@ def replay(
     )
     if moves or pgn is not None:
         truth = pgn if pgn is not None else recording / "truth.pgn"
-        _replay_moves(rec, truth if truth.exists() else None, game, scale)
+        assessing = _Assessing(settings, assess)
+        try:
+            _replay_moves(rec, truth if truth.exists() else None, game, scale, assessing)
+        finally:
+            assessing.close()
         return
     if not detect:
         return
@@ -338,9 +345,17 @@ def _read_truth(truth_pgn: Path) -> list[str]:
 
 
 def _replay_moves(
-    rec: Recording, truth_pgn: Path | None = None, scored_game: int = 1, scale: float = 1.0
+    rec: Recording,
+    truth_pgn: Path | None = None,
+    scored_game: int = 1,
+    scale: float = 1.0,
+    assessing: _Assessing | None = None,
 ) -> None:
-    """Run the game pipeline over a recording and, if a truth PGN exists, score one game."""
+    """Run the game pipeline over a recording and, if a truth PGN exists, score one game.
+
+    With an `assessing` the engine follows along as well, which is the same wiring the live
+    watcher uses and the only way to exercise it without a game on the screen.
+    """
     import chess
     import cv2
 
@@ -378,11 +393,15 @@ def _replay_moves(
                 f"tick {tick.frame_id:5d} recogniser built from a start position, "
                 f"{bottom} at the bottom"
             )
+        if assessing is not None:
+            assessing.drain(indent="            ")
         for event in events:
             # Decided per event: a game-over, a game-start, and the next game's first move
             # can share one tick.
             scoring = bool(truth) and len(games) == scored_game - 1
             if isinstance(event, MovePlayed):
+                if assessing is not None:
+                    assessing.submit(event)
                 who = "you" if event.by_user else "opp"
                 verdict = ""
                 if scoring:
@@ -435,6 +454,8 @@ def _replay_moves(
             elif isinstance(event, GameStarted):
                 console.print(f"tick {tick.frame_id:5d} GameStarted")
     elapsed = time.perf_counter() - started
+    if assessing is not None:
+        assessing.wait(indent="            ")
     # A game still in progress when the recording ends is reported as it stands; a finished
     # one was already reported by its game-over event.
     if (
@@ -664,6 +685,76 @@ def _make_analyser(settings: Settings, *, depth: int | None = None) -> Analyser 
     )
 
 
+class _Assessing:
+    """The engine alongside a game as it is followed: submit moves, print what comes back.
+
+    Shared by the live watcher and by replay, so both wire the engine up the same way.
+    Nothing here blocks: assessments arrive on the worker thread and are printed on the
+    tick that finds them, a second or two after the move, which is when a coach would
+    speak anyway. Only moves already played are described, never the position on the
+    board, which is what the disclosure rules require.
+    """
+
+    def __init__(self, settings: Settings, enabled: bool, *, depth: int | None = None) -> None:
+        self.analyser = _make_analyser(settings, depth=depth) if enabled else None
+        if enabled and self.analyser is None:
+            console.print("[yellow]no Stockfish: moves will not be assessed[/yellow]")
+        # Where each move was played from, so a better move can be named in the notation a
+        # person reads; dropped as soon as that assessment is printed.
+        self._from: dict[int, str] = {}
+
+    @property
+    def on(self) -> bool:
+        return self.analyser is not None
+
+    def submit(self, event: object) -> None:
+        import chess
+
+        from sidecoach.events import MovePlayed
+
+        if self.analyser is None or not isinstance(event, MovePlayed):
+            return
+        before = chess.Board(event.fen_before)
+        self.analyser.submit_move(event.game_id, before, chess.Move.from_uci(event.uci), event.ply)
+        self._from[event.ply] = event.fen_before
+
+    def reset(self) -> None:
+        if self.analyser is not None:
+            self.analyser.annotator.reset()
+            self._from.clear()
+
+    def drain(self, log: TextIO | None = None, indent: str = "  ") -> None:
+        import chess
+
+        from sidecoach.events import MoveAssessment
+
+        if self.analyser is None:
+            return
+        for assessed in self.analyser.poll():
+            if isinstance(assessed, MoveAssessment):
+                fen = self._from.pop(assessed.ply, None)
+                if fen is not None:
+                    text = _assessment_text(assessed, chess.Board(fen))
+                    console.print(f"{indent}[dim]ply {assessed.ply}[/dim] {text}")
+            if log is not None:
+                log.write(assessed.model_dump_json() + "\n")
+
+    def wait(self, timeout: float = 30.0, log: TextIO | None = None, indent: str = "  ") -> None:
+        """Let the engine catch up at the end of a game, so nothing is lost on the way out."""
+        if self.analyser is None:
+            return
+        deadline = time.monotonic() + timeout
+        while self.analyser.pending and time.monotonic() < deadline:
+            self.drain(log, indent)
+            time.sleep(0.05)
+        self.drain(log, indent)
+
+    def close(self) -> None:
+        if self.analyser is not None:
+            self.analyser.close()
+            self.analyser = None
+
+
 _SEVERITY_COLOUR = {
     "blunder": "red",
     "mistake": "yellow",
@@ -884,7 +975,6 @@ def watch(
     from sidecoach.events import (
         GameEnded,
         GameStarted,
-        MoveAssessment,
         MovePlayed,
         Resync,
         Takeback,
@@ -913,12 +1003,7 @@ def watch(
     )
     console.print("start a new game on the board; keys: r resign, d draw, n new game, q quit\n")
 
-    analyser = _make_analyser(settings) if analysis else None
-    if analysis and analyser is None:
-        console.print("[yellow]no Stockfish: moves will not be assessed[/yellow]")
-    # The position each move was played from, so its assessment can name a better move in
-    # the notation a person reads; dropped as soon as that assessment is printed.
-    assessed_from: dict[int, str] = {}
+    assessing = _Assessing(settings, analysis)
 
     locked = False
     bootstraps = 0
@@ -1003,11 +1088,7 @@ def watch(
                     elif isinstance(event, MovePlayed):
                         after = chess.Board(event.fen_after)
                         before = chess.Board(event.fen_before)
-                        if analyser is not None:
-                            analyser.submit_move(
-                                event.game_id, before, chess.Move.from_uci(event.uci), event.ply
-                            )
-                            assessed_from[event.ply] = event.fen_before
+                        assessing.submit(event)
                         number = before.fullmove_number
                         dots = "." if before.turn == chess.WHITE else "..."
                         who = "you" if event.by_user else "opponent"
@@ -1021,25 +1102,14 @@ def watch(
                         console.print(f"[yellow]takeback[/yellow] {event.plies} ply")
                     elif isinstance(event, Resync):
                         console.print(f"[yellow]resync[/yellow]: {event.reason}")
-                        if analyser is not None:
-                            analyser.annotator.reset()
+                        assessing.reset()
                     elif isinstance(event, GameEnded):
                         console.print(f"[bold]game over[/bold] {event.result} ({event.reason})")
                         if event.pgn:
                             games.append(event.pgn)
                             console.print(f"PGN: {event.pgn}")
 
-                if analyser is not None:
-                    for assessed in analyser.poll():
-                        if isinstance(assessed, MoveAssessment):
-                            fen = assessed_from.pop(assessed.ply, None)
-                            if fen is not None:
-                                console.print(
-                                    f"  [dim]ply {assessed.ply}[/dim] "
-                                    f"{_assessment_text(assessed, chess.Board(fen))}"
-                                )
-                        if log is not None:
-                            log.write(assessed.model_dump_json() + "\n")
+                assessing.drain(log)
 
                 now = time.monotonic()
                 if now - last_status >= 5.0:
@@ -1075,6 +1145,8 @@ def watch(
         # the game so far is still reported below.
         console.print(f"[red]capture failed:[/red] {exc}")
     finally:
+        assessing.wait(log=log)
+        assessing.close()
         if recorder is not None:
             recorder.close()
         if log is not None:
