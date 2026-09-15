@@ -12,7 +12,16 @@ from dataclasses import dataclass, field
 import chess
 import numpy as np
 
-from sidecoach.events import ClockObservation, Event, GameEnded, GameStarted, Region, Side
+from sidecoach.events import (
+    ClockObservation,
+    Event,
+    GameEnded,
+    GameStarted,
+    Region,
+    ScreenState,
+    ScreenStateChanged,
+    Side,
+)
 from sidecoach.state.reconcile import Readings, Reconciler
 from sidecoach.vision.board_detect import BoardCandidate
 from sidecoach.vision.clock import ClockReader, ClockReading
@@ -83,6 +92,8 @@ class GamePipeline:
     _unread_change: bool = False
     # The last clock observation emitted, so an unchanged reading is not repeated.
     _last_clock: tuple[int | None, int | None, Side | None] | None = None
+    # The last screen state emitted, so a ScreenStateChanged fires only on a transition.
+    _screen_state: ScreenState = ScreenState.UNKNOWN
 
     def process(
         self, frame: np.ndarray, ts: float, changed: bool = True, frame_id: int | None = None
@@ -102,7 +113,7 @@ class GamePipeline:
             self._unread_change = self._unread_change or changed
             if self.reconciler is not None:
                 self.reconciler.board_unseen()
-            return []
+            return self._stamp(self._emit_screen_state(board_present=False), ts, frame_id)
         geometry = BoardGeometry(self.board.region, self.board.cell_px)
         key = (self.board.region, round(self.board.cell_px, 2))
         changed = (
@@ -140,6 +151,7 @@ class GamePipeline:
                 # The new recogniser reads this frame as its own start position.
                 self._start_on_screen = False
         if self.model is None or self.reconciler is None or self._readings is None:
+            events += self._emit_screen_state(board_present=True)
             return self._stamp(events, ts, frame_id)
         was_started = self.reconciler.started
         events += self.reconciler.update(self._readings, ts)
@@ -154,6 +166,7 @@ class GamePipeline:
             # The theme may still have changed between games, so rebuild the recogniser
             # from this frame and keep the reconciler it already reset.
             self._rebuild_model(frame, geometry)
+        events += self._emit_screen_state(board_present=True)
         return self._stamp(events, ts, frame_id)
 
     def end_game(
@@ -174,6 +187,7 @@ class GamePipeline:
         self._unread_change = False
         self._start_seen = 0
         self._start_on_screen = False
+        self._screen_state = ScreenState.UNKNOWN
         self._last_clock = None
         if self.clock is not None:
             self.clock.reset()
@@ -199,6 +213,29 @@ class GamePipeline:
             return []
         self._last_clock = key
         return [observation]
+
+    def _derive_screen_state(self, board_present: bool) -> ScreenState:
+        """The screen state from what the pipeline already knows: whether a board is
+        locked, and where its game sits in its life. DESIGN's first slice reads it from
+        board presence and the game lifecycle (running clocks refine live-versus-analysis
+        later); there is no separate classifier.
+        """
+        if not board_present:
+            return ScreenState.UNKNOWN  # no board: a menu, the lobby, or scrolled off
+        rec = self.reconciler
+        if rec is None or not rec.started:
+            return ScreenState.UNKNOWN  # a board, but no game recognised on it yet
+        if rec.finished:
+            return ScreenState.GAME_OVER
+        return ScreenState.LIVE_GAME
+
+    def _emit_screen_state(self, *, board_present: bool) -> list[Event]:
+        """A ScreenStateChanged when the derived state differs from the last emitted."""
+        state = self._derive_screen_state(board_present)
+        if state == self._screen_state:
+            return []
+        self._screen_state = state
+        return [ScreenStateChanged(state=state)]
 
     @staticmethod
     def _stamp(events: list[Event], ts: float, frame_id: int | None) -> list[Event]:
