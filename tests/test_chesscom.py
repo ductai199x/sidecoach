@@ -203,21 +203,22 @@ def test_labels_follow_the_review_vocabulary() -> None:
     # The only move is great whether or not it was the engine's first choice, unless it is
     # obvious (a recapture, the only legal move) or the game was already decided.
     assert _label(0.0, only_move=True) is Label.GREAT
-    assert _label(0.0, only_move=True, obvious=True) is Label.BEST
-    assert _label(0.01, only_move=True, obvious=True) is Label.EXCELLENT
-    assert _label(0.0, only_move=True, before_score=0.95) is Label.BEST
+    assert _label(0.0, only_move=True, obvious=True) is Label.EXCELLENT
+    assert _label(0.0, only_move=True, obvious=True, is_best=True) is Label.BEST
+    assert _label(0.0, only_move=True, before_score=0.95) is Label.EXCELLENT
     assert _label(0.0, opponent_erred=True, is_best=True, obvious=True) is Label.BEST
-    # Nothing better was found: best, whether or not it was the engine's first choice.
-    assert _label(0.0) is Label.BEST
+    # A move as good as the engine's choice but not that choice is excellent, not best:
+    # measured against chess.com's tallies, "best" is the engine's first choice only.
+    assert _label(0.0) is Label.EXCELLENT
     # An unsound sacrifice is judged by its loss like any move.
     assert _label(0.3, sacrifice=True) is Label.BLUNDER
 
 
 def test_accuracy_is_a_hundred_for_no_loss_and_falls_with_it() -> None:
     assert move_accuracy(0.0) == 100.0
-    assert 78 < move_accuracy(0.05) < 82
-    assert 20 < move_accuracy(0.30) < 30
-    assert move_accuracy(1.0) == 0.0
+    assert 75 < move_accuracy(0.01) < 80
+    assert 24 < move_accuracy(0.05) < 29, "an inaccuracy on chess.com's scale"
+    assert move_accuracy(0.30) == 0.0 and move_accuracy(1.0) == 0.0
     assert game_accuracy([]) is None
     assert game_accuracy([100.0, 100.0]) == 100.0
     assert game_accuracy([100.0, 50.0]) == 75.0

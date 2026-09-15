@@ -115,6 +115,8 @@ def test_severity_names_the_thresholds() -> None:
     assert severity(0.10, t) is Severity.MISTAKE
     assert severity(0.20, t) is Severity.BLUNDER
     assert severity(0.9, t) is Severity.BLUNDER
+    fitted = Thresholds()
+    assert (fitted.inaccuracy, fitted.mistake, fitted.blunder) == (0.04, 0.11, 0.28)
 
 
 def test_eval_loss_is_measured_from_the_movers_side() -> None:
@@ -401,7 +403,7 @@ def test_a_real_game_is_assessed_end_to_end(engine: Engine) -> None:
         losses[san] = assessment.expected_loss
         board.push(move)
     assert losses["Nf6"] > 0.5, "the move that allows mate is a blunder"
-    assert losses["Qxf7#"] == 0.0 and losses["e4"] < 0.05
+    assert losses["Qxf7#"] == 0.0 and losses["e4"] < 0.04
     assert final is not None and final.lines == [] and board.is_checkmate()
 
 

@@ -58,9 +58,10 @@ class CoachSettings(BaseModel):
     stuck_seconds: int = 45
     quiet: bool = False
     persona: str = "warm_direct"
-    inaccuracy: float = 0.05
-    mistake: float = 0.10
-    blunder: float = 0.20
+    # Fitted to chess.com's review tallies over six games; see analysis.score.Thresholds.
+    inaccuracy: float = 0.04
+    mistake: float = 0.11
+    blunder: float = 0.28
     decisive_gap: float = 0.10
     only_move_gap: float = 0.30
     excellent: float = 0.02

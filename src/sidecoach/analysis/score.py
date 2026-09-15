@@ -57,11 +57,17 @@ def expected_score(
 
 @dataclass(frozen=True)
 class Thresholds:
-    """How much loss earns a name, and what makes a position a decisive moment."""
+    """How much loss earns a name, and what makes a position a decisive moment.
 
-    inaccuracy: float = 0.05
-    mistake: float = 0.10
-    blunder: float = 0.20
+    The three severity lines were fitted to chess.com's review tallies over six of the
+    user's games (671 plies, 2026-09-15): they put our inaccuracy, mistake, miss and blunder
+    counts at 55, 30, 25 and 10 against their 60, 38, 22 and 10. A blunder throws away more
+    than a quarter of the game.
+    """
+
+    inaccuracy: float = 0.04
+    mistake: float = 0.11
+    blunder: float = 0.28
     decisive_gap: float = 0.10
     # An only move: everything else throws away this much. Wider than a decisive moment,
     # since "there is one move here" is a stronger claim than "this move matters".
@@ -174,7 +180,7 @@ def label_move(
                 return Label.BRILLIANT
             if only_move or (opponent_erred and is_best):
                 return Label.GREAT
-        if is_best or loss == 0.0:
+        if is_best:
             return Label.BEST
         return Label.EXCELLENT if loss < thresholds.excellent else Label.GOOD
     verdict = severity(loss, thresholds)
@@ -183,10 +189,15 @@ def label_move(
     return Label.MISTAKE if verdict is Severity.MISTAKE else Label.INACCURACY
 
 
-# Lichess's per-move accuracy: 100 for no loss, falling off exponentially with the drop in
-# winning chances, on the same curve as `human_expected_score`.
+# Per-move accuracy: 100 for no loss, falling off exponentially with the drop in winning
+# chances. The shape is Lichess's; the steepness is not. Lichess uses 0.04354, on which an
+# inaccuracy scores about 80, and the plain mean of that ran fifteen points above
+# chess.com's accuracy on every one of six games. At 0.25 an inaccuracy scores 26, a
+# mistake 5, and the mean lands within 4.4 points of chess.com's number over twelve
+# game-sides with no bias to speak of: chess.com's accuracy is, in effect, how often you
+# played a near-best move.
 ACCURACY_A = 103.1668
-ACCURACY_K = 0.04354
+ACCURACY_K = 0.25
 ACCURACY_C = 3.1669
 
 
@@ -200,9 +211,8 @@ def game_accuracy(accuracies: Sequence[float]) -> float | None:
     """One number for a side's game: the mean of the per-move accuracies.
 
     Lichess averages a volatility-weighted mean with a harmonic mean; the harmonic mean
-    collapses on a single move that flipped the game, which club games have, and against
-    chess.com's numbers on six of them the plain mean sat much closer. Chess.com's own
-    formula is not published, so the numbers will be near, not equal.
+    collapses on a single move that flipped the game, which club games have. Chess.com's
+    own formula is not published; the plain mean on the steepened curve is what fitted.
     """
     if not accuracies:
         return None
