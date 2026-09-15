@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import platform
 import sys
 import time
@@ -657,13 +656,11 @@ def detect(
         console.print(f"annotated -> {out}")
 
 
-def _load_tagger() -> Tagger | None:
-    """The motif tagger, when it is built; the analysis runs without it until then."""
-    try:
-        module = importlib.import_module("sidecoach.analysis.motifs")
-    except ImportError:
-        return None
-    return cast("Tagger", module)
+def _load_tagger() -> Tagger:
+    """The motif tagger: what a move did, in the names a coach uses."""
+    from sidecoach.analysis import motifs
+
+    return cast("Tagger", motifs)
 
 
 def _load_book(settings: Settings) -> Book | None:

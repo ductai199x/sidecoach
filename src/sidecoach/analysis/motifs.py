@@ -10,6 +10,16 @@ Two questions, two functions. `tags_for_move` answers "what does this move do", 
 mover's point of view. `tags_for_position` answers "what is in this position" for the side to
 move: the static features plus the tags of the engine's best move.
 
+Two rules keep the tags honest, because a coach who names a motif that is not worth acting on
+is worse than a coach who says nothing:
+
+1. A tag that claims material has to gain material once defenders are counted. A pawn
+   shielding a defended knight is not a pin; a knight forking two rooks while a pawn can take
+   it is not a fork.
+2. `tags_for_move` reports only what the move brought about. A pin the bishop was already
+   making before the move is not something the move did, so castling does not inherit it.
+   Those features still show up in `tags_for_position`, where they belong.
+
 `mate_in` counts the mover's own moves including the one being judged: 1 means this move is
 checkmate, 3 means this move plus two more, and a negative value means the mover gets mated.
 A negative `mate_in` never produces a `mateIn*` tag.
@@ -117,11 +127,12 @@ def _value(piece_type: chess.PieceType | None) -> int:
 
 
 def _tag(name: str, squares: Iterable[chess.Square], move: chess.Move | None = None) -> MotifTag:
-    return MotifTag(
-        name=name,
-        squares=[chess.square_name(s) for s in squares],
-        move=None if move is None else move.uci(),
-    )
+    names: list[str] = []
+    for square in squares:
+        label = chess.square_name(square)
+        if label not in names:
+            names.append(label)
+    return MotifTag(name=name, squares=names, move=None if move is None else move.uci())
 
 
 def _sliders(board: chess.Board, color: chess.Color) -> chess.SquareSet:
@@ -208,14 +219,14 @@ def _defensive_evidence(
 ) -> list[chess.Square] | None:
     """A quiet move that saves material: it runs from an attack, or it defends an attacked man.
 
-    Running away means the piece stood on an attacked square and its new square is not
-    attacked at all. Defending means the move newly covers a friendly piece that the opponent
-    was attacking before the move and is still attacking after it.
+    Running away means the piece could have been taken for profit where it stood and its new
+    square is not attacked at all. Defending means the move newly covers a friendly piece the
+    opponent could have won before the move and is still attacking after it. Adding a second
+    guard to a piece that was already holding is not a rescue, so it does not count.
     """
     enemy = not mover
-    if before.is_attacked_by(enemy, move.from_square) and not after.is_attacked_by(
-        enemy, move.to_square
-    ):
+    ran = not _is_safe(before, move.from_square) and not after.is_attacked_by(enemy, move.to_square)
+    if ran:
         return [move.from_square, move.to_square]
     covered_before = before.attacks(move.from_square)
     for square in after.attacks(move.to_square):
@@ -224,8 +235,9 @@ def _defensive_evidence(
         piece = after.piece_at(square)
         if piece is None or piece.color != mover:
             continue
-        if before.is_attacked_by(enemy, square) and after.is_attacked_by(enemy, square):
-            return [move.to_square, square]
+        if _is_safe(before, square) or not after.is_attacked_by(enemy, square):
+            continue
+        return [move.to_square, square]
     return None
 
 
@@ -275,12 +287,48 @@ def _group_a(
 # --- group B: what the move creates -----------------------------------------------------
 
 
+def _winnable(
+    view: chess.Board, square: chess.Square, cost: int, ignore: chess.Square | None = None
+) -> bool:
+    """Would taking the piece on `square` with a `cost`-valued piece gain material?
+
+    True when the piece is worth more than what takes it, or when nothing defends it.
+    `ignore` drops one defender, which is how a skewered piece stops counting as the guard of
+    the piece behind it: it is the one being driven off the line.
+    """
+    piece = view.piece_at(square)
+    if piece is None:
+        return False
+    if piece.piece_type == chess.KING or _value(piece.piece_type) > cost:
+        return True
+    defenders = view.attackers(piece.color, square)
+    if ignore is not None:
+        defenders.discard(ignore)
+    return not defenders
+
+
+def _is_safe(view: chess.Board, square: chess.Square) -> bool:
+    """Can the piece on `square` be taken for profit? Safe means no, so it can stay."""
+    piece = view.piece_at(square)
+    if piece is None:
+        return True
+    mine = _value(piece.piece_type)
+    attackers = view.attackers(not piece.color, square)
+    if not attackers:
+        return True
+    if any(_value(view.piece_type_at(a)) < mine for a in attackers):
+        return False
+    return bool(view.attackers(piece.color, square))
+
+
 def _fork(after: chess.Board, move: chess.Move, mover: chess.Color) -> MotifTag | None:
-    """The moved piece attacks two or more targets it can profitably take.
+    """The moved piece attacks two or more targets it could profitably take.
 
     A target is the enemy king, an enemy piece worth more than the moved piece, or an enemy
-    piece worth at least as much as the moved piece and undefended. Equal value plus a
-    defender is a trade, not a fork, which is what keeps pawn pushes out of this.
+    piece worth at least as much and undefended. Equal value plus a defender is a trade, not
+    a fork, which is what keeps pawn pushes out of this. Unless the enemy king is one of the
+    targets, the forking piece must also be safe where it stands: a knight forking two rooks
+    while a pawn can take it wins nothing.
     """
     piece = after.piece_at(move.to_square)
     if piece is None or piece.color != mover:
@@ -288,50 +336,59 @@ def _fork(after: chess.Board, move: chess.Move, mover: chess.Color) -> MotifTag 
     enemy = not mover
     mine = _value(piece.piece_type)
     targets: list[chess.Square] = []
+    forks_king = False
     for square in after.attacks(move.to_square):
         victim = after.piece_at(square)
         if victim is None or victim.color != enemy:
             continue
         theirs = _value(victim.piece_type)
-        if victim.piece_type == chess.KING or theirs > mine:
+        if victim.piece_type == chess.KING:
+            forks_king = True
             targets.append(square)
-        elif theirs >= mine and not after.attackers(enemy, square):
+        elif theirs > mine or (theirs >= mine and not after.attackers(enemy, square)):
             targets.append(square)
     if len(targets) < 2:
+        return None
+    if not forks_king and not _is_safe(after, move.to_square):
         return None
     return _tag("fork", [move.to_square, *targets], move)
 
 
-def _hanging(after: chess.Board, mover: chess.Color) -> MotifTag | None:
-    """An enemy piece attacked by the mover with no defender at all.
+def _hanging_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
+    """Enemy pieces attacked by the mover with no defender at all, one tag per piece.
 
     Pawns are excluded: loose pawns are everywhere and a coach calling one "hanging" is noise.
+    One tag per piece so that a piece that was already loose before a move can be told apart
+    from one the move just left en prise.
     """
     enemy = not mover
-    loose: list[chess.Square] = []
-    for square in sorted(after.piece_map()):
-        piece = after.piece_at(square)
+    tags: list[MotifTag] = []
+    for square in sorted(view.piece_map()):
+        piece = view.piece_at(square)
         if piece is None or piece.color != enemy:
             continue
         if piece.piece_type in (chess.PAWN, chess.KING):
             continue
-        if after.attackers(mover, square) and not after.attackers(enemy, square):
-            loose.append(square)
-    if not loose:
-        return None
-    return _tag("hangingPiece", loose)
+        if view.attackers(mover, square) and not view.attackers(enemy, square):
+            tags.append(_tag("hangingPiece", [square]))
+    return tags
 
 
 def _ray_motifs(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
     """Pins, skewers and x-rays: one mover slider, one enemy piece, one enemy piece behind it.
 
-    Worth more behind is a pin (absolute when it is the king), worth less behind is a skewer,
-    equal is a plain x-ray. A pawn on the pinning rook's own file is skipped: it moves along
-    the line anyway, so it is not restricted.
+    Every one of them has to gain something, counting defenders, or it is not worth naming.
+    A pin needs the shielded piece to be the king, or to be winnable once the shield steps
+    aside. A skewer needs the front piece to be one the owner must move and the piece behind
+    to be winnable. An x-ray is the leftover equal-value case, and it too needs the piece
+    behind to be loose. Nothing is reported when the front piece can simply take the slider
+    for profit, because then there is no line to act on. A pawn on the pinning rook's own
+    file is skipped: it moves along the line anyway, so it is not restricted.
     """
     enemy = not mover
     tags: list[MotifTag] = []
     for slider in _sliders(view, mover):
+        cost = _value(view.piece_type_at(slider))
         for front_sq in view.attacks(slider):
             front = view.piece_at(front_sq)
             if front is None or front.color != enemy:
@@ -344,20 +401,23 @@ def _ray_motifs(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
                 continue
             squares = [slider, front_sq, back_sq]
             front_value, back_value = _value(front.piece_type), _value(back.piece_type)
+            if slider in view.attacks(front_sq) and _winnable(view, slider, front_value):
+                continue
+            behind_is_loose = _winnable(view, back_sq, cost, ignore=front_sq)
             if back_value > front_value:
                 on_file = chess.square_file(slider) == chess.square_file(front_sq)
                 if front.piece_type == chess.PAWN and on_file:
                     continue
-                if back_value < _MINOR:
+                if not behind_is_loose:
                     continue
                 tags.append(_tag("pin", squares))
                 if back.piece_type == chess.KING:
                     tags.append(_tag("absolutePin", squares))
             elif front_value > back_value:
-                heavy = front_value >= _ROOK
-                if heavy and back_value >= _MINOR:
+                must_move = _winnable(view, front_sq, cost)
+                if must_move and back_value >= _MINOR and behind_is_loose:
                     tags.append(_tag("skewer", squares))
-            elif front_value >= _MINOR:
+            elif front_value >= _MINOR and behind_is_loose:
                 tags.append(_tag("xRayAttack", squares))
     return tags
 
@@ -368,13 +428,15 @@ def _discovered_attack(
     """The move steps off a line and a friendly slider now bears on something it did not.
 
     The proof is geometric: the vacated square lies strictly between the slider and the new
-    target. Only the king or a piece worth at least a knight counts as a target.
+    target. The target must be the king, or a piece worth at least a knight that the slider
+    could actually win, counting its defenders.
     """
     enemy = not mover
     squares: list[chess.Square] = []
     for slider in _sliders(after, mover):
         if slider == move.to_square or before.piece_at(slider) != after.piece_at(slider):
             continue
+        cost = _value(after.piece_type_at(slider))
         was = before.attacks(slider)
         for target in after.attacks(slider):
             if target in was:
@@ -383,6 +445,8 @@ def _discovered_attack(
             if piece is None or piece.color != enemy:
                 continue
             if piece.piece_type != chess.KING and _value(piece.piece_type) < _MINOR:
+                continue
+            if not _winnable(after, target, cost):
                 continue
             if not chess.BB_SQUARES[move.from_square] & chess.between(slider, target):
                 continue
@@ -412,6 +476,8 @@ def _interference(
             piece = before.piece_at(guarded)
             if piece is None or piece.color != enemy:
                 continue
+            if _value(piece.piece_type) < _MINOR or piece.piece_type == chess.KING:
+                continue
             if not chess.BB_SQUARES[move.to_square] & chess.between(slider, guarded):
                 continue
             if guarded in after.attacks(slider) or after.attackers(enemy, guarded):
@@ -422,23 +488,24 @@ def _interference(
     return None
 
 
-def _trapped_piece(view: chess.Board, mover: chess.Color) -> MotifTag | None:
-    """An enemy rook or queen attacked by something cheaper with nowhere safe to go.
+def _trapped_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
+    """Enemy rooks or queens attacked by something cheaper with nowhere safe to go.
 
     Needs the enemy to move, so it is skipped whenever either king is in check: check
-    evasions would make every piece look trapped.
+    evasions would make every piece look trapped. One tag per piece, so a piece that was
+    already trapped before a move can be told apart from one the move just shut in.
     """
     enemy = not mover
     enemy_king = view.king(enemy)
     mover_king = view.king(mover)
     if enemy_king is None or mover_king is None:
-        return None
+        return []
     if view.attackers(mover, enemy_king) or view.attackers(enemy, mover_king):
-        return None
+        return []
     escapes: dict[chess.Square, list[chess.Move]] = {}
     for move in view.legal_moves:
         escapes.setdefault(move.from_square, []).append(move)
-    trapped: list[chess.Square] = []
+    trapped: list[MotifTag] = []
     for square in sorted(view.piece_map()):
         piece = view.piece_at(square)
         if piece is None or piece.color != enemy or _value(piece.piece_type) < _ROOK:
@@ -457,10 +524,8 @@ def _trapped_piece(view: chess.Board, mover: chess.Color) -> MotifTag | None:
                 safe = True
                 break
         if not safe:
-            trapped.append(square)
-    if not trapped:
-        return None
-    return _tag("trappedPiece", trapped)
+            trapped.append(_tag("trappedPiece", [square, *hunters]))
+    return trapped
 
 
 def _attacking_f2f7(
@@ -484,8 +549,9 @@ def _exposed_king(view: chess.Board, mover: chess.Color) -> MotifTag | None:
     """The enemy king has lost its pawn shelter and the mover has force bearing on it.
 
     Shelter is counted one pawn per file over the three files around the king, one or two
-    ranks in front. At most one such pawn, plus a queen or rook and two more pieces, plus at
-    least two attacked squares in the king's ring.
+    ranks in front. At most one such pawn, a queen or a rook among at least three attacking
+    pieces (bare rook-and-knight endings are not attacks), and at least two squares of the
+    king's ring under fire.
     """
     enemy = not mover
     king = view.king(enemy)
@@ -508,9 +574,10 @@ def _exposed_king(view: chess.Board, mover: chess.Color) -> MotifTag | None:
                 break
     if shelter > 1:
         return None
+    attackers = (chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT)
     heavy = view.pieces(chess.QUEEN, mover) or view.pieces(chess.ROOK, mover)
-    force = sum(len(view.pieces(pt, mover)) for pt in (chess.KNIGHT, chess.BISHOP, chess.ROOK))
-    if not heavy or force + len(view.pieces(chess.QUEEN, mover)) < 2:
+    force = sum(len(view.pieces(piece_type, mover)) for piece_type in attackers)
+    if not heavy or force < 3:
         return None
     hit = [s for s in chess.SquareSet(chess.BB_KING_ATTACKS[king]) if view.is_attacked_by(mover, s)]
     if len(hit) < 2:
@@ -519,12 +586,55 @@ def _exposed_king(view: chess.Board, mover: chess.Color) -> MotifTag | None:
 
 
 def _static_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
-    """Everything readable from the attack maps alone, from `mover`'s point of view."""
+    """Everything readable from the attack maps alone, from `mover`'s point of view.
+
+    `view` must have the enemy to move, which is what the position after a move looks like.
+    """
     tags = _ray_motifs(view, mover)
-    for tag in (_hanging(view, mover), _trapped_piece(view, mover), _exposed_king(view, mover)):
-        if tag is not None:
-            tags.append(tag)
+    tags.extend(_hanging_tags(view, mover))
+    tags.extend(_trapped_tags(view, mover))
+    exposed = _exposed_king(view, mover)
+    if exposed is not None:
+        tags.append(exposed)
     return tags
+
+
+def _enemy_to_move(board: chess.Board, mover: chess.Color) -> chess.Board:
+    if board.turn != mover:
+        return board
+    view = board.copy(stack=False)
+    view.turn = not mover
+    view.ep_square = None
+    return view
+
+
+_RAY_NAMES = ("pin", "absolutePin", "skewer", "xRayAttack")
+
+
+def _static_key(tag: MotifTag) -> tuple[str, tuple[str, ...]]:
+    """Identity of a static feature, so the same feature before and after a move matches.
+
+    Only the part that makes the feature what it is goes into the key. A pin is which piece is
+    shielding which, not which of my pieces happens to be doing the pinning, so sliding a rook
+    along the rank it was already pinning on does not count as creating a pin. Likewise the
+    king being out in the open is the feature, not which ring squares are hit this ply, and a
+    trapped piece is the piece with nowhere to go, not the current list of hunters.
+    """
+    if tag.name in _RAY_NAMES:
+        return (tag.name, tuple(tag.squares[1:]))
+    if tag.name in ("exposedKing", "trappedPiece"):
+        return (tag.name, tuple(tag.squares[:1]))
+    return (tag.name, tuple(tag.squares))
+
+
+def _new_static_tags(before: chess.Board, after: chess.Board, mover: chess.Color) -> list[MotifTag]:
+    """Static features the move brought about, and only those.
+
+    A pin the bishop was already making before the move is not something the move did, so it
+    does not belong in the move's tags. It is still reported by `tags_for_position`.
+    """
+    prior = {_static_key(tag) for tag in _static_tags(_enemy_to_move(before, mover), mover)}
+    return [tag for tag in _static_tags(after, mover) if _static_key(tag) not in prior]
 
 
 # --- group C: what the line does --------------------------------------------------------
@@ -533,32 +643,30 @@ def _static_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
 def _sacrifice(
     boards: list[chess.Board], played: list[chess.Move], mover: chess.Color, mate_in: int | None
 ) -> MotifTag | None:
-    """The mover is at least two points down somewhere in the line, and the line still wins.
+    """This move gives up at least two points to the opponent's reply, and the line still wins.
 
-    Two points, so a pawn gambit does not count. Taking the minimum over the whole line is
-    what "not immediately regained by a simple recapture" means: an even trade dips and comes
-    straight back, so the minimum never falls. "Still wins" is a mate for the mover, or the
-    material coming back by the end of the line.
+    The judgement is about the move played, not about the line it leads to. Taking the
+    lowest point anywhere in a twelve-ply variation would call almost everything a
+    sacrifice, since the opponent captures first in half of all trades and the material
+    comes straight back: measured that way, `2. Nf3` in the game of 2026-09-14 20:06 was a
+    sacrifice. So the balance is read after the move and the opponent's answer to it.
+
+    Two points, so a pawn gambit does not count. "Still wins" is a mate for the mover, or
+    the material coming back by the end of the line: a piece given for nothing at all is a
+    blunder, and the assessment already says so.
     """
     if len(played) < 2:
         return None
     start = _balance(boards[0], mover)
-    worst = start
-    worst_square: chess.Square | None = None
-    for i in range(1, len(boards)):
-        balance = _balance(boards[i], mover)
-        if balance < worst:
-            worst = balance
-            worst_square = played[i - 1].to_square
-    if start - worst < _SACRIFICE_THRESHOLD:
+    answered = _balance(boards[2], mover) if len(boards) > 2 else _balance(boards[-1], mover)
+    if start - answered < _SACRIFICE_THRESHOLD:
         return None
     mating = mate_in is not None and mate_in > 0
     if not mating and _balance(boards[-1], mover) < start:
         return None
-    squares = [played[0].from_square, played[0].to_square]
-    if worst_square is not None:
-        squares.append(worst_square)
-    return _tag("sacrifice", squares, played[0])
+    return _tag(
+        "sacrifice", [played[0].from_square, played[0].to_square, played[1].to_square], played[0]
+    )
 
 
 def _clearance(boards: list[chess.Board], played: list[chess.Move]) -> MotifTag | None:
@@ -582,9 +690,7 @@ def _clearance(boards: list[chess.Board], played: list[chess.Move]) -> MotifTag 
     return None
 
 
-def _capturing_defender(
-    boards: list[chess.Board], played: list[chess.Move]
-) -> MotifTag | None:
+def _capturing_defender(boards: list[chess.Board], played: list[chess.Move]) -> MotifTag | None:
     """The move captures a piece and a later move of the mover's lands on a square it guarded."""
     first = played[0]
     if not boards[0].is_capture(first):
@@ -719,11 +825,11 @@ def _mating_pattern_tags(position: chess.Board) -> list[MotifTag]:
     if king_rank == back_rank:
         forward = back_rank + (1 if loser == chess.WHITE else -1)
         front = [
-            chess.square(f, forward) for f in (king_file - 1, king_file, king_file + 1) if 0 <= f <= 7
+            chess.square(f, forward)
+            for f in (king_file - 1, king_file, king_file + 1)
+            if 0 <= f <= 7
         ]
-        blocked = all(
-            (p := position.piece_at(s)) is not None and p.color == loser for s in front
-        )
+        blocked = all((p := position.piece_at(s)) is not None and p.color == loser for s in front)
         heavy = [
             c
             for c in checkers
@@ -738,7 +844,9 @@ def _mating_pattern_tags(position: chess.Board) -> list[MotifTag]:
         kind = position.piece_type_at(checker)
         adjacent = chess.square_distance(checker, king) == 1
         knights = [
-            s for s in _defenders(position, winner, checker) if position.piece_type_at(s) == chess.KNIGHT
+            s
+            for s in _defenders(position, winner, checker)
+            if position.piece_type_at(s) == chess.KNIGHT
         ]
 
         if kind == chess.KNIGHT and len(own_ring) == len(ring):
@@ -785,7 +893,7 @@ def _mating_pattern_tags(position: chess.Board) -> list[MotifTag]:
         if kind == chess.ROOK and king_file in (0, 7) and chess.square_file(checker) == king_file:
             inner = 1 if king_file == 0 else 6
             above, below = king_rank + 1, king_rank - 1
-            if 0 <= below and above <= 7:
+            if below >= 0 and above <= 7:
                 beside = chess.square(inner, king_rank)
                 blocker = position.piece_at(beside)
                 flights = (chess.square(inner, above), chess.square(inner, below))
@@ -854,7 +962,7 @@ def tags_for_move(
     after = boards[1]
 
     tags = _group_a(before, after, move, mover)
-    tags.extend(_static_tags(after, mover))
+    tags.extend(_new_static_tags(before, after, mover))
     for tag in (
         _fork(after, move, mover),
         _discovered_attack(before, after, move, mover),
@@ -891,10 +999,7 @@ def tags_for_position(
     moves starting with `pv[0]`.
     """
     mover = board.turn
-    view = board.copy(stack=False)
-    view.turn = not mover
-    view.ep_square = None
-    tags = _static_tags(view, mover)
+    tags = _static_tags(_enemy_to_move(board, mover), mover)
 
     if pv and pv[0] in board.legal_moves:
         tags.extend(tags_for_move(board, pv[0], pv=pv[1:], mate_in=mate_in))
