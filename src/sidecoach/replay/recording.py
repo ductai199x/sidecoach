@@ -26,6 +26,7 @@ import cv2
 import numpy as np
 
 from sidecoach.events import Region
+from sidecoach.vision.board_detect import BoardCandidate
 
 FOURCC = "FFV1"
 META_FILE = "meta.json"
@@ -44,6 +45,8 @@ class RecordingMeta:
     codec: str = FOURCC
     version: int = 1
     change_region: tuple[int, int, int, int] | None = None
+    # Frames are the capture region resized by this factor (1.0 for a live capture).
+    scale: float = 1.0
     keyframe_interval_s: float | None = None
 
 
@@ -69,6 +72,8 @@ def frames_differ(
     if region is not None:
         a = a[region.y : region.y + region.h, region.x : region.x + region.w]
         b = b[region.y : region.y + region.h, region.x : region.x + region.w]
+    if a.size == 0:
+        return False
     diff = cv2.absdiff(a, b)
     if diff.ndim == 3:
         diff = diff.max(axis=2)
@@ -80,6 +85,58 @@ def clamp_region(region: Region, width: int, height: int) -> Region:
     x0, y0 = max(0, region.x), max(0, region.y)
     x1, y1 = min(width, region.x + region.w), min(height, region.y + region.h)
     return Region(x0, y0, max(0, x1 - x0), max(0, y1 - y0))
+
+
+def board_gate(board: BoardCandidate | None, width: int, height: int) -> Region | None:
+    """The board plus half a cell of margin, clamped to the frame; None without a board."""
+    if board is None:
+        return None
+    pad = int(round(board.cell_px / 2))
+    r = board.region
+    return clamp_region(Region(r.x - pad, r.y - pad, r.w + 2 * pad, r.h + 2 * pad), width, height)
+
+
+class ChangeGate:
+    """Decides which frames count as changed: the one rule for recording and for replay.
+
+    A frame is a change when more than `min_fraction` of the gated region differs from
+    the last changed frame by over `threshold`, or when a keyframe is due. The live
+    watcher without a recorder and the recorder itself share this object's logic, so a
+    session replays with the same `changed` stream it was seen with.
+    """
+
+    def __init__(
+        self,
+        *,
+        threshold: int = 12,
+        min_fraction: float = 0.0005,
+        keyframe_interval_s: float | None = 1.0,
+        region: Region | None = None,
+    ) -> None:
+        self.threshold = threshold
+        self.min_fraction = min_fraction
+        self.keyframe_interval_s = keyframe_interval_s
+        self.region = region
+        self._last: np.ndarray | None = None
+        self._last_ts = -1e9
+
+    def changed(self, frame: np.ndarray, ts: float) -> bool:
+        if self._last is None or self._last.shape != frame.shape:
+            due = True
+        elif self.region is not None and (self.region.w == 0 or self.region.h == 0):
+            due = False
+        else:
+            region = (
+                clamp_region(self.region, frame.shape[1], frame.shape[0]) if self.region else None
+            )
+            due = frames_differ(self._last, frame, self.threshold, region, self.min_fraction) or (
+                self.keyframe_interval_s is not None
+                and ts - self._last_ts >= self.keyframe_interval_s
+            )
+        if due:
+            self._last = frame.copy()
+            self._last_ts = ts
+        return due
 
 
 class Recorder:
@@ -94,7 +151,11 @@ class Recorder:
         change_region: Region | None = None,
         keyframe_interval_s: float | None = 1.0,
         min_changed_fraction: float = 0.0005,
+        scale: float = 1.0,
+        size: tuple[int, int] | None = None,
     ) -> None:
+        """`size` is the stored frame size when it differs from the region (a shrunk copy)."""
+        width, height = size if size is not None else (region.w, region.h)
         out_dir.mkdir(parents=True, exist_ok=True)
         self.dir = out_dir
         self.change_threshold = change_threshold
@@ -108,8 +169,8 @@ class Recorder:
             region=(region.x, region.y, region.w, region.h),
             fps=fps,
             started_at=datetime.now(UTC).isoformat(timespec="seconds"),
-            width=region.w,
-            height=region.h,
+            width=width,
+            height=height,
             change_region=(
                 (
                     self.change_region.x,
@@ -121,37 +182,32 @@ class Recorder:
                 else None
             ),
             keyframe_interval_s=keyframe_interval_s,
+            scale=scale,
         )
         (out_dir / META_FILE).write_text(json.dumps(asdict(self.meta), indent=2))
         self._writer = cv2.VideoWriter(
             str(out_dir / VIDEO_FILE),
             cv2.VideoWriter.fourcc(*FOURCC),
             float(fps),
-            (region.w, region.h),
+            (width, height),
         )
         if not self._writer.isOpened():
             raise RuntimeError(f"could not open {FOURCC} video writer at {out_dir / VIDEO_FILE}")
         self._index = (out_dir / INDEX_FILE).open("w", encoding="utf-8")
+        self._gate = ChangeGate(
+            threshold=change_threshold,
+            min_fraction=min_changed_fraction,
+            keyframe_interval_s=keyframe_interval_s,
+            region=self.change_region,
+        )
         self._last: np.ndarray | None = None
         self._last_stored_ts: float | None = None
         self.ticks = 0
         self.stored = 0
 
     def _should_store(self, frame: np.ndarray, ts: float) -> bool:
-        if self._last is None or self._last_stored_ts is None:
-            return True
-        if frames_differ(
-            self._last,
-            frame,
-            self.change_threshold,
-            self.change_region,
-            self.min_changed_fraction,
-        ):
-            return True
-        return (
-            self.keyframe_interval_s is not None
-            and ts - self._last_stored_ts >= self.keyframe_interval_s
-        )
+        self._gate.region = self.change_region
+        return self._gate.changed(frame, ts)
 
     def write(self, frame: np.ndarray, ts: float) -> Tick:
         if frame.shape[:2] != (self.meta.height, self.meta.width):
@@ -159,16 +215,20 @@ class Recorder:
                 f"frame is {frame.shape[1]}x{frame.shape[0]}, "
                 f"recording is {self.meta.width}x{self.meta.height}"
             )
+        if frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8:
+            raise ValueError("frames must be 8-bit BGR; the writer silently drops anything else")
         stored: int | None = None
         if self._should_store(frame, ts):
-            self._writer.write(frame)
+            if not self._writer.write(frame):
+                # A tick that claims a stored frame the video does not hold would shift
+                # every later tick onto the wrong frame; better to stop the recording.
+                raise RuntimeError(f"video writer refused frame {self.stored} of {self.dir}")
             stored = self.stored
             self.stored += 1
-            self._last = frame.copy()
-            self._last_stored_ts = ts
         tick = Tick(self.ticks, ts, stored)
         self.ticks += 1
         self._index.write(json.dumps(asdict(tick)) + "\n")
+        self._index.flush()  # a hard kill then loses frames, not the whole index
         return tick
 
     def close(self) -> None:
@@ -252,6 +312,51 @@ def concat_recordings(parts: list[tuple[Path, int | None, int | None]], out_dir:
                 if end is not None and tick.frame_id > end:
                     break
                 recorder.write(frame, tick.ts)
+    finally:
+        recorder.close()
+    return Recording(out_dir)
+
+
+def shrink_recording(
+    src: Path,
+    out_dir: Path,
+    scale: float,
+    first: int | None = None,
+    last: int | None = None,
+) -> Recording:
+    """A copy of `src` with every frame resized by `scale`, still lossless.
+
+    The whole screen is kept: the program's input is the screen, and a recording that held
+    less would test an easier problem than the live one. Timestamps and the change gating
+    of the source are kept, so a tick that repeated the previous frame still does. The
+    capture region stays in screen coordinates and the scale is recorded, so a pixel maps
+    back to the screen. Resizing uses area averaging, which is what a smaller screen shows.
+    """
+    rec = Recording(src)
+    if not 0.0 < scale <= 1.0:
+        raise ValueError(f"scale must be in (0, 1], got {scale}")
+    width = max(2, round(rec.meta.width * scale))
+    height = max(2, round(rec.meta.height * scale))
+    recorder = Recorder(
+        out_dir,
+        monitor=rec.meta.monitor,
+        region=rec.region,
+        fps=rec.meta.fps,
+        change_region=None,
+        keyframe_interval_s=rec.meta.keyframe_interval_s,
+        min_changed_fraction=0.0,
+        scale=scale * rec.meta.scale,
+        size=(width, height),
+    )
+    try:
+        for tick, frame in rec.frames():
+            if first is not None and tick.frame_id < first:
+                continue
+            if last is not None and tick.frame_id > last:
+                break
+            if (frame.shape[1], frame.shape[0]) != (width, height):
+                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+            recorder.write(frame, tick.ts)
     finally:
         recorder.close()
     return Recording(out_dir)

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 
-from sidecoach.events import Region
+from sidecoach.events import MovePlayed, Region
 from sidecoach.replay.recording import Recorder, Recording, frames_differ
 
 
@@ -91,3 +91,67 @@ def test_wrong_frame_size_rejected(tmp_path: Path) -> None:
             recorder.write(_frame(1, (10, 10, 3)), ts=0.0)
     finally:
         recorder.close()
+
+
+def test_shrink_keeps_the_ticks_and_the_game_at_half_scale(tmp_path: Path) -> None:
+    import chess
+
+    from sidecoach.replay.recording import shrink_recording
+    from sidecoach.state.pipeline import GamePipeline
+    from tests.synth import synthetic_board
+
+    region = Region(0, 0, 1280, 800)
+    recorder = Recorder(tmp_path / "full", monitor=0, region=region, fps=10)
+    board = chess.Board()
+    frames = [synthetic_board(board=board, cell=96, x0=200, y0=20)] * 3
+    for san in ("e4", "e5", "Nf3"):
+        move = board.push_san(san)
+        frames += [synthetic_board(board=board, cell=96, x0=200, y0=20, highlight=move)] * 3
+    for i, frame in enumerate(frames):
+        recorder.write(frame, ts=float(i) / 10)
+    recorder.close()
+
+    full = Recording(tmp_path / "full")
+    small = shrink_recording(tmp_path / "full", tmp_path / "half", 0.5)
+    assert len(small.ticks) == len(full.ticks)
+    assert [t.stored is None for t in small.ticks] == [t.stored is None for t in full.ticks]
+    assert (small.meta.width, small.meta.height, small.meta.scale) == (640, 400, 0.5)
+    assert (small.region.w, small.region.h) == (1280, 800)  # still the screen region
+
+    pipe = GamePipeline()
+    played = []
+    for tick, frame in small.frames():
+        assert frame.shape[:2] == (400, 640)
+        for event in pipe.process(frame, tick.ts, changed=tick.stored is not None):
+            if isinstance(event, MovePlayed):
+                played.append(event.san)
+    assert played == ["e4", "e5", "Nf3"]
+
+
+def test_change_gate_matches_the_recorder(tmp_path: Path) -> None:
+    """The unrecorded live path must see the same `changed` stream a recording would."""
+    from sidecoach.replay.recording import ChangeGate
+
+    region = Region(0, 0, 64, 48)
+    gate_region = Region(8, 8, 40, 30)
+    recorder = Recorder(
+        tmp_path / "rec", monitor=0, region=region, fps=10, change_region=gate_region
+    )
+    gate = ChangeGate(region=gate_region)
+    base = _frame(1)
+    edited = base.copy()
+    edited[20:30, 20:30] = 0  # inside the gate
+    outside = base.copy()
+    outside[0:3, 0:3] = 0  # outside the gate
+    frames = [base, base, outside, edited, edited, base]
+    times = [0.0, 0.1, 0.2, 0.3, 0.4, 2.0]  # the last one is a keyframe by time
+    recorded = [recorder.write(f, ts).stored is not None for f, ts in zip(frames, times)]
+    recorder.close()
+    live = [gate.changed(f, ts) for f, ts in zip(frames, times)]
+    assert recorded == live == [True, False, False, True, False, True]
+
+
+def test_zero_area_gate_never_changes() -> None:
+    a = _frame(1)
+    b = _frame(2)
+    assert not frames_differ(a, b, region=Region(0, 0, 0, 10))

@@ -29,7 +29,7 @@ module labels.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 import chess
@@ -79,6 +79,39 @@ class CellReading:
     # An opaque overlay confirmed by the neighbours hides this cell. The reconciler may
     # then carry the cell's last visible reading for a short while.
     covered: bool = False
+
+
+def _reading(
+    sil: Silhouette,
+    kind: Kind,
+    *,
+    symbol: str | None = None,
+    colour: Side | None = None,
+    confidence: float = 0.0,
+    highlighted: bool = False,
+    settled: bool = False,
+    hover: bool = False,
+    offset: float = 0.0,
+    guess: str | None = None,
+    covered: bool = False,
+) -> CellReading:
+    bg = (float(sil.background[0]), float(sil.background[1]), float(sil.background[2]))
+    return CellReading(
+        kind,
+        symbol,
+        colour,
+        confidence,
+        sil.fraction,
+        sil.luminance,
+        highlighted,
+        bg,
+        sil.brightness,
+        settled,
+        hover,
+        offset,
+        guess,
+        covered,
+    )
 
 
 @dataclass(frozen=True)
@@ -133,6 +166,8 @@ def ring_median_color(
             patch[inner:-inner, -inner:-outer].reshape(-1, patch.shape[2]),
         ]
     )
+    if ring.shape[0] == 0:  # a patch too small to have a ring at all
+        ring = patch.reshape(-1, patch.shape[2])
     return np.median(ring, axis=0)
 
 
@@ -215,6 +250,7 @@ COVER_TOLERANCE = 12.0  # two cells under one opaque overlay share a background
 TINT_MIN_ALPHA = 0.2  # a translucent overlay this faint already spoils the pieces under it
 TINT_ALPHA_SPREAD = 0.15  # the alpha read from each colour channel must agree
 TINT_MIN_CELLS = 6  # highlights and marks tint a few cells; a fading dialog tints a block
+TINT_BLOCK_FILL = 0.8  # of the block's bounding box; a dialog is a filled rectangle
 OVERLAY_SIDE_FILL = 0.9  # an overlay edge fills a whole side of the inner patch
 OVERLAY_BLOCK_FILL = 0.85  # an overlay corner is a solid rectangle
 
@@ -300,14 +336,24 @@ def translucent_cover(
                     )
                 ):
                     parent[find(r * 8 + c)] = find(rr * 8 + cc)
-    sizes: dict[int, int] = {}
+    members: dict[int, list[int]] = {}
     for i in range(64):
         if shifted[i // 8, i % 8]:
-            root = find(i)
-            sizes[root] = sizes.get(root, 0) + 1
+            members.setdefault(find(i), []).append(i)
     covered = np.zeros((8, 8), dtype=bool)
-    for i in range(64):
-        if shifted[i // 8, i % 8] and sizes.get(find(i), 0) >= TINT_MIN_CELLS:
+    for cells in members.values():
+        if len(cells) < TINT_MIN_CELLS:
+            continue
+        # A dialog is a filled rectangle at least two cells wide and high. A file of
+        # right-click marks or the squares of a queued premove make a line, and stay
+        # readable.
+        rows = [i // 8 for i in cells]
+        cols = [i % 8 for i in cells]
+        height = max(rows) - min(rows) + 1
+        width = max(cols) - min(cols) + 1
+        if height < 2 or width < 2 or len(cells) < TINT_BLOCK_FILL * height * width:
+            continue
+        for i in cells:
             covered[i // 8, i % 8] = True
     # A highlighted square or one with the dialog's text over its ring does not fit the
     # tint, yet it lies under the same overlay when its neighbours do.
@@ -359,8 +405,6 @@ def iou(a: np.ndarray, b: np.ndarray, keep: np.ndarray = _BADGE_BLIND) -> float:
 @dataclass
 class ThemeModel:
     exemplars: list[Exemplar] = field(default_factory=list)
-    white_luminance: float = 200.0
-    black_luminance: float = 50.0
     light_bg: np.ndarray | None = None
     dark_bg: np.ndarray | None = None
 
@@ -391,17 +435,9 @@ class ThemeModel:
             return "move"
         return "foreign"
 
-    def is_highlighted(self, background: np.ndarray, row: int, col: int) -> bool:
-        return self.highlight_kind(background, row, col) == "move"
-
-    def classify_patch(self, patch: np.ndarray, row: int = 0, col: int = 0) -> CellReading:
-        """One cell on its own; without neighbours only the colour shift can flag an overlay."""
-        return self._classify(silhouette(patch), row, col, covered=False)
-
     def _classify(self, sil: Silhouette, row: int, col: int, covered: bool) -> CellReading:
         kind_of_tint = self.highlight_kind(sil.background, row, col)
         highlighted = kind_of_tint == "move"
-        bg = (float(sil.background[0]), float(sil.background[1]), float(sil.background[2]))
         if covered or kind_of_tint == "foreign":
             # Something is drawn over this square; whatever the silhouette shows is not the
             # board. No evidence either way. An opaque overlay confirmed by the neighbours
@@ -413,51 +449,13 @@ class ThemeModel:
                 and sil.hover
                 and self.highlight_kind(sil.deep_background, row, col) != "foreign"
             )
-            return CellReading(
-                "unknown",
-                None,
-                None,
-                0.0,
-                sil.fraction,
-                sil.luminance,
-                False,
-                bg,
-                sil.brightness,
-                False,
-                hover,
-                0.0,
-                covered=covered,
-            )
+            return _reading(sil, "unknown", hover=hover, covered=covered)
         if sil.fraction <= EMPTY_MAX_FRACTION:
-            return CellReading(
-                "empty",
-                None,
-                None,
-                1.0,
-                sil.fraction,
-                sil.luminance,
-                highlighted,
-                bg,
-                sil.brightness,
-                True,
-                sil.hover,
-                0.0,
+            return _reading(
+                sil, "empty", confidence=1.0, highlighted=highlighted, settled=True, hover=sil.hover
             )
         if sil.fraction < PIECE_MIN_FRACTION or not self.exemplars:
-            return CellReading(
-                "unknown",
-                None,
-                None,
-                0.0,
-                sil.fraction,
-                sil.luminance,
-                highlighted,
-                bg,
-                sil.brightness,
-                False,
-                sil.hover,
-                0.0,
-            )
+            return _reading(sil, "unknown", highlighted=highlighted, hover=sil.hover)
 
         best_by_symbol: dict[str, tuple[float, float, Exemplar]] = {}
         for exemplar in self.exemplars:
@@ -475,37 +473,29 @@ class ThemeModel:
         settled = offset <= SETTLED_TOLERANCE and not sil.hover
         if overlap >= MIN_IOU and score - runner_up >= MIN_MARGIN:
             colour = Side.WHITE if symbol.isupper() else Side.BLACK
-            return CellReading(
+            return _reading(
+                sil,
                 "piece",
-                symbol,
-                colour,
-                score - runner_up,
-                sil.fraction,
-                sil.luminance,
-                highlighted,
-                bg,
-                sil.brightness,
-                settled,
-                sil.hover,
-                offset,
+                symbol=symbol,
+                colour=colour,
+                confidence=score - runner_up,
+                highlighted=highlighted,
+                settled=settled,
+                hover=sil.hover,
+                offset=offset,
             )
         nearest = min(self.exemplars, key=lambda e: abs(sil.brightness - e.brightness))
         colour = Side.WHITE if nearest.symbol.isupper() else Side.BLACK
         guess = symbol if symbol.isupper() == (colour == Side.WHITE) else None
-        return CellReading(
+        return _reading(
+            sil,
             "piece",
-            None,
-            colour,
-            0.5,
-            sil.fraction,
-            sil.luminance,
-            highlighted,
-            bg,
-            sil.brightness,
-            False,
-            sil.hover,
-            offset,
-            guess,
+            colour=colour,
+            confidence=0.5,
+            highlighted=highlighted,
+            hover=sil.hover,
+            offset=offset,
+            guess=guess,
         )
 
     def covered_cells(self, sils: list[list[Silhouette]]) -> np.ndarray:
@@ -568,19 +558,17 @@ class ThemeModel:
                     for cc in range(max(0, c - 1), min(8, c + 2))
                 )
                 if beside:
-                    readings[r][c] = CellReading(
-                        "unknown",
-                        None,
-                        None,
-                        0.0,
-                        reading.fg_fraction,
-                        reading.luminance,
-                        False,
-                        reading.background,
-                        reading.brightness,
-                        False,
-                        False,
-                        0.0,
+                    readings[r][c] = replace(
+                        reading,
+                        kind="unknown",
+                        symbol=None,
+                        colour=None,
+                        confidence=0.0,
+                        highlighted=False,
+                        settled=False,
+                        hover=False,
+                        offset=0.0,
+                        guess=None,
                         covered=True,
                     )
         return readings
@@ -588,13 +576,19 @@ class ThemeModel:
     @classmethod
     def from_start_position(
         cls, frame: np.ndarray, geometry: BoardGeometry, bottom: Side
-    ) -> ThemeModel:
+    ) -> ThemeModel | None:
+        """The recogniser for this game, or None when the start frame is not clean enough.
+
+        A cursor, a hover outline, or a badge on one cell of the start frame would
+        otherwise become that piece's exemplar for the whole game, and the king and the
+        queen have one cell each. So every cell must show a plausible piece: enough
+        foreground, centred, no hover outline. Pieces with several cells (the pawns, the
+        pairs) are fused by majority vote, which keeps one odd cell from spoiling them.
+        """
         start = chess.Board()
-        model = cls()
-        white_lums: list[float] = []
-        black_lums: list[float] = []
         light_bgs: list[np.ndarray] = []
         dark_bgs: list[np.ndarray] = []
+        samples: dict[str, list[Silhouette]] = {}
         for r in range(8):
             for c in range(8):
                 sil = silhouette(geometry.crop(frame, r, c, size=2 * CELL))
@@ -602,15 +596,38 @@ class ThemeModel:
                 if piece is None:
                     (light_bgs if is_light(r, c) else dark_bgs).append(sil.background)
                     continue
-                model.exemplars.append(
-                    Exemplar(piece.symbol(), sil.mask, sil.brightness, sil.centroid)
-                )
-                (white_lums if piece.color == chess.WHITE else black_lums).append(sil.luminance)
-        model.white_luminance = float(np.median(white_lums))
-        model.black_luminance = float(np.median(black_lums))
+                if not _plausible_exemplar(sil):
+                    return None
+                samples.setdefault(piece.symbol(), []).append(sil)
+        model = cls()
+        for symbol, sils in samples.items():
+            votes = np.mean([sil.mask for sil in sils], axis=0)
+            mask = votes >= 0.5
+            if float(mask.mean()) < PIECE_MIN_FRACTION:
+                return None
+            brightness = float(np.median([sil.brightness for sil in sils]))
+            centroid = (
+                float(np.median([sil.centroid[0] for sil in sils])),
+                float(np.median([sil.centroid[1] for sil in sils])),
+            )
+            model.exemplars.append(Exemplar(symbol, mask, brightness, centroid))
         model.light_bg = np.median(np.array(light_bgs), axis=0)
         model.dark_bg = np.median(np.array(dark_bgs), axis=0)
+        gap = float(np.linalg.norm(model.light_bg - model.dark_bg))
+        if gap <= COVER_TOLERANCE:
+            return None  # the two square colours cannot be told apart
         return model
+
+
+EXEMPLAR_MAX_FRACTION = 0.9
+EXEMPLAR_MAX_OFFSET = 0.15  # of a cell, from the centre
+
+
+def _plausible_exemplar(sil: Silhouette) -> bool:
+    """A piece drawn on its own square: enough foreground, centred, nothing over it."""
+    if sil.hover or not PIECE_MIN_FRACTION <= sil.fraction <= EXEMPLAR_MAX_FRACTION:
+        return False
+    return float(np.hypot(sil.centroid[0] - 0.5, sil.centroid[1] - 0.5)) <= EXEMPLAR_MAX_OFFSET
 
 
 def occupancy(frame: np.ndarray, geometry: BoardGeometry) -> np.ndarray:

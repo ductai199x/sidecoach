@@ -14,6 +14,7 @@ from rich.table import Table
 
 from sidecoach import __version__
 from sidecoach.config import Settings, find_stockfish, load_settings
+from sidecoach.events import Side
 
 app = typer.Typer(
     help="Sidecoach: vision-first chess coaching companion.",
@@ -35,18 +36,21 @@ def _check_vision_libs() -> tuple[str, str]:
 
 
 def _check_video_codec() -> tuple[str, str]:
+    import tempfile
+
     import cv2
 
     from sidecoach.replay.recording import FOURCC
 
-    writer = cv2.VideoWriter(
-        str(Path(typer.get_app_dir("sidecoach")) / "codec_probe.mkv"),
-        cv2.VideoWriter.fourcc(*FOURCC),
-        10.0,
-        (64, 64),
-    )
-    ok = writer.isOpened()
-    writer.release()
+    with tempfile.TemporaryDirectory() as probe_dir:
+        writer = cv2.VideoWriter(
+            str(Path(probe_dir) / "codec_probe.mkv"),
+            cv2.VideoWriter.fourcc(*FOURCC),
+            10.0,
+            (64, 64),
+        )
+        ok = writer.isOpened()
+        writer.release()
     return (
         ("ok", f"{FOURCC} lossless writer available") if ok else ("error", f"{FOURCC} unavailable")
     )
@@ -157,9 +161,7 @@ def record(
     """Record a monitor to a lossless recording until Ctrl+C or --seconds."""
     from sidecoach.capture.loop import capture_loop
     from sidecoach.capture.mss_backend import MssCapture
-    from sidecoach.events import Region
-    from sidecoach.replay.recording import Recorder, clamp_region
-    from sidecoach.vision.board_detect import BoardCandidate
+    from sidecoach.replay.recording import Recorder, board_gate
     from sidecoach.vision.tracker import BoardTracker
 
     settings = load_settings(config)
@@ -167,19 +169,10 @@ def record(
     cap = MssCapture()
     tracker = BoardTracker()
 
-    def gate_for(board: BoardCandidate | None, width: int, height: int) -> Region | None:
-        if board is None:
-            return None
-        pad = int(round(board.cell_px / 2))
-        r = board.region
-        return clamp_region(
-            Region(r.x - pad, r.y - pad, r.w + 2 * pad, r.h + 2 * pad), width, height
-        )
-
     try:
         region = cap.monitors()[monitor]
         board = tracker.update(cap.grab(region))
-        change_region = gate_for(board, region.w, region.h)
+        change_region = board_gate(board, region.w, region.h)
         if board:
             console.print(
                 f"board found at {board.region} cell {board.cell_px:.1f}px; "
@@ -201,7 +194,7 @@ def record(
         try:
             for frame_id, ts, frame in capture_loop(cap, region, fps, max_seconds=seconds):
                 board = tracker.update(frame)
-                gate = gate_for(board, region.w, region.h)
+                gate = board_gate(board, region.w, region.h)
                 if gate != recorder.change_region:
                     recorder.change_region = gate
                     where = f"board now at {board.region}" if board else "board lost"
@@ -235,9 +228,16 @@ def replay(
     moves: Annotated[bool, typer.Option(help="Reconstruct the moves played")] = False,
     pgn: Annotated[Path | None, typer.Option(help="Ground-truth PGN to score against")] = None,
     game: Annotated[int, typer.Option(help="Which game in the recording the PGN scores")] = 1,
+    scale: Annotated[
+        float, typer.Option(help="Resize every frame by this factor before the pipeline")
+    ] = 1.0,
     config: ConfigOpt = None,
 ) -> None:
-    """Summarise a recording, track the board through it, or reconstruct the game."""
+    """Summarise a recording, track the board through it, or reconstruct the game.
+
+    `--scale` replays the same frames smaller or larger, which is how size invariance is
+    tested without storing another copy of the recording.
+    """
     from sidecoach.replay.recording import Recording
 
     rec = Recording(recording)
@@ -248,7 +248,7 @@ def replay(
     )
     if moves or pgn is not None:
         truth = pgn if pgn is not None else recording / "truth.pgn"
-        _replay_moves(rec, truth if truth.exists() else None, game)
+        _replay_moves(rec, truth if truth.exists() else None, game, scale)
         return
     if not detect:
         return
@@ -290,9 +290,12 @@ def _read_truth(truth_pgn: Path) -> list[str]:
     return sans
 
 
-def _replay_moves(rec: object, truth_pgn: Path | None = None, scored_game: int = 1) -> None:
+def _replay_moves(
+    rec: object, truth_pgn: Path | None = None, scored_game: int = 1, scale: float = 1.0
+) -> None:
     """Run the game pipeline over a recording and, if a truth PGN exists, score one game."""
     import chess
+    import cv2
 
     from sidecoach.events import GameEnded, GameStarted, MovePlayed, Resync, Takeback
     from sidecoach.replay.recording import Recording
@@ -318,7 +321,11 @@ def _replay_moves(rec: object, truth_pgn: Path | None = None, scored_game: int =
     segment_start = 0
     started = time.perf_counter()
     for tick, frame in rec.frames():
-        events = pipe.process(frame, tick.ts, changed=tick.stored is not None)
+        if scale != 1.0:
+            frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        events = pipe.process(
+            frame, tick.ts, changed=tick.stored is not None, frame_id=tick.frame_id
+        )
         if pipe.bootstraps != bootstraps:
             bootstraps = pipe.bootstraps
             bottom = pipe.bottom.value if pipe.bottom else "?"
@@ -326,8 +333,10 @@ def _replay_moves(rec: object, truth_pgn: Path | None = None, scored_game: int =
                 f"tick {tick.frame_id:5d} recogniser built from a start position, "
                 f"{bottom} at the bottom"
             )
-        scoring = bool(truth) and len(games) == scored_game - 1  # the scored game
         for event in events:
+            # Decided per event: a game-over, a game-start, and the next game's first move
+            # can share one tick.
+            scoring = bool(truth) and len(games) == scored_game - 1
             if isinstance(event, MovePlayed):
                 who = "you" if event.by_user else "opp"
                 verdict = ""
@@ -418,6 +427,18 @@ def _replay_moves(rec: object, truth_pgn: Path | None = None, scored_game: int =
     console.print(f"{len(rec.ticks)} ticks in {elapsed:.1f} s")
 
 
+def _part_spec(part: str) -> tuple[Path, int | None, int | None]:
+    """`dir`, `dir:first`, `dir:first:last`, or `dir::last`; a drive letter keeps its colon."""
+    head, *tail = part.rsplit(":", 2)
+    if len(tail) == 2 and not tail[0].isdigit() and tail[0] != "":
+        head, tail = f"{head}:{tail[0]}", tail[1:]
+    if len(tail) == 1 and not (tail[0].isdigit() or tail[0] == ""):
+        head, tail = f"{head}:{tail[0]}", []
+    first = int(tail[0]) if len(tail) > 0 and tail[0] else None
+    last = int(tail[1]) if len(tail) > 1 and tail[1] else None
+    return Path(head), first, last
+
+
 @app.command()
 def concat(
     out: Path,
@@ -430,15 +451,37 @@ def concat(
 
     spec: list[tuple[Path, int | None, int | None]] = []
     for part in parts:
-        pieces = part.split(":")
-        path = Path(pieces[0])
-        first = int(pieces[1]) if len(pieces) > 1 and pieces[1] else None
-        last = int(pieces[2]) if len(pieces) > 2 and pieces[2] else None
-        spec.append((path, first, last))
+        spec.append(_part_spec(part))
     rec = concat_recordings(spec, out)
     console.print(
         f"{out}: {len(rec.ticks)} ticks, {rec.stored_count} stored frames, "
         f"{rec.meta.width}x{rec.meta.height}"
+    )
+
+
+@app.command()
+def shrink(
+    out: Path,
+    recording: Path,
+    short: Annotated[int, typer.Option(help="Target length of the frame's short side")] = 720,
+    first: Annotated[int | None, typer.Option(help="First tick to keep")] = None,
+    last: Annotated[int | None, typer.Option(help="Last tick to keep")] = None,
+) -> None:
+    """Re-encode a recording at about 720p, losslessly, keeping the whole screen.
+
+    The frame is scaled so that its short side is `short` pixels (never enlarged). A 1440p
+    session becomes 1280x720, a quarter of the size, and still holds everything the program
+    sees: the board, the clocks, the move list. It replays as if the game had been played on
+    a smaller screen, which is also how size invariance gets tested.
+    """
+    from sidecoach.replay.recording import Recording, shrink_recording
+
+    src = Recording(recording)
+    scale = min(1.0, short / min(src.meta.width, src.meta.height))
+    rec = shrink_recording(recording, out, scale, first, last)
+    console.print(
+        f"{out}: {len(rec.ticks)} ticks, {rec.stored_count} stored frames, "
+        f"{rec.meta.width}x{rec.meta.height} at scale {rec.meta.scale:g}"
     )
 
 
@@ -475,11 +518,14 @@ def cells(
         if pipe.model is None or pipe.board is None or pipe.bottom is None:
             continue
         geometry = BoardGeometry(pipe.board.region, pipe.board.cell_px)
+        readings = pipe.readings
+        if readings is None:
+            continue
         parts = []
         for sq in wanted:
             r, c = row_col(sq, pipe.bottom)
             crop = geometry.crop(frame, r, c, size=96)
-            reading = pipe.model.classify_patch(crop, r, c)
+            reading = readings[r][c]
             flags = ("*" if reading.highlighted else "") + ("~" if reading.hover else "")
             flags += "" if reading.settled else "!"
             parts.append(
@@ -542,7 +588,9 @@ def watch(
     """Watch the screen live: lock onto the board, follow the game, print every move.
 
     Start it, then begin a new game so the recogniser can bootstrap from the start position.
-    Every session is recorded so anything odd can be replayed with `sidecoach replay`.
+    With --record (the default) the session is recorded so anything odd can be replayed
+    with `sidecoach replay`, and every event is logged beside it. Keys while watching:
+    r = you resign, d = draw agreed, n = new game (forget the current one), q = quit.
     """
     import chess
 
@@ -552,12 +600,12 @@ def watch(
         GameEnded,
         GameStarted,
         MovePlayed,
-        Region,
         Resync,
         Takeback,
     )
-    from sidecoach.replay.recording import Recorder, clamp_region, frames_differ
+    from sidecoach.replay.recording import ChangeGate, Recorder, board_gate
     from sidecoach.state.pipeline import GamePipeline
+    from sidecoach.ui.keys import KeyReader
 
     settings = load_settings(config)
     cap = MssCapture()
@@ -565,109 +613,147 @@ def watch(
     pipe = GamePipeline()
     recorder: Recorder | None = None
     folder: Path | None = None
+    gate = ChangeGate(keyframe_interval_s=1.0)
+    log = None
     if record:
         folder = out or settings.data_dir / "recordings" / time.strftime("%Y%m%d-%H%M%S")
         recorder = Recorder(
             folder, monitor=monitor, region=region, fps=fps, keyframe_interval_s=1.0
         )
+        log = (folder / "events.jsonl").open("w", encoding="utf-8")
     console.print(
         f"watching monitor {monitor} {region.w}x{region.h} at {fps} fps"
-        + (f", recording to {folder}" if folder else "")
+        + (f", recording to {folder}" if folder else ", not recording")
     )
-    console.print("start a new game on the board; press Ctrl+C to stop\n")
+    console.print("start a new game on the board; keys: r resign, d draw, n new game, q quit\n")
 
-    def gate_for(width: int, height: int) -> Region | None:
-        if pipe.board is None:
-            return None
-        pad = int(round(pipe.board.cell_px / 2))
-        r = pipe.board.region
-        return clamp_region(
-            Region(r.x - pad, r.y - pad, r.w + 2 * pad, r.h + 2 * pad), width, height
-        )
-
-    last_frame = None
     locked = False
     bootstraps = 0
     last_move_ts: float | None = None
     last_status = time.monotonic()
     ticks_since_status = 0
+    pipeline_ms: list[float] = []
     games: list[str] = []
+
+    def user_result(resigned: bool) -> str:
+        if not resigned:
+            return "1/2-1/2"
+        return "0-1" if pipe.bottom == Side.WHITE else "1-0"
+
     try:
-        for _frame_id, ts, frame in capture_loop(cap, region, fps, max_seconds=seconds):
-            gate = gate_for(region.w, region.h)
-            if recorder is not None:
-                recorder.change_region = gate
-                changed = recorder.write(frame, ts).stored is not None
-            else:
-                changed = last_frame is None or frames_differ(
-                    last_frame, frame, region=gate, min_fraction=0.0005
-                )
-                last_frame = frame
-            try:
-                events = pipe.process(frame, ts, changed=changed)
-            except Exception as exc:  # noqa: BLE001
-                # Never let a pipeline bug end a live session; the recording keeps the
-                # evidence and the next frames get a fresh chance.
-                console.print(f"[red]pipeline error:[/red] {exc!r}")
-                events = []
-            ticks_since_status += 1
-
-            if (pipe.board is not None) != locked:
-                locked = pipe.board is not None
-                if locked and pipe.board is not None:
-                    b = pipe.board
-                    console.print(
-                        f"[green]board locked[/green] at {b.region} cell {b.cell_px:.1f}px"
-                    )
+        with KeyReader() as keys:
+            for frame_id, ts, frame in capture_loop(cap, region, fps, max_seconds=seconds):
+                gate.region = board_gate(pipe.board, region.w, region.h)
+                if recorder is not None:
+                    recorder.change_region = gate.region
+                    changed = recorder.write(frame, ts).stored is not None
                 else:
-                    console.print("[yellow]board lost[/yellow]")
-            if pipe.bootstraps != bootstraps:
-                bootstraps = pipe.bootstraps
-                bottom = pipe.bottom.value if pipe.bottom else "?"
-                console.print(f"[green]start position seen[/green], {bottom} at the bottom")
+                    changed = gate.changed(frame, ts)
+                begun = time.perf_counter()
+                try:
+                    events = pipe.process(frame, ts, changed=changed, frame_id=frame_id)
+                except Exception as exc:  # noqa: BLE001
+                    # Never let a pipeline bug end a live session; the recording keeps the
+                    # evidence and the next frames get a fresh chance.
+                    console.print(f"[red]pipeline error at frame {frame_id}:[/red] {exc!r}")
+                    events = []
+                pipeline_ms.append((time.perf_counter() - begun) * 1000.0)
+                ticks_since_status += 1
 
-            for event in events:
-                if isinstance(event, GameStarted):
-                    console.print(
-                        f"[bold]new game[/bold] {event.game_id}, you play {event.user_side.value}"
+                key = keys.read()
+                if key == "q":
+                    console.print("quit")
+                    break
+                if key in ("r", "d") and pipe.reconciler is not None:
+                    reason = "user resigned" if key == "r" else "draw agreed"
+                    events += pipe.reconciler.end(user_result(key == "r"), reason)
+                elif key == "n":
+                    if pipe.reconciler is not None:
+                        events += pipe.reconciler.end("*", "abandoned by the user")
+                    pipe.reset()
+                    console.print("[yellow]forgot the game; waiting for a start position[/yellow]")
+
+                if log is not None:
+                    for event in events:
+                        log.write(event.model_dump_json() + "\n")
+
+                if (pipe.board is not None) != locked:
+                    locked = pipe.board is not None
+                    if locked and pipe.board is not None:
+                        b = pipe.board
+                        console.print(
+                            f"[green]board locked[/green] at {b.region} cell {b.cell_px:.1f}px"
+                        )
+                    else:
+                        console.print("[yellow]board lost[/yellow]")
+                if pipe.bootstraps != bootstraps:
+                    bootstraps = pipe.bootstraps
+                    bottom = pipe.bottom.value if pipe.bottom else "?"
+                    console.print(f"[green]start position seen[/green], {bottom} at the bottom")
+
+                for event in events:
+                    if isinstance(event, GameStarted):
+                        console.print(
+                            f"[bold]new game[/bold] {event.game_id}, "
+                            f"you play {event.user_side.value}"
+                        )
+                        last_move_ts = ts
+                    elif isinstance(event, MovePlayed):
+                        after = chess.Board(event.fen_after)
+                        before = chess.Board(event.fen_before)
+                        number = before.fullmove_number
+                        dots = "." if before.turn == chess.WHITE else "..."
+                        who = "you" if event.by_user else "opponent"
+                        elapsed = f" {ts - last_move_ts:.1f}s" if last_move_ts is not None else ""
+                        last_move_ts = ts
+                        console.print(f"[bold]{number}{dots} {event.san}[/bold]  {who}{elapsed}")
+                        if board:
+                            console.print(str(after))
+                            console.print()
+                    elif isinstance(event, Takeback):
+                        console.print(f"[yellow]takeback[/yellow] {event.plies} ply")
+                    elif isinstance(event, Resync):
+                        console.print(f"[yellow]resync[/yellow]: {event.reason}")
+                    elif isinstance(event, GameEnded):
+                        console.print(f"[bold]game over[/bold] {event.result} ({event.reason})")
+                        if event.pgn:
+                            games.append(event.pgn)
+                            console.print(f"PGN: {event.pgn}")
+
+                now = time.monotonic()
+                if now - last_status >= 5.0:
+                    rate = ticks_since_status / (now - last_status)
+                    if pipe.board is None:
+                        state = "no board"
+                    elif pipe.tracker.verified:
+                        state = f"locked fit {pipe.board.fit:.2f}"
+                    else:
+                        state = "lock in doubt"
+                    stage = "following" if pipe.model is not None else "waiting for a start"
+                    plies = len(pipe.reconciler.board.move_stack) if pipe.reconciler else 0
+                    lag = (time.monotonic() - ts) * 1000.0
+                    timings = sorted(pipeline_ms) or [0.0]
+                    p50 = timings[len(timings) // 2]
+                    p95 = timings[min(len(timings) - 1, int(len(timings) * 0.95))]
+                    stored = (
+                        f", {recorder.stored} frames, {recorder.size_bytes() / 1e6:.0f} MB"
+                        if recorder
+                        else ""
                     )
-                    last_move_ts = ts
-                elif isinstance(event, MovePlayed):
-                    after = chess.Board(event.fen_after)
-                    number = (event.ply + 1) // 2
-                    dots = "." if event.ply % 2 == 1 else "..."
-                    who = "you" if event.by_user else "opponent"
-                    elapsed = f" {ts - last_move_ts:.1f}s" if last_move_ts is not None else ""
-                    last_move_ts = ts
-                    console.print(f"[bold]{number}{dots} {event.san}[/bold]  {who}{elapsed}")
-                    if board:
-                        console.print(str(after))
-                        console.print()
-                elif isinstance(event, Takeback):
-                    console.print(f"[yellow]takeback[/yellow] {event.plies} ply")
-                elif isinstance(event, Resync):
-                    console.print(f"[yellow]resync[/yellow]: {event.reason}")
-                elif isinstance(event, GameEnded):
-                    console.print(f"[bold]game over[/bold] {event.result} ({event.reason})")
-                    if event.pgn:
-                        games.append(event.pgn)
-                        console.print(f"PGN: {event.pgn}")
-
-            now = time.monotonic()
-            if now - last_status >= 5.0:
-                rate = ticks_since_status / (now - last_status)
-                state = "locked" if pipe.board is not None else "no board"
-                stage = "following" if pipe.model is not None else "waiting for a start position"
-                plies = len(pipe.reconciler.board.move_stack) if pipe.reconciler else 0
-                stored = f", {recorder.stored} frames stored" if recorder else ""
-                console.print(f"[dim]{rate:.1f} fps, {state}, {stage}, ply {plies}{stored}[/dim]")
-                last_status = now
-                ticks_since_status = 0
+                    console.print(
+                        f"[dim]{rate:.1f} fps, {state}, {stage}, ply {plies}, "
+                        f"pipeline {p50:.0f}/{p95:.0f} ms, lag {lag:.0f} ms{stored}[/dim]"
+                    )
+                    last_status = now
+                    ticks_since_status = 0
+                    pipeline_ms = []
     except KeyboardInterrupt:
         pass
     finally:
         if recorder is not None:
             recorder.close()
+        if log is not None:
+            log.close()
         cap.close()
     if (
         pipe.reconciler is not None

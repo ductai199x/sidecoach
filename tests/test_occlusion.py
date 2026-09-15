@@ -63,6 +63,7 @@ def test_tracker_holds_lock_under_a_dialog() -> None:
 def test_covered_cells_read_as_unknown_and_visible_cells_still_read() -> None:
     clean = synthetic_board()
     model = ThemeModel.from_start_position(clean, GEOM, Side.WHITE)
+    assert model is not None
     for dark in (False, True):
         readings = model.classify_frame(with_dialog(clean, dark=dark), GEOM)
         r, c = row_col(chess.C5, Side.WHITE)  # under the dialog
@@ -107,6 +108,7 @@ MIDDLE_MATE = "8/8/8/4Q3/8/k1K5/8/8 w - - 0 1"
 def _reconciler_at(fen: str) -> tuple[ThemeModel, Reconciler, chess.Board]:
     start = synthetic_board()
     model = ThemeModel.from_start_position(start, GEOM, Side.WHITE)
+    assert model is not None
     rec = Reconciler(bottom=Side.WHITE, user_side=Side.WHITE, settle_frames=2)
     rec.update(model.classify_frame(start, GEOM), 0.0)
     board = chess.Board(fen)
@@ -193,6 +195,7 @@ def test_nothing_reads_as_hovered_under_a_dialog() -> None:
     """A dialog edge cutting through a pawn must not pass for a drag in progress."""
     clean = synthetic_board()
     model = ThemeModel.from_start_position(clean, GEOM, Side.WHITE)
+    assert model is not None
     for dark in (False, True):
         readings = model.classify_frame(with_dialog(clean, dark=dark), GEOM)
         hovered = [(r, c) for r in range(8) for c in range(8) if readings[r][c].hover]

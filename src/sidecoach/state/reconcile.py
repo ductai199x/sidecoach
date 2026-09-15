@@ -8,9 +8,10 @@ hides cells, an arrow makes a cell unreadable.
 
 Cell readings can be exact (a symbol), occupied (a piece whose type is hidden by a badge),
 empty, or unknown; unknown cells carry no evidence either way. A move is committed only after
-it has explained `settle_frames` consecutive frames, and, once the game has shown that it
-highlights the last move, only when both its squares are highlighted. That is what stops a
-dragged piece drawn over a neighbouring square from being taken as a move.
+it has explained `settle_frames` consecutive frames in which every square it touches holds a
+settled piece or is empty and no square carries the hover outline of a drag. Highlight
+colours are never consulted. That is what stops a dragged piece drawn over a neighbouring
+square from being taken as a move.
 
 Browsing history is normal: the user steps back through the move list with the arrow keys
 or by clicking a move, and the board shows an earlier position. A frame that matches an
@@ -49,7 +50,7 @@ Observation = dict[chess.Square, CellReading]
 Explanation = tuple[chess.Move, ...]
 PendingKey = tuple[object, ...]
 # Pending keys whose last element is a story of moves from the latest position.
-STORY_KEYS = ("moves", "moves-cautious", "premove")
+STORY_KEYS = ("moves", "moves-cautious")
 
 
 def touched_squares(board: chess.Board, move: chess.Move) -> set[chess.Square]:
@@ -127,9 +128,7 @@ class Reconciler:
     resync_after: int = 150
     board: chess.Board = field(default_factory=chess.Board)
     game_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
-    highlights: bool | None = None
     viewing: int | None = None
-    _unhighlighted_commits: int = 0
     _hover_seen: bool = False
     _pending: tuple[PendingKey, int] | None = None
     _stale: dict[chess.Square, tuple[tuple[object, ...], int]] = field(default_factory=dict)
@@ -233,9 +232,7 @@ class Reconciler:
         self._unexplained_frames = 0
         self._started = True
         self._finished = False
-        self.highlights = None
         self.viewing = None
-        self._unhighlighted_commits = 0
         self._base_fen = chess.STARTING_FEN
         self._turn_unknown = False
         self._resync_candidate = None
@@ -333,14 +330,24 @@ class Reconciler:
         return []
 
     def _history_index(self, obs: Observation, diff: set[chess.Square]) -> int | None:
-        """Index of the earlier position of this game the frame shows, if any."""
+        """Index of the earlier position of this game the frame shows, if any.
+
+        The last `history_depth` positions are checked one by one. The base position is
+        checked as well however long the game is: a click on the first move of the list
+        shows it, and it must never pass for a new game while this one is running.
+        """
         earlier = self.board.copy()
         undone: set[chess.Square] = set()
-        for back in range(1, min(len(self.board.move_stack), self.history_depth) + 1):
+        plies = len(self.board.move_stack)
+        for back in range(1, min(plies, self.history_depth) + 1):
             move = earlier.pop()
             undone |= touched_squares(earlier, move)
             if diff <= undone and matches(earlier, obs, set(obs)):
-                return len(self.board.move_stack) - back
+                return plies - back
+        if plies > self.history_depth:
+            base = chess.Board(self._base_fen)
+            if matches(base, obs, set(obs)):
+                return 0
         return None
 
     def _board_at(self, index: int) -> chess.Board:
@@ -404,10 +411,6 @@ class Reconciler:
             self._unexplained_frames = 0
             return events
 
-        # Explain the whole disagreement first. Only if nothing fits, retry ignoring cells
-        # that have disagreed with an unchanged reading for a while: a badge or a ring on
-        # one cell must not stall the game, but a stale cell may also hold a real move whose
-        # commit was blocked for other reasons, so it is never dropped from the first try.
         # A drag in progress blocks every explanation without contradicting any. A story
         # seen settled just before the drag stays pending through it, so that the frames
         # after the drop can confirm or extend it; a quiet frame that fits nothing drops it.
@@ -430,6 +433,10 @@ class Reconciler:
         replied = self._explain_opponent_move(obs, think_ms)
         if replied is not None:
             return events + replied
+        if self._hover_seen:
+            # A hover outline refuses every story below; the searches would only burn time.
+            self._hold_pending(blocked)
+            return events
         explained = self._explain_paths(obs, diff, obs, think_ms)
         if explained is not None:
             return events + explained
@@ -551,6 +558,7 @@ class Reconciler:
         self._turn_unknown = len(valid_turns) > 1
         self.board = board
         self._base_fen = board.fen()
+        self._finished = False
         self._pending = None
         self._stale = {}
         self.viewing = None
@@ -601,8 +609,9 @@ class Reconciler:
 
         Order: one move from the latest position; an earlier position of this game (the user
         is browsing); a different move from the viewed position (a takeback); a short path of
-        missed moves. `full_obs` carries the highlight evidence. `cautious` marks the retry
-        that ignores stale cells; its paths need an extra frame to settle.
+        missed moves. `full_obs` is the whole frame, for the settled and hover checks, while
+        `obs` may leave ignored cells out. `cautious` marks the retry that ignores stale
+        cells; its paths need an extra frame to settle.
         """
         if self._turn_unknown and not self._resolve_turn(obs, diff):
             return None
@@ -668,6 +677,34 @@ class Reconciler:
             return self._settle(key, full_obs, self._commit_moves(paths[0], think_ms))
         return None
 
+    @property
+    def user_colour(self) -> chess.Color:
+        return chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
+
+    def _pending_story(self) -> tuple[Explanation, chess.Board] | None:
+        """The pending story from the latest position and the position it leads to."""
+        if self._pending is None or self._pending[0][0] not in STORY_KEYS:
+            return None
+        moves = self._pending[0][-1]
+        assert isinstance(moves, tuple)
+        base = self.board.copy(stack=False)
+        for move in moves:
+            if move not in base.legal_moves:
+                return None
+            base.push(move)
+        return moves, base
+
+    @staticmethod
+    def _cells_clean(obs: Observation, squares: set[chess.Square]) -> bool:
+        """Every square is read, holds a settled piece or nothing, and is not under the cursor."""
+        for sq in squares:
+            reading = obs.get(sq)
+            if reading is None or reading.hover:
+                return False
+            if reading.kind == "piece" and not reading.settled:
+                return False
+        return True
+
     def _hold_pending(self, blocked: bool) -> None:
         """Keep the pending story through a blocked frame, drop it on a quiet one or when old."""
         self._pending_age += 1
@@ -687,17 +724,12 @@ class Reconciler:
         explain the frame, the whole chain is what settles. An intermediate frame also
         disambiguates transpositions the search alone would have to guess.
         """
-        if self._pending is None or self._pending[0][0] not in STORY_KEYS:
-            return None
-        moves = self._pending[0][len(self._pending[0]) - 1]
-        assert isinstance(moves, tuple)
-        base = self.board.copy(stack=False)
-        for move in moves:
-            if move not in base.legal_moves:
-                return None
-            base.push(move)
         if self.viewing is not None:
             return None
+        story = self._pending_story()
+        if story is None or self._pending is None:
+            return None
+        moves, base = story
         diff_base = {sq for sq, r in obs.items() if not cell_agrees(r, base.piece_at(sq))}
         if not diff_base:
             # The frame shows the position the story leads to: one more frame of evidence.
@@ -731,17 +763,14 @@ class Reconciler:
         """
         if self.viewing is not None or self._turn_unknown:
             return None
-        moves: tuple[chess.Move, ...] = ()
-        if self._pending is not None and self._pending[0][0] in STORY_KEYS:
-            pending_moves = self._pending[0][len(self._pending[0]) - 1]
-            assert isinstance(pending_moves, tuple)
-            moves = pending_moves
+        moves: Explanation = ()
         base = self.board.copy(stack=False)
-        for move in moves:
-            if move not in base.legal_moves:
-                return None
-            base.push(move)
-        user_colour = chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
+        story = self._pending_story()
+        if story is not None:
+            moves, base = story
+        elif self._pending is not None and self._pending[0][0] in STORY_KEYS:
+            return None  # a pending story that is no longer legal explains nothing
+        user_colour = self.user_colour
         bot_diff: set[chess.Square] = set()
         for sq, reading in obs.items():
             if cell_agrees(reading, base.piece_at(sq)):
@@ -760,14 +789,8 @@ class Reconciler:
             before = self.board.copy(stack=False)
             for move in moves[:-1]:
                 before.push(move)
-            for sq in touched_squares(before, moves[-1]):
-                reading = obs.get(sq)
-                if (
-                    reading is None
-                    or reading.hover
-                    or (reading.kind == "piece" and not reading.settled)
-                ):
-                    return None
+            if not self._cells_clean(obs, touched_squares(before, moves[-1])):
+                return None
             return self._settle(self._pending[0], obs, self._commit_moves(moves, think_ms))
         if not bot_diff:
             return None
@@ -775,14 +798,8 @@ class Reconciler:
         if len(replies) != 1:
             return None
         reply = replies[0][0]
-        for sq in touched_squares(base, reply):
-            reading = obs.get(sq)
-            if (
-                reading is None
-                or reading.hover
-                or (reading.kind == "piece" and not reading.settled)
-            ):
-                return None
+        if not self._cells_clean(obs, touched_squares(base, reply)):
+            return None
         combined = moves + (reply,)
         if len(combined) > self.max_chain_plies:
             return None
@@ -805,7 +822,7 @@ class Reconciler:
         """
         if self.viewing is not None or self._turn_unknown or self._hover_seen:
             return None
-        user_colour = chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
+        user_colour = self.user_colour
         shown: list[chess.Square] = []
         gone: list[chess.Square] = []
         for sq in diff:
@@ -840,7 +857,7 @@ class Reconciler:
             if not self._highlight_ok(obs, (path[0],)):
                 return None
             return self._settle(
-                ("premove", (path[0],)), obs, self._commit_moves((path[0],), think_ms)
+                ("moves", (path[0],)), obs, self._commit_moves((path[0],), think_ms)
             )
         if not rest:
             # The queue formed or changed; nothing has happened on the board yet.
@@ -857,7 +874,7 @@ class Reconciler:
         story = (reply, path[0])
         if not self._highlight_ok(obs, story):
             return None
-        return self._settle(("premove", story), obs, self._commit_moves(story, think_ms))
+        return self._settle(("moves", story), obs, self._commit_moves(story, think_ms))
 
     def _queue_path(
         self, origin: chess.Square, target: chess.Square, symbol: str
@@ -870,7 +887,7 @@ class Reconciler:
         king has across an open board, are an ambiguity and nothing is assumed.
         """
         piece = self.board.piece_at(origin)
-        if piece is None:
+        if piece is None or chess.Piece.from_symbol(symbol).color != piece.color:
             return None
         promotion: int | None = None
         if piece.piece_type != chess.PAWN and symbol.upper() != piece.symbol().upper():
@@ -931,7 +948,7 @@ class Reconciler:
         else:
             self._pending = (key, 1)
         self._pending_age = 0
-        moves = key[len(key) - 1]
+        moves = key[-1]
         assert isinstance(moves, tuple)
         needed = (
             self.settle_frames
@@ -940,15 +957,6 @@ class Reconciler:
         )
         if self._pending[1] < needed:
             return []
-        last = moves[len(moves) - 1]
-        both = all(sq in obs and obs[sq].highlighted for sq in (last.from_square, last.to_square))
-        if self.highlights is None:
-            if both:
-                self.highlights = True
-            else:
-                self._unhighlighted_commits += 1
-                if self._unhighlighted_commits >= 3:
-                    self.highlights = False
         events = commit()
         self._pending = None
         self._stale = {}
@@ -1082,6 +1090,14 @@ class Reconciler:
             self._finished = True
             events.append(self._ended(self.board.result(), "game over on board"))
         return events
+
+    def end(self, result: str, reason: str) -> list[Event]:
+        """End the game on the user's word: a resignation, a draw, or an abort."""
+        if not self._started or self._finished:
+            return []
+        self._finished = True
+        self._pending = None
+        return [self._ended(result, reason)]
 
     def _ended(self, result: str, reason: str) -> GameEnded:
         return GameEnded(

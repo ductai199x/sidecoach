@@ -75,3 +75,84 @@ def test_tracker_no_board() -> None:
     tracker = BoardTracker()
     assert tracker.update(noise) is None
     assert not tracker.locked
+
+
+def _dialog_and_page_edge(frame: np.ndarray) -> np.ndarray:
+    """A dialog over columns a to c of rows 1 to 6, spilling left, and a page edge a cell right."""
+    import cv2
+
+    out = frame.copy()
+    cv2.rectangle(out, (300 - 40, 120 + 128), (300 + 192, 120 + 512), (40, 40, 40), -1)
+    out[:, 876:] = (30, 30, 30)
+    return out
+
+
+def test_tracker_does_not_slide_under_a_dialog_beside_a_page_edge() -> None:
+    tracker = BoardTracker(refine_every=3)
+    clean = synthetic_board(x0=300, y0=120, cell=64)
+    assert tracker.update(clean) is not None
+    covered = _dialog_and_page_edge(clean)
+    for _ in range(8):
+        board = tracker.update(covered)
+        assert board is not None
+        assert abs(board.region.x - 300) <= 2, board.region
+    assert tracker.detections == 1
+
+
+def test_refit_cannot_turn_a_passing_frame_into_a_miss(monkeypatch) -> None:
+    from dataclasses import replace
+
+    import sidecoach.vision.tracker as tracker_module
+
+    tracker = BoardTracker(refine_every=1)
+    frame = synthetic_board(x0=300, y0=120, cell=64)
+    locked = tracker.update(frame)
+    assert locked is not None
+    monkeypatch.setattr(
+        tracker_module, "refine", lambda gray, cand, **kw: replace(cand, fit=0.845, contrast=50.0)
+    )
+    monkeypatch.setattr(
+        tracker_module, "fit_score", lambda gray, region, cell, colours=None: (0.86, 50.0)
+    )
+    board = tracker.update(frame)
+    assert board is not None and tracker.misses == 0
+    assert board.region == locked.region and board.fit == 0.86
+
+
+def test_tracker_thresholds_reach_detection() -> None:
+    frame = synthetic_board(x0=300, y0=120, cell=64, pieces=False)
+    from tests.synth import DARK
+
+    spoiled = frame.copy()
+    for r, c in ((0, 0), (0, 2), (2, 0), (4, 4), (6, 2), (2, 6)):  # six light cells painted dark
+        spoiled[120 + r * 64 : 184 + r * 64, 300 + c * 64 : 364 + c * 64] = DARK
+    tracker = BoardTracker(min_fit=0.95)
+    results = [tracker.update(spoiled) for _ in range(12)]
+    assert all(b is None for b in results) or tracker.detections == 1
+
+
+def test_held_frames_report_the_measured_fit() -> None:
+    tracker = BoardTracker(max_misses=3)
+    frame = synthetic_board(x0=300, y0=120, cell=64)
+    locked = tracker.update(frame)
+    assert locked is not None and locked.fit >= 0.85
+    occluded = frame.copy()
+    occluded[100:700, 250:850] = 128
+    held = tracker.update(occluded)
+    assert held is not None and held.fit < 0.85 and not tracker.verified
+    assert held.region == locked.region
+
+
+def test_periodic_refit_is_stable_on_a_busy_frame() -> None:
+    tracker = BoardTracker(refine_every=3)
+    frame = synthetic_board()
+    first = tracker.update(frame)
+    assert first is not None
+    for _ in range(30):
+        board = tracker.update(frame)
+        assert board is not None
+        assert (
+            abs(board.region.x - first.region.x) <= 1 and abs(board.region.y - first.region.y) <= 1
+        )
+        assert abs(board.cell_px - first.cell_px) <= 0.1
+    assert tracker.detections == 1

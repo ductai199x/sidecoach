@@ -1,5 +1,6 @@
 import chess
 import cv2
+import numpy as np
 
 from sidecoach.events import Region, Side
 from sidecoach.vision.pieces import (
@@ -55,8 +56,8 @@ def _check_all_cells(model: ThemeModel, frame, board: chess.Board, bottom: Side)
 def test_theme_model_classifies_start_and_later_positions() -> None:
     frame = synthetic_board()
     model = ThemeModel.from_start_position(frame, GEOM, Side.WHITE)
+    assert model is not None
     assert model.symbols == set("PNBRQKpnbrqk")
-    assert model.white_luminance > model.black_luminance
     _check_all_cells(model, frame, chess.Board(), Side.WHITE)
 
     later = chess.Board()
@@ -76,6 +77,7 @@ def test_theme_model_classifies_start_and_later_positions() -> None:
 def test_theme_model_black_at_bottom() -> None:
     frame = synthetic_board(bottom=Side.BLACK)
     model = ThemeModel.from_start_position(frame, GEOM, Side.BLACK)
+    assert model is not None
     later = chess.Board()
     for san in ("d4", "Nf6", "c4", "e6", "Nc3", "Bb4"):
         later.push_san(san)
@@ -86,6 +88,7 @@ def test_hover_outline_needs_all_four_sides() -> None:
     """A badge crossing one corner of a cell is not the outline drawn around a hovered square."""
     frame = synthetic_board()
     model = ThemeModel.from_start_position(frame, GEOM, Side.WHITE)
+    assert model is not None
     r, c = row_col(chess.E4, Side.WHITE)
     x0, y0, x1, y1 = GEOM.cell_box(r, c)
 
@@ -98,3 +101,58 @@ def test_hover_outline_needs_all_four_sides() -> None:
     cv2.rectangle(hovered, (x0 + 2, y0 + 2), (x1 - 3, y1 - 3), (255, 255, 255), 3)
     reading = model.classify_frame(hovered, GEOM)[r][c]
     assert reading.hover
+
+
+def test_bootstrap_refuses_a_start_frame_with_a_piece_hidden() -> None:
+    """A cursor or badge over the queen at the start would be her exemplar for the game."""
+    frame = synthetic_board()
+    r, c = row_col(chess.D1, Side.WHITE)
+    x0, y0, x1, y1 = GEOM.cell_box(r, c)
+    spoiled = frame.copy()
+    spoiled[y0:y1, x0:x1] = (208, 236, 238)  # the queen erased: an empty light square
+    assert looks_like_start_position(spoiled, GEOM)  # one stray cell is allowed here
+    assert ThemeModel.from_start_position(spoiled, GEOM, Side.WHITE) is None
+
+    hovered = frame.copy()
+    cv2.rectangle(hovered, (x0 + 2, y0 + 2), (x1 - 3, y1 - 3), (255, 255, 255), 3)
+    assert ThemeModel.from_start_position(hovered, GEOM, Side.WHITE) is None
+
+
+def test_bootstrap_fuses_pawns_so_one_odd_pawn_does_not_spoil_them() -> None:
+    frame = synthetic_board()
+    r, c = row_col(chess.E2, Side.WHITE)
+    x0, y0, x1, y1 = GEOM.cell_box(r, c)
+    odd = frame.copy()
+    cv2.circle(odd, (x1 - 10, y0 + 10), 7, (40, 40, 220), -1)  # a badge in the corner
+    model = ThemeModel.from_start_position(odd, GEOM, Side.WHITE)
+    assert model is not None
+    clean = model.classify_frame(frame, GEOM)
+    for square in (chess.A2, chess.E2, chess.H2):
+        r, c = row_col(square, Side.WHITE)
+        assert clean[r][c].symbol == "P" and clean[r][c].settled
+
+
+def test_a_line_of_marked_squares_is_not_an_overlay() -> None:
+    """Six right-click marks down a file, or a queued premove's squares, stay readable."""
+    frame = synthetic_board()
+    model = ThemeModel.from_start_position(frame, GEOM, Side.WHITE)
+    assert model is not None
+    board = chess.Board()
+    board.push_san("e4")
+    marks = (chess.E3, chess.E4, chess.E5, chess.E6, chess.E7, chess.E8)
+    readings = model.classify_frame(synthetic_board(board=board, red_marks=marks), GEOM)
+    r, c = row_col(chess.E4, Side.WHITE)
+    assert readings[r][c].symbol == "P" and not readings[r][c].covered
+    r, c = row_col(chess.E8, Side.WHITE)
+    assert readings[r][c].symbol == "k" and not readings[r][c].covered
+
+
+def test_a_tiny_patch_reads_without_nan() -> None:
+    import warnings
+
+    from sidecoach.vision.pieces import silhouette
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        sil = silhouette(np.full((2, 2, 3), 120, dtype=np.uint8))
+    assert np.all(np.isfinite(sil.background)) and not sil.hover and sil.fraction == 0.0

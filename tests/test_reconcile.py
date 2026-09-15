@@ -13,6 +13,7 @@ GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
 def _setup(bottom: Side = Side.WHITE) -> tuple[ThemeModel, Reconciler]:
     frame = synthetic_board(bottom=bottom)
     model = ThemeModel.from_start_position(frame, GEOM, bottom)
+    assert model is not None
     return model, Reconciler(bottom=bottom, user_side=bottom, settle_frames=2)
 
 
@@ -222,6 +223,7 @@ def test_selected_piece_does_not_block_the_opponents_move() -> None:
 
 def test_highlight_kinds() -> None:
     model = ThemeModel.from_start_position(synthetic_board(), GEOM, Side.WHITE)
+    assert model is not None
     light = np.array(LIGHT, dtype=np.float32)
     assert model.highlight_kind(light, 0, 0) == "none"
     assert model.highlight_kind(np.array(tint(LIGHT, YELLOW), dtype=np.float32), 0, 0) == "move"
@@ -628,3 +630,129 @@ def test_mate_settles_with_two_badge_cells_as_wildcards() -> None:
         events += rec.update(badge(model.classify_frame(frame, GEOM)), 1.0 + 0.1 * i)
     assert _played(events) == ["Kh6", "Qaf8#"]
     assert any(isinstance(e, GameEnded) for e in events)
+
+
+def test_browsing_to_the_start_of_a_long_game_is_not_a_new_game() -> None:
+    """The move list's first entry shows the start position; a game of 42 plies is still on."""
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    line = [
+        "e4",
+        "e5",
+        "Nf3",
+        "Nc6",
+        "Bb5",
+        "a6",
+        "Ba4",
+        "Nf6",
+        "O-O",
+        "Be7",
+        "Re1",
+        "b5",
+        "Bb3",
+        "d6",
+        "c3",
+        "O-O",
+        "h3",
+        "Nb8",
+        "d4",
+        "Nbd7",
+        "Nbd2",
+        "Bb7",
+        "Bc2",
+        "Re8",
+        "Nf1",
+        "Bf8",
+        "Ng3",
+        "g6",
+        "a4",
+        "c5",
+        "d5",
+        "c4",
+        "Bg5",
+        "h6",
+        "Be3",
+        "Nc5",
+        "Qd2",
+        "h5",
+        "Bg5",
+        "Be7",
+        "Kh2",
+        "Kg7",
+    ]
+    assert len(line) > rec.history_depth
+    ts = _play(model, rec, board, line)
+    assert len(rec.board.move_stack) == len(line)
+    events = []
+    for i in range(6):
+        events += _feed(model, rec, chess.Board(), Side.WHITE, ts + 0.1 * (i + 1))
+    assert not any(isinstance(e, GameStarted | GameEnded | Takeback) for e in events)
+    assert rec.viewing == 0
+    assert len(rec.board.move_stack) == len(line)
+
+
+def test_position_resync_after_a_finished_game_is_live_again() -> None:
+    model, rec = _setup()
+    rec.resync_hold_frames = 3
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    _play(model, rec, board, ["f3", "e5", "g4", "Qh4#"])
+    assert rec.finished
+    later = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3")
+    events = []
+    for i in range(6):
+        events += _feed(model, rec, later, Side.WHITE, 2.0 + 0.1 * i)
+    assert any(isinstance(e, Resync) for e in events)
+    assert rec.board.board_fen() == later.board_fen()
+    assert not rec.finished
+
+
+def test_queue_path_shortest_unique_ways() -> None:
+    rec = Reconciler(bottom=Side.WHITE, user_side=Side.WHITE)
+    rec.board = chess.Board("4k3/P7/8/3p4/4P3/8/P7/4K3 w - - 0 1")
+    # A pawn takes the double step when that is shorter.
+    path = rec._queue_path(chess.A2, chess.A5, "P")
+    assert path is not None and [m.uci() for m in path] == ["a2a4", "a4a5"]
+    # A pawn only captures on the way to its target, never through an empty square.
+    assert rec._queue_path(chess.E4, chess.D5, "P") is not None
+    assert rec._queue_path(chess.E4, chess.F5, "P") is None
+    # Promotion to the piece drawn on the last rank; a pawn drawn there is not decided.
+    path = rec._queue_path(chess.A7, chess.A8, "N")
+    assert path is not None and [m.uci() for m in path] == ["a7a8n"]
+    assert rec._queue_path(chess.A7, chess.A8, "P") is None
+    assert rec._queue_path(chess.A7, chess.A8, "q") is None  # the wrong colour
+    # A king two squares away has several shortest ways: nothing is assumed.
+    assert rec._queue_path(chess.E1, chess.E3, "K") is None
+    assert rec._queue_path(chess.E1, chess.E2, "K") is not None
+    # A blocked file has no way at all.
+    rec.board = chess.Board("4k3/8/8/8/8/p7/P7/4K3 w - - 0 1")
+    assert rec._queue_path(chess.A2, chess.A4, "P") is None
+
+
+def test_opponent_move_waits_while_its_squares_are_under_the_drag() -> None:
+    """The bot answers e5 while the user drags a pawn across e5: nothing commits until the drop."""
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    _play(model, rec, board, ["e4"])
+    board.push_san("e5")
+    events = []
+    for i in range(4):
+        drag = (chess.D2, chess.E5, 0.05, 0.05)
+        events += _feed(model, rec, board, Side.WHITE, 1.0 + 0.1 * i, dragging=drag)
+    assert not _played(events)
+    for i in range(2):
+        events += _feed(model, rec, board, Side.WHITE, 2.0 + 0.1 * i)
+    assert _played(events) == ["e5"]
+
+
+def test_user_can_end_the_game_by_resigning() -> None:
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    _play(model, rec, board, ["e4", "e5"])
+    events = rec.end("0-1", "user resigned")
+    assert len(events) == 1 and isinstance(events[0], GameEnded)
+    assert events[0].result == "0-1" and events[0].pgn == "1. e4 e5"
+    assert rec.finished and rec.end("0-1", "again") == []

@@ -16,6 +16,7 @@ ENDGAME = "8/2K2k2/1P6/4Bp1p/P4PpP/6P1/8/8 w - - 0 60"
 def _reconciler_at(fen: str) -> tuple[ThemeModel, Reconciler, chess.Board]:
     start = synthetic_board()
     model = ThemeModel.from_start_position(start, GEOM, Side.WHITE)
+    assert model is not None
     rec = Reconciler(bottom=Side.WHITE, user_side=Side.WHITE, settle_frames=2)
     rec.update(model.classify_frame(start, GEOM), 0.0)
     board = chess.Board(fen)

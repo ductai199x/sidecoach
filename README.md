@@ -25,6 +25,7 @@ Then start a new game against a bot on that monitor. The watcher locks onto the 
 ```
 uv run sidecoach replay data/recordings/<stamp> --moves --pgn game.pgn
 uv run sidecoach cells data/recordings/<stamp> --squares e2,e4 --start 100 --end 140
+uv run sidecoach shrink data/recordings/g07-name data/recordings/<stamp>   # half size, still lossless
 ```
 
 ## Status
