@@ -735,6 +735,9 @@ class _Assessing:
         # Where each move was played from, so a better move can be named in the notation a
         # person reads; dropped as soon as that assessment is printed.
         self._from: dict[int, str] = {}
+        # An optional sink for the assessment lines (the panel's debug terminal); when set,
+        # lines go to it instead of the console.
+        self.sink: Callable[[str], None] | None = None
 
     @property
     def on(self) -> bool:
@@ -771,7 +774,10 @@ class _Assessing:
                 fen = self._from.pop(assessed.ply, None)
                 if fen is not None:
                     text = _assessment_text(assessed, chess.Board(fen))
-                    console.print(f"{indent}[dim]ply {assessed.ply}[/dim] {text}")
+                    if self.sink is not None:
+                        self.sink(f"ply {assessed.ply} {text}")
+                    else:
+                        console.print(f"{indent}[dim]ply {assessed.ply}[/dim] {text}")
             if log is not None:
                 log.write(assessed.model_dump_json() + "\n")
         return drained
@@ -805,6 +811,9 @@ class _Coaching:
     def __init__(self, settings: Settings, enabled: bool) -> None:
         self.coach: Coach | None = None
         self.log: TextIO | None = None
+        # An optional sink for coach messages: when set (the panel), each message goes to it
+        # instead of the terminal console. Left None, messages print as before.
+        self.sink: Callable[[object], None] | None = None
         if not enabled:
             return
         from sidecoach.coach.coach import Coach
@@ -857,7 +866,10 @@ class _Coaching:
         if self.coach is None:
             return
         for message in self.coach.poll():
-            console.print(f"{indent}[bold cyan]coach:[/bold cyan] {message.text}")
+            if self.sink is not None:
+                self.sink(message)
+            else:
+                console.print(f"{indent}[bold cyan]coach:[/bold cyan] {message.text}")
             if self.log is not None:
                 self.log.write(message.model_dump_json() + "\n")
 
@@ -1586,6 +1598,29 @@ def watch(
         console.print(
             f"\nrecording saved to {folder}; replay with: sidecoach replay {folder} --moves"
         )
+
+
+@app.command()
+def panel(
+    monitor: Annotated[
+        int | None, typer.Option(help="Monitor index, see doctor; default the primary")
+    ] = None,
+    fps: Annotated[int, typer.Option(help="Capture rate")] = 10,
+    config: ConfigOpt = None,
+) -> None:
+    """Open the desktop panel: the live coach with a board, coach messages, a voice, an
+    orientation flip and an analyse-this-position button, and a debug terminal at the bottom.
+
+    Needs the panel extras: uv sync --group panel (and --group voice to hear the coach).
+    Start it, then begin a game on the board -- the same live engine as `watch`, in a window.
+    """
+    try:
+        from sidecoach.ui.panel import run_panel
+    except ImportError as exc:
+        console.print(f"[red]panel extras missing:[/red] {exc}; run `uv sync --group panel`")
+        raise typer.Exit(1) from exc
+    settings = load_settings(config)
+    run_panel(settings, monitor=monitor, fps=fps)
 
 
 if __name__ == "__main__":

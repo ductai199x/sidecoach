@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>sidecoach</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header id="bar">
+      <span class="brand">sidecoach</span>
+      <button id="startStop" class="primary">Start</button>
+      <span id="status" class="status">idle</span>
+      <span class="spacer"></span>
+      <label class="ctl">voice
+        <select id="voice"></select>
+      </label>
+      <label class="ctl"><input type="checkbox" id="mute" /> mute</label>
+      <button id="flip" class="ghost" title="Swap which side is at the bottom">Flip</button>
+      <button id="analyze" class="ghost" title="Read the position now on the board (puzzle / mid-game)">Analyze</button>
+    </header>
+
+    <main>
+      <section id="left">
+        <div id="board" class="board"></div>
+        <div id="gameinfo" class="gameinfo">
+          <span id="side">—</span>
+          <span id="ply">ply 0</span>
+          <span id="following" class="muted">waiting for a start</span>
+        </div>
+        <div class="moves-wrap">
+          <ol id="moves" class="moves"></ol>
+        </div>
+      </section>
+
+      <section id="right">
+        <div class="panel-title">Coach</div>
+        <div id="coach" class="coach"></div>
+        <div class="ask">
+          <input id="askInput" type="text" placeholder="Ask the coach…  (Enter to send)" />
+          <button id="askBtn" class="primary">Ask</button>
+        </div>
+        <div class="quick">
+          <button data-cmd="hint" class="ghost">Hint</button>
+          <button data-cmd="move" class="ghost">Best move</button>
+          <button data-cmd="line" class="ghost">Line</button>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="term-head">
+        <span>debug terminal</span>
+        <label class="ctl"><input type="checkbox" id="autoscroll" checked /> autoscroll</label>
+        <button id="clearTerm" class="ghost small">clear</button>
+      </div>
+      <div id="terminal" class="terminal"></div>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>
