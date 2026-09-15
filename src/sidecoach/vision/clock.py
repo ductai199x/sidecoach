@@ -6,7 +6,9 @@ What the recordings show (720p copies of a 1440p screen, 43-pixel cells):
   above the board and one the same distance below it. The box is about 1.56 cells wide and
   0.47 tall. The digits are 0.23 cell tall, right-aligned inside the box with about 0.12 cell
   of padding, and a small clock icon sits at the left of the box. The format is M:SS or
-  MM:SS, with tenths under a minute (0:59.9).
+  MM:SS, with tenths under a minute (0:59.9). No clock in the six recordings fell under
+  eleven minutes, so the tenths dot is taken from the colon's lower dot, and a tenths
+  separator matched as a colon is repaired in `parse_clock`.
 - White's box is light with dark text and black's box dark with light text, whichever side
   is to move. The box colours therefore say which clock is white's, not which one runs.
 - The running clock's icon animates: its hand sweeps round in bursts, once a second. The
@@ -17,11 +19,16 @@ What the recordings show (720p copies of a 1440p screen, 43-pixel cells):
   by `scripts/validate_clocks.py --learn`).
 
 The reader is a pure vision component: it reports the top and bottom clocks as drawn, which
-one is highlighted as white's, and which one is running. The pipeline knows which side sits
-at the bottom and maps top and bottom to colours itself.
+box is light, and which clock is running. The pipeline knows which side sits at the bottom
+and maps top and bottom to colours itself. Nothing about whose turn it is comes from here:
+the reconciler reads the turn off the board. A clock reading is remaining time, the time
+control it implies, and a note of which clock is ticking.
 
 Geometry is relative to the board's cell size, and every glyph is scaled to a fixed line
 height before classification, so the reader does not depend on the board or screen size.
+
+A bad frame must never take a live session down, so `ClockReader.read` catches everything
+and returns None.
 """
 
 from __future__ import annotations
@@ -64,7 +71,7 @@ Which = Literal["top", "bottom"]
 class ClockReading:
     top_ms: int | None  # what the clock above the board shows, in milliseconds
     bottom_ms: int | None  # what the clock below the board shows
-    running: Which | None  # which one is highlighted as running, if either
+    running: Which | None  # which one is ticking, if either
     confidence: float  # 0..1, how sure the digits were read
     # Which box has the light background: white's clock, on every chess.com theme seen.
     light: Which | None = None
@@ -114,7 +121,9 @@ def _fill_extent(row: np.ndarray, start: int, background: float) -> int:
     return int(off[-1]) + 1 if len(off) else 0
 
 
-def find_box(gray: np.ndarray, x_right: float, rows: tuple[int, int], cell: float) -> ClockBox | None:
+def find_box(
+    gray: np.ndarray, x_right: float, rows: tuple[int, int], cell: float
+) -> ClockBox | None:
     """The clock box whose right edge is at `x_right`, between the given rows, if any.
 
     The column band just inside the right edge is the box's padding: along it, the box is a
@@ -141,10 +150,12 @@ def find_box(gray: np.ndarray, x_right: float, rows: tuple[int, int], cell: floa
             continue
         background = float(np.median(profile[a:b]))
         top, bottom = r0 + a, r0 + b
-        inset = max(1, int(round(0.12 * span)))
+        # The leftmost row reaching furthest left is the box's edge: the icon and the
+        # digits stop the scan early on the rows they cross, and no row can run past the
+        # edge, where the page is a different colour.
         left = min(
-            _fill_extent(gray[top + inset].astype(np.float32), c1 - 1, background),
-            _fill_extent(gray[bottom - 1 - inset].astype(np.float32), c1 - 1, background),
+            _fill_extent(gray[row].astype(np.float32), c1 - 1, background)
+            for row in range(top, bottom)
         )
         box_width = c1 - left
         if not BOX_WIDTH_CELLS[0] * cell <= box_width <= BOX_WIDTH_CELLS[1] * cell:
@@ -298,7 +309,14 @@ class GlyphTemplates:
 
 def parse_clock(text: str) -> int | None:
     """Milliseconds shown by a clock string such as 15:00, 1:02:03 or 0:59.9; None if it
-    is not a clock."""
+    is not a clock.
+
+    A tenths dot read as a colon is repaired: seconds always have two digits, so a lone
+    digit after the last separator is tenths whichever glyph was matched.
+    """
+    if text.count(":") > 1 and len(text.rsplit(":", 1)[1]) == 1:
+        head, tail = text.rsplit(":", 1)
+        text = f"{head}.{tail}"
     match = _CLOCK_RE.match(text)
     if not match:
         return None
@@ -371,10 +389,18 @@ def _icon_changed(previous: np.ndarray, current: np.ndarray) -> bool:
 class ClockReader:
     """Reads both clocks near a tracked board, frame by frame.
 
-    `running` is decided from motion: a clock whose value fell since the last frame, or
-    whose icon changed, is running; a clock whose value rose just received its increment
-    and stopped, so the other one is running. Evidence expires after `stale_after_s`, so a
-    game that has not started, or has ended, reports no running clock.
+    `running` is decided from motion, never from the box colours, which are the sides. The
+    running clock's icon is a face whose hand sweeps round, so its pixels change from frame
+    to frame while the idle icon's never do; and the running clock's value falls once a
+    second, while a clock that just rose has taken its increment and stopped, which makes
+    the other one the running clock. Evidence expires after `stale_after_s`, so a game that
+    has not begun, or that has ended, reports no running clock.
+
+    Whose turn it is comes from the board, not from here. This is a reading for the record
+    and for cross-checking, and nothing in the game state depends on it.
+
+    A reader without templates (the file is missing or unreadable) reads nothing rather
+    than raising, so a broken install costs the clocks and not the session.
     """
 
     def __init__(
@@ -383,10 +409,17 @@ class ClockReader:
         *,
         min_confidence: float = 0.35,
         stale_after_s: float = 3.0,
+        handover_holds_s: float = 1.2,
     ) -> None:
-        self.templates = templates or GlyphTemplates.load()
+        if templates is None:
+            try:
+                templates = GlyphTemplates.load()
+            except (OSError, ValueError, KeyError):
+                templates = None
+        self.templates = templates
         self.min_confidence = min_confidence
         self.stale_after_s = stale_after_s
+        self.handover_holds_s = handover_holds_s
         self.last: dict[Which, BoxReading | None] = {"top": None, "bottom": None}
         self._state: dict[Which, _BoxState] = {"top": _BoxState(), "bottom": _BoxState()}
         self._calls = 0
@@ -409,10 +442,14 @@ class ClockReader:
     def _read(
         self, frame: np.ndarray, board: BoardCandidate, ts: float | None
     ) -> ClockReading | None:
+        if self.templates is None or frame.ndim not in (2, 3) or frame.size == 0:
+            return None
         self._calls += 1
         now = ts if ts is not None else self._calls * 0.1
         x, y, w, h = board.region
         cell = board.cell_px
+        if not 4.0 <= cell <= 4096.0 or w <= 0 or h <= 0:
+            return None
         reach = int(round(SEARCH_CELLS * cell))
         readings: dict[Which, BoxReading | None] = {
             "top": self._read_side(frame, x + w, (y - reach, y - 1), cell),
@@ -456,7 +493,10 @@ class ClockReader:
         c1 = min(width, int(round(x_right)) + 1)
         if r1 - r0 < 4 or c1 - c0 < 4:
             return None
-        strip = frame[r0:r1, c0:c1]
+        assert self.templates is not None
+        strip = np.ascontiguousarray(frame[r0:r1, c0:c1])
+        if strip.dtype != np.uint8:
+            strip = np.clip(strip, 0, 255).astype(np.uint8)
         gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY) if strip.ndim == 3 else strip
         box = find_box(gray, x_right - c0, (0, r1 - r0), cell)
         if box is None:
@@ -470,9 +510,13 @@ class ClockReader:
         icon = reading.icon
         if icon is not None:
             icon = Region(icon.x + c0, icon.y + r0, icon.w, icon.h)
-        return BoxReading(shifted, reading.text, reading.ms, reading.confidence, reading.glyphs, icon)
+        return BoxReading(
+            shifted, reading.text, reading.ms, reading.confidence, reading.glyphs, icon
+        )
 
-    def _observe(self, which: Which, reading: BoxReading | None, frame: np.ndarray, now: float) -> None:
+    def _observe(
+        self, which: Which, reading: BoxReading | None, frame: np.ndarray, now: float
+    ) -> None:
         state = self._state[which]
         if reading is None:
             state.icon = None
@@ -489,7 +533,9 @@ class ClockReader:
         if icon is None or icon.w < 3 or icon.h < 3:
             state.icon = None
             return
-        patch = frame[icon.y : icon.y + icon.h, icon.x : icon.x + icon.w]
+        patch = np.ascontiguousarray(frame[icon.y : icon.y + icon.h, icon.x : icon.x + icon.w])
+        if patch.dtype != np.uint8:
+            patch = np.clip(patch, 0, 255).astype(np.uint8)
         patch = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY) if patch.ndim == 3 else patch.copy()
         if state.icon is not None and _icon_changed(state.icon, patch):
             state.icon_moved = now
@@ -497,6 +543,12 @@ class ClockReader:
 
     def _running(self, now: float) -> Which | None:
         top, bottom = self._state["top"], self._state["bottom"]
+        # A clock that rose took its increment: that side has just moved and stopped, and
+        # the other one started. For a moment after, the stopped clock's icon is still
+        # settling, so the handover outranks the icons rather than competing with them.
+        handover = max(top.increased, bottom.increased)
+        if now - handover <= self.handover_holds_s:
+            return "bottom" if top.increased >= bottom.increased else "top"
         evidence = {
             "top": max(top.decreased, top.icon_moved, bottom.increased),
             "bottom": max(bottom.decreased, bottom.icon_moved, top.increased),

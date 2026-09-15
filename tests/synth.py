@@ -11,7 +11,9 @@ import chess
 import cv2
 import numpy as np
 
-from sidecoach.events import Side
+from sidecoach.events import Region, Side
+from sidecoach.vision.board_detect import BoardCandidate
+from sidecoach.vision.clock import GlyphTemplates
 from sidecoach.vision.squares import row_col
 
 LIGHT = (208, 236, 238)
@@ -318,3 +320,139 @@ def with_overlays(frame: np.ndarray, x0: int, y0: int, cell: int) -> np.ndarray:
     cv2.fillPoly(out, [cursor], (255, 255, 255))
     cv2.polylines(out, [cursor], True, (0, 0, 0), 1)
     return out
+
+
+def _trim(canvas: np.ndarray) -> np.ndarray:
+    """A template canvas cropped to the columns that hold ink, so scaling it to a glyph
+    width scales the glyph and not its padding."""
+    columns = np.flatnonzero(canvas.max(axis=0) > 0.02)
+    if len(columns) == 0:
+        return canvas
+    return canvas[:, columns[0] : columns[-1] + 1]
+
+
+def draw_clock_box(
+    frame: np.ndarray,
+    x_right: int,
+    y_centre: int,
+    cell: float,
+    text: str,
+    *,
+    light: bool = True,
+    icon_angle: float | None = None,
+    colours: tuple[int, int] | None = None,
+    templates: GlyphTemplates | None = None,
+) -> None:
+    """Draw a chess.com clock box, right-aligned at `x_right`, the way the site draws one.
+
+    The glyphs are the learned templates, scaled to the digit height a board of this cell
+    size implies, so a test reads back what the reader was trained on. `light` picks the
+    polarity: white's box is light with dark text, black's dark with light text.
+    `icon_angle` is the hand of the running clock's face in radians; None draws the idle
+    dash instead. `colours` overrides the (background, text) greys of the theme.
+    """
+    templates = templates or GlyphTemplates.load()
+    height = max(6, int(round(0.47 * cell)))
+    line = max(4, int(round(0.23 * cell)))
+    pad = max(1, int(round(0.12 * cell)))
+    background, ink = colours if colours is not None else ((255, 40) if light else (36, 250))
+    glyphs = [_trim(templates.canvas_for(ch, light)[0]) for ch in text]
+    widths = [max(1, int(round(templates.canvas_for(ch, light)[1] * line))) for ch in text]
+    gap = max(1, line // 10)
+    icon = int(round(0.55 * height))
+    # chess.com's box is a fixed width with the digits right-aligned in it, so the icon
+    # sits well clear of them; a box only as wide as its content would not.
+    content = sum(widths) + gap * (len(glyphs) - 1) + 3 * pad + icon
+    width = max(content, int(round(1.56 * cell)))
+    x0, y0 = x_right - width, y_centre - height // 2
+    cv2.rectangle(frame, (x0, y0), (x_right - 1, y0 + height - 1), (background,) * 3, -1)
+    x = x_right - pad - sum(widths) - gap * (len(glyphs) - 1)
+    top = y_centre - line // 2
+    for canvas, w in zip(glyphs, widths, strict=True):
+        patch = cv2.resize(canvas, (w, line), interpolation=cv2.INTER_AREA)
+        block = frame[top : top + line, x : x + w].astype(np.float32)
+        blend = background + patch[:, :, None] * (ink - background)
+        frame[top : top + line, x : x + w] = np.clip(
+            np.where(patch[:, :, None] > 0.02, blend, block), 0, 255
+        ).astype(np.uint8)
+        x += w + gap
+    centre = (x0 + pad + icon // 2, y_centre)
+    radius = max(2, icon // 2 - 1)
+    cv2.circle(frame, centre, radius, (ink,) * 3, 1)
+    if icon_angle is None:
+        cv2.line(
+            frame,
+            (centre[0] - radius // 2, centre[1]),
+            (centre[0] + radius // 2, centre[1]),
+            (ink,) * 3,
+            1,
+        )
+    else:
+        tip = (
+            centre[0] + int(round(0.7 * radius * np.cos(icon_angle))),
+            centre[1] + int(round(0.7 * radius * np.sin(icon_angle))),
+        )
+        cv2.line(frame, centre, tip, (ink,) * 3, 1)
+
+
+def board_with_clocks(
+    top: str,
+    bottom: str,
+    *,
+    cell: int = 43,
+    x0: int = 300,
+    y0: int = 120,
+    width: int = 1280,
+    height: int = 720,
+    top_light: bool = False,
+    icon_angles: tuple[float | None, float | None] = (None, None),
+    colours: tuple[tuple[int, int], tuple[int, int]] | None = None,
+    page: tuple[int, int, int] = (46, 46, 46),
+    seed: int = 3,
+    templates: GlyphTemplates | None = None,
+) -> tuple[np.ndarray, BoardCandidate]:
+    """A board with a clock box above and below it, and the candidate a tracker would give.
+
+    The strips the clocks sit in are painted the page colour first, as a site's page is
+    behind them; a box on random noise would be a harder problem than the real one.
+    """
+    frame = synthetic_board(
+        width=width, height=height, x0=x0, y0=y0, cell=cell, pieces=True, seed=seed
+    )
+    side = 8 * cell
+    band = int(round(1.4 * cell))
+    for y in (y0 - band, y0 + side):
+        cv2.rectangle(
+            frame,
+            (max(0, x0 - cell), max(0, y)),
+            (min(width - 1, x0 + side + cell), min(height - 1, y + band)),
+            page,
+            -1,
+        )
+    templates = templates or GlyphTemplates.load()
+    draw_clock_box(
+        frame,
+        x0 + side,
+        y0 - int(round(0.37 * cell)),
+        cell,
+        top,
+        light=top_light,
+        icon_angle=icon_angles[0],
+        colours=colours[0] if colours else None,
+        templates=templates,
+    )
+    draw_clock_box(
+        frame,
+        x0 + side,
+        y0 + side + int(round(0.37 * cell)),
+        cell,
+        bottom,
+        light=not top_light,
+        icon_angle=icon_angles[1],
+        colours=colours[1] if colours else None,
+        templates=templates,
+    )
+    board = BoardCandidate(
+        region=Region(x0, y0, side, side), cell_px=float(cell), score=1.0, contrast=60.0, fit=1.0
+    )
+    return frame, board

@@ -50,7 +50,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sidecoach.events import GameStarted, MovePlayed, Side  # noqa: E402
+from sidecoach.events import MovePlayed, Side  # noqa: E402
 from sidecoach.replay.recording import Recording  # noqa: E402
 from sidecoach.state.pipeline import GamePipeline  # noqa: E402
 from sidecoach.vision.clock import (  # noqa: E402
@@ -58,7 +58,6 @@ from sidecoach.vision.clock import (  # noqa: E402
     GLYPH_W,
     SEARCH_CELLS,
     ClockReader,
-    ClockReading,
     GlyphTemplates,
     find_box,
     glyph_canvas,
@@ -70,14 +69,12 @@ from sidecoach.vision.tracker import BoardTracker  # noqa: E402
 INCREMENTS = (0, 1, 2, 3, 5, 10, 15, 20, 30, 45, 60)
 # Two stored frames of one box this close cannot straddle two ticks of the display.
 MAX_STEP_TICKS = 12
-
-
-def fmt(ms: int | None) -> str:
-    if ms is None:
-        return "--:--"
-    s, tenths = divmod(ms // 100, 10)
-    m, s = divmod(s, 60)
-    return f"{m}:{s:02d}" + (f".{tenths}" if m == 0 else "")
+# The reconciler confirms a move about a third of a second after the clocks hand over,
+# once the pieces have settled; a handover further than LAG_SPAN away is another ply's.
+LAG = 0.3
+LAG_SPAN = 1.5
+# How far a ply's span may differ from the whole seconds its mover's clock lost.
+SLACK = 1.5
 
 
 # Learning
@@ -241,7 +238,11 @@ def label_clusters(
 
     def similarity(k: int, digit: int) -> float:
         return max(
-            (float(_unit(centroids[k]) @ _unit(centroids[j])) for j, v in order.items() if v == digit),
+            (
+                float(_unit(centroids[k]) @ _unit(centroids[j]))
+                for j, v in order.items()
+                if v == digit
+            ),
             default=-1.0,
         )
 
@@ -358,199 +359,356 @@ def learn(rec_dirs: list[Path], out: Path) -> None:
 
 @dataclass
 class Landing:
+    """A move the pipeline reported, and the tick it reported it on."""
+
     ply: int
     san: str
     tick: int
-    by_user: bool
 
 
-def _mode(values: list[int]) -> int | None:
-    if not values:
-        return None
-    return Counter(values).most_common(1)[0][0]
+@dataclass
+class Ply:
+    """One ply compared: what the clocks say it took, and what chess.com says."""
+
+    ply: int
+    san: str
+    think: float | None
+    target: float
+    note: str
 
 
-def _idle_value(series: dict[int, int | None], ticks: range) -> int | None:
-    values = [series[t] for t in ticks if series.get(t) is not None]
-    return _mode(values)
+@dataclass
+class Replay:
+    """Everything one replay of a recording produced, tick by tick."""
+
+    ts: dict[int, float]
+    white: dict[int, int | None]
+    black: dict[int, int | None]
+    running: dict[int, str | None]
+    board_at: dict[int, bool]
+    landings: list[Landing]
+    bottom: Side
+    costs: list[float]
+    read_ticks: int
 
 
-def _after_value(series: dict[int, int | None], ticks: range) -> int | None:
-    """The post-increment value: the largest value seen at least twice, else the largest."""
-    values = [series[t] for t in ticks if series.get(t) is not None]
-    if not values:
-        return None
-    twice = [v for v, n in Counter(values).items() if n >= 2]
-    return max(twice) if twice else max(values)
+def fmt(ms: int | None) -> str:
+    if ms is None:
+        return "--:--"
+    seconds, tenths = divmod(ms // 100, 10)
+    minutes, seconds = divmod(seconds, 60)
+    return f"{minutes}:{seconds:02d}" + (f".{tenths}" if minutes == 0 else "")
 
 
-def _falls(series: dict[int, int | None], ticks: range) -> list[int]:
-    """Ticks in `ticks` at which the value read is one less than the last value read."""
-    falls: list[int] = []
-    prev: int | None = None
-    for t in ticks:
-        v = series.get(t)
-        if v is None:
+def align(landings: list[Landing], truth: list[str]) -> dict[int, int]:
+    """Put every landing on the truth line: which ply of chess.com's game it is.
+
+    The pipeline's own ply numbers restart when it resyncs, and a takeback replays moves it
+    has already reported, so a landing is matched by its move instead: the occurrence of
+    that move, of the right colour, nearest to where the last landing left off.
+    """
+    on_ply: dict[int, int] = {}
+    pos = 0
+    for landing in landings:
+        hits = [
+            k
+            for k, san in enumerate(truth)
+            if san == landing.san and k % 2 == (landing.ply - 1) % 2
+        ]
+        if not hits:
             continue
-        if prev is not None and v == prev - 1000:
-            falls.append(t)
-        prev = v
-    return falls
+        hit = min(hits, key=lambda k: (abs(k - pos), k))
+        on_ply[hit + 1] = landing.tick
+        pos = hit + 1
+    return on_ply
+
+
+def changes(series: dict[int, int | None], ts: dict[int, float]) -> list[tuple[float, float]]:
+    """(when, by how many seconds) for every change of a clock's display.
+
+    The moment is the midpoint between the last frame showing the old value and the first
+    showing the new one, which is the best a display sampled at ten frames a second allows.
+    """
+    out: list[tuple[float, float]] = []
+    previous: int | None = None
+    previous_tick = 0
+    for tick in sorted(series):
+        value = series[tick]
+        if value is None:
+            continue
+        if previous is not None and value != previous:
+            out.append((0.5 * (ts[previous_tick] + ts[tick]), (value - previous) / 1000))
+        previous, previous_tick = value, tick
+    return out
+
+
+def replay(rec_dir: Path) -> Replay:
+    rec = Recording(rec_dir)
+    pipe = GamePipeline()
+    reader = ClockReader()
+    run = Replay({}, {}, {}, {}, {}, [], Side.WHITE, [], 0)
+    for tick, frame in rec.frames():
+        run.ts[tick.frame_id] = tick.ts
+        events = pipe.process(
+            frame, tick.ts, changed=tick.stored is not None, frame_id=tick.frame_id
+        )
+        board = pipe.board if pipe.tracker.verified else None
+        run.board_at[tick.frame_id] = board is not None
+        reading = None
+        if board is not None:
+            started = time.perf_counter()
+            reading = reader.read(frame, board, tick.ts)
+            run.costs.append(time.perf_counter() - started)
+        # The reader never learns which side is which; the pipeline does, and maps here.
+        top_is_white = pipe.bottom == Side.BLACK
+        run.white[tick.frame_id] = run.black[tick.frame_id] = None
+        run.running[tick.frame_id] = None
+        if reading is not None:
+            run.read_ticks += 1
+            run.white[tick.frame_id] = reading.top_ms if top_is_white else reading.bottom_ms
+            run.black[tick.frame_id] = reading.bottom_ms if top_is_white else reading.top_ms
+            if reading.running is not None:
+                run.running[tick.frame_id] = (
+                    "white" if (reading.running == "top") == top_is_white else "black"
+                )
+        for event in events:
+            if isinstance(event, MovePlayed):
+                run.landings.append(Landing(event.ply, event.san, tick.frame_id))
+    run.bottom = pipe.bottom or Side.WHITE
+    return run
+
+
+def increment(run: Replay) -> int:
+    """The time control's increment, from the rise of a clock at the move that earns it."""
+    rises = Counter(
+        round(by) for _, by in changes(run.white, run.ts) + changes(run.black, run.ts) if by > 0.5
+    )
+    # The idle clock shows floor(remaining) and the running clock ceil, so a ten-second
+    # increment reads as a nine-second rise at the handover.
+    raw = rises.most_common(1)[0][0] if rises else 0
+    return min(INCREMENTS, key=lambda i: abs(i - (raw + 1)))
+
+
+def handovers(run: Replay, on_ply: dict[int, int], plies: int, inc: int) -> dict[int, float]:
+    """When each ply's move reached the clocks, read from the clocks themselves.
+
+    The mover's clock rises by the increment at the moment their move lands, which is the
+    moment the opponent's clock starts running: the boundary between two plies of thinking.
+    The clocks show it within a frame, where the move reaches the reconciler only once the
+    pieces have settled, a third of a second later and sometimes much more. Ply 1 starts
+    with the game, a second before white's clock first falls, and only when the recording
+    caught the clock still at its full value.
+    """
+    rises = {
+        1: [when for when, by in changes(run.white, run.ts) if inc - 1.5 <= by <= inc + 0.5],
+        0: [when for when, by in changes(run.black, run.ts) if inc - 1.5 <= by <= inc + 0.5],
+    }
+    hand: dict[int, float] = {}
+    read = [t for t in sorted(run.ts) if run.white.get(t) is not None]
+    falls = [when for when, by in changes(run.white, run.ts) if by < -0.5]
+    if read and falls:
+        full = max(v for v in run.white.values() if v is not None)
+        if run.white[read[0]] == full and falls[0] - run.ts[read[0]] <= 1.5:
+            hand[0] = falls[0] - 1.0
+    for ply in range(1, plies + 1):
+        if ply not in on_ply:
+            continue
+        want = run.ts[on_ply[ply]] - LAG
+        floor = max((hand[q] for q in range(ply - 1, -1, -1) if q in hand), default=-1e18)
+        near = [when for when in rises[ply % 2] if abs(when - want) <= LAG_SPAN and when > floor]
+        if near:
+            hand[ply] = min(near, key=lambda when: abs(when - want))
+    return hand
+
+
+def steady(clock: dict[int, int | None], ticks: range) -> int | None:
+    """The value a clock shows most often over a span of ticks."""
+    seen = [clock[t] for t in ticks if clock.get(t) is not None]
+    return Counter(seen).most_common(1)[0][0] if seen else None
 
 
 def validate(rec_dir: Path, verbose: bool = True) -> dict[str, object]:
-    rec = Recording(rec_dir)
+    run = replay(rec_dir)
     truth = json.loads((rec_dir / "chesscom.json").read_text(encoding="utf-8"))["moves"]
-    pipe = GamePipeline()
-    reader = ClockReader()
-    ts_of: dict[int, float] = {}
-    readings: dict[int, ClockReading | None] = {}
-    board_at: dict[int, bool] = {}
-    landings: list[Landing] = []
-    started_at: int | None = None
-    costs: list[float] = []
-    for tick, frame in rec.frames():
-        ts_of[tick.frame_id] = tick.ts
-        events = pipe.process(frame, tick.ts, changed=tick.stored is not None, frame_id=tick.frame_id)
-        board = pipe.board if pipe.tracker.verified else None
-        board_at[tick.frame_id] = board is not None
-        if board is not None:
-            t = time.perf_counter()
-            reading = reader.read(frame, board, tick.ts)
-            costs.append(time.perf_counter() - t)
-        else:
-            reading = None
-        readings[tick.frame_id] = reading
-        for event in events:
-            if isinstance(event, GameStarted) and started_at is None:
-                started_at = tick.frame_id
-            if isinstance(event, MovePlayed):
-                landings.append(Landing(event.ply, event.san, tick.frame_id, event.by_user))
-    bottom = pipe.bottom or Side.WHITE
-    # Per-clock series in ms, by tick, white and black.
-    white: dict[int, int | None] = {}
-    black: dict[int, int | None] = {}
-    light_votes: Counter[str] = Counter()
-    running_votes: Counter[str] = Counter()
-    for tick_id, reading in readings.items():
-        if reading is None:
-            white[tick_id] = black[tick_id] = None
-            continue
-        top_is_white = bottom == Side.BLACK
-        white[tick_id] = reading.top_ms if top_is_white else reading.bottom_ms
-        black[tick_id] = reading.bottom_ms if top_is_white else reading.top_ms
-        if reading.light is not None:
-            light_votes[reading.light] += 1
-        running_votes[str(reading.running)] += 1
-    # The last landing of every truth ply, matched by SAN: a taken-back ply is replayed.
-    by_ply: dict[int, Landing] = {}
-    for landing in landings:
-        expected = truth[landing.ply - 1]["san"] if landing.ply - 1 < len(truth) else None
-        if expected == landing.san:
-            by_ply[landing.ply] = landing
-    if started_at is not None:
-        by_ply[0] = Landing(0, "start", started_at, False)
-    # The increment, from the jump itself: the mover's clock rises by it within a tick or
-    # two of their move landing. The mode over the plies ignores a takeback restoring a
-    # clock and the odd misread.
-    jumps: Counter[int] = Counter()
-    for ply, landing in by_ply.items():
-        if ply == 0:
-            continue
-        clock = white if ply % 2 == 1 else black
-        series = [clock[t] for t in range(landing.tick - 3, landing.tick + 9) if clock.get(t)]
-        for before, after in zip(series, series[1:], strict=False):
-            if before is not None and after is not None and after > before:
-                jumps[(after - before) // 1000] += 1
-    inc = jumps.most_common(1)[0][0] if jumps else 0
-    if inc not in INCREMENTS:
-        inc = min(INCREMENTS, key=lambda i: abs(i - inc))
-    rows: list[tuple[int, str, float | None, float, str]] = []
+    sans = [move["san"] for move in truth]
+    on_ply = align(run.landings, sans)
+    inc = increment(run)
+    hand = handovers(run, on_ply, len(truth), inc)
+    clocks = {1: run.white, 0: run.black}
+    ordered = sorted(run.ts)
+
+    def idle(clock: dict[int, int | None], when: float, after: bool) -> int | None:
+        """The clock's steady display just before, or just after, a moment."""
+        picks = [
+            clock[t]
+            for t in ordered
+            if clock.get(t) is not None
+            and (run.ts[t] > when if after else run.ts[t] < when)
+            and abs(run.ts[t] - when) < 1.2
+        ]
+        if not picks:
+            return None
+        return picks[0] if after else picks[-1]
+
+    rows: list[Ply] = []
     for ply in range(1, len(truth) + 1):
         target = truth[ply - 1]["time_ds"] / 10.0
-        if ply not in by_ply or ply - 1 not in by_ply:
-            rows.append((ply, truth[ply - 1]["san"], None, target, "no landing"))
+        san = sans[ply - 1]
+        if ply not in on_ply:
+            rows.append(Ply(ply, san, None, target, "the pipeline reported no such move"))
             continue
-        clock = white if ply % 2 == 1 else black
-        s_tick, e_tick = by_ply[ply - 1].tick, by_ply[ply].tick
-        before = _idle_value(clock, range(s_tick - 2, s_tick + 1))
-        after = _after_value(clock, range(e_tick, e_tick + 6))
-        if before is None or after is None:
-            rows.append((ply, truth[ply - 1]["san"], None, target, "clock unread"))
+        if ply not in hand or ply - 1 not in hand:
+            rows.append(Ply(ply, san, None, target, "no clock handover near the move"))
             continue
-        n = (before - after) // 1000 + inc
-        falls = [t for t in _falls(clock, range(s_tick - 2, e_tick + 6)) if t > s_tick and t <= e_tick + 1]
-        S, E = ts_of[s_tick], ts_of[e_tick]
-        if n <= 0 or not falls:
-            estimate = E - S
-            note = "" if n == 0 else f"n={n} without a fall"
+        start, end = hand[ply - 1], hand[ply]
+        before = idle(clocks[ply % 2], start, after=False)
+        after = idle(clocks[ply % 2], end, after=True)
+        lost = None if before is None or after is None else (before - after) // 1000 + inc
+        think = end - start
+        if lost is None:
+            rows.append(Ply(ply, san, None, target, "a clock was unreadable at a handover"))
+        elif abs(think - lost) > SLACK:
+            # The digits say the mover's clock did not lose what this span implies, so the
+            # handover belongs to another ply: the move landed well before the reconciler
+            # saw it, or a takeback put time back on the clock.
+            rows.append(Ply(ply, san, None, target, f"lost {lost} s over a {think:.1f} s span"))
         else:
-            estimate = (n - 1) + (ts_of[falls[0]] - S) + (E - ts_of[falls[-1]])
-            note = "" if len(falls) == n else f"{len(falls)} falls for n={n}"
-        rows.append((ply, truth[ply - 1]["san"], estimate, target, note))
-    errors = [abs(e - t) for _, _, e, t, _ in rows if e is not None]
-    within = sum(1 for err in errors if err <= 0.5)
-    tc = None
-    if started_at is not None:
-        tc = (fmt(_idle_value(white, range(started_at, started_at + 10))), fmt(_idle_value(black, range(started_at, started_at + 10))))
-    board_ticks = sum(board_at.values())
-    read_ticks = sum(1 for t, r in readings.items() if r is not None)
+            rows.append(Ply(ply, san, think, target, ""))
+
+    measured = [row for row in rows if row.think is not None]
+    errors = [abs(row.think - row.target) for row in measured if row.think is not None]
+    within = sum(1 for error in errors if error <= 0.5)
+    # The time control, as both clocks' first steady reading of this game: the ticks just
+    # before the first move landed. The reading when the recording opens is whatever page
+    # was up, which for a recording that joins a game in progress is not the time control.
+    control = None
+    first = min((tick for ply, tick in on_ply.items() if ply == 1), default=None)
+    if first is None:
+        first = next((t for t in ordered if run.board_at[t]), None)
+    if first is not None:
+        window = range(max(0, first - 25), first + 1)
+        control = (fmt(steady(run.white, window)), fmt(steady(run.black, window)), inc)
+    right = Counter()
+    for ply in range(1, len(truth) + 1):
+        if ply not in hand or ply - 1 not in hand:
+            continue
+        mover = "white" if ply % 2 == 1 else "black"
+        for tick in ordered:
+            if hand[ply - 1] + 0.5 < run.ts[tick] < hand[ply] - 0.5 and run.running[tick]:
+                right[run.running[tick] == mover] += 1
     if verbose:
-        print(f"\n== {rec_dir.name}: {len(truth)} plies, {bottom.value} at the bottom, increment {inc} s")
-        print(f"   time control read at the start: white {tc[0] if tc else '?'} black {tc[1] if tc else '?'}")
-        print(f"   {read_ticks} of {board_ticks} board ticks read a clock; light box votes {dict(light_votes)}; running votes {dict(running_votes)}")
-        print("   ply  san      clock   chess.com   error")
-        for ply, san, estimate, target, note in rows:
-            est = f"{estimate:6.1f}" if estimate is not None else "   n/a"
-            err = f"{estimate - target:+5.1f}" if estimate is not None else "     "
-            flag = " <-- off" if estimate is not None and abs(estimate - target) > 1.0 else ""
-            print(f"   {ply:3d}  {san:8s} {est}  {target:6.1f}  {err}  {note}{flag}")
-        for ply, san, estimate, target, _ in rows:
-            if estimate is None or abs(estimate - target) <= 1.0:
-                continue
-            s_tick, e_tick = by_ply[ply - 1].tick, by_ply[ply].tick
-            print(f"   ply {ply} {san}: clock {estimate:.1f} s vs chess.com {target:.1f} s; readings (tick white black running):")
-            for t in list(range(s_tick - 3, s_tick + 3)) + list(range(e_tick - 3, e_tick + 6)):
-                r = readings.get(t)
-                print(f"      {t:5d} {fmt(white.get(t))} {fmt(black.get(t))} {r.running if r else '-'}")
-    summary = {
+        report(rec_dir, run, rows, measured, errors, within, control, hand, right)
+    return {
         "recording": rec_dir.name,
         "plies": len(truth),
-        "measured": len(errors),
+        "measured": len(measured),
         "within_0_5": within / len(errors) if errors else 0.0,
         "mae": sum(errors) / len(errors) if errors else float("nan"),
-        "worst": sorted(((abs(e - t), p) for p, _, e, t, _ in rows if e is not None), reverse=True)[:3],
-        "time_control": tc,
-        "increment": inc,
-        "cost_ms": 1000 * statistics.mean(costs) if costs else float("nan"),
-        "cost_p95_ms": 1000 * float(np.percentile(costs, 95)) if costs else float("nan"),
-        "read_ticks": read_ticks,
-        "board_ticks": board_ticks,
-        "unread_before_board": sum(1 for t, r in readings.items() if r is not None and not board_at[t]),
+        "time_control": control,
+        "cost_ms": 1000 * statistics.mean(run.costs) if run.costs else float("nan"),
+        "cost_p95_ms": 1000 * float(np.percentile(run.costs, 95)) if run.costs else float("nan"),
+        "running_right": right[True] / sum(right.values()) if right else float("nan"),
+        "worst": sorted(
+            (
+                (round(abs(row.think - row.target), 1), row.ply, row.san)
+                for row in measured
+                if row.think is not None
+            ),
+            reverse=True,
+        )[:3],
     }
-    if verbose:
+
+
+def report(
+    rec_dir: Path,
+    run: Replay,
+    rows: list[Ply],
+    measured: list[Ply],
+    errors: list[float],
+    within: int,
+    control: tuple[str, str, int] | None,
+    hand: dict[int, float],
+    right: Counter,
+) -> None:
+    board_ticks = sum(run.board_at.values())
+    blind = sum(1 for on in run.board_at.values() if not on)
+    print(f"\n== {rec_dir.name}: {len(rows)} plies, {run.bottom.value} at the bottom")
+    if control is not None:
+        print(f"   time control read at the start: {control[0]} and {control[1]}, +{control[2]} s")
+    print(
+        f"   {run.read_ticks} of {board_ticks} ticks with a board read a clock; "
+        f"{blind} ticks had no board and the reader was not called"
+    )
+    if right:
         print(
-            f"   summary: {within}/{len(errors)} plies within 0.5 s ({summary['within_0_5']:.1%}), "
-            f"MAE {summary['mae']:.2f} s, worst {summary['worst']}, "
-            f"cost {summary['cost_ms']:.2f} ms/frame (p95 {summary['cost_p95_ms']:.2f})"
+            f"   the clock reported running was the mover's on {right[True]} of "
+            f"{sum(right.values())} ticks between handovers"
         )
-    return summary
+    print("   ply  move       clock  chess.com   error")
+    for row in rows:
+        think = f"{row.think:6.1f}" if row.think is not None else "   n/a"
+        error = f"{row.think - row.target:+5.1f}" if row.think is not None else "     "
+        flag = " <--" if row.think is not None and abs(row.think - row.target) > 1.0 else ""
+        print(
+            f"   {row.ply:3d}  {row.san:9s} {think}  {row.target:6.1f}  {error}  {row.note}{flag}"
+        )
+    for row in measured:
+        if row.think is None or abs(row.think - row.target) <= 1.0:
+            continue
+        print(f"   ply {row.ply} {row.san}: clock {row.think:.1f} s, chess.com {row.target:.1f} s")
+        for tick in sorted(run.ts):
+            if hand[row.ply - 1] - 0.6 < run.ts[tick] < hand[row.ply] + 0.6:
+                print(
+                    f"      {tick:5d} {run.ts[tick] - hand[row.ply - 1]:+6.2f} "
+                    f"white {fmt(run.white[tick])} black {fmt(run.black[tick])} "
+                    f"running {run.running[tick]}"
+                )
+    skipped = Counter(row.note.split(" over")[0] for row in rows if row.think is None)
+    share = within / len(errors) if errors else 0.0
+    mae = sum(errors) / len(errors) if errors else float("nan")
+    print(
+        f"   summary: {within}/{len(errors)} measured plies within 0.5 s ({share:.1%}), "
+        f"MAE {mae:.2f} s, {len(rows) - len(measured)} plies not measured {dict(skipped)}"
+    )
+    print(
+        f"   cost {1000 * statistics.mean(run.costs):.2f} ms a frame "
+        f"(p95 {1000 * float(np.percentile(run.costs, 95)):.2f} ms) over {len(run.costs)} frames"
+    )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("recordings", nargs="+", type=Path)
-    parser.add_argument("--learn", type=Path, metavar="OUT", help="learn glyph templates into OUT instead of validating")
+    parser.add_argument(
+        "--learn",
+        type=Path,
+        metavar="OUT",
+        help="learn glyph templates into OUT instead of validating",
+    )
     args = parser.parse_args()
     if args.learn:
         learn(args.recordings, args.learn)
         return
     summaries = [validate(rec_dir) for rec_dir in args.recordings]
     if len(summaries) > 1:
-        measured = sum(int(s["measured"]) for s in summaries)  # type: ignore[call-overload]
-        within = sum(float(s["within_0_5"]) * int(s["measured"]) for s in summaries)  # type: ignore[call-overload]
-        mae = sum(float(s["mae"]) * int(s["measured"]) for s in summaries) / max(1, measured)  # type: ignore[call-overload]
-        print(f"\n== all: {within / max(1, measured):.1%} of {measured} plies within 0.5 s, MAE {mae:.2f} s")
+        counts = [int(summary["measured"]) for summary in summaries]  # type: ignore[arg-type]
+        plies = sum(int(summary["plies"]) for summary in summaries)  # type: ignore[arg-type]
+        measured = sum(counts)
+        within = sum(
+            float(summary["within_0_5"]) * n  # type: ignore[arg-type]
+            for summary, n in zip(summaries, counts, strict=True)
+        )
+        mae = sum(
+            float(summary["mae"]) * n  # type: ignore[arg-type]
+            for summary, n in zip(summaries, counts, strict=True)
+        ) / max(1, measured)
+        share = within / max(1, measured)
+        print(
+            f"\n== all six: {share:.1%} of {measured} measured plies within 0.5 s, "
+            f"MAE {mae:.2f} s; {measured} of {plies} plies measured"
+        )
 
 
 if __name__ == "__main__":
