@@ -501,6 +501,28 @@ def _is_central_strong(board: chess.Board, square: chess.Square, us: chess.Color
     )
 
 
+def _pawn_storm_side(board: chess.Board, move: chess.Move, us: chess.Color) -> str | None:
+    """The wing being stormed if the move pushes a pawn at the enemy King, else None.
+
+    A pawn advance -- not a capture -- toward an enemy King that has castled to a wing, on the
+    files around it: the classic way to prise open a castled position.
+    """
+    if board.piece_type_at(move.from_square) != chess.PAWN or board.is_capture(move):
+        return None
+    enemy_king = board.king(not us)
+    if enemy_king is None:
+        return None
+    king_file = chess.square_file(enemy_king)
+    if not (king_file <= 2 or king_file >= 5):
+        return None  # a King in the centre is not a wing to storm
+    if abs(chess.square_file(move.to_square) - king_file) > 2:
+        return None
+    advancing = (
+        chess.square_rank(move.to_square) - chess.square_rank(move.from_square)
+    ) * _forward(us) > 0
+    return ("queenside" if king_file <= 2 else "kingside") if advancing else None
+
+
 def _rook_behind_passer(
     after: chess.Board, rook_square: chess.Square, us: chess.Color
 ) -> str | None:
@@ -668,6 +690,14 @@ def best_move_idea(
         name = PIECE_NAMES[piece_type]
         return PositionalFact(
             "activate", f"this brings your most passive piece, the {name}, to life on {to}", (to,)
+        )
+
+    storm_side = _pawn_storm_side(board, move, us)
+    if storm_side is not None:
+        return PositionalFact(
+            "pawnStorm",
+            f"storm their King with the pawn to {to}, prising open the {storm_side}",
+            (to,),
         )
 
     if phase != "opening" and piece_type == chess.PAWN:

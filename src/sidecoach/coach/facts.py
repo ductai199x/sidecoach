@@ -32,6 +32,7 @@ _PLAN_THEME: dict[str, str] = {
     "rookBehindPasser": "getting your rook behind the passed pawn",
     "break": "breaking open their pawn structure",
     "centre": "fighting for the centre",
+    "pawnStorm": "storming the pawns in front of their King",
     "pushPasser": "pushing your passed pawn",
     "activate": "activating your worst-placed piece",
     "space": "gaining space on the flank",

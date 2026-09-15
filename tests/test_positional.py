@@ -147,6 +147,13 @@ def test_endgame_king_activity_and_pawn_break_and_rook_behind_passer() -> None:
     assert P.best_move_idea(board, board.parse_san("Ra1"), chess.WHITE).kind == "rookBehindPasser"
 
 
+def test_pawn_storm_is_a_pawn_push_at_the_castled_king() -> None:
+    # Black has castled kingside (g8); g4 storms that wing, a4 is only queenside space.
+    board = chess.Board("r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/2NP1N2/PPP1QPPP/R1B1K2R w KQ - 0 7")
+    assert P.best_move_idea(board, board.parse_san("g4"), chess.WHITE).kind == "pawnStorm"
+    assert P.best_move_idea(board, board.parse_san("a4"), chess.WHITE).kind == "space"
+
+
 def test_prophylaxis_is_a_quiet_move_that_stops_the_opponent_s_threat() -> None:
     # Black threatens ...Nxe4: the e4 pawn hangs to the f6 knight. Nc3 defends it -- prophylaxis,
     # and it outranks the fact that Nc3 also develops.
