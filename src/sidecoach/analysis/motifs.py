@@ -496,7 +496,7 @@ def _ray_motifs(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
             behind_is_loose = _winnable(view, back_sq, cost, ignore=front_sq)
             if front_value > back_value:
                 must_move = _winnable(view, front_sq, cost)
-                if must_move and back_value >= _MINOR and behind_is_loose:
+                if must_move and behind_is_loose:
                     tags.append(_tag("skewer", squares))
             elif front_value >= _MINOR and behind_is_loose:
                 tags.append(_tag("xRayAttack", squares))
@@ -508,26 +508,22 @@ def _discovered_attack(
 ) -> MotifTag | None:
     """The move steps off a line and a friendly slider now bears on something it did not.
 
-    The proof is geometric: the vacated square lies strictly between the slider and the new
-    target. The target must be the king, or a piece worth at least a knight that the slider
-    could actually win, counting its defenders.
+    The proof is geometric, the way Lichess tags a discovery: the vacated square lies
+    strictly between the slider and an enemy piece it now attacks and did not before. Whether
+    that piece can be won is not the test -- revealing the attack is the motif -- so a
+    discovery onto a defended piece, or onto a pawn, still counts.
     """
     enemy = not mover
     squares: list[chess.Square] = []
     for slider in _sliders(after, mover):
         if slider == move.to_square or before.piece_at(slider) != after.piece_at(slider):
             continue
-        cost = _value(after.piece_type_at(slider))
         was = before.attacks(slider)
         for target in after.attacks(slider):
             if target in was:
                 continue
             piece = after.piece_at(target)
             if piece is None or piece.color != enemy:
-                continue
-            if piece.piece_type != chess.KING and _value(piece.piece_type) < _MINOR:
-                continue
-            if not _winnable(after, target, cost):
                 continue
             if not chess.BB_SQUARES[move.from_square] & chess.between(slider, target):
                 continue
