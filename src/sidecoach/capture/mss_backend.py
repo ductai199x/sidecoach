@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import mss
 import numpy as np
 
@@ -26,10 +28,8 @@ class MssCapture:
         return np.ascontiguousarray(bgra[:, :, :3])
 
     def reopen(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self._sct.close()
-        except Exception:  # noqa: BLE001
-            pass
         self._sct = mss.mss()
 
     def close(self) -> None:

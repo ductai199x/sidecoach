@@ -72,6 +72,8 @@ class GamePipeline:
             # unverified geometry would be noise for the reconciler. Whatever changed in
             # this frame is still unread.
             self._unread_change = self._unread_change or changed
+            if self.reconciler is not None:
+                self.reconciler.board_unseen()
             return []
         geometry = BoardGeometry(self.board.region, self.board.cell_px)
         key = (self.board.region, round(self.board.cell_px, 2))

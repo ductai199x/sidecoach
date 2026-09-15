@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Callable, Iterator
 
@@ -51,10 +52,8 @@ def capture_loop(
             failures += 1
             if failures > grab_retries:
                 raise CaptureFailed(f"{failures} grabs failed in a row: {exc}") from exc
-            try:
+            with contextlib.suppress(Exception):  # the next grab decides if the capture is back
                 backend.reopen()
-            except Exception:  # noqa: BLE001
-                pass  # the next grab decides whether the capture is back
             time.sleep(retry_delay)
             next_due = time.monotonic()
             continue

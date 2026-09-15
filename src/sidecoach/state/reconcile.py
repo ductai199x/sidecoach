@@ -151,9 +151,10 @@ class Reconciler:
     # Last stable reading of every cell and the frame it was seen in, plus the key of the
     # previous frame's reading, which a reading must repeat to count as stable.
     memory_frames: int = 30
-    # A gap this long between frames means the board went unseen (lost, covered,
-    # minimised) and anything remembered about covered cells may have changed under it.
-    memory_gap_s: float = 1.0
+    # The board unseen for this many ticks (lost, covered, minimised: the pipeline reports
+    # each such tick) means anything remembered about covered cells may have changed.
+    memory_gap_ticks: int = 5
+    _unseen: int = 0
     # Fewer readable cells than this is no evidence of anything: a theme the recogniser
     # was not built for, or a page-wide overlay.
     min_readable_cells: int = 32
@@ -162,7 +163,6 @@ class Reconciler:
     _frame_index: int = 0
     _blocked: bool = False
     _ts: float = 0.0
-    _last_ts: float | None = None
     _last_commit_ts: float | None = None
 
     @property
@@ -431,13 +431,17 @@ class Reconciler:
 
     # Main entry
 
+    def board_unseen(self) -> None:
+        """A tick on which the board could not be read at all; see `memory_gap_ticks`."""
+        self._unseen += 1
+
     def update(self, readings: Readings, ts: float) -> list[Event]:
         self._ts = ts
         events = self.start() if not self._started else []
-        if self._last_ts is not None and ts - self._last_ts > self.memory_gap_s:
+        if self._unseen >= self.memory_gap_ticks:
             self._last_seen = {}
             self._previous = {}
-        self._last_ts = ts
+        self._unseen = 0
         # A hover outline anywhere means a drag is in progress, even on a cell whose content
         # could not be read; it must be seen before unknown cells are dropped.
         self._hover_seen = any(reading.hover for row in readings for reading in row)

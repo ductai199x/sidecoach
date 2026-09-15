@@ -831,16 +831,19 @@ def test_drag_frames_do_not_settle_the_side_to_move_after_a_resync() -> None:
     assert not rec.turn_unknown and rec.board.turn == chess.WHITE
 
 
-def test_memory_of_covered_cells_expires_across_a_gap_in_frames() -> None:
+def test_memory_of_covered_cells_expires_when_the_board_went_unseen() -> None:
     model, rec = _setup()
     board = chess.Board()
     for i in range(3):
         _feed(model, rec, board, Side.WHITE, 0.1 * i)
     assert rec._last_seen  # the start position is remembered
-    _feed(model, rec, board, Side.WHITE, 0.3)
-    assert rec._last_seen  # a normal interval keeps it
+    rec.board_unseen()
     _feed(model, rec, board, Side.WHITE, 5.0)
-    assert not rec._last_seen  # the board went unseen for seconds: forgotten
+    assert rec._last_seen  # a capture stall or one doubtful tick keeps it
+    for _ in range(5):
+        rec.board_unseen()
+    _feed(model, rec, board, Side.WHITE, 5.5)
+    assert not rec._last_seen  # the board was lost or covered for half a second: forgotten
 
 
 def test_contradicted_memory_is_forgotten_at_once() -> None:
