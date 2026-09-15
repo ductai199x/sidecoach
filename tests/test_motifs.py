@@ -162,6 +162,23 @@ def test_pawn_fork_of_two_knights() -> None:
     assert squares_of(fen, "e4e5", "fork") == ["e5", "d6", "f6"]
 
 
+def test_queen_check_fork_wins_a_loose_piece_worth_less() -> None:
+    # Qd1-a4+ checks the king on e8 down the diagonal and hits the loose bishop on b4. The
+    # bishop is worth less than the queen, but the check forces a king move and it falls, so
+    # it is a real fork the plain value test would miss.
+    fen = "4k3/8/8/8/1b6/8/8/3Q3K w - - 0 1"
+    names = tag_names(fen, "d1a4")
+    assert "check" in names and "fork" in names
+    assert squares_of(fen, "d1a4", "fork") == ["a4", "b4", "e8"]
+
+
+def test_a_check_the_enemy_can_answer_while_saving_the_piece_is_no_fork() -> None:
+    # Same idea, but a rook on a8 can capture the checking queen, so the loose bishop is not
+    # won and it is not a fork.
+    fen = "r3k3/8/8/8/1b6/8/8/3Q3K w - - 0 1"
+    assert "fork" not in tag_names(fen, "d1a4")
+
+
 def test_a_pawn_push_hitting_two_defended_pawns_is_not_a_fork() -> None:
     # e4-e5 attacks the d6 and f6 pawns, but both are held by the pawn behind them, so
     # nothing is won and there is nothing to point at.

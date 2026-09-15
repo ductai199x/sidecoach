@@ -321,7 +321,33 @@ def _is_safe(view: chess.Board, square: chess.Square) -> bool:
     return bool(view.attackers(piece.color, square))
 
 
-def _fork(after: chess.Board, move: chess.Move, mover: chess.Color) -> MotifTag | None:
+def _mover_captures(
+    boards: list[chess.Board], played: Sequence[chess.Move], mover: chess.Color, plies: int = 6
+) -> frozenset[chess.Square]:
+    """Squares the mover captures an enemy piece on early in the line the engine expects.
+
+    This lets a fork that wins its piece a move or two later (once a check has been answered)
+    be recognised on the board where the double attack is set up, using the engine's own
+    continuation rather than a guess -- the same line the multi-move motifs already read.
+    """
+    squares: set[chess.Square] = set()
+    for i, mv in enumerate(played[:plies]):
+        board = boards[i]
+        if board.turn != mover:
+            continue
+        victim = board.piece_at(mv.to_square)
+        if victim is not None and victim.color != mover:
+            squares.add(mv.to_square)
+    return frozenset(squares)
+
+
+def _fork(
+    after: chess.Board,
+    move: chess.Move,
+    mover: chess.Color,
+    *,
+    won_in_line: frozenset[chess.Square] = frozenset(),
+) -> MotifTag | None:
     """The moved piece attacks two or more targets it could profitably take.
 
     A target is the enemy king, an enemy piece worth more than the moved piece, or an enemy
@@ -329,29 +355,89 @@ def _fork(after: chess.Board, move: chess.Move, mover: chess.Color) -> MotifTag 
     a fork, which is what keeps pawn pushes out of this. Unless the enemy king is one of the
     targets, the forking piece must also be safe where it stands: a knight forking two rooks
     while a pawn can take it wins nothing.
+
+    A check is the exception to value: when the move gives check, a loose enemy piece the
+    forker also hits counts however cheap it is, because the enemy must answer the check and
+    cannot save the piece too. That single case is verified move by move (`_check_fork_wins`)
+    so a check that the enemy can meet while rescuing the piece is not called a fork. This is
+    the common queen-check-and-grab that plain value comparison misses.
     """
     piece = after.piece_at(move.to_square)
     if piece is None or piece.color != mover:
         return None
     enemy = not mover
     mine = _value(piece.piece_type)
+    gives_check = after.is_check()
     targets: list[chess.Square] = []
     forks_king = False
     for square in after.attacks(move.to_square):
         victim = after.piece_at(square)
         if victim is None or victim.color != enemy:
             continue
-        theirs = _value(victim.piece_type)
         if victim.piece_type == chess.KING:
             forks_king = True
             targets.append(square)
-        elif theirs > mine or (theirs >= mine and not after.attackers(enemy, square)):
+        elif _fork_target(after, move.to_square, square, mine, mover, gives_check, won_in_line):
             targets.append(square)
     if len(targets) < 2:
         return None
     if not forks_king and not _is_safe(after, move.to_square):
         return None
     return _tag("fork", [move.to_square, *targets], move)
+
+
+def _fork_target(
+    after: chess.Board,
+    forker: chess.Square,
+    square: chess.Square,
+    mine: int,
+    mover: chess.Color,
+    gives_check: bool,
+    won_in_line: frozenset[chess.Square],
+) -> bool:
+    """Whether the enemy piece on `square` is one a fork from `forker` would win.
+
+    A cheap loose piece counts when the move gives check and either the piece cannot be
+    saved against any reply (`_check_fork_wins`) or the engine's own line actually captures
+    it -- the latter settles the cases where the enemy has a defence that only fails to
+    deeper calculation, which is the engine's job, not the geometry's.
+    """
+    enemy = not mover
+    theirs = _value(after.piece_type_at(square))
+    if theirs > mine or (theirs >= mine and not after.attackers(enemy, square)):
+        return True
+    return (
+        gives_check
+        and not after.attackers(enemy, square)
+        and (square in won_in_line or _check_fork_wins(after, forker, square, mover))
+    )
+
+
+def _check_fork_wins(
+    after: chess.Board, forker: chess.Square, target: chess.Square, mover: chess.Color
+) -> bool:
+    """After a checking move, is the loose enemy piece on `target` truly won?
+
+    True only when no legal reply to the check rescues it: for every reply the piece is still
+    there, still attacked by the forker, and still undefended. A reply that captures the
+    forker, guards the piece, or moves it to safety means the check-fork does not win it.
+    """
+    replies = list(after.legal_moves)
+    if not replies:  # checkmate: the mate tags cover this, it is not a fork win
+        return False
+    enemy = not mover
+    cost = _value(after.piece_type_at(forker))
+    for reply in replies:
+        nxt = after.copy(stack=False)
+        nxt.push(reply)
+        victim = nxt.piece_at(target)
+        if victim is None or victim.color != enemy:
+            return False  # the piece moved, was traded, or the square changed hands
+        if forker not in nxt.attackers(mover, target):
+            return False  # the forker no longer hits it (captured, pinned, blocked)
+        if not _winnable(nxt, target, cost):
+            return False  # it is defended now
+    return True
 
 
 def _hanging_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
@@ -969,7 +1055,7 @@ def tags_for_move(
     tags = _group_a(before, after, move, mover)
     tags.extend(_new_static_tags(before, after, mover))
     for tag in (
-        _fork(after, move, mover),
+        _fork(after, move, mover, won_in_line=_mover_captures(boards, played, mover)),
         _discovered_attack(before, after, move, mover),
         _interference(before, after, move, mover),
         _attacking_f2f7(before, after, move, mover),
