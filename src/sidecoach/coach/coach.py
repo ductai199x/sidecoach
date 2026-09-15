@@ -775,9 +775,11 @@ class Coach:
             )
         else:
             directive = (
-                "Answer them directly at the level the fact sheet allows. If they claimed "
-                "something the board contradicts, correct it gently and specifically. If they "
-                "asked for what the sheet does not give you, say you will not give that away yet "
-                "and offer the next smaller nudge instead."
+                "Answer them directly and be honest about their own claim. If they proposed a "
+                "move, or named a square or piece, you may say it back and tell them plainly "
+                "whether it holds up -- when the engine does not rate their move, say it is not "
+                "the strongest and, in general terms, why. Only the engine's better move or line "
+                "is withheld: never reveal that unless the sheet lists it, but do point them "
+                "toward the right idea with a question."
             )
         return f'The player says: "{said}".{checks}\n\n{directive}', fallback
