@@ -318,6 +318,36 @@ def lucena(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     ]
 
 
+def philidor(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
+    """The Philidor position: the drawing defence in a rook-and-pawn ending. Your king stands in
+    front of the enemy pawn and your rook waits on your own third rank, keeping the enemy king
+    off the sixth; once the pawn advances there, you check it from behind. Recognised while the
+    third-rank defence still holds -- the pawn not yet on its sixth rank."""
+    them = not us
+    if not _rook_and_pawn_vs_rook(board, them):  # they own the pawn, we defend with K + R
+        return []
+    pawn = next(iter(board.pieces(chess.PAWN, them)))
+    pf, pr = chess.square_file(pawn), chess.square_rank(pawn)
+    king = board.king(us)
+    rook = next(iter(board.pieces(chess.ROOK, us)))
+    if king is None or chess.square_file(king) != pf:
+        return []
+    in_front = chess.square_rank(king) > pr if them == chess.WHITE else chess.square_rank(king) < pr
+    third_rank = 2 if us == chess.WHITE else 5
+    on_third = chess.square_rank(rook) == third_rank
+    not_yet_sixth = pr <= 4 if them == chess.WHITE else pr >= 3
+    if in_front and on_third and not_yet_sixth:
+        return [
+            PositionalFact(
+                "philidor",
+                "hold the Philidor draw: keep your rook on the third rank to stop their "
+                "king reaching the sixth, then check from behind once the pawn advances",
+                (_name(king), _name(rook)),
+            )
+        ]
+    return []
+
+
 # Space (Silman's rules of space): central manoeuvring room. Measured the way an engine counts
 # it -- the safe central squares behind your front, files c-f on your side, that no enemy pawn
 # attacks and your own pawn does not block -- which separates a real space edge from a symmetric
@@ -978,6 +1008,7 @@ def features(
     facts += opposition(board, us)
     facts += key_squares(board, us)
     facts += lucena(board, us)
+    facts += philidor(board, us)
     facts += material_plan(board, us)
     facts += worst_piece(board, us)
     return facts
@@ -1244,6 +1275,7 @@ _FEATURE_RANK: dict[str, int] = {
     "uncastled": 0,
     "undeveloped": 1,
     "lucena": 1,
+    "philidor": 1,
     "runningPawn": 1,
     "outrunPawn": 1,
     "passiveKing": 2,

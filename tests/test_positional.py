@@ -380,3 +380,13 @@ def test_lucena_position_is_recognised_as_a_won_rook_ending() -> None:
     # A queen on the board: not a pure rook-and-pawn ending.
     with_queen = chess.Board("3K4/3P4/5k2/8/8/8/7q/R6r w - - 0 1")
     assert P.lucena(with_queen, chess.WHITE) == []
+
+
+def test_philidor_position_is_recognised_as_the_drawing_defence() -> None:
+    # Black defends: king in front of White's e5-pawn, rook on the 6th rank (Black's third).
+    board = chess.Board("8/4k3/r7/4P3/4K3/8/8/7R b - - 0 1")
+    assert kinds(P.philidor(board, chess.BLACK)) == ["philidor"]
+    assert "third rank" in P.philidor(board, chess.BLACK)[0].text
+    # With the rook off the third rank the drawing defence is not set up.
+    broken = chess.Board("8/4k3/8/4P3/4K3/8/8/r6R b - - 0 1")
+    assert P.philidor(broken, chess.BLACK) == []
