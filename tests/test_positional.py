@@ -336,3 +336,20 @@ def test_square_of_the_pawn_names_the_decisive_race() -> None:
     assert P.square_of_the_pawn(close, chess.WHITE, phase="endgame") == []
     # Only fires in the endgame, where a lone king must chase a pawn.
     assert P.square_of_the_pawn(board, chess.WHITE, phase="middlegame") == []
+
+
+def test_the_opposition_is_named_in_king_and_pawn_endgames() -> None:
+    # Kings facing on the e-file two squares apart, White to move: Black holds the opposition.
+    board = chess.Board("8/8/4k3/8/4K3/8/4P3/8 w - - 0 1")
+    assert kinds(P.opposition(board, chess.BLACK)) == ["opposition"]
+    assert "must give way" in P.opposition(board, chess.BLACK)[0].text
+    assert kinds(P.opposition(board, chess.WHITE)) == ["oppositionAgainst"]
+    # With Black to move, White takes the opposition.
+    board.turn = chess.BLACK
+    assert kinds(P.opposition(board, chess.WHITE)) == ["opposition"]
+    # Kings not on a line with an odd gap between them: no opposition.
+    off = chess.Board("8/8/5k2/8/4K3/8/4P3/8 w - - 0 1")
+    assert P.opposition(off, chess.WHITE) == []
+    # Not a pure king-and-pawn endgame (a rook is on): the opposition is not the battle.
+    with_piece = chess.Board("8/8/4k3/8/4K3/8/4P3/4R3 w - - 0 1")
+    assert P.opposition(with_piece, chess.WHITE) == []

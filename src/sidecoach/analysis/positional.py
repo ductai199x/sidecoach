@@ -175,6 +175,50 @@ def square_of_the_pawn(
     return facts
 
 
+def _only_kings_and_pawns(board: chess.Board) -> bool:
+    return all(p.piece_type in (chess.KING, chess.PAWN) for p in board.piece_map().values())
+
+
+def opposition(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
+    """Who holds the opposition in a king-and-pawn endgame.
+
+    The kings facing off with an odd number of squares between them force the other side to
+    give way -- a true geometric fact, stated neutrally, since the opposition only wins in the
+    right pawn structure (a king far enough in front of its pawn wins without it). Fires only
+    with kings and pawns alone on the board, where the opposition is genuinely the battle.
+    """
+    if not _only_kings_and_pawns(board) or not board.pawns:
+        return []
+    white_king, black_king = board.king(chess.WHITE), board.king(chess.BLACK)
+    if white_king is None or black_king is None:
+        return []
+    files = abs(chess.square_file(white_king) - chess.square_file(black_king))
+    ranks = abs(chess.square_rank(white_king) - chess.square_rank(black_king))
+    aligned = (
+        (files == 0 and ranks in (2, 4, 6))
+        or (ranks == 0 and files in (2, 4, 6))
+        or (files == ranks and files in (2, 4, 6))
+    )
+    if not aligned:
+        return []
+    label = "opposition" if max(files, ranks) == 2 else "distant opposition"
+    squares = (_name(white_king), _name(black_king))
+    holder = not board.turn  # the side to move must give way; the other holds the opposition
+    if holder == us:
+        return [
+            PositionalFact(
+                "opposition", f"you have the {label}: the enemy king must give way first", squares
+            )
+        ]
+    return [
+        PositionalFact(
+            "oppositionAgainst",
+            f"your opponent has the {label}, so your king must give way -- look to seize it back",
+            squares,
+        )
+    ]
+
+
 # Space (Silman's rules of space): central manoeuvring room. Measured the way an engine counts
 # it -- the safe central squares behind your front, files c-f on your side, that no enemy pawn
 # attacks and your own pawn does not block -- which separates a real space edge from a symmetric
@@ -832,6 +876,7 @@ def features(
     facts += bishop_pair(board, us)
     facts += king_activity(board, us, phase=phase)
     facts += square_of_the_pawn(board, us, phase=phase)
+    facts += opposition(board, us)
     facts += material_plan(board, us)
     facts += worst_piece(board, us)
     return facts
@@ -1100,6 +1145,8 @@ _FEATURE_RANK: dict[str, int] = {
     "runningPawn": 1,
     "outrunPawn": 1,
     "passiveKing": 2,
+    "opposition": 2,
+    "oppositionAgainst": 3,
     "iqpTarget": 3,
     "hangingPawnsTarget": 4,
     "targetPawn": 5,
