@@ -79,6 +79,10 @@ class CellReading:
     # An opaque overlay confirmed by the neighbours hides this cell. The reconciler may
     # then carry the cell's last visible reading for a short while.
     covered: bool = False
+    # The hue of a translucent tint over the square, when the cell is still readable:
+    # "yellow" (a last-move or selection highlight), "red" (a premove queue square, a
+    # check, a right-click mark), or "other". None when the square shows its own colour.
+    tint: str | None = None
 
 
 def _reading(
@@ -94,6 +98,7 @@ def _reading(
     offset: float = 0.0,
     guess: str | None = None,
     covered: bool = False,
+    tint: str | None = None,
 ) -> CellReading:
     bg = (float(sil.background[0]), float(sil.background[1]), float(sil.background[2]))
     return CellReading(
@@ -111,6 +116,7 @@ def _reading(
         offset,
         guess,
         covered,
+        tint,
     )
 
 
@@ -446,6 +452,7 @@ class ThemeModel:
     def _classify(self, sil: Silhouette, row: int, col: int, covered: bool) -> CellReading:
         kind_of_tint = self.highlight_kind(sil.background, row, col)
         highlighted = kind_of_tint == "move"
+        tint = {"move": "yellow", "red": "red"}.get(kind_of_tint)
         if covered or kind_of_tint == "foreign":
             # Something is drawn over this square; whatever the silhouette shows is not the
             # board. No evidence either way. An opaque overlay confirmed by the neighbours
@@ -460,10 +467,16 @@ class ThemeModel:
             return _reading(sil, "unknown", hover=hover, covered=covered)
         if sil.fraction <= EMPTY_MAX_FRACTION:
             return _reading(
-                sil, "empty", confidence=1.0, highlighted=highlighted, settled=True, hover=sil.hover
+                sil,
+                "empty",
+                confidence=1.0,
+                highlighted=highlighted,
+                settled=True,
+                hover=sil.hover,
+                tint=tint,
             )
         if sil.fraction < PIECE_MIN_FRACTION or not self.exemplars:
-            return _reading(sil, "unknown", highlighted=highlighted, hover=sil.hover)
+            return _reading(sil, "unknown", highlighted=highlighted, hover=sil.hover, tint=tint)
 
         best_by_symbol: dict[str, tuple[float, float, Exemplar]] = {}
         for exemplar in self.exemplars:
@@ -491,6 +504,7 @@ class ThemeModel:
                 settled=settled,
                 hover=sil.hover,
                 offset=offset,
+                tint=tint,
             )
         nearest = min(self.exemplars, key=lambda e: abs(sil.brightness - e.brightness))
         colour = Side.WHITE if nearest.symbol.isupper() else Side.BLACK
@@ -504,6 +518,7 @@ class ThemeModel:
             hover=sil.hover,
             offset=offset,
             guess=guess,
+            tint=tint,
         )
 
     def covered_cells(self, sils: list[list[Silhouette]]) -> np.ndarray:
