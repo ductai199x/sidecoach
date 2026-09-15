@@ -302,6 +302,16 @@ def test_interference_cuts_a_defender_off_its_charge() -> None:
     assert "hangingPiece" in names
 
 
+def test_interference_a_forced_king_block_cuts_its_own_rook_off_the_mate_square() -> None:
+    # Rd7+ Kf8 Rxc8#: the check drives the black king to f8, where it blocks the rook on h8
+    # off c8 along the back rank, so c8 is no longer defended and Rxc8 is mate. This is the
+    # common shape Lichess calls interference -- the enemy forced to interfere with itself.
+    fen = "2r4r/p3kpp1/1N2p1n1/4P3/7p/q7/P4PPP/2RR2K1 w - - 0 32"
+    names = tag_names(fen, "d1d7", pv=["e7f8", "c1c8"])
+    assert "interference" in names
+    assert squares_of(fen, "d1d7", "interference", pv=["e7f8", "c1c8"]) == ["c8", "f8", "h8"]
+
+
 def test_trapped_piece_has_nowhere_safe_to_go() -> None:
     # The queen on a8 is boxed in by her own rook and pawn; Bc1-b2 defends the rook on a1 so
     # that Qxa1 stops working, and then every square on the a-file is covered.

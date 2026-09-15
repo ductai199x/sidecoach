@@ -537,12 +537,36 @@ def _discovered_attack(
 
 
 def _interference(
+    boards: list[chess.Board], played: Sequence[chess.Move], mover: chess.Color
+) -> MotifTag | None:
+    """Cutting a line of defence, the way Lichess tags it, read over the line and by either side.
+
+    Two shapes. The mover interposes between an enemy slider and a piece it was defending,
+    cutting the guard and winning that piece (`_mover_interference`). Or the mover forces the
+    enemy -- almost always with a check -- to answer with a move that blocks one of the
+    enemy's own sliders off a square it was guarding, a square the mover then captures or
+    mates on (`_self_interference`). The forced self-block is the common case; the mover's own
+    interposition is the textbook one.
+    """
+    exploited = {played[k].to_square for k in range(0, len(played), 2)}
+    for i, move in enumerate(played):
+        before, after = boards[i], boards[i + 1]
+        if i % 2 == 0:
+            tag = _mover_interference(before, after, move, mover)
+        else:
+            tag = _self_interference(before, after, move, not mover, exploited)
+        if tag is not None:
+            return tag
+    return None
+
+
+def _mover_interference(
     before: chess.Board, after: chess.Board, move: chess.Move, mover: chess.Color
 ) -> MotifTag | None:
-    """The moved piece lands on the line between an enemy slider and the man it defended.
+    """The mover lands on the line between an enemy slider and the piece it was defending.
 
-    Crisp because it is geometric plus a before/after test: the defended piece must lose its
-    last defender and come under attack from the mover.
+    Geometric plus a before/after test: the defended piece loses its last defender and comes
+    under attack from the mover.
     """
     enemy = not mover
     for slider in _sliders(before, enemy):
@@ -552,9 +576,7 @@ def _interference(
             if guarded == move.to_square:
                 continue
             piece = before.piece_at(guarded)
-            if piece is None or piece.color != enemy:
-                continue
-            if piece.piece_type == chess.KING:
+            if piece is None or piece.color != enemy or piece.piece_type == chess.KING:
                 continue
             if not chess.BB_SQUARES[move.to_square] & chess.between(slider, guarded):
                 continue
@@ -564,6 +586,50 @@ def _interference(
                 continue
             return _tag("interference", [move.to_square, slider, guarded], move)
     return None
+
+
+def _self_interference(
+    before: chess.Board,
+    after: chess.Board,
+    reply: chess.Move,
+    defender: chess.Color,
+    exploited: set[chess.Square],
+) -> MotifTag | None:
+    """A forced reply that blocks one of the replier's own sliders off a square it was guarding.
+
+    The block lands on `reply.to_square`; a `defender` slider that reached that square cleanly
+    and guarded a square the mover later lands on (`exploited`) no longer guards it afterwards.
+    That is the enemy interfering with its own defence.
+    """
+    block = reply.to_square
+    for slider in _sliders(before, defender):
+        if slider == block or not _slider_reaches(before.piece_type_at(slider), slider, block):
+            continue
+        if any(before.piece_at(sq) for sq in chess.SquareSet(chess.between(slider, block))):
+            continue
+        for target in _beyond(slider, block):
+            if before.piece_at(target) is not None and target not in exploited:
+                break
+            if (
+                target in exploited
+                and slider in before.attackers(defender, target)
+                and slider not in after.attackers(defender, target)
+            ):
+                return _tag("interference", [target, block, slider], reply)
+            if before.piece_at(target) is not None:
+                break
+    return None
+
+
+def _beyond(frm: chess.Square, through: chess.Square) -> Iterable[chess.Square]:
+    """Squares continuing along the frm -> through ray, past `through` to the board edge."""
+    df = _sign(chess.square_file(through) - chess.square_file(frm))
+    dr = _sign(chess.square_rank(through) - chess.square_rank(frm))
+    file_, rank_ = chess.square_file(through) + df, chess.square_rank(through) + dr
+    while 0 <= file_ <= 7 and 0 <= rank_ <= 7:
+        yield chess.square(file_, rank_)
+        file_ += df
+        rank_ += dr
 
 
 def _trapped_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
@@ -1128,7 +1194,7 @@ def tags_for_move(
         _fork(after, move, mover, won_in_line=_mover_captures(boards, played, mover)),
         _discovered_attack(before, after, move, mover),
         _xray(boards, played, mover),
-        _interference(before, after, move, mover),
+        _interference(boards, played, mover),
         _attacking_f2f7(before, after, move, mover),
         _sacrifice(boards, played, mover, mate_in),
         _clearance(boards, played),
