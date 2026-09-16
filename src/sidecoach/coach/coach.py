@@ -225,6 +225,9 @@ class Spoken:
     problems: list[str]
     attempts: int
     calls: list[ModelCall] = field(default_factory=list)
+    # Already a turn of the conversation (a quick answer recorded before the model was
+    # asked to build on it), so polling it must not record it again.
+    recorded: bool = False
 
 
 @dataclass
@@ -693,6 +696,7 @@ class Coach:
                 ),
                 fen=position.board.fen(),
                 now=True,
+                record_now=True,
             )
         if self.claims is None or not may_carry_claims(text):
             self._speak(Trigger.USER_ASK, position, level, ts, user_text=text, quick=canned)
@@ -720,8 +724,13 @@ class Coach:
         out: list[CoachMessage] = []
         for spoken in self.speaker.poll():
             self.spoken.append(spoken)
-            with self._lock:
-                self.conversation.coach_said(spoken.message.text)
+            if not spoken.message.text:
+                # A failed model reply with nothing to fall back on: kept for the log (its
+                # calls say why), said to no one.
+                continue
+            if not spoken.recorded:
+                with self._lock:
+                    self.conversation.coach_said(spoken.message.text)
             out.append(spoken.message)
         return out
 
@@ -889,6 +898,10 @@ class Coach:
         instruction, fallback = self._instruction(
             trigger, position, level, user_text, verdicts, assessment, played, quick=quick
         )
+        if quick:
+            # The template is already out as the quick answer; a model reply that fails the
+            # checks adds nothing, rather than the same line a second time.
+            fallback = ""
         directive = f"{self._level_line(level, position)}{instruction}"
         with self._lock:
             self.conversation.level = level
@@ -946,9 +959,11 @@ class Coach:
         annotations: list[Annotation] | None = None,
         fen: str | None = None,
         now: bool = False,
+        record_now: bool = False,
     ) -> None:
         """A message that needs no model; it queues behind whatever the model is writing,
-        unless `now`, when it goes out at once."""
+        unless `now`, when it goes out at once. With `record_now` it is a turn of the
+        conversation from this moment, so a request built next already shows it."""
         message = CoachMessage(
             text=text,
             level=level,
@@ -958,8 +973,12 @@ class Coach:
             fen=fen,
             annotations=list(annotations or []),
         )
+        if record_now:
+            with self._lock:
+                self.conversation.coach_said(text)
         self.speaker.submit_ready(
-            Spoken(message=message, level=level, problems=[], attempts=0), now=now
+            Spoken(message=message, level=level, problems=[], attempts=0, recorded=record_now),
+            now=now,
         )
 
     def _instruction(
@@ -1027,11 +1046,12 @@ class Coach:
                     f"two sentences. No lecture."
                 )
             return instruction, fallback
-        # An explicit ask.
+        # An explicit ask. The player's words are already the last message of the
+        # conversation; the directive says only how to answer them.
         said = user_text or "hint"
         checks = ""
         if verdicts:
-            checks = "\n\nTheir claims, checked against the board:\n- " + "\n- ".join(verdicts)
+            checks = "Their claims, checked against the board:\n- " + "\n- ".join(verdicts) + "\n\n"
         if level >= DisclosureLevel.LINE:
             fallback = (
                 f"The line is {' '.join(facts.line)}."
@@ -1050,9 +1070,19 @@ class Coach:
             fallback = f"Look at {region}."
         elif level >= DisclosureLevel.THEME:
             fallback = f"Think about {theme}."
+        elif facts.nature and facts.nature.startswith("forcing"):
+            # The one fact the QUESTION level allows: whether the answer is forcing. The
+            # generic "opponent's idea" question pointed the wrong way in a position where
+            # the player had a capture to find.
+            fallback = (
+                "Something forcing is on: is there a check or a capture worth calculating first?"
+            )
         else:
             fallback = "What is your opponent's most dangerous idea here?"
-        shown = f' They have just been shown "{fallback}"; build on it, do not repeat it.'
+        shown = (
+            " Your last turn above is the quick answer they have already been shown; build on "
+            "it, do not repeat it."
+        )
         if _ASK_REVIEW.search(said):
             # An overall verdict comes from the tally in "Game so far", never from an
             # impression of the last position: the first review told a player a queen up
@@ -1108,4 +1138,4 @@ class Coach:
                 "is withheld: never reveal that unless the sheet lists it, but do point them "
                 "toward the right idea with a question."
             )
-        return f'The player says: "{said}".{checks}\n\n{directive}', fallback
+        return f"{checks}{directive}", fallback

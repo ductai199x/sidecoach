@@ -903,30 +903,43 @@ class PanelEngine:
             ]
             if spoken.attempts:
                 meta.append(f"{spoken.attempts} attempt{'s' if spoken.attempts != 1 else ''}")
-            if spoken.problems:
-                meta.append("draft rejected → template")
-            action = self._speak(message.trigger.value, message.text, message.ply)
-            if action == "stale":
-                meta.append("not spoken: board moved on")
-            elif action == "skip":
-                meta.append("not spoken: voice busy")
-            elif action == "supersede":
-                meta.append("cut in")
-            self._emit(
-                "coach",
-                "warn" if spoken.problems else "info",
-                " · ".join(meta) + " — " + elide(message.text, 80),
-                full=message.text,
-                trigger=message.trigger.value,
-                disclosure=int(spoken.level),
-                ply=message.ply,
-                attempts=spoken.attempts,
-                problems=spoken.problems,
-                fallback=bool(spoken.problems),
-                voice=action,
-                fen=message.fen,
-                annotations=[mark.model_dump() for mark in message.annotations],
-            )
+            if not message.text:
+                # The model's reply failed the checks and the quick answer already stands.
+                self._emit(
+                    "coach",
+                    "warn",
+                    " · ".join(meta) + " — model reply rejected; the quick answer stands",
+                    trigger=message.trigger.value,
+                    disclosure=int(spoken.level),
+                    ply=message.ply,
+                    attempts=spoken.attempts,
+                    problems=spoken.problems,
+                )
+            else:
+                if spoken.problems:
+                    meta.append("draft rejected → template")
+                action = self._speak(message.trigger.value, message.text, message.ply)
+                if action == "stale":
+                    meta.append("not spoken: board moved on")
+                elif action == "skip":
+                    meta.append("not spoken: voice busy")
+                elif action == "supersede":
+                    meta.append("cut in")
+                self._emit(
+                    "coach",
+                    "warn" if spoken.problems else "info",
+                    " · ".join(meta) + " — " + elide(message.text, 80),
+                    full=message.text,
+                    trigger=message.trigger.value,
+                    disclosure=int(spoken.level),
+                    ply=message.ply,
+                    attempts=spoken.attempts,
+                    problems=spoken.problems,
+                    fallback=bool(spoken.problems),
+                    voice=action,
+                    fen=message.fen,
+                    annotations=[mark.model_dump() for mark in message.annotations],
+                )
             for index, call in enumerate(spoken.calls, start=1):
                 # What the model actually wrote, so a stump or a leak can be traced to its
                 # source; a reply the token budget cut short is worth a warning.

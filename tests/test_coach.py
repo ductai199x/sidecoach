@@ -205,9 +205,15 @@ def test_a_hint_unlocks_the_theme_and_asking_for_the_move_unlocks_it() -> None:
     current = _current_move_message(_given(provider, 2))
     assert "Engine lines for the position now" in current and "Qxf7#" in current
     # Every earlier coach turn is in the conversation as an assistant message: two hints,
-    # each answered at once with the template and then by the model.
-    roles = [m["role"] for m in _given(provider, 2)]
-    assert roles.count("assistant") == 4
+    # each answered at once with the template and then by the model -- and this ask's own
+    # quick answer is already a turn when the model is asked to build on it.
+    given = _given(provider, 2)
+    roles = [m["role"] for m in given]
+    assert roles.count("assistant") == 5
+    assert roles[-3:] == ["user", "assistant", "user"]
+    assert given[-3]["content"] == 'The player says: "ok just tell me the move"'
+    assert given[-2]["content"].startswith("The move is Qxf7")
+    assert "have just been shown that it is Qxf7" in given[-1]["content"]
 
 
 def test_naming_the_move_yourself_earns_the_candidate_level() -> None:
@@ -755,3 +761,27 @@ def test_material_is_always_from_the_users_side_and_the_review_draws_on_the_tall
     assert "Your moves so far (3 judged): 1 best, 1 book, 1 inaccuracy." in last_own
     assert "Ground lost at: 2. Qh5 (inaccuracy)" in last_own
     assert any(m["content"].startswith("Game over: 1-0") for m in messages)
+
+
+def test_a_quick_answer_is_a_turn_before_the_model_and_a_failed_reply_adds_nothing() -> None:
+    # The model's two candidates both name the mating move at the QUESTION level: rejected
+    # twice. With the quick answer already out, nothing is said in its place -- the same
+    # line a second time was what the first rendered example showed.
+    coach, provider = _coach(["[p=0.5] Play Qxf7#.\n[p=0.5] Qxf7 mates.", "[p=1.0] Qxf7#!"])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    coach.ask("hint", 8.0)
+    out = _messages(coach)
+    quick = "Something forcing is on: is there a check or a capture worth calculating first?"
+    assert [m.text for m in out] == [quick]
+    # The request carried the quick answer as the coach's own turn, then the directive.
+    given = _given(provider, 0)
+    assert given[-3]["content"] == 'The player says: "hint"'
+    assert given[-2]["role"] == "assistant" and given[-2]["content"].startswith("Something forcing")
+    assert given[-1]["role"] == "user" and "build on it, do not repeat it" in given[-1]["content"]
+    assert "The player says" not in given[-1]["content"]
+    # The rejected reply is in the log, with its calls, and nowhere else.
+    rejected = [s for s in coach.spoken if not s.message.text]
+    assert len(rejected) == 1 and rejected[0].attempts == 2 and rejected[0].problems
+    turns = [e for e in coach.conversation.entries if e.role == "assistant"]
+    assert [e.text for e in turns] == [quick]
