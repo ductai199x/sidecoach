@@ -97,8 +97,9 @@ def _probe_cuda(ort: Any) -> bool:
 def providers_for(device: str) -> tuple[list[str], Device]:
     """The onnxruntime provider list for a requested device, and where that lands.
 
-    `auto` prefers CUDA when it initialises; `cuda` is the same but says so when it does
-    not; `cpu` is CPU only.
+    `cuda` (and its synonym `auto`) takes the GPU when the CUDA provider initialises and
+    falls back to the CPU otherwise, saying so; `cpu` is CPU only. Nothing here fails for
+    want of a GPU.
     """
     if device not in DEVICES:
         raise ValueError(f"device must be one of {DEVICES}, got {device!r}")
@@ -106,11 +107,7 @@ def providers_for(device: str) -> tuple[list[str], Device]:
         return [_CPU], Device("cpu", "cpu (as configured)")
     if cuda_available():
         return [_CUDA, _CPU], Device("cuda", "cuda")
-    if device == "cuda":
-        why = "cuda requested but the CUDA provider did not initialise"
-    else:
-        why = "no usable CUDA provider"
-    return [_CPU], Device("cpu", f"cpu ({why})")
+    return [_CPU], Device("cpu", "cpu (CUDA not available, fell back)")
 
 
 def session(path: Path | str, device: str, **options: Any) -> tuple[Any, Device]:

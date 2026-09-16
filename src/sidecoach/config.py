@@ -85,11 +85,12 @@ class VoiceSettings(BaseModel):
     lang: str = "en-us"
     # Where the Kokoro model files live; defaults to <data_dir>/models/kokoro when unset.
     model_dir: str | None = None
-    # Where each voice model runs: "auto" (the GPU when onnxruntime's CUDA provider
-    # initialises, else the CPU), "cpu", or "cuda". A model is loaded once, on the device
+    # Where each voice model runs: "cuda" (the default: the GPU when onnxruntime's CUDA
+    # provider initialises, otherwise the CPU, with a warning in the log) or "cpu" (never the
+    # GPU). "auto" is accepted as a synonym for "cuda". A model is loaded once, on the device
     # chosen at start, and kept for the session; changing the device means restarting.
-    tts_device: str = "auto"
-    stt_device: str = "auto"
+    tts_device: str = "cuda"
+    stt_device: str = "cuda"
     # Hearing: "parakeet" (NVIDIA Parakeet-TDT-0.6B via onnx-asr, the default; ~100 ms on the
     # CPU), "whisper" (faster-whisper, best raw accuracy, wants the GPU), or "null".
     stt_provider: str = "parakeet"

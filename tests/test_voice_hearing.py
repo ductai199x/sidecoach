@@ -38,15 +38,18 @@ def test_cpu_is_cpu_and_bad_devices_are_refused() -> None:
         runtime.providers_for("tpu")
 
 
-def test_auto_and_cuda_land_somewhere_stated() -> None:
+def test_cuda_is_the_default_and_falls_back_to_cpu_with_a_reason() -> None:
+    from sidecoach.config import VoiceSettings
+
+    assert VoiceSettings().tts_device == "cuda" and VoiceSettings().stt_device == "cuda"
     for wanted in ("auto", "cuda"):
         providers, where = runtime.providers_for(wanted)
-        assert providers[-1] == "CPUExecutionProvider"
+        assert providers[-1] == "CPUExecutionProvider"  # the CPU is always the last resort
         assert where.name in ("cpu", "cuda")
         if where.name == "cuda":
             assert providers[0] == "CUDAExecutionProvider"
         else:
-            assert "cuda" in where.detail.lower() or "no usable" in where.detail
+            assert "fell back" in where.detail
 
 
 # ---- Kokoro loads its graph once, whatever the voice does ------------------------------------

@@ -272,9 +272,11 @@ class PanelEngine:
             seconds = getattr(provider, "load_seconds", None)
             detail = provider.healthcheck()[1]
             if ok and device is not None:
+                wanted = getattr(provider, "device_wanted", "cuda")
+                fell_back = wanted != "cpu" and device.name == "cpu"
                 self._emit(
                     "sys",
-                    "info",
+                    "warn" if fell_back else "info",
                     f"{label}: {detail}; loaded once in {seconds or 0:.1f}s",
                     device=device.name,
                 )

@@ -1631,10 +1631,12 @@ def panel(
         float, typer.Option(help="Replay pace: 1.0 = as played, 2.0 = twice as fast, 0 = unpaced")
     ] = 1.0,
     tts_device: Annotated[
-        str | None, typer.Option(help="Where the voice runs: auto, cpu, or cuda")
+        str | None,
+        typer.Option(help="Where the voice runs: cuda (default, falls back to cpu) or cpu"),
     ] = None,
     stt_device: Annotated[
-        str | None, typer.Option(help="Where the ear runs: auto, cpu, or cuda")
+        str | None,
+        typer.Option(help="Where the ear runs: cuda (default, falls back to cpu) or cpu"),
     ] = None,
     listen: Annotated[
         str | None, typer.Option(help="How the coach listens: off, ptt (hold to talk), or vad")
