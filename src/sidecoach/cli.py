@@ -730,6 +730,13 @@ class _Assessing:
 
     def __init__(self, settings: Settings, enabled: bool, *, depth: int | None = None) -> None:
         self.analyser = _make_analyser(settings, depth=depth) if enabled else None
+        # A few words on the engine's state, for the panel's log: on (with its depth), or why not.
+        if not enabled:
+            self.detail = "off"
+        elif self.analyser is None:
+            self.detail = "no Stockfish found (see `sidecoach doctor`)"
+        else:
+            self.detail = f"Stockfish, depth {depth or settings.engine.depth}"
         if enabled and self.analyser is None:
             console.print("[yellow]no Stockfish: moves will not be assessed[/yellow]")
         # Where each move was played from, so a better move can be named in the notation a
@@ -814,6 +821,8 @@ class _Coaching:
         # An optional sink for coach messages: when set (the panel), each message goes to it
         # instead of the terminal console. Left None, messages print as before.
         self.sink: Callable[[object], None] | None = None
+        # A few words on the coach's state, for the panel's log: on (with its model), or why not.
+        self.detail = "off"
         if not enabled:
             return
         from sidecoach.coach.coach import Coach
@@ -823,10 +832,12 @@ class _Coaching:
         try:
             provider = make_provider(settings.llm)
         except Exception as exc:  # noqa: BLE001
+            self.detail = f"no LLM provider: {exc}"
             console.print(f"[yellow]no coach: {exc}[/yellow]")
             return
         ok, detail = provider.healthcheck()
         if not ok:
+            self.detail = f"LLM not reachable: {detail}"
             console.print(f"[yellow]no coach: {detail}[/yellow]")
             return
         policy = InterjectionPolicy(
@@ -839,6 +850,7 @@ class _Coaching:
             claims=_claims_check(provider),
         )
         self.coach.start()
+        self.detail = f"{provider.name} ({detail})"
         console.print(f"[green]coach on[/green]: {provider.name}")
 
     @property
@@ -1612,6 +1624,12 @@ def panel(
         typer.Option(help="Feed the panel from a recording instead of the live screen (dev)"),
     ] = None,
     browser: Annotated[bool, typer.Option(help="Open the panel in the browser")] = True,
+    record: Annotated[
+        bool, typer.Option(help="Record a live session (frames, events and the debug log)")
+    ] = True,
+    speed: Annotated[
+        float, typer.Option(help="Replay pace: 1.0 = as played, 2.0 = twice as fast, 0 = unpaced")
+    ] = 1.0,
     config: ConfigOpt = None,
 ) -> None:
     """Open the panel: the live coach in the browser -- a board, coach messages, a voice, an
@@ -1620,7 +1638,8 @@ def panel(
     Needs the panel extras: uv sync --group panel (and --group voice to hear the coach). It
     serves a local FastAPI backend and opens the browser at it -- the same live engine as
     `watch`. Start it, then begin a game on the board, or use --replay <recording> to drive
-    the panel from a saved game while developing, no live screen needed.
+    the panel from a saved game while developing, no live screen needed. A live session is
+    recorded under data/recordings/ with its events and debug log, like `watch`.
     """
     try:
         from sidecoach.ui.server import run_server
@@ -1629,7 +1648,16 @@ def panel(
         raise typer.Exit(1) from exc
     settings = load_settings(config)
     console.print(f"panel serving at http://127.0.0.1:{port}/  (Ctrl-C to stop)")
-    run_server(settings, monitor=monitor, fps=fps, port=port, replay=replay, open_browser=browser)
+    run_server(
+        settings,
+        monitor=monitor,
+        fps=fps,
+        port=port,
+        replay=replay,
+        record=record,
+        speed=speed,
+        open_browser=browser,
+    )
 
 
 if __name__ == "__main__":

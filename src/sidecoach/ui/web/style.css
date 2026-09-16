@@ -157,25 +157,71 @@ main {
 
 .coach { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 0; padding-right: 2px; }
 .msg { background: var(--panel2); border-left: 3px solid var(--coach); border-radius: 5px; padding: 8px 10px; }
+.msg .meta { font-size: 10.5px; color: var(--muted); margin-bottom: 4px; letter-spacing: .3px; }
 .ask { display: flex; gap: 8px; }
 .ask input { flex: 1; }
 .quick { display: flex; gap: 8px; }
 
 /* ---- terminal ---- */
 footer { border-top: 1px solid var(--line); background: var(--panel); }
-.term-head { display: flex; align-items: center; gap: 12px; padding: 6px 14px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--line); }
-.term-head span:first-child { text-transform: uppercase; letter-spacing: .6px; font-weight: 700; }
+
+/* The status strip: health that changes continuously, kept current rather than logged. */
+.health {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px;
+  padding: 5px 14px; border-bottom: 1px solid var(--line);
+  font: 11.5px/1.4 "Cascadia Code", "Consolas", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.health .hk { color: var(--muted); text-transform: uppercase; letter-spacing: .4px; font-size: 10px; }
+.health .hv { color: var(--ink); margin-right: 10px; }
+.health .hv.bad { color: var(--error); }
+.health .hv.warn { color: var(--warn); }
+
+.term-head { display: flex; align-items: center; gap: 10px; padding: 5px 14px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--line); }
+.term-title { text-transform: uppercase; letter-spacing: .6px; font-weight: 700; }
+.chips { display: flex; gap: 4px; }
+.chip { padding: 1px 8px; font-size: 11px; font-weight: 600; border-radius: 10px; background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.chip.on { color: var(--ink); background: var(--panel2); border-color: var(--panel3); }
+.chip.on[data-chan="game"]   { border-color: var(--accent); }
+.chip.on[data-chan="coach"]  { border-color: #b5d68f; }
+.chip.on[data-chan="engine"] { border-color: var(--info-blue); }
+.chip.on[data-chan="vision"] { border-color: #c9a86a; }
+.chip.on[data-chan="voice"]  { border-color: #b08bd9; }
+.chip.on[data-chan="user"]   { border-color: #e6e5e3; }
+.search { width: 160px; padding: 2px 8px; font-size: 11px; }
+
 .terminal {
-  height: 190px; overflow: auto; padding: 8px 14px; margin: 0;
+  height: 190px; overflow: auto; padding: 6px 14px; margin: 0;
   font: 12px/1.5 "Cascadia Code", "Consolas", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
   background: #1f1e1b;
 }
-.terminal .row { white-space: pre-wrap; word-break: break-word; }
-.lvl-info .m { color: var(--ink); }
-.lvl-move .m { color: var(--accent); font-weight: 600; }
-.lvl-coach .m { color: #b5d68f; }
-.lvl-engine .m { color: var(--muted); }
-.lvl-warn .m { color: var(--warn); }
-.lvl-error .m { color: var(--error); }
+.terminal .row { display: grid; grid-template-columns: 5.5em 4.6em 1fr; column-gap: 8px; align-items: baseline; }
+.terminal .row[hidden] { display: none; }
+.terminal .row.has-data { cursor: pointer; }
+.terminal .row .t { color: #6f6d69; }
+.terminal .row .c { font-weight: 700; font-size: 10.5px; letter-spacing: .4px; text-transform: uppercase; }
+.terminal .row .m { white-space: pre-wrap; word-break: break-word; color: var(--ink); }
+.terminal .row .m .n { color: var(--muted); margin-left: 6px; font-size: 11px; }
+.terminal .row .m .caret { color: var(--muted); margin-right: 4px; }
+.terminal .row .d { grid-column: 3; margin: 2px 0 6px; padding: 6px 8px; background: #16151300; border-left: 2px solid var(--panel3); color: var(--muted); white-space: pre-wrap; font-size: 11px; }
+.terminal .row .d[hidden] { display: none; }
+
+/* colour by channel; level overrides for warn / error; debug is dim */
+.chan-sys .c    { color: var(--muted); }
+.chan-vision .c { color: #c9a86a; }
+.chan-game .c   { color: var(--accent); }
+.chan-engine .c { color: var(--info-blue); }
+.chan-coach .c  { color: #b5d68f; }
+.chan-voice .c  { color: #b08bd9; }
+.chan-user .c   { color: var(--ink); }
+.chan-game .m   { color: var(--accent); font-weight: 600; }
+.chan-coach .m  { color: #d3e6bd; }
+.chan-engine .m { color: #c6cfd8; }
+.lvl-debug .m, .lvl-debug .c { color: #7f7d79; font-weight: 400; }
+.lvl-warn .m  { color: var(--warn); }
+.lvl-error .m { color: var(--error); font-weight: 600; }
+.sev-mistake .m, .sev-blunder .m { color: #ffa459; }
+.sev-inaccuracy .m { color: var(--warn); }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

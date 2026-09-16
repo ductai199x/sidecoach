@@ -33,6 +33,11 @@ class TTSProvider(Protocol):
         """Cut off anything now playing or queued -- for a barge-in or a new position."""
         ...
 
+    @property
+    def busy(self) -> bool:
+        """Whether a line is playing or waiting to play."""
+        ...
+
 
 class NullTTS:
     """The silent provider: healthcheck says why, `say` does nothing. Used when voice is off
@@ -51,6 +56,10 @@ class NullTTS:
 
     def stop(self) -> None:
         return None
+
+    @property
+    def busy(self) -> bool:
+        return False
 
 
 __all__ = ["NullTTS", "TTSProvider", "speak_notation"]

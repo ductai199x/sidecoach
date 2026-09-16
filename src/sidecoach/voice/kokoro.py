@@ -54,6 +54,7 @@ class KokoroTTS:
         # does not play over what comes next.
         self._generation = 0
         self._lock = threading.Lock()
+        self._playing = False
 
     @property
     def onnx_path(self) -> Path:
@@ -88,6 +89,11 @@ class KokoroTTS:
         self._ensure_worker()
         self._queue.put(spoken)
 
+    @property
+    def busy(self) -> bool:
+        """Whether a line is playing or waiting to play."""
+        return self._playing or not self._queue.empty()
+
     def stop(self) -> None:
         """Drop everything queued and silence anything now playing."""
         with self._lock:
@@ -112,6 +118,8 @@ class KokoroTTS:
         """Load the model and the audio module once. Returns whether the voice is usable."""
         if self._kokoro is not None:
             return True
+        if self._failed:
+            return False
         try:
             # Lazy, heavy, and optional (the `voice` extra); pyright need not resolve them.
             import sounddevice  # type: ignore[reportMissingImports]
@@ -130,23 +138,32 @@ class KokoroTTS:
             text = self._queue.get()
             if text is None:
                 return
-            if not self._load():
-                return  # degraded to silence; drain nothing further
-            with self._lock:
-                generation = self._generation
+            # Busy from the moment a line is taken up, through synthesis, until it has
+            # finished playing -- so a caller asking `busy` mid-synthesis gets the truth.
+            self._playing = True
             try:
-                samples, sample_rate = self._kokoro.create(  # type: ignore[attr-defined]
-                    text, voice=self.voice, speed=self.speed, lang=self.lang
-                )
-            except Exception as exc:  # noqa: BLE001 - a bad line must not kill the voice
-                log.warning("Kokoro synthesis failed for %r: %s", text, exc)
-                continue
-            # A stop between synthesis and playback means this line was cancelled.
-            with self._lock:
-                if generation != self._generation:
-                    continue
-            try:
-                self._sd.play(samples, sample_rate)  # type: ignore[attr-defined]
-                self._sd.wait()  # type: ignore[attr-defined]
-            except Exception as exc:  # noqa: BLE001 - audio errors are not fatal
-                log.warning("Kokoro playback failed: %s", exc)
+                self._speak_one(text)
+            finally:
+                self._playing = False
+
+    def _speak_one(self, text: str) -> None:
+        if not self._load():
+            return  # degraded to silence
+        with self._lock:
+            generation = self._generation
+        try:
+            samples, sample_rate = self._kokoro.create(  # type: ignore[attr-defined]
+                text, voice=self.voice, speed=self.speed, lang=self.lang
+            )
+        except Exception as exc:  # noqa: BLE001 - a bad line must not kill the voice
+            log.warning("Kokoro synthesis failed for %r: %s", text, exc)
+            return
+        # A stop between synthesis and playback means this line was cancelled.
+        with self._lock:
+            if generation != self._generation:
+                return
+        try:
+            self._sd.play(samples, sample_rate)  # type: ignore[attr-defined]
+            self._sd.wait()  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001 - audio errors are not fatal
+            log.warning("Kokoro playback failed: %s", exc)

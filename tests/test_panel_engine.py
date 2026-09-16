@@ -40,12 +40,25 @@ def test_engine_follows_a_recorded_game_and_reports_it(tmp_path: Path) -> None:
 
     snap = engine.poll(0)
     state, lines = snap["state"], snap["lines"]
-    levels = {ln["level"] for ln in lines}
     texts = [ln["text"] for ln in lines]
+    chans = {ln["chan"] for ln in lines}
 
+    assert {"sys", "vision", "game"} <= chans, f"channels seen: {chans}"
     assert any("board locked" in t for t in texts), "never reported locking the board"
     assert any("start position seen" in t for t in texts), "never bootstrapped the start position"
-    assert "move" in levels, "no moves were surfaced to the terminal"
+    moves = [
+        ln
+        for ln in lines
+        if ln["chan"] == "game" and "(you" in ln["text"] or "(opponent" in ln["text"]
+    ]
+    assert moves, "no moves were surfaced to the terminal"
+    assert all("ply" in ln["data"] and "uci" in ln["data"] for ln in moves), (
+        "move records carry no data"
+    )
+    assert state["health"].get("stage"), "no health strip in the state"
+    assert state["session_dir"] and (Path(state["session_dir"]) / "debug.jsonl").exists(), (
+        "no debug.jsonl written for the session"
+    )
     assert state["fen"], "no position in the state"
     assert state["ply"] >= 8, f"expected several plies, got {state['ply']}"
     assert state["following"] or state["moves"], "engine never followed a game"
@@ -66,10 +79,14 @@ def test_api_poll_is_incremental_and_serialisable(tmp_path: Path) -> None:
 
     json.dumps(first)
 
-    # An emitted line shows up once, and polling past its cursor does not repeat it.
-    engine._emit("info", "hello")
+    # An emitted record shows up once, structured, and polling past its cursor does not
+    # repeat it.
+    engine._emit("sys", "info", "hello", detail=42)
     got = api.poll(first["cursor"])
-    assert [ln["text"] for ln in got["lines"]] == ["hello"]
+    assert len(got["lines"]) == 1
+    record = got["lines"][0]
+    assert record["chan"] == "sys" and record["level"] == "info" and record["text"] == "hello"
+    assert record["data"] == {"detail": 42} and record["t"] >= 0
     assert api.poll(got["cursor"])["lines"] == []
 
 

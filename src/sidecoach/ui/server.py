@@ -103,18 +103,36 @@ def make_engine(
     monitor: int | None = None,
     fps: int = 10,
     replay: Path | None = None,
+    record: bool = True,
+    speed: float = 1.0,
 ) -> PanelEngine:
-    """A live engine, or one fed from a recording when `replay` is given (deterministic dev)."""
+    """A live engine, or one fed from a recording when `replay` is given (deterministic dev).
+
+    A replay is paced to its own timestamps at `speed` times real time (1.0 = as it was
+    played, so the coach and the voice have the time they had; 0 = as fast as the pipeline
+    goes, for tests).
+    """
     frame_source = None
     if replay is not None:
+        import time
+
         from sidecoach.replay.recording import Recording
 
         def frames() -> Any:
+            first_ts: float | None = None
+            wall0 = time.monotonic()
             for i, (tick, frame) in enumerate(Recording(replay).frames()):
+                if first_ts is None:
+                    first_ts = tick.ts
+                if speed > 0:
+                    due = wall0 + (tick.ts - first_ts) / speed
+                    delay = due - time.monotonic()
+                    if delay > 0:
+                        time.sleep(min(delay, 1.0))
                 yield (i, tick.ts, frame)
 
         frame_source = frames()
-    return PanelEngine(settings, monitor=monitor, fps=fps, frame_source=frame_source)
+    return PanelEngine(settings, monitor=monitor, fps=fps, record=record, frame_source=frame_source)
 
 
 def run_server(
@@ -125,12 +143,16 @@ def run_server(
     host: str = "127.0.0.1",
     port: int = 8765,
     replay: Path | None = None,
+    record: bool = True,
+    speed: float = 1.0,
     open_browser: bool = True,
 ) -> None:
     """Serve the panel and open it in the browser. Blocks until the server is stopped."""
     import uvicorn
 
-    engine = make_engine(settings, monitor=monitor, fps=fps, replay=replay)
+    engine = make_engine(
+        settings, monitor=monitor, fps=fps, replay=replay, record=record, speed=speed
+    )
     app = build_app(engine)
     if replay is not None:
         engine.start()  # a recording plays on its own; live capture waits for the Start button

@@ -63,5 +63,8 @@ def test_poll_reports_a_replayed_game(tmp_path: Path) -> None:
     data = client.get("/api/poll").json()
     assert data["state"]["fen"], "no position reported over HTTP"
     assert data["state"]["ply"] >= 8
-    assert any(ln["level"] == "move" for ln in data["lines"]), "no moves surfaced over HTTP"
+    assert any(
+        ln["chan"] == "game" and ("(you" in ln["text"] or "(opponent" in ln["text"])
+        for ln in data["lines"]
+    ), "no moves surfaced over HTTP"
     assert any("start position seen" in ln["text"] for ln in data["lines"])

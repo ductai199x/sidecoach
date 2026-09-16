@@ -64,6 +64,9 @@ class InterjectionPolicy:
     _spoken_at: set[int] = field(default_factory=set, init=False)
     _user_to_move: bool = field(default=False, init=False)
     _remaining_ms: int | None = field(default=None, init=False)
+    # Why the last unprompted trigger did not fire, in a few words, for the debug log --
+    # the answer to "why is the coach quiet?". None once a trigger fires.
+    last_reason: str | None = field(default=None, init=False)
 
     # What the board is doing
 
@@ -89,28 +92,42 @@ class InterjectionPolicy:
 
     def on_user_move_assessed(self, assessment: MoveAssessment) -> Trigger | None:
         """After the user's move is measured: a lesson if it was a mistake, else a word."""
-        if self.settings.quiet or self.time_control is TimeControl.BULLET:
-            return None
+        if self.settings.quiet:
+            return self._silent("quiet mode")
+        if self.time_control is TimeControl.BULLET:
+            return self._silent("bullet: no unprompted coaching")
         serious = assessment.severity in (Severity.MISTAKE, Severity.BLUNDER) or (
             assessment.label is not None and assessment.label.value == "miss"
         )
+        self.last_reason = None
         if serious and self.time_control is not TimeControl.BLITZ:
             return Trigger.POST_MISTAKE
         return Trigger.POST_MOVE
 
     def on_position_analysed(self, ply: int, *, decisive: bool) -> Trigger | None:
         """The engine has looked at the position the user is thinking in."""
-        if not self._may_speak_now(ply) or not decisive:
+        if not self._may_speak_now(ply):
             return None
+        if not decisive:
+            return self._silent("position not decisive")
+        self.last_reason = None
         return Trigger.DECISIVE_QUESTION
 
     def tick(self, ts: float) -> Trigger | None:
         """Time passing while the user thinks; a hint once they have been stuck long enough."""
-        if self._ply is None or self._since is None or not self._may_speak_now(self._ply):
+        if self._ply is None or self._since is None:
+            return self._silent("no position yet")
+        if not self._may_speak_now(self._ply):
             return None
-        if ts - self._since < self.stuck_threshold():
-            return None
+        threshold = self.stuck_threshold()
+        if ts - self._since < threshold:
+            return self._silent(f"waiting for a stuck hint at {threshold:.0f}s")
+        self.last_reason = None
         return Trigger.STUCK
+
+    def _silent(self, reason: str) -> None:
+        self.last_reason = reason
+        return None
 
     def said(self, ply: int) -> None:
         """One unprompted message went out for the position at `ply`; no more while it lasts."""
@@ -125,11 +142,21 @@ class InterjectionPolicy:
         return threshold
 
     def _may_speak_now(self, ply: int) -> bool:
-        if self.settings.quiet or not self._user_to_move or ply != self._ply:
+        reason = None
+        if self.settings.quiet:
+            reason = "quiet mode"
+        elif not self._user_to_move:
+            reason = "opponent to move"
+        elif ply != self._ply:
+            reason = "position moved on"
+        elif self.time_control in (TimeControl.BLITZ, TimeControl.BULLET):
+            reason = f"{self.time_control.value}: no unprompted hints"
+        elif ply in self._spoken_at:
+            reason = "already spoke in this position"
+        if reason is not None:
+            self.last_reason = reason
             return False
-        if self.time_control in (TimeControl.BLITZ, TimeControl.BULLET):
-            return False
-        return ply not in self._spoken_at
+        return True
 
 
 # Lower is more important; when two triggers want the same moment, the coach speaks to the

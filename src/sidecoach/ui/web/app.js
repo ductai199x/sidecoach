@@ -114,22 +114,103 @@ function renderMoves(sans) {
   const wrap = list.parentElement; wrap.scrollTop = wrap.scrollHeight;
 }
 
+// --- the debug terminal -------------------------------------------------------
+//
+// A record is {seq, t, chan, level, text, data}. The line shows `mm:ss.s  CHAN  text`; a
+// click expands `data`. Identical consecutive lines collapse into one with a ×N badge.
+// Filters (channel chips, verbose, search) only hide rows, so the whole session stays in
+// the DOM and can be re-examined without polling again.
+
+const filters = { chans: new Set(["sys", "vision", "game", "engine", "coach", "voice", "user"]), verbose: false, query: "" };
+let lastRow = null; // {key, el, count}
+
+function stamp(t) {
+  const m = Math.floor(t / 60), s = (t - m * 60).toFixed(1).padStart(4, "0");
+  return String(m).padStart(2, "0") + ":" + s;
+}
+
+function visible(row) {
+  if (!filters.chans.has(row.dataset.chan)) return false;
+  if (row.dataset.level === "debug" && !filters.verbose) return false;
+  if (filters.query && !row.dataset.text.includes(filters.query)) return false;
+  return true;
+}
+
+function applyFilters() {
+  for (const row of el("terminal").children) row.hidden = !visible(row);
+}
+
 function addLine(line) {
   const term = el("terminal");
+  const key = line.chan + "|" + line.level + "|" + line.text;
+  if (lastRow && lastRow.key === key) {
+    lastRow.count++;
+    lastRow.badge.textContent = "×" + lastRow.count;
+    return;
+  }
   const row = document.createElement("div");
-  row.className = "row lvl-" + line.level;
-  const m = document.createElement("span"); m.className = "m"; m.textContent = line.text;
-  row.appendChild(m);
+  const hasData = line.data && Object.keys(line.data).length > 0;
+  row.className = "row chan-" + line.chan + " lvl-" + line.level + (hasData ? " has-data" : "");
+  if (line.data && line.data.severity) row.classList.add("sev-" + line.data.severity);
+  row.dataset.chan = line.chan; row.dataset.level = line.level;
+  row.dataset.text = (line.chan + " " + line.text).toLowerCase();
+
+  const t = document.createElement("span"); t.className = "t"; t.textContent = stamp(line.t || 0);
+  const c = document.createElement("span"); c.className = "c"; c.textContent = line.chan;
+  const m = document.createElement("span"); m.className = "m";
+  if (hasData) { const caret = document.createElement("span"); caret.className = "caret"; caret.textContent = "▸"; m.appendChild(caret); }
+  m.appendChild(document.createTextNode(line.text));
+  const badge = document.createElement("span"); badge.className = "n"; m.appendChild(badge);
+  row.append(t, c, m);
+  if (hasData) {
+    const d = document.createElement("pre"); d.className = "d"; d.hidden = true;
+    d.textContent = JSON.stringify(line.data, null, 1).replace(/\n\s*/g, (x) => x.length > 1 ? "\n " : x);
+    row.appendChild(d);
+    row.onclick = () => { d.hidden = !d.hidden; m.firstChild.textContent = d.hidden ? "▸" : "▾"; };
+  }
+  row.hidden = !visible(row);
   term.appendChild(row);
+  lastRow = { key, el: row, count: 1, badge };
   if (el("autoscroll").checked) term.scrollTop = term.scrollHeight;
 
-  if (line.level === "coach") {
-    const c = el("coach");
-    const msg = document.createElement("div"); msg.className = "msg"; msg.textContent = line.text;
-    c.appendChild(msg);
-    c.scrollTop = c.scrollHeight;
-    coachCount++;
-  }
+  if (line.chan === "coach" && line.data && line.data.full) addCoach(line);
+}
+
+function addCoach(line) {
+  const c = el("coach");
+  const msg = document.createElement("div"); msg.className = "msg";
+  const meta = document.createElement("div"); meta.className = "meta";
+  const d = line.data;
+  meta.textContent = d.trigger.replace("_", " ") + " · level " + d.disclosure + (d.ply != null ? " · ply " + d.ply : "") + (d.fallback ? " · template" : "");
+  const body = document.createElement("div"); body.textContent = d.full;
+  msg.append(meta, body);
+  c.appendChild(msg);
+  c.scrollTop = c.scrollHeight;
+  coachCount++;
+}
+
+// --- the status strip ----------------------------------------------------------
+
+function clockText(clock) {
+  if (!clock) return "–";
+  const fmt = (ms) => { if (ms == null) return "–"; const s = Math.round(ms / 1000); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+  const run = clock.running ? " (" + clock.running + " running)" : "";
+  return "W " + fmt(clock.white_ms) + "  B " + fmt(clock.black_ms) + run;
+}
+
+function renderHealth(h, s) {
+  if (!h) return;
+  el("h-fps").textContent = h.fps != null ? h.fps.toFixed(1) : "–";
+  const lock = el("h-lock"); lock.textContent = h.lock || "–";
+  lock.className = "hv" + (h.lock === "no board" ? " bad" : h.lock === "lock in doubt" ? " warn" : "");
+  el("h-stage").textContent = (h.stage || "–") + (s.ply ? ", ply " + s.ply : "");
+  el("h-pipe").textContent = h.pipeline_ms ? h.pipeline_ms[0] + "/" + h.pipeline_ms[1] + " ms" : "–";
+  const lag = el("h-lag"); lag.textContent = h.lag_ms != null ? h.lag_ms + " ms" : "–";
+  lag.className = "hv" + (h.lag_ms > 1500 ? " bad" : h.lag_ms > 500 ? " warn" : "");
+  el("h-clock").textContent = clockText(s.clock);
+  const q = el("h-coach"); q.textContent = h.coach_pending != null ? String(h.coach_pending) : "–";
+  q.className = "hv" + (h.coach_pending > 1 ? " warn" : "");
+  el("h-rec").textContent = h.recording || "–";
 }
 
 function renderState(s) {
@@ -143,6 +224,7 @@ function renderState(s) {
   const shown = s.view_flip ? (base === "white" ? "black" : "white") : base;
   renderBoard(s.fen, shown, s.last_move);
   renderMoves(s.moves || []);
+  renderHealth(s.health, s);
   setRunning(s.running);
 }
 
@@ -191,7 +273,17 @@ function wire() {
   for (const b of document.querySelectorAll(".quick button")) {
     b.onclick = () => api[b.dataset.cmd]();
   }
-  el("clearTerm").onclick = () => { el("terminal").replaceChildren(); };
+  el("clearTerm").onclick = () => { el("terminal").replaceChildren(); lastRow = null; };
+  for (const chip of document.querySelectorAll("#chans .chip")) {
+    chip.onclick = () => {
+      const chan = chip.dataset.chan;
+      if (filters.chans.has(chan)) filters.chans.delete(chan); else filters.chans.add(chan);
+      chip.classList.toggle("on", filters.chans.has(chan));
+      applyFilters();
+    };
+  }
+  el("verbose").onchange = (e) => { filters.verbose = e.target.checked; applyFilters(); };
+  el("search").oninput = (e) => { filters.query = e.target.value.trim().toLowerCase(); applyFilters(); };
 }
 
 function sendAsk() {

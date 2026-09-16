@@ -49,8 +49,30 @@
     </main>
 
     <footer>
+      <div id="health" class="health">
+        <span class="hk">fps</span><span id="h-fps" class="hv">–</span>
+        <span class="hk">board</span><span id="h-lock" class="hv">–</span>
+        <span class="hk">stage</span><span id="h-stage" class="hv">–</span>
+        <span class="hk">pipeline</span><span id="h-pipe" class="hv">–</span>
+        <span class="hk">lag</span><span id="h-lag" class="hv">–</span>
+        <span class="hk">clock</span><span id="h-clock" class="hv">–</span>
+        <span class="hk">coach queue</span><span id="h-coach" class="hv">–</span>
+        <span class="hk">recording</span><span id="h-rec" class="hv">–</span>
+      </div>
       <div class="term-head">
-        <span>debug terminal</span>
+        <span class="term-title">debug terminal</span>
+        <div id="chans" class="chips">
+          <button class="chip on" data-chan="sys">sys</button>
+          <button class="chip on" data-chan="vision">vision</button>
+          <button class="chip on" data-chan="game">game</button>
+          <button class="chip on" data-chan="engine">engine</button>
+          <button class="chip on" data-chan="coach">coach</button>
+          <button class="chip on" data-chan="voice">voice</button>
+          <button class="chip on" data-chan="user">user</button>
+        </div>
+        <label class="ctl"><input type="checkbox" id="verbose" /> verbose</label>
+        <input id="search" type="text" class="search" placeholder="filter…" />
+        <span class="spacer"></span>
         <label class="ctl"><input type="checkbox" id="autoscroll" checked /> autoscroll</label>
         <button id="clearTerm" class="ghost small">clear</button>
       </div>
