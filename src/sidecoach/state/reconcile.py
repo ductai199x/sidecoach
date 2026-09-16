@@ -26,6 +26,7 @@ several cells stay unexplained for a long time, which a long drag never triggers
 
 from __future__ import annotations
 
+import itertools
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -53,6 +54,18 @@ def _turn_valid(board: chess.Board, turn: chess.Color) -> bool:
 
 Readings = list[list[CellReading]]
 Observation = dict[chess.Square, CellReading]
+
+
+@dataclass(frozen=True)
+class _QueueWay:
+    """One way a premove ghost could have been queued: from `origin`, landing on the red
+    squares `visited`; `passes_over` when a slider's step crossed a red square."""
+
+    origin: chess.Square
+    visited: frozenset[chess.Square]
+    passes_over: bool = False
+
+
 Explanation = tuple[chess.Move, ...]
 PendingKey = tuple[object, ...]
 # Pending keys whose last element is a story of moves from the latest position.
@@ -460,7 +473,7 @@ class Reconciler:
         self._blocked = self._hover_seen or any(
             reading.kind == "piece" and not reading.settled for row in readings for reading in row
         )
-        obs = self._unqueue(self._observe(readings))
+        obs = self._unqueue(self._observe(readings))  # premove ghosts put back
         if len(obs) < self.min_readable_cells:
             self._hold_pending(True)
             return events
@@ -569,7 +582,7 @@ class Reconciler:
 
     def _unqueue(self, obs: Observation) -> Observation:
         """The picture with queued premoves undone: each of the user's pieces drawn at the
-        end of a red queue is put back on the red, empty square it will leave from.
+        end of a red queue is put back on the empty square it will leave from.
 
         Chess.com draws a premoved piece at its destination and tints the queue's squares
         red, so the screen is not a position. The one-piece case is explained as a queue
@@ -578,91 +591,176 @@ class Reconciler:
         the capture never caught. Undoing the queue gives the true position, which the
         ordinary explanations then read -- the real move that slipped by, the opponent's
         reply, the queued step the moment it executes and its squares turn from red to the
-        site's last-move colour. A piece on a red square that the position already has
-        there is not a ghost (the user's own king in check, on chess.com's red square).
-        The queue's end goes unread rather than empty: a queued capture is drawn over the
-        piece it will take. Nothing is undone when the ghosts and origins do not pair off
-        one to one.
+        site's last-move colour.
+
+        Where a ghost's piece really stands is read against the position -- the one the
+        pending story leads to when there is one, since a bot answering every frame or two
+        keeps the committed position a picture behind: on the square that position has
+        the piece, when that square is red and empty (the queue formed there); else one
+        move of the piece away from it, on a tinted, empty square (the first queued step
+        executed and is not yet committed). From its square the piece must reach the
+        ghost in queued steps, each landing on a red square; the chains of all the ghosts
+        together must account for every red, empty square, each once (the ladder
+        d3-d4-d5-d6 starts at d3, or d3 goes unaccounted for; two chains never share a
+        square); chains built square by square, a slider stopping at each red square on
+        its ray, are preferred to ones that pass a red square over (another piece's queue
+        crossing the ray), and red origins to ones in the last-move colour; and there must
+        then be exactly one reading. A piece on a red square that the position already
+        has there is not a ghost (the user's own king in check, on chess.com's red
+        square). The queue's end goes unread rather than empty: a queued capture is drawn
+        over the piece it will take. Nothing is undone when the picture cannot be read for
+        certain.
         """
-        red_empty = [sq for sq, r in obs.items() if r.tint == "red" and r.kind == "empty"]
+        red_empty = frozenset(sq for sq, r in obs.items() if r.tint == "red" and r.kind == "empty")
         if not red_empty:
             return obs
+        pending = self._pending_story()
+        anchor = pending[1] if pending is not None else self.board
         ghosts: list[tuple[chess.Square, CellReading]] = []
         for sq, reading in obs.items():
             if reading.tint != "red" or reading.kind != "piece" or reading.symbol is None:
                 continue
             if reading.colour != self.user_side:
                 continue
-            here = self.board.piece_at(sq)
+            here = anchor.piece_at(sq)
             if here is not None and here.symbol() == reading.symbol:
                 continue  # really there; the square is red for another reason
             ghosts.append((sq, reading))
         if not ghosts:
             return obs
-        origins = frozenset(red_empty)
-        pairs: list[tuple[chess.Square, chess.Square, CellReading]] = []
-        taken: set[chess.Square] = set()
+        options: list[list[_QueueWay]] = []
         for target, reading in ghosts:
             symbol = reading.symbol
             assert symbol is not None
-            candidates = [
-                o for o in origins - taken if self._queue_reaches(symbol, o, target, origins, obs)
-            ]
-            if len(candidates) != 1:
-                # Prefer the origin the position has this very piece on.
-                candidates = [
-                    o
-                    for o in candidates
-                    if (piece := self.board.piece_at(o)) is not None and piece.symbol() == symbol
-                ]
-                if len(candidates) != 1:
-                    return obs
-            origin = candidates[0]
-            taken.add(origin)
-            pairs.append((origin, target, reading))
+            options.append(self._queue_origins(symbol, target, red_empty, obs, anchor))
+            if not options[-1]:
+                return obs
+        # Every red square is one queue's origin or one queue's landing, never two.
+        ranked: dict[tuple[int, int], set[tuple[chess.Square, ...]]] = {}
+        for choice in itertools.product(*options):
+            origins = tuple(way.origin for way in choice)
+            if len(set(origins)) != len(origins):
+                continue
+            covered = [o for o in origins if o in red_empty]
+            for way in choice:
+                covered.extend(way.visited)
+            if len(covered) != len(set(covered)) or set(covered) != set(red_empty):
+                continue
+            rank = (
+                sum(1 for way in choice if way.passes_over),
+                sum(1 for o in origins if o not in red_empty),
+            )
+            ranked.setdefault(rank, set()).add(origins)
+        if not ranked:
+            return obs
+        best = ranked[min(ranked)]
+        if len(best) != 1:
+            return obs
+        chosen = next(iter(best))
         out = dict(obs)
-        for origin, target, reading in pairs:
+        for (target, reading), origin in zip(ghosts, chosen, strict=True):
             out[origin] = replace(reading, highlighted=False, tint=None, settled=True)
             out.pop(target, None)
-        for sq in origins - taken:
-            out.pop(sq, None)  # an intermediate square of a longer queue: unread
+        for sq in red_empty:
+            if sq not in chosen:
+                out.pop(sq, None)  # an intermediate square of a queue: unread
         return out
 
-    def _queue_reaches(
+    def _queue_origins(
+        self,
+        symbol: str,
+        target: chess.Square,
+        red: frozenset[chess.Square],
+        obs: Observation,
+        anchor: chess.Board,
+    ) -> list[_QueueWay]:
+        """Every way a ghost of `symbol` at `target` could have been queued: from a square
+        `anchor` has such a piece on, or one move of it away (see `_unqueue`)."""
+        piece = chess.Piece.from_symbol(symbol)
+        out: list[_QueueWay] = []
+        scratch = anchor.copy(stack=False)
+        scratch.turn = piece.color
+        for stand, here in anchor.piece_map().items():
+            if here != piece:
+                continue
+            reading = obs.get(stand)
+            if reading is None or reading.kind != "empty":
+                continue  # still shown there, or unreadable: not this piece
+            if stand in red:
+                out.extend(self._queue_ways(symbol, stand, target, red, obs))
+                continue
+            # The first queued step has executed: the piece is one move on, on a tinted,
+            # empty square the queue continues from.
+            for move in scratch.generate_pseudo_legal_moves(chess.BB_SQUARES[stand]):
+                to = move.to_square
+                if to == target:
+                    continue
+                landed = obs.get(to)
+                if landed is None or landed.kind != "empty" or landed.tint is None:
+                    continue
+                out.extend(self._queue_ways(symbol, to, target, red, obs))
+        return out
+
+    def _queue_ways(
         self,
         symbol: str,
         origin: chess.Square,
         target: chess.Square,
-        via: frozenset[chess.Square],
+        red: frozenset[chess.Square],
         obs: Observation,
-    ) -> bool:
-        """Whether a piece `symbol` could be queued from `origin` to `target`, hopping only
-        over the red squares `via`, past the pieces the picture shows, within the queue
-        length chess.com allows."""
+    ) -> list[_QueueWay]:
+        """The ways a piece `symbol` could be queued from `origin` to `target`: every step
+        lands on a red square, past the pieces the picture shows; a slider either stops at
+        the first red square on its ray, as a queue built square by square does, or
+        passes one over (another piece's queue crossing the ray). Empty when it cannot get
+        there within the queue length chess.com allows."""
         piece = chess.Piece.from_symbol(symbol)
         scratch = chess.Board(None)
         for sq, reading in obs.items():
             if reading.kind == "piece" and reading.symbol is not None and reading.tint != "red":
                 scratch.set_piece_at(sq, chess.Piece.from_symbol(reading.symbol))
         scratch.turn = piece.color
-        frontier = {origin}
-        seen = {origin}
-        for _ in range(self.max_queue_steps):
-            next_frontier: set[chess.Square] = set()
-            for sq in frontier:
-                scratch.set_piece_at(sq, piece)
-                for move in scratch.generate_pseudo_legal_moves(chess.BB_SQUARES[sq]):
-                    to = move.to_square
-                    if to == target:
-                        return True
-                    if to in via and to not in seen:
-                        seen.add(to)
+        landings = red | {target}
+        slider = piece.piece_type in (chess.QUEEN, chess.ROOK, chess.BISHOP)
+        ways: list[_QueueWay] = []
+        for stop_at_red in (True, False) if slider else (False,):
+            frontier = {origin}
+            parent: dict[chess.Square, chess.Square | None] = {origin: None}
+            found: frozenset[chess.Square] | None = None
+            for _ in range(self.max_queue_steps):
+                next_frontier: set[chess.Square] = set()
+                for sq in frontier:
+                    scratch.set_piece_at(sq, piece)
+                    for move in scratch.generate_pseudo_legal_moves(chess.BB_SQUARES[sq]):
+                        to = move.to_square
+                        if to not in landings or to in parent:
+                            continue
+                        if stop_at_red and any(
+                            b in red for b in chess.SquareSet(chess.between(sq, to))
+                        ):
+                            continue
+                        parent[to] = sq
+                        if to == target:
+                            visited: set[chess.Square] = set()
+                            back = parent[to]
+                            while back is not None and back != origin:
+                                visited.add(back)
+                                back = parent[back]
+                            found = frozenset(visited)
+                            break
                         next_frontier.add(to)
-                scratch.remove_piece_at(sq)
-            frontier = next_frontier
-            if not frontier:
-                break
-        return False
+                    scratch.remove_piece_at(sq)
+                    if found is not None:
+                        break
+                if found is not None or not next_frontier:
+                    break
+                frontier = next_frontier
+            if found is None:
+                continue
+            way = _QueueWay(origin, found, passes_over=not stop_at_red and slider)
+            if all(w.visited != found for w in ways):
+                ways.append(way)
+        return ways
 
     def pending_terminal(self) -> tuple[Explanation, chess.Board] | None:
         """The story seen once and still pending, when it ends the game: the mate the
@@ -1035,9 +1133,19 @@ class Reconciler:
                 return None
             story = paths[0]
         combined = tuple(moves) + tuple(story)
-        if len(combined) > self.max_chain_plies or not self._highlight_ok(obs, combined):
+        if not self._highlight_ok(obs, combined):
             return None
-        return self._settle(("moves", combined), obs, self._commit_moves(combined))
+        # A bot that answers within a frame or two and a queue that executes on every
+        # answer make a chain that grows by two plies a picture and never shows the same
+        # picture long enough to settle. This frame is explained from the position the
+        # pending plies lead to: the second witness those plies were waiting for. So they
+        # are committed now, and only the plies this frame added stay pending.
+        events = self._commit_moves(tuple(moves))()
+        self._pending = (("moves", tuple(story)), 1)
+        self._pending_age = 0
+        self._stale = {}
+        self._unexplained_frames = 0
+        return events
 
     def _explain_opponent_move(self, obs: Observation) -> list[Event] | None:
         """The opponent's move, committed whether or not the user is dragging.
