@@ -1606,21 +1606,30 @@ def panel(
         int | None, typer.Option(help="Monitor index, see doctor; default the primary")
     ] = None,
     fps: Annotated[int, typer.Option(help="Capture rate")] = 10,
+    port: Annotated[int, typer.Option(help="Port for the local panel server")] = 8765,
+    replay: Annotated[
+        Path | None,
+        typer.Option(help="Feed the panel from a recording instead of the live screen (dev)"),
+    ] = None,
+    browser: Annotated[bool, typer.Option(help="Open the panel in the browser")] = True,
     config: ConfigOpt = None,
 ) -> None:
-    """Open the desktop panel: the live coach with a board, coach messages, a voice, an
+    """Open the panel: the live coach in the browser -- a board, coach messages, a voice, an
     orientation flip and an analyse-this-position button, and a debug terminal at the bottom.
 
-    Needs the panel extras: uv sync --group panel (and --group voice to hear the coach).
-    Start it, then begin a game on the board -- the same live engine as `watch`, in a window.
+    Needs the panel extras: uv sync --group panel (and --group voice to hear the coach). It
+    serves a local FastAPI backend and opens the browser at it -- the same live engine as
+    `watch`. Start it, then begin a game on the board, or use --replay <recording> to drive
+    the panel from a saved game while developing, no live screen needed.
     """
     try:
-        from sidecoach.ui.panel import run_panel
+        from sidecoach.ui.server import run_server
     except ImportError as exc:
         console.print(f"[red]panel extras missing:[/red] {exc}; run `uv sync --group panel`")
         raise typer.Exit(1) from exc
     settings = load_settings(config)
-    run_panel(settings, monitor=monitor, fps=fps)
+    console.print(f"panel serving at http://127.0.0.1:{port}/  (Ctrl-C to stop)")
+    run_server(settings, monitor=monitor, fps=fps, port=port, replay=replay, open_browser=browser)
 
 
 if __name__ == "__main__":

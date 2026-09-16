@@ -1,0 +1,7 @@
+cburnett chess piece set
+Copyright (c) Colin M.L. Burnett. Licensed under CC BY-SA 3.0
+(https://creativecommons.org/licenses/by-sa/3.0/), as distributed by Lichess
+(https://github.com/lichess-org/lila/tree/master/public/piece/cburnett).
+
+Used unmodified as the panel's piece graphics. The board colours are a plain green/cream
+palette and carry no third-party assets.

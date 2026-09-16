@@ -1,14 +1,15 @@
-"""The desktop panel: a native window over the live coaching engine, with a debug terminal.
+"""The panel's engine: the live coaching loop behind the web UI, with a debug terminal.
 
-pywebview hosts a small web UI; `PanelApi` is the bridge the page calls. The capture ->
-pipeline -> engine -> coach loop runs on its own thread as `PanelEngine`, exactly the loop
-`sidecoach watch` runs, but with its lines routed to the page's terminal and its coach
-messages both shown and spoken. Control actions from the page (start, ask, flip, pick a
-voice, analyse a position) are marshalled onto the loop thread through a command queue, so
-nothing touches the pipeline or the coach from two threads at once.
+The capture -> pipeline -> engine -> coach loop runs on its own thread as `PanelEngine`,
+exactly the loop `sidecoach watch` runs, but with its lines routed to the page's terminal
+and its coach messages both shown and spoken. `PanelApi` is the thin control surface the
+server (`sidecoach.ui.server`, FastAPI) exposes over HTTP. Control actions from the page
+(start, ask, flip, pick a voice, analyse a position) are marshalled onto the loop thread
+through a command queue, so nothing touches the pipeline or the coach from two threads at
+once.
 
-The engine takes an injectable frame source, so it can be driven from a recording in a test
-without a window or a screen.
+The engine takes an injectable frame source, so it can be driven from a recording -- in a
+test, or with `sidecoach panel --replay` while developing -- without a live screen.
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ import time
 from collections import deque
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from sidecoach.config import Settings
@@ -47,6 +47,16 @@ PICKER_VOICES: list[str] = [
 
 Frame = tuple[int, float, Any]  # (frame_id, ts, frame)
 FrameSource = Iterable[Frame]
+
+
+def _plain(text: str) -> str:
+    """Rich console markup ("[dim]...[/dim]") stripped, for a line shown on the page."""
+    from rich.text import Text
+
+    try:
+        return Text.from_markup(text).plain
+    except Exception:  # noqa: BLE001 - a stray bracket in a line is not worth losing the line
+        return text
 
 
 @dataclass
@@ -81,6 +91,7 @@ class PanelEngine:
     _state: dict[str, Any] = field(default_factory=dict, init=False)
     _tts: TTSProvider = field(default=None, init=False)  # type: ignore[assignment]
     _forced_bottom: Any = field(default=None, init=False)  # a Side chosen by the flip button
+    _view_flip: bool = field(default=False, init=False)  # the panel's board shown turned around
 
     def __post_init__(self) -> None:
         self._tts = self._build_tts(self.voice)
@@ -88,6 +99,8 @@ class PanelEngine:
             "running": False,
             "fen": None,
             "moves": [],
+            "last_move": None,
+            "view_flip": False,
             "game_id": None,
             "user_side": None,
             "bottom": None,
@@ -211,7 +224,8 @@ class PanelEngine:
         assessing = _Assessing(self.settings, self.analysis)
         coaching = _Coaching(self.settings, self.coach and assessing.on)
         coaching.sink = self._on_coach_message
-        assessing.sink = lambda line: self._emit("engine", line)
+        # The assessment lines are written for the rich console; the page wants plain text.
+        assessing.sink = lambda line: self._emit("engine", _plain(line))
         self._set(
             running=True,
             status="waiting for a board",
@@ -318,16 +332,26 @@ class PanelEngine:
         return events
 
     def _flip(self, pipe: Any, ts: float) -> list[Any]:
+        """Flip means two things, and never disturbs a game that is being followed.
+
+        While a game is running, the pipeline's orientation is a fact it read from the
+        screen, so flipping only turns the panel's board around (a view preference).
+        Reorienting the reconciler here would re-read an unchanged screen the wrong way up
+        and resync to a rotated, bogus position. With no game running, flipping chooses
+        the side the next analyse / cold start assumes at the bottom -- the way out when
+        the coordinates are off and the labels cannot be read.
+        """
         Side = self._side
+        if pipe.reconciler is not None and pipe.reconciler.started:
+            self._view_flip = not self._view_flip
+            self._set(view_flip=self._view_flip)
+            self._emit("info", "view flipped (the game is still read from the screen as is)")
+            return []
         current = self._forced_bottom or pipe.bottom or Side.WHITE
         target = Side.BLACK if current == Side.WHITE else Side.WHITE
         self._forced_bottom = target
-        self._emit("info", f"orientation flipped: {target.value} at the bottom")
-        if pipe.reconciler is not None:
-            events = pipe.reconciler.reorient(target)
-            pipe.bottom = target
-            self._set(bottom=target.value)
-            return events
+        self._set(bottom=target.value)
+        self._emit("info", f"analysis orientation: {target.value} at the bottom")
         return []
 
     def _analyze(self, pipe: Any, frame: Any, geom: Any) -> list[Any]:
@@ -362,6 +386,7 @@ class PanelEngine:
         self._set(
             fen=fen,
             moves=sans,
+            last_move=moves[-1] if moves else None,  # uci, for the from/to highlight
             ply=len(moves),
             following=pipe.model is not None,
             bottom=pipe.bottom.value if pipe.bottom else None,
@@ -431,22 +456,3 @@ class PanelApi:
     def set_muted(self, muted: bool) -> bool:
         self._engine.set_muted(bool(muted))
         return True
-
-
-def run_panel(settings: Settings, *, monitor: int | None = None, fps: int = 10) -> None:
-    """Open the panel window over a live engine. Blocks until the window is closed."""
-    import webview
-
-    engine = PanelEngine(settings, monitor=monitor, fps=fps)
-    api = PanelApi(engine)
-    web = Path(__file__).parent / "web" / "index.html"
-    window = webview.create_window(
-        "sidecoach",
-        url=str(web),
-        js_api=api,
-        width=1120,
-        height=820,
-        min_size=(880, 640),
-    )
-    window.events.closed += engine.stop  # type: ignore[reportOptionalMemberAccess]
-    webview.start()

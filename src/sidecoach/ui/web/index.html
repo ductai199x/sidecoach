@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>sidecoach</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
@@ -24,16 +25,15 @@
       <section id="left">
         <div id="board" class="board"></div>
         <div id="gameinfo" class="gameinfo">
-          <span id="side">—</span>
+          <span id="side" class="strong">—</span>
           <span id="ply">ply 0</span>
-          <span id="following" class="muted">waiting for a start</span>
-        </div>
-        <div class="moves-wrap">
-          <ol id="moves" class="moves"></ol>
+          <span id="following">waiting for a start</span>
         </div>
       </section>
 
       <section id="right">
+        <div class="panel-title">Moves</div>
+        <div class="moves-wrap"><div id="moves"></div></div>
         <div class="panel-title">Coach</div>
         <div id="coach" class="coach"></div>
         <div class="ask">

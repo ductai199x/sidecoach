@@ -30,9 +30,11 @@ voice = [
     "kokoro-onnx>=0.4",
     "sounddevice>=0.5",
 ]
-# The desktop panel: a native window over a local web UI, `uv sync --group panel`.
+# The panel backend: a local FastAPI server behind the web UI, `uv sync --group panel`.
+# The UI opens in the browser, so it is debuggable with real devtools and testable over HTTP.
 panel = [
-    "pywebview>=5.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [build-system]
