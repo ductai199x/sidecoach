@@ -45,6 +45,8 @@ from sidecoach.events import (
     GameStarted,
     MoveAssessment,
     MovePlayed,
+    ScreenState,
+    ScreenStateChanged,
     Severity,
     Side,
     Trigger,
@@ -640,6 +642,8 @@ class Coach:
             self._on_clock(event, ts)
         elif isinstance(event, GameEnded):
             self._current = None
+        elif isinstance(event, ScreenStateChanged):
+            self.policy.covered = event.state is ScreenState.COVERED
 
     def tick(self, ts: float) -> None:
         """Time passing: a hint if the user has been stuck long enough."""

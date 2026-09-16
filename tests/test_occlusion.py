@@ -285,13 +285,14 @@ def test_junk_next_to_a_strip_is_not_relabelled_but_next_to_a_dialog_it_is() -> 
 
 
 @pytest.mark.parametrize("bottom", BOTTOMS)
-def test_a_dialog_that_stays_over_a_live_board_ends_the_game(bottom: Side) -> None:
-    """The third live game ended with premoves: five plies in a second and a half, then the
-    game-over dialog, and the reconciler had explained the screen with a shorter path that
-    left its board one move short of the mate. Nothing under the dialog could tell it
-    more, so the coach thought the game was on. The dialog itself is the site's word:
-    up for two seconds over a live board, it ends the game, with the result unknown when
-    the board is not terminal -- and the user's word can still settle the result."""
+def test_a_dialog_that_stays_over_a_live_board_covers_the_game_but_ends_nothing(
+    bottom: Side,
+) -> None:
+    """A dialog is not a result: sites put dialogs over the board for many reasons. One
+    that stays marks the screen COVERED, the game stays open, and the user's word or the
+    next game ends it. One that flashes past counts for nothing."""
+    from sidecoach.events import ScreenState, ScreenStateChanged
+
     pipe = GamePipeline()
     board = chess.Board()
     ts = 0.0
@@ -307,7 +308,6 @@ def test_a_dialog_that_stays_over_a_live_board_ends_the_game(bottom: Side) -> No
     assert [e.san for e in events if isinstance(e, MovePlayed)] == ["e4", "e5"]
     assert pipe.reconciler is not None and not pipe.reconciler.finished
 
-    # A dialog that flashes past (a toast fading through) ends nothing.
     frame = synthetic_board(board=board, bottom=bottom)
     events = []
     for _ in range(5):
@@ -315,19 +315,53 @@ def test_a_dialog_that_stays_over_a_live_board_ends_the_game(bottom: Side) -> No
         ts += 0.1
     events += pipe.process(frame, ts)
     ts += 0.1
-    assert not [e for e in events if isinstance(e, GameEnded)]
-    assert not pipe.reconciler.finished
+    assert not [e for e in events if isinstance(e, (GameEnded, ScreenStateChanged))]
 
-    # One that stays does, once, with the result not read; the game does not end twice.
     events = []
     for _ in range(30):
         events += pipe.process(with_dialog(frame, dark=True, bottom=bottom), ts)
         ts += 0.1
-    ended = [e for e in events if isinstance(e, GameEnded)]
-    assert len(ended) == 1 and ended[0].result == "*" and "dialog" in ended[0].reason
-    assert pipe.reconciler.finished
-
-    # The user says who won, and the result is settled; a second word changes nothing.
+    states = [e.state for e in events if isinstance(e, ScreenStateChanged)]
+    assert states == [ScreenState.COVERED]
+    assert not [e for e in events if isinstance(e, GameEnded)]
+    assert not pipe.reconciler.finished
+    # The cover lifts: live again, same game.
+    events = pipe.process(frame, ts)
+    assert [e.state for e in events if isinstance(e, ScreenStateChanged)] == [ScreenState.LIVE_GAME]
+    # The user says how it ended.
     settled = pipe.end_game("1-0", "opponent resigned or lost on time", ts)
     assert [e.result for e in settled if isinstance(e, GameEnded)] == ["1-0"]
     assert pipe.end_game("0-1", "changed my mind", ts) == []
+
+
+@pytest.mark.parametrize("bottom", BOTTOMS)
+def test_the_dialog_confirms_a_mate_read_once(bottom: Side) -> None:
+    """The mating move is read in one clean frame and the dialog comes before a second:
+    the dialog is the confirmation the settling needed, and the game ends on the board's
+    own result."""
+    pipe = GamePipeline()
+    board = chess.Board()
+    ts = 0.0
+    for _ in range(2):
+        pipe.process(synthetic_board(board=board, bottom=bottom), ts)
+        ts += 0.1
+    events = []
+    for san in ("f3", "e5", "g4"):
+        move = board.push_san(san)
+        for _ in range(2):
+            events += pipe.process(synthetic_board(board=board, bottom=bottom, highlight=move), ts)
+            ts += 0.1
+    assert [e.san for e in events if isinstance(e, MovePlayed)] == ["f3", "e5", "g4"]
+    mate = board.push_san("Qh4#")
+    frame = synthetic_board(board=board, bottom=bottom, highlight=mate)
+    events = pipe.process(frame, ts)  # one clean frame
+    ts += 0.1
+    assert not [e for e in events if isinstance(e, MovePlayed)]
+    # The dialog hides d8 and h4 both (it covers the middle; both squares lie under it
+    # for one orientation and the memory of covered cells does the rest for the other).
+    for _ in range(30):
+        events += pipe.process(with_dialog(frame, dark=True, bottom=bottom), ts)
+        ts += 0.1
+    assert [e.san for e in events if isinstance(e, MovePlayed)] == ["Qh4#"]
+    ended = [e for e in events if isinstance(e, GameEnded)]
+    assert ended and ended[0].result == "0-1"

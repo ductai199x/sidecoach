@@ -77,6 +77,10 @@ class ScreenState(StrEnum):
     LESSON = "lesson"
     LOBBY = "lobby"
     GAME_OVER = "game_over"
+    # A dialog or a large overlay over the board of a live game: the game may be over (a
+    # resignation, a flag, the site's game-over dialog) or merely interrupted; the board
+    # cannot say which, so the game stays open and the coach stays quiet.
+    COVERED = "covered"
     UNKNOWN = "unknown"
 
 

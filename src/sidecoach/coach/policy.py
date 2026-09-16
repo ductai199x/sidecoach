@@ -69,6 +69,8 @@ class InterjectionPolicy:
     _spoken_at: set[int] = field(default_factory=set, init=False)
     _user_to_move: bool = field(default=False, init=False)
     _remaining_ms: int | None = field(default=None, init=False)
+    # The board is under a dialog: the game may be over, and no nudge makes sense.
+    covered: bool = field(default=False, init=False)
     # Why the last unprompted trigger did not fire, in a few words, for the debug log --
     # the answer to "why is the coach quiet?". None once a trigger fires.
     last_reason: str | None = field(default=None, init=False)
@@ -160,6 +162,8 @@ class InterjectionPolicy:
         reason = None
         if self.settings.quiet:
             reason = "quiet mode"
+        elif self.covered:
+            reason = "the board is covered"
         elif not self._user_to_move:
             reason = "opponent to move"
         elif ply != self._ply:

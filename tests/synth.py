@@ -98,9 +98,17 @@ def render_board(
     highlight: chess.Move | None = None,
     red_marks: tuple[chess.Square, ...] = (),
     dragging: tuple[chess.Square, chess.Square, float, float] | None = None,
+    premoves: tuple[tuple[chess.Move, ...], ...] = (),
 ) -> None:
     """Render `board`. `dragging` = (origin, hovered square, dx, dy): the origin's piece is
-    drawn over the hovered square displaced by (dx, dy) cells, under a hover outline."""
+    drawn over the hovered square displaced by (dx, dy) cells, under a hover outline.
+
+    `premoves` are queues the user has set up while the opponent thinks, drawn the way
+    chess.com draws them: every square of a queue is tinted red, the piece is drawn at
+    the end of its queue and its real square is left empty. A queue is a tuple of moves
+    of one piece, each from the last one's destination; several queues are several
+    pieces.
+    """
     for r in range(8):
         for c in range(8):
             colour = light if (r + c) % 2 == 0 else dark
@@ -115,6 +123,12 @@ def render_board(
     if highlight is not None:
         tinted += [(highlight.from_square, YELLOW), (highlight.to_square, YELLOW)]
     tinted += [(square, RED) for square in red_marks]
+    queued_from: dict[chess.Square, chess.Square] = {}  # the piece's real square -> queue end
+    for queue in premoves:
+        for move in queue:
+            tinted += [(move.from_square, RED), (move.to_square, RED)]
+        if queue:
+            queued_from[queue[0].from_square] = queue[-1].to_square
     for square, overlay in tinted:
         r, c = row_col(square, bottom)
         base = light if (r + c) % 2 == 0 else dark
@@ -129,7 +143,19 @@ def render_board(
     for square, piece in board.piece_map().items():
         if square == lifted:
             continue
+        if square in queued_from:
+            continue  # drawn at the end of its queue instead
+        if square in queued_from.values():
+            continue  # a queued capture: the premoved piece is drawn over it
         r, c = row_col(square, bottom)
+        draw_piece(
+            frame, x0 + c * cell + cell // 2, y0 + r * cell + cell // 2, cell, piece.symbol()
+        )
+    for origin, end in queued_from.items():
+        piece = board.piece_at(origin)
+        if piece is None:
+            continue
+        r, c = row_col(end, bottom)
         draw_piece(
             frame, x0 + c * cell + cell // 2, y0 + r * cell + cell // 2, cell, piece.symbol()
         )
@@ -245,6 +271,7 @@ def synthetic_board(
     highlight: chess.Move | None = None,
     red_marks: tuple[chess.Square, ...] = (),
     dragging: tuple[chess.Square, chess.Square, float, float] | None = None,
+    premoves: tuple[tuple[chess.Move, ...], ...] = (),
     seed: int = 0,
 ) -> np.ndarray:
     """A board on a busy background. `pieces=False` renders an empty board."""
@@ -262,6 +289,7 @@ def synthetic_board(
         highlight=highlight,
         red_marks=red_marks,
         dragging=dragging,
+        premoves=premoves,
     )
     return frame
 

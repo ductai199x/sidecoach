@@ -24,6 +24,7 @@ Reading the HTML is done offline from a saved file, never from a live page.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from collections.abc import Sequence
@@ -101,15 +102,11 @@ class _OverviewParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         text = data.strip()
         if self._tally_key is not None and text:
-            try:
+            with contextlib.suppress(ValueError):
                 self.tallies.setdefault(self._tally_key, []).append(int(text.lstrip("+")))
-            except ValueError:
-                pass
         if self._rating_side is not None and text:
-            try:
+            with contextlib.suppress(ValueError):
                 self.ratings[self._rating_side].append(float(text))
-            except ValueError:
-                pass
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "span" and self._tally_key is not None:
@@ -171,10 +168,8 @@ class _MoveListParser(HTMLParser):
         a = {key: value or "" for key, value in attrs}
         classes = a.get("class", "").split()
         if tag == "div" and a.get("data-move-list-el") == "timestamp":
-            try:
+            with contextlib.suppress(KeyError, ValueError):
                 self.times[int(a["data-ply"])] = int(a["data-time"])
-            except (KeyError, ValueError):
-                pass
         if tag == "div" and "main-line-ply" in classes:
             self._colour = "white" if "white-move" in classes else "black"
             self._div_depth = 1
@@ -249,12 +244,11 @@ def verify(moves: Sequence[ReferenceMove], truth: Sequence[chess.Move] | None = 
             move = board.parse_san(reference.san)
         except ValueError as exc:
             raise ValueError(f"ply {reference.ply}: {reference.san!r} does not play") from exc
-        if truth is not None:
-            if truth[reference.ply - 1] != move:
-                raise ValueError(
-                    f"ply {reference.ply}: review has {reference.san}, the game has "
-                    f"{board.san(truth[reference.ply - 1])}"
-                )
+        if truth is not None and truth[reference.ply - 1] != move:
+            raise ValueError(
+                f"ply {reference.ply}: review has {reference.san}, the game has "
+                f"{board.san(truth[reference.ply - 1])}"
+            )
         board.push(move)
 
 

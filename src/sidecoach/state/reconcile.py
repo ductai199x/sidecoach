@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import chess
 
@@ -460,7 +460,7 @@ class Reconciler:
         self._blocked = self._hover_seen or any(
             reading.kind == "piece" and not reading.settled for row in readings for reading in row
         )
-        obs = self._observe(readings)
+        obs = self._unqueue(self._observe(readings))
         if len(obs) < self.min_readable_cells:
             self._hold_pending(True)
             return events
@@ -566,6 +566,123 @@ class Reconciler:
         if adopted:
             return events + adopted
         return events + self._maybe_resync(diff)
+
+    def _unqueue(self, obs: Observation) -> Observation:
+        """The picture with queued premoves undone: each of the user's pieces drawn at the
+        end of a red queue is put back on the red, empty square it will leave from.
+
+        Chess.com draws a premoved piece at its destination and tints the queue's squares
+        red, so the screen is not a position. The one-piece case is explained as a queue
+        below; but two pieces can be queued at once (the third live game ended with both
+        queens premoved), and a queue can form right after a real move whose settled frame
+        the capture never caught. Undoing the queue gives the true position, which the
+        ordinary explanations then read -- the real move that slipped by, the opponent's
+        reply, the queued step the moment it executes and its squares turn from red to the
+        site's last-move colour. A piece on a red square that the position already has
+        there is not a ghost (the user's own king in check, on chess.com's red square).
+        The queue's end goes unread rather than empty: a queued capture is drawn over the
+        piece it will take. Nothing is undone when the ghosts and origins do not pair off
+        one to one.
+        """
+        red_empty = [sq for sq, r in obs.items() if r.tint == "red" and r.kind == "empty"]
+        if not red_empty:
+            return obs
+        ghosts: list[tuple[chess.Square, CellReading]] = []
+        for sq, reading in obs.items():
+            if reading.tint != "red" or reading.kind != "piece" or reading.symbol is None:
+                continue
+            if reading.colour != self.user_side:
+                continue
+            here = self.board.piece_at(sq)
+            if here is not None and here.symbol() == reading.symbol:
+                continue  # really there; the square is red for another reason
+            ghosts.append((sq, reading))
+        if not ghosts:
+            return obs
+        origins = frozenset(red_empty)
+        pairs: list[tuple[chess.Square, chess.Square, CellReading]] = []
+        taken: set[chess.Square] = set()
+        for target, reading in ghosts:
+            symbol = reading.symbol
+            assert symbol is not None
+            candidates = [
+                o for o in origins - taken if self._queue_reaches(symbol, o, target, origins, obs)
+            ]
+            if len(candidates) != 1:
+                # Prefer the origin the position has this very piece on.
+                candidates = [
+                    o
+                    for o in candidates
+                    if (piece := self.board.piece_at(o)) is not None and piece.symbol() == symbol
+                ]
+                if len(candidates) != 1:
+                    return obs
+            origin = candidates[0]
+            taken.add(origin)
+            pairs.append((origin, target, reading))
+        out = dict(obs)
+        for origin, target, reading in pairs:
+            out[origin] = replace(reading, highlighted=False, tint=None, settled=True)
+            out.pop(target, None)
+        for sq in origins - taken:
+            out.pop(sq, None)  # an intermediate square of a longer queue: unread
+        return out
+
+    def _queue_reaches(
+        self,
+        symbol: str,
+        origin: chess.Square,
+        target: chess.Square,
+        via: frozenset[chess.Square],
+        obs: Observation,
+    ) -> bool:
+        """Whether a piece `symbol` could be queued from `origin` to `target`, hopping only
+        over the red squares `via`, past the pieces the picture shows, within the queue
+        length chess.com allows."""
+        piece = chess.Piece.from_symbol(symbol)
+        scratch = chess.Board(None)
+        for sq, reading in obs.items():
+            if reading.kind == "piece" and reading.symbol is not None and reading.tint != "red":
+                scratch.set_piece_at(sq, chess.Piece.from_symbol(reading.symbol))
+        scratch.turn = piece.color
+        frontier = {origin}
+        seen = {origin}
+        for _ in range(self.max_queue_steps):
+            next_frontier: set[chess.Square] = set()
+            for sq in frontier:
+                scratch.set_piece_at(sq, piece)
+                for move in scratch.generate_pseudo_legal_moves(chess.BB_SQUARES[sq]):
+                    to = move.to_square
+                    if to == target:
+                        return True
+                    if to in via and to not in seen:
+                        seen.add(to)
+                        next_frontier.add(to)
+                scratch.remove_piece_at(sq)
+            frontier = next_frontier
+            if not frontier:
+                break
+        return False
+
+    def pending_terminal(self) -> tuple[Explanation, chess.Board] | None:
+        """The story seen once and still pending, when it ends the game: the mate the
+        site's dialog then covered before a second clean frame could confirm it."""
+        story = self._pending_story()
+        if story is None or not story[1].is_game_over():
+            return None
+        return story
+
+    def commit_pending_terminal(self) -> list[Event]:
+        """Commit the pending story that ends the game (see `pending_terminal`)."""
+        story = self.pending_terminal()
+        if story is None:
+            return []
+        moves, _ = story
+        events = self._commit_moves(moves)()
+        self._pending = None
+        self._stale = {}
+        self._unexplained_frames = 0
+        return events
 
     def _ghosts(self, diff: set[chess.Square], obs: Observation) -> set[chess.Square]:
         """Stale readings of something unnameable on squares the position has empty."""

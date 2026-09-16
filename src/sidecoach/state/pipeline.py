@@ -101,8 +101,10 @@ class GamePipeline:
     _last_clock: tuple[int | None, int | None, Side | None] | None = None
     # The last screen state emitted, so a ScreenStateChanged fires only on a transition.
     _screen_state: ScreenState = ScreenState.UNKNOWN
-    # When a dialog-sized cover first appeared over a live game's board, or None.
+    # When a dialog-sized cover first appeared over a live game's board, or None; and
+    # whether one has stayed long enough to count as covering the board.
     _dialog_since: float | None = None
+    _covered: bool = False
 
     def process(
         self, frame: np.ndarray, ts: float, changed: bool = True, frame_id: int | None = None
@@ -164,7 +166,7 @@ class GamePipeline:
             return self._stamp(events, ts, frame_id)
         was_started = self.reconciler.started
         events += self.reconciler.update(self._readings, ts)
-        events += self._dialog_ends_the_game(self._readings, ts)
+        events += self._dialog_over_the_board(self._readings, ts)
         if (
             was_started
             and not rebuilt
@@ -179,34 +181,40 @@ class GamePipeline:
         events += self._emit_screen_state(board_present=True)
         return self._stamp(events, ts, frame_id)
 
-    def _dialog_ends_the_game(self, readings: Readings, ts: float) -> list[Event]:
-        """A dialog that covers the board of a live game and stays is the site ending it.
+    def _dialog_over_the_board(self, readings: Readings, ts: float) -> list[Event]:
+        """A dialog that covers the board of a live game and stays.
 
-        Chess.com puts its game-over dialog over the board the moment a game ends. When
-        the last moves were premoves the end came faster than the capture, and the board
-        under the dialog is the one the reconciler never got to read: a mate delivered in
-        the last second left the coach thinking the game was on. A cover of at least
-        DIALOG_CELLS cells, held for DIALOG_SECONDS, ends the game; the result is the
-        board's own when the board is terminal, else unknown ("*"), which the user's End
-        game menu can settle. A dialog never appears over a live board otherwise, and one
-        that flashes past (a toast, a tooltip) does not last this long.
+        Chess.com puts its game-over dialog over the board the moment a game ends; other
+        sites, and other moments, put other things there. So a cover is never taken as a
+        result on its own. When the mating move was read once, clean, and the cover came
+        before a second frame could confirm it, the cover is that confirmation (the third
+        live game: five premoved plies in a second and a half, then the dialog). Otherwise
+        the screen state becomes COVERED: the game stays open -- a new game, or the user's
+        End game menu, ends it -- and the coach is quiet until the board is back. A cover
+        that flashes past (a toast, a tooltip) counts for nothing.
         """
         rec = self.reconciler
         if rec is None or not rec.started or rec.finished:
             self._dialog_since = None
+            self._covered = False
             return []
         covered = sum(1 for row in readings for reading in row if reading.covered)
         if covered < DIALOG_CELLS:
             self._dialog_since = None
+            self._covered = False
             return []
         if self._dialog_since is None:
             self._dialog_since = ts
             return []
         if ts - self._dialog_since < DIALOG_SECONDS:
             return []
-        self._dialog_since = None
-        result = rec.board.result() if rec.board.is_game_over() else "*"
-        return rec.end(result, "a dialog covered the board")
+        if rec.pending_terminal() is not None:
+            events = rec.commit_pending_terminal()
+            if events:
+                self._dialog_since = None
+                return events
+        self._covered = True
+        return []
 
     def end_game(
         self, result: str, reason: str, ts: float, frame_id: int | None = None
@@ -229,6 +237,7 @@ class GamePipeline:
         self._screen_state = ScreenState.UNKNOWN
         self._last_clock = None
         self._dialog_since = None
+        self._covered = False
         if self.clock is not None:
             self.clock.reset()
 
@@ -267,6 +276,8 @@ class GamePipeline:
             return ScreenState.UNKNOWN  # a board, but no game recognised on it yet
         if rec.finished:
             return ScreenState.GAME_OVER
+        if self._covered:
+            return ScreenState.COVERED
         return ScreenState.LIVE_GAME
 
     def _emit_screen_state(self, *, board_present: bool) -> list[Event]:

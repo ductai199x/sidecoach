@@ -764,6 +764,13 @@ class PanelEngine:
                 }
             )
         elif isinstance(event, ScreenStateChanged):
+            if event.state.value == "covered":
+                self._emit(
+                    "game",
+                    "info",
+                    "the board is covered by a dialog: game over? The game stays open until "
+                    "a new one starts or End game… says how it ended; the coach waits",
+                )
             self._emit("vision", "debug", f"screen: {event.state.value}")
 
     def _dispatch_engine(self, events: list[Any], opening: str | None, chess: Any) -> str | None:
