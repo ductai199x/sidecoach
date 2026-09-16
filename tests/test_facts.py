@@ -90,3 +90,37 @@ def test_describe_tactic_reads_a_fork_the_best_move_creates() -> None:
     best = chess.Move.from_uci("e5g6")  # Ng6 forks the rooks on f8 and h8
     text = describe_tactic(board, "fork", ["g6", "f8", "h8"], best_move=best)
     assert text == "the knight on g6 forks the rook on f8 and the rook on h8"
+
+
+def test_the_nature_of_the_best_move_is_forcing_or_quiet() -> None:
+    """From the question level the sheet says whether the answer is a check, a capture or a
+    promotion, or a quiet improving move: it names nothing, and it stops the stuck hint
+    from being the same pawn-advance homily in every position (the first live game's
+    endgame had a promotion with mate to find and got "support your central pawns", four
+    times over)."""
+    from sidecoach.coach.coach import fact_sheet
+    from sidecoach.events import DisclosureLevel
+
+    def analysed(fen: str, best: str) -> Analysis:
+        return Analysis(
+            game_id="g",
+            fen=fen,
+            ply=6,
+            lines=[Line(moves=[best], depth=12, expected_score=0.8)],
+            decisive=False,
+            only_move=False,
+        )
+
+    mate = facts_from_analysis(chess.Board(SCHOLAR), analysed(SCHOLAR, "h5f7"))
+    assert mate.nature is not None and mate.nature.startswith("forcing")
+    sheet = fact_sheet(mate, DisclosureLevel.QUESTION)
+    assert "nature: forcing: the answer is a check, a capture or a promotion" in sheet
+    assert "f7" not in sheet.split("Fact sheet:")[1] and "queen" not in sheet
+    # The trial game's endgame: a rook up, a pawn on d7, dxe8=Q+ leads to mate.
+    fen = "1q2r2k/3P4/p6p/1pRQ2p1/8/5P2/PP4PP/5R1K w - - 1 34"
+    promote = facts_from_analysis(chess.Board(fen), analysed(fen, "d7e8q"))
+    assert promote.nature is not None and promote.nature.startswith("forcing")
+    quiet_fen = "r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 4"
+    quiet = facts_from_analysis(chess.Board(quiet_fen), analysed(quiet_fen, "b1c3"))
+    assert quiet.nature is not None and quiet.nature.startswith("quiet")
+    assert "nature: quiet" in fact_sheet(quiet, DisclosureLevel.QUESTION)

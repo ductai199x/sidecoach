@@ -42,6 +42,11 @@ What sits on top of the board is told apart by geometry, never by colour:
 - A tint over half the board or more is no highlight but a theme this recogniser was not
   built on; those cells read as unknown until the pipeline rebuilds it from a start
   position.
+- A drawing -- an arrow, the edge of a mark -- is saturated colour that is neither the
+  square's own colour nor a white or black piece nor the blend of the two where a piece's
+  edge is smoothed onto the square. A cell with more than a sliver of such pixels reads as
+  unknown with `hover` set until the drawing is gone, since an arrowhead over a piece can
+  look like a different piece, and a move must not commit through it.
 
 This is theme-specific by construction and needs no training. The learned classifier planned
 in DESIGN.md section 5.2 generalises across themes later and can be trained on the crops this
@@ -77,6 +82,21 @@ TINT_MIN_COSINE = 0.9
 TINT_MIN_CORNER_SHIFT = HIGHLIGHT_TOLERANCE / 2
 CORNER_CLEAN_MAX = 0.25
 CORNER_MIN_KNOWN = 0.2
+# Something drawn over a square -- an arrow, a mark's edge -- is saturated colour far from
+# the square's own colour, which a white or black piece never is. The smoothed edge of a
+# dark piece on a bright highlight is chromatic too, but it lies on the line from the
+# square's colour to black (a white piece's edge, to white); a drawing is off both lines
+# by more than OVERLAY_OFF_LINE. A cell with more than OVERLAY_MAX of its inner pixels
+# like that cannot be read, so no move commits through it.
+OVERLAY_DISTANCE = 60.0
+OVERLAY_CHROMA = 70.0
+OVERLAY_OFF_LINE = 40.0
+OVERLAY_MAX = 0.03
+# The move-classification badge sits on the top-right corner; a quarter-disc of this
+# radius (as a share of the cell) around that corner is not measured for drawings.
+OVERLAY_BADGE_RADIUS = 0.4
+# Pieces whose core colour is this chromatic are a coloured set; the overlay rule is then off.
+PIECE_CHROMA_MAX = 40.0
 EMPTY_MAX_FRACTION = 0.04
 # Chess.com's legal-move hint dots cover about a tenth of a cell; the smallest piece, a pawn,
 # covers a third. Anything in between is reported as unknown, which carries no evidence.
@@ -171,6 +191,10 @@ class Silhouette:
     # deeper than the ring: a tint reaches them, an outline does not.
     inner: np.ndarray
     corner_pixels: np.ndarray
+    # The share of inner pixels that are saturated colour far from the square's own colour
+    # (an arrow drawn over the square), and the median chroma of the piece's core.
+    overlay: float = 0.0
+    chroma: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -330,6 +354,51 @@ def _align_centroid(mask: np.ndarray) -> tuple[float, float]:
     return _centroid(mask & _BADGE_BLIND)
 
 
+def _overlay_blind(size: int) -> np.ndarray:
+    """Pixels the overlay measure looks at: everything outside the badge's corner disc."""
+    ys, xs = np.mgrid[0:size, 0:size]
+    return np.hypot(xs - (size - 1), ys) / size > OVERLAY_BADGE_RADIUS
+
+
+_OVERLAY_BLIND = _overlay_blind(CELL)
+
+
+def _off_line(pixels: np.ndarray, start: np.ndarray, end: np.ndarray) -> np.ndarray:
+    """How far each pixel lies from the segment of colours between `start` and `end`."""
+    direction = end - start
+    length = float(direction @ direction) or 1.0
+    along = np.clip(((pixels - start) @ direction) / length, 0.0, 1.0)
+    nearest = start + along[:, None] * direction
+    return np.linalg.norm(pixels - nearest, axis=1)
+
+
+def _overlay_fraction(
+    inner: np.ndarray, background: np.ndarray, distance: np.ndarray, chroma_map: np.ndarray
+) -> float:
+    """The share of inner pixels that are a drawing: chromatic, far from the square's colour,
+    and off the lines from that colour to black and to white where piece edges blend.
+
+    The badge's quarter-disc at the top-right corner is left out: a move-classification
+    badge is saturated colour drawn over the square that stays until the next move, and the
+    cell under it must still read. An arrowhead lands on the middle of its square and a mark
+    rings the whole square, so both are seen without the corner; only the first inch of an
+    arrow's tail leaving a square up and to the right is lost, and the piece it leaves from
+    is genuinely still readable.
+    """
+    size = inner.shape[0]
+    blind = _OVERLAY_BLIND if size == CELL else _overlay_blind(size)
+    candidates = (distance > OVERLAY_DISTANCE) & (chroma_map > OVERLAY_CHROMA) & blind
+    if not candidates.any():
+        return 0.0
+    pixels = inner[candidates].astype(np.float32)
+    start = background.astype(np.float32)
+    off = np.minimum(
+        _off_line(pixels, start, np.zeros(3, dtype=np.float32)),
+        _off_line(pixels, start, np.full(3, 255.0, dtype=np.float32)),
+    )
+    return float(np.count_nonzero(off > OVERLAY_OFF_LINE)) / candidates.size
+
+
 def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
     """Silhouette mask, foreground fraction, colour statistics, centroid, hover, background."""
     background = ring_median_color(patch)
@@ -340,8 +409,11 @@ def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
     mask = _fill_enclosed(distance > BG_TOLERANCE)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, _KERNEL)
     fraction = float(mask.mean())
+    chroma_map = inner.max(axis=2).astype(np.float32) - inner.min(axis=2).astype(np.float32)
+    overlay = _overlay_fraction(inner, background, distance, chroma_map)
     luminance = 0.0
     brightness = 0.0
+    chroma = 0.0
     centroid = (0.5, 0.5)
     if fraction > 0:
         # Colour statistics come from the core of the piece, not its outline: white pieces
@@ -352,6 +424,7 @@ def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
         sample = gray[sample_mask]
         luminance = float(np.median(sample))
         brightness = float((sample > 128).mean())
+        chroma = float(np.median(chroma_map[sample_mask]))
         centroid = _centroid(mask)
     # Chess.com's hover outline is about 5% of the cell wide and sits at its edge, so the
     # ring the background is read from stays clean and serves as the reference. The corner
@@ -368,6 +441,8 @@ def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
         hover,
         inner,
         corner_pixels(patch),
+        overlay,
+        chroma,
     )
 
 
@@ -555,6 +630,9 @@ class ThemeModel:
     # Rank-digit exemplars (value -> glyph) learned from the start position, where the
     # orientation is known; used to read the orientation cold from any board of this theme.
     rank_labels: dict[int, np.ndarray] = field(default_factory=dict)
+    # Whether the pieces are white and black rather than a coloured set: only then can a
+    # saturated patch over a square be called something drawn on it (see OVERLAY_MAX).
+    achromatic_pieces: bool = True
 
     @property
     def symbols(self) -> set[str]:
@@ -635,6 +713,11 @@ class ThemeModel:
             # Something that is not a tint sits on the square: a hover outline thick enough
             # to fill the ring, a capture ring, an edge. The silhouette is not the board,
             # and a commit must wait until it is gone.
+            return _reading(sil, "unknown", hover=True)
+        if getattr(self, "achromatic_pieces", True) and sil.overlay > OVERLAY_MAX:
+            # An arrow or a mark drawn over the square: saturated colour a white or black
+            # piece never has. Whatever the silhouette says now is not the position -- an
+            # arrowhead over a black pawn reads as a white piece -- so the cell waits.
             return _reading(sil, "unknown", hover=True)
         if sil.fraction <= EMPTY_MAX_FRACTION:
             return _reading(
@@ -848,6 +931,8 @@ class ThemeModel:
             best = max(samples[symbol], key=lambda sil: iou(sil.mask, reference_mask))
             fused[symbol] = _fuse(symbol, [best])
         model = cls()
+        chromas = [sil.chroma for sils in samples.values() for sil in sils]
+        model.achromatic_pieces = bool(chromas) and float(np.median(chromas)) < PIECE_CHROMA_MAX
         for symbol in samples:
             exemplar = fused[symbol]
             if float(exemplar.mask.mean()) < PIECE_MIN_FRACTION:

@@ -432,7 +432,9 @@ def test_clock_scales_the_policy_and_a_new_game_resets_it() -> None:
     # A fresh 10+0 game: the peak clock bands it as rapid.
     coach.on_event(ClockObservation(white_ms=600_000, black_ms=600_000, running=Side.WHITE), 1.0)
     assert coach.policy.time_control is TimeControl.RAPID
-    # The user is White, so their remaining is White's; a low clock shrinks the stuck hint.
+    # The user is White, so their remaining is White's; a low clock shrinks the stuck hint
+    # (down to the floor, which the test coach's ten-second setting already sits under).
+    coach.policy.settings = PolicySettings(stuck_seconds=45)
     coach.on_event(ClockObservation(white_ms=50_000, black_ms=300_000, running=Side.WHITE), 2.0)
     assert coach.policy._remaining_ms == 50_000
     assert coach.policy.stuck_threshold() < coach.policy.settings.stuck_seconds

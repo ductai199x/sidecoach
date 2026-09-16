@@ -45,10 +45,15 @@ def time_control_of(initial_ms: int | None, increment_ms: int = 0) -> TimeContro
 class PolicySettings:
     stuck_seconds: float = 45.0
     quiet: bool = False
-    # The stuck threshold never drops below this, even on a low clock.
-    stuck_floor_seconds: float = 8.0
+    # The stuck threshold never drops below this, even on a low clock. Twenty seconds on a
+    # move is thinking, not being stuck; at eight, the first live game got a nudge on nearly
+    # every endgame move, each one spoken over the next.
+    stuck_floor_seconds: float = 20.0
     # With a clock, a hint comes after this share of the remaining time, at most.
     stuck_share_of_remaining: float = 0.08
+    # Under this much clock the user is in a scramble: a two-sentence question takes longer
+    # to hear than they have to think, so no stuck hints at all.
+    stuck_scramble_seconds: float = 30.0
 
 
 @dataclass
@@ -119,11 +124,21 @@ class InterjectionPolicy:
             return self._silent("no position yet")
         if not self._may_speak_now(self._ply):
             return None
+        if self.in_scramble:
+            return self._silent("time scramble: no stuck hints")
         threshold = self.stuck_threshold()
         if ts - self._since < threshold:
             return self._silent(f"waiting for a stuck hint at {threshold:.0f}s")
         self.last_reason = None
         return Trigger.STUCK
+
+    @property
+    def in_scramble(self) -> bool:
+        """Whether the user's clock is down to the last seconds."""
+        return (
+            self._remaining_ms is not None
+            and self._remaining_ms < self.settings.stuck_scramble_seconds * 1000
+        )
 
     def _silent(self, reason: str) -> None:
         self.last_reason = reason

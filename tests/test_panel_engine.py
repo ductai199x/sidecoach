@@ -123,3 +123,35 @@ def test_end_game_refuses_unknown_outcomes(tmp_path: Path) -> None:
         engine.end_game("rage-quit")
     engine.end_game("draw")
     assert engine._commands.get_nowait() == ("end", "draw")
+
+
+def test_legal_move_dots_are_not_a_degraded_reading(tmp_path: Path) -> None:
+    """A picked-up rook puts a dot on a dozen squares, each too small to be a piece and read
+    as unknown; the first live game logged "reading degraded" on nearly every endgame move
+    for it. Only covered cells and unknowns that are piece-sized or hovered count."""
+    from types import SimpleNamespace
+
+    from sidecoach.ui.panel import DEGRADED_FRAMES
+    from sidecoach.vision.pieces import CellReading
+
+    def cell(kind: str, fraction: float = 0.0, **kw: object) -> CellReading:
+        return CellReading(kind, None, None, 0.0, fraction, 0.0, **kw)  # type: ignore[arg-type]
+
+    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
+    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+    dots = [[cell("empty") for _ in range(8)] for _ in range(8)]
+    for c in range(8):  # a rook's whole rank of dots, plus its own hovered square
+        dots[3][c] = cell("unknown", 0.08)
+    dots[3][0] = cell("unknown", 0.3, hover=True)
+    degraded = False
+    for _ in range(DEGRADED_FRAMES + 2):
+        degraded = engine._check_degraded(SimpleNamespace(readings=dots), degraded)
+    assert degraded is False
+    # A dialog fading in covers cells; that is degraded.
+    dialog = [[cell("empty") for _ in range(8)] for _ in range(8)]
+    for r in range(3):
+        for c in range(3):
+            dialog[r][c] = cell("unknown", 0.5, covered=True)
+    for _ in range(DEGRADED_FRAMES + 2):
+        degraded = engine._check_degraded(SimpleNamespace(readings=dialog), degraded)
+    assert degraded is True

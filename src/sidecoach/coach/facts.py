@@ -272,6 +272,13 @@ def _to_move(uci: str) -> chess.Move | None:
         return None
 
 
+def nature_of(board: chess.Board, best: chess.Move) -> str:
+    """Whether the best move is forcing or quiet, in the words the sheet uses."""
+    if board.is_capture(best) or board.gives_check(best) or best.promotion:
+        return "forcing: the answer is a check, a capture or a promotion"
+    return "quiet: there is no tactic to find here; the move improves your position"
+
+
 def facts_from_analysis(
     board: chess.Board,
     analysis: Analysis,
@@ -338,10 +345,12 @@ def facts_from_analysis(
     ideas = [fact.text for fact in positional.top_features(board, us, phase=phase, limit=2)]
 
     piece: str | None = None
+    nature: str | None = None
     if best is not None:
         moving = board.piece_at(best.from_square)
         if moving is not None:
             piece = f"your {PIECE_NAMES[moving.piece_type]}"
+        nature = nature_of(board, best)
 
     candidates: list[str] = []
     if lines:
@@ -364,6 +373,7 @@ def facts_from_analysis(
         last_move=last_move,
         decisive=analysis.decisive,
         only_move=analysis.only_move,
+        nature=nature,
         theme=theme_text,
         region=region,
         piece=piece,

@@ -51,6 +51,12 @@ class PositionFacts(BaseModel):
     last_move: str | None = None
     decisive: bool = False
     only_move: bool = False
+    # Whether the best idea is forcing -- a check, a capture, a promotion -- or quiet. Given
+    # from the question level: "have you looked at every check and capture?" is the first
+    # thing a coach asks a stuck player, and it points at no square, piece or move; "there
+    # is no tactic here" stops a fruitless hunt. Without it the model, seeing only the
+    # board, fell back on the same pawn-advance homily for every stuck hint.
+    nature: str | None = None
     theme: str | None = None
     region: str | None = None
     piece: str | None = None
@@ -87,11 +93,21 @@ _ALWAYS: tuple[str, ...] = (
 )
 _BY_LEVEL: dict[DisclosureLevel, tuple[str, ...]] = {
     DisclosureLevel.SILENT: (),
-    DisclosureLevel.QUESTION: (),
-    DisclosureLevel.THEME: ("theme", "plan"),
-    DisclosureLevel.REGION: ("theme", "plan", "ideas", "region"),
-    DisclosureLevel.PIECE: ("theme", "plan", "ideas", "region", "piece", "focus", "tactic"),
+    DisclosureLevel.QUESTION: ("nature",),
+    DisclosureLevel.THEME: ("nature", "theme", "plan"),
+    DisclosureLevel.REGION: ("nature", "theme", "plan", "ideas", "region"),
+    DisclosureLevel.PIECE: (
+        "nature",
+        "theme",
+        "plan",
+        "ideas",
+        "region",
+        "piece",
+        "focus",
+        "tactic",
+    ),
     DisclosureLevel.CANDIDATE: (
+        "nature",
         "theme",
         "plan",
         "ideas",
@@ -103,6 +119,7 @@ _BY_LEVEL: dict[DisclosureLevel, tuple[str, ...]] = {
         "threats",
     ),
     DisclosureLevel.LINE: (
+        "nature",
         "theme",
         "plan",
         "ideas",

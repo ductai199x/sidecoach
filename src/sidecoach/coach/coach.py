@@ -20,6 +20,7 @@ import re
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 import chess
 
@@ -88,7 +89,7 @@ TRIVIAL_LOSS = 0.02
 # Verbalized sampling: how many candidate replies to ask for, and the room and warmth to
 # give the distribution. Warmer than a single reply on purpose, since a check filters them.
 VS_CANDIDATES = 4
-VS_MAX_TOKENS = 600
+VS_MAX_TOKENS = 2048
 VS_TEMPERATURE = 0.9
 VS_DIRECTIVE = (
     "\n\nInstead of one reply, give FOUR different ways you could say this, varied in wording "
@@ -98,7 +99,12 @@ VS_DIRECTIVE = (
     "likely you would be to choose each; they need not sum to one."
 )
 _VS_MARKER = re.compile(r"\[\s*p?\s*=?\s*([0-9]*\.?[0-9]+)\s*\]\s*", re.IGNORECASE)
+# A marker fragment left in a candidate's text: a whole one, or one cut off mid-way.
+_STRAY_MARKER = re.compile(r"\s*\[\s*p\s*=\s*[0-9.]*\]?\s*")
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
+# Where a reply's last complete sentence ends: terminal punctuation, then any closing
+# quote or bracket. What follows the last of these is a sentence the model never finished.
+_SENTENCE_END = re.compile(r"[.!?…][\"'”’)\]]*(?=\s|$)")
 
 
 def _vs_wrap(messages: list[ChatMessage]) -> list[ChatMessage]:
@@ -112,21 +118,36 @@ def _vs_wrap(messages: list[ChatMessage]) -> list[ChatMessage]:
     return wrapped
 
 
+def complete_sentences(text: str) -> str:
+    """The text up to the end of its last complete sentence; empty if it has none.
+
+    A reply the token budget cut off ends mid-sentence -- "...is spot-on. Given" -- and in
+    the first live game a one-word stump like "Given" was the candidate that passed every
+    check and got spoken. A stump is not a reply, so it is trimmed away or, alone, dropped.
+    """
+    ends = list(_SENTENCE_END.finditer(text))
+    return text[: ends[-1].end()].strip() if ends else ""
+
+
 def _parse_candidates(raw: str) -> list[tuple[float, str]]:
     """The verbalized replies as (probability, text). A reply with no markers is one candidate.
 
     The text of each candidate runs from its marker to the next, so a reply that wraps onto
     another line is kept whole. A model that ignores the format still yields one usable reply.
+    Every candidate is cut back to its last complete sentence.
     """
     cleaned = _THINK_BLOCK.sub("", raw).strip()
     markers = list(_VS_MARKER.finditer(cleaned))
     if not markers:
+        cleaned = complete_sentences(_STRAY_MARKER.sub("", cleaned).strip())
         return [(1.0, cleaned)] if cleaned else []
     out: list[tuple[float, str]] = []
     for index, marker in enumerate(markers):
         start = marker.end()
         end = markers[index + 1].start() if index + 1 < len(markers) else len(cleaned)
-        text = cleaned[start:end].strip()
+        # A reply cut off by the token budget can end in a half-written next marker
+        # ("...move? [p=0.2" with no closing bracket); no fragment may reach the user.
+        text = complete_sentences(_STRAY_MARKER.sub("", cleaned[start:end]).strip())
         if not text:
             continue
         try:
@@ -144,6 +165,18 @@ def _sample_reply(passed: list[tuple[float, str]]) -> str:
 
 
 @dataclass
+class ModelCall:
+    """One call to the model: what it wrote, what the server said about the call (finish
+    reason, tokens, seconds), and how the candidates fared. The debug log's answer to
+    "why did the coach say that?"."""
+
+    raw: str
+    stats: dict[str, Any]
+    candidates: int
+    passed: int
+
+
+@dataclass
 class Spoken:
     """One coach message, with what it was checked against, for the log."""
 
@@ -151,6 +184,7 @@ class Spoken:
     level: DisclosureLevel
     problems: list[str]
     attempts: int
+    calls: list[ModelCall] = field(default_factory=list)
 
 
 @dataclass
@@ -327,13 +361,16 @@ class Speaker:
         problems: list[str] = []
         text = ""
         attempts = 0
+        calls: list[ModelCall] = []
         while attempts < 2:
             attempts += 1
+            stats: dict[str, Any] = {}
             try:
                 completion = self.provider.chat(
                     request.system, messages, max_tokens=VS_MAX_TOKENS, temperature=VS_TEMPERATURE
                 )
                 raw = completion.text
+                stats = dict(completion.stats)
             except Exception as exc:  # noqa: BLE001
                 self.failures += 1
                 self.last_error = f"{type(exc).__name__}: {exc}"
@@ -343,6 +380,7 @@ class Speaker:
                 for prob, candidate in _parse_candidates(raw)
             ]
             passed = [(prob, candidate) for prob, candidate, faults in scored if not faults]
+            calls.append(ModelCall(raw, stats, len(scored), len(passed)))
             if passed:
                 text, problems = _sample_reply(passed), []
                 break
@@ -370,7 +408,13 @@ class Speaker:
             fen=request.board.fen(),
             annotations=[*request.annotations, *mentions_in(text, request.board)],
         )
-        return Spoken(message=message, level=request.level, problems=problems, attempts=attempts)
+        return Spoken(
+            message=message,
+            level=request.level,
+            problems=problems,
+            attempts=attempts,
+            calls=calls,
+        )
 
     def _problems(self, text: str, request: _Request) -> list[str]:
         found = [
@@ -402,6 +446,12 @@ class Speaker:
 # What the user's words mean for disclosure. Deterministic on purpose: the model never
 # decides how much may be said.
 _HINT = re.compile(r"\b(hint|clue|nudge|help me|help|stuck|where should i look)\b", re.I)
+# A bare request for a hint, with nothing claimed: "hint", "give me a hint", "a clue".
+_ASK_HINT = re.compile(
+    r"^\W*(?:(?:give me |i need |can i have |i want |any )?(?:a |an |some )?"
+    r"(?:hint|clue|nudge|help|tip)s?(?: please)?)\W*$",
+    re.IGNORECASE,
+)
 _ASK_MOVE = re.compile(
     r"\b(best move|what (should|do|would) i (play|do)|what would you play|which move|"
     r"just tell me|what'?s the move|tell me the move|the answer)\b",
@@ -785,7 +835,8 @@ class Coach:
             return (
                 "The player has been thinking for a while and is stuck. Give one hint, at the "
                 "level of what the fact sheet allows, in one or two sentences, ending with a "
-                "question. Do not name a move.",
+                "question. Do not name a move. Take a different angle from every hint you "
+                "have already given in this game; never repeat one.",
                 fallback,
             )
         if trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE) and assessment and played:
@@ -835,7 +886,15 @@ class Coach:
             fallback = f"Think about {theme}."
         else:
             fallback = "What is your opponent's most dangerous idea here?"
-        if level >= DisclosureLevel.LINE and _ASK_LINE.search(said) and facts.line:
+        if _ASK_HINT.match(said):
+            # A bare "hint" carries no claim to be honest about; treated as one, the model
+            # answered its own last message as if the player had said it.
+            directive = (
+                "They asked for a hint. Give one, at the level of what the fact sheet allows, "
+                "in one or two sentences, ending with a question. Do not name a move, and do "
+                "not comment on anything said earlier."
+            )
+        elif level >= DisclosureLevel.LINE and _ASK_LINE.search(said) and facts.line:
             directive = (
                 f"They asked to see the line: give it -- {' '.join(facts.line)} -- plainly, then "
                 "one short sentence on the idea behind it. Do not answer with a question."

@@ -234,14 +234,28 @@ def test_blitz_keeps_only_the_post_move_word_and_bullet_nothing() -> None:
 
 
 def test_the_stuck_threshold_shrinks_with_the_clock() -> None:
-    policy = InterjectionPolicy(PolicySettings(stuck_seconds=45, stuck_floor_seconds=8))
+    policy = InterjectionPolicy(PolicySettings(stuck_seconds=45, stuck_floor_seconds=20))
     assert policy.stuck_threshold() == 45
     policy.set_remaining(15 * 60_000)
     assert policy.stuck_threshold() == 45, "plenty of time: the default holds"
-    policy.set_remaining(3 * 60_000)
-    assert policy.stuck_threshold() == 14.4, "eight per cent of three minutes"
-    policy.set_remaining(30_000)
-    assert policy.stuck_threshold() == 8, "never below the floor"
+    policy.set_remaining(5 * 60_000)
+    assert policy.stuck_threshold() == 24, "eight per cent of five minutes"
+    policy.set_remaining(100_000)
+    assert policy.stuck_threshold() == 20, "never below the floor"
+
+
+def test_no_stuck_hints_in_a_time_scramble() -> None:
+    # With 100 s left a hint still comes, at the floor; with 25 s left the user has no time
+    # to hear a question, let alone act on it.
+    policy = InterjectionPolicy(PolicySettings(stuck_seconds=45, stuck_floor_seconds=20))
+    policy.new_position(6, 0.0, user_to_move=True)
+    policy.set_remaining(100_000)
+    assert policy.tick(21.0) is Trigger.STUCK
+    policy = InterjectionPolicy(PolicySettings(stuck_seconds=45, stuck_floor_seconds=20))
+    policy.new_position(6, 0.0, user_to_move=True)
+    policy.set_remaining(25_000)
+    assert policy.tick(60.0) is None
+    assert policy.last_reason == "time scramble: no stuck hints"
 
 
 def test_priority_order_for_colliding_triggers() -> None:

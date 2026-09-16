@@ -663,12 +663,25 @@ class PanelEngine:
     def _check_degraded(self, pipe: Any, degraded: bool) -> bool:
         """Warn once when many cells cannot be read for a while (an overlay, a dialog), and
         say once when the reading is clean again. A single frame's blip -- a piece being
-        dragged across the board -- is not worth a line, hence the run of frames required."""
+        dragged across the board -- is not worth a line, hence the run of frames required.
+
+        A picked-up rook or queen puts a legal-move dot on a dozen squares, each too small
+        to be a piece and read as unknown; that is the site showing where it may go, not a
+        degraded reading, so those cells are not counted."""
+        from sidecoach.vision.pieces import PIECE_MIN_FRACTION
+
         readings = pipe.readings
         if readings is None:
             return degraded
         bad = sum(
-            1 for row in readings for reading in row if reading.kind == "unknown" or reading.covered
+            1
+            for row in readings
+            for reading in row
+            if reading.covered
+            or (
+                reading.kind == "unknown"
+                and (reading.hover or reading.fg_fraction >= PIECE_MIN_FRACTION)
+            )
         )
         self._bad_run = self._bad_run + 1 if bad >= DEGRADED_CELLS else 0
         if self._bad_run >= DEGRADED_FRAMES and not degraded:
@@ -882,6 +895,29 @@ class PanelEngine:
                 fen=message.fen,
                 annotations=[mark.model_dump() for mark in message.annotations],
             )
+            for index, call in enumerate(spoken.calls, start=1):
+                # What the model actually wrote, so a stump or a leak can be traced to its
+                # source; a reply the token budget cut short is worth a warning.
+                finish = call.stats.get("finish_reason") or "?"
+                tokens = call.stats.get("completion_tokens")
+                seconds = call.stats.get("elapsed_s")
+                summary = (
+                    f"model reply {index}: {call.candidates} candidates, {call.passed} passed"
+                    + (f", {tokens} tokens" if tokens is not None else "")
+                    + (f" in {seconds:.1f}s" if isinstance(seconds, (int, float)) else "")
+                    + (", cut off by the token budget" if finish == "length" else "")
+                )
+                self._emit(
+                    "coach",
+                    "warn" if finish == "length" else "debug",
+                    summary,
+                    raw=elide(call.raw, 2000),
+                    finish_reason=finish,
+                    completion_tokens=tokens,
+                    elapsed_s=seconds,
+                    candidates=call.candidates,
+                    passed=call.passed,
+                )
         seen = len(coach.spoken)
         speaker = coach.speaker
         if speaker.failures > failures:
