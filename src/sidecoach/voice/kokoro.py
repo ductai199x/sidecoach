@@ -21,6 +21,7 @@ import time
 from importlib.util import find_spec
 from pathlib import Path
 
+from sidecoach.voice.devices import follows_system_default, system_default
 from sidecoach.voice.notation import speak_notation
 from sidecoach.voice.runtime import Device
 from sidecoach.voice.runtime import session as make_session
@@ -52,6 +53,7 @@ class KokoroTTS:
         self.lang = lang
         self.device_wanted = device
         self.output_device = output_device  # a sounddevice output index or name
+        self._playback: int | None = None  # resolved once, when unconfigured
         self.device: Device | None = None  # where the graph actually loaded
         self.load_seconds: float | None = None
         self._queue: queue.Queue[str | None] = queue.Queue()
@@ -94,12 +96,25 @@ class KokoroTTS:
         where = self.device.detail if self.device else f"{self.device_wanted} (not loaded yet)"
         return True, f"kokoro-onnx, voice {self.voice}, {where}, speaker: {self.speaker_name()}"
 
+    def playback_device(self) -> int | str | None:
+        """The device lines play through: the configured one, else the one that follows the
+        system default (Windows' Sound Mapper), else PortAudio's own default."""
+        if self.output_device is not None:
+            return self.output_device
+        if self._playback is None:
+            self._playback = system_default("output")
+        return self._playback
+
     def speaker_name(self) -> str:
         """The output device the voice plays through, by name."""
         try:
             import sounddevice as sd  # type: ignore[reportMissingImports]
 
-            index = self.output_device if self.output_device is not None else sd.default.device[1]
+            device = self.playback_device()
+            if follows_system_default(device, "output"):
+                now = sd.query_devices(sd.default.device[1]).get("name", "?")
+                return f"the system default output ({now} now; follows a change)"
+            index = device if device is not None else sd.default.device[1]
             return str(sd.query_devices(index).get("name", index))
         except Exception:  # noqa: BLE001
             return str(self.output_device or "default output")
@@ -201,7 +216,7 @@ class KokoroTTS:
             if generation != self._generation:
                 return
         try:
-            self._sd.play(samples, sample_rate, device=self.output_device)  # type: ignore[attr-defined]
+            self._sd.play(samples, sample_rate, device=self.playback_device())  # type: ignore[attr-defined]
             self._sd.wait()  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - audio errors are not fatal
             log.warning("Kokoro playback failed: %s", exc)

@@ -30,6 +30,7 @@ from typing import Any
 
 import numpy as np
 
+from sidecoach.voice.devices import follows_system_default, system_default
 from sidecoach.voice.vad import HOP, SAMPLE_RATE, Endpointer, SileroGate
 
 log = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ class Microphone:
 
     def __init__(self, device: int | str | None = None) -> None:
         self.device = device
+        self._capture: int | None = None  # resolved once, when unconfigured
         self.frames: queue.Queue[np.ndarray] = queue.Queue(maxsize=QUEUE_FRAMES)
         self.dropped = 0
         self._stream: Any = None
@@ -56,15 +58,28 @@ class Microphone:
         try:
             import sounddevice as sd  # type: ignore[reportMissingImports]
 
-            index = self.device if self.device is not None else sd.default.device[0]
+            device = self.capture_device()
+            index = device if device is not None else sd.default.device[0]
             if index is None or (isinstance(index, int) and index < 0):
                 return False, "no default input device"
             info = sd.query_devices(index)
             if info.get("max_input_channels", 0) < 1:
                 return False, f"device {index} has no input channels"
+            if follows_system_default(device, "input"):
+                now = sd.query_devices(sd.default.device[0]).get("name", "?")
+                return True, f"the system default input ({now} now; follows a change when reopened)"
             return True, f"input device {index}: {info.get('name', '?')}"
         except Exception as exc:  # noqa: BLE001
             return False, f"no input device: {exc}"
+
+    def capture_device(self) -> int | str | None:
+        """The device frames come from: the configured one, else the one that follows the
+        system default (Windows' Sound Mapper), else PortAudio's own default."""
+        if self.device is not None:
+            return self.device
+        if self._capture is None:
+            self._capture = system_default("input")
+        return self._capture
 
     def open(self) -> bool:
         if self._stream is not None:
@@ -93,7 +108,7 @@ class Microphone:
                 channels=1,
                 dtype="float32",
                 blocksize=HOP,
-                device=self.device,
+                device=self.capture_device(),
                 callback=callback,
             )
             self._stream.start()
