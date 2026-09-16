@@ -341,7 +341,8 @@ def test_a_good_move_gets_one_sentence_from_the_model_with_the_template_to_fall_
     assert len(out) == 1 and out[0].text in ("Mate on the board, clean finish.", "That ends it.")
     assert out[0].trigger is Trigger.POST_MOVE
     directive = _directive(_given(provider, 0))
-    assert "The player just played Qxf7#" in directive and "best, as good as any" in directive
+    assert "The player just played Qxf7#" in directive
+    assert "best -- the engine's own choice" in directive
     assert "fifteen words at most" in directive and "give TWO different ways" in directive
     # When the reply fails, the two-word template stands in.
     from sidecoach.coach.coach import VERDICTS
@@ -830,3 +831,26 @@ def test_a_quick_answer_is_a_turn_before_the_model_and_a_failed_reply_adds_nothi
     assert len(rejected) == 1 and rejected[0].attempts == 2 and rejected[0].problems
     turns = [e for e in coach.conversation.entries if e.role == "assistant"]
     assert [e.text for e in turns] == [quick]
+
+
+def test_a_fact_question_falls_back_to_the_fact_not_the_hint() -> None:
+    """ "How many pieces am I up?" once fell back, when the model's reply failed, to the
+    hint for the position ("Something forcing is on..."): the fallback for a question
+    about a fact that is never withheld is that fact."""
+    coach, provider = _coach(["", ""])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    coach.ask("how many pieces am I up?", 8.0)
+    out = _messages(coach)
+    assert out and out[-1].text.startswith("Material:")
+    provider.replies = ["", ""]
+    coach.ask("am I winning?", 9.0)
+    out = _messages(coach)
+    assert out and out[-1].text.startswith("Right now you are winning")
+    provider.replies = ["", ""]
+    coach.ask("what opening is this?", 10.0)
+    out = _messages(coach)
+    assert out and (
+        out[-1].text == "We left the opening book early."
+        or out[-1].text.startswith("The opening was the")
+    )

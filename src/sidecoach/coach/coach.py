@@ -440,6 +440,19 @@ _ASK_REVIEW = re.compile(
     r"what should i work on)\b",
     re.IGNORECASE,
 )
+# Questions about facts that are never withheld: the material, the opening, who stands better.
+_ASK_MATERIAL = re.compile(
+    r"\b(?:material|(?:how many|what) (?:pieces|pawns)|(?:am|are) i up|who'?s up|up material|"
+    r"down material|piece count)\b",
+    re.IGNORECASE,
+)
+_ASK_OPENING = re.compile(r"\b(?:opening|theory|book move)\b", re.IGNORECASE)
+_ASK_EVAL = re.compile(
+    r"\b(?:am i (?:winning|losing|better|worse|ok|okay|in trouble)|who'?s (?:better|winning)|"
+    r"how am i doing|is this (?:position )?good for me|what'?s the (?:eval|evaluation|score)|"
+    r"how bad is it|am i lost)\b",
+    re.IGNORECASE,
+)
 # A bare request for a hint, with nothing claimed: "hint", "give me a hint", "a clue".
 _ASK_HINT = re.compile(
     r"^\W*(?:(?:give me |i need |can i have |i want |any )?(?:a |an |some )?"
@@ -858,6 +871,37 @@ class Coach:
         self._last_verdict = chosen
         return chosen.format(san=san)
 
+    def _opening_so_far(self) -> str | None:
+        """The opening the game was in: the last name the book gave."""
+        with self._lock:
+            for record in reversed(self.conversation.records):
+                if record.analysis is not None and record.analysis.opening:
+                    return record.analysis.opening
+        return None
+
+    def _standing_template(self, position: _Position) -> str:
+        """Who stands better, from the engine's score for the position, in plain words."""
+        analysis = position.analysis
+        if analysis is None or not analysis.lines:
+            return "I have no evaluation for this yet."
+        score = analysis.lines[0].expected_score
+        if position.board.turn != self.user_colour:
+            score = 1.0 - score
+        if score >= 0.85:
+            words = "you are winning"
+        elif score >= 0.62:
+            words = "you are better"
+        elif score > 0.38:
+            words = "it is about equal"
+        elif score > 0.15:
+            words = "you are worse"
+        else:
+            words = "you are losing"
+        material = ""
+        if position.facts is not None and position.facts.material:
+            material = f"; material: {position.facts.material}"
+        return f"Right now {words}{material}."
+
     def _review_template(self) -> str:
         """The record in a sentence, for when the model's review fails the checks: the
         tally and where ground was lost, from the same records the messages carry."""
@@ -1055,8 +1099,16 @@ class Coach:
                 )
             elif routine:
                 fallback = self._verdict(played.san, label)
+                meaning = {
+                    "book": "opening theory",
+                    "brilliant": "a sound sacrifice",
+                    "great": "the one move that keeps the advantage",
+                    "best": "the engine's own choice",
+                    "excellent": "as strong as the best move",
+                    "good": "a sound move, a little behind the best",
+                }.get(label, "a sound move")
                 instruction = (
-                    f"The player just played {played.san} ({words}): {label}, as good as any. "
+                    f"The player just played {played.san} ({words}): {label} -- {meaning}. "
                     "One short sentence, fifteen words at most, in your own voice: a nod, or "
                     "what the move does when a message says so. No question, no lecture, no "
                     "advice, no guess at what it allows or risks, and not the same words as "
@@ -1103,6 +1155,17 @@ class Coach:
             )
         else:
             fallback = "What is your opponent's most dangerous idea here?"
+        # A question about a fact that is never withheld -- the material, the opening, who
+        # stands better -- falls back to that fact, not to the hint for the position.
+        if _ASK_MATERIAL.search(said) and facts.material:
+            fallback = f"Material: {facts.material}."
+        elif _ASK_OPENING.search(said):
+            opening = self._opening_so_far()
+            fallback = (
+                f"The opening was the {opening}." if opening else "We left the opening book early."
+            )
+        elif _ASK_EVAL.search(said):
+            fallback = self._standing_template(position)
         shown = (
             " Your last turn above is the quick answer they have already been shown; build on "
             "it, do not repeat it."
