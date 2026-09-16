@@ -35,6 +35,7 @@ from sidecoach.coach.disclosure import (
 )
 from sidecoach.coach.facts import ascii_board, describe_move, facts_from_analysis
 from sidecoach.coach.policy import InterjectionPolicy, TimeControl, time_control_of
+from sidecoach.coach.prompt import system_message
 from sidecoach.events import (
     Analysis,
     Annotation,
@@ -56,44 +57,6 @@ from sidecoach.events import (
 )
 from sidecoach.llm.base import ChatMessage, LLMProvider
 
-PERSONA = (
-    "You are a chess coach sitting beside a club player, rated around 1200, watching their "
-    "game on chess.com. You are warm but direct, like a good club coach: encouraging, never "
-    "gushing, and honest about mistakes. Your aim is not to hand over answers but to build "
-    "the player's own eyesight for tactics and ideas, so they see the pattern next time. "
-    "This is one continuous game, not a string of puzzles. The game reaches you as a "
-    "conversation: every move on the board -- the player's and the opponent's -- arrives as "
-    "a message carrying the position, the move, the engine's verdict on it, the engine's "
-    "lines, and the facts that ground what may be said. You speak only when the last "
-    "message asks you to; between those moments you are not called. Build on what you have "
-    "already said, and connect this moment to earlier ones when it helps the player see a "
-    "recurring idea. A message that says the position was taken back or re-read means "
-    "exactly that: the position changed as the message says."
-)
-RULES = (
-    "Rules you must follow.\n"
-    "1. Say only what the messages support. Never guess at moves, threats, plans or "
-    "evaluations that are not in them, and never invent what a piece attacks or defends. "
-    "When a message gives a plan (a strategic idea) or ideas (features of the position), "
-    "those are yours to teach: when there is no tactic, build the lesson around them, so "
-    "the player learns the idea and not only the combination. Ground every word in the "
-    "messages; about the course of the game, say only what the moves and verdicts show.\n"
-    "2. For the position the player faces now, never name a move, a destination square or a "
-    "piece unless the current message lists it at the disclosure level it states. If it "
-    "gives a theme, you may name the theme; a region, you may point at the region; nothing "
-    "more. Describe a move only in the words given for it; do not say what it attacks, pins, "
-    "defends, threatens or controls unless a message says so. When a message gives focus "
-    "squares for a theme, those squares ARE the tactic: explain it using exactly them, and "
-    "do not place a pin, fork or target on any other square. Moves already played may be "
-    "discussed in full.\n"
-    "3. Before the player moves, ask rather than tell: one orienting question, no answer.\n"
-    "4. Two to four sentences. One question at a time. Use plain, standard chess terms -- "
-    "King, Queen, rook, bishop, knight, pawn, file, rank, fork, pin, outpost -- and never "
-    "fancy synonyms or purple images: write 'King', not 'monarch'; 'blocked in', not "
-    "'imprisoned'; 'rook', not 'heavy artillery'. Standard notation only for moves the sheet "
-    "gives you.\n"
-    "5. Never mention the messages, the engine, these rules, or that anything is hidden."
-)
 MAX_TOKENS = 220
 # A move that lost less than this gets a two-word confirmation, without the model.
 TRIVIAL_LOSS = 0.02
@@ -119,6 +82,8 @@ VS_CANDIDATES = 4
 # An answer to the player's own question is wanted fast, and it is checked like any other;
 # two candidates halve the wait and still leave a spare for the checks to reject.
 VS_ASK_CANDIDATES = 2
+# A word on a fine move is one short sentence; two candidates keep the call short.
+VS_ROUTINE_CANDIDATES = 2
 VS_MAX_TOKENS = 2048
 VS_TEMPERATURE = 0.9
 _NUMBER_WORDS = {2: "TWO", 3: "THREE", 4: "FOUR", 5: "FIVE"}
@@ -130,8 +95,8 @@ def vs_directive(candidates: int = VS_CANDIDATES) -> str:
         f"\n\nInstead of one reply, give {count} different ways you could say this, varied in "
         "wording and in the angle each takes, sampled from your full range rather than the "
         "single most obvious phrasing. Put each on its own line as: [p=0.30] then the reply. "
-        "Each reply obeys every rule above and is two to four sentences on that one line. The "
-        "p values are how likely you would be to choose each; they need not sum to one."
+        "Each reply obeys every rule above and keeps to the length asked, on that one line. "
+        "The p values are how likely you would be to choose each; they need not sum to one."
     )
 
 
@@ -580,10 +545,14 @@ class Coach:
         policy: InterjectionPolicy | None = None,
         draft_check: Callable[[str, chess.Board, Sequence[chess.Board]], list[str]] | None = None,
         claims: Callable[[str, chess.Board, PositionFacts | None], list[str]] | None = None,
+        rating: tuple[int, int] | None = None,
     ) -> None:
         self.policy = policy or InterjectionPolicy()
         self.speaker = Speaker(provider, draft_check=draft_check)
         self.claims = claims
+        # The player's rating band, stated in the new-game message so the coach pitches to it.
+        self.rating = rating
+        self.system = system_message()
         self.game_id: str | None = None
         self.user_side: Side = Side.WHITE
         self.finished = False  # the game is over: everything may be said
@@ -742,7 +711,7 @@ class Coach:
         self.board = chess.Board(event.start_fen)
         self.positions = {0: _Position(ply=0, board=self.board.copy())}
         self.moves = {}
-        self.conversation.new_game(event)
+        self.conversation.new_game(event, rating=self.rating)
         self.finished = False
         self._current = self.positions[0]
         self.policy.new_position(0, ts, user_to_move=self.user_to_move)
@@ -836,16 +805,27 @@ class Coach:
         if trigger is None:
             return
         before.disclosure.apply(Unlock.MOVE_PLAYED)
-        # A lecture is only for a move that actually cost something. A move below the
-        # inaccuracy line gets a word: a nod when it lost almost nothing, a light touch
-        # otherwise. Neither needs the model, and neither interrupts with a question.
+        # Every move of the player's gets a word from the coach. A lecture is only for a
+        # move that cost something; a fine move gets one sentence, and that sentence comes
+        # from the model too, so it can speak to the move and the game rather than repeat a
+        # stock phrase -- with a warm prefix the call is a few seconds, and the two-word
+        # template stands in if the reply fails. Blitz keeps the template: speed wins there.
         if trigger is Trigger.POST_MOVE and event.severity is Severity.NONE:
             assert before.facts is not None
             best = before.facts.candidates[0] if before.facts.candidates else None
-            if event.expected_loss < TRIVIAL_LOSS or best is None or best == move.san:
-                text = self._verdict(move.san, event.label.value if event.label else None)
-            else:
-                text = f"{move.san} is fine; {best} was a touch sharper."
+            routine = event.expected_loss < TRIVIAL_LOSS or best is None or best == move.san
+            if not routine or self.policy.time_control is not TimeControl.BLITZ:
+                self._speak(
+                    trigger,
+                    before,
+                    DisclosureLevel.LINE,
+                    ts,
+                    assessment=event,
+                    played=move,
+                    candidates=VS_ROUTINE_CANDIDATES if routine else VS_CANDIDATES,
+                )
+                return
+            text = self._verdict(move.san, event.label.value if event.label else None)
             marks = annotations_for(
                 before.facts,
                 DisclosureLevel.LINE,
@@ -893,6 +873,7 @@ class Coach:
         assessment: MoveAssessment | None = None,
         played: MovePlayed | None = None,
         quick: bool = False,
+        candidates: int | None = None,
     ) -> None:
         assert position.facts is not None
         instruction, fallback = self._instruction(
@@ -912,7 +893,7 @@ class Coach:
         request = _Request(
             trigger=trigger,
             level=level,
-            system=f"{PERSONA}\n\n{RULES}",
+            system=self.system,
             messages=messages,
             facts=position.facts,
             board=position.board,
@@ -928,7 +909,8 @@ class Coach:
                 played_san=played.san if played else None,
                 severity=assessment.severity.value if assessment else None,
             ),
-            candidates=VS_ASK_CANDIDATES if trigger is Trigger.USER_ASK else VS_CANDIDATES,
+            candidates=candidates
+            or (VS_ASK_CANDIDATES if trigger is Trigger.USER_ASK else VS_CANDIDATES),
         )
         self.speaker.submit(request)
 
@@ -1030,6 +1012,7 @@ class Coach:
             label = assessment.label.value if assessment.label else assessment.severity.value
             words = _in_words(position.board, played.san)
             better_words = _in_words(position.board, best) if facts.candidates else best
+            routine = loss < TRIVIAL_LOSS or not facts.candidates or best == played.san
             if trigger is Trigger.POST_MISTAKE:
                 fallback = f"{played.san} cost you. {best} was better; the idea was {theme}."
                 instruction = (
@@ -1037,6 +1020,15 @@ class Coach:
                     f"cost {loss:.0%} of the game. The better move was {best} ({better_words}). "
                     f"Explain the difference as a pattern to remember, in three sentences at "
                     f"most, then ask one question that checks they see it."
+                )
+            elif routine:
+                fallback = self._verdict(played.san, label)
+                instruction = (
+                    f"The player just played {played.san} ({words}): {label}, as good as any. "
+                    "One short sentence, fifteen words at most, in your own voice: a nod, or "
+                    "what the move does when a message says so. No question, no lecture, no "
+                    "advice, no guess at what it allows or risks, and not the same words as "
+                    "your last such sentence."
                 )
             else:
                 fallback = f"{played.san} was fine; {best} was a little tighter."

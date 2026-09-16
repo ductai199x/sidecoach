@@ -299,10 +299,8 @@ def test_stuck_gives_a_hint_once_and_the_opponents_turn_is_silent() -> None:
     assert _messages(quiet) == []
 
 
-def test_a_good_move_earns_two_words_without_the_model() -> None:
-    coach, provider = _coach(["never used"])
-    _play_to_scholar(coach)
-    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+def _mate_in_one_played(coach: Coach) -> None:
+    """The user plays Qxf7#, the engine's own move, after the scholar's-mate position."""
     board = chess.Board(SCHOLAR)
     move = board.parse_san("Qxf7#")
     board.push(move)
@@ -330,11 +328,45 @@ def test_a_good_move_earns_two_words_without_the_model() -> None:
         ),
         11.0,
     )
+
+
+def test_a_good_move_gets_one_sentence_from_the_model_with_the_template_to_fall_back_on() -> None:
+    # Every move of the player's is a turn for the coach: a fine move gets one short
+    # sentence from the model, asked for as two candidates so the call stays short.
+    coach, provider = _coach(["[p=0.6] Mate on the board, clean finish.\n[p=0.4] That ends it."])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    _mate_in_one_played(coach)
     out = _messages(coach)
+    assert len(out) == 1 and out[0].text in ("Mate on the board, clean finish.", "That ends it.")
+    assert out[0].trigger is Trigger.POST_MOVE
+    directive = _directive(_given(provider, 0))
+    assert "The player just played Qxf7#" in directive and "best, as good as any" in directive
+    assert "fifteen words at most" in directive and "give TWO different ways" in directive
+    # When the reply fails, the two-word template stands in.
     from sidecoach.coach.coach import VERDICTS
 
+    coach, provider = _coach(["", ""])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    _mate_in_one_played(coach)
+    out = _messages(coach)
     assert len(out) == 1 and out[0].text in [p.format(san="Qxf7#") for p in VERDICTS["best"]]
-    assert provider.prompts == [], "no model call for a good move"
+    assert len(provider.prompts) == 2, "one call, one retry, then the template"
+
+
+def test_in_blitz_a_good_move_earns_two_words_without_the_model() -> None:
+    from sidecoach.coach.coach import VERDICTS
+    from sidecoach.coach.policy import TimeControl
+
+    coach, provider = _coach(["never used"])
+    _play_to_scholar(coach)
+    coach.policy.time_control = TimeControl.BLITZ
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    _mate_in_one_played(coach)
+    out = _messages(coach)
+    assert len(out) == 1 and out[0].text in [p.format(san="Qxf7#") for p in VERDICTS["best"]]
+    assert provider.prompts == [], "no model call for a good move in blitz"
     # The wording is by the label and never the same twice running: "good, good, good"
     # for a whole game wore thin.
     seen = {coach._verdict("Nf3", "good") for _ in range(40)}

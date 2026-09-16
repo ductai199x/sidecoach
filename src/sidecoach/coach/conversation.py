@@ -124,7 +124,14 @@ class Conversation:
 
     # ---- the game's events, in the order they happen -----------------------------------
 
-    def new_game(self, event: GameStarted, *, opponent: str = "a bot", control: str = "") -> None:
+    def new_game(
+        self,
+        event: GameStarted,
+        *,
+        opponent: str = "a bot",
+        control: str = "",
+        rating: tuple[int, int] | None = None,
+    ) -> None:
         self.user_side = event.user_side
         self.start_fen = event.start_fen
         self.entries = []
@@ -132,6 +139,8 @@ class Conversation:
         self._drained = 0
         side = "White" if event.user_side == Side.WHITE else "Black"
         text = f"New game. You coach the player, who is {side}, against {opponent}."
+        if rating:
+            text += f" The player is rated about {rating[0]} to {rating[1]}."
         if control:
             text += f" Time control: {control}."
         if event.start_fen != chess.STARTING_FEN:
