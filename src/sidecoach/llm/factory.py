@@ -15,6 +15,8 @@ class ProviderDefaults:
     model: str
     api_key_env: str | None
     thinking_control: ThinkingControl
+    # An env var that overrides base_url: a hosted provider's endpoint is per account.
+    base_url_env: str | None = None
 
 
 PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
@@ -31,6 +33,7 @@ PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         model="qwen3.8-max",
         api_key_env="DASHSCOPE_API_KEY",
         thinking_control="param",
+        base_url_env="DASHSCOPE_BASE_URL",
     ),
 }
 
@@ -52,9 +55,10 @@ def make_provider(settings: LLMSettings, *, timeout_s: float | None = None) -> O
             f"llm.thinking_control must be one of {THINKING_CONTROLS}, got {control!r}"
         )
 
+    env_url = os.environ.get(defaults.base_url_env) if defaults.base_url_env else None
     return OpenAICompatProvider(
         settings.provider,
-        settings.base_url or defaults.base_url,
+        settings.base_url or env_url or defaults.base_url,
         settings.model or defaults.model,
         api_key=api_key,
         thinking_control=control,  # type: ignore[arg-type]
