@@ -223,6 +223,9 @@ class _Request:
     annotations: list[Annotation] = field(default_factory=list)
     # How many replies to ask the model for; fewer for an answer the player is waiting on.
     candidates: int = VS_CANDIDATES
+    # The moves played so far in the game (SAN). A reply about the game as it went may
+    # name them; the board checker must not fault "Rg6" from move 30 as unplayable now.
+    played: frozenset[str] = frozenset()
 
 
 def _after_best(request: _Request) -> list[chess.Board]:
@@ -369,18 +372,19 @@ class Speaker:
                 text, problems = _sample_reply(passed), []
                 break
             problems = scored[0][2] if scored else ["empty reply"]
-            messages = [
-                *messages,
-                {"role": "assistant", "content": raw.strip() or "(no reply)"},
-                {
-                    "role": "user",
-                    "content": (
-                        "Those replies are not allowed: " + "; ".join(problems) + ". Give "
-                        f"{_NUMBER_WORDS.get(request.candidates, request.candidates)} fresh, "
-                        "varied replies that avoid those, keeping to the fact sheet."
-                    ),
-                },
-            ]
+            # The second try carries the complaint inside the directive: appending the failed
+            # attempt and the complaint as two more messages doubled the prompt on a long
+            # game (131k tokens became 276k, past the model's context).
+            rejected = "; ".join(problems)
+            shown = raw.strip()[:600] or "(no reply)"
+            retry = dict(messages[-1])
+            retry["content"] = (
+                str(retry.get("content", ""))
+                + f"\n\nYour first attempt was:\n{shown}\n\nThose replies are not allowed: "
+                f"{rejected}. Give {_NUMBER_WORDS.get(request.candidates, request.candidates)} "
+                "fresh, varied replies that avoid those, keeping to the messages above."
+            )
+            messages = [*messages[:-1], retry]  # type: ignore[list-item]
         if problems:
             self.fallbacks += 1
             text = request.fallback
@@ -407,7 +411,11 @@ class Speaker:
             for item in leak_check(text, request.facts, request.level, said=request.user_text)
         ]
         if self.draft_check is not None:
-            found += self.draft_check(text, request.board, _after_best(request))
+            for problem in self.draft_check(text, request.board, _after_best(request)):
+                san = problem.split(":", 1)[0].strip()
+                if san in request.played:
+                    continue  # a move of the game's history, named as such
+                found.append(problem)
         return found
 
     def _run(self) -> None:
@@ -569,6 +577,9 @@ class Coach:
         # The player's rating band, stated in the new-game message so the coach pitches to it.
         self.rating = rating
         self.system = system_message()
+        # Run the claims check on the caller's thread (replay and evaluation) instead of a
+        # worker: live it is threaded so a button press never stalls the pipeline.
+        self.sync_claims = False
         self.game_id: str | None = None
         self.user_side: Side = Side.WHITE
         self.finished = False  # the game is over: everything may be said
@@ -694,7 +705,10 @@ class Coach:
                 verdicts = []
             self._speak(Trigger.USER_ASK, position, level, ts, user_text=text, verdicts=verdicts)
 
-        threading.Thread(target=checked, name="sidecoach-claims", daemon=True).start()
+        if self.sync_claims:
+            checked()  # replay and evaluation: the request must exist when ask() returns
+        else:
+            threading.Thread(target=checked, name="sidecoach-claims", daemon=True).start()
 
     def hint(self, ts: float) -> None:
         self.ask("hint", ts)
@@ -987,6 +1001,7 @@ class Coach:
             ),
             candidates=candidates
             or (VS_ASK_CANDIDATES if trigger is Trigger.USER_ASK else VS_CANDIDATES),
+            played=frozenset(r.move.san for r in self.conversation.judged_records()),
         )
         self.speaker.submit(request)
 

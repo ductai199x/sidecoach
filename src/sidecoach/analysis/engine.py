@@ -164,8 +164,11 @@ def _line(info: chess.engine.InfoDict, board: chess.Board, pv_plies: int, model:
     )
 
 
-def san_line(board: chess.Board, moves: list[str], limit: int | None = None) -> str:
-    """A line of UCI moves as a person reads it: `24. Nxe5 Bxe5 25. Qh5`.
+def san_line(
+    board: chess.Board, moves: list[str], limit: int | None = None, *, numbered: bool = True
+) -> str:
+    """A line of UCI moves as a person reads it: `24. Nxe5 Bxe5 25. Qh5`; without
+    `numbered`, the bare moves `Nxe5 Bxe5 Qh5` (the position says whose move it is).
 
     Anything the engine cannot play from this position stops the line; a line that has
     drifted out of step with the board is a bug worth seeing rather than hiding.
@@ -179,9 +182,9 @@ def san_line(board: chess.Board, moves: list[str], limit: int | None = None) -> 
             break
         if move not in replay.legal_moves:
             break
-        if replay.turn == chess.WHITE:
+        if numbered and replay.turn == chess.WHITE:
             parts.append(f"{replay.fullmove_number}.")
-        elif i == 0:
+        elif numbered and i == 0:
             parts.append(f"{replay.fullmove_number}...")
         parts.append(replay.san(move))
         replay.push(move)

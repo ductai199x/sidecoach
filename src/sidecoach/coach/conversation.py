@@ -14,7 +14,17 @@ allows -- and everything else that grounds a reply: the motifs with their square
 strategic features, the opponent's threats, the opening, the phase, the clock, and a running
 tally of the user's moves by label. What the message says about the position the user now
 faces obeys the disclosure level in force when it is rendered; a message is frozen the
-first time it is sent, and facts that arrive later go in a message of their own.
+first time it is sent in its final form, and facts that arrive later go in a message of
+their own.
+
+The encoding spends tokens where the model reasons. The current message carries the moves so
+far and the last two plies carry the board diagram; an older ply's message says the same
+position as a FEN, writes its engine lines without move numbers, and does not repeat in its
+facts the candidates and line that its lines block already gives. Nothing is dropped: every
+verdict, every line, every fact, every tally is there for every ply. Measured on a 165-ply
+game the full form ran to about 130k tokens, past what a retry could fit in the model's
+context; this form is well under half, and a ply's message takes it once it is older than
+the last two, so the server's cached prefix stays valid.
 
 The `Coach` owns one of these per game and asks it for the messages of every request.
 """
@@ -41,6 +51,9 @@ from sidecoach.events import (
 )
 from sidecoach.llm.base import ChatMessage
 
+# The latest plies whose messages carry the full encoding: the board diagram, numbered
+# lines, the candidates and line in the facts. Older plies say the same with fewer tokens.
+RECENT_PLIES = 2
 BEST_LINES = 3
 WEAKER_LINES = 3
 LINE_PLIES = 8
@@ -234,21 +247,27 @@ class Conversation:
         the last ply message stays live until the next move, since the disclosure level
         for the position the user faces can rise while they think."""
         out: list[ChatMessage] = []
-        last_ply = max((i for i, e in enumerate(self.entries) if e.kind == "ply"), default=None)
+        ply_indexes = [i for i, e in enumerate(self.entries) if e.kind == "ply"]
+        last_ply = ply_indexes[-1] if ply_indexes else None
+        # The position the user faces and the one they moved from carry the diagram; an
+        # older ply carries its FEN -- the same position, a quarter of the tokens.
+        recent = set(ply_indexes[-RECENT_PLIES:])
         for i, entry in enumerate(self.entries):
             if entry.kind != "ply":
                 out.append({"role": entry.role, "content": entry.text})  # type: ignore[typeddict-item]
                 continue
-            if entry.frozen is not None and i != last_ply:
+            if entry.frozen is not None and i not in recent:
                 text = entry.frozen
             else:
                 assert entry.record is not None
                 # History is at full disclosure: a position already played through hides
                 # nothing. Only the position the user faces now is rendered at the level.
                 level = self.level if i == last_ply else DisclosureLevel.LINE
-                text = self.render_ply(entry.record, level)
-                if i != last_ply:
-                    entry.frozen = text
+                text = self.render_ply(
+                    entry.record, level, current=i == last_ply, recent=i in recent
+                )
+                if i not in recent:
+                    entry.frozen = text  # its final form: frozen from here on
             out.append({"role": "user", "content": text})
         return out
 
@@ -258,7 +277,18 @@ class Conversation:
         self._drained = len(self.entries)
         return new
 
-    def render_ply(self, record: PlyRecord, level: DisclosureLevel | None = None) -> str:
+    def render_ply(
+        self,
+        record: PlyRecord,
+        level: DisclosureLevel | None = None,
+        *,
+        current: bool = True,
+        recent: bool = True,
+    ) -> str:
+        """The message for one ply. `current` is the position the user faces (it alone
+        carries the moves so far); `recent` is one of the last two plies (they carry the
+        board diagram; older plies carry the FEN, the lines without move numbers, and
+        no copy of the candidates and line the lines block already gives)."""
         level = self.level if level is None else level
         move = record.move
         board_after = chess.Board(move.fen_after)
@@ -266,10 +296,17 @@ class Conversation:
         user_colour = chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
         who = "you" if move.by_user else "your opponent"
         lines: list[str] = []
-        # 1. Board state.
-        pgn = self._pgn_through(record)
-        lines.append(f"Moves so far: {pgn}" if pgn else "Moves so far: (none)")
-        lines.append(ascii_board(board_after))
+        # 1. Board state. The moves so far are written on the current message only: every
+        # earlier message carries its own move, so the sequence is there in full, and the
+        # line repeated on each of them was the one part of a message that grew with the
+        # game (a fifth of a 165-ply game's tokens, all of it duplicate).
+        if current:
+            pgn = self._pgn_through(record)
+            lines.append(f"Moves so far: {pgn}" if pgn else "Moves so far: (none)")
+        if recent:
+            lines.append(ascii_board(board_after))
+        else:
+            lines.append(f"Position (FEN): {board_after.fen()}")
         lines.append(self._turn_text(board_after).capitalize() + ".")
         # 2. The move.
         took = f", {move.think_ms / 1000:.1f} s" if move.think_ms is not None else ""
@@ -283,9 +320,11 @@ class Conversation:
         # 3. The engine's verdict on the move.
         lines.append(self._verdict_text(record, board_before, user_colour))
         # 4. The lines for the position now, subject to disclosure when it is the user's move.
-        lines.extend(self._lines_text(record, board_after, user_colour, level))
+        lines.extend(self._lines_text(record, board_after, user_colour, level, numbered=recent))
         # 5. Everything else.
-        lines.extend(self._grounding_text(record, board_after, user_colour, level))
+        lines.extend(
+            self._grounding_text(record, board_after, user_colour, level, with_lines=recent)
+        )
         if move.by_user:
             lines.append(self._tally_text(record))
         return "\n".join(line for line in lines if line)
@@ -326,6 +365,8 @@ class Conversation:
         board: chess.Board,
         user_colour: chess.Color,
         level: DisclosureLevel,
+        *,
+        numbered: bool = True,
     ) -> list[str]:
         analysis = record.analysis
         if analysis is None or not analysis.lines:
@@ -349,7 +390,7 @@ class Conversation:
         out.append(f"Engine lines for the position now ({whose} move; scores from your side):")
         for i, line in enumerate(best, start=1):
             out.append(
-                f"  {i}. {san_line(board, line.moves, limit=limit)}  "
+                f"  {i}. {san_line(board, line.moves, limit=limit, numbered=numbered)}  "
                 f"{self._score(line.expected_score, to_move, user_colour)}"
             )
         if weaker:
@@ -357,7 +398,7 @@ class Conversation:
             for i, line in enumerate(weaker, start=len(best) + 1):
                 drop = top - line.expected_score
                 out.append(
-                    f"  {i}. {san_line(board, line.moves, limit=limit)}  "
+                    f"  {i}. {san_line(board, line.moves, limit=limit, numbered=numbered)}  "
                     f"{self._score(line.expected_score, to_move, user_colour)} "
                     f"({drop:.2f} behind the best)"
                 )
@@ -369,6 +410,8 @@ class Conversation:
         board: chess.Board,
         user_colour: chess.Color,
         level: DisclosureLevel,
+        *,
+        with_lines: bool = True,
     ) -> list[str]:
         facts = record.facts
         if facts is None:
@@ -376,6 +419,10 @@ class Conversation:
         user_to_move = board.turn == user_colour
         level = level if user_to_move else DisclosureLevel.LINE
         visible = visible_facts(facts, level)
+        if not with_lines and record.analysis is not None and record.analysis.lines:
+            # The candidates and the line are the lines block's first moves and first line;
+            # an older ply's message does not write them twice.
+            visible = {k: v for k, v in visible.items() if k not in ("candidates", "line")}
         out: list[str] = []
         shown: list[str] = []
         keys = (

@@ -474,7 +474,14 @@ def test_the_conversation_is_the_game_one_message_per_move_with_the_tally() -> N
     assert "Your moves so far (1 judged): 1 book." in e4
     bc4 = [m["content"] for m in messages if "Move: 2. Bc4 by you" in m["content"]][0]
     assert "Your moves so far (2 judged): 1 excellent, 1 book." in bc4
-    assert "Moves so far: 1. e4 e5 2. Bc4" in bc4
+    # The moves so far are written on the current message only; a history message carries
+    # its own move and no copy of the growing list.
+    assert "Moves so far:" not in bc4
+    current = [
+        m["content"] for m in messages if m["role"] == "user" and "Moves so far:" in m["content"]
+    ]
+    assert len(current) == 1
+    assert current[0].startswith("Moves so far: 1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6")
     assert messages[-2]["content"] == 'The player says: "how is my opening?"'
 
 
@@ -854,3 +861,18 @@ def test_a_fact_question_falls_back_to_the_fact_not_the_hint() -> None:
         out[-1].text == "We left the opening book early."
         or out[-1].text.startswith("The opening was the")
     )
+
+
+def test_a_retry_does_not_grow_the_prompt() -> None:
+    """When every candidate fails the checks, the second try carries the complaint inside
+    the directive: appending the failed attempt as two more messages doubled the prompt
+    on a long game, past the model's context."""
+    coach, provider = _coach(["[p=0.5] Play Qxf7#.\n[p=0.5] Qxf7 mates.", "[p=1.0] Look around."])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    coach.ask("hint", 8.0)
+    _messages(coach)
+    first, second = _given(provider, 0), _given(provider, 1)
+    assert len(second) == len(first)
+    assert "Those replies are not allowed" in second[-1]["content"]
+    assert "Your first attempt was" in second[-1]["content"]
