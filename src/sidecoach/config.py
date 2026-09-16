@@ -26,7 +26,7 @@ class CaptureSettings(BaseModel):
 
 class EngineSettings(BaseModel):
     stockfish_path: str | None = None
-    multipv: int = 4
+    multipv: int = 6
     movetime_ms: int = 300
     threads: int = 4
     hash_mb: int = 256

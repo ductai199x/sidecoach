@@ -288,7 +288,24 @@ footer { border-top: 1px solid var(--line); background: var(--panel); }
 .health .hv.warn { color: var(--warn); }
 
 .term-head { display: flex; align-items: center; gap: 10px; padding: 5px 14px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--line); }
-.term-title { text-transform: uppercase; letter-spacing: .6px; font-weight: 700; }
+.tabs { display: flex; gap: 2px; }
+.tab { padding: 2px 10px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); }
+.tab:hover { background: transparent; color: var(--ink); }
+.tab.on { color: var(--ink); border-bottom-color: var(--accent); }
+
+/* The conversation: what you and the coach said, in order, each coach turn with the
+   exact turn the model was given and what it wrote, folded under it. */
+.conversation { height: 190px; overflow: auto; padding: 8px 14px; display: flex; flex-direction: column; gap: 6px; background: #1f1e1b; }
+.conversation .turn { max-width: 78%; padding: 6px 10px; border-radius: 12px; font-size: 13px; line-height: 1.4; }
+.conversation .turn.you { align-self: flex-end; background: #3b4a2f; border-bottom-right-radius: 3px; }
+.conversation .turn.coach { align-self: flex-start; background: var(--panel2); border-bottom-left-radius: 3px; }
+.conversation .turn.coach.unspoken { opacity: .55; }
+.conversation .turn.game { align-self: flex-end; background: #2b2926; border: 1px solid var(--line); border-bottom-right-radius: 3px; color: var(--muted); font-size: 12px; }
+.conversation .turn .who { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; }
+.conversation .turn details { margin-top: 5px; font-size: 11px; color: var(--muted); }
+.conversation .turn details summary { cursor: pointer; }
+.conversation .turn details pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0; padding: 6px 8px; background: #16151300; border-left: 2px solid var(--panel3); font: 11px/1.45 "Cascadia Code", "Consolas", ui-monospace, monospace; max-height: 260px; overflow: auto; }
+.conversation .turn details pre.raw { border-left-color: var(--accent); }
 .chips { display: flex; gap: 4px; }
 .chip { padding: 1px 8px; font-size: 11px; font-weight: 600; border-radius: 10px; background: transparent; color: var(--muted); border: 1px solid var(--line); }
 .chip.on { color: var(--ink); background: var(--panel2); border-color: var(--panel3); }

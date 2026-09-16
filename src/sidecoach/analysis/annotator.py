@@ -88,7 +88,7 @@ class GameAnnotator:
 
     engine: Engine
     depth: int = 18
-    multipv: int = 4
+    multipv: int = 6
     thresholds: Thresholds = field(default_factory=Thresholds)
     tagger: Tagger | None = None
     book: Book | None = None

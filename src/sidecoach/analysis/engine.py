@@ -44,7 +44,7 @@ class Engine:
     path: Path
     threads: int = 4
     hash_mb: int = 256
-    multipv: int = 4
+    multipv: int = 6
     pv_plies: int = DEFAULT_PV_PLIES
     # How a line's score becomes an expected score; see `analysis.score.expected_score`.
     score_model: str = DEFAULT_SCORE_MODEL

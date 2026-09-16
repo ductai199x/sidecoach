@@ -46,6 +46,9 @@ class PositionFacts(BaseModel):
 
     fen: str
     side_to_move: str
+    # The side the coach speaks to, when the position is not that side's to move (the
+    # opponent is thinking); None means the side to move.
+    user_side: str | None = None
     phase: str
     material: str | None = None
     last_move: str | None = None
@@ -84,6 +87,7 @@ class PositionFacts(BaseModel):
 _ALWAYS: tuple[str, ...] = (
     "fen",
     "side_to_move",
+    "user_side",
     "phase",
     "material",
     "last_move",

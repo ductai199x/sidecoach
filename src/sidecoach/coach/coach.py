@@ -25,6 +25,7 @@ from typing import Any
 import chess
 
 from sidecoach.coach.annotations import annotations_for, mentions_in
+from sidecoach.coach.conversation import Conversation
 from sidecoach.coach.disclosure import (
     Disclosure,
     PositionFacts,
@@ -45,10 +46,12 @@ from sidecoach.events import (
     GameStarted,
     MoveAssessment,
     MovePlayed,
+    Resync,
     ScreenState,
     ScreenStateChanged,
     Severity,
     Side,
+    Takeback,
     Trigger,
 )
 from sidecoach.llm.base import ChatMessage, LLMProvider
@@ -58,33 +61,39 @@ PERSONA = (
     "game on chess.com. You are warm but direct, like a good club coach: encouraging, never "
     "gushing, and honest about mistakes. Your aim is not to hand over answers but to build "
     "the player's own eyesight for tactics and ideas, so they see the pattern next time. "
-    "This is one continuous game, not a string of puzzles: speak as an ongoing conversation, "
-    "build on what you have already said, and connect this moment to earlier ones when it "
-    "helps the player see a recurring idea. The line 'Game so far' below is your memory of "
-    "the game; use it, do not repeat it back."
+    "This is one continuous game, not a string of puzzles. The game reaches you as a "
+    "conversation: every move on the board -- the player's and the opponent's -- arrives as "
+    "a message carrying the position, the move, the engine's verdict on it, the engine's "
+    "lines, and the facts that ground what may be said. You speak only when the last "
+    "message asks you to; between those moments you are not called. Build on what you have "
+    "already said, and connect this moment to earlier ones when it helps the player see a "
+    "recurring idea. A message that says the position was taken back or re-read means "
+    "exactly that: the position changed as the message says."
 )
 RULES = (
     "Rules you must follow.\n"
-    "1. Say only what the fact sheet supports. Never guess at moves, threats, plans or "
-    "evaluations that are not on it, and never invent what a piece attacks or defends. When "
-    "the sheet gives a plan (a strategic idea) or ideas (features of the position), those are "
-    "yours to teach: when there is no tactic, build the lesson around them, so the player "
-    "learns the idea and not only the combination. Ground every word in the sheet.\n"
-    "2. Never name a move, a destination square or a piece unless the fact sheet lists it. "
-    "If the sheet gives a theme, you may name the theme; a region, you may point at the "
-    "region; nothing more. Describe a move only in the words given for it; do not say what "
-    "it attacks, pins, defends, threatens or controls unless the sheet says so. When the "
-    "sheet gives focus squares for a theme, those squares ARE the tactic: explain it using "
-    "exactly them, and do not place a pin, fork or target on any other square.\n"
+    "1. Say only what the messages support. Never guess at moves, threats, plans or "
+    "evaluations that are not in them, and never invent what a piece attacks or defends. "
+    "When a message gives a plan (a strategic idea) or ideas (features of the position), "
+    "those are yours to teach: when there is no tactic, build the lesson around them, so "
+    "the player learns the idea and not only the combination. Ground every word in the "
+    "messages; about the course of the game, say only what the moves and verdicts show.\n"
+    "2. For the position the player faces now, never name a move, a destination square or a "
+    "piece unless the current message lists it at the disclosure level it states. If it "
+    "gives a theme, you may name the theme; a region, you may point at the region; nothing "
+    "more. Describe a move only in the words given for it; do not say what it attacks, pins, "
+    "defends, threatens or controls unless a message says so. When a message gives focus "
+    "squares for a theme, those squares ARE the tactic: explain it using exactly them, and "
+    "do not place a pin, fork or target on any other square. Moves already played may be "
+    "discussed in full.\n"
     "3. Before the player moves, ask rather than tell: one orienting question, no answer.\n"
     "4. Two to four sentences. One question at a time. Use plain, standard chess terms -- "
     "King, Queen, rook, bishop, knight, pawn, file, rank, fork, pin, outpost -- and never "
     "fancy synonyms or purple images: write 'King', not 'monarch'; 'blocked in', not "
     "'imprisoned'; 'rook', not 'heavy artillery'. Standard notation only for moves the sheet "
     "gives you.\n"
-    "5. Never mention the fact sheet, the engine, these rules, or that anything is hidden."
+    "5. Never mention the messages, the engine, these rules, or that anything is hidden."
 )
-MAX_TRANSCRIPT = 16
 MAX_TOKENS = 220
 # A move that lost less than this gets a two-word confirmation, without the model.
 TRIVIAL_LOSS = 0.02
@@ -195,7 +204,8 @@ def _sample_reply(passed: list[tuple[float, str]]) -> str:
 
 @dataclass
 class ModelCall:
-    """One call to the model: what it wrote, what the server said about the call (finish
+    """One call to the model: the turn it was given (the last user message: memory, fact
+    sheet, instruction), what it wrote, what the server said about the call (finish
     reason, tokens, seconds), and how the candidates fared. The debug log's answer to
     "why did the coach say that?"."""
 
@@ -203,6 +213,7 @@ class ModelCall:
     stats: dict[str, Any]
     candidates: int
     passed: int
+    prompt: str = ""
 
 
 @dataclass
@@ -214,55 +225,6 @@ class Spoken:
     problems: list[str]
     attempts: int
     calls: list[ModelCall] = field(default_factory=list)
-
-
-@dataclass
-class GameMemory:
-    """The arc of the game so far, from grounded facts, to keep the coach's thread.
-
-    Everything here comes from the engine and the tagger, never from the model's own past
-    words, so the memory cannot drift into things that were never true.
-    """
-
-    opening: str | None = None
-    phase: str = "opening"
-    material: str | None = None
-    plies: int = 0
-    # Ideas the player kept missing: the theme of a position where they went wrong, and how
-    # often. This is what lets the coach say "the a3 break has come up before".
-    missed: dict[str, int] = field(default_factory=dict)
-    last_mistake_ply: int | None = None
-
-    def note_move(self, ply: int, phase: str, material: str | None, opening: str | None) -> None:
-        self.plies = max(self.plies, ply)
-        self.phase = phase
-        self.material = material
-        if opening:
-            self.opening = opening
-
-    def note_mistake(self, ply: int, theme: str | None, plan: str | None = None) -> None:
-        """Record what the player missed: the tactic if there was one, else the strategic idea.
-
-        So the memory learns habits, not only tactics -- a player who keeps overlooking
-        development or leaving the king in the centre builds up a count the coach can name.
-        """
-        self.last_mistake_ply = ply
-        idea = theme or plan
-        if idea:
-            self.missed[idea] = self.missed.get(idea, 0) + 1
-
-    def block(self) -> str:
-        move_no = (self.plies + 1) // 2
-        parts = [f"move {move_no}, {self.phase}"]
-        if self.material and self.material != "material is level":
-            parts.append(self.material)
-        if self.opening:
-            parts.insert(0, self.opening)
-        recurring = [f"{theme} ({count}x)" for theme, count in self.missed.items() if count > 1]
-        line = "Game so far: " + "; ".join(parts) + "."
-        if recurring:
-            line += " Ideas the player has missed more than once: " + ", ".join(recurring) + "."
-        return line
 
 
 @dataclass
@@ -433,7 +395,8 @@ class Speaker:
                 for prob, candidate in _parse_candidates(raw)
             ]
             passed = [(prob, candidate) for prob, candidate, faults in scored if not faults]
-            calls.append(ModelCall(raw, stats, len(scored), len(passed)))
+            given = "\n\n---\n\n".join(str(m["content"]) for m in messages[-2:])
+            calls.append(ModelCall(raw, stats, len(scored), len(passed), given))
             if passed:
                 text, problems = _sample_reply(passed), []
                 break
@@ -500,6 +463,12 @@ class Speaker:
 # What the user's words mean for disclosure. Deterministic on purpose: the model never
 # decides how much may be said.
 _HINT = re.compile(r"\b(hint|clue|nudge|help me|help|stuck|where should i look)\b", re.I)
+# An overall verdict on the game: "how did I do", "how was my game", "overall", "summary".
+_ASK_REVIEW = re.compile(
+    r"\b(?:how (?:did|have) i (?:do|play|done|played)|how was (?:my|the) game|overall|"
+    r"summar(?:y|ise|ize)|review (?:my|the) game|rate my (?:game|play))\b",
+    re.IGNORECASE,
+)
 # A bare request for a hint, with nothing claimed: "hint", "give me a hint", "a clue".
 _ASK_HINT = re.compile(
     r"^\W*(?:(?:give me |i need |can i have |i want |any )?(?:a |an |some )?"
@@ -520,7 +489,9 @@ _CLAIM_WORDS = re.compile(
 
 def may_carry_claims(text: str) -> bool:
     """Whether the user's words could state something about the board to check."""
-    return _CLAIM_WORDS.search(text) is not None and not _ASK_HINT.match(text)
+    if _ASK_HINT.match(text) or _ASK_REVIEW.search(text):
+        return False
+    return _CLAIM_WORDS.search(text) is not None
 
 
 _ASK_MOVE = re.compile(
@@ -566,16 +537,25 @@ def fact_sheet(facts: PositionFacts, level: DisclosureLevel) -> str:
     visible = visible_facts(facts, level)
     board = chess.Board(facts.fen)
     who = "White" if board.turn == chess.WHITE else "Black"
-    yours = facts.side_to_move
+    yours = facts.user_side or facts.side_to_move
+    if yours == facts.side_to_move:
+        turn = f"{who} to move; you are {yours}."
+    else:
+        turn = (
+            f"{who} (your opponent) to move; you are {yours}. The candidates, threats and "
+            "plan below are your opponent's."
+        )
+    if board.is_game_over():
+        turn = f"The game is over ({board.result()}); you are {yours}."
     lines = [
         "The position (white at the bottom, capitals are white):",
         ascii_board(board),
-        f"{who} to move; you are {yours}.",
+        turn,
         "",
         "Fact sheet:",
     ]
     for key, value in visible.items():
-        if key in ("fen", "side_to_move") or value in (None, "", [], False):
+        if key in ("fen", "side_to_move", "user_side") or value in (None, "", [], False):
             continue
         if isinstance(value, list):
             value = (
@@ -603,15 +583,16 @@ class Coach:
         self.claims = claims
         self.game_id: str | None = None
         self.user_side: Side = Side.WHITE
+        self.finished = False  # the game is over: everything may be said
         self.board = chess.Board()
         self.positions: dict[int, _Position] = {}
         self.moves: dict[int, MovePlayed] = {}
-        self.transcript: list[ChatMessage] = []
-        self.memory = GameMemory()
+        # The game as the model sees it: one message per move, the coach's turns between.
+        self.conversation = Conversation()
         self.spoken: list[Spoken] = []
         self._current: _Position | None = None
         self._clock_peak_ms: int | None = None
-        # The transcript is appended from the caller's thread and from a claims check.
+        # The conversation is read from the caller's thread and from a claims check.
         self._lock = threading.RLock()
         self._last_verdict: str | None = None
 
@@ -622,6 +603,10 @@ class Coach:
 
     def close(self) -> None:
         self.speaker.close()
+
+    @property
+    def user_colour(self) -> chess.Color:
+        return chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
 
     @property
     def user_to_move(self) -> bool:
@@ -640,10 +625,19 @@ class Coach:
             self._on_assessment(event, ts)
         elif isinstance(event, ClockObservation):
             self._on_clock(event, ts)
+        elif isinstance(event, Takeback):
+            self._on_takeback(event, ts)
+        elif isinstance(event, Resync):
+            self._on_resync(event, ts)
         elif isinstance(event, GameEnded):
             self._current = None
+            self.finished = True
+            self.conversation.ended(event)
         elif isinstance(event, ScreenStateChanged):
-            self.policy.covered = event.state is ScreenState.COVERED
+            covered = event.state is ScreenState.COVERED
+            if covered and not self.policy.covered:
+                self.conversation.covered()
+            self.policy.covered = covered
 
     def tick(self, ts: float) -> None:
         """Time passing: a hint if the user has been stuck long enough."""
@@ -677,7 +671,12 @@ class Coach:
         unlock = unlock_for(text, position.board, position.facts.candidates)
         if unlock is not None:
             position.disclosure.apply(unlock)
-        level = position.disclosure.level
+        level = max(position.disclosure.level, DisclosureLevel.QUESTION)
+        if self.finished or position.board.is_game_over():
+            # Nothing is withheld from a game that is over.
+            level = DisclosureLevel.LINE
+        with self._lock:
+            self.conversation.user_said(text)
         canned = unlock in (Unlock.HINT, Unlock.ASK_MOVE, Unlock.ASK_LINE) and not may_carry_claims(
             text
         )
@@ -722,8 +721,7 @@ class Coach:
         for spoken in self.speaker.poll():
             self.spoken.append(spoken)
             with self._lock:
-                self.transcript.append({"role": "assistant", "content": spoken.message.text})
-                del self.transcript[:-MAX_TRANSCRIPT]
+                self.conversation.coach_said(spoken.message.text)
             out.append(spoken.message)
         return out
 
@@ -735,8 +733,8 @@ class Coach:
         self.board = chess.Board(event.start_fen)
         self.positions = {0: _Position(ply=0, board=self.board.copy())}
         self.moves = {}
-        self.transcript = []
-        self.memory = GameMemory()
+        self.conversation.new_game(event)
+        self.finished = False
         self._current = self.positions[0]
         self.policy.new_position(0, ts, user_to_move=self.user_to_move)
         self._clock_peak_ms = None
@@ -753,6 +751,7 @@ class Coach:
         user_ms = event.white_ms if self.user_side == Side.WHITE else event.black_ms
         if user_ms is not None:
             self.policy.set_remaining(user_ms)
+        self.conversation.clock(event.white_ms, event.black_ms)
         seen = [ms for ms in (event.white_ms, event.black_ms) if ms is not None]
         if not seen:
             return
@@ -767,6 +766,7 @@ class Coach:
     def _on_move(self, event: MovePlayed, ts: float) -> None:
         self.board = chess.Board(event.fen_after)
         self.moves[event.ply] = event
+        self.conversation.move(event)
         position = _Position(ply=event.ply, board=self.board.copy(), last_move=event.san)
         self.positions[event.ply] = position
         for old in [ply for ply in self.positions if ply < event.ply - 6]:
@@ -774,15 +774,40 @@ class Coach:
         self._current = position
         self.policy.new_position(event.ply, ts, user_to_move=self.user_to_move)
 
+    def _on_takeback(self, event: Takeback, ts: float) -> None:
+        """Moves withdrawn: the conversation says so, and the game goes on from the position
+        the board is back at; the replacement moves arrive as ordinary moves."""
+        self.conversation.takeback(event)
+        self.board = chess.Board(event.fen)
+        active = self.conversation.active_records()
+        ply = active[-1].move.ply if active else 0
+        for gone in [p for p in self.positions if p > ply]:
+            del self.positions[gone]
+        position = self.positions.get(ply)
+        if position is None:
+            position = _Position(ply=ply, board=self.board.copy())
+            self.positions[ply] = position
+        self._current = position
+        self.policy.new_position(ply, ts, user_to_move=self.user_to_move)
+
+    def _on_resync(self, event: Resync, ts: float) -> None:
+        """The board was re-read: the position jumped; the move numbering restarts."""
+        self.board = chess.Board(event.fen)
+        self.conversation.resync(event, self.board)
+        self.positions = {0: _Position(ply=0, board=self.board.copy())}
+        self.moves = {}
+        self._current = self.positions[0]
+        self.policy.new_position(0, ts, user_to_move=self.user_to_move)
+
     def _on_analysis(self, event: Analysis, ts: float) -> None:
         position = self.positions.get(event.ply)
         if position is None or position.board.fen() != event.fen:
             return
         position.analysis = event
-        position.facts = facts_from_analysis(position.board, event, last_move=position.last_move)
-        self.memory.note_move(
-            event.ply, position.facts.phase, position.facts.material, event.opening
+        position.facts = facts_from_analysis(
+            position.board, event, last_move=position.last_move, user=self.user_colour
         )
+        self.conversation.analysed(event, position.facts)
         if position is self._current and self.user_to_move:
             trigger = self.policy.on_position_analysed(event.ply, decisive=event.decisive)
             if trigger is not None:
@@ -791,6 +816,7 @@ class Coach:
                 self._speak(trigger, position, level, ts)
 
     def _on_assessment(self, event: MoveAssessment, ts: float) -> None:
+        self.conversation.assess(event)
         move = self.moves.get(event.ply)
         if move is None or not move.by_user:
             return
@@ -800,8 +826,6 @@ class Coach:
         trigger = self.policy.on_user_move_assessed(event)
         if trigger is None:
             return
-        if event.severity is not Severity.NONE:
-            self.memory.note_mistake(event.ply, before.facts.theme, before.facts.plan)
         before.disclosure.apply(Unlock.MOVE_PLAYED)
         # A lecture is only for a move that actually cost something. A move below the
         # inaccuracy line gets a word: a nod when it lost almost nothing, a light touch
@@ -865,11 +889,13 @@ class Coach:
         instruction, fallback = self._instruction(
             trigger, position, level, user_text, verdicts, assessment, played, quick=quick
         )
-        prompt = f"{self.memory.block()}\n\n{fact_sheet(position.facts, level)}\n\n{instruction}"
+        directive = f"{self._level_line(level, position)}{instruction}"
         with self._lock:
-            self.transcript.append({"role": "user", "content": prompt})
-            del self.transcript[:-MAX_TRANSCRIPT]
-            messages = list(self.transcript)
+            self.conversation.level = level
+            messages: list[ChatMessage] = [
+                *self.conversation.messages(),
+                {"role": "user", "content": directive},
+            ]
         request = _Request(
             trigger=trigger,
             level=level,
@@ -892,6 +918,22 @@ class Coach:
             candidates=VS_ASK_CANDIDATES if trigger is Trigger.USER_ASK else VS_CANDIDATES,
         )
         self.speaker.submit(request)
+
+    @staticmethod
+    def _level_line(level: DisclosureLevel, position: _Position) -> str:
+        """What may be said about the position the player faces, stated on the directive."""
+        if position.board.is_game_over():
+            return ""
+        words = {
+            DisclosureLevel.SILENT: "nothing about the position",
+            DisclosureLevel.QUESTION: "an orienting question only; no theme, square, piece or move",
+            DisclosureLevel.THEME: "the theme; no square, piece or move",
+            DisclosureLevel.REGION: "the theme and the region; no piece or move",
+            DisclosureLevel.PIECE: "the theme, the region and the piece; no move",
+            DisclosureLevel.CANDIDATE: "the candidate moves; not the line",
+            DisclosureLevel.LINE: "everything, the line included",
+        }[level]
+        return f"Disclosure for the position the player faces: {words}.\n\n"
 
     def _queue_plain(
         self,
@@ -1011,7 +1053,19 @@ class Coach:
         else:
             fallback = "What is your opponent's most dangerous idea here?"
         shown = f' They have just been shown "{fallback}"; build on it, do not repeat it.'
-        if _ASK_HINT.match(said):
+        if _ASK_REVIEW.search(said):
+            # An overall verdict comes from the tally in "Game so far", never from an
+            # impression of the last position: the first review told a player a queen up
+            # that they had been a queen down.
+            directive = (
+                "They asked how they did overall. Answer from the engine's verdicts on their "
+                "moves in the messages above -- the labels, the tally in their last move's "
+                "message, where they lost ground, how the material went -- and from nothing "
+                "else: do not infer the course of the game from the position on the board. "
+                "Two or three sentences: what went well, the one thing to work on, in plain "
+                "words. If no move has a verdict yet, say you have not seen enough to say."
+            )
+        elif _ASK_HINT.match(said):
             # A bare "hint" carries no claim to be honest about; treated as one, the model
             # answered its own last message as if the player had said it.
             directive = (

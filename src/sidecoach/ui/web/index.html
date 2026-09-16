@@ -85,7 +85,10 @@
         <span class="hk">rss</span><span id="h-rss" class="hv">–</span>
       </div>
       <div class="term-head">
-        <span class="term-title">debug terminal</span>
+        <div class="tabs">
+          <button class="tab on" data-pane="terminal">debug terminal</button>
+          <button class="tab" data-pane="conversation" title="What you and the coach said, and what the model was given each time">conversation</button>
+        </div>
         <div id="chans" class="chips">
           <button class="chip on" data-chan="sys">sys</button>
           <button class="chip on" data-chan="vision">vision</button>
@@ -102,6 +105,7 @@
         <button id="clearTerm" class="ghost small">clear</button>
       </div>
       <div id="terminal" class="terminal"></div>
+      <div id="conversation" class="conversation" hidden></div>
     </footer>
 
     <script src="app.js"></script>

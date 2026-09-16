@@ -102,12 +102,16 @@ def phase_of(board: chess.Board, in_book: bool = False) -> str:
     return "middlegame"
 
 
-def material_text(board: chess.Board) -> str:
-    """The material balance as the side to move would say it."""
+def material_text(board: chess.Board, perspective: chess.Color | None = None) -> str:
+    """The material balance as `perspective` (the user; by default the side to move) would
+    say it. The first live games' coach told a player a queen up that they were a queen
+    down: the balance had been read from the opponent's side whenever the opponent was
+    to move, and the memory carried it into the post-game verdict."""
+    who = board.turn if perspective is None else perspective
     us = not_us = 0
     for piece in board.piece_map().values():
         value = _VALUES.get(piece.piece_type, 0)
-        if piece.color == board.turn:
+        if piece.color == who:
             us += value
         else:
             not_us += value
@@ -285,10 +289,13 @@ def facts_from_analysis(
     *,
     last_move: str | None = None,
     in_book: bool = False,
+    user: chess.Color | None = None,
 ) -> PositionFacts:
     """The fact bundle for `board`, which is the position `analysis` measured.
 
-    `board` must be the position the side to move faces; the coach speaks to that side.
+    `board` must be the position the side to move faces; the candidates, threats and
+    plan are the side to move's. `user` is the side the coach speaks to -- the material
+    is read from that side -- and by default the side to move.
     """
     lines = analysis.lines
     best_uci = lines[0].moves[0] if lines and lines[0].moves else None
@@ -368,8 +375,9 @@ def facts_from_analysis(
     return PositionFacts(
         fen=board.fen(),
         side_to_move="white" if board.turn == chess.WHITE else "black",
+        user_side=None if user is None else ("white" if user == chess.WHITE else "black"),
         phase=phase,
-        material=material_text(board),
+        material=material_text(board, user),
         last_move=last_move,
         decisive=analysis.decisive,
         only_move=analysis.only_move,

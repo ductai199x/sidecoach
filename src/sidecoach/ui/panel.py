@@ -878,6 +878,22 @@ class PanelEngine:
         coach = coaching.coach
         if coach is None:
             return seen, failures
+        # Every message of the game's conversation, as the model will see it, at debug: the
+        # panel's Conversation tab is built from these.
+        for entry in coach.conversation.drain_new():
+            if entry.kind == "coach":
+                continue  # the coach's turns are logged below, with their calls
+            text = entry.text
+            if entry.kind == "ply" and entry.record is not None:
+                text = coach.conversation.render_ply(entry.record)
+            self._emit(
+                "coach",
+                "debug",
+                f"turn ({entry.kind}): {elide(text, 80)}",
+                role=entry.role,
+                kind=entry.kind,
+                body=text[:6000],
+            )
         for spoken in coach.spoken[seen:]:
             message = spoken.message
             meta = [
@@ -928,6 +944,7 @@ class PanelEngine:
                     "warn" if finish == "length" else "debug",
                     summary,
                     raw=elide(call.raw, 2000),
+                    prompt=call.prompt[-6000:],
                     finish_reason=finish,
                     completion_tokens=tokens,
                     elapsed_s=seconds,

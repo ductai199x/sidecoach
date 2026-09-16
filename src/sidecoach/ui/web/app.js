@@ -228,6 +228,59 @@ function addLine(line) {
   if (el("autoscroll").checked) term.scrollTop = term.scrollHeight;
 
   if (line.chan === "coach" && line.data && line.data.full) addCoach(line);
+  addConvo(line);
+}
+
+// --- the conversation view ------------------------------------------------------------
+//
+// Every ask and every coach message as a turn, in order; under a coach turn, the exact
+// turn the model was given (the memory line, the fact sheet, the instruction) and what it
+// wrote, for each call it took. A coach message that was not spoken (stale, the voice
+// busy) is shown faded.
+
+let lastCoachTurn = null;
+
+function addConvo(line) {
+  const box = el("conversation");
+  const d = line.data || {};
+  if (line.chan === "user" && line.text.startsWith("you: ")) {
+    const t = document.createElement("div"); t.className = "turn you";
+    const who = document.createElement("div"); who.className = "who"; who.textContent = "you";
+    t.append(who, document.createTextNode(line.text.slice(5)));
+    box.appendChild(t);
+    lastCoachTurn = null;
+  } else if (line.chan === "coach" && d.full) {
+    const t = document.createElement("div");
+    t.className = "turn coach" + (d.voice === "stale" || d.voice === "skip" ? " unspoken" : "");
+    const who = document.createElement("div"); who.className = "who";
+    who.textContent = "coach · " + (d.trigger || "").replace("_", " ") + (d.fallback ? " · template" : "");
+    t.append(who, document.createTextNode(d.full));
+    box.appendChild(t);
+    lastCoachTurn = t;
+  } else if (line.chan === "coach" && line.text.startsWith("turn (") && d.kind) {
+    // A message of the game's conversation: the move, the takeback, the re-read, the end.
+    const t = document.createElement("div"); t.className = "turn game";
+    const who = document.createElement("div"); who.className = "who"; who.textContent = d.kind;
+    const first = (d.body || "").split("\n").find((l) => l.startsWith("Move:")) || (d.text || "").split("\n")[0];
+    t.append(who, document.createTextNode(first));
+    if (d.body && d.body.length > first.length) {
+      const det = document.createElement("details");
+      const sum = document.createElement("summary"); sum.textContent = "the whole message"; det.appendChild(sum);
+      const p = document.createElement("pre"); p.textContent = d.body; det.appendChild(p);
+      t.appendChild(det);
+    }
+    box.appendChild(t);
+    lastCoachTurn = null;
+  } else if (line.chan === "coach" && line.text.startsWith("model reply") && lastCoachTurn) {
+    const det = document.createElement("details");
+    const sum = document.createElement("summary"); sum.textContent = line.text; det.appendChild(sum);
+    if (d.prompt) { const p = document.createElement("pre"); p.textContent = "GIVEN:" + "\n" + d.prompt; det.appendChild(p); }
+    if (d.raw) { const r = document.createElement("pre"); r.className = "raw"; r.textContent = "WROTE:" + "\n" + d.raw; det.appendChild(r); }
+    lastCoachTurn.appendChild(det);
+  } else {
+    return;
+  }
+  if (!box.hidden && el("autoscroll").checked) box.scrollTop = box.scrollHeight;
 }
 
 // --- board marks: the arrows and highlights that go with a coach message --------------
@@ -545,6 +598,14 @@ function wire() {
   send.ontouchend = () => setPtt(false);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && pinnedPly !== null) { pinnedPly = null; showLive(); } });
   el("clearTerm").onclick = () => { el("terminal").replaceChildren(); lastRow = null; };
+  for (const tab of document.querySelectorAll(".tabs .tab")) {
+    tab.onclick = () => {
+      for (const t of document.querySelectorAll(".tabs .tab")) t.classList.toggle("on", t === tab);
+      el("terminal").hidden = tab.dataset.pane !== "terminal";
+      el("conversation").hidden = tab.dataset.pane !== "conversation";
+      const pane = el(tab.dataset.pane); pane.scrollTop = pane.scrollHeight;
+    };
+  }
   for (const chip of document.querySelectorAll("#chans .chip")) {
     chip.onclick = () => {
       const chan = chip.dataset.chan;

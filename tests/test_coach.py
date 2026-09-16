@@ -109,6 +109,23 @@ def _messages(coach: Coach):
     return coach.poll()
 
 
+def _given(provider: ScriptedProvider, index: int = -1) -> list[ChatMessage]:
+    """The messages the model was given on the `index`-th call: the conversation, then
+    the directive."""
+    return provider.prompts[index][1]
+
+
+def _current_move_message(messages: list[ChatMessage]) -> str:
+    """The last move message: the position the player faces, at the level in force."""
+    moves = [m["content"] for m in messages if m["role"] == "user" and "Move: " in m["content"]]
+    assert moves, "no move message in the conversation"
+    return moves[-1]
+
+
+def _directive(messages: list[ChatMessage]) -> str:
+    return messages[-1]["content"]
+
+
 def test_a_decisive_moment_earns_one_question_that_names_nothing() -> None:
     coach, provider = _coach(["What is your opponent's most dangerous idea right now?"])
     _play_to_scholar(coach)
@@ -116,13 +133,26 @@ def test_a_decisive_moment_earns_one_question_that_names_nothing() -> None:
     out = _messages(coach)
     assert len(out) == 1 and out[0].trigger is Trigger.DECISIVE_QUESTION
     assert out[0].level is DisclosureLevel.QUESTION
-    # The model was handed the position and nothing about the answer.
-    _, messages = provider.prompts[0]
-    sheet = messages[-1]["content"]
-    assert "White to move; you are white" in sheet and "decisive: True" in sheet
-    assert "a b c d e f g h" in sheet, "the position is drawn as a board"
-    for secret in ("Qxf7", "mating", "queen", "h5f7", "theme", "candidates"):
-        assert secret not in sheet, secret
+    # The model was handed the game as messages: one per move, the last one the position
+    # the player faces, drawn as a board, with the engine's lines withheld at this level.
+    messages = _given(provider, 0)
+    assert messages[0]["content"].startswith("New game. You coach the player, who is White")
+    moves = [m for m in messages if m["role"] == "user" and "Move: " in m["content"]]
+    assert [m["content"].split("Move: ")[1].split(" by")[0] for m in moves] == [
+        "1. e4",
+        "1... e5",
+        "2. Bc4",
+        "2... Nc6",
+        "3. Qh5",
+        "3... Nf6",
+    ]
+    current = _current_move_message(messages)
+    assert "White to move." in current and "decisive: True" in current
+    assert "a b c d e f g h" in current, "the position is drawn as a board"
+    assert "Engine lines for the position now: withheld" in current
+    for secret in ("Qxf7", "mating", "queen", "h5f7", "candidates"):
+        assert secret not in current, secret
+    assert "an orienting question only" in _directive(messages)
     # And a second question for the same position is not asked.
     coach.on_event(_mate_analysis(6), 8.0)
     assert _messages(coach) == []
@@ -158,17 +188,26 @@ def test_a_hint_unlocks_the_theme_and_asking_for_the_move_unlocks_it() -> None:
     coach.ask("give me a hint", 8.0)
     out = _messages(coach)
     assert out[0].level is DisclosureLevel.QUESTION
-    assert "theme" not in provider.prompts[0][1][-1]["content"]
+    current = _current_move_message(_given(provider, 0))
+    assert "theme:" not in current and "Qxf7" not in current
+    # The player's words are a message of the conversation, verbatim.
+    asks = [m["content"] for m in _given(provider, 0) if m["content"].startswith("The player says")]
+    assert asks == ['The player says: "give me a hint"']
     coach.ask("another hint", 8.5)
     out = _messages(coach)
     assert out[0].level is DisclosureLevel.THEME
-    sheet = provider.prompts[1][1][-1]["content"]
-    assert "theme: a mating attack" in sheet and "Qxf7" not in sheet and "queen" not in sheet
+    current = _current_move_message(_given(provider, 1))
+    assert "theme: a mating attack" in current and "Qxf7" not in current
+    assert "queen" not in current.split("Facts for the position you face")[1]
     coach.ask("ok just tell me the move", 9.0)
     out = _messages(coach)
     assert out[0].level is DisclosureLevel.CANDIDATE and "Qxf7" in out[0].text
-    sheet = provider.prompts[2][1][-1]["content"]
-    assert "candidates: Qxf7#" in sheet
+    current = _current_move_message(_given(provider, 2))
+    assert "Engine lines for the position now" in current and "Qxf7#" in current
+    # Every earlier coach turn is in the conversation as an assistant message: two hints,
+    # each answered at once with the template and then by the model.
+    roles = [m["role"] for m in _given(provider, 2)]
+    assert roles.count("assistant") == 4
 
 
 def test_naming_the_move_yourself_earns_the_candidate_level() -> None:
@@ -224,8 +263,15 @@ def test_feedback_after_the_users_move_may_say_everything_about_that_position() 
     out = _messages(coach)
     assert len(out) == 1 and out[0].trigger is Trigger.POST_MISTAKE
     assert out[0].level is DisclosureLevel.LINE and "Qxf7" in out[0].text
-    sheet = provider.prompts[-1][1][-1]["content"]
-    assert "candidates: Qxf7#" in sheet and "Bxf7+" in sheet and "miss" in sheet
+    # The move's own message carries the verdict and what the engine preferred; the
+    # position before it, now history, shows its lines in full.
+    messages = _given(provider)
+    played = _current_move_message(messages)
+    assert "Move: 4. Bxf7+ by you" in played
+    assert "Engine verdict on Bxf7+: miss; it cost 0.45 of expected score" in played
+    assert "the engine preferred 4. Qxf7#" in played
+    before = [m["content"] for m in messages if "Move: 3... Nf6" in m["content"]][0]
+    assert "1. 4. Qxf7#" in before, "history is at full disclosure"
 
 
 def test_stuck_gives_a_hint_once_and_the_opponents_turn_is_silent() -> None:
@@ -362,33 +408,43 @@ def test_the_fact_sheet_hides_by_level() -> None:
     assert "line: Qxf7#" in fact_sheet(facts, DisclosureLevel.LINE)
 
 
-def test_the_game_memory_carries_the_arc_into_the_prompt() -> None:
-    from sidecoach.coach.coach import GameMemory
-
-    memory = GameMemory()
-    memory.note_move(6, "opening", "material is level", "C50 Italian Game")
-    memory.note_move(24, "middlegame", "you are down a pawn", None)
-    block = memory.block()
-    assert "C50 Italian Game" in block and "move 12, middlegame" in block
-    assert "down a pawn" in block and "level" not in block
-    # A recurring missed idea is surfaced only once it has happened more than once.
-    memory.note_mistake(20, "a fork")
-    assert "missed more than once" not in memory.block()
-    memory.note_mistake(28, "a fork")
-    assert "a fork (2x)" in memory.block()
-    # A strategic lapse is recorded too, from the plan when there is no tactic to miss.
-    memory.note_mistake(30, None, "finishing your development")
-    memory.note_mistake(34, None, "finishing your development")
-    assert "finishing your development (2x)" in memory.block()
-
-
-def test_the_memory_reaches_the_model_and_grows_with_the_game() -> None:
-    coach, provider = _coach(["Careful here.", "That let it slip."])
+def test_the_conversation_is_the_game_one_message_per_move_with_the_tally() -> None:
+    """The model sees the game as it went: every move a message with the engine's word on
+    it and the running tally of the player's moves; nothing is summarised away."""
+    coach, provider = _coach(["Two clean moves so far. Keep developing."])
     _play_to_scholar(coach)
-    coach.on_event(_mate_analysis(6), 7.0)
+    for ply, (uci, label) in {1: ("e2e4", Label.BOOK), 3: ("f1c4", Label.EXCELLENT)}.items():
+        coach.on_event(
+            MoveAssessment(
+                game_id="g",
+                ply=ply,
+                uci=uci,
+                expected_loss=0.0,
+                severity=Severity.NONE,
+                best=[uci],
+                label=label,
+            ),
+            7.0,
+        )
+    coach.on_event(_mate_analysis(6, decisive=False), 8.0)
+    coach.ask("how is my opening?", 9.0)
     _messages(coach)
-    assert "Game so far:" in provider.prompts[0][1][-1]["content"]
-    # A mistake in a themed position is remembered.
+    messages = _given(provider)
+    e4 = [m["content"] for m in messages if "Move: 1. e4 by you" in m["content"]][0]
+    assert "Engine verdict on e4: book; it cost nothing" in e4
+    assert "Your moves so far (1 judged): 1 book." in e4
+    bc4 = [m["content"] for m in messages if "Move: 2. Bc4 by you" in m["content"]][0]
+    assert "Your moves so far (2 judged): 1 excellent, 1 book." in bc4
+    assert "Moves so far: 1. e4 e5 2. Bc4" in bc4
+    assert messages[-2]["content"] == 'The player says: "how is my opening?"'
+
+
+def test_a_takeback_is_a_message_that_says_so_and_history_keeps_the_withdrawn_move() -> None:
+    from sidecoach.events import Takeback
+
+    coach, provider = _coach(["Fine."])
+    _play_to_scholar(coach)
+    fen_before = chess.Board(SCHOLAR).fen()
     board = chess.Board(SCHOLAR)
     move = board.parse_san("Bxf7+")
     board.push(move)
@@ -398,26 +454,86 @@ def test_the_memory_reaches_the_model_and_grows_with_the_game() -> None:
             ply=7,
             san="Bxf7+",
             uci=move.uci(),
-            fen_before=SCHOLAR,
+            fen_before=fen_before,
             fen_after=board.fen(),
             by_user=True,
         ),
         10.0,
     )
+    coach.on_event(Takeback(game_id="g", plies=1, fen=fen_before), 11.0)
+    board = chess.Board(SCHOLAR)
+    move = board.parse_san("Qxf7#")
+    board.push(move)
     coach.on_event(
-        MoveAssessment(
+        MovePlayed(
             game_id="g",
             ply=7,
+            san="Qxf7#",
             uci=move.uci(),
-            expected_loss=0.45,
-            severity=Severity.BLUNDER,
-            best=["h5f7"],
-            label=Label.MISS,
+            fen_before=fen_before,
+            fen_after=board.fen(),
+            by_user=True,
         ),
-        11.0,
+        12.0,
     )
+    coach.on_event(_mate_analysis(6, decisive=False), 12.5)  # facts for the ask below
+    coach.ask("what happened there?", 13.0)
     _messages(coach)
-    assert coach.memory.missed.get("a mating attack") == 1
+    texts = [m["content"] for m in _given(provider)]
+    withdrawn = [t for t in texts if "Move: 4. Bxf7+ by you" in t]
+    takeback = [t for t in texts if t.startswith("Takeback: 4. Bxf7+ withdrawn")]
+    replacement = [t for t in texts if "Move: 4. Qxf7# by you" in t]
+    assert withdrawn and takeback and replacement
+    assert texts.index(withdrawn[0]) < texts.index(takeback[0]) < texts.index(replacement[0])
+    assert "back at the position after 3... Nf6" in takeback[0]
+    # The move list in the replacement's message no longer holds the withdrawn move.
+    assert "Moves so far: 1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7#" in replacement[0]
+    assert "Bxf7+" not in replacement[0].split("Moves so far:")[1].split("\n")[0]
+
+
+def test_a_reread_of_the_board_is_a_message_and_the_numbering_restarts() -> None:
+    from sidecoach.events import Resync
+
+    coach, provider = _coach(["Understood."])
+    _play_to_scholar(coach)
+    fen = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/2N5/PPPP1PPP/R1B1K1NR b KQkq - 5 4"
+    coach.on_event(
+        Resync(game_id="g", fen=fen, reason="position adopted after 3 unexplained cells"), 20.0
+    )
+    board = chess.Board(fen)
+    move = board.parse_san("d6")
+    board.push(move)
+    coach.on_event(
+        MovePlayed(
+            game_id="g",
+            ply=1,
+            san="d6",
+            uci=move.uci(),
+            fen_before=fen,
+            fen_after=board.fen(),
+            by_user=False,
+        ),
+        21.0,
+    )
+    coach.on_event(
+        Analysis(
+            game_id="g",
+            fen=board.fen(),
+            ply=1,
+            lines=[Line(moves=["c3d5"], depth=12, expected_score=0.6)],
+            decisive=False,
+            only_move=False,
+        ),
+        22.0,
+    )
+    coach.ask("what now?", 23.0)
+    _messages(coach)
+    texts = [m["content"] for m in _given(provider)]
+    reread = [t for t in texts if t.startswith("The board was re-read")]
+    assert reread and "Moves may have gone unseen" in reread[0]
+    # The numbering follows the position the board was read at, not a ply count.
+    after = [t for t in texts if "Move: 4... d6 by your opponent" in t]
+    assert after and "Moves so far: 4... d6" in after[0]
 
 
 def test_asking_before_anything_is_analysed_gets_an_honest_answer() -> None:
@@ -554,3 +670,88 @@ def test_an_ask_overtakes_unprompted_requests_still_waiting() -> None:
     assert speaker.dropped == 2 and speaker.pending == 1
     speaker.run_pending()
     assert [s.message.trigger for s in speaker.poll()] == [Trigger.USER_ASK]
+
+
+def test_material_is_always_from_the_users_side_and_the_review_draws_on_the_tally() -> None:
+    """The first post-game question ("how did I do overall?") was answered "you were down
+    a queen for much of the middlegame" to a player who had won a queen: the material was
+    read from whichever side was to move, and the memory carried that into the verdict.
+    Now the facts, the sheet and the memory all speak from the user's side, a finished
+    game withholds nothing, and an overall verdict is drawn from the engine's tally."""
+    from sidecoach.events import GameEnded
+
+    coach, provider = _coach(["You kept it clean: nothing lost, and the finish was sharp."])
+    _start(coach)
+    board = chess.Board()
+    # 1. e4 e5 2. Qh5 Nc6 3. Qxe5+ (White, the user, wins a pawn; then Black to move.)
+    for ply, san in enumerate(("e4", "e5", "Qh5", "Nc6", "Qxe5+"), start=1):
+        move = board.parse_san(san)
+        before = board.fen()
+        board.push(move)
+        coach.on_event(
+            MovePlayed(
+                game_id="g",
+                ply=ply,
+                san=san,
+                uci=move.uci(),
+                fen_before=before,
+                fen_after=board.fen(),
+                by_user=(ply % 2 == 1),
+            ),
+            float(ply),
+        )
+    # The engine looks at the position with Black to move.
+    coach.on_event(
+        Analysis(
+            game_id="g",
+            fen=board.fen(),
+            ply=5,
+            lines=[Line(moves=["f8e7"], depth=12, expected_score=0.4)],
+            decisive=False,
+            only_move=False,
+        ),
+        6.0,
+    )
+    facts = coach.positions[5].facts
+    assert facts is not None
+    assert facts.material == "you are up a pawn", "from the user's side, not the mover's"
+    assert facts.user_side == "white" and facts.side_to_move == "black"
+    sheet = fact_sheet(facts, DisclosureLevel.QUESTION)
+    assert "Black (your opponent) to move; you are white" in sheet
+    assert "Material: you are up a pawn." in coach.conversation.render_ply(
+        coach.conversation.records[-1], DisclosureLevel.LINE
+    )
+    # The user's moves get their labels tallied.
+    for ply, (uci, label) in {
+        1: ("e2e4", Label.BOOK),
+        3: ("d1h5", Label.INACCURACY),
+        5: ("h5e5", Label.BEST),
+    }.items():
+        coach.on_event(
+            MoveAssessment(
+                game_id="g",
+                ply=ply,
+                uci=uci,
+                expected_loss=0.03 if label is Label.INACCURACY else 0.0,
+                severity=Severity.INACCURACY if label is Label.INACCURACY else Severity.NONE,
+                best=[uci],
+                label=label,
+            ),
+            7.0,
+        )
+    _messages(coach)
+    # The game ends; an overall question is answered from the tally, at full disclosure.
+    coach.on_event(
+        GameEnded(game_id="g", result="1-0", reason="resigned", pgn="", final_fen=board.fen()), 8.0
+    )
+    coach.ask("how did I do overall this game?", 9.0)
+    out = _messages(coach)
+    assert out and out[-1].level is DisclosureLevel.LINE
+    messages = _given(provider)
+    directive = _directive(messages)
+    assert "They asked how they did overall" in directive
+    assert "do not infer the course of the game from the position" in directive
+    last_own = [m["content"] for m in messages if "Move: 3. Qxe5+ by you" in m["content"]][0]
+    assert "Your moves so far (3 judged): 1 best, 1 book, 1 inaccuracy." in last_own
+    assert "Ground lost at: 2. Qh5 (inaccuracy)" in last_own
+    assert any(m["content"].startswith("Game over: 1-0") for m in messages)
