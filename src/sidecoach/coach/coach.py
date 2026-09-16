@@ -433,8 +433,11 @@ class Speaker:
 _HINT = re.compile(r"\b(hint|clue|nudge|help me|help|stuck|where should i look)\b", re.I)
 # An overall verdict on the game: "how did I do", "how was my game", "overall", "summary".
 _ASK_REVIEW = re.compile(
-    r"\b(?:how (?:did|have) i (?:do|play|done|played)|how was (?:my|the) game|overall|"
-    r"summar(?:y|ise|ize)|review (?:my|the) game|rate my (?:game|play))\b",
+    r"\b(?:how (?:did|have|am) i (?:do|play|done|played|playing|doing)|how was (?:my|the) game|"
+    r"overall|summar(?:y|ise|ize)|review (?:my|the) game|rate my (?:game|play)|"
+    r"where did i (?:lose|go wrong)|what (?:do|did) i keep (?:missing|doing)|"
+    r"what (?:did|have) i (?:do|done) wrong|my (?:mistakes|worst moves?)|"
+    r"what should i work on)\b",
     re.IGNORECASE,
 )
 # A bare request for a hint, with nothing claimed: "hint", "give me a hint", "a clue".
@@ -855,6 +858,35 @@ class Coach:
         self._last_verdict = chosen
         return chosen.format(san=san)
 
+    def _review_template(self) -> str:
+        """The record in a sentence, for when the model's review fails the checks: the
+        tally and where ground was lost, from the same records the messages carry."""
+        with self._lock:
+            judged = [
+                r
+                for r in self.conversation.judged_records()
+                if r.move.by_user and r.assessment is not None
+            ]
+            if not judged:
+                return "I have not seen enough of this game yet to say."
+            counts: dict[str, int] = {}
+            lost: list[str] = []
+            for r in judged:
+                assert r.assessment is not None
+                label = (
+                    r.assessment.label.value if r.assessment.label else r.assessment.severity.value
+                )
+                counts[label] = counts.get(label, 0) + 1
+                if r.assessment.severity.value != "none":
+                    lost.append(f"{self.conversation._numbered(r.move)} ({label})")
+        good = sum(counts.get(k, 0) for k in ("brilliant", "great", "best", "excellent"))
+        text = f"{good} of your {len(judged)} moves were best or excellent."
+        if lost:
+            text += " You lost ground at " + ", ".join(lost[-3:]) + "."
+        else:
+            text += " Nothing cost you real ground."
+        return text
+
     def _latest_with_facts(self) -> _Position | None:
         for ply in sorted(self.positions, reverse=True):
             if self.positions[ply].facts is not None:
@@ -1087,6 +1119,8 @@ class Coach:
                 "Two or three sentences: what went well, the one thing to work on, in plain "
                 "words. If no move has a verdict yet, say you have not seen enough to say."
             )
+            # A review has a record to fall back on, not a line.
+            fallback = self._review_template()
         elif _ASK_HINT.match(said):
             # A bare "hint" carries no claim to be honest about; treated as one, the model
             # answered its own last message as if the player had said it.

@@ -793,6 +793,19 @@ def test_material_is_always_from_the_users_side_and_the_review_draws_on_the_tall
     assert "Your moves so far (3 judged): 1 best, 1 book, 1 inaccuracy." in last_own
     assert "Ground lost at: 2. Qh5 (inaccuracy)" in last_own
     assert any(m["content"].startswith("Game over: 1-0") for m in messages)
+    # Other ways of asking are reviews too, and when the model's review fails the checks
+    # the template is the record, not "I have no line for this yet".
+    from sidecoach.coach.coach import _ASK_REVIEW
+
+    for words in ("what do I keep missing?", "where did I lose it?", "how am I playing so far?"):
+        assert _ASK_REVIEW.search(words), words
+    assert not _ASK_REVIEW.search("what's the plan so far?")
+    provider.replies = ["", ""]
+    coach.ask("what do I keep missing?", 10.0)
+    out = _messages(coach)
+    assert out[-1].text == (
+        "1 of your 3 moves were best or excellent. You lost ground at 2. Qh5 (inaccuracy)."
+    )
 
 
 def test_a_quick_answer_is_a_turn_before_the_model_and_a_failed_reply_adds_nothing() -> None:
