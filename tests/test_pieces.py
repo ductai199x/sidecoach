@@ -434,3 +434,36 @@ def test_recogniser_works_at_small_cell_sizes(cell: int) -> None:
             if readings[r][c].symbol != expected:
                 wrong.append((r, c, expected, readings[r][c].symbol))
     assert not wrong, wrong
+
+
+def test_a_fractional_cell_never_wears_a_phantom_hover_outline() -> None:
+    """641 px for eight squares is 80.125 a square: the edges fall between pixels and the
+    straddling pixels blend the two square colours. Rounding the crop to the nearest pixel
+    let those blends in on both sides of the e-file and both sides of the fourth rank, and
+    e4 alone read as hovered on every frame -- so 1.e4 never settled and the second live
+    game was never followed. A crop of whole pixels only has clean edges everywhere."""
+    light, dark = (176, 214, 237), (98, 135, 184)
+    exact = np.zeros((648, 648, 3), dtype=np.uint8)
+    for r in range(8):
+        for c in range(8):
+            exact[r * 81 : (r + 1) * 81, c * 81 : (c + 1) * 81] = (
+                light if (r + c) % 2 == 0 else dark
+            )
+    frame = np.full((900, 900, 3), 40, dtype=np.uint8)
+    frame[100:741, 100:741] = cv2.resize(exact, (641, 641), interpolation=cv2.INTER_AREA)
+    geometry = BoardGeometry(Region(100, 100, 641, 641), 641 / 8)
+    hovered = [
+        (r, c)
+        for r in range(8)
+        for c in range(8)
+        if silhouette(geometry.crop(frame, r, c, size=2 * CELL)).hover
+    ]
+    assert hovered == []
+    # Whole pixels only, and never more than a pixel lost a side.
+    x0, y0, x1, y1 = geometry.cell_box(4, 4)
+    assert (x0, y0, x1, y1) == (421, 421, 500, 500)
+    assert all(
+        79 <= geometry.cell_box(r, c)[2] - geometry.cell_box(r, c)[0] <= 81
+        for r in range(8)
+        for c in range(8)
+    )
