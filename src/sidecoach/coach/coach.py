@@ -86,18 +86,45 @@ MAX_TRANSCRIPT = 16
 MAX_TOKENS = 220
 # A move that lost less than this gets a two-word confirmation, without the model.
 TRIVIAL_LOSS = 0.02
+# The confirmations, by the move's label, in the vocabulary chess.com uses; "{san}" is the
+# move. A book move is theory, a best move is the engine's own, the rest are fine moves.
+VERDICTS: dict[str, list[str]] = {
+    "book": ["{san}: book.", "{san}, still theory.", "{san}: known territory."],
+    "brilliant": ["{san}: brilliant.", "{san} -- that is a find."],
+    "great": ["{san}: great move.", "{san} -- the one move that works."],
+    "best": [
+        "{san}: best.",
+        "{san} -- that's the move.",
+        "{san}, spot on.",
+        "{san}: exactly.",
+        "{san}: the engine's choice too.",
+    ],
+    "excellent": ["{san}: excellent.", "{san}: strong.", "{san} -- very good.", "{san}: nice."],
+    "good": ["{san}: good.", "{san}: fine.", "{san}, solid.", "{san} works.", "{san}: sound."],
+}
 # Verbalized sampling: how many candidate replies to ask for, and the room and warmth to
 # give the distribution. Warmer than a single reply on purpose, since a check filters them.
 VS_CANDIDATES = 4
+# An answer to the player's own question is wanted fast, and it is checked like any other;
+# two candidates halve the wait and still leave a spare for the checks to reject.
+VS_ASK_CANDIDATES = 2
 VS_MAX_TOKENS = 2048
 VS_TEMPERATURE = 0.9
-VS_DIRECTIVE = (
-    "\n\nInstead of one reply, give FOUR different ways you could say this, varied in wording "
-    "and in the angle each takes, sampled from your full range rather than the single most "
-    "obvious phrasing. Put each on its own line as: [p=0.30] then the reply. Each reply obeys "
-    "every rule above and is two to four sentences on that one line. The p values are how "
-    "likely you would be to choose each; they need not sum to one."
-)
+_NUMBER_WORDS = {2: "TWO", 3: "THREE", 4: "FOUR", 5: "FIVE"}
+
+
+def vs_directive(candidates: int = VS_CANDIDATES) -> str:
+    count = _NUMBER_WORDS.get(candidates, str(candidates))
+    return (
+        f"\n\nInstead of one reply, give {count} different ways you could say this, varied in "
+        "wording and in the angle each takes, sampled from your full range rather than the "
+        "single most obvious phrasing. Put each on its own line as: [p=0.30] then the reply. "
+        "Each reply obeys every rule above and is two to four sentences on that one line. The "
+        "p values are how likely you would be to choose each; they need not sum to one."
+    )
+
+
+VS_DIRECTIVE = vs_directive()
 _VS_MARKER = re.compile(r"\[\s*p?\s*=?\s*([0-9]*\.?[0-9]+)\s*\]\s*", re.IGNORECASE)
 # A marker fragment left in a candidate's text: a whole one, or one cut off mid-way.
 _STRAY_MARKER = re.compile(r"\s*\[\s*p\s*=\s*[0-9.]*\]?\s*")
@@ -107,13 +134,13 @@ _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
 _SENTENCE_END = re.compile(r"[.!?…][\"'”’)\]]*(?=\s|$)")
 
 
-def _vs_wrap(messages: list[ChatMessage]) -> list[ChatMessage]:
+def _vs_wrap(messages: list[ChatMessage], candidates: int = VS_CANDIDATES) -> list[ChatMessage]:
     """Append the verbalized-sampling directive to the final user turn."""
     if not messages:
         return messages
     wrapped = list(messages)
     last = dict(wrapped[-1])
-    last["content"] = str(last.get("content", "")) + VS_DIRECTIVE
+    last["content"] = str(last.get("content", "")) + vs_directive(candidates)
     wrapped[-1] = last  # type: ignore[assignment]
     return wrapped
 
@@ -262,6 +289,8 @@ class _Request:
     user_text: str | None = None
     # Board marks built from the same filtered facts the model sees (see coach.annotations).
     annotations: list[Annotation] = field(default_factory=list)
+    # How many replies to ask the model for; fewer for an answer the player is waiting on.
+    candidates: int = VS_CANDIDATES
 
 
 def _after_best(request: _Request) -> list[chess.Board]:
@@ -300,6 +329,7 @@ class Speaker:
         self.draft_check = draft_check
         self.failures = 0
         self.fallbacks = 0
+        self.dropped = 0  # unprompted requests an ask overtook before they started
         self.last_error: str | None = None
         self._requests: queue.Queue[_Request | Spoken | None] = queue.Queue()
         self._results: queue.SimpleQueue[Spoken] = queue.SimpleQueue()
@@ -322,11 +352,32 @@ class Speaker:
             thread.join(timeout)
 
     def submit(self, request: _Request) -> None:
+        """Queue a request. An ask goes ahead of any unprompted request still waiting: the
+        player is waiting for this one, and a post-move remark or a nudge that has not
+        started yet would only be stale by the time the answer came out."""
+        if request.trigger is Trigger.USER_ASK:
+            kept: list[_Request | Spoken | None] = []
+            while True:
+                try:
+                    item = self._requests.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(item, _Request) and item.trigger is not Trigger.USER_ASK:
+                    self.dropped += 1
+                    continue
+                kept.append(item)
+            for item in kept:
+                self._requests.put(item)
         self._requests.put(request)
 
-    def submit_ready(self, spoken: Spoken) -> None:
-        """A message that is already final; it goes out through the same queue, in order."""
-        self._requests.put(spoken)
+    def submit_ready(self, spoken: Spoken, *, now: bool = False) -> None:
+        """A message that is already final; it goes out through the same queue, in order --
+        or, with `now`, straight to the results, ahead of whatever the model is writing:
+        the quick answer to a button press must not wait behind a post-move remark."""
+        if now:
+            self._results.put(spoken)
+        else:
+            self._requests.put(spoken)
 
     def run_pending(self) -> None:
         """Answer every queued request on the calling thread: for tests and for replay."""
@@ -357,7 +408,7 @@ class Speaker:
         reply is sampled by its own stated likelihood from those that pass. Because several are
         offered at once, a clean one is usually among them, so the template is rarely needed.
         """
-        messages = _vs_wrap(list(request.messages))
+        messages = _vs_wrap(list(request.messages), request.candidates)
         problems: list[str] = []
         text = ""
         attempts = 0
@@ -391,8 +442,9 @@ class Speaker:
                 {
                     "role": "user",
                     "content": (
-                        "Those replies are not allowed: " + "; ".join(problems) + ". Give four "
-                        "fresh, varied replies that avoid those, keeping to the fact sheet."
+                        "Those replies are not allowed: " + "; ".join(problems) + ". Give "
+                        f"{_NUMBER_WORDS.get(request.candidates, request.candidates)} fresh, "
+                        "varied replies that avoid those, keeping to the fact sheet."
                     ),
                 },
             ]
@@ -452,6 +504,23 @@ _ASK_HINT = re.compile(
     r"(?:hint|clue|nudge|help|tip)s?(?: please)?)\W*$",
     re.IGNORECASE,
 )
+# Words that can carry a claim about the board worth checking: a move, a square, a piece.
+# A bare "hint" or "what should I play" carries none, and skipping the check is what makes
+# the buttons answer at once.
+_CLAIM_WORDS = re.compile(
+    r"\b(?:[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?|O-O(?:-O)?|[a-h][1-8]|"
+    r"pawn|knight|bishop|rook|queen|king|castl\w*|check|mate|fork|pin|skewer|hang\w*|"
+    r"threat\w*|attack\w*|capture\w*|take\w*|trade\w*|sac\w*|win\w*|los\w*|"
+    r"safe|blunder|mistake|good|bad|better|best|worse|worst)\b",
+    re.IGNORECASE,
+)
+
+
+def may_carry_claims(text: str) -> bool:
+    """Whether the user's words could state something about the board to check."""
+    return _CLAIM_WORDS.search(text) is not None and not _ASK_HINT.match(text)
+
+
 _ASK_MOVE = re.compile(
     r"\b(best move|what (should|do|would) i (play|do)|what would you play|which move|"
     r"just tell me|what'?s the move|tell me the move|the answer)\b",
@@ -540,6 +609,9 @@ class Coach:
         self.spoken: list[Spoken] = []
         self._current: _Position | None = None
         self._clock_peak_ms: int | None = None
+        # The transcript is appended from the caller's thread and from a claims check.
+        self._lock = threading.RLock()
+        self._last_verdict: str | None = None
 
     # Lifecycle
 
@@ -579,7 +651,15 @@ class Coach:
         self._speak(trigger, self._current, level, ts)
 
     def ask(self, text: str, ts: float) -> None:
-        """The user said something. Always answered, at the level their words earn."""
+        """The user said something. Always answered, at the level their words earn.
+
+        Returns at once. A canned ask -- a hint, the move, the line -- gets the template
+        for its level immediately, with its marks, so the answer is on the board before the
+        model has started; the model's fuller reply follows. Words that may carry a claim
+        about the board are checked first, on a worker thread: the check is a model call of
+        its own, and run on the caller's thread it stalled the whole pipeline for seconds
+        (the first live games: every button press froze the vision until it returned).
+        """
         position = self._current
         if position is None or position.facts is None:
             position = self._latest_with_facts()
@@ -593,20 +673,36 @@ class Coach:
         unlock = unlock_for(text, position.board, position.facts.candidates)
         if unlock is not None:
             position.disclosure.apply(unlock)
-        verdicts: list[str] = []
-        if self.claims is not None:
+        level = position.disclosure.level
+        canned = unlock in (Unlock.HINT, Unlock.ASK_MOVE, Unlock.ASK_LINE) and not may_carry_claims(
+            text
+        )
+        if canned:
+            _, quick = self._instruction(Trigger.USER_ASK, position, level, text, (), None, None)
+            self._queue_plain(
+                Trigger.USER_ASK,
+                quick,
+                ts,
+                ply=position.ply,
+                level=level,
+                annotations=annotations_for(
+                    position.facts, level, position.board, trigger=Trigger.USER_ASK
+                ),
+                fen=position.board.fen(),
+                now=True,
+            )
+        if self.claims is None or not may_carry_claims(text):
+            self._speak(Trigger.USER_ASK, position, level, ts, user_text=text, quick=canned)
+            return
+
+        def checked() -> None:
             try:
-                verdicts = self.claims(text, position.board, position.facts)
+                verdicts = self.claims(text, position.board, position.facts)  # type: ignore[misc]
             except Exception:  # noqa: BLE001
                 verdicts = []
-        self._speak(
-            Trigger.USER_ASK,
-            position,
-            position.disclosure.level,
-            ts,
-            user_text=text,
-            verdicts=verdicts,
-        )
+            self._speak(Trigger.USER_ASK, position, level, ts, user_text=text, verdicts=verdicts)
+
+        threading.Thread(target=checked, name="sidecoach-claims", daemon=True).start()
 
     def hint(self, ts: float) -> None:
         self.ask("hint", ts)
@@ -621,8 +717,9 @@ class Coach:
         out: list[CoachMessage] = []
         for spoken in self.speaker.poll():
             self.spoken.append(spoken)
-            self.transcript.append({"role": "assistant", "content": spoken.message.text})
-            del self.transcript[:-MAX_TRANSCRIPT]
+            with self._lock:
+                self.transcript.append({"role": "assistant", "content": spoken.message.text})
+                del self.transcript[:-MAX_TRANSCRIPT]
             out.append(spoken.message)
         return out
 
@@ -709,7 +806,7 @@ class Coach:
             assert before.facts is not None
             best = before.facts.candidates[0] if before.facts.candidates else None
             if event.expected_loss < TRIVIAL_LOSS or best is None or best == move.san:
-                text = f"{move.san}: good."
+                text = self._verdict(move.san, event.label.value if event.label else None)
             else:
                 text = f"{move.san} is fine; {best} was a touch sharper."
             marks = annotations_for(
@@ -732,6 +829,15 @@ class Coach:
             return
         self._speak(trigger, before, DisclosureLevel.LINE, ts, assessment=event, played=move)
 
+    def _verdict(self, san: str, label: str | None) -> str:
+        """The two-word confirmation of a fine move, worded by its label and never the same
+        as the last one: a game of "Nf3: good. Bb5: good. Nc3: good." wears thin."""
+        phrases = VERDICTS.get(label or "", VERDICTS["good"])
+        choices = [p for p in phrases if p != self._last_verdict] or phrases
+        chosen = random.choice(choices)
+        self._last_verdict = chosen
+        return chosen.format(san=san)
+
     def _latest_with_facts(self) -> _Position | None:
         for ply in sorted(self.positions, reverse=True):
             if self.positions[ply].facts is not None:
@@ -749,19 +855,22 @@ class Coach:
         verdicts: Sequence[str] = (),
         assessment: MoveAssessment | None = None,
         played: MovePlayed | None = None,
+        quick: bool = False,
     ) -> None:
         assert position.facts is not None
         instruction, fallback = self._instruction(
-            trigger, position, level, user_text, verdicts, assessment, played
+            trigger, position, level, user_text, verdicts, assessment, played, quick=quick
         )
         prompt = f"{self.memory.block()}\n\n{fact_sheet(position.facts, level)}\n\n{instruction}"
-        self.transcript.append({"role": "user", "content": prompt})
-        del self.transcript[:-MAX_TRANSCRIPT]
+        with self._lock:
+            self.transcript.append({"role": "user", "content": prompt})
+            del self.transcript[:-MAX_TRANSCRIPT]
+            messages = list(self.transcript)
         request = _Request(
             trigger=trigger,
             level=level,
             system=f"{PERSONA}\n\n{RULES}",
-            messages=list(self.transcript),
+            messages=messages,
             facts=position.facts,
             board=position.board,
             fallback=fallback,
@@ -776,6 +885,7 @@ class Coach:
                 played_san=played.san if played else None,
                 severity=assessment.severity.value if assessment else None,
             ),
+            candidates=VS_ASK_CANDIDATES if trigger is Trigger.USER_ASK else VS_CANDIDATES,
         )
         self.speaker.submit(request)
 
@@ -789,8 +899,10 @@ class Coach:
         level: DisclosureLevel = DisclosureLevel.SILENT,
         annotations: list[Annotation] | None = None,
         fen: str | None = None,
+        now: bool = False,
     ) -> None:
-        """A message that needs no model; it queues behind whatever the model is writing."""
+        """A message that needs no model; it queues behind whatever the model is writing,
+        unless `now`, when it goes out at once."""
         message = CoachMessage(
             text=text,
             level=level,
@@ -800,7 +912,9 @@ class Coach:
             fen=fen,
             annotations=list(annotations or []),
         )
-        self.speaker.submit_ready(Spoken(message=message, level=level, problems=[], attempts=0))
+        self.speaker.submit_ready(
+            Spoken(message=message, level=level, problems=[], attempts=0), now=now
+        )
 
     def _instruction(
         self,
@@ -811,8 +925,14 @@ class Coach:
         verdicts: Sequence[str],
         assessment: MoveAssessment | None,
         played: MovePlayed | None,
+        *,
+        quick: bool = False,
     ) -> tuple[str, str]:
-        """The turn's instruction to the model, and the template used if it fails."""
+        """The turn's instruction to the model, and the template used if it fails.
+
+        `quick` means the template has already been shown as an immediate answer, so the
+        model is asked to build on it rather than repeat it.
+        """
         facts = position.facts
         assert facts is not None
         theme = facts.theme or facts.plan or "the position"
@@ -886,23 +1006,40 @@ class Coach:
             fallback = f"Think about {theme}."
         else:
             fallback = "What is your opponent's most dangerous idea here?"
+        shown = f' They have just been shown "{fallback}"; build on it, do not repeat it.'
         if _ASK_HINT.match(said):
             # A bare "hint" carries no claim to be honest about; treated as one, the model
             # answered its own last message as if the player had said it.
             directive = (
                 "They asked for a hint. Give one, at the level of what the fact sheet allows, "
                 "in one or two sentences, ending with a question. Do not name a move, and do "
-                "not comment on anything said earlier."
+                "not comment on anything said earlier." + (shown if quick else "")
             )
         elif level >= DisclosureLevel.LINE and _ASK_LINE.search(said) and facts.line:
             directive = (
-                f"They asked to see the line: give it -- {' '.join(facts.line)} -- plainly, then "
-                "one short sentence on the idea behind it. Do not answer with a question."
+                (
+                    f"They asked to see the line and have just been shown it: "
+                    f"{' '.join(facts.line)}. Give one or two short sentences on the idea "
+                    "behind it. Do not answer with a question."
+                )
+                if quick
+                else (
+                    f"They asked to see the line: give it -- {' '.join(facts.line)} -- plainly, "
+                    "then one short sentence on the idea behind it. Do not answer with a question."
+                )
             )
         elif level >= DisclosureLevel.CANDIDATE and _ASK_MOVE.search(said) and facts.candidates:
             directive = (
-                f"They asked what to play: tell them plainly it is {facts.candidates[0]}, then one "
-                "short sentence on why. Do not answer with a question this time."
+                (
+                    f"They asked what to play and have just been shown that it is "
+                    f"{facts.candidates[0]}. Give one or two short sentences on why. Do not "
+                    "answer with a question this time."
+                )
+                if quick
+                else (
+                    f"They asked what to play: tell them plainly it is {facts.candidates[0]}, "
+                    "then one short sentence on why. Do not answer with a question this time."
+                )
             )
         else:
             directive = (

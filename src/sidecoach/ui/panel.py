@@ -132,6 +132,9 @@ class PanelEngine:
     _forced_bottom: Any = field(default=None, init=False)  # a Side chosen by the flip button
     _view_flip: bool = field(default=False, init=False)  # the panel's board shown turned around
     _fen_before: dict[int, str] = field(default_factory=dict, init=False)  # ply -> fen before
+    # ply -> the engine's label for the move played to reach it (best, blunder, ...), for
+    # the move list's badges.
+    _labels: dict[int, str] = field(default_factory=dict, init=False)
     _bad_run: int = field(default=0, init=False)  # consecutive frames read as degraded
     # Screen rectangles (x, y, w, h in physical pixels) painted flat before the pipeline
     # sees a live frame -- the panel's own board, so the vision never locks onto it.
@@ -161,6 +164,9 @@ class PanelEngine:
             "running": False,
             "fen": None,
             "moves": [],
+            "fens": [],
+            "ucis": [],
+            "labels": {},
             "last_move": None,
             "view_flip": False,
             "game_id": None,
@@ -710,6 +716,7 @@ class PanelEngine:
 
         if isinstance(event, GameStarted):
             self._fen_before.clear()
+            self._labels.clear()
             self._emit(
                 "game",
                 "info",
@@ -776,6 +783,9 @@ class PanelEngine:
                     if better:
                         parts.append(f"better {better}")
                 tags = list(dict.fromkeys(tag.name for tag in event.tags))
+                if event.label is not None:
+                    self._labels[event.ply] = event.label.value
+                    self._set(labels={str(k): v for k, v in self._labels.items()})
                 # "quietMove" is the tagger's "nothing special"; it stays in the data only.
                 shown = [t for t in tags if t != "quietMove"]
                 if shown:
@@ -1001,9 +1011,9 @@ class PanelEngine:
                 break
             if name in ("ask", "ask_spoken"):
                 if coaching.on:
-                    coaching.ask(str(payload), ts)
                     if name == "ask":
                         self._emit("user", "info", f"you: {payload}")
+                    coaching.ask(str(payload), ts)
                 else:
                     self._emit("user", "warn", f"no coach to ask: {payload}")
             elif name == "end":
@@ -1081,10 +1091,12 @@ class PanelEngine:
         rec = pipe.reconciler
         fen = rec.board.fen() if rec is not None else None
         moves = [m.uci() for m in rec.board.move_stack] if rec is not None else []
-        sans = self._sans(rec) if rec is not None else []
+        sans, fens = self._sans(rec) if rec is not None else ([], [])
         self._set(
             fen=fen,
             moves=sans,
+            fens=fens,  # the position after each ply, for browsing the move list
+            ucis=moves,  # each ply's move, for the from/to highlight while browsing
             last_move=moves[-1] if moves else None,  # uci, for the from/to highlight
             ply=len(moves),
             following=pipe.model is not None,
@@ -1093,18 +1105,21 @@ class PanelEngine:
         )
 
     @staticmethod
-    def _sans(rec: Any) -> list[str]:
+    def _sans(rec: Any) -> tuple[list[str], list[str]]:
+        """The game's moves as SAN, and the FEN after each, from the reconciler's base."""
         import chess
 
         board = chess.Board(rec._base_fen) if getattr(rec, "_base_fen", None) else chess.Board()
         out: list[str] = []
+        fens: list[str] = []
         for move in rec.board.move_stack:
             try:
                 out.append(board.san(move))
             except Exception:  # noqa: BLE001 - a resync base can make SAN ambiguous; show uci
                 out.append(move.uci())
             board.push(move)
-        return out
+            fens.append(board.fen())
+        return out, fens
 
 
 class PanelApi:

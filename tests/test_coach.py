@@ -279,8 +279,20 @@ def test_a_good_move_earns_two_words_without_the_model() -> None:
         11.0,
     )
     out = _messages(coach)
-    assert [m.text for m in out] == ["Qxf7#: good."]
+    from sidecoach.coach.coach import VERDICTS
+
+    assert len(out) == 1 and out[0].text in [p.format(san="Qxf7#") for p in VERDICTS["best"]]
     assert provider.prompts == [], "no model call for a good move"
+    # The wording is by the label and never the same twice running: "good, good, good"
+    # for a whole game wore thin.
+    seen = {coach._verdict("Nf3", "good") for _ in range(40)}
+    assert len(seen) >= 3
+    previous = None
+    for _ in range(40):
+        current = coach._verdict("Nf3", "good")
+        assert current != previous
+        previous = current
+    assert coach._verdict("e4", "book") in [p.format(san="e4") for p in VERDICTS["book"]]
 
 
 def test_the_draft_checker_can_veto_a_false_claim() -> None:
@@ -448,3 +460,97 @@ def test_clock_scales_the_policy_and_a_new_game_resets_it() -> None:
     coach.on_event(ClockObservation(white_ms=185_000, black_ms=180_000, running=Side.BLACK), 4.0)
     assert coach.policy._remaining_ms == 180_000
     assert coach.policy.time_control is TimeControl.BLITZ
+
+
+def test_a_canned_ask_is_answered_at_once_and_the_model_builds_on_it() -> None:
+    """Hint, Best move and Line: the template for the level goes out immediately, with its
+    marks, and the model's fuller reply follows; the buttons felt slow when the answer
+    waited on two model calls."""
+    coach, provider = _coach(["Because it keeps the knight out of play, and eyes e5."])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    coach.ask_move(8.0)
+    quick = coach.poll()  # before the model has answered anything
+    assert [m.text for m in quick] == ["The move is Qxf7#."]
+    assert quick[0].trigger is Trigger.USER_ASK and quick[0].level is DisclosureLevel.CANDIDATE
+    assert any(mark.kind == "arrow" for mark in quick[0].annotations)
+    out = _messages(coach)
+    assert [m.text for m in out] == ["Because it keeps the knight out of play, and eyes e5."]
+    prompt = provider.prompts[0][1][-1]["content"]
+    assert "have just been shown that it is Qxf7#" in prompt
+    assert "TWO different ways" in prompt, "an answer the player waits for asks for fewer"
+
+
+def test_claims_are_checked_off_the_callers_thread_and_only_when_there_are_any() -> None:
+    import threading
+    import time
+
+    from sidecoach.coach.coach import may_carry_claims
+
+    assert not may_carry_claims("hint")
+    assert not may_carry_claims("what should I play")
+    assert not may_carry_claims("show me the line")
+    assert may_carry_claims("is Nf3 good here")
+    assert may_carry_claims("my knight is hanging")
+    assert may_carry_claims("can I castle")
+
+    calls: list[str] = []
+    started = threading.Event()
+
+    def slow_claims(text: str, board: chess.Board, facts: object) -> list[str]:
+        calls.append(threading.current_thread().name)
+        started.set()
+        time.sleep(0.2)
+        return ["'Nf3 is good': not the strongest, Qxf7# mates"]
+
+    provider = ScriptedProvider(["Not quite. What is your most active piece already eyeing?"])
+    coach = Coach(
+        provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), claims=slow_claims
+    )
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    begun = time.perf_counter()
+    coach.ask("is Nf3 good here", 8.0)
+    assert time.perf_counter() - begun < 0.1, "the caller never waits on the check"
+    assert started.wait(2.0)
+    time.sleep(0.4)
+    assert calls and calls[0] != threading.main_thread().name
+    out = _messages(coach)
+    assert [m.text for m in out] == ["Not quite. What is your most active piece already eyeing?"]
+    assert "Their claims, checked against the board" in provider.prompts[0][1][-1]["content"]
+    # A bare hint never runs the check.
+    coach.hint(9.0)
+    _messages(coach)
+    assert len(calls) == 1
+
+
+def test_an_ask_overtakes_unprompted_requests_still_waiting() -> None:
+    from sidecoach.coach.coach import Speaker, _Request
+
+    provider = ScriptedProvider([])
+    speaker = Speaker(provider)
+    coach, _ = _coach([])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    position = coach.positions[6]
+    assert position.facts is not None
+
+    def request(trigger: Trigger) -> _Request:
+        return _Request(
+            trigger=trigger,
+            level=DisclosureLevel.QUESTION,
+            system="",
+            messages=[{"role": "user", "content": "x"}],
+            facts=position.facts,  # type: ignore[arg-type]
+            board=position.board,
+            fallback="fallback",
+            ply=6,
+            game_id="g",
+        )
+
+    speaker.submit(request(Trigger.STUCK))
+    speaker.submit(request(Trigger.POST_MOVE))
+    speaker.submit(request(Trigger.USER_ASK))
+    assert speaker.dropped == 2 and speaker.pending == 1
+    speaker.run_pending()
+    assert [s.message.trigger for s in speaker.poll()] == [Trigger.USER_ASK]

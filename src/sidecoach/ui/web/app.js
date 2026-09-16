@@ -5,7 +5,6 @@ const el = (id) => document.getElementById(id);
 let cursor = 0;
 let running = false;
 let lastBoardKey = null;
-let lastMovesLen = -1;
 let coachCount = 0;
 
 // The backend is a local FastAPI server: poll for state, POST the controls. Same shape the
@@ -100,23 +99,73 @@ function renderBoard(fen, bottom, lastMove) {
   board.replaceChildren(frag);
 }
 
-function renderMoves(sans) {
-  if (sans.length === lastMovesLen) return;
-  lastMovesLen = sans.length;
+// --- the move list ------------------------------------------------------------
+//
+// Each move carries the engine's label as a badge (the ones chess.com marks: brilliant,
+// great, best, inaccuracy, mistake, miss, blunder; good and book stay plain). Hovering a
+// move shows its position on the board; clicking pins it there, for as long as you like,
+// and clicking it again (or Escape) comes back to the live board.
+
+const BADGED = new Set(["brilliant", "great", "best", "inaccuracy", "mistake", "miss", "blunder"]);
+let moveFens = [];    // fen after each ply
+let moveUcis = [];    // uci of each ply
+let pinnedPly = null; // a move the user clicked
+let lastMovesKey = "";
+
+function showPly(ply) {
+  // Show the position after `ply` (1-based) with that move highlighted.
+  ghost = true;
+  viewPly = ply;
+  const fen = ply > 0 ? moveFens[ply - 1] : null;
+  if (fen) renderBoard(fen, currentBottom, moveUcis[ply - 1] || null);
+  for (const mv of document.querySelectorAll("#moves .mv.view")) mv.classList.remove("view");
+  const cell = document.querySelector("#moves .mv[data-ply='" + ply + "']");
+  if (cell) cell.classList.add("view");
+  renderOverlay();
+}
+
+function showLive() {
+  ghost = false;
+  viewPly = null;
+  for (const mv of document.querySelectorAll("#moves .mv.view")) mv.classList.remove("view");
+  renderBoard(liveFen, currentBottom, liveLastMove);
+  renderOverlay();
+}
+
+function renderMoves(sans, labels) {
+  const key = sans.length + "|" + JSON.stringify(labels || {});
+  if (key === lastMovesKey) return;
+  lastMovesKey = key;
   const list = el("moves");
   const frag = document.createDocumentFragment();
+  const cell = (san, ply) => {
+    const m = document.createElement("span"); m.className = "mv";
+    if (!san) return m;
+    m.dataset.ply = String(ply);
+    m.appendChild(document.createTextNode(san));
+    const label = labels && labels[String(ply)];
+    if (label && BADGED.has(label)) {
+      const b = document.createElement("i"); b.className = "badge " + label; b.title = label; m.appendChild(b);
+    }
+    if (ply === sans.length) m.classList.add("cur");
+    if (ply === pinnedPly) m.classList.add("view");
+    m.onmouseenter = () => { if (pinnedPly === null) showPly(ply); };
+    m.onmouseleave = () => { if (pinnedPly === null) showLive(); };
+    m.onclick = () => {
+      if (pinnedPly === ply) { pinnedPly = null; showLive(); }
+      else { pinnedPly = ply; showPly(ply); }
+    };
+    return m;
+  };
   for (let i = 0; i < sans.length; i += 2) {
     const row = document.createElement("div"); row.className = "mrow";
     const num = document.createElement("span"); num.className = "num"; num.textContent = (i / 2 + 1) + ".";
-    const w = document.createElement("span"); w.className = "mv"; w.textContent = sans[i] || "";
-    const b = document.createElement("span"); b.className = "mv"; b.textContent = sans[i + 1] || "";
-    if (i + 1 === sans.length - 1) b.classList.add("cur");
-    else if (i === sans.length - 1) w.classList.add("cur");
-    row.append(num, w, b);
+    row.append(num, cell(sans[i], i + 1), cell(sans[i + 1], i + 2));
     frag.appendChild(row);
   }
   list.replaceChildren(frag);
-  const wrap = list.parentElement; wrap.scrollTop = wrap.scrollHeight;
+  if (pinnedPly !== null && pinnedPly > sans.length) { pinnedPly = null; showLive(); }
+  if (pinnedPly === null) { const wrap = list.parentElement; wrap.scrollTop = wrap.scrollHeight; }
 }
 
 // --- the debug terminal -------------------------------------------------------
@@ -195,6 +244,7 @@ let latestMarks = null; // {ply, marks}
 let hoverMarks = null;  // marks while a message is hovered
 let hoverSquare = null; // a square while a token is hovered
 let ghost = false;      // the board is showing a message's own position, not the live one
+let viewPly = null;     // the ply the board shows while browsing the move list
 const MARK_PLY_TOLERANCE = 1;
 const SQ_TOKEN = /(?<![A-Za-z0-9])((?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)[+#]?|[a-h][1-8])(?![A-Za-z0-9])/g;
 
@@ -214,7 +264,8 @@ function svgEl(name, attrs) {
 function renderOverlay() {
   const svg = el("overlay");
   let marks = hoverMarks;
-  if (!marks && latestMarks && (latestMarks.ply == null || currentPly - latestMarks.ply <= MARK_PLY_TOLERANCE)) marks = latestMarks.marks;
+  const plyShown = viewPly == null ? currentPly : viewPly;
+  if (!marks && latestMarks && (latestMarks.ply == null || (plyShown >= latestMarks.ply && plyShown - latestMarks.ply <= MARK_PLY_TOLERANCE))) marks = latestMarks.marks;
   const list = [...(marks || [])];
   if (hoverSquare) list.push({ kind: "square", squares: [hoverSquare], color: "mention", opacity: 0.9 });
   const frag = document.createDocumentFragment();
@@ -261,9 +312,24 @@ function linkedText(text, container) {
   container.appendChild(document.createTextNode(text.slice(last)));
 }
 
+let pendingMsg = null; // the "thinking" placeholder after an ask, until the reply lands
+
+function showPending() {
+  if (pendingMsg) return;
+  const c = el("coach");
+  const msg = document.createElement("div"); msg.className = "msg pending";
+  const meta = document.createElement("div"); meta.className = "meta"; meta.textContent = "coach";
+  const body = document.createElement("div"); body.className = "dots";
+  msg.append(meta, body);
+  c.appendChild(msg);
+  c.scrollTop = c.scrollHeight;
+  pendingMsg = msg;
+}
+
 function addCoach(line) {
   const c = el("coach");
   const d = line.data;
+  if (pendingMsg) { pendingMsg.remove(); pendingMsg = null; }
   const marks = d.annotations || [];
   const msg = document.createElement("div"); msg.className = "msg" + (marks.length ? " linked" : "");
   const meta = document.createElement("div"); meta.className = "meta";
@@ -282,7 +348,8 @@ function addCoach(line) {
     };
     msg.onmouseleave = () => {
       hoverMarks = null;
-      if (ghost) { ghost = false; renderBoard(liveFen, currentBottom, liveLastMove); }
+      if (pinnedPly !== null) showPly(pinnedPly);
+      else if (ghost) { ghost = false; renderBoard(liveFen, currentBottom, liveLastMove); }
       renderOverlay();
     };
   }
@@ -328,22 +395,39 @@ function renderHealth(h, s) {
 
 let pttDown = false;
 let listenMode = "off";
+const MODE_TITLES = {
+  off: "Listening: off. Click for hold-to-talk",
+  ptt: "Listening: hold to talk (hold the round button, or Space). Click for always-on voice",
+  vad: "Listening: voice (the coach hears you whenever you speak). Click to turn off",
+};
+const MODE_NEXT = { off: "ptt", ptt: "vad", vad: "off" };
 
 function setPtt(down) {
   if (listenMode !== "ptt" || pttDown === down) return;
   pttDown = down;
-  el("talk").classList.toggle("live", down);
+  renderSend();
   api.ptt(down);
+}
+
+// The round button is Send while there is text; empty, it is the hold-to-talk button in
+// push-to-talk mode, the listening indicator in voice mode, and just a mic otherwise.
+function renderSend() {
+  const btn = el("send");
+  const hasText = el("askInput").value.trim().length > 0;
+  const state = hasText ? "send" : listenMode === "ptt" ? "ptt" : listenMode === "vad" ? "vad" : "idle";
+  btn.dataset.state = state;
+  btn.classList.toggle("live", state === "ptt" && pttDown);
+  btn.title = state === "send" ? "Send (Enter)" : state === "ptt" ? "Hold to talk (or hold Space)" : state === "vad" ? "Listening" : "Type a question, or turn listening on";
 }
 
 function renderListen(s) {
   if (s.listen !== undefined && s.listen !== listenMode) {
     listenMode = s.listen;
-    el("listen").value = listenMode;
-    const t = el("talk");
-    t.disabled = listenMode !== "ptt";
-    t.textContent = listenMode === "vad" ? "🎤 listening" : "🎤 Hold to talk";
-    if (listenMode !== "ptt") { pttDown = false; t.classList.remove("live"); }
+    const mode = el("listenMode");
+    mode.dataset.mode = listenMode;
+    mode.title = MODE_TITLES[listenMode] || "";
+    if (listenMode !== "ptt") pttDown = false;
+    renderSend();
   }
   const h = el("heard");
   if (s.heard) { h.hidden = false; h.innerHTML = ""; h.appendChild(document.createTextNode("heard: ")); const b = document.createElement("b"); b.textContent = s.heard; h.appendChild(b); }
@@ -359,8 +443,9 @@ function renderState(s) {
   const base = s.bottom || "white";
   const shown = s.view_flip ? (base === "white" ? "black" : "white") : base;
   liveFen = s.fen; liveLastMove = s.last_move;
+  moveFens = s.fens || []; moveUcis = s.ucis || [];
   if (!ghost) renderBoard(s.fen, shown, s.last_move);
-  renderMoves(s.moves || []);
+  renderMoves(s.moves || [], s.labels || {});
   renderHealth(s.health, s);
   renderListen(s);
   setRunning(s.running);
@@ -403,6 +488,10 @@ function reportBoardRect() {
 
 // --- polling -----------------------------------------------------------------
 
+// One poll at a time: the next is scheduled only once this one has been handled. On a
+// fixed interval, a server that stalled for a moment (the end of the first live game) had
+// several polls in flight with the same cursor, and every one of them brought back the
+// same new lines: "game over" seven times over.
 async function tick() {
   try {
     reportBoardRect();
@@ -413,6 +502,7 @@ async function tick() {
   } catch (e) {
     /* window closing or api not ready; ignore this tick */
   }
+  setTimeout(tick, 250);
 }
 
 // --- controls ----------------------------------------------------------------
@@ -435,11 +525,25 @@ function wire() {
   el("analyze").onclick = () => api.analyze();
   el("mute").onchange = (e) => api.set_muted(e.target.checked);
   el("voice").onchange = (e) => api.set_voice(e.target.value);
-  el("askBtn").onclick = sendAsk;
-  el("askInput").addEventListener("keydown", (e) => { if (e.key === "Enter") sendAsk(); });
-  for (const b of document.querySelectorAll(".quick button")) {
-    b.onclick = () => api[b.dataset.cmd]();
+  const input = el("askInput");
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") sendAsk(); });
+  input.addEventListener("input", renderSend);
+  for (const b of document.querySelectorAll(".chips-row .qchip")) {
+    b.onclick = () => { showPending(); api[b.dataset.cmd](); };
   }
+  el("listenMode").onclick = () => {
+    // Optimistic: the next click must see this one, even before the engine confirms it.
+    const next = MODE_NEXT[listenMode] || "ptt";
+    renderListen({ listen: next });
+    api.set_listen(next);
+  };
+  const send = el("send");
+  send.onclick = () => { if (send.dataset.state === "send") sendAsk(); else if (send.dataset.state === "idle") input.focus(); };
+  send.onmousedown = () => { if (send.dataset.state === "ptt") setPtt(true); };
+  send.onmouseup = send.onmouseleave = () => setPtt(false);
+  send.ontouchstart = (e) => { if (send.dataset.state === "ptt") { e.preventDefault(); setPtt(true); } };
+  send.ontouchend = () => setPtt(false);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && pinnedPly !== null) { pinnedPly = null; showLive(); } });
   el("clearTerm").onclick = () => { el("terminal").replaceChildren(); lastRow = null; };
   for (const chip of document.querySelectorAll("#chans .chip")) {
     chip.onclick = () => {
@@ -450,13 +554,7 @@ function wire() {
     };
   }
   el("verbose").onchange = (e) => { filters.verbose = e.target.checked; applyFilters(); };
-  el("listen").onchange = (e) => api.set_listen(e.target.value);
   el("end").onchange = (e) => { if (e.target.value) { api.end(e.target.value); e.target.value = ""; } };
-  const talk = el("talk");
-  talk.onmousedown = () => setPtt(true);
-  talk.onmouseup = talk.onmouseleave = () => setPtt(false);
-  talk.ontouchstart = (e) => { e.preventDefault(); setPtt(true); };
-  talk.ontouchend = () => setPtt(false);
   const typing = () => ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement && document.activeElement.tagName);
   document.addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat && !typing()) { e.preventDefault(); setPtt(true); } });
   document.addEventListener("keyup", (e) => { if (e.code === "Space" && !typing()) { e.preventDefault(); setPtt(false); } });
@@ -468,8 +566,10 @@ function sendAsk() {
   const input = el("askInput");
   const text = input.value.trim();
   if (!text) return;
+  showPending();
   api.ask(text);
   input.value = "";
+  renderSend();
 }
 
 async function main() {
@@ -478,7 +578,8 @@ async function main() {
   if (first.state) { fillVoices(first.state.voices || [], first.state.voice); renderState(first.state); }
   if (first.lines) for (const line of first.lines) addLine(line);
   if (first.cursor !== undefined) cursor = first.cursor;
-  setInterval(tick, 250);
+  renderSend();
+  setTimeout(tick, 250);
 }
 
 main();
