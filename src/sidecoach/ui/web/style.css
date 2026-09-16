@@ -85,6 +85,22 @@ main {
 #left { display: flex; flex-direction: column; gap: 8px; width: var(--board); }
 
 /* ---- board ---- */
+.board-wrap { position: relative; width: var(--board); height: var(--board); flex: 0 0 auto; }
+/* The marks that go with a coach message: arrows, highlights, rings. Roles, not hues. */
+.overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.overlay .mk-good    { --mk: #81b64c; }
+.overlay .mk-played  { --mk: #7f9bb3; }
+.overlay .mk-warn    { --mk: #f7c631; }
+.overlay .mk-bad     { --mk: #fa412d; }
+.overlay .mk-threat  { --mk: #e0362b; }
+.overlay .mk-focus   { --mk: #5b8bb0; }
+.overlay .mk-region  { --mk: #5b8bb0; }
+.overlay .mk-line    { --mk: #81b64c; }
+.overlay .mk-mention { --mk: #b08bd9; }
+.overlay rect   { fill: var(--mk); }
+.overlay circle { fill: none; stroke: var(--mk); stroke-width: 0.09; }
+.overlay line   { stroke: var(--mk); stroke-width: 0.17; stroke-linecap: round; }
+.overlay marker path { fill: var(--mk); }
 .board {
   position: relative;
   display: grid;
@@ -157,7 +173,13 @@ main {
 
 .coach { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 0; padding-right: 2px; }
 .msg { background: var(--panel2); border-left: 3px solid var(--coach); border-radius: 5px; padding: 8px 10px; }
+.msg.linked { cursor: default; }
+.msg.linked:hover { background: var(--panel3); }
 .msg .meta { font-size: 10.5px; color: var(--muted); margin-bottom: 4px; letter-spacing: .3px; }
+.msg .meta .marks { color: #b08bd9; }
+/* a square or move the coach named: hover it to light it up on the board */
+.msg .tok { color: #d9c8f2; border-bottom: 1px dotted #b08bd9; cursor: default; }
+.msg .tok:hover { background: #b08bd933; }
 .ask { display: flex; gap: 8px; }
 .ask input { flex: 1; }
 .quick { display: flex; gap: 8px; }

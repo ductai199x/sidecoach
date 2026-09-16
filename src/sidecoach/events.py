@@ -234,12 +234,33 @@ class UserUtterance(Event):
     source: str = "text"
 
 
+class Annotation(BaseModel):
+    """A mark on the board that goes with a coach message: what the words are about.
+
+    `kind` is "square" (a highlight), "ring" (around a piece) or "arrow" (from, to);
+    `squares` holds one name, or two for an arrow. `color` is a role, not a hue --
+    good / warn / bad / threat / focus / mention / region / line -- so the page keeps the
+    palette. Marks are built from the same disclosure-filtered facts the message was written
+    from, so a mark never shows more than the words do.
+    """
+
+    kind: str
+    squares: list[str]
+    color: str = "focus"
+    opacity: float = 1.0
+    label: str | None = None
+
+
 class CoachMessage(Event):
     text: str
     level: DisclosureLevel
     trigger: Trigger
     game_id: str | None = None
     ply: int | None = None
+    # The position the message is about (a played move's origin, or the live position), so
+    # a panel can show the marks on the board they belong to rather than the one now on screen.
+    fen: str | None = None
+    annotations: list[Annotation] = Field(default_factory=list)
 
 
 class ProfileEvidence(Event):

@@ -176,17 +176,116 @@ function addLine(line) {
   if (line.chan === "coach" && line.data && line.data.full) addCoach(line);
 }
 
+// --- board marks: the arrows and highlights that go with a coach message --------------
+//
+// Each coach message carries marks built from the same disclosure-filtered facts it was
+// written from. The latest message's marks show while the board is still at (or one ply
+// past) the position they describe; hovering any message shows its marks regardless, and
+// hovering a square or move the coach named lights that square up.
+
+let currentBottom = "white";
+let currentPly = 0;
+let liveFen = null, liveLastMove = null; // the board on screen, to come back to after a hover
+let latestMarks = null; // {ply, marks}
+let hoverMarks = null;  // marks while a message is hovered
+let hoverSquare = null; // a square while a token is hovered
+let ghost = false;      // the board is showing a message's own position, not the live one
+const MARK_PLY_TOLERANCE = 1;
+const SQ_TOKEN = /(?<![A-Za-z0-9])((?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)[+#]?|[a-h][1-8])(?![A-Za-z0-9])/g;
+
+function cellOf(square) {
+  const file = FILES.indexOf(square[0]), rank = +square[1] - 1;
+  const col = currentBottom === "black" ? 7 - file : file;
+  const row = currentBottom === "black" ? rank : 7 - rank;
+  return { x: col, y: row };
+}
+
+function svgEl(name, attrs) {
+  const n = document.createElementNS("http://www.w3.org/2000/svg", name);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  return n;
+}
+
+function renderOverlay() {
+  const svg = el("overlay");
+  let marks = hoverMarks;
+  if (!marks && latestMarks && (latestMarks.ply == null || currentPly - latestMarks.ply <= MARK_PLY_TOLERANCE)) marks = latestMarks.marks;
+  const list = [...(marks || [])];
+  if (hoverSquare) list.push({ kind: "square", squares: [hoverSquare], color: "mention", opacity: 0.9 });
+  const frag = document.createDocumentFragment();
+  const defs = svgEl("defs", {});
+  const colors = new Set(list.filter((m) => m.kind === "arrow").map((m) => m.color));
+  for (const c of colors) {
+    const marker = svgEl("marker", { id: "ah-" + c, class: "mk-" + c, viewBox: "0 0 10 10", refX: "7", refY: "5", markerWidth: "3.2", markerHeight: "3.2", orient: "auto-start-reverse" });
+    marker.appendChild(svgEl("path", { d: "M0,0 L10,5 L0,10 z" }));
+    defs.appendChild(marker);
+  }
+  frag.appendChild(defs);
+  // squares and rings first, arrows on top
+  for (const m of list.filter((m) => m.kind !== "arrow")) {
+    const { x, y } = cellOf(m.squares[0]);
+    const op = m.opacity == null ? 1 : m.opacity;
+    if (m.kind === "square") frag.appendChild(svgEl("rect", { x, y, width: 1, height: 1, class: "mk-" + m.color, opacity: op * 0.55 }));
+    else if (m.kind === "ring") frag.appendChild(svgEl("circle", { cx: x + 0.5, cy: y + 0.5, r: 0.42, class: "mk-" + m.color, opacity: op }));
+  }
+  for (const m of list.filter((m) => m.kind === "arrow")) {
+    const a = cellOf(m.squares[0]), b = cellOf(m.squares[1]);
+    const x1 = a.x + 0.5, y1 = a.y + 0.5, x2 = b.x + 0.5, y2 = b.y + 0.5;
+    const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1;
+    const k = 0.32 / len; // stop short of the centre so the head lands on it
+    frag.appendChild(svgEl("line", { x1, y1, x2: x2 - dx * k, y2: y2 - dy * k, class: "mk-" + m.color, opacity: m.opacity == null ? 1 : m.opacity, "marker-end": "url(#ah-" + m.color + ")" }));
+  }
+  svg.replaceChildren(frag);
+}
+
+function linkedText(text, container) {
+  // Wrap the squares and moves the coach named so hovering one lights its square.
+  let last = 0;
+  for (const m of text.matchAll(SQ_TOKEN)) {
+    container.appendChild(document.createTextNode(text.slice(last, m.index)));
+    const tok = document.createElement("span"); tok.className = "tok"; tok.textContent = m[0];
+    const sq = m[0].match(/[a-h][1-8]/g); // the destination square of a move, or the square
+    if (sq) {
+      const dest = sq[sq.length - 1];
+      tok.onmouseenter = () => { hoverSquare = dest; renderOverlay(); };
+      tok.onmouseleave = () => { hoverSquare = null; renderOverlay(); };
+    }
+    container.appendChild(tok);
+    last = m.index + m[0].length;
+  }
+  container.appendChild(document.createTextNode(text.slice(last)));
+}
+
 function addCoach(line) {
   const c = el("coach");
-  const msg = document.createElement("div"); msg.className = "msg";
-  const meta = document.createElement("div"); meta.className = "meta";
   const d = line.data;
+  const marks = d.annotations || [];
+  const msg = document.createElement("div"); msg.className = "msg" + (marks.length ? " linked" : "");
+  const meta = document.createElement("div"); meta.className = "meta";
   meta.textContent = d.trigger.replace("_", " ") + " · level " + d.disclosure + (d.ply != null ? " · ply " + d.ply : "") + (d.fallback ? " · template" : "");
-  const body = document.createElement("div"); body.textContent = d.full;
+  if (marks.length) { const s = document.createElement("span"); s.className = "marks"; s.textContent = " · " + marks.length + " mark" + (marks.length > 1 ? "s" : ""); meta.appendChild(s); }
+  const body = document.createElement("div");
+  linkedText(d.full, body);
   msg.append(meta, body);
+  if (marks.length) {
+    // Hovering shows the position the message was about, with its marks, so an arrow
+    // from an earlier moment is never drawn over pieces that have since moved.
+    msg.onmouseenter = () => {
+      hoverMarks = marks;
+      if (d.fen && d.fen !== liveFen) { ghost = true; renderBoard(d.fen, currentBottom, null); }
+      renderOverlay();
+    };
+    msg.onmouseleave = () => {
+      hoverMarks = null;
+      if (ghost) { ghost = false; renderBoard(liveFen, currentBottom, liveLastMove); }
+      renderOverlay();
+    };
+  }
   c.appendChild(msg);
   c.scrollTop = c.scrollHeight;
   coachCount++;
+  latestMarks = { ply: d.ply, marks };
+  renderOverlay();
 }
 
 // --- the status strip ----------------------------------------------------------
@@ -222,10 +321,16 @@ function renderState(s) {
   // the panel's board around.
   const base = s.bottom || "white";
   const shown = s.view_flip ? (base === "white" ? "black" : "white") : base;
-  renderBoard(s.fen, shown, s.last_move);
+  liveFen = s.fen; liveLastMove = s.last_move;
+  if (!ghost) renderBoard(s.fen, shown, s.last_move);
   renderMoves(s.moves || []);
   renderHealth(s.health, s);
   setRunning(s.running);
+  const ply = s.ply || 0;
+  if (shown !== currentBottom || ply !== currentPly) {
+    currentBottom = shown; currentPly = ply;
+    renderOverlay();
+  }
 }
 
 function setRunning(on) {

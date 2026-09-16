@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 
 import chess
 
+from sidecoach.coach.annotations import annotations_for, mentions_in
 from sidecoach.coach.disclosure import (
     Disclosure,
     PositionFacts,
@@ -34,6 +35,7 @@ from sidecoach.coach.facts import ascii_board, describe_move, facts_from_analysi
 from sidecoach.coach.policy import InterjectionPolicy, TimeControl, time_control_of
 from sidecoach.events import (
     Analysis,
+    Annotation,
     ClockObservation,
     CoachMessage,
     DisclosureLevel,
@@ -224,6 +226,8 @@ class _Request:
     # What the user said this turn, if anything. A square, piece or move the user named is
     # not a leak for the coach to repeat back: confirming it reveals nothing they did not say.
     user_text: str | None = None
+    # Board marks built from the same filtered facts the model sees (see coach.annotations).
+    annotations: list[Annotation] = field(default_factory=list)
 
 
 def _after_best(request: _Request) -> list[chess.Board]:
@@ -363,6 +367,8 @@ class Speaker:
             trigger=request.trigger,
             game_id=request.game_id,
             ply=request.ply,
+            fen=request.board.fen(),
+            annotations=[*request.annotations, *mentions_in(text, request.board)],
         )
         return Spoken(message=message, level=request.level, problems=problems, attempts=attempts)
 
@@ -656,7 +662,23 @@ class Coach:
                 text = f"{move.san}: good."
             else:
                 text = f"{move.san} is fine; {best} was a touch sharper."
-            self._queue_plain(trigger, text, ts, ply=before.ply, level=DisclosureLevel.LINE)
+            marks = annotations_for(
+                before.facts,
+                DisclosureLevel.LINE,
+                before.board,
+                trigger=trigger,
+                played_san=move.san,
+                severity=event.severity.value,
+            )
+            self._queue_plain(
+                trigger,
+                text,
+                ts,
+                ply=before.ply,
+                level=DisclosureLevel.LINE,
+                annotations=marks,
+                fen=before.board.fen(),
+            )
             return
         self._speak(trigger, before, DisclosureLevel.LINE, ts, assessment=event, played=move)
 
@@ -696,6 +718,14 @@ class Coach:
             ply=position.ply,
             game_id=self.game_id or "",
             user_text=user_text,
+            annotations=annotations_for(
+                position.facts,
+                level,
+                position.board,
+                trigger=trigger,
+                played_san=played.san if played else None,
+                severity=assessment.severity.value if assessment else None,
+            ),
         )
         self.speaker.submit(request)
 
@@ -707,10 +737,18 @@ class Coach:
         *,
         ply: int | None = None,
         level: DisclosureLevel = DisclosureLevel.SILENT,
+        annotations: list[Annotation] | None = None,
+        fen: str | None = None,
     ) -> None:
         """A message that needs no model; it queues behind whatever the model is writing."""
         message = CoachMessage(
-            text=text, level=level, trigger=trigger, game_id=self.game_id, ply=ply
+            text=text,
+            level=level,
+            trigger=trigger,
+            game_id=self.game_id,
+            ply=ply,
+            fen=fen,
+            annotations=list(annotations or []),
         )
         self.speaker.submit_ready(Spoken(message=message, level=level, problems=[], attempts=0))
 

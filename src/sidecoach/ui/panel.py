@@ -655,6 +655,8 @@ class PanelEngine:
                 problems=spoken.problems,
                 fallback=bool(spoken.problems),
                 voice=action,
+                fen=message.fen,
+                annotations=[mark.model_dump() for mark in message.annotations],
             )
         seen = len(coach.spoken)
         speaker = coach.speaker
