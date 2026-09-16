@@ -44,12 +44,14 @@ class KokoroTTS:
         speed: float = 1.0,
         lang: str = "en-us",
         device: str = "auto",
+        output_device: int | str | None = None,
     ) -> None:
         self.model_dir = Path(model_dir)
         self.voice = voice
         self.speed = speed
         self.lang = lang
         self.device_wanted = device
+        self.output_device = output_device  # a sounddevice output index or name
         self.device: Device | None = None  # where the graph actually loaded
         self.load_seconds: float | None = None
         self._queue: queue.Queue[str | None] = queue.Queue()
@@ -90,7 +92,17 @@ class KokoroTTS:
         if missing:
             return False, f"model files missing from {self.model_dir}: {', '.join(missing)}"
         where = self.device.detail if self.device else f"{self.device_wanted} (not loaded yet)"
-        return True, f"kokoro-onnx, voice {self.voice}, {where}"
+        return True, f"kokoro-onnx, voice {self.voice}, {where}, speaker: {self.speaker_name()}"
+
+    def speaker_name(self) -> str:
+        """The output device the voice plays through, by name."""
+        try:
+            import sounddevice as sd  # type: ignore[reportMissingImports]
+
+            index = self.output_device if self.output_device is not None else sd.default.device[1]
+            return str(sd.query_devices(index).get("name", index))
+        except Exception:  # noqa: BLE001
+            return str(self.output_device or "default output")
 
     def set_voice(self, voice: str) -> None:
         """Change the voice. A style vector, not a model: nothing is reloaded."""
@@ -189,7 +201,7 @@ class KokoroTTS:
             if generation != self._generation:
                 return
         try:
-            self._sd.play(samples, sample_rate)  # type: ignore[attr-defined]
+            self._sd.play(samples, sample_rate, device=self.output_device)  # type: ignore[attr-defined]
             self._sd.wait()  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - audio errors are not fatal
             log.warning("Kokoro playback failed: %s", exc)

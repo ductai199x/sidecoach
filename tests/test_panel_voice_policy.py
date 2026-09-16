@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from sidecoach.config import Settings, VoiceSettings
-from sidecoach.ui.panel import STALE_PLIES, PanelEngine
+from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.server import make_engine
 
 REC = Path("data/recordings/g01-david-green")
@@ -22,9 +22,17 @@ SHORT = "exf5: good."
 
 def test_a_message_about_a_position_the_board_left_is_not_spoken() -> None:
     act = PanelEngine.voice_action
+    # A verdict on the user's move (made from ply 10) is still the news after the move (11)
+    # and the bot's instant reply (12) -- the normal case against a bot -- and stale only
+    # once the user has moved again (13).
     assert act("post_mistake", LONG, ply=10, ply_now=10, busy=False) == "speak"
-    assert act("post_mistake", LONG, ply=10, ply_now=10 + STALE_PLIES - 1, busy=False) == "speak"
-    assert act("post_mistake", LONG, ply=10, ply_now=10 + STALE_PLIES, busy=False) == "stale"
+    assert act("post_mistake", LONG, ply=10, ply_now=12, busy=False) == "speak"
+    assert act("post_move", SHORT, ply=10, ply_now=12, busy=False) == "speak"
+    assert act("post_mistake", LONG, ply=10, ply_now=13, busy=False) == "stale"
+    # A hint about the live position is moot as soon as the user moves.
+    assert act("stuck", LONG, ply=10, ply_now=10, busy=False) == "speak"
+    assert act("stuck", LONG, ply=10, ply_now=11, busy=False) == "stale"
+    assert act("decisive_question", LONG, ply=10, ply_now=11, busy=False) == "stale"
     # The answer to the user's own question is never stale, however far the board has moved.
     assert act("user_ask", LONG, ply=None, ply_now=40, busy=True) == "supersede"
     assert act("user_ask", LONG, ply=10, ply_now=40, busy=False) == "speak"
@@ -35,7 +43,7 @@ def test_short_verdicts_yield_to_a_busy_voice_and_substance_cuts_in() -> None:
     assert act("post_move", SHORT, ply=4, ply_now=4, busy=False) == "speak"
     assert act("post_move", SHORT, ply=4, ply_now=4, busy=True) == "skip"
     assert act("decisive_question", LONG, ply=4, ply_now=4, busy=True) == "supersede"
-    assert act("stuck", LONG, ply=4, ply_now=5, busy=True) == "supersede"
+    assert act("stuck", LONG, ply=4, ply_now=4, busy=True) == "supersede"
 
 
 def test_speak_records_the_action_and_stops_before_cutting_in(tmp_path: Path) -> None:
@@ -73,7 +81,7 @@ def test_speak_records_the_action_and_stops_before_cutting_in(tmp_path: Path) ->
     assert fake.calls == ["stop", "say:" + LONG]
     fake.calls.clear()
     assert engine._speak("post_move", SHORT, ply=12) == "skip"
-    assert engine._speak("post_move", SHORT, ply=9) == "stale"
+    assert engine._speak("post_move", SHORT, ply=8) == "stale"
     assert fake.calls == []
     engine.muted = True
     assert engine._speak("stuck", LONG, ply=12) == "muted"

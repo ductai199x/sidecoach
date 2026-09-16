@@ -24,8 +24,16 @@ def make_tts(settings: Settings) -> TTSProvider:
             speed=voice.speed,
             lang=voice.lang,
             device=voice.tts_device,
+            output_device=_device(voice.output_device),
         )
     return NullTTS(f"unknown voice.provider {voice.provider!r}")
+
+
+def _device(spec: str | None) -> int | str | None:
+    """A sounddevice device: an index if the setting is a number, else a name, else None."""
+    if spec is None or spec == "":
+        return None
+    return int(spec) if spec.isdigit() else spec
 
 
 def make_ear(settings: Settings) -> STTProvider:

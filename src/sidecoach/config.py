@@ -15,6 +15,10 @@ from pydantic import BaseModel, Field
 
 
 class CaptureSettings(BaseModel):
+    # "auto" (Windows Graphics Capture when available, else mss), "wgc", or "mss". GDI
+    # capture (mss) can show a hardware-accelerated browser window frozen on Windows until
+    # it is moved; WGC returns the composed screen and does not have that problem.
+    backend: str = "auto"
     fps: int = 10
     record_frames: bool = True
     record_crops: bool = True
@@ -102,6 +106,9 @@ class VoiceSettings(BaseModel):
     listen: str = "ptt"
     # An input device index or name for sounddevice; the default input when unset.
     mic_device: str | None = None
+    # An output device index or name for the coach's voice; the default output when unset.
+    # (`sidecoach doctor` lists the devices.) The default is often a monitor's HDMI audio.
+    output_device: str | None = None
     # The global push-to-talk key, held from any window (the game has the focus, not the
     # panel): a pynput key name such as "ctrl_r", "alt_r", "f9", a single character, or a
     # mouse side button "mouse_x1" / "mouse_x2". Empty disables the global key.

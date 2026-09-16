@@ -77,8 +77,12 @@ OUTCOMES = ("resigned", "won", "draw", "forget")
 # and how many frames in a row it must stay that way before it is worth a line.
 DEGRADED_CELLS = 6
 DEGRADED_FRAMES = 5
-# A coach message about a position this many plies behind the board is shown, not spoken.
-STALE_PLIES = 2
+# How far the board may have moved on (in plies) before a message is shown but not spoken.
+# A post-move verdict is about the position before the user's move: after the move (+1) and
+# the bot's instant reply (+2) it is still the news; once the user has moved again (+3) it
+# is stale. A hint about the live position is moot the moment the user moves (+1).
+STALE_AFTER = {"post_move": 2, "post_mistake": 2, "decisive_question": 0, "stuck": 0}
+STALE_PLIES = 2  # the fallback for any other trigger
 # A "verdict" this short (post-move "exf5: good.") is skipped when the voice is busy.
 SHORT_VERDICT = 40
 HEALTH_EVERY_S = 1.0
@@ -400,16 +404,19 @@ class PanelEngine:
         position the board has left behind.
 
         A fast game (or a replay run faster than it was played) can move on while a line is
-        still being synthesised or spoken. So: a message whose position is already
-        STALE_PLIES behind is shown but not spoken ("stale"); a short post-move verdict is
-        dropped if the voice is busy rather than queued behind it ("skip"); anything
-        substantive cuts off whatever is still playing about an older moment ("supersede").
-        The answer to the user's own question is never stale: they asked.
+        still being synthesised or spoken. So: a message whose position is further behind
+        the board than its trigger allows (STALE_AFTER: a post-move verdict survives the
+        user's move and the bot's instant reply; a hint about the live position does not
+        survive the user moving) is shown but not spoken ("stale"); a short post-move
+        verdict is dropped if the voice is busy rather than queued behind it ("skip");
+        anything substantive cuts off whatever is still playing about an older moment
+        ("supersede"). The answer to the user's own question is never stale: they asked.
         """
         if trigger == "user_ask":
             # The user asked; the answer is owed aloud even if the board has moved on.
             return "supersede" if busy else "speak"
-        if ply is not None and ply_now - ply >= STALE_PLIES:
+        allowed = STALE_AFTER.get(trigger, STALE_PLIES - 1)
+        if ply is not None and ply_now - ply > allowed:
             return "stale"
         if trigger == "post_move" and len(text) < SHORT_VERDICT:
             return "skip" if busy else "speak"
@@ -465,16 +472,17 @@ class PanelEngine:
         events_log: IO[str] | None = None
         if live:
             from sidecoach.capture.loop import capture_loop
-            from sidecoach.capture.mss_backend import MssCapture
+            from sidecoach.capture.wgc_backend import make_capture
             from sidecoach.cli import _monitor_region
             from sidecoach.replay.recording import ChangeGate, Recorder
 
-            cap = MssCapture()
+            cap = make_capture(self.settings.capture.backend)
             monitor, region = _monitor_region(cap, self.monitor)
             self._emit(
                 "sys",
                 "info",
-                f"capturing monitor {monitor}, {region.w}x{region.h} at {self.fps} fps",
+                f"capturing monitor {monitor}, {region.w}x{region.h} at {self.fps} fps "
+                f"({getattr(cap, 'name', 'capture')})",
             )
             gate = ChangeGate(keyframe_interval_s=1.0)
             if self.record:

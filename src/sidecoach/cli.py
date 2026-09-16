@@ -122,23 +122,27 @@ def _check_llm(settings: Settings) -> tuple[str, str]:
     return ("ok" if ok else "error"), f"{provider.name}: {detail}"
 
 
-def _check_capture() -> tuple[str, str]:
+def _check_capture(backend: str = "auto") -> tuple[str, str]:
     try:
-        from sidecoach.capture.mss_backend import MssCapture
+        from sidecoach.capture.wgc_backend import make_capture
 
-        cap = MssCapture()
+        cap = make_capture(backend)
         try:
             monitors = cap.monitors()
-            frame = cap.grab(monitors[0])
+            primary = primary_monitor(monitors)
+            frame = cap.grab(monitors[primary])
         finally:
             cap.close()
     except Exception as exc:  # noqa: BLE001
         return "error", str(exc)
-    primary = primary_monitor(monitors)
     sizes = ", ".join(
         f"{i}: {m.w}x{m.h}" + (" (primary)" if i == primary else "") for i, m in enumerate(monitors)
     )
-    return "ok", f"{len(monitors)} monitor(s) [{sizes}]; grab ok {frame.shape[1]}x{frame.shape[0]}"
+    name = getattr(cap, "name", "capture")
+    return (
+        "ok",
+        f"{name}; {len(monitors)} monitor(s) [{sizes}]; grab ok {frame.shape[1]}x{frame.shape[0]}",
+    )
 
 
 @app.command()
@@ -175,13 +179,13 @@ def snap(
     """Save one PNG screenshot per monitor into data/screenshots."""
     import cv2
 
-    from sidecoach.capture.mss_backend import MssCapture
+    from sidecoach.capture.wgc_backend import make_capture
 
     settings = load_settings(config)
     folder = out or settings.data_dir / "screenshots"
     folder.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    cap = MssCapture()
+    cap = make_capture(settings.capture.backend)
     try:
         monitors = cap.monitors()
         targets = [monitor] if monitor is not None else range(len(monitors))
@@ -220,13 +224,13 @@ def record(
 ) -> None:
     """Record a monitor to a lossless recording until Ctrl+C or --seconds."""
     from sidecoach.capture.loop import CaptureFailed, capture_loop
-    from sidecoach.capture.mss_backend import MssCapture
+    from sidecoach.capture.wgc_backend import make_capture
     from sidecoach.replay.recording import Recorder, board_gate
     from sidecoach.vision.tracker import BoardTracker
 
     settings = load_settings(config)
     folder = out or settings.data_dir / "recordings" / time.strftime("%Y%m%d-%H%M%S")
-    cap = MssCapture()
+    cap = make_capture(settings.capture.backend)
     tracker = BoardTracker()
 
     try:
@@ -1393,7 +1397,7 @@ def watch(
     import chess
 
     from sidecoach.capture.loop import CaptureFailed, capture_loop
-    from sidecoach.capture.mss_backend import MssCapture
+    from sidecoach.capture.wgc_backend import make_capture
     from sidecoach.events import (
         GameEnded,
         GameStarted,
@@ -1407,7 +1411,7 @@ def watch(
     from sidecoach.vision.clock import ClockReader
 
     settings = load_settings(config)
-    cap = MssCapture()
+    cap = make_capture(settings.capture.backend)
     monitor, region = _monitor_region(cap, monitor)
     pipe = GamePipeline(clock=ClockReader())
     recorder: Recorder | None = None
