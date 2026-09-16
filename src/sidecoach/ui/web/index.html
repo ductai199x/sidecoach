@@ -17,6 +17,13 @@
         <select id="voice"></select>
       </label>
       <label class="ctl"><input type="checkbox" id="mute" /> mute</label>
+      <select id="end" class="end" title="End the game when the board cannot tell: a resignation, a flag, a draw">
+        <option value="">End game…</option>
+        <option value="resigned">I resigned / lost on time</option>
+        <option value="won">Opponent resigned / flagged</option>
+        <option value="draw">Draw agreed</option>
+        <option value="forget">New game (forget this one)</option>
+      </select>
       <button id="flip" class="ghost" title="Swap which side is at the bottom">Flip</button>
       <button id="analyze" class="ghost" title="Read the position now on the board (puzzle / mid-game)">Analyze</button>
     </header>

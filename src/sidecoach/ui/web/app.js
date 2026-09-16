@@ -30,6 +30,7 @@ const api = {
   set_voice: (voice) => post("/api/voice", { voice }),
   set_muted: (muted) => post("/api/muted", { muted }),
   set_listen: (mode) => post("/api/listen", { mode }),
+  end: (outcome) => post("/api/end", { outcome }),
   ptt: (down) => post("/api/ptt", { down }),
 };
 
@@ -424,6 +425,7 @@ function wire() {
   }
   el("verbose").onchange = (e) => { filters.verbose = e.target.checked; applyFilters(); };
   el("listen").onchange = (e) => api.set_listen(e.target.value);
+  el("end").onchange = (e) => { if (e.target.value) { api.end(e.target.value); e.target.value = ""; } };
   const talk = el("talk");
   talk.onmousedown = () => setPtt(true);
   talk.onmouseup = talk.onmouseleave = () => setPtt(false);

@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
+
 from sidecoach.config import Settings, VoiceSettings
 from sidecoach.replay.recording import Recording
 from sidecoach.ui.panel import PanelApi, PanelEngine
@@ -102,3 +104,22 @@ def test_flip_and_voice_controls_do_not_raise_without_a_game(tmp_path: Path) -> 
     assert api.flip() is True
     assert api.analyze() is True
     assert api.hint() is True
+
+
+def test_ending_a_game_on_the_users_word_scores_it_from_their_side() -> None:
+    outcome = PanelEngine.outcome_result
+    assert outcome("resigned", "white") == ("0-1", "user resigned or lost on time")
+    assert outcome("resigned", "black") == ("1-0", "user resigned or lost on time")
+    assert outcome("won", "white") == ("1-0", "opponent resigned or lost on time")
+    assert outcome("won", "black") == ("0-1", "opponent resigned or lost on time")
+    assert outcome("draw", "white") == ("1/2-1/2", "draw agreed")
+    assert outcome("forget", "black")[0] == "*"
+
+
+def test_end_game_refuses_unknown_outcomes(tmp_path: Path) -> None:
+    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
+    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+    with pytest.raises(ValueError):
+        engine.end_game("rage-quit")
+    engine.end_game("draw")
+    assert engine._commands.get_nowait() == ("end", "draw")

@@ -53,6 +53,10 @@ class _Ptt(BaseModel):
     down: bool
 
 
+class _End(BaseModel):
+    outcome: str
+
+
 def build_app(engine: PanelEngine) -> FastAPI:
     """A FastAPI app serving the panel UI and the control API over `engine`."""
     from fastapi import FastAPI
@@ -104,6 +108,10 @@ def build_app(engine: PanelEngine) -> FastAPI:
     @app.post("/api/muted")
     def muted(body: _Muted) -> dict[str, bool]:
         return {"ok": api.set_muted(body.muted)}
+
+    @app.post("/api/end")
+    def end(body: _End) -> dict[str, bool]:
+        return {"ok": api.end(body.outcome)}
 
     @app.post("/api/listen")
     def listen(body: _Listen) -> dict[str, Any]:

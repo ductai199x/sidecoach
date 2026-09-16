@@ -69,6 +69,10 @@ PICKER_VOICES: list[str] = [
 Frame = tuple[int, float, Any]  # (frame_id, ts, frame)
 FrameSource = Iterable[Frame]
 
+# How a game ends when the board cannot say so (a resignation, a flag, an agreed draw):
+# outcome -> (result from the user's side, reason). "forget" is not an outcome but a reset.
+OUTCOMES = ("resigned", "won", "draw", "forget")
+
 # Unreadable cells (unknown or covered) beyond which a frame's reading is called degraded,
 # and how many frames in a row it must stay that way before it is worth a line.
 DEGRADED_CELLS = 6
@@ -225,6 +229,25 @@ class PanelEngine:
         else:
             self._listener.release()
         self._set(ptt=bool(down) and self._listener.mode == "ptt")
+
+    def end_game(self, outcome: str) -> None:
+        """End the game on the user's word: they resigned or flagged, the opponent did, a
+        draw was agreed -- or forget the game altogether and wait for the next start."""
+        if outcome not in OUTCOMES:
+            raise ValueError(f"outcome must be one of {OUTCOMES}")
+        self.command("end", outcome)
+
+    @staticmethod
+    def outcome_result(outcome: str, user_side: str | None) -> tuple[str, str]:
+        """The PGN result and the reason for an outcome, from the user's side."""
+        user_white = user_side != "black"
+        if outcome == "resigned":
+            return ("0-1" if user_white else "1-0"), "user resigned or lost on time"
+        if outcome == "won":
+            return ("1-0" if user_white else "0-1"), "opponent resigned or lost on time"
+        if outcome == "draw":
+            return "1/2-1/2", "draw agreed"
+        return "*", "abandoned by the user"
 
     def hear(self, audio: Any, seconds: float | None = None) -> None:
         """Treat a float32 16 kHz clip as something the user said (the test and dev path)."""
@@ -896,10 +919,30 @@ class PanelEngine:
                         self._emit("user", "info", f"you: {payload}")
                 else:
                     self._emit("user", "warn", f"no coach to ask: {payload}")
+            elif name == "end":
+                events += self._end(pipe, str(payload), ts)
             elif name == "flip":
                 events += self._flip(pipe)
             elif name == "analyze":
                 events += self._analyze(pipe, frame, geom)
+        return events
+
+    def _end(self, pipe: Any, outcome: str, ts: float) -> list[Any]:
+        if pipe.reconciler is None or not pipe.reconciler.started:
+            self._emit("user", "warn", "no game to end")
+            return []
+        with self._lock:
+            user_side = self._state.get("user_side")
+        result, reason = self.outcome_result(outcome, user_side)
+        events: list[Any] = []
+        if not pipe.reconciler.finished:
+            events = pipe.end_game(result, reason, ts)
+            self._emit("user", "info", f"you ended the game: {reason} ({result})")
+        if outcome == "forget":
+            pipe.reset()
+            self._fen_before.clear()
+            self._set(game_id=None, user_side=None, following=False)
+            self._emit("game", "info", "forgot the game; waiting for a start position")
         return events
 
     def _flip(self, pipe: Any) -> list[Any]:
@@ -1020,6 +1063,10 @@ class PanelApi:
 
     def set_voice(self, voice: str) -> bool:
         self._engine.set_voice(voice)
+        return True
+
+    def end(self, outcome: str) -> bool:
+        self._engine.end_game(outcome)
         return True
 
     def set_muted(self, muted: bool) -> bool:

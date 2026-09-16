@@ -217,6 +217,7 @@ footer { border-top: 1px solid var(--line); background: var(--panel); }
 .chip.on[data-chan="voice"]  { border-color: #b08bd9; }
 .chip.on[data-chan="user"]   { border-color: #e6e5e3; }
 .search { width: 160px; padding: 2px 8px; font-size: 11px; }
+select.end { font-weight: 600; }
 
 .terminal {
   height: 190px; overflow: auto; padding: 6px 14px; margin: 0;
