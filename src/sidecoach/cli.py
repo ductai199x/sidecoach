@@ -852,7 +852,6 @@ class _Coaching:
             policy=policy,
             draft_check=_draft_check(),
             claims=_claims_check(provider),
-            rating=(settings.profile.rating_low, settings.profile.rating_high),
         )
         self.coach.start()
         self.detail = f"{provider.name} ({detail})"

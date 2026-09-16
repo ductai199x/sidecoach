@@ -21,7 +21,7 @@ def test_the_system_message_is_persona_contract_rules_and_reply_format_in_order(
     assert "takeback" in prompt.CONTRACT and "re-read" in prompt.CONTRACT
     assert "the verdicts and the tally, and nowhere else" in prompt.CONTRACT
     assert "brilliant, great, best, excellent, good, book" in prompt.CONTRACT
-    assert "Corrections from earlier games" not in text
+    assert "Rules learned from earlier games" not in text
 
 
 def test_corrections_are_appended_only_when_the_file_has_content(
@@ -31,21 +31,21 @@ def test_corrections_are_appended_only_when_the_file_has_content(
     empty.write_text("   \n", encoding="utf-8")
     monkeypatch.setattr(prompt, "CORRECTIONS_PATH", empty)
     prompt.corrections.cache_clear()
-    assert "Corrections from earlier games" not in prompt.system_message()
+    assert "Rules learned from earlier games" not in prompt.system_message()
 
     filled = tmp_path / "c.md"
     filled.write_text("## 1\nThe coach said X; the record showed Y; say Y.\n", encoding="utf-8")
     monkeypatch.setattr(prompt, "CORRECTIONS_PATH", filled)
     prompt.corrections.cache_clear()
     text = prompt.system_message()
-    assert text.endswith("Follow these.\n## 1\nThe coach said X; the record showed Y; say Y.")
-    assert text.index(prompt.REPLY_FORMAT) < text.index("Corrections from earlier games")
+    assert text.endswith("as the rules above.\n## 1\nThe coach said X; the record showed Y; say Y.")
+    assert text.index(prompt.REPLY_FORMAT) < text.index("Rules learned from earlier games")
     prompt.corrections.cache_clear()
 
     missing = tmp_path / "missing.md"
     monkeypatch.setattr(prompt, "CORRECTIONS_PATH", missing)
     prompt.corrections.cache_clear()
-    assert "Corrections from earlier games" not in prompt.system_message()
+    assert "Rules learned from earlier games" not in prompt.system_message()
     prompt.corrections.cache_clear()
 
 
@@ -55,12 +55,11 @@ def test_the_shipped_corrections_file_exists_and_is_read() -> None:
     assert prompt.corrections() == prompt.CORRECTIONS_PATH.read_text(encoding="utf-8").strip()
 
 
-def test_the_new_game_message_states_the_side_and_the_rating_band() -> None:
+def test_the_new_game_message_states_the_side_and_never_a_rating() -> None:
+    """Whoever is playing gets the same coach: no rating is stated or pitched to."""
     convo = Conversation()
-    convo.new_game(
-        GameStarted(game_id="g", user_side=Side.BLACK, start_fen=chess.Board().fen()),
-        rating=(1000, 1400),
-    )
+    convo.new_game(GameStarted(game_id="g", user_side=Side.BLACK, start_fen=chess.Board().fen()))
     first = convo.messages()[0]["content"]
     assert first.startswith("New game. You coach the player, who is Black, against a bot.")
-    assert "The player is rated about 1000 to 1400." in first
+    assert "rated" not in first
+    assert "rating" not in prompt.system_message(with_corrections=False).lower()

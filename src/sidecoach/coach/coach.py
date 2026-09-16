@@ -569,13 +569,10 @@ class Coach:
         policy: InterjectionPolicy | None = None,
         draft_check: Callable[[str, chess.Board, Sequence[chess.Board]], list[str]] | None = None,
         claims: Callable[[str, chess.Board, PositionFacts | None], list[str]] | None = None,
-        rating: tuple[int, int] | None = None,
     ) -> None:
         self.policy = policy or InterjectionPolicy()
         self.speaker = Speaker(provider, draft_check=draft_check)
         self.claims = claims
-        # The player's rating band, stated in the new-game message so the coach pitches to it.
-        self.rating = rating
         self.system = system_message()
         # Run the claims check on the caller's thread (replay and evaluation) instead of a
         # worker: live it is threaded so a button press never stalls the pipeline.
@@ -741,7 +738,7 @@ class Coach:
         self.board = chess.Board(event.start_fen)
         self.positions = {0: _Position(ply=0, board=self.board.copy())}
         self.moves = {}
-        self.conversation.new_game(event, rating=self.rating)
+        self.conversation.new_game(event)
         self.finished = False
         self._current = self.positions[0]
         self.policy.new_position(0, ts, user_to_move=self.user_to_move)
