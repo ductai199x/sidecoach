@@ -749,13 +749,12 @@ class PanelEngine:
             self._emit("game", "warn", f"resync: {event.reason}", fen=event.fen)
             assessing.reset()
         elif isinstance(event, GameEnded):
-            self._emit(
-                "game",
-                "info",
-                f"game over {event.result} ({event.reason})",
-                result=event.result,
-                pgn=event.pgn,
-            )
+            text = f"game over {event.result} ({event.reason})"
+            if event.result == "*":
+                text = (
+                    f"game over ({event.reason}); the result was not read -- End game… can set it"
+                )
+            self._emit("game", "info", text, result=event.result, pgn=event.pgn)
         elif isinstance(event, ClockObservation):
             self._set(
                 clock={
@@ -1032,8 +1031,8 @@ class PanelEngine:
             user_side = self._state.get("user_side")
         result, reason = self.outcome_result(outcome, user_side)
         events: list[Any] = []
-        if not pipe.reconciler.finished:
-            events = pipe.end_game(result, reason, ts)
+        events = pipe.end_game(result, reason, ts)
+        if events:
             self._emit("user", "info", f"you ended the game: {reason} ({result})")
         if outcome == "forget":
             pipe.reset()

@@ -141,6 +141,8 @@ class Reconciler:
     _unexplained_frames: int = 0
     _started: bool = False
     _finished: bool = False
+    # The result the game ended with; "*" when the end was seen but not who won.
+    _result: str | None = None
     # Position resync: adopt a fully readable, stable board that no move story explains.
     resync_hold_frames: int = 10
     max_stale_subset_cells: int = 4
@@ -252,6 +254,7 @@ class Reconciler:
         self._unexplained_frames = 0
         self._started = True
         self._finished = False
+        self._result = None
         self.viewing = None
         self._base_fen = chess.STARTING_FEN
         self._turn_unknown = False
@@ -631,6 +634,7 @@ class Reconciler:
         self.board = board
         self._base_fen = board.fen()
         self._finished = False
+        self._result = None
         self._last_commit_ts = self._ts
         self._pending = None
         self._stale = {}
@@ -684,6 +688,7 @@ class Reconciler:
         self._base_fen = board.fen()
         self._started = True
         self._finished = False
+        self._result = None
         self._last_commit_ts = self._ts
         self.game_id = uuid.uuid4().hex[:8]
         return [GameStarted(game_id=self.game_id, user_side=self.user_side, start_fen=board.fen())]
@@ -1328,15 +1333,19 @@ class Reconciler:
         ]
         if self.board.is_game_over():
             self._finished = True
-            events.append(self._ended(self.board.result(), "game over on board"))
+            self._result = self.board.result()
+            events.append(self._ended(self._result, "game over on board"))
         return events
 
     def end(self, result: str, reason: str) -> list[Event]:
-        """End the game on the user's word: a resignation, a draw, or an abort."""
-        if not self._started or self._finished:
+        """End the game: on the user's word (a resignation, a draw, an abort) or on the
+        site's dialog. A game that ended with the result unknown ("*") can be ended again
+        with the result the user supplies."""
+        if not self._started or (self._finished and self._result != "*"):
             return []
         self._finished = True
         self._pending = None
+        self._result = result
         return [self._ended(result, reason)]
 
     def _ended(self, result: str, reason: str) -> GameEnded:

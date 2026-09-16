@@ -282,3 +282,52 @@ def test_junk_next_to_a_strip_is_not_relabelled_but_next_to_a_dialog_it_is() -> 
     )
     r5, c5 = row_col(chess.D5, Side.WHITE)
     assert readings[r5][c5].covered and not readings[r5][c5].hover, readings[r5][c5]
+
+
+@pytest.mark.parametrize("bottom", BOTTOMS)
+def test_a_dialog_that_stays_over_a_live_board_ends_the_game(bottom: Side) -> None:
+    """The third live game ended with premoves: five plies in a second and a half, then the
+    game-over dialog, and the reconciler had explained the screen with a shorter path that
+    left its board one move short of the mate. Nothing under the dialog could tell it
+    more, so the coach thought the game was on. The dialog itself is the site's word:
+    up for two seconds over a live board, it ends the game, with the result unknown when
+    the board is not terminal -- and the user's word can still settle the result."""
+    pipe = GamePipeline()
+    board = chess.Board()
+    ts = 0.0
+    for _ in range(2):
+        pipe.process(synthetic_board(board=board, bottom=bottom), ts)
+        ts += 0.1
+    events = []
+    for san in ("e4", "e5"):
+        move = board.push_san(san)
+        for _ in range(2):
+            events += pipe.process(synthetic_board(board=board, bottom=bottom, highlight=move), ts)
+            ts += 0.1
+    assert [e.san for e in events if isinstance(e, MovePlayed)] == ["e4", "e5"]
+    assert pipe.reconciler is not None and not pipe.reconciler.finished
+
+    # A dialog that flashes past (a toast fading through) ends nothing.
+    frame = synthetic_board(board=board, bottom=bottom)
+    events = []
+    for _ in range(5):
+        events += pipe.process(with_dialog(frame, dark=True, bottom=bottom), ts)
+        ts += 0.1
+    events += pipe.process(frame, ts)
+    ts += 0.1
+    assert not [e for e in events if isinstance(e, GameEnded)]
+    assert not pipe.reconciler.finished
+
+    # One that stays does, once, with the result not read; the game does not end twice.
+    events = []
+    for _ in range(30):
+        events += pipe.process(with_dialog(frame, dark=True, bottom=bottom), ts)
+        ts += 0.1
+    ended = [e for e in events if isinstance(e, GameEnded)]
+    assert len(ended) == 1 and ended[0].result == "*" and "dialog" in ended[0].reason
+    assert pipe.reconciler.finished
+
+    # The user says who won, and the result is settled; a second word changes nothing.
+    settled = pipe.end_game("1-0", "opponent resigned or lost on time", ts)
+    assert [e.result for e in settled if isinstance(e, GameEnded)] == ["1-0"]
+    assert pipe.end_game("0-1", "changed my mind", ts) == []

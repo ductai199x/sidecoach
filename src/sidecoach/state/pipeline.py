@@ -42,6 +42,10 @@ from sidecoach.vision.tracker import BoardTracker
 # rather than the box tint. Everything here tolerates a missing, hidden, or misread clock by
 # producing nothing: a bad clock costs the clock, never the session.
 CLOCK_MIN_CONFIDENCE = 0.4
+# A cover of this many cells that stays this long over a live game is the game-over dialog.
+# Chess.com's covers about thirty-five cells; a promotion picker four.
+DIALOG_CELLS = 12
+DIALOG_SECONDS = 2.0
 CLOCK_MAX_MS = 3 * 60 * 60 * 1000  # three hours; anything above is a misread, not a clock
 
 
@@ -97,6 +101,8 @@ class GamePipeline:
     _last_clock: tuple[int | None, int | None, Side | None] | None = None
     # The last screen state emitted, so a ScreenStateChanged fires only on a transition.
     _screen_state: ScreenState = ScreenState.UNKNOWN
+    # When a dialog-sized cover first appeared over a live game's board, or None.
+    _dialog_since: float | None = None
 
     def process(
         self, frame: np.ndarray, ts: float, changed: bool = True, frame_id: int | None = None
@@ -158,6 +164,7 @@ class GamePipeline:
             return self._stamp(events, ts, frame_id)
         was_started = self.reconciler.started
         events += self.reconciler.update(self._readings, ts)
+        events += self._dialog_ends_the_game(self._readings, ts)
         if (
             was_started
             and not rebuilt
@@ -171,6 +178,35 @@ class GamePipeline:
             self._rebuild_model(frame, geometry)
         events += self._emit_screen_state(board_present=True)
         return self._stamp(events, ts, frame_id)
+
+    def _dialog_ends_the_game(self, readings: Readings, ts: float) -> list[Event]:
+        """A dialog that covers the board of a live game and stays is the site ending it.
+
+        Chess.com puts its game-over dialog over the board the moment a game ends. When
+        the last moves were premoves the end came faster than the capture, and the board
+        under the dialog is the one the reconciler never got to read: a mate delivered in
+        the last second left the coach thinking the game was on. A cover of at least
+        DIALOG_CELLS cells, held for DIALOG_SECONDS, ends the game; the result is the
+        board's own when the board is terminal, else unknown ("*"), which the user's End
+        game menu can settle. A dialog never appears over a live board otherwise, and one
+        that flashes past (a toast, a tooltip) does not last this long.
+        """
+        rec = self.reconciler
+        if rec is None or not rec.started or rec.finished:
+            self._dialog_since = None
+            return []
+        covered = sum(1 for row in readings for reading in row if reading.covered)
+        if covered < DIALOG_CELLS:
+            self._dialog_since = None
+            return []
+        if self._dialog_since is None:
+            self._dialog_since = ts
+            return []
+        if ts - self._dialog_since < DIALOG_SECONDS:
+            return []
+        self._dialog_since = None
+        result = rec.board.result() if rec.board.is_game_over() else "*"
+        return rec.end(result, "a dialog covered the board")
 
     def end_game(
         self, result: str, reason: str, ts: float, frame_id: int | None = None
@@ -192,6 +228,7 @@ class GamePipeline:
         self._start_on_screen = False
         self._screen_state = ScreenState.UNKNOWN
         self._last_clock = None
+        self._dialog_since = None
         if self.clock is not None:
             self.clock.reset()
 
