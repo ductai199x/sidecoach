@@ -31,6 +31,7 @@ const api = {
   set_muted: (muted) => post("/api/muted", { muted }),
   set_listen: (mode) => post("/api/listen", { mode }),
   end: (outcome) => post("/api/end", { outcome }),
+  exclude: (rect) => post("/api/exclude", rect),
   ptt: (down) => post("/api/ptt", { down }),
 };
 
@@ -79,6 +80,7 @@ function renderBoard(fen, bottom, lastMove) {
       const name = FILES[file] + (rank + 1);
       const sq = document.createElement("div");
       sq.className = "sq " + (((rank + file) % 2 === 0) ? "dark" : "light");
+      if (r % 2 === 1) sq.classList.add("odd");  // the panel's own-board signature
       if (hl.has(name)) sq.classList.add("hl");
       const piece = ranks[7 - rank][file];
       if (piece) {
@@ -376,10 +378,34 @@ function setRunning(on) {
   b.classList.toggle("running", on);
 }
 
+// --- keeping the vision off our own board ----------------------------------------------------
+//
+// If the game shares this monitor, the pipeline could lock onto the panel's board instead
+// of the game's. The page knows where its board is on screen, so it tells the engine, which
+// masks that rectangle before a frame is read. Screen coordinates are approximate (window
+// chrome, DPI); the engine adds a margin.
+
+let lastRect = "";
+function reportBoardRect() {
+  const r = el("board").getBoundingClientRect();
+  if (!r.width) return;
+  const dpr = window.devicePixelRatio || 1;
+  const chromeH = Math.max(0, window.outerHeight - window.innerHeight);
+  const rect = {
+    x: Math.round((window.screenX + r.left) * dpr),
+    y: Math.round((window.screenY + chromeH + r.top) * dpr),
+    w: Math.round(r.width * dpr),
+    h: Math.round(r.height * dpr),
+  };
+  const key = JSON.stringify(rect);
+  if (key !== lastRect) { lastRect = key; api.exclude(rect); }
+}
+
 // --- polling -----------------------------------------------------------------
 
 async function tick() {
   try {
+    reportBoardRect();
     const res = await api.poll(cursor);
     if (res.cursor !== undefined) cursor = Math.max(cursor, res.cursor);
     if (res.lines) for (const line of res.lines) addLine(line);

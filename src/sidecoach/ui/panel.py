@@ -129,6 +129,9 @@ class PanelEngine:
     _view_flip: bool = field(default=False, init=False)  # the panel's board shown turned around
     _fen_before: dict[int, str] = field(default_factory=dict, init=False)  # ply -> fen before
     _bad_run: int = field(default=0, init=False)  # consecutive frames read as degraded
+    # Screen rectangles (x, y, w, h in physical pixels) painted flat before the pipeline
+    # sees a live frame -- the panel's own board, so the vision never locks onto it.
+    _exclude: list[tuple[int, int, int, int]] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         # Each voice model is built exactly once here and kept for the engine's life; the
@@ -248,6 +251,34 @@ class PanelEngine:
         if outcome == "draw":
             return "1/2-1/2", "draw agreed"
         return "*", "abandoned by the user"
+
+    def set_exclusion(self, x: int, y: int, w: int, h: int) -> None:
+        """Tell the vision where the panel's own board is on screen, so it is masked out.
+
+        The page reports its board's screen rectangle; if the game shares that monitor, the
+        detector would otherwise find the bigger, cleaner board -- the panel's -- and never
+        see a start position. Painted flat grey before recording and processing.
+        """
+        rect = (int(x), int(y), int(w), int(h))
+        with self._lock:
+            changed = rect not in self._exclude
+            self._exclude = [rect] if w > 0 and h > 0 else []
+        if changed and w > 0 and h > 0:
+            self._emit(
+                "vision", "info", f"masking the panel's own board at ({x},{y}) {w}x{h}", rect=rect
+            )
+
+    @staticmethod
+    def mask(frame: Any, region: Any, rects: list[tuple[int, int, int, int]]) -> None:
+        """Paint `rects` (screen pixels) flat over `frame`, which covers `region`. In place."""
+        margin = 24  # window chrome and DPI rounding: err on the side of covering more
+        for x, y, w, h in rects:
+            x0 = max(0, x - margin - region.x)
+            y0 = max(0, y - margin - region.y)
+            x1 = min(region.w, x + w + margin - region.x)
+            y1 = min(region.h, y + h + margin - region.y)
+            if x1 > x0 and y1 > y0:
+                frame[y0:y1, x0:x1] = 128
 
     def hear(self, audio: Any, seconds: float | None = None) -> None:
         """Treat a float32 16 kHz clip as something the user said (the test and dev path)."""
@@ -466,7 +497,14 @@ class PanelEngine:
             cache = ThemeCache(self.settings.data_dir / "themes")
         except Exception as exc:  # noqa: BLE001 - a cache is a nicety; the panel runs without it
             self._emit("sys", "warn", f"theme cache unavailable: {exc}")
-        pipe = GamePipeline(clock=ClockReader(), cache=cache)
+        from sidecoach.vision.ownboard import is_own_board
+        from sidecoach.vision.tracker import BoardTracker
+
+        # The vision must never lock onto the panel's own board: it carries a signature
+        # (vision.ownboard) the tracker vetoes, on top of the screen-rectangle mask.
+        pipe = GamePipeline(
+            clock=ClockReader(), cache=cache, tracker=BoardTracker(reject=is_own_board)
+        )
         assessing = _Assessing(self.settings, self.analysis)
         coaching = _Coaching(self.settings, self.coach and assessing.on)
         # Their console output is replaced by the log: assessments are formatted here from
@@ -499,6 +537,11 @@ class PanelEngine:
                 changed = True
                 if live:
                     from sidecoach.replay.recording import board_gate
+
+                    with self._lock:
+                        excluded = list(self._exclude)
+                    if excluded:
+                        self.mask(frame, region, excluded)
 
                     gate.region = board_gate(pipe.board, region.w, region.h)
                     if recorder is not None:

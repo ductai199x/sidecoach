@@ -14,10 +14,12 @@ its own and its boundary comb is clearly stronger than the one at the lock's geo
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 
 import numpy as np
 
+from sidecoach.events import Region
 from sidecoach.vision.board_detect import (
     BoardCandidate,
     Colours,
@@ -41,6 +43,7 @@ class BoardTracker:
         refit_gain: float = 1.1,
         redetect_backoff: int = 20,
         near_backoff: int = 3,
+        reject: Callable[[np.ndarray, Region, float], bool] | None = None,
     ) -> None:
         self.min_fit = min_fit
         self.min_contrast = min_contrast
@@ -50,6 +53,11 @@ class BoardTracker:
         self.refit_gain = refit_gain
         self.redetect_backoff = redetect_backoff
         self.near_backoff = near_backoff
+        # A veto on detected boards: called with the colour frame, a candidate's region and
+        # cell size; True means "not a board we want" (the panel's own board, see
+        # vision.ownboard). Vetoed candidates are dropped before one is adopted.
+        self.reject = reject
+        self.rejected = 0
         self.board: BoardCandidate | None = None
         self.colours: Colours | None = None
         self.last_cell_px: float | None = None
@@ -130,6 +138,10 @@ class BoardTracker:
                 return None
 
         boards = self._detect(gray, full=self._cooldown <= 0)
+        if self.reject is not None and boards:
+            kept = [b for b in boards if not self.reject(frame_bgr, b.region, b.cell_px)]
+            self.rejected += len(boards) - len(kept)
+            boards = kept
         self.misses = 0
         self._frames_since_refine = 0
         self.board = boards[0] if boards else None

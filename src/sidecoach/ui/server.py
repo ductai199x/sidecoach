@@ -57,6 +57,13 @@ class _End(BaseModel):
     outcome: str
 
 
+class _Rect(BaseModel):
+    x: int
+    y: int
+    w: int
+    h: int
+
+
 def build_app(engine: PanelEngine) -> FastAPI:
     """A FastAPI app serving the panel UI and the control API over `engine`."""
     from fastapi import FastAPI
@@ -108,6 +115,11 @@ def build_app(engine: PanelEngine) -> FastAPI:
     @app.post("/api/muted")
     def muted(body: _Muted) -> dict[str, bool]:
         return {"ok": api.set_muted(body.muted)}
+
+    @app.post("/api/exclude")
+    def exclude(body: _Rect) -> dict[str, bool]:
+        engine.set_exclusion(body.x, body.y, body.w, body.h)
+        return {"ok": True}
 
     @app.post("/api/end")
     def end(body: _End) -> dict[str, bool]:
