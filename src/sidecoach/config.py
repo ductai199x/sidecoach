@@ -85,6 +85,26 @@ class VoiceSettings(BaseModel):
     lang: str = "en-us"
     # Where the Kokoro model files live; defaults to <data_dir>/models/kokoro when unset.
     model_dir: str | None = None
+    # Where each voice model runs: "auto" (the GPU when onnxruntime's CUDA provider
+    # initialises, else the CPU), "cpu", or "cuda". A model is loaded once, on the device
+    # chosen at start, and kept for the session; changing the device means restarting.
+    tts_device: str = "auto"
+    stt_device: str = "auto"
+    # Hearing: "parakeet" (NVIDIA Parakeet-TDT-0.6B via onnx-asr, the default; ~100 ms on the
+    # CPU), "whisper" (faster-whisper, best raw accuracy, wants the GPU), or "null".
+    stt_provider: str = "parakeet"
+    # The model name for the provider (onnx-asr's for parakeet, faster-whisper's for whisper);
+    # the provider's default when unset.
+    stt_model: str | None = None
+    # How the coach listens when the panel starts: "off", "ptt" (hold to talk), or "vad"
+    # (voice activity: speak, and the coach is cut off when you start).
+    listen: str = "ptt"
+    # An input device index or name for sounddevice; the default input when unset.
+    mic_device: str | None = None
+    # The global push-to-talk key, held from any window (the game has the focus, not the
+    # panel): a pynput key name such as "ctrl_r", "alt_r", "f9", a single character, or a
+    # mouse side button "mouse_x1" / "mouse_x2". Empty disables the global key.
+    ptt_key: str = "ctrl_r"
 
 
 class Settings(BaseModel):

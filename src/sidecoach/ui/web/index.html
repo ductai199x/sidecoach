@@ -47,7 +47,17 @@
           <button data-cmd="hint" class="ghost">Hint</button>
           <button data-cmd="move" class="ghost">Best move</button>
           <button data-cmd="line" class="ghost">Line</button>
+          <span class="spacer"></span>
+          <label class="ctl">listen
+            <select id="listen">
+              <option value="off">off</option>
+              <option value="ptt">hold to talk</option>
+              <option value="vad">voice</option>
+            </select>
+          </label>
+          <button id="talk" class="talk" title="Hold to talk (or hold Space)">🎤 Hold to talk</button>
         </div>
+        <div id="heard" class="heard" hidden></div>
       </section>
     </main>
 
@@ -61,6 +71,9 @@
         <span class="hk">clock</span><span id="h-clock" class="hv">–</span>
         <span class="hk">coach queue</span><span id="h-coach" class="hv">–</span>
         <span class="hk">recording</span><span id="h-rec" class="hv">–</span>
+        <span class="hk">voice</span><span id="h-voice" class="hv">–</span>
+        <span class="hk">ear</span><span id="h-ear" class="hv">–</span>
+        <span class="hk">rss</span><span id="h-rss" class="hv">–</span>
       </div>
       <div class="term-head">
         <span class="term-title">debug terminal</span>

@@ -25,8 +25,9 @@ def test_a_message_about_a_position_the_board_left_is_not_spoken() -> None:
     assert act("post_mistake", LONG, ply=10, ply_now=10, busy=False) == "speak"
     assert act("post_mistake", LONG, ply=10, ply_now=10 + STALE_PLIES - 1, busy=False) == "speak"
     assert act("post_mistake", LONG, ply=10, ply_now=10 + STALE_PLIES, busy=False) == "stale"
-    # A message with no position (a reply to a general question) is never stale.
+    # The answer to the user's own question is never stale, however far the board has moved.
     assert act("user_ask", LONG, ply=None, ply_now=40, busy=True) == "supersede"
+    assert act("user_ask", LONG, ply=10, ply_now=40, busy=False) == "speak"
 
 
 def test_short_verdicts_yield_to_a_busy_voice_and_substance_cuts_in() -> None:

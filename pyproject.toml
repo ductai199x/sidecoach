@@ -24,17 +24,46 @@ dev = [
     "ruff>=0.6",
     "pyright>=1.1.380",
 ]
-# The voice extras are heavy (onnxruntime) and optional: `uv sync --group voice`. Without
-# them the coach runs silent -- the Kokoro provider reports the extras missing and no-ops.
+# The voice extras (TTS + STT + VAD) are heavy and optional: `uv sync --group voice`. Without
+# them the coach runs silent and deaf -- the providers report the extras missing and no-op.
+# Both models run on ONE runtime, onnxruntime-gpu, which also serves the CPU: the device is
+# chosen per model in config (voice.tts_device / voice.stt_device = auto | cpu | cuda). The
+# nvidia-* wheels carry the CUDA 13 / cuDNN 9 DLLs onnxruntime-gpu >= 1.27 loads through
+# onnxruntime.preload_dlls(); on a machine with no NVIDIA GPU they are inert and the CPU
+# provider is used.
 voice = [
     "kokoro-onnx>=0.4",
+    "onnx-asr[hub]>=0.12",
+    "onnxruntime-gpu>=1.27",
+    "nvidia-cudnn-cu13>=9.0",
+    "nvidia-cublas>=13.0",
+    "nvidia-cuda-runtime>=13.0",
+    "nvidia-cuda-nvrtc>=13.0",
+    "nvidia-cufft>=12.0",
+    "nvidia-curand>=10.0",
     "sounddevice>=0.5",
+    "pynput>=1.7",
+]
+# Whisper on the GPU as an alternative STT (faster-whisper / CTranslate2, CUDA 12 wheels).
+whisper = [
+    "faster-whisper>=1.2",
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12>=9.0,<10",
 ]
 # The panel backend: a local FastAPI server behind the web UI, `uv sync --group panel`.
 # The UI opens in the browser, so it is debuggable with real devtools and testable over HTTP.
 panel = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    "psutil>=6.0",
+]
+
+[tool.uv]
+# kokoro-onnx and onnx-asr depend on the CPU-only `onnxruntime`, which would shadow
+# onnxruntime-gpu (same import name, last installed wins). Drop that requirement: the GPU
+# build provides the CPU provider too, so one package serves both devices.
+override-dependencies = [
+    "onnxruntime ; sys_platform == 'never'",
 ]
 
 [build-system]

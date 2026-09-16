@@ -17,6 +17,10 @@ import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+# This module needs the panel extras (`uv sync --group panel`); the CLI imports it behind an
+# ImportError guard. FastAPI resolves handler annotations from the module globals, so
+# `Request` is imported here, not inside `build_app`.
+from fastapi import Request
 from pydantic import BaseModel
 
 from sidecoach.config import Settings
@@ -24,6 +28,7 @@ from sidecoach.ui.panel import PanelApi, PanelEngine
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
 
 WEB = Path(__file__).parent / "web"
 
@@ -38,6 +43,14 @@ class _Voice(BaseModel):
 
 class _Muted(BaseModel):
     muted: bool
+
+
+class _Listen(BaseModel):
+    mode: str
+
+
+class _Ptt(BaseModel):
+    down: bool
 
 
 def build_app(engine: PanelEngine) -> FastAPI:
@@ -92,6 +105,33 @@ def build_app(engine: PanelEngine) -> FastAPI:
     def muted(body: _Muted) -> dict[str, bool]:
         return {"ok": api.set_muted(body.muted)}
 
+    @app.post("/api/listen")
+    def listen(body: _Listen) -> dict[str, Any]:
+        return {"ok": True, "mode": engine.set_listen(body.mode)}
+
+    @app.post("/api/ptt")
+    def ptt(body: _Ptt) -> dict[str, bool]:
+        engine.ptt(body.down)
+        return {"ok": True}
+
+    @app.post("/api/hear")
+    async def hear(request: Request) -> dict[str, Any]:
+        """A 16 kHz mono WAV in the body is treated as something the user said -- the way to
+        exercise the whole hear -> correct -> ask path without a microphone."""
+        import io
+        import wave
+
+        import numpy as np
+
+        body = await request.body()
+        with wave.open(io.BytesIO(body), "rb") as w:
+            if w.getframerate() != 16000 or w.getnchannels() != 1 or w.getsampwidth() != 2:
+                return {"ok": False, "error": "need 16 kHz mono 16-bit PCM WAV"}
+            pcm = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
+        audio = pcm.astype(np.float32) / 32768.0
+        engine.hear(audio)
+        return {"ok": True, "seconds": round(len(audio) / 16000, 2)}
+
     # Everything else is the static web UI; html=True serves index.html at /.
     app.mount("/", StaticFiles(directory=str(WEB), html=True), name="web")
     return app
@@ -105,6 +145,9 @@ def make_engine(
     replay: Path | None = None,
     record: bool = True,
     speed: float = 1.0,
+    tts_device: str | None = None,
+    stt_device: str | None = None,
+    listen: str | None = None,
 ) -> PanelEngine:
     """A live engine, or one fed from a recording when `replay` is given (deterministic dev).
 
@@ -112,6 +155,15 @@ def make_engine(
     played, so the coach and the voice have the time they had; 0 = as fast as the pipeline
     goes, for tests).
     """
+    # CLI overrides for where the voice models run and how the coach listens.
+    if tts_device or stt_device or listen:
+        settings = settings.model_copy(deep=True)
+        if tts_device:
+            settings.voice.tts_device = tts_device
+        if stt_device:
+            settings.voice.stt_device = stt_device
+        if listen:
+            settings.voice.listen = listen
     frame_source = None
     if replay is not None:
         import time
@@ -146,12 +198,23 @@ def run_server(
     record: bool = True,
     speed: float = 1.0,
     open_browser: bool = True,
+    tts_device: str | None = None,
+    stt_device: str | None = None,
+    listen: str | None = None,
 ) -> None:
     """Serve the panel and open it in the browser. Blocks until the server is stopped."""
     import uvicorn
 
     engine = make_engine(
-        settings, monitor=monitor, fps=fps, replay=replay, record=record, speed=speed
+        settings,
+        monitor=monitor,
+        fps=fps,
+        replay=replay,
+        record=record,
+        speed=speed,
+        tts_device=tts_device,
+        stt_device=stt_device,
+        listen=listen,
     )
     app = build_app(engine)
     if replay is not None:

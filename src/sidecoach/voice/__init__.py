@@ -8,7 +8,16 @@ into words by `speak_notation` before it is voiced. See DESIGN.md section 5.9.
 from __future__ import annotations
 
 from sidecoach.voice.base import NullTTS, TTSProvider
-from sidecoach.voice.factory import make_tts
+from sidecoach.voice.factory import make_ear, make_tts
 from sidecoach.voice.notation import speak_notation
+from sidecoach.voice.stt import NullSTT, STTProvider
 
-__all__ = ["NullTTS", "TTSProvider", "make_tts", "speak_notation"]
+__all__ = [
+    "NullSTT",
+    "NullTTS",
+    "STTProvider",
+    "TTSProvider",
+    "make_ear",
+    "make_tts",
+    "speak_notation",
+]

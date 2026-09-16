@@ -1,9 +1,9 @@
-"""Kokoro-82M text-to-speech, via kokoro-onnx on the CPU.
+"""Kokoro-82M text-to-speech, via kokoro-onnx on the shared ONNX runtime, CPU or GPU.
 
-Kokoro is small, natural, Apache-2.0, and real-time on the CPU (about seven times faster than
-it speaks), which leaves the GPU free for the local LLM. A future port to the GPU would swap
-kokoro-onnx for the PyTorch `kokoro` package on a CUDA build of torch; the onnxruntime wheel
-here exposes no CUDA provider, so ONNX stays on the CPU for now.
+Kokoro is small, natural, Apache-2.0, real-time on the CPU and ~24x real-time on the GPU. The
+graph is loaded ONCE (`load`, or lazily on the first line) into a session that lives as long
+as the provider; a voice is only a style vector chosen at synthesis time, so changing the
+voice never reloads anything. The device comes from `sidecoach.voice.runtime`.
 
 Everything heavy -- the model, the audio device -- is imported lazily and loaded off the
 calling thread, so importing this module is cheap and a machine without the voice extras or
@@ -17,10 +17,13 @@ import contextlib
 import logging
 import queue
 import threading
+import time
 from importlib.util import find_spec
 from pathlib import Path
 
 from sidecoach.voice.notation import speak_notation
+from sidecoach.voice.runtime import Device
+from sidecoach.voice.runtime import session as make_session
 
 log = logging.getLogger(__name__)
 
@@ -40,16 +43,21 @@ class KokoroTTS:
         voice: str = "af_sarah",
         speed: float = 1.0,
         lang: str = "en-us",
+        device: str = "auto",
     ) -> None:
         self.model_dir = Path(model_dir)
         self.voice = voice
         self.speed = speed
         self.lang = lang
+        self.device_wanted = device
+        self.device: Device | None = None  # where the graph actually loaded
+        self.load_seconds: float | None = None
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._worker: threading.Thread | None = None
         self._kokoro: object | None = None
         self._sd: object | None = None
         self._failed = False
+        self._load_lock = threading.Lock()
         # Bumped on every stop so a synthesis in flight knows its line was cancelled and
         # does not play over what comes next.
         self._generation = 0
@@ -64,11 +72,15 @@ class KokoroTTS:
     def voices_path(self) -> Path:
         return self.model_dir / VOICES_FILE
 
+    @property
+    def loaded(self) -> bool:
+        return self._kokoro is not None
+
     def healthcheck(self) -> tuple[bool, str]:
         """Whether the voice can speak, checked without loading the model.
 
         The extras must be importable and the two model files present; the model itself is
-        big and is loaded lazily on the first line.
+        big and is loaded once, by `load` or on the first line.
         """
         if find_spec("kokoro_onnx") is None:
             return False, "kokoro-onnx not installed; run `uv sync --group voice`"
@@ -77,7 +89,40 @@ class KokoroTTS:
         missing = [p.name for p in (self.onnx_path, self.voices_path) if not p.exists()]
         if missing:
             return False, f"model files missing from {self.model_dir}: {', '.join(missing)}"
-        return True, f"kokoro-onnx, voice {self.voice}, CPU"
+        where = self.device.detail if self.device else f"{self.device_wanted} (not loaded yet)"
+        return True, f"kokoro-onnx, voice {self.voice}, {where}"
+
+    def set_voice(self, voice: str) -> None:
+        """Change the voice. A style vector, not a model: nothing is reloaded."""
+        self.voice = voice
+
+    def load(self) -> bool:
+        """Load the graph and the audio module once. Returns whether the voice is usable.
+
+        Safe to call from any thread and any number of times; only the first call does
+        work. The engine calls it at start so the first line is not the slow one.
+        """
+        with self._load_lock:
+            if self._kokoro is not None:
+                return True
+            if self._failed:
+                return False
+            try:
+                # Lazy, heavy, and optional (the `voice` extra); pyright need not resolve them.
+                import sounddevice  # type: ignore[reportMissingImports]
+                from kokoro_onnx import Kokoro  # type: ignore[reportMissingImports]
+
+                begun = time.perf_counter()
+                sess, where = make_session(self.onnx_path, self.device_wanted)
+                self._kokoro = Kokoro.from_session(sess, str(self.voices_path))
+                self._sd = sounddevice
+                self.device = where
+                self.load_seconds = time.perf_counter() - begun
+                return True
+            except Exception as exc:  # noqa: BLE001 - any load failure degrades to silence
+                log.warning("Kokoro voice unavailable, going silent: %s", exc)
+                self._failed = True
+                return False
 
     def say(self, text: str) -> None:
         """Queue a line to be spoken. Notation in it is read aloud in words."""
@@ -114,25 +159,6 @@ class KokoroTTS:
         self._worker = threading.Thread(target=self._run, name="kokoro-tts", daemon=True)
         self._worker.start()
 
-    def _load(self) -> bool:
-        """Load the model and the audio module once. Returns whether the voice is usable."""
-        if self._kokoro is not None:
-            return True
-        if self._failed:
-            return False
-        try:
-            # Lazy, heavy, and optional (the `voice` extra); pyright need not resolve them.
-            import sounddevice  # type: ignore[reportMissingImports]
-            from kokoro_onnx import Kokoro  # type: ignore[reportMissingImports]
-
-            self._kokoro = Kokoro(str(self.onnx_path), str(self.voices_path))
-            self._sd = sounddevice
-            return True
-        except Exception as exc:  # noqa: BLE001 - any load failure degrades to silence
-            log.warning("Kokoro voice unavailable, going silent: %s", exc)
-            self._failed = True
-            return False
-
     def _run(self) -> None:
         while True:
             text = self._queue.get()
@@ -147,7 +173,7 @@ class KokoroTTS:
                 self._playing = False
 
     def _speak_one(self, text: str) -> None:
-        if not self._load():
+        if not self.load():
             return  # degraded to silence
         with self._lock:
             generation = self._generation

@@ -1630,6 +1630,15 @@ def panel(
     speed: Annotated[
         float, typer.Option(help="Replay pace: 1.0 = as played, 2.0 = twice as fast, 0 = unpaced")
     ] = 1.0,
+    tts_device: Annotated[
+        str | None, typer.Option(help="Where the voice runs: auto, cpu, or cuda")
+    ] = None,
+    stt_device: Annotated[
+        str | None, typer.Option(help="Where the ear runs: auto, cpu, or cuda")
+    ] = None,
+    listen: Annotated[
+        str | None, typer.Option(help="How the coach listens: off, ptt (hold to talk), or vad")
+    ] = None,
     config: ConfigOpt = None,
 ) -> None:
     """Open the panel: the live coach in the browser -- a board, coach messages, a voice, an
@@ -1657,6 +1666,9 @@ def panel(
         record=record,
         speed=speed,
         open_browser=browser,
+        tts_device=tts_device,
+        stt_device=stt_device,
+        listen=listen,
     )
 
 

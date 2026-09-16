@@ -29,6 +29,8 @@ const api = {
   ask: (text) => post("/api/ask", { text }),
   set_voice: (voice) => post("/api/voice", { voice }),
   set_muted: (muted) => post("/api/muted", { muted }),
+  set_listen: (mode) => post("/api/listen", { mode }),
+  ptt: (down) => post("/api/ptt", { down }),
 };
 
 // --- rendering ---------------------------------------------------------------
@@ -310,6 +312,38 @@ function renderHealth(h, s) {
   const q = el("h-coach"); q.textContent = h.coach_pending != null ? String(h.coach_pending) : "–";
   q.className = "hv" + (h.coach_pending > 1 ? " warn" : "");
   el("h-rec").textContent = h.recording || "–";
+  el("h-voice").textContent = h.tts_device || "–";
+  el("h-ear").textContent = h.stt_device || "–";
+  el("h-rss").textContent = h.rss_mb != null ? h.rss_mb + " MB" : "–";
+}
+
+// --- talking to the coach ----------------------------------------------------------------
+//
+// Hold the button (or Space, outside a text box) to talk in push-to-talk mode; in voice mode
+// the server's VAD decides and the button is just an indicator. What was heard, corrected
+// against the board, shows under the buttons and the coach answers it like a typed ask.
+
+let pttDown = false;
+let listenMode = "off";
+
+function setPtt(down) {
+  if (listenMode !== "ptt" || pttDown === down) return;
+  pttDown = down;
+  el("talk").classList.toggle("live", down);
+  api.ptt(down);
+}
+
+function renderListen(s) {
+  if (s.listen !== undefined && s.listen !== listenMode) {
+    listenMode = s.listen;
+    el("listen").value = listenMode;
+    const t = el("talk");
+    t.disabled = listenMode !== "ptt";
+    t.textContent = listenMode === "vad" ? "🎤 listening" : "🎤 Hold to talk";
+    if (listenMode !== "ptt") { pttDown = false; t.classList.remove("live"); }
+  }
+  const h = el("heard");
+  if (s.heard) { h.hidden = false; h.innerHTML = ""; h.appendChild(document.createTextNode("heard: ")); const b = document.createElement("b"); b.textContent = s.heard; h.appendChild(b); }
 }
 
 function renderState(s) {
@@ -325,6 +359,7 @@ function renderState(s) {
   if (!ghost) renderBoard(s.fen, shown, s.last_move);
   renderMoves(s.moves || []);
   renderHealth(s.health, s);
+  renderListen(s);
   setRunning(s.running);
   const ply = s.ply || 0;
   if (shown !== currentBottom || ply !== currentPly) {
@@ -388,6 +423,16 @@ function wire() {
     };
   }
   el("verbose").onchange = (e) => { filters.verbose = e.target.checked; applyFilters(); };
+  el("listen").onchange = (e) => api.set_listen(e.target.value);
+  const talk = el("talk");
+  talk.onmousedown = () => setPtt(true);
+  talk.onmouseup = talk.onmouseleave = () => setPtt(false);
+  talk.ontouchstart = (e) => { e.preventDefault(); setPtt(true); };
+  talk.ontouchend = () => setPtt(false);
+  const typing = () => ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement && document.activeElement.tagName);
+  document.addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat && !typing()) { e.preventDefault(); setPtt(true); } });
+  document.addEventListener("keyup", (e) => { if (e.code === "Space" && !typing()) { e.preventDefault(); setPtt(false); } });
+  window.addEventListener("blur", () => setPtt(false));
   el("search").oninput = (e) => { filters.query = e.target.value.trim().toLowerCase(); applyFilters(); };
 }
 

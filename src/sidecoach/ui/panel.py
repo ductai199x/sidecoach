@@ -16,8 +16,9 @@ What the log carries, by channel:
           (decisive moment, only move, threats, the opening)
   coach   each message with why it spoke, at what disclosure level, how many attempts, and
           whether the checks rejected a draft; at debug, why it is quiet
-  voice   what was spoken or muted, and any synthesis failure
-  user    the user's asks
+  voice   what was spoken or muted, what was heard (and how it was corrected), the
+          microphone, barge-ins, and any synthesis or recognition failure
+  user    the user's asks, typed or spoken
 Continuously-changing health (fps, lock fit, pipeline timing, lag, clock, recording size) is
 not logged at all; it lives in the state as a status strip.
 
@@ -27,6 +28,7 @@ test, or with `sidecoach panel --replay` while developing -- without a live scre
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue
 import threading
@@ -38,7 +40,11 @@ from typing import IO, Any
 
 from sidecoach.config import Settings
 from sidecoach.ui.log import DebugLog, elide
-from sidecoach.voice import TTSProvider, make_tts
+from sidecoach.voice import STTProvider, TTSProvider, make_ear, make_tts
+from sidecoach.voice.correct import correct
+from sidecoach.voice.hotkey import GlobalPushToTalk
+from sidecoach.voice.mic import MODES, Listener, Microphone
+from sidecoach.voice.vad import SileroGate
 
 # The English Kokoro voices offered in the picker (American / British, female / male).
 PICKER_VOICES: list[str] = [
@@ -110,13 +116,36 @@ class PanelEngine:
     _log: DebugLog = field(default_factory=DebugLog, init=False)
     _state: dict[str, Any] = field(default_factory=dict, init=False)
     _tts: TTSProvider = field(default=None, init=False)  # type: ignore[assignment]
+    _stt: STTProvider = field(default=None, init=False)  # type: ignore[assignment]
+    _gate: SileroGate = field(default_factory=SileroGate, init=False)
+    _mic: Microphone = field(default=None, init=False)  # type: ignore[assignment]
+    _listener: Listener = field(default=None, init=False)  # type: ignore[assignment]
+    _hotkey: GlobalPushToTalk = field(default=None, init=False)  # type: ignore[assignment]
     _forced_bottom: Any = field(default=None, init=False)  # a Side chosen by the flip button
     _view_flip: bool = field(default=False, init=False)  # the panel's board shown turned around
     _fen_before: dict[int, str] = field(default_factory=dict, init=False)  # ply -> fen before
     _bad_run: int = field(default=0, init=False)  # consecutive frames read as degraded
 
     def __post_init__(self) -> None:
+        # Each voice model is built exactly once here and kept for the engine's life; the
+        # graphs load on the device configured (see `_warm_voice`) and are never reloaded.
         self._tts = self._build_tts(self.voice)
+        self._stt = make_ear(self._voice_settings())
+        self._mic = Microphone(self.settings.voice.mic_device)
+        self._listener = Listener(
+            self._mic,
+            self._gate,
+            on_utterance=self._on_utterance,
+            on_speech_start=self._on_speech_start,
+            coach_speaking=lambda: self._tts.busy,
+            on_event=lambda level, text: self._emit("voice", level, text),
+        )
+        # Held from any window -- the game has the focus mid-game, not the panel.
+        self._hotkey = GlobalPushToTalk(
+            self.settings.voice.ptt_key,
+            on_press=lambda: self.ptt(True),
+            on_release=lambda: self.ptt(False),
+        )
         self._state = {
             "running": False,
             "fen": None,
@@ -136,6 +165,10 @@ class PanelEngine:
             "coach_on": self.coach,
             "analysis_on": self.analysis,
             "voice_detail": self._tts.healthcheck()[1],
+            "stt_detail": self._stt.healthcheck()[1],
+            "listen": "off",
+            "ptt": False,
+            "heard": None,
             "clock": None,
             "health": {},
             "session_dir": None,
@@ -159,12 +192,46 @@ class PanelEngine:
         self._commands.put((name, payload))
 
     def set_voice(self, voice: str) -> None:
+        """Change the speaking voice. A style vector on the loaded model: nothing reloads."""
+        set_voice = getattr(self._tts, "set_voice", None)
+        if set_voice is not None:
+            set_voice(voice)
         with self._lock:
-            self._tts = self._build_tts(voice)
             self.voice = voice
             self._state["voice"] = voice
             self._state["voice_detail"] = self._tts.healthcheck()[1]
         self._emit("voice", "info", f"voice set to {voice}", detail=self._state["voice_detail"])
+
+    def set_listen(self, mode: str) -> str:
+        """How the coach listens: off, push-to-talk, or voice activity."""
+        if mode not in MODES:
+            raise ValueError(f"listen mode must be one of {MODES}")
+        detail = self._listener.set_mode(mode)
+        self._set(listen=self._listener.mode, ptt=False)
+        self._emit("voice", "info", f"listening: {detail}")
+        if self._listener.mode == "ptt":
+            if self._hotkey.start():
+                self._emit("voice", "info", f"push-to-talk: {self._hotkey.detail}")
+            else:
+                self._emit("voice", "warn", f"push-to-talk key: {self._hotkey.detail}")
+        else:
+            self._hotkey.stop()
+        return self._listener.mode
+
+    def ptt(self, down: bool) -> None:
+        """Push-to-talk pressed or released."""
+        if down:
+            self._listener.press()
+        else:
+            self._listener.release()
+        self._set(ptt=bool(down) and self._listener.mode == "ptt")
+
+    def hear(self, audio: Any, seconds: float | None = None) -> None:
+        """Treat a float32 16 kHz clip as something the user said (the test and dev path)."""
+        import numpy as np
+
+        clip = np.asarray(audio, dtype=np.float32)
+        self._on_utterance(clip, seconds if seconds is not None else len(clip) / 16000)
 
     def set_muted(self, muted: bool) -> None:
         with self._lock:
@@ -182,12 +249,87 @@ class PanelEngine:
 
     # ---- internals ------------------------------------------------------------------------
 
-    def _build_tts(self, voice: str) -> TTSProvider:
+    def _voice_settings(self, voice: str | None = None) -> Settings:
+        """The settings with voice on: the panel speaks and listens unless told otherwise."""
         cfg = self.settings.model_copy(deep=True)
-        cfg.voice = cfg.voice.model_copy(
-            update={"enabled": True, "provider": "kokoro", "voice": voice}
+        update: dict[str, Any] = {"enabled": True, "provider": "kokoro"}
+        if voice is not None:
+            update["voice"] = voice
+        cfg.voice = cfg.voice.model_copy(update=update)
+        return cfg
+
+    def _build_tts(self, voice: str) -> TTSProvider:
+        return make_tts(self._voice_settings(voice))
+
+    def _warm_voice(self) -> None:
+        """Load both voice models once, off the pipeline thread, and say where they landed."""
+        for label, provider in (("voice", self._tts), ("ear", self._stt)):
+            load = getattr(provider, "load", None)
+            if load is None:
+                continue
+            ok = load()
+            device = getattr(provider, "device", None)
+            seconds = getattr(provider, "load_seconds", None)
+            detail = provider.healthcheck()[1]
+            if ok and device is not None:
+                self._emit(
+                    "sys",
+                    "info",
+                    f"{label}: {detail}; loaded once in {seconds or 0:.1f}s",
+                    device=device.name,
+                )
+            else:
+                self._emit("sys", "warn", f"{label}: {detail}")
+        with self._lock:
+            self._state["voice_detail"] = self._tts.healthcheck()[1]
+            self._state["stt_detail"] = self._stt.healthcheck()[1]
+        ok, detail = self._mic.healthcheck()
+        self._emit("sys", "info" if ok else "warn", f"mic: {detail}")
+        wanted = self.settings.voice.listen
+        if wanted != "off":
+            self.set_listen(wanted)
+
+    def _on_speech_start(self) -> None:
+        """The user started talking: the coach stops mid-sentence (barge-in)."""
+        if self._tts.busy:
+            self._tts.stop()
+            self._emit("voice", "debug", "barge-in: the coach was cut off")
+
+    def _on_utterance(self, audio: Any, seconds: float) -> None:
+        """Something was said: transcribe it, correct it against the board, ask the coach.
+
+        Runs on the listener thread; the ask is queued for the pipeline thread.
+        """
+        import chess
+
+        begun = time.perf_counter()
+        raw = self._stt.transcribe(audio)
+        ms = (time.perf_counter() - begun) * 1000
+        if not raw:
+            self._emit(
+                "voice", "debug", f"heard nothing in {seconds:.1f}s of audio", stt_ms=round(ms)
+            )
+            return
+        with self._lock:
+            fen = self._state.get("fen")
+        board = None
+        if fen:
+            try:
+                board = chess.Board(fen)
+            except ValueError:
+                board = None
+        fixed = correct(raw, board)
+        self._set(heard=fixed.text)
+        self._emit(
+            "voice",
+            "info",
+            f"heard: {fixed.text}",
+            raw=raw,
+            moves=fixed.moves,
+            seconds=round(seconds, 2),
+            stt_ms=round(ms),
         )
-        return make_tts(cfg)
+        self.command("ask_spoken", fixed.text)
 
     def _emit(self, chan: str, level: str, text: str, **data: Any) -> None:
         self._log.emit(chan, level, text, **data)
@@ -206,7 +348,11 @@ class PanelEngine:
         STALE_PLIES behind is shown but not spoken ("stale"); a short post-move verdict is
         dropped if the voice is busy rather than queued behind it ("skip"); anything
         substantive cuts off whatever is still playing about an older moment ("supersede").
+        The answer to the user's own question is never stale: they asked.
         """
+        if trigger == "user_ask":
+            # The user asked; the answer is owed aloud even if the board has moved on.
+            return "supersede" if busy else "speak"
         if ply is not None and ply_now - ply >= STALE_PLIES:
             return "stale"
         if trigger == "post_move" and len(text) < SHORT_VERDICT:
@@ -224,6 +370,7 @@ class PanelEngine:
             self._tts.stop()
         if action in ("speak", "supersede"):
             self._tts.say(text)
+            self._emit("voice", "debug", f"speaking ({self.voice}): {elide(text, 60)}")
         return action
 
     def _say(self, text: str) -> None:
@@ -303,8 +450,7 @@ class PanelEngine:
         coaching.sink = lambda _message: None
         self._emit("sys", "info" if assessing.on else "warn", f"engine: {assessing.detail}")
         self._emit("sys", "info" if coaching.on else "warn", f"coach: {coaching.detail}")
-        ready, detail = self._tts.healthcheck()
-        self._emit("sys", "info" if ready else "warn", f"voice: {detail}")
+        threading.Thread(target=self._warm_voice, name="voice-load", daemon=True).start()
         self._set(status="waiting for a board", coach_on=coaching.on, analysis_on=assessing.on)
 
         latest: Any = None
@@ -419,6 +565,8 @@ class PanelEngine:
         except Exception as exc:  # noqa: BLE001 - report and shut down cleanly
             self._emit("sys", "error", f"engine stopped: {exc!r}")
         finally:
+            with contextlib.suppress(Exception):
+                self._listener.set_mode("off")
             coaching.events(assessing.wait(), time.monotonic())
             assessing.close()
             coaching.wait()
@@ -697,8 +845,21 @@ class PanelEngine:
         else:
             lock = "lock in doubt"
         pending = coaching.coach.speaker.pending if coaching.coach is not None else 0
+        rss_mb = None
+        try:
+            import psutil
+
+            rss_mb = round(psutil.Process().memory_info().rss / 1e6)
+        except Exception:  # noqa: BLE001 - psutil is a panel extra; no number is fine
+            rss_mb = None
+        tts_dev = getattr(getattr(self._tts, "device", None), "name", None)
+        stt_dev = getattr(getattr(self._stt, "device", None), "name", None)
         self._set(
             health={
+                "rss_mb": rss_mb,
+                "tts_device": tts_dev,
+                "stt_device": stt_dev,
+                "mic_dropped": self._mic.dropped,
                 "fps": round(ticks / elapsed, 1) if elapsed else 0.0,
                 "lock": lock,
                 "stage": "following" if pipe.model is not None else "waiting for a start",
@@ -726,10 +887,11 @@ class PanelEngine:
                 name, payload = self._commands.get_nowait()
             except queue.Empty:
                 break
-            if name == "ask":
+            if name in ("ask", "ask_spoken"):
                 if coaching.on:
                     coaching.ask(str(payload), ts)
-                    self._emit("user", "info", f"you: {payload}")
+                    if name == "ask":
+                        self._emit("user", "info", f"you: {payload}")
                 else:
                     self._emit("user", "warn", f"no coach to ask: {payload}")
             elif name == "flip":
