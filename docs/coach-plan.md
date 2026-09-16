@@ -285,3 +285,25 @@ data/eval/                            items, judgments, rounds (gitignored)
   in step 2 (section 2.5).
 - Concept questions: out of the automatic metric until a curriculum exists.
 - Pedagogy: yours, by playing.
+
+## 11. Status, 2026-09-16 afternoon
+
+- Steps 1-3 done and committed (`19c2db2`, `2f59439`, `363140c`, `092fbd8`): the conversation,
+  the measurements (262k context; 1.8 s per added message with the prefix cached), the system
+  message with the C slot, every move of the player's a turn.
+- Step 4 built (gitignored `tools/eval/`): `masters.py` (30 Nunn, 60 Fischer, 130 Mammoth games
+  found in the text; located on pgnmentor by surname index + year; LCS alignment by move number,
+  colour and destination under an OCR confusion map; 92% of Nunn's plies aligned), `facts.py` (the
+  engine facts cached per ply), `corpus.py` (items through the real Coach with a capture),
+  `split.py` (by game, 20% + this morning's game held out).
+- Step 5 built: `taxonomy.py` -- 19 classes, required facts per class and level, question
+  templates, the named-move sampler.
+- Step 6 built: `judge.py` -- deterministic checks (leak, board, form) then the DashScope
+  qwen3.8-max judge; every call on the ledger `data/eval/usage.jsonl` with a token budget and a
+  dry-run estimate (measured ~770 tokens per judgment). `generate.py` answers items with the local
+  model through the coach's own speaker. `report.py` aggregates per class and source.
+- Step 8 written: `icr.py` -- the round loop over a fixed stratified training sample; the worst
+  failures per class become demonstrations written by the judge model and checked like a coach
+  draft; C appended, snapshotted per round; stops on epsilon, the cap, or the budget.
+- Running: the baseline replies for the 1,063 recording items; the masters alignment over all
+  three books (first pass: 198 of 220 games located, 14,729 plies, 5,291 annotated).
