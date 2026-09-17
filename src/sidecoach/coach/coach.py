@@ -229,22 +229,25 @@ class _Request:
 
 
 def _after_best(request: _Request) -> list[chess.Board]:
-    """The board after the engine's best move, so a tactic that move makes reads as real.
+    """The boards along the engine's line, so what the line does reads as real.
 
     A fork or pin the recommended move creates is not on the board in front of the player;
-    the draft checker is handed this extra frame so it does not fault the coach for naming a
-    piece on the square the best move will put it on.
+    the draft checker is handed the frames after each move of the line so it does not fault
+    the coach for naming a piece on the square a move will put it on, or -- when asked for
+    the line and reciting it -- for a move that is only playable further along it.
     """
-    best = request.facts.line or request.facts.candidates
-    if not best:
-        return []
-    try:
-        move = request.board.parse_san(best[0])
-    except ValueError:
-        return []
-    after = request.board.copy(stack=False)
-    after.push(move)
-    return [after]
+    line = request.facts.line or request.facts.candidates[:1]
+    frames: list[chess.Board] = []
+    board = request.board.copy(stack=False)
+    for san in line:
+        try:
+            move = board.parse_san(san)
+        except ValueError:
+            break
+        board = board.copy(stack=False)
+        board.push(move)
+        frames.append(board)
+    return frames
 
 
 class Speaker:

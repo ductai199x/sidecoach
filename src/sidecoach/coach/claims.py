@@ -1006,10 +1006,10 @@ def check_draft(
     A "<piece> on <square>" phrase must match the board, colour word included ("your" is
     the side to move). A tactic claimed of such a piece (pinned, hanging, safe, a fork, a
     skewer) must hold on the board, or on one of the `after` positions, which are the boards
-    after the best move: a fork the best move creates is real even though the current board
-    does not show it yet. A move must be playable: legal now, or legal for the opponent
-    after a pass, since a coach may name a threat. Bare squares are never flagged; a coach
-    may point at one.
+    along the best line: a fork the best move creates is real even though the current board
+    does not show it yet. A move must be playable on one of the frames: legal now, legal
+    for the opponent after a pass (a coach may name a threat), or legal further along the
+    line the coach was given. Bare squares are never flagged; a coach may point at one.
     """
     problems: list[DraftProblem] = []
     seen: set[str] = set()
@@ -1055,13 +1055,13 @@ def check_draft(
         core = _TRAILING_MARKS.sub("", token)
         if core == match.group(1):
             continue  # a bare square
-        reason = _move_problem(board, core)
-        if reason:
-            add(token, reason)
+        reasons = [_move_problem(frame, core) for frame in frames]
+        if all(reasons):
+            add(token, reasons[0] or "")
     for match in _CASTLE.finditer(text):
-        reason = _move_problem(board, match.group(1).replace("0", "O"))
-        if reason:
-            add(match.group(0), reason)
+        reasons = [_move_problem(frame, match.group(1).replace("0", "O")) for frame in frames]
+        if all(reasons):
+            add(match.group(0), reasons[0] or "")
     for phrase, reason in _strategic_problems(text, board):
         add(phrase, reason)
     return problems

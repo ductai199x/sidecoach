@@ -639,3 +639,21 @@ def test_extract_with_the_local_provider() -> None:
         print(f"  [{v.result}] {v.reason}")
     kinds = {one.kind for one in claims}
     assert ClaimKind.ATTACKS in kinds
+
+
+def test_draft_accepts_the_moves_and_placements_of_the_line_it_was_given() -> None:
+    """Asked for the line, the coach recites it: a move only playable further along the
+    line, and a piece on the square a later move puts it, are real on those frames. The
+    checker once flagged "Rxb7 cannot be played here" on the line's own fourth move."""
+    board = chess.Board()
+    frames = []
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bb5"):
+        board = board.copy(stack=False)
+        board.push_san(san)
+        frames.append(board)
+    start = chess.Board()
+    text = "The line goes e4 e5 Nf3 Nc6 Bb5: your bishop on b5 pins nothing yet, but Nc6 is met."
+    assert check_draft(text, start, after=frames) == []
+    # Without the frames a later move is not playable now, and the bishop is not on b5.
+    flagged = {p.text for p in check_draft(text, start)}
+    assert "Bb5" in flagged and "your bishop on b5" in flagged
