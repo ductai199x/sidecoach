@@ -62,6 +62,12 @@ class CoachSettings(BaseModel):
     stuck_seconds: int = 45
     quiet: bool = False
     persona: str = "warm_direct"
+    # Test-time verification: a second model reads every candidate reply against the
+    # messages and the clean ones are spoken (see coach.Speaker). "" is off; "same" uses
+    # the coach's own model; else a provider name from the LLM defaults ("dashscope" with
+    # verify_model "qwen3.8-flash" is what the evaluation measured: fabrication 0.33 -> 0.15).
+    verify: str = ""
+    verify_model: str | None = None
     # Fitted to chess.com's review tallies over six games; see analysis.score.Thresholds.
     inaccuracy: float = 0.04
     mistake: float = 0.10

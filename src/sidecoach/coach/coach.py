@@ -721,9 +721,10 @@ class Coach:
         policy: InterjectionPolicy | None = None,
         draft_check: Callable[[str, chess.Board, Sequence[chess.Board]], list[str]] | None = None,
         claims: Callable[[str, chess.Board, PositionFacts | None], list[str]] | None = None,
+        verifier: LLMProvider | None = None,
     ) -> None:
         self.policy = policy or InterjectionPolicy()
-        self.speaker = Speaker(provider, draft_check=draft_check)
+        self.speaker = Speaker(provider, draft_check=draft_check, verifier=verifier)
         self.claims = claims
         self.system = system_message()
         # Run the claims check on the caller's thread (replay and evaluation) instead of a

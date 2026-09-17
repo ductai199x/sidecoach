@@ -852,6 +852,7 @@ class _Coaching:
             policy=policy,
             draft_check=_draft_check(),
             claims=_claims_check(provider),
+            verifier=_verifier(settings, provider),  # type: ignore[arg-type]
         )
         self.coach.start()
         self.detail = f"{provider.name} ({detail})"
@@ -926,6 +927,21 @@ def _draft_check() -> Callable[[str, chess.Board, Sequence[chess.Board]], list[s
         return [f"{item.text}: {item.reason}" for item in problems]
 
     return check
+
+
+def _verifier(settings: Settings, provider: object) -> object:
+    """The verifier the settings ask for: none, the coach's own model, or another provider."""
+    kind = settings.coach.verify.strip().lower()
+    if not kind:
+        return None
+    if kind == "same":
+        return provider
+    from sidecoach.config import LLMSettings
+    from sidecoach.llm.factory import make_provider
+
+    return make_provider(
+        LLMSettings(provider=kind, model=settings.coach.verify_model), timeout_s=60
+    )
 
 
 def _claims_check(provider: object) -> Callable[[str, chess.Board, object], list[str]] | None:
