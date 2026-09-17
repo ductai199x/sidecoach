@@ -31,6 +31,7 @@ The `Coach` owns one of these per game and asks it for the messages of every req
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import chess
@@ -71,27 +72,35 @@ LABEL_ORDER = (
 )
 
 
+# Whole words, in this order: the opponent's things become the player's first, then the
+# side to move's become theirs. "you" is "them" at the end of a clause, "they" elsewhere.
 _THEIRS = (
-    ("your opponent's", "your"),
-    ("your opponent", "you"),
-    ("You are", "They are"),
-    ("you are", "they are"),
-    ("You have", "They have"),
-    ("you have", "they have"),
-    ("Your ", "Their "),
-    ("your ", "their "),
-    ("yours", "theirs"),
-    (" you ", " they "),
-    (" you.", " them."),
-    (" you,", " them,"),
+    (re.compile(r"\bYour opponent's\b"), "Your"),
+    (re.compile(r"\bYour opponent\b"), "You"),
+    (re.compile(r"\byour opponent's\b"), "your"),
+    (re.compile(r"\byour opponent\b"), "you"),
+    (re.compile(r"\bYou are\b"), "They are"),
+    (re.compile(r"\byou are\b"), "they are"),
+    (re.compile(r"\bYou have\b"), "They have"),
+    (re.compile(r"\byou have\b"), "they have"),
+    (re.compile(r"\bYours\b"), "Theirs"),
+    (re.compile(r"\byours\b"), "theirs"),
+    (re.compile(r"\bYour\b"), "Their"),
+    (re.compile(r"\byour\b"), "their"),
+    (re.compile(r"\bYou\b(?=\s*(?:[.,;:!?)]|$))"), "Them"),
+    (re.compile(r"\byou\b(?=\s*(?:[.,;:!?)]|$))"), "them"),
+    (re.compile(r"\bYou\b"), "They"),
+    (re.compile(r"\byou\b"), "they"),
 )
 
 
 def _theirs(text: str) -> str:
     """A fact written for the side to move, reworded for the opponent: 'your king is
-    still in the centre' becomes 'their king is still in the centre'."""
-    for old, new in _THEIRS:
-        text = text.replace(old, new)
+    still in the centre' becomes 'their king is still in the centre'. (A fact that began
+    with "you still have ..." once kept its "you": the old table matched " you " with a
+    space on each side, and a value's first word has none.)"""
+    for pattern, new in _THEIRS:
+        text = pattern.sub(new, text)
     return text
 
 
