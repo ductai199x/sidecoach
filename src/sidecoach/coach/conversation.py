@@ -48,6 +48,7 @@ from sidecoach.events import (
     MoveAssessment,
     MovePlayed,
     Resync,
+    Severity,
     Side,
     Takeback,
 )
@@ -366,7 +367,10 @@ class Conversation:
         # makes up.
         try:
             played = board_before.parse_san(move.san)
-            did = effects_text(board_before, played)
+            # A move the engine judged sound has its hazards resolved by the tactics.
+            did = effects_text(
+                board_before, played, hazards=assessment.severity is not Severity.NONE
+            )
         except ValueError:
             did = ""
         if did:
@@ -374,7 +378,7 @@ class Conversation:
         if assessment.best and loss >= 0.005 and assessment.best[0] != move.uci:
             try:
                 better_move = chess.Move.from_uci(assessment.best[0])
-                would = effects_text(board_before, better_move)
+                would = effects_text(board_before, better_move, hazards=False)
                 better_san = board_before.san(better_move)
             except ValueError:
                 would, better_san = "", ""
@@ -442,7 +446,7 @@ class Conversation:
         passed = board.copy(stack=False)
         passed.push(chess.Move.null())
         try:
-            text = effects_text(passed, passed.parse_san(san))
+            text = effects_text(passed, passed.parse_san(san), hazards=False)
         except ValueError:
             return san
         return f"{san} ({text})" if text else san
@@ -453,7 +457,7 @@ class Conversation:
         if not moves:
             return ""
         try:
-            text = effects_text(board, chess.Move.from_uci(moves[0]))
+            text = effects_text(board, chess.Move.from_uci(moves[0]), hazards=False)
         except ValueError:
             return ""
         return f"  ({text})" if text else ""

@@ -66,10 +66,15 @@ def _pinned_enemies(board: chess.Board, colour: chess.Color) -> set[chess.Square
     return out
 
 
-def describe_effects(board: chess.Board, move: chess.Move, *, limit: int = 3) -> list[str]:
+def describe_effects(
+    board: chess.Board, move: chess.Move, *, limit: int = 3, hazards: bool = True
+) -> list[str]:
     """The move's effects on the board, most telling first, at most `limit` phrases.
 
-    Computed on the position before and after the move; nothing here is inferred.
+    Computed on the position before and after the move; nothing here is inferred. The
+    static hazards -- a piece put or left where it is attacked and undefended -- are named
+    only with `hazards`: for a move the engine judged sound (its own line, a threat it
+    found, a move it called best) the tactics resolve them, and naming them would mislead.
     """
     if move not in board.legal_moves:
         return []
@@ -100,6 +105,7 @@ def describe_effects(board: chess.Board, move: chess.Move, *, limit: int = 3) ->
     # rest of the army: enemy pieces attacked after that were not attacked before.
     before_attacked = _attacked_by(board, us)
     after_attacked = _attacked_by(after, us)
+
     def value_at(square: chess.Square) -> int:
         piece = after.piece_at(square)
         return VALUE[piece.piece_type] if piece else 0
@@ -129,13 +135,13 @@ def describe_effects(board: chess.Board, move: chess.Move, *, limit: int = 3) ->
         is_attacked = after.is_attacked_by(them, move.to_square)
         if was_attacked and not is_attacked:
             out.append(f"gets the {mover_word} out of attack")
-        elif is_attacked and not after.is_attacked_by(us, move.to_square):
+        elif hazards and is_attacked and not after.is_attacked_by(us, move.to_square):
             out.append(f"puts the {mover_word} where it is attacked and undefended")
 
     # Own pieces left undefended by the move, and attacked ones newly defended.
     before_loose = _undefended(board, us)
     after_loose = _undefended(after, us)
-    left = [s for s in after_loose - before_loose if s != move.to_square]
+    left = [s for s in after_loose - before_loose if s != move.to_square] if hazards else []
     for s in sorted(left, key=lambda s: -value_at(s)):
         tail = ", and it is attacked" if after.is_attacked_by(them, s) else ""
         out.append(f"leaves {_name(after, s)} undefended{tail}")
@@ -167,7 +173,9 @@ def describe_effects(board: chess.Board, move: chess.Move, *, limit: int = 3) ->
     return out[:limit]
 
 
-def effects_text(board: chess.Board, move: chess.Move, *, limit: int = 3) -> str:
+def effects_text(
+    board: chess.Board, move: chess.Move, *, limit: int = 3, hazards: bool = True
+) -> str:
     """The effects joined for a message, or an empty string when the move does nothing
     the board can name (a quiet developing move)."""
-    return "; ".join(describe_effects(board, move, limit=limit))
+    return "; ".join(describe_effects(board, move, limit=limit, hazards=hazards))
