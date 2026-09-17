@@ -876,3 +876,96 @@ def test_a_retry_does_not_grow_the_prompt() -> None:
     assert len(second) == len(first)
     assert "Those replies are not allowed" in second[-1]["content"]
     assert "Your first attempt was" in second[-1]["content"]
+
+
+def _bishop_check_instead_of_mate(coach: Coach) -> None:
+    """The user plays Bxf7+ where Qxf7 was mate, and the engine has judged it."""
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6), 7.0)
+    _messages(coach)
+    board = chess.Board(SCHOLAR)
+    move = board.parse_san("Bxf7+")
+    board.push(move)
+    coach.on_event(
+        MovePlayed(
+            game_id="g",
+            ply=7,
+            san="Bxf7+",
+            uci=move.uci(),
+            fen_before=SCHOLAR,
+            fen_after=board.fen(),
+            by_user=True,
+        ),
+        10.0,
+    )
+    coach.on_event(
+        MoveAssessment(
+            game_id="g",
+            ply=7,
+            uci=move.uci(),
+            expected_loss=0.45,
+            severity=Severity.BLUNDER,
+            best=["h5f7"],
+            label=Label.MISS,
+        ),
+        11.0,
+    )
+    _messages(coach)
+
+
+def test_a_question_about_the_last_move_gets_its_verdict_in_full() -> None:
+    """ "Why was that bad?" is about a position that is past: the directive states the
+    verdict, the cost, the move the engine preferred and the idea, and says nothing is
+    withheld. The generic ask directive ("the better move is withheld") had the model
+    answer with a hint about the position now instead."""
+    coach, provider = _coach(["...", "..."])
+    _bishop_check_instead_of_mate(coach)
+    provider.replies = ["", ""]
+    coach.ask("why was that bad?", 12.0)
+    out = _messages(coach)
+    directive = _directive(_given(provider))
+    assert "They ask about the move they already played, Bxf7+" in directive
+    assert "cost 45% of the game" in directive and "the engine preferred Qxf7#" in directive
+    assert "nothing about it is withheld" in directive
+    # The fallback is the verdict itself, not a hint.
+    assert out and out[-1].text.startswith("Bxf7+ cost you 45% of the game. Qxf7# was better")
+
+
+def test_a_question_about_a_fine_last_move_says_it_was_fine() -> None:
+    coach, provider = _coach(["...", ""])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6), 7.0)
+    _messages(coach)
+    board = chess.Board(SCHOLAR)
+    move = board.parse_san("Qxf7#")
+    board.push(move)
+    coach.on_event(
+        MovePlayed(
+            game_id="g",
+            ply=7,
+            san="Qxf7#",
+            uci=move.uci(),
+            fen_before=SCHOLAR,
+            fen_after=board.fen(),
+            by_user=True,
+        ),
+        10.0,
+    )
+    coach.on_event(
+        MoveAssessment(
+            game_id="g",
+            ply=7,
+            uci=move.uci(),
+            expected_loss=0.0,
+            severity=Severity.NONE,
+            best=["h5f7"],
+            label=Label.BEST,
+        ),
+        11.0,
+    )
+    _messages(coach)
+    coach.ask("was that a mistake?", 12.0)
+    _messages(coach)
+    directive = _directive(_given(provider))
+    assert "It was not bad: the verdict was best" in directive
+    assert "do not invent a fault" in directive

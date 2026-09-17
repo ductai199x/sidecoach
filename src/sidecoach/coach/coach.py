@@ -25,7 +25,7 @@ from typing import Any
 import chess
 
 from sidecoach.coach.annotations import annotations_for, mentions_in
-from sidecoach.coach.conversation import Conversation
+from sidecoach.coach.conversation import Conversation, PlyRecord
 from sidecoach.coach.disclosure import (
     Disclosure,
     PositionFacts,
@@ -455,6 +455,16 @@ _ASK_MATERIAL = re.compile(
     re.IGNORECASE,
 )
 _ASK_OPENING = re.compile(r"\b(?:opening|theory|book move)\b", re.IGNORECASE)
+# A question about the move the player already played: its verdict is in the record and is
+# theirs in full -- that position is past, and the disclosure level binds only the one now.
+_ASK_LAST_MOVE = re.compile(
+    r"\b(?:why was (?:that|it|my (?:last )?move) (?:bad|wrong|a mistake|a blunder|an inaccuracy)|"
+    r"what was better|what should i have (?:played|done)|what did i miss|what went wrong|"
+    r"was (?:that|it|my (?:last )?move) (?:a )?(?:mistake|blunder|bad|wrong)|"
+    r"what'?s wrong with (?:that|it|my (?:last )?move)|why (?:is|was) (?:that|it) (?:so )?bad|"
+    r"what did i do wrong|did i (?:just )?(?:blunder|mess up))\b",
+    re.IGNORECASE,
+)
 _ASK_EVAL = re.compile(
     r"\b(?:am i (?:winning|losing|better|worse|ok|okay|in trouble)|who'?s (?:better|winning)|"
     r"how am i doing|is this (?:position )?good for me|what'?s the (?:eval|evaluation|score)|"
@@ -890,6 +900,19 @@ class Coach:
                     return record.analysis.opening
         return None
 
+    def _last_own_move(self) -> tuple[PlyRecord, PositionFacts | None] | None:
+        """The player's last judged move, with the facts of the position it was played from
+        (the facts the previous record carries: they are for the position its move led to).
+        Only the last two records count: further back, "that move" means something else."""
+        with self._lock:
+            records = self.conversation.active_records()
+            for i in range(len(records) - 1, max(-1, len(records) - 3), -1):
+                record = records[i]
+                if record.move.by_user and record.assessment is not None:
+                    before = records[i - 1].facts if i > 0 else None
+                    return record, before
+        return None
+
     def _standing_template(self, position: _Position) -> str:
         """Who stands better, from the engine's score for the position, in plain words."""
         analysis = position.analysis
@@ -1230,6 +1253,50 @@ class Coach:
                     "then one short sentence on why. Do not answer with a question this time."
                 )
             )
+        elif _ASK_LAST_MOVE.search(said) and (own := self._last_own_move()) is not None:
+            # Asked about their own last move. Its verdict was given in its move message and
+            # the facts of the position it was played from in the message before: all of it
+            # may be said outright. Without this the model took "the better move is withheld"
+            # for the position now to cover the past one and answered with a hint instead.
+            record, before = own
+            assert record.assessment is not None
+            verdict = record.assessment
+            san = record.move.san
+            label = verdict.label.value if verdict.label else verdict.severity.value
+            loss = verdict.expected_loss
+            best = ""
+            if verdict.best and verdict.severity is not Severity.NONE:
+                try:
+                    best = chess.Board(record.move.fen_before).san(
+                        chess.Move.from_uci(verdict.best[0])
+                    )
+                except ValueError:
+                    best = ""
+            idea = ""
+            if before is not None:
+                idea = before.theme or before.plan or (before.ideas[0] if before.ideas else "")
+            if verdict.severity is Severity.NONE:
+                fallback = self._verdict(san, label)
+                directive = (
+                    f"They ask about the move they already played, {san}. It was not bad: the "
+                    f"verdict was {label}, and it cost nothing. Tell them so plainly, in one or "
+                    "two sentences, and do not invent a fault. No question."
+                )
+            else:
+                fallback = f"{san} cost you {loss:.0%} of the game."
+                if best:
+                    fallback += f" {best} was better" + (f"; the idea was {idea}." if idea else ".")
+                directive = (
+                    f"They ask about the move they already played, {san}. Its verdict is in its "
+                    f"move message and is theirs in full: it was a {label} that cost {loss:.0%} "
+                    "of the game"
+                    + (f", the engine preferred {best}" if best else "")
+                    + (f", and the idea was {idea}" if idea else "")
+                    + ". Say that plainly -- the position it was played from is past, so "
+                    "nothing about it is withheld; the disclosure level binds only the position "
+                    "they face now. Three sentences at most, then one question that checks they "
+                    "see the pattern."
+                )
         else:
             directive = (
                 "Answer them directly and be honest about their own claim. If they proposed a "
