@@ -72,3 +72,49 @@ def test_the_opponents_facts_are_reworded_whole_word_from_the_first_word() -> No
         "Their rook holds the file; it attacks them."
     )
     assert _theirs("yours is the better bishop") == "theirs is the better bishop"
+
+
+def test_the_verdict_says_what_the_move_does_and_what_the_better_move_would_do() -> None:
+    """The coach's commonest invention was the reason a move was good or bad. The verdict
+    now carries the mechanism, computed on the board: what the move takes, attacks,
+    defends, leaves undefended; the same for the move the engine preferred."""
+    from sidecoach.coach.effects import describe_effects
+
+    # After 1. e4 e5 2. Nf3 Nc6 3. Bb5: the bishop pins nothing yet but attacks the knight.
+    board = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3")
+    assert describe_effects(board, board.parse_san("Bb5")) == ["attacks the knight on c6"]
+    # A queen stepping onto an open file with nothing to attack: the file is named.
+    board = chess.Board("4k3/8/8/8/8/8/8/Q3K3 w - - 0 1")
+    assert "takes the open d-file" in describe_effects(board, board.parse_san("Qd1"))
+    # In the message: the played move's effects and the better move's.
+    convo = Conversation()
+    convo.new_game(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.Board().fen()))
+    fen_before = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"
+    board = chess.Board(fen_before)
+    move = board.parse_san("Nc3")
+    board.push(move)
+    record = convo.move(
+        MovePlayed(
+            game_id="g",
+            ply=5,
+            san="Nc3",
+            uci=move.uci(),
+            fen_before=fen_before,
+            fen_after=board.fen(),
+            by_user=True,
+        )
+    )
+    convo.assess(
+        MoveAssessment(
+            game_id="g",
+            ply=5,
+            uci=move.uci(),
+            expected_loss=0.03,
+            severity=Severity.INACCURACY,
+            best=["f1b5"],
+            label=Label.INACCURACY,
+        )
+    )
+    text = convo.render_ply(record)
+    assert "What Bb5 would do: attacks the knight on c6." in text
+    assert "What Nc3 does:" not in text  # a quiet developing move: nothing the board can name

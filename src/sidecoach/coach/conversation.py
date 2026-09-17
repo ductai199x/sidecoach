@@ -38,6 +38,7 @@ import chess
 
 from sidecoach.analysis.engine import san_line
 from sidecoach.coach.disclosure import PositionFacts, visible_facts
+from sidecoach.coach.effects import effects_text
 from sidecoach.coach.facts import ascii_board, material_text
 from sidecoach.events import (
     Analysis,
@@ -360,6 +361,25 @@ class Conversation:
             if better:
                 parts.append(f"the engine preferred {better}")
         text = "; ".join(parts) + f". Material: {material}."
+        # What the move did on the board, and what the better move would have done: the
+        # mechanism, computed, so the coach has a true reason to give instead of one it
+        # makes up.
+        try:
+            played = board_before.parse_san(move.san)
+            did = effects_text(board_before, played)
+        except ValueError:
+            did = ""
+        if did:
+            text += f" What {move.san} does: {did}."
+        if assessment.best and loss >= 0.005 and assessment.best[0] != move.uci:
+            try:
+                better_move = chess.Move.from_uci(assessment.best[0])
+                would = effects_text(board_before, better_move)
+                better_san = board_before.san(better_move)
+            except ValueError:
+                would, better_san = "", ""
+            if would:
+                text += f" What {better_san} would do: {would}."
         tags = [t for t in assessment.tags if t.name not in ("quietMove", "capture", "check")]
         if tags:
             named = ", ".join(
@@ -401,6 +421,7 @@ class Conversation:
             out.append(
                 f"  {i}. {san_line(board, line.moves, limit=limit, numbered=numbered)}  "
                 f"{self._score(line.expected_score, to_move, user_colour)}"
+                + self._does(board, line.moves)
             )
         if weaker:
             out.append("  weaker:")
@@ -412,6 +433,30 @@ class Conversation:
                     f"({drop:.2f} behind the best)"
                 )
         return out
+
+    @staticmethod
+    def _threat_words(board: chess.Board, san: str) -> str:
+        """A threat with what it does: "Nd3+ (forks the queen on d2 and the rook on f1)"."""
+        if board.is_check():
+            return san
+        passed = board.copy(stack=False)
+        passed.push(chess.Move.null())
+        try:
+            text = effects_text(passed, passed.parse_san(san))
+        except ValueError:
+            return san
+        return f"{san} ({text})" if text else san
+
+    @staticmethod
+    def _does(board: chess.Board, moves: list[str]) -> str:
+        """What a line's first move does on the board, for the lines block."""
+        if not moves:
+            return ""
+        try:
+            text = effects_text(board, chess.Move.from_uci(moves[0]))
+        except ValueError:
+            return ""
+        return f"  ({text})" if text else ""
 
     def _grounding_text(
         self,
@@ -452,6 +497,10 @@ class Conversation:
             value = visible.get(key)
             if value in (None, "", [], False):
                 continue
+            if key == "threats" and isinstance(value, list):
+                # A threat is the opponent's move if the side to move passed; what it does
+                # is computed on that position, so the coach can say it in words.
+                value = [self._threat_words(board, str(v)) for v in value]
             if isinstance(value, list):
                 value = ", ".join(str(v) for v in value)
             text = str(value)
