@@ -244,6 +244,9 @@ class _Request:
     # What the user said this turn, if anything. A square, piece or move the user named is
     # not a leak for the coach to repeat back: confirming it reveals nothing they did not say.
     user_text: str | None = None
+    # What the directive itself disclosed this turn -- the engine's word on the move or
+    # line the player asked about -- which the coach may therefore repeat.
+    disclosed: str = ""
     # Board marks built from the same filtered facts the model sees (see coach.annotations).
     annotations: list[Annotation] = field(default_factory=list)
     # How many replies to ask the model for; fewer for an answer the player is waiting on.
@@ -547,9 +550,12 @@ class Speaker:
         return [], verified, False
 
     def _problems(self, text: str, request: _Request) -> list[str]:
-        # What the user said this turn and the moves of the game so far are not leaks: a
-        # move already played may be discussed in full, whatever the level in force.
-        said = " ".join(filter(None, [request.user_text, *sorted(request.played)]))
+        # What the user said this turn, what the directive itself disclosed (the engine on
+        # what they asked about) and the moves of the game so far are not leaks: a move
+        # already played may be discussed in full, whatever the level in force.
+        said = " ".join(
+            filter(None, [request.user_text, request.disclosed, *sorted(request.played)])
+        )
         found = [
             f"withheld {item}"
             for item in leak_check(text, request.facts, request.level, said=said or None)
@@ -1195,6 +1201,7 @@ class Coach:
             ply=position.ply,
             game_id=self.game_id or "",
             user_text=user_text,
+            disclosed="\n".join(v for v in verdicts if v.startswith("Engine on ")),
             annotations=annotations_for(
                 position.facts,
                 level,

@@ -211,7 +211,12 @@ def leak_check(
         parts = value if isinstance(value, list) else [value]
         allowed_squares |= squares_in(" ".join(str(part) for part in parts))
     said_squares = squares_in(said) if said else set()
-    said_words = set(_WORD_RE.findall(said.lower())) if said else set()
+    # A move said with its check or mate mark ("Qh4+") is the same move said without it.
+    said_words = (
+        {w for word in _WORD_RE.findall(said.lower()) for w in (word, word.rstrip("+#"))}
+        if said
+        else set()
+    )
     allowed_squares |= said_squares
 
     leaks: list[str] = []
