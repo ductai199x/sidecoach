@@ -14,6 +14,7 @@ hands in events and polls for messages, exactly as it does with the engine.
 
 from __future__ import annotations
 
+import contextlib
 import queue
 import random
 import re
@@ -223,8 +224,9 @@ class _Request:
     annotations: list[Annotation] = field(default_factory=list)
     # How many replies to ask the model for; fewer for an answer the player is waiting on.
     candidates: int = VS_CANDIDATES
-    # The moves played so far in the game (SAN). A reply about the game as it went may
-    # name them; the board checker must not fault "Rg6" from move 30 as unplayable now.
+    # The moves of the record (SAN): those played so far, and those the verdicts named as
+    # better. A reply about the game as it went may name either; the board checker must
+    # not fault "Rg6" from move 30 as unplayable now, nor the leak check count it.
     played: frozenset[str] = frozenset()
 
 
@@ -1031,9 +1033,22 @@ class Coach:
             ),
             candidates=candidates
             or (VS_ASK_CANDIDATES if trigger is Trigger.USER_ASK else VS_CANDIDATES),
-            played=frozenset(r.move.san for r in self.conversation.judged_records()),
+            played=self._record_moves(),
         )
         self.speaker.submit(request)
+
+    def _record_moves(self) -> frozenset[str]:
+        """The moves the messages name about the game so far: every move played, and the
+        move each verdict said the engine preferred."""
+        out: set[str] = set()
+        with self._lock:
+            for r in self.conversation.judged_records():
+                out.add(r.move.san)
+                if r.assessment is not None and r.assessment.best:
+                    with contextlib.suppress(ValueError):
+                        board = chess.Board(r.move.fen_before)
+                        out.add(board.san(chess.Move.from_uci(r.assessment.best[0])))
+        return frozenset(out)
 
     @staticmethod
     def _level_line(level: DisclosureLevel, position: _Position) -> str:
