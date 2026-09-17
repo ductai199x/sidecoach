@@ -853,6 +853,7 @@ class _Coaching:
             draft_check=_draft_check(),
             claims=_claims_check(provider),
             verifier=_verifier(settings, provider),  # type: ignore[arg-type]
+            engine=_named_engine(settings),  # type: ignore[arg-type]
         )
         self.coach.start()
         self.detail = f"{provider.name} ({detail})"
@@ -927,6 +928,28 @@ def _draft_check() -> Callable[[str, chess.Board, Sequence[chess.Board]], list[s
         return [f"{item.text}: {item.reason}" for item in problems]
 
     return check
+
+
+def _named_engine(settings: Settings) -> object:
+    """A second Stockfish for the coach, for the moves the player names: the annotator's
+    engine is on its worker thread with the game's own positions. Bounded so a question
+    never waits on a slow position; None when Stockfish is not installed."""
+    path = find_stockfish(settings)
+    if path is None:
+        return None
+    from sidecoach.analysis.engine import Engine
+
+    engine = Engine(
+        path=path,
+        threads=max(1, settings.engine.threads // 2),
+        hash_mb=min(128, settings.engine.hash_mb),
+        multipv=3,
+        pv_plies=settings.engine.pv_plies,
+        score_model=settings.engine.score_model,
+        max_seconds=3.0,
+    )
+    engine.open()
+    return engine
 
 
 def _verifier(settings: Settings, provider: object) -> object:

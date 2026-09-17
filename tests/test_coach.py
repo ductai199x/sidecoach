@@ -987,3 +987,72 @@ def test_a_move_of_the_game_so_far_is_never_a_leak() -> None:
     out = _messages(coach)
     assert out and out[-1].text.startswith("Nf6 develops")
     assert out[-1].level is DisclosureLevel.QUESTION
+
+
+def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> None:
+    """ "What about Bc4?" once got only "not among the engine's best moves". With an engine
+    the object carries the engine's word on that move: the score after it, how far behind
+    the best, the reply, what it does -- and the directive says it is theirs to hear."""
+    from sidecoach.events import Line
+
+    class FakeEngine:
+        def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+            # Before the move: the best is Bb5 at 0.55; after 3. Bc4: 0.48 for Black to
+            # move (0.52 for White), reply ...Bc5.
+            if board.turn == chess.WHITE:
+                return [Line(moves=["f1b5"], depth=14, expected_score=0.55)]
+            return [Line(moves=["f8c5", "d2d3"], depth=14, expected_score=0.48)]
+
+    # The coach's own model plans what to examine (first call), then answers (second).
+    coach, provider = _coach(
+        [
+            '{"probes": [{"label": "your Bc4", "moves": ["Bc4"]}]}',
+            "[p=1.0] Bc4 is fine: a hair behind the best. What does it aim at?",
+        ]
+    )
+    coach.engine = FakeEngine()
+    _start(coach)
+    board = chess.Board()
+    for ply, san in enumerate(("e4", "e5", "Nf3", "Nc6"), start=1):
+        move = board.parse_san(san)
+        before = board.fen()
+        board.push(move)
+        coach.on_event(
+            MovePlayed(
+                game_id="g",
+                ply=ply,
+                san=san,
+                uci=move.uci(),
+                fen_before=before,
+                fen_after=board.fen(),
+                by_user=(ply % 2 == 1),
+            ),
+            float(ply),
+        )
+    coach.on_event(
+        Analysis(
+            game_id="g",
+            fen=board.fen(),
+            ply=4,
+            lines=[Line(moves=["f1b5"], depth=12, expected_score=0.55)],
+            decisive=False,
+            only_move=False,
+            tags=[],
+        ),
+        5.0,
+    )
+    _messages(coach)
+    coach.ask("what about Bc4?", 6.0)
+    out = _messages(coach)
+    assert out and out[-1].text.startswith("Bc4 is fine")
+    directive = _directive(_given(provider))
+    assert (
+        "Engine on your Bc4, which you asked about: after 3. Bc4 the expected score is 0.52"
+        in directive
+    )
+    assert "0.03 behind the engine's best;" in directive
+    assert "the engine's reply would be 3... Bc5 4. d3" in directive
+    assert "what Bc4 does: attacks the pawn on f7" in directive
+    # Below LINE the engine's own preferred move is not named.
+    assert "Bb5" not in directive
+    assert "that analysis is theirs to hear in full" in directive

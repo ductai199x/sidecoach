@@ -37,6 +37,8 @@ from sidecoach.coach.disclosure import (
     visible_facts,
 )
 from sidecoach.coach.facts import ascii_board, describe_move, facts_from_analysis
+from sidecoach.coach.named import EngineLike as NamedEngine
+from sidecoach.coach.named import analyse_named
 from sidecoach.coach.policy import InterjectionPolicy, TimeControl, time_control_of
 from sidecoach.coach.prompt import system_message
 from sidecoach.events import (
@@ -722,10 +724,14 @@ class Coach:
         draft_check: Callable[[str, chess.Board, Sequence[chess.Board]], list[str]] | None = None,
         claims: Callable[[str, chess.Board, PositionFacts | None], list[str]] | None = None,
         verifier: LLMProvider | None = None,
+        engine: NamedEngine | None = None,
     ) -> None:
         self.policy = policy or InterjectionPolicy()
         self.speaker = Speaker(provider, draft_check=draft_check, verifier=verifier)
         self.claims = claims
+        # The engine that analyses a move or line the player names, on demand; without
+        # one, a named move is only checked against the candidates the facts hold.
+        self.engine = engine
         self.system = system_message()
         # Run the claims check on the caller's thread (replay and evaluation) instead of a
         # worker: live it is threaded so a button press never stalls the pipeline.
@@ -853,7 +859,18 @@ class Coach:
                 record_now=True,
             )
         if self.claims is None or not may_carry_claims(text):
-            self._speak(Trigger.USER_ASK, position, level, ts, user_text=text, quick=canned)
+            verdicts: list[str] = []
+            if self.engine is not None and may_carry_claims(text):
+                verdicts = self._named_analysis(text, position, level)
+            self._speak(
+                Trigger.USER_ASK,
+                position,
+                level,
+                ts,
+                user_text=text,
+                verdicts=verdicts,
+                quick=canned,
+            )
             return
 
         def checked() -> None:
@@ -861,6 +878,8 @@ class Coach:
                 verdicts = self.claims(text, position.board, position.facts)  # type: ignore[misc]
             except Exception:  # noqa: BLE001
                 verdicts = []
+            # The engine on what they asked about, examined now, joins the checks.
+            verdicts = [*verdicts, *self._named_analysis(text, position, level)]
             self._speak(Trigger.USER_ASK, position, level, ts, user_text=text, verdicts=verdicts)
 
         if self.sync_claims:
@@ -1050,6 +1069,24 @@ class Coach:
                 if record.analysis is not None and record.analysis.opening:
                     return record.analysis.opening
         return None
+
+    def _named_analysis(self, text: str, position: _Position, level: DisclosureLevel) -> list[str]:
+        """The engine's word on what the player asked about: the model decides what to
+        examine, the engine examines it; one line per probe, none when nothing was named."""
+        if self.engine is None:
+            return []
+        try:
+            return analyse_named(
+                text,
+                position.board,
+                self.engine,
+                user_colour=self.user_colour,
+                level=level,
+                planner=self.speaker.provider,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.speaker.last_error = f"named analysis: {type(exc).__name__}: {exc}"
+            return []
 
     def _last_own_move(self) -> PlyRecord | None:
         """The player's own move, when it is the last move played and has its verdict.
@@ -1321,8 +1358,17 @@ class Coach:
         # conversation; the directive says only how to answer them.
         said = user_text or "hint"
         checks = ""
-        if verdicts:
-            checks = "Their claims, checked against the board:\n- " + "\n- ".join(verdicts) + "\n\n"
+        claims_checked = [v for v in verdicts if not v.startswith("Engine on ")]
+        engine_words = [v for v in verdicts if v.startswith("Engine on ")]
+        if claims_checked:
+            checks = (
+                "Their claims, checked against the board:\n- "
+                + "\n- ".join(claims_checked)
+                + "\n\n"
+            )
+        if engine_words:
+            # The engine on the move or line they named: theirs to hear about in full.
+            checks += "\n".join(engine_words) + "\n\n"
         if level >= DisclosureLevel.LINE:
             fallback = (
                 f"The line is {' '.join(facts.line)}."
@@ -1461,8 +1507,10 @@ class Coach:
                 "Answer them directly and be honest about their own claim. If they proposed a "
                 "move, or named a square or piece, you may say it back and tell them plainly "
                 "whether it holds up -- when the engine does not rate their move, say it is not "
-                "the strongest and, in general terms, why. Only the engine's better move or line "
-                "is withheld: never reveal that unless the sheet lists it, but do point them "
-                "toward the right idea with a question."
+                "the strongest and, in general terms, why. When the engine's word on the move "
+                "or line they named is given above, that analysis is theirs to hear in full: "
+                "the score after it, how far behind the best, the reply, what the move does. "
+                "Only the engine's better move or line is withheld: never reveal that unless "
+                "the sheet lists it, but do point them toward the right idea with a question."
             )
         return f"{checks}{directive}", fallback
