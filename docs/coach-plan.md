@@ -324,3 +324,11 @@ data/eval/                            items, judgments, rounds (gitignored)
   commit f17b1f7): the coach, the claims check (only for a question naming a move; plain
   templates never carry a claim), the judge. Judge self-agreement on the idea questions over
   35 items: idea_match 94%, idea_in_facts 80%.
+
+- ICR final (2026-09-17 morning): the paper's loop exactly (moment -> right reply, 5 a round,
+  one per class), temperature 0.1, the object carrying computed move effects, the judge
+  running the board-checker on disputed claims. Held-out (231 items, flash): C empty
+  .52/.76/.79/.43 (pass/completeness/claim support/fabrication) -> 20 demos .58/.89/.86/.33
+  -> + test-time verification .72/.89/.93/.19 (correctness .99). qwen3.8-max with the same C:
+  .67/.89/.89/.30. C ships at 20 demonstrations (~22k tokens); `coach.verify = "dashscope"`
+  turns verification on. Spend: ~700M flash + 26M max tokens lifetime, all on the ledger.
