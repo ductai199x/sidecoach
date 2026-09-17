@@ -915,13 +915,12 @@ class Coach:
         return None
 
     def _last_own_move(self) -> PlyRecord | None:
-        """The player's last judged move. Only the last two records count: further back,
-        "that move" means something else."""
+        """The player's own move, when it is the last move played and has its verdict.
+        Once the opponent has replied, "that move" is theirs: the generic ask handles it."""
         with self._lock:
             records = self.conversation.active_records()
-            for record in reversed(records[-2:]):
-                if record.move.by_user and record.assessment is not None:
-                    return record
+            if records and records[-1].move.by_user and records[-1].assessment is not None:
+                return records[-1]
         return None
 
     def _standing_template(self, position: _Position) -> str:
