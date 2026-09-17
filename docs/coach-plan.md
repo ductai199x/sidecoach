@@ -196,11 +196,22 @@ converted text keeps every move as a heading with the move number and the destin
 intact (`### 3 tZ:lc3`, `### 4 ctJfd7`) followed by the master's explanation. The moves come
 from pgnmentor's per-player PGNs (the OCR mangles piece letters); each heading is aligned to
 its ply by move number + colour + destination square and verified against the game.
-Nunn annotates every move of ~30 games; the other two are sparser: on the order of two
-thousand (position, move, master's explanation) items. They supply the classes the recordings
-cannot: "why is this the move", "what is the plan", "what did the loser miss", at master level.
+Nunn annotates every move of ~30 games; the other two are sparser: 4,602 plies carry a
+readable note once the scan's table rows, captions, dangling move numbers and lost
+variations are cut and its piece stand-ins restored where a tally shows them reliable.
 The master's prose is the *judge's* reference for idea completeness; it enters no prompt, no
 repository file, and no C.
+
+A master game takes exactly the path a bot game takes (2026-09-16, Tai: the player's rating
+never matters, here or anywhere): the same triggers, the same question rotation, the coach on
+White's side. The one difference is that at an annotated ply the items *about that move*
+(verdict, verdict_weaker, lesson, ask_last_move, ask_opponent_move) carry the note as
+`reference`; 2,698 items do. For those the judge states the note's core point in one sentence
+and answers two yes-or-no questions: `idea_match` (the reply makes it) and `idea_in_facts`
+(the coach's evidence states it, with `idea_where`). In ICR a point missed *and* in the facts
+is an omission the coach answers for (confirmed two-of-two, then a demonstration written from
+the facts alone -- the writer never sees the note); a point missed and absent from the facts
+is logged per round as a facts gap, the input to the facts layer, not to C.
 
 ### 6.3 The puzzles
 
@@ -305,5 +316,11 @@ data/eval/                            items, judgments, rounds (gitignored)
 - Step 8 written: `icr.py` -- the round loop over a fixed stratified training sample; the worst
   failures per class become demonstrations written by the judge model and checked like a coach
   draft; C appended, snapshotted per round; stops on epsilon, the cap, or the budget.
-- Running: the baseline replies for the 1,063 recording items; the masters alignment over all
-  three books (first pass: 198 of 220 games located, 14,729 plies, 5,291 annotated).
+- Masters final (2026-09-16 night): 199 of 220 games, 14,811 plies, 4,602 with a readable
+  note; the corpus 13,778 items over 213 games (8 processes, 84 s), 2,668 with a reference;
+  split by game per book (masters 40 of 199 held out, recordings 3 of 14); every check in
+  `validate.py` passes; a rebuilt game is byte-identical.
+- Everything on DashScope qwen3.8-flash at the account's endpoint (`DASHSCOPE_BASE_URL`,
+  commit f17b1f7): the coach, the claims check (only for a question naming a move; plain
+  templates never carry a claim), the judge. Judge self-agreement on the idea questions over
+  35 items: idea_match 94%, idea_in_facts 80%.
