@@ -38,7 +38,8 @@ from sidecoach.coach.disclosure import (
 )
 from sidecoach.coach.facts import ascii_board, describe_move, facts_from_analysis
 from sidecoach.coach.named import EngineLike as NamedEngine
-from sidecoach.coach.named import analyse_named
+from sidecoach.coach.named import analyse_named, disclosed_frames
+from sidecoach.coach.named import spoken as spoken_examination
 from sidecoach.coach.policy import InterjectionPolicy, TimeControl, time_control_of
 from sidecoach.coach.prompt import system_message
 from sidecoach.events import (
@@ -276,6 +277,9 @@ def _after_best(request: _Request) -> list[chess.Board]:
         board = board.copy(stack=False)
         board.push(move)
         frames.append(board)
+    # And along what the directive disclosed: the line the player asked about, examined.
+    if request.disclosed:
+        frames += disclosed_frames(request.board, request.disclosed.splitlines())
     return frames
 
 
@@ -864,10 +868,28 @@ class Coach:
                 now=True,
                 record_now=True,
             )
+
+        def examined() -> list[str]:
+            """The engine on what they asked about; its plain-words form goes out at once
+            as the coach's turn (correct by construction), and the model builds on it."""
+            found = self._named_analysis(text, position, level)
+            if found:
+                self._queue_plain(
+                    Trigger.USER_ASK,
+                    " ".join(spoken_examination(f) for f in found),
+                    ts,
+                    ply=position.ply,
+                    level=level,
+                    fen=position.board.fen(),
+                    now=True,
+                    record_now=True,
+                )
+            return found
+
         if self.claims is None or not may_carry_claims(text):
             verdicts: list[str] = []
             if self.engine is not None and may_carry_claims(text):
-                verdicts = self._named_analysis(text, position, level)
+                verdicts = examined()
             self._speak(
                 Trigger.USER_ASK,
                 position,
@@ -875,7 +897,7 @@ class Coach:
                 ts,
                 user_text=text,
                 verdicts=verdicts,
-                quick=canned,
+                quick=canned or bool(verdicts),
             )
             return
 
@@ -884,9 +906,18 @@ class Coach:
                 verdicts = self.claims(text, position.board, position.facts)  # type: ignore[misc]
             except Exception:  # noqa: BLE001
                 verdicts = []
-            # The engine on what they asked about, examined now, joins the checks.
-            verdicts = [*verdicts, *self._named_analysis(text, position, level)]
-            self._speak(Trigger.USER_ASK, position, level, ts, user_text=text, verdicts=verdicts)
+            # The engine on what they asked about, examined now and spoken first.
+            found = examined()
+            verdicts = [*verdicts, *found]
+            self._speak(
+                Trigger.USER_ASK,
+                position,
+                level,
+                ts,
+                user_text=text,
+                verdicts=verdicts,
+                quick=bool(found),
+            )
 
         if self.sync_claims:
             checked()  # replay and evaluation: the request must exist when ask() returns
@@ -1374,7 +1405,8 @@ class Coach:
                 + "\n\n"
             )
         if engine_words:
-            # The engine on the move or line they named: theirs to hear about in full.
+            # The engine on what they asked about: theirs to hear about in full, and
+            # already said out loud as the coach's last turn when `quick`.
             checks += "\n".join(engine_words) + "\n\n"
         if level >= DisclosureLevel.LINE:
             fallback = (
@@ -1466,6 +1498,17 @@ class Coach:
                     "then one short sentence on why. Do not answer with a question this time."
                 )
             )
+        elif engine_words and quick:
+            # The examination is out already; the coach adds the lesson in it, not the
+            # numbers again.
+            directive = (
+                "They asked about a move or line and have just been shown the engine's word on "
+                "it -- your last turn above. Build on it in one or two sentences: what it means "
+                "for their idea, in plain chess words, saying only what that analysis and the "
+                "messages state; do not repeat its numbers. Then one question that points them "
+                "at the idea. Name no move the messages do not give."
+            )
+            fallback = ""
         elif _ASK_LAST_MOVE.search(said) and (record := self._last_own_move()) is not None:
             # Asked about their own last move. Its verdict was given in its move message and
             # the facts of the position it was played from in the message before: all of it

@@ -1007,7 +1007,7 @@ def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> No
     coach, provider = _coach(
         [
             '{"probes": [{"label": "your Bc4", "moves": ["Bc4"]}]}',
-            "[p=1.0] Bc4 is fine: a hair behind the best. What does it aim at?",
+            "[p=1.0] Bc4 is fine: a little behind the best. What does it aim at?",
         ]
     )
     coach.engine = FakeEngine()
@@ -1044,8 +1044,17 @@ def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> No
     _messages(coach)
     coach.ask("what about Bc4?", 6.0)
     out = _messages(coach)
-    assert out and out[-1].text.startswith("Bc4 is fine")
+    # The examination goes out first, in plain words, as the coach's own turn; the model's
+    # reply builds on it.
+    assert [m.text for m in out] == [
+        "your Bc4: after 3. Bc4 it is about equal, a little behind the best; they would answer "
+        "3... Bc5 4. d3; Bc4 attacks the pawn on f7.",
+        "Bc4 is fine: a little behind the best. What does it aim at?",
+    ]
+    history = _given(provider)[:-1]
+    assert history[-1]["role"] == "assistant" and history[-1]["content"].startswith("your Bc4:")
     directive = _directive(_given(provider))
+    assert "have just been shown the engine's word on it" in directive
     assert (
         "Engine on your Bc4, which you asked about: after 3. Bc4 the expected score is 0.52"
         in directive
@@ -1055,4 +1064,4 @@ def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> No
     assert "what Bc4 does: attacks the pawn on f7" in directive
     # Below LINE the engine's own preferred move is not named.
     assert "Bb5" not in directive
-    assert "that analysis is theirs to hear in full" in directive
+    assert "Name no move the messages do not give" in directive

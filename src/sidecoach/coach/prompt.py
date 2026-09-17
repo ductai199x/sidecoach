@@ -7,8 +7,8 @@ the model is told up front. The reply format for verbalized sampling. And C, the
 corrective demonstrations produced offline by iterative context refinement (the coach's
 own replies on the evaluation set, judged against the facts; the moments where it most
 severely fabricated or omitted, each paired with the reply that was right): test-time
-training lives here and nowhere else. C is read from `context/corrections.md` beside this module; an empty file means an
-untrained prompt, which is the state before the first ICR run.
+training lives here and nowhere else. C is read from `context/corrections.md` beside this
+module; an empty file means an untrained prompt, which is the state before the first ICR run.
 """
 
 from __future__ import annotations

@@ -209,6 +209,100 @@ def examine(
     return " ".join(parts)
 
 
+_ENGINE_ON = re.compile(
+    r"^Engine on (?P<label>.+?), which you asked about: (?P<body>.*)$", re.DOTALL
+)
+_PROBE_LINE = re.compile(r"after (?P<moves>.+?) the expected score is")
+_REPLY_LINE = re.compile(r"(?:the engine's reply would be|the engine then plays) (?P<moves>[^;]+)")
+
+
+def disclosed_frames(board: chess.Board, facts: list[str]) -> list[chess.Board]:
+    """The positions along each examination: after every move of the probe, then after
+    every move of the engine's reply. The coach may recite what it was shown, so a move
+    or a piece that is real only further along that line is checked there, not faulted."""
+    frames: list[chess.Board] = []
+    for fact in facts:
+        m = _ENGINE_ON.match(fact)
+        if not m:
+            continue
+        body = m.group("body")
+        replay = board.copy(stack=False)
+        probe = _PROBE_LINE.search(body)
+        tokens = probe.group("moves").split() if probe else []
+        reply = _REPLY_LINE.search(body)
+        if reply:
+            tokens += reply.group("moves").rstrip(". ").split()
+        for token in tokens:
+            token = re.sub(r"^\d{1,3}\.(?:\.\.)?", "", token).strip()
+            if not token:
+                continue
+            if token.lower() == "pass":
+                move = chess.Move.null()
+            else:
+                try:
+                    move = replay.parse_san(token)
+                except ValueError:
+                    break
+            replay = replay.copy(stack=False)
+            replay.push(move)
+            frames.append(replay)
+    return frames
+
+
+def spoken(fact: str) -> str:
+    """The examination as the coach says it out loud, the same facts in plainer words:
+    "Bc4: after 3. Bc4 it is about equal, a hair behind the best; they would answer
+    3... Bc5 4. d3; it attacks the pawn on f7." Numbers become words; nothing is added."""
+    m = _ENGINE_ON.match(fact)
+    if not m:
+        return fact
+    label, body = m.group("label"), m.group("body").strip()
+    body = re.sub(
+        r"^after (.+?) the expected score is (\d\.\d\d) from your side",
+        lambda mm: f"after {mm.group(1)} {_standing(float(mm.group(2)))}",
+        body,
+    )
+    body = re.sub(
+        r", (\d\.\d\d) behind the engine's best(?: \(([^)]+)\))?",
+        lambda mm: (
+            ", "
+            + _gap_words(float(mm.group(1)))
+            + (f" (the best is {mm.group(2)})" if mm.group(2) else "")
+        ),
+        body,
+    )
+    body = body.replace(", as good as the engine's best", ", as good as the best move").replace(
+        ", better than the engine's first line", ", better than the engine's first choice"
+    )
+    body = body.replace("the engine's reply would be", "they would answer").replace(
+        "the engine then plays", "then the engine plays"
+    )
+    body = re.sub(r"what (\S+) does: ", r"\1 ", body)
+    return f"{label}: {body}"
+
+
+def _standing(score: float) -> str:
+    if score >= 0.85:
+        return "you are winning"
+    if score >= 0.62:
+        return "you are better"
+    if score > 0.38:
+        return "it is about equal"
+    if score > 0.15:
+        return "you are worse"
+    return "you are losing"
+
+
+def _gap_words(gap: float) -> str:
+    if gap < 0.02:
+        return "a hair behind the best"
+    if gap < 0.05:
+        return "a little behind the best"
+    if gap < 0.15:
+        return "clearly behind the best"
+    return "a serious step down from the best"
+
+
 def analyse_named(
     text: str,
     board: chess.Board,

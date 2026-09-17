@@ -956,9 +956,13 @@ def _tactic_problem(board: chess.Board, square_name: str, state: str) -> str | N
     if state == "pinned":
         if _pin_line(board, square) is None:
             return f"the {name} on {square_name} is not pinned"
-    elif state in ("hanging", "undefended", "unprotected", "loose", "enprise"):
+    elif state in ("hanging", "enprise"):
         if not attackers:
             return f"nothing attacks the {name} on {square_name}"
+        if defenders:
+            return f"the {name} on {square_name} is defended"
+    elif state in ("undefended", "unprotected", "loose"):
+        # A piece with no defender is undefended whether or not anything attacks it yet.
         if defenders:
             return f"the {name} on {square_name} is defended"
     elif state == "safe":
