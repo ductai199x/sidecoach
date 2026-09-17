@@ -5,9 +5,9 @@ message of the conversation is and carries, so the model reads the messages as a
 not as a story. The rules, which the checks in `coach.py` enforce after the fact and which
 the model is told up front. The reply format for verbalized sampling. And C, the
 corrective demonstrations produced offline by iterative context refinement (the coach's
-own replies on the evaluation set, judged against the facts, its worst fabrications and
-omissions paired with the corrected reply): test-time training lives here and nowhere
-else. C is read from `context/corrections.md` beside this module; an empty file means an
+own replies on the evaluation set, judged against the facts; the moments where it most
+severely fabricated or omitted, each paired with the reply that was right): test-time
+training lives here and nowhere else. C is read from `context/corrections.md` beside this module; an empty file means an
 untrained prompt, which is the state before the first ICR run.
 """
 
@@ -123,8 +123,9 @@ def system_message(*, with_corrections: bool = True) -> str:
     c = corrections() if with_corrections else ""
     if c:
         parts.append(
-            "Rules learned from earlier games. Each is a rule you must keep, with the case "
-            "that taught it: what a coach wrote, why it was wrong, and what to say instead. "
-            "The rules bind as strongly as the rules above.\n" + c
+            "Demonstrations from earlier games. Each is a moment as it reached you -- the "
+            "moves so far, the last two moves' messages, what was said since, the directive "
+            "-- and the reply that was right for it. Reply to the game in front of you as "
+            "these replies do.\n" + c
         )
     return "\n\n".join(parts)

@@ -21,7 +21,7 @@ def test_the_system_message_is_persona_contract_rules_and_reply_format_in_order(
     assert "takeback" in prompt.CONTRACT and "re-read" in prompt.CONTRACT
     assert "the verdicts and the tally, and nowhere else" in prompt.CONTRACT
     assert "brilliant, great, best, excellent, good, book" in prompt.CONTRACT
-    assert "Rules learned from earlier games" not in text
+    assert "Demonstrations from earlier games" not in text
 
 
 def test_corrections_are_appended_only_when_the_file_has_content(
@@ -31,21 +31,25 @@ def test_corrections_are_appended_only_when_the_file_has_content(
     empty.write_text("   \n", encoding="utf-8")
     monkeypatch.setattr(prompt, "CORRECTIONS_PATH", empty)
     prompt.corrections.cache_clear()
-    assert "Rules learned from earlier games" not in prompt.system_message()
+    assert "Demonstrations from earlier games" not in prompt.system_message()
 
     filled = tmp_path / "c.md"
-    filled.write_text("## 1\nThe coach said X; the record showed Y; say Y.\n", encoding="utf-8")
+    filled.write_text(
+        '### 1\nMoves so far: 1. e4\n\nReply: "e4, still theory."\n', encoding="utf-8"
+    )
     monkeypatch.setattr(prompt, "CORRECTIONS_PATH", filled)
     prompt.corrections.cache_clear()
     text = prompt.system_message()
-    assert text.endswith("as the rules above.\n## 1\nThe coach said X; the record showed Y; say Y.")
-    assert text.index(prompt.REPLY_FORMAT) < text.index("Rules learned from earlier games")
+    assert text.endswith(
+        'as these replies do.\n### 1\nMoves so far: 1. e4\n\nReply: "e4, still theory."'
+    )
+    assert text.index(prompt.REPLY_FORMAT) < text.index("Demonstrations from earlier games")
     prompt.corrections.cache_clear()
 
     missing = tmp_path / "missing.md"
     monkeypatch.setattr(prompt, "CORRECTIONS_PATH", missing)
     prompt.corrections.cache_clear()
-    assert "Rules learned from earlier games" not in prompt.system_message()
+    assert "Demonstrations from earlier games" not in prompt.system_message()
     prompt.corrections.cache_clear()
 
 
