@@ -83,3 +83,81 @@ def test_a_bare_hint_is_asked_for_as_a_hint_not_as_a_claim() -> None:
     prompt = provider.prompts[0][1][-1]["content"]
     assert "They asked for a hint" in prompt
     assert "their own claim" not in prompt and "anything said earlier" in prompt
+
+
+def test_a_verifier_keeps_the_clean_candidate_and_repairs_when_none_is() -> None:
+    """With a verifier, a candidate the second model finds unsupported is not spoken; when
+    every candidate has an unsupported statement, the likeliest is repaired once."""
+    import chess
+
+    from sidecoach.coach.coach import Speaker, _Request
+    from sidecoach.coach.disclosure import PositionFacts
+    from sidecoach.events import DisclosureLevel, Trigger
+    from sidecoach.llm.base import Completion
+    from tests.test_coach import ScriptedProvider
+
+    board = chess.Board()
+    board.push_san("e4")
+    board.push_san("e5")
+
+    def _request() -> _Request:
+        return _Request(
+            trigger=Trigger.USER_ASK,
+            level=DisclosureLevel.LINE,
+            system="You are a coach.",
+            messages=[
+                {"role": "user", "content": "Moves so far: 1. e4 e5 -- White to move."},
+                {"role": "user", "content": "Answer them."},
+            ],
+            facts=PositionFacts(
+                fen=board.fen(),
+                side_to_move="white",
+                user_side="white",
+                phase="opening",
+                candidates=["Nf3"],
+            ),
+            board=board,
+            fallback="Think.",
+            ply=2,
+            game_id="g",
+            candidates=2,
+        )
+
+    class Verifier:
+        name = model = "scripted-verifier"
+
+        def __init__(self, answers: list[str]) -> None:
+            self.answers = answers
+            self.seen: list[str] = []
+
+        def healthcheck(self):
+            return True, "ok"
+
+        def chat(self, system, messages, **kw):
+            self.seen.append(messages[-1]["content"])
+            return Completion(text=self.answers.pop(0))
+
+    coach_model = ScriptedProvider(
+        ["[p=0.6] Nf3 develops and eyes e5.\n[p=0.4] Nf3 develops a piece."]
+    )
+    # The first candidate invents "eyes e5"; the second is clean.
+    verifier = Verifier(['{"unsupported": ["eyes e5"]}', '{"unsupported": []}'])
+    speaker = Speaker(coach_model, verifier=verifier)  # type: ignore[arg-type]
+    spoken = speaker.speak_now(_request())
+    assert spoken.message.text == "Nf3 develops a piece."
+    assert spoken.verified == [["eyes e5"], []] and not spoken.repaired
+
+    # Both candidates unsupported: the likelier one is repaired.
+    coach_model = ScriptedProvider(
+        ["[p=0.7] Nf3 develops and eyes e5.\n[p=0.3] Nf3 pins the knight."]
+    )
+    verifier = Verifier(
+        [
+            '{"unsupported": ["eyes e5"]}',
+            '{"unsupported": ["pins the knight"]}',
+            '{"reply": "Nf3 develops a piece."}',
+        ]
+    )
+    speaker = Speaker(coach_model, verifier=verifier)  # type: ignore[arg-type]
+    spoken = speaker.speak_now(_request())
+    assert spoken.message.text == "Nf3 develops a piece." and spoken.repaired

@@ -15,11 +15,13 @@ hands in events and polls for messages, exactly as it does with the engine.
 from __future__ import annotations
 
 import contextlib
+import json
 import queue
 import random
 import re
 import threading
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -164,6 +166,20 @@ def _parse_candidates(raw: str) -> list[tuple[float, str]]:
     return out
 
 
+_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def _json_object(text: str) -> object:
+    """The first JSON object in a model's answer, or None."""
+    m = _JSON_OBJECT.search(text or "")
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return None
+
+
 def _sample_reply(passed: list[tuple[float, str]]) -> str:
     """Sample one reply, weighted by its stated likelihood; ties and zeros still get a chance."""
     weights = [max(prob, 0.01) for prob, _ in passed]
@@ -196,6 +212,10 @@ class Spoken:
     # Already a turn of the conversation (a quick answer recorded before the model was
     # asked to build on it), so polling it must not record it again.
     recorded: bool = False
+    # What the verifier found, when one runs: per candidate the statements the messages do
+    # not support, and whether the reply spoken was a repair of the best candidate.
+    verified: list[list[str]] = field(default_factory=list)
+    repaired: bool = False
 
 
 @dataclass
@@ -254,11 +274,33 @@ def _after_best(request: _Request) -> list[chess.Board]:
     return frames
 
 
+VERIFY_SYSTEM = (
+    "You check a chess coach's reply against the messages the coach was given: the game so "
+    "far, the engine's verdicts, lines and facts, and the directive. List every statement in "
+    "the reply that those messages do not state and that does not follow directly from the "
+    "moves themselves (a capture takes the piece on that square, a check makes the king "
+    "answer, a move lands where it lands). A question is not a statement; a restatement of "
+    "a fact in other words is supported; a mild inference the messages make plain is "
+    "supported. Quote each unsupported statement in the reply's own words. Answer in JSON "
+    'only: {"unsupported": [str]}'
+)
+
+REPAIR_SYSTEM = (
+    "You edit a chess coach's reply so that it keeps only statements the messages the coach "
+    "was given support. Remove or reword the statements listed as unsupported; keep the "
+    "reply's length, form (a closing question stays a closing question), voice and plain "
+    'chess words; add nothing. Answer in JSON only: {"reply": str}'
+)
+
+
 class Speaker:
     """Runs the model on a worker thread and checks what it says.
 
     A draft with a leak or a false claim about the board is sent back once with the
     problem named; a second failure is replaced by the template, and the failure counted.
+    With a `verifier`, every candidate that passes those checks is also read against the
+    messages by a second model, the clean ones are sampled from, and when none is clean the
+    likeliest is repaired once: test-time verification, on top of the demonstrations in C.
     """
 
     def __init__(
@@ -266,9 +308,11 @@ class Speaker:
         provider: LLMProvider,
         *,
         draft_check: Callable[[str, chess.Board, Sequence[chess.Board]], list[str]] | None = None,
+        verifier: LLMProvider | None = None,
     ) -> None:
         self.provider = provider
         self.draft_check = draft_check
+        self.verifier = verifier
         self.failures = 0
         self.fallbacks = 0
         self.dropped = 0  # unprompted requests an ask overtook before they started
@@ -355,6 +399,8 @@ class Speaker:
         text = ""
         attempts = 0
         calls: list[ModelCall] = []
+        verified: list[list[str]] = []
+        repaired = False
         while attempts < 2:
             attempts += 1
             stats: dict[str, Any] = {}
@@ -375,6 +421,8 @@ class Speaker:
             passed = [(prob, candidate) for prob, candidate, faults in scored if not faults]
             given = "\n\n---\n\n".join(str(m["content"]) for m in messages[-2:])
             calls.append(ModelCall(raw, stats, len(scored), len(passed), given))
+            if passed and self.verifier is not None:
+                passed, verified, repaired = self._verify(passed, request)
             if passed:
                 text, problems = _sample_reply(passed), []
                 break
@@ -410,7 +458,71 @@ class Speaker:
             problems=problems,
             attempts=attempts,
             calls=calls,
+            verified=verified,
+            repaired=repaired,
         )
+
+    def _verify(
+        self, passed: list[tuple[float, str]], request: _Request
+    ) -> tuple[list[tuple[float, str]], list[list[str]], bool]:
+        """The candidates read against the messages by the verifier: those with nothing
+        unsupported stay; when none does, the likeliest is repaired once and kept if the
+        repair passes the deterministic checks. Returns the candidates to sample from, what
+        the verifier found per candidate, and whether a repair was used."""
+        assert self.verifier is not None
+        context = "\n\n".join(str(m["content"]) for m in request.messages[-3:])
+
+        def check(candidate: str) -> list[str]:
+            content = (
+                "The messages the coach was given (the latest):\n\n"
+                + context
+                + '\n\nThe coach\'s reply:\n"""\n'
+                + candidate
+                + '\n"""\n\nJSON only.'
+            )
+            try:
+                completion = self.verifier.chat(  # type: ignore[union-attr]
+                    VERIFY_SYSTEM,
+                    [{"role": "user", "content": content}],
+                    max_tokens=400,
+                    temperature=0.0,
+                )
+            except Exception:  # noqa: BLE001
+                return []  # the verifier failed: the candidate is not held against it
+            found = _json_object(completion.text)
+            items = found.get("unsupported") if isinstance(found, dict) else None
+            return [str(x) for x in items if str(x).strip()] if isinstance(items, list) else []
+
+        with ThreadPoolExecutor(max_workers=max(1, len(passed))) as pool:
+            verified = list(pool.map(check, [c for _, c in passed]))
+        clean = [pc for pc, faults in zip(passed, verified, strict=True) if not faults]
+        if clean:
+            return clean, verified, False
+        prob, best = max(zip(passed, verified, strict=True), key=lambda pv: pv[0][0])[0]
+        faults = verified[[c for _, c in passed].index(best)]
+        content = (
+            "The messages the coach was given (the latest):\n\n"
+            + context
+            + '\n\nThe reply:\n"""\n'
+            + best
+            + '\n"""\n\nUnsupported statements: '
+            + "; ".join(faults)
+            + "\n\nJSON only."
+        )
+        try:
+            completion = self.verifier.chat(
+                REPAIR_SYSTEM,
+                [{"role": "user", "content": content}],
+                max_tokens=500,
+                temperature=0.0,
+            )
+        except Exception:  # noqa: BLE001
+            return [], verified, False
+        found = _json_object(completion.text)
+        repaired = str(found.get("reply") or "").strip() if isinstance(found, dict) else ""
+        if repaired and not self._problems(repaired, request):
+            return [(prob, repaired)], verified, True
+        return [], verified, False
 
     def _problems(self, text: str, request: _Request) -> list[str]:
         # What the user said this turn and the moves of the game so far are not leaks: a
