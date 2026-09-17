@@ -927,8 +927,12 @@ def test_a_question_about_the_last_move_gets_its_verdict_in_full() -> None:
     assert "They ask about the move they already played, Bxf7+" in directive
     assert "cost 45% of the game" in directive and "the engine preferred Qxf7#" in directive
     assert "nothing about it is withheld" in directive
+    # Spoken from the position the move was played from, with everything shown: naming
+    # the better move is not a leak, as it is not in the lesson after a mistake.
+    assert out and out[-1].level is DisclosureLevel.LINE
+    assert out[-1].fen == SCHOLAR
     # The fallback is the verdict itself, not a hint.
-    assert out and out[-1].text.startswith("Bxf7+ cost you 45% of the game. Qxf7# was better")
+    assert out[-1].text.startswith("Bxf7+ cost you 45% of the game. Qxf7# was better")
 
 
 def test_a_question_about_a_fine_last_move_says_it_was_fine() -> None:
@@ -969,3 +973,17 @@ def test_a_question_about_a_fine_last_move_says_it_was_fine() -> None:
     directive = _directive(_given(provider))
     assert "It was not bad: the verdict was best" in directive
     assert "do not invent a fault" in directive
+
+
+def test_a_move_of_the_game_so_far_is_never_a_leak() -> None:
+    """Asked why the opponent played their last move, the coach names it. Below CANDIDATE
+    the leak check flags every move token, and it flagged the history: a move already
+    played may be discussed in full."""
+    coach, _ = _coach(["[p=1.0] Nf6 develops with a threat; what does it leave behind?"])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    _messages(coach)
+    coach.ask("why did he play that?", 8.0)
+    out = _messages(coach)
+    assert out and out[-1].text.startswith("Nf6 develops")
+    assert out[-1].level is DisclosureLevel.QUESTION

@@ -409,9 +409,12 @@ class Speaker:
         )
 
     def _problems(self, text: str, request: _Request) -> list[str]:
+        # What the user said this turn and the moves of the game so far are not leaks: a
+        # move already played may be discussed in full, whatever the level in force.
+        said = " ".join(filter(None, [request.user_text, *sorted(request.played)]))
         found = [
             f"withheld {item}"
-            for item in leak_check(text, request.facts, request.level, said=request.user_text)
+            for item in leak_check(text, request.facts, request.level, said=said or None)
         ]
         if self.draft_check is not None:
             for problem in self.draft_check(text, request.board, _after_best(request)):
@@ -686,6 +689,14 @@ class Coach:
             level = DisclosureLevel.LINE
         with self._lock:
             self.conversation.user_said(text)
+        if _ASK_LAST_MOVE.search(text) and (own := self._last_own_move()) is not None:
+            # About the move they already played: spoken from the position it was played
+            # from, with everything shown, as the lesson after a mistake is. That position
+            # is past; the level in force binds only the one they face now.
+            before = self.positions.get(own.move.ply - 1)
+            if before is not None and before.facts is not None:
+                position, level = before, DisclosureLevel.LINE
+        assert position.facts is not None
         canned = unlock in (Unlock.HINT, Unlock.ASK_MOVE, Unlock.ASK_LINE) and not may_carry_claims(
             text
         )
@@ -903,17 +914,14 @@ class Coach:
                     return record.analysis.opening
         return None
 
-    def _last_own_move(self) -> tuple[PlyRecord, PositionFacts | None] | None:
-        """The player's last judged move, with the facts of the position it was played from
-        (the facts the previous record carries: they are for the position its move led to).
-        Only the last two records count: further back, "that move" means something else."""
+    def _last_own_move(self) -> PlyRecord | None:
+        """The player's last judged move. Only the last two records count: further back,
+        "that move" means something else."""
         with self._lock:
             records = self.conversation.active_records()
-            for i in range(len(records) - 1, max(-1, len(records) - 3), -1):
-                record = records[i]
+            for record in reversed(records[-2:]):
                 if record.move.by_user and record.assessment is not None:
-                    before = records[i - 1].facts if i > 0 else None
-                    return record, before
+                    return record
         return None
 
     def _standing_template(self, position: _Position) -> str:
@@ -1256,12 +1264,11 @@ class Coach:
                     "then one short sentence on why. Do not answer with a question this time."
                 )
             )
-        elif _ASK_LAST_MOVE.search(said) and (own := self._last_own_move()) is not None:
+        elif _ASK_LAST_MOVE.search(said) and (record := self._last_own_move()) is not None:
             # Asked about their own last move. Its verdict was given in its move message and
             # the facts of the position it was played from in the message before: all of it
             # may be said outright. Without this the model took "the better move is withheld"
             # for the position now to cover the past one and answered with a hint instead.
-            record, before = own
             assert record.assessment is not None
             verdict = record.assessment
             san = record.move.san
@@ -1275,9 +1282,9 @@ class Coach:
                     )
                 except ValueError:
                     best = ""
-            idea = ""
-            if before is not None:
-                idea = before.theme or before.plan or (before.ideas[0] if before.ideas else "")
+            # The request's facts are those of the position the move was played from when
+            # the coach has them (ask() chose that position); the idea is theirs.
+            idea = facts.theme or facts.plan or (facts.ideas[0] if facts.ideas else "")
             if verdict.severity is Severity.NONE:
                 fallback = self._verdict(san, label)
                 directive = (
