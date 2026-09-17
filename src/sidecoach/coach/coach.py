@@ -286,10 +286,11 @@ VERIFY_SYSTEM = (
 )
 
 REPAIR_SYSTEM = (
-    "You edit a chess coach's reply so that it keeps only statements the messages the coach "
-    "was given support. Remove or reword the statements listed as unsupported; keep the "
-    "reply's length, form (a closing question stays a closing question), voice and plain "
-    'chess words; add nothing. Answer in JSON only: {"reply": str}'
+    "You edit a chess coach's reply. Remove or reword only the statements listed as "
+    "unsupported, so that what remains is supported by the messages the coach was given. "
+    "Change nothing else: every other sentence stays exactly as it is, the form stays (a "
+    "closing question stays a closing question), the voice stays; add nothing. Answer in "
+    'JSON only: {"reply": str}'
 )
 
 
@@ -470,7 +471,9 @@ class Speaker:
         repair passes the deterministic checks. Returns the candidates to sample from, what
         the verifier found per candidate, and whether a repair was used."""
         assert self.verifier is not None
-        context = "\n\n".join(str(m["content"]) for m in request.messages[-3:])
+        # The latest messages: the position the player faces, the one they moved from, the
+        # dialogue since, the directive -- the facts a reply may draw on are in these.
+        context = "\n\n".join(str(m["content"]) for m in request.messages[-5:])
 
         def check(candidate: str) -> list[str]:
             content = (
