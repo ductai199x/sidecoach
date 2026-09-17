@@ -343,9 +343,12 @@ class Conversation:
             parts.append(f"it cost {loss:.2f} of expected score")
         else:
             parts.append("it cost nothing")
-        if assessment.best and loss >= 0.005:
+        if assessment.best and loss >= 0.005 and assessment.best[0] != move.uci:
+            # The engine's line, when its first move is not the one played. (Comparing
+            # the line's last move to the one played dropped the line whenever a four-ply
+            # line happened to end on the same move: castling, most often.)
             better = san_line(board_before, assessment.best, limit=4)
-            if better and not better.endswith(move.san):
+            if better:
                 parts.append(f"the engine preferred {better}")
         text = "; ".join(parts) + f". Material: {material}."
         tags = [t for t in assessment.tags if t.name not in ("quietMove", "capture", "check")]
