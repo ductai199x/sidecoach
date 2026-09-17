@@ -276,21 +276,29 @@ def _after_best(request: _Request) -> list[chess.Board]:
 
 VERIFY_SYSTEM = (
     "You check a chess coach's reply against the messages the coach was given: the game so "
-    "far, the engine's verdicts, lines and facts, and the directive. List every statement in "
-    "the reply that those messages do not state and that does not follow directly from the "
-    "moves themselves (a capture takes the piece on that square, a check makes the king "
-    "answer, a move lands where it lands). A question is not a statement; a restatement of "
-    "a fact in other words is supported; a mild inference the messages make plain is "
-    "supported. Quote each unsupported statement in the reply's own words. Answer in JSON "
-    'only: {"unsupported": [str]}'
+    "far, the engine's verdicts (the label, the cost, the move the engine preferred, what "
+    "the moves do), the lines, the facts (the nature of the position, the theme, the plan, "
+    "the threats, the ideas), the tally, and the directive. A statement is supported when a "
+    "message states it, or restates it in other words, or it follows directly from the move "
+    "itself (a capture takes the piece on that square, a check makes the king answer, a move "
+    "lands where it lands), or it is a plain inference the messages make obvious, or "
+    "ordinary chess usage of a stated fact (a rook on an open file 'active', a king on e1 "
+    "'in the centre'). Approximate or hedged wording of a supported fact is supported. "
+    "Unsupported is only what is specific and absent: what a piece attacks, defends, pins "
+    "or threatens when no message says so; a plan, weakness, structure or evaluation no "
+    "message gives; a reason for a move no message gives; a move, win or loss that did not "
+    "happen; a habit the record does not show. A question is not a statement. Quote each "
+    "unsupported statement in the reply's own words; when in doubt, it is supported. "
+    'Answer in JSON only: {"unsupported": [str]}'
 )
 
 REPAIR_SYSTEM = (
     "You edit a chess coach's reply. Remove or reword only the statements listed as "
     "unsupported, so that what remains is supported by the messages the coach was given. "
-    "Change nothing else: every other sentence stays exactly as it is, the form stays (a "
-    "closing question stays a closing question), the voice stays; add nothing. Answer in "
-    'JSON only: {"reply": str}'
+    "Change nothing else: every other sentence stays exactly as it is -- in particular keep "
+    "every fact about the move that the messages give (its label, what it cost, the move "
+    "the engine preferred, the idea) -- the form stays (a closing question stays a closing "
+    'question), the voice stays; add nothing. Answer in JSON only: {"reply": str}'
 )
 
 
@@ -503,28 +511,37 @@ class Speaker:
             return clean, verified, False
         prob, best = max(zip(passed, verified, strict=True), key=lambda pv: pv[0][0])[0]
         faults = verified[[c for _, c in passed].index(best)]
-        content = (
-            "The messages the coach was given (the latest):\n\n"
-            + context
-            + '\n\nThe reply:\n"""\n'
-            + best
-            + '\n"""\n\nUnsupported statements: '
-            + "; ".join(faults)
-            + "\n\nJSON only."
-        )
-        try:
-            completion = self.verifier.chat(
-                REPAIR_SYSTEM,
-                [{"role": "user", "content": content}],
-                max_tokens=500,
-                temperature=0.0,
+        # Two tries at the repair: the second is also told what the deterministic checks
+        # found wrong with the first.
+        note = ""
+        for _ in range(2):
+            content = (
+                "The messages the coach was given (the latest):\n\n"
+                + context
+                + '\n\nThe reply:\n"""\n'
+                + best
+                + '\n"""\n\nUnsupported statements: '
+                + "; ".join(faults)
+                + note
+                + "\n\nJSON only."
             )
-        except Exception:  # noqa: BLE001
-            return [], verified, False
-        found = _json_object(completion.text)
-        repaired = str(found.get("reply") or "").strip() if isinstance(found, dict) else ""
-        if repaired and not self._problems(repaired, request):
-            return [(prob, repaired)], verified, True
+            try:
+                completion = self.verifier.chat(
+                    REPAIR_SYSTEM,
+                    [{"role": "user", "content": content}],
+                    max_tokens=500,
+                    temperature=0.0,
+                )
+            except Exception:  # noqa: BLE001
+                return [], verified, False
+            found = _json_object(completion.text)
+            repaired = str(found.get("reply") or "").strip() if isinstance(found, dict) else ""
+            if not repaired:
+                return [], verified, False
+            faults_now = self._problems(repaired, request)
+            if not faults_now:
+                return [(prob, repaired)], verified, True
+            note = "\n\nYour previous edit was rejected for: " + "; ".join(faults_now) + "."
         return [], verified, False
 
     def _problems(self, text: str, request: _Request) -> list[str]:
