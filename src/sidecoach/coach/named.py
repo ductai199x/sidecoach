@@ -48,8 +48,9 @@ PLAN_SYSTEM = (
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 # A move as a player types it, with or without a move number; "pass" is the player waiting.
 _TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])(?:\d{1,3}\.(?:\.\.)?\s*)?((?:[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h]x?[a-h][1-8]|[a-h][1-8]|O-O-O|O-O|0-0-0|0-0)(?:=[QRBN])?[+#]?)(?![A-Za-z0-9])"
+    r"(?<![A-Za-z0-9])(?:\d{1,3}\.(?:\.\.)?\s*)?((?:[a-h][1-8][a-h][1-8][qrbn]?|[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h]x?[a-h][1-8]|[a-h][1-8]|O-O-O|O-O|0-0-0|0-0)(?:=[QRBN])?[+#]?)(?![A-Za-z0-9])"
 )
+_UCI = re.compile(r"^[a-h][1-8][a-h][1-8][qrbn]?$")
 
 
 # A piece named with its square ("the white bishop on d3", "my knight at f6") or a bare
@@ -91,7 +92,7 @@ def parse_probe(label: str, moves: list[str], board: chess.Board) -> Probe:
             move = chess.Move.null()
         else:
             try:
-                move = replay.parse_san(token)
+                move = _parse(replay, token)
             except ValueError:
                 probe.illegal = token
                 break
@@ -111,12 +112,12 @@ def probes_by_words(text: str, board: chess.Board) -> list[Probe]:
     for match in _TOKEN.finditer(text):
         token = match.group(1).replace("0-0-0", "O-O-O").replace("0-0", "O-O")
         try:
-            move = replay.parse_san(token)
+            move = _parse(replay, token)
         except ValueError:
             if not moves:
                 continue
             break
-        moves.append(token)
+        moves.append(replay.san(move))
         replay.push(move)
     return (
         [parse_probe(san_line(board, [m.uci() for m in _replay(board, moves)]), moves, board)]
@@ -218,6 +219,44 @@ def examine_piece(probe: Probe, board: chess.Board, *, user_colour: chess.Color)
                 f"it is pinned to the {name_of(board, pin[1])} by the {name_of(board, pin[0])}"
             )
     return f"{head} " + "; ".join(parts) + "."
+
+
+def _parse(board: chess.Board, token: str) -> chess.Move:
+    """A move as the player wrote it: SAN, or UCI ("e2e4"); ValueError when illegal."""
+    if _UCI.match(token.lower()):
+        move = chess.Move.from_uci(token.lower())
+        if move not in board.legal_moves:
+            raise ValueError(token)
+        return move
+    return board.parse_san(token)
+
+
+def examine_static(probe: Probe, board: chess.Board) -> str:
+    """Without an engine: the position the probe's moves lead to, and what the first move
+    does. No score; the FEN so the position can be read."""
+    head = f"Engine on {probe.label}, which you asked about:"
+    if not probe.parsed:
+        return f"{head} {probe.illegal} is not a legal move here."
+    after = board.copy(stack=False)
+    for move in probe.parsed:
+        after.push(move)
+    played = (
+        san_line(board, [m.uci() for m in probe.parsed if m != chess.Move.null()])
+        if all(m != chess.Move.null() for m in probe.parsed)
+        else " ".join(probe.moves[: len(probe.parsed)])
+    )
+    parts = [head]
+    if probe.illegal:
+        parts.append(f"after {played}, {probe.illegal} is not a legal move;")
+    parts.append(f"after {played} the position is {after.fen()}")
+    if after.is_game_over():
+        parts[-1] += f" (the game is over: {after.result()})"
+    first = next((m for m in probe.parsed if m != chess.Move.null()), None)
+    if first is not None and probe.parsed[0] != chess.Move.null():
+        does = effects_text(board, first, hazards=True)
+        if does:
+            parts[-1] += f"; what {board.san(first)} does: {does}"
+    return " ".join(parts) + "."
 
 
 def _replay(board: chess.Board, sans: list[str]) -> list[chess.Move]:
@@ -427,18 +466,20 @@ def analyse_named(
     level: DisclosureLevel,
     planner: LLMProvider | None = None,
     depth: int = 14,
+    static: bool = False,
 ) -> list[str]:
     """The engine's word on what the player asked about: one line per probe, or none when
     their words name nothing to examine. The planner (a model) decides the probes; without
     one, the moves named in the words are examined as one line, or the pieces and squares
-    named each on their own. A piece or square needs no engine; a move does, and without
-    one those probes are dropped."""
+    named each on their own. A piece or square needs no engine; a move without one is
+    dropped, unless `static`, when it gets the position it leads to and what it does,
+    without a score (a FEN is for a reader of the object, not for a coach to say)."""
     probes = (
         plan_probes(text, board, planner, user_colour=user_colour)
         if planner is not None
         else probes_by_words(text, board)
     )
-    if board.turn != user_colour or engine is None:
+    if (board.turn != user_colour and engine is not None) or (engine is None and not static):
         # Only the position the player faces is theirs to ask lines about; the board's
         # pieces are theirs to ask about at any time.
         probes = [p for p in probes if p.square is not None]
@@ -446,14 +487,15 @@ def analyse_named(
         return []
     out: list[str] = []
     best: Line | None = None
-    if any(p.square is None for p in probes):
-        assert engine is not None
+    if engine is not None and any(p.square is None for p in probes):
         before = engine.analyse(board, depth=depth)
         best = before[0] if before else None
     for p in probes:
         if p.square is not None:
             out.append(examine_piece(p, board, user_colour=user_colour))
-        elif engine is not None:
+        elif engine is None:
+            out.append(examine_static(p, board))
+        else:
             out.append(
                 examine(p, board, engine, best, user_colour=user_colour, level=level, depth=depth)
             )

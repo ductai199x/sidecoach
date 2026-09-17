@@ -23,7 +23,7 @@ _VALUE: dict[chess.PieceType, int] = {
     chess.KING: 100,
 }
 _SLIDERS = (chess.BISHOP, chess.ROOK, chess.QUEEN)
-LIMIT = 6  # entries per list, most valuable first
+LIMIT = 8  # entries per list, most valuable first
 
 
 def name_of(board: chess.Board, square: chess.Square) -> str:
@@ -242,9 +242,21 @@ def side_lines(board: chess.Board, colour: chess.Color, *, own: str, their: str)
 def to_move_lines(board: chess.Board, *, own: str) -> list[str]:
     """What the side to move can do at once: checks and captures, in SAN, with what is taken."""
     out: list[str] = []
-    checks = [board.san(m) for m in board.legal_moves if board.gives_check(m)]
+    checks: list[str] = []
+    for m in board.legal_moves:
+        if not board.gives_check(m):
+            continue
+        after = board.copy(stack=False)
+        after.push(m)
+        checkers = after.checkers()
+        kind = ""
+        if len(checkers) > 1:
+            kind = " (double check)"
+        elif m.to_square not in checkers:
+            kind = " (discovered check)"
+        checks.append(board.san(m) + kind)
     if checks:
-        out.append(f"{own} checks: " + ", ".join(checks[:8]))
+        out.append(f"{own} checks: " + ", ".join(checks[:10]))
     caps = []
     for m in board.legal_moves:
         if board.is_capture(m):
@@ -263,7 +275,7 @@ def to_move_lines(board: chess.Board, *, own: str) -> list[str]:
             )
     if caps:
         caps.sort(key=lambda x: -x[0])
-        out.append(f"{own} captures: " + ", ".join(c for _, c in caps[:8]))
+        out.append(f"{own} captures: " + ", ".join(c for _, c in caps[:10]))
     return out
 
 
@@ -276,5 +288,5 @@ def inventory_text(board: chess.Board, user_colour: chess.Color) -> str:
     now = to_move_lines(board, own=mover)
     lines = [*mine, *theirs, *now]
     if not lines:
-        return ""
-    return "On the board now: " + " | ".join(lines) + "."
+        return "On the board now: nothing hangs, nothing is pinned, no check or capture is on."
+    return "On the board now (complete lists): " + " | ".join(lines) + "."

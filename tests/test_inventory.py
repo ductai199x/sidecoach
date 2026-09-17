@@ -36,7 +36,9 @@ def test_hanging_pinned_batteries_and_captures_are_read_off_the_board() -> None:
     board = chess.Board("6k1/8/8/8/8/8/8/R2q1r1K w - - 0 1")
     assert skewer_target(board, chess.A1) == (chess.D1, chess.F1)
     assert forks_in_place(chess.Board(), chess.WHITE) == []
-    assert inventory_text(chess.Board(), chess.WHITE) == ""
+    assert inventory_text(chess.Board(), chess.WHITE) == (
+        "On the board now: nothing hangs, nothing is pinned, no check or capture is on."
+    )
 
 
 def test_a_piece_named_with_its_square_is_examined_without_an_engine() -> None:

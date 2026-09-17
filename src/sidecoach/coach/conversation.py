@@ -41,6 +41,7 @@ from sidecoach.coach.disclosure import PositionFacts, visible_facts
 from sidecoach.coach.effects import effects_text
 from sidecoach.coach.facts import ascii_board, material_text, standing_words
 from sidecoach.coach.inventory import inventory_text
+from sidecoach.coach.outcome import line_outcome
 from sidecoach.events import (
     Analysis,
     DisclosureLevel,
@@ -436,6 +437,7 @@ class Conversation:
                 f"  {i}. {san_line(board, line.moves, limit=limit, numbered=numbered)}  "
                 f"{self._score(line.expected_score, to_move, user_colour)}"
                 + self._does(board, line.moves)
+                + (self._leads(board, line.moves[:limit], user_colour) if numbered else "")
             )
         if weaker:
             out.append("  weaker:")
@@ -449,19 +451,26 @@ class Conversation:
         return out
 
     def _standing_text(self, top: Line, to_move: chess.Color, user_colour: chess.Color) -> str:
-        """Who stands better, in words, with the number: "Standing: you are better (0.66
-        from your side; about +1.2 pawns)". A number alone is read wrong; the words are
-        what a coach says, and what the model repeats."""
+        """Who stands better, in words, with the engine's number named by side: "Standing:
+        you are better (Stockfish: White +1.2 pawns; your winning chances about 66%)". A
+        bare 0-1 number was read as a pawn score, or not at all; the words are what a
+        coach says, and the side named leaves no sign to guess."""
         score = top.expected_score if to_move == user_colour else 1.0 - top.expected_score
-        text = f"Standing: {standing_words(score)} ({score:.2f} from your side"
+        text = f"Standing: {standing_words(score)} (Stockfish: "
         if top.mate is not None:
             n = abs(top.mate)
-            ours = (top.mate > 0) == (to_move == user_colour)
-            text += f"; mate in {n} for {'you' if ours else 'them'}"
+            winner = to_move if top.mate > 0 else not to_move
+            text += f"mate in {n} for {'White' if winner == chess.WHITE else 'Black'}"
         elif top.score_cp is not None:
-            cp = top.score_cp if to_move == user_colour else -top.score_cp
-            text += f"; about {cp / 100:+.1f} pawns"
-        return text + ")."
+            cp_white = top.score_cp if to_move == chess.WHITE else -top.score_cp
+            if abs(cp_white) < 15:
+                text += "level, 0.0 pawns"
+            else:
+                ahead = "White" if cp_white > 0 else "Black"
+                text += f"{ahead} ahead by about {abs(cp_white) / 100:.1f} pawns"
+        else:
+            text += "no number"
+        return text + f"; your winning chances about {round(score * 100)}%)."
 
     @staticmethod
     def _threat_words(board: chess.Board, san: str) -> str:
@@ -475,6 +484,12 @@ class Conversation:
         except ValueError:
             return san
         return f"{san} ({text})" if text else san
+
+    @staticmethod
+    def _leads(board: chess.Board, moves: list[str], user_colour: chess.Color) -> str:
+        """Where the line leads, for the lines block: "-> you win a pawn; the e-file opens"."""
+        text = line_outcome(board, moves, user_colour)
+        return f"  -> {text}" if text else ""
 
     @staticmethod
     def _does(board: chess.Board, moves: list[str]) -> str:
