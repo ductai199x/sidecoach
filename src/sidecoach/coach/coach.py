@@ -86,7 +86,9 @@ VS_ASK_CANDIDATES = 2
 # A word on a fine move is one short sentence; two candidates keep the call short.
 VS_ROUTINE_CANDIDATES = 2
 VS_MAX_TOKENS = 2048
-VS_TEMPERATURE = 0.9
+# Cold. The candidates are already a distribution the model verbalizes (their p= marks);
+# hot sampling on top of that is where the invented sentence came from.
+VS_TEMPERATURE = 0.1
 _NUMBER_WORDS = {2: "TWO", 3: "THREE", 4: "FOUR", 5: "FIVE"}
 
 
