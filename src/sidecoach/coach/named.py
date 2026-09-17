@@ -23,6 +23,8 @@ import chess
 
 from sidecoach.analysis.engine import san_line
 from sidecoach.coach.effects import effects_text
+from sidecoach.coach.facts import PIECE_NAMES, standing_words
+from sidecoach.coach.inventory import name_of, pin_target
 from sidecoach.events import DisclosureLevel, Line
 from sidecoach.llm.base import ChatMessage, LLMProvider
 
@@ -36,9 +38,11 @@ PLAN_SYSTEM = (
     "probe is their move and then the opponent's, in that order. An idea in "
     "words ('trade queens', 'take on f7', 'castle') becomes the moves that do it. Several "
     "alternatives are several probes, at most four. Label each probe in the player's own "
-    "terms ('your Nf3', 'the line Bb5 a6 Ba4', 'if they take on e5'). If their words name "
-    "nothing to examine, return an empty list. Answer in JSON only: "
-    '{"probes": [{"label": str, "moves": [str]}]}'
+    "terms ('your Nf3', 'the line Bb5 a6 Ba4', 'if they take on e5'). A question about a "
+    "piece or a square rather than a move ('is my knight safe?', 'what does the bishop on "
+    "d3 do?', 'what about e5?') is a probe with a square instead of moves. If their words "
+    "name nothing to examine, return an empty list. Answer in JSON only: "
+    '{"probes": [{"label": str, "moves": [str]} | {"label": str, "square": str}]}'
 )
 
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
@@ -48,18 +52,29 @@ _TOKEN = re.compile(
 )
 
 
+# A piece named with its square ("the white bishop on d3", "my knight at f6") or a bare
+# square asked about ("what about e5", "square d5").
+_PIECE_ON = re.compile(
+    r"(?:(?P<colour>white|black|my|your|their|his|her)\s+)?(?P<piece>king|queen|rook|bishop|knight|pawn)s?\s+(?:on|at)\s+(?P<square>[a-h][1-8])\b",
+    re.IGNORECASE,
+)
+_SQUARE_ASKED = re.compile(r"\b(?:square|on|about|at)\s+(?P<square>[a-h][1-8])\b", re.IGNORECASE)
+
+
 class EngineLike(Protocol):
     def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]: ...
 
 
 @dataclass
 class Probe:
-    """One thing to examine: moves from the position, in the player's terms."""
+    """One thing to examine: moves from the position, in the player's terms -- or a piece
+    or square, when that is what they asked about."""
 
     label: str
     moves: list[str]  # SAN, or "pass" for a null move (the opponent's move first)
     parsed: list[chess.Move] = field(default_factory=list)
     illegal: str | None = None  # the first move that could not be played, if any
+    square: chess.Square | None = None  # a piece or square probe instead of moves
 
 
 def parse_probe(label: str, moves: list[str], board: chess.Board) -> Probe:
@@ -86,7 +101,11 @@ def parse_probe(label: str, moves: list[str], board: chess.Board) -> Probe:
 
 
 def probes_by_words(text: str, board: chess.Board) -> list[Probe]:
-    """Without a planner: the moves named in the words, as one line, as far as legal."""
+    """Without a planner: the moves named in the words, as one line, as far as legal; or
+    the pieces and squares named, one probe each."""
+    pieces = pieces_by_words(text, board)
+    if pieces:
+        return pieces
     moves: list[str] = []
     replay = board.copy(stack=False)
     for match in _TOKEN.finditer(text):
@@ -104,6 +123,101 @@ def probes_by_words(text: str, board: chess.Board) -> list[Probe]:
         if moves
         else []
     )
+
+
+def pieces_by_words(text: str, board: chess.Board) -> list[Probe]:
+    """The pieces named with their square, or the squares asked about, as probes."""
+    out: list[Probe] = []
+    seen: set[chess.Square] = set()
+    for m in _PIECE_ON.finditer(text):
+        square = chess.parse_square(m.group("square").lower())
+        if square in seen:
+            continue
+        seen.add(square)
+        out.append(Probe(label=m.group(0).strip(), moves=[], square=square))
+    if out:
+        return out[:4]
+    for m in _SQUARE_ASKED.finditer(text):
+        square = chess.parse_square(m.group("square").lower())
+        if square in seen:
+            continue
+        seen.add(square)
+        out.append(Probe(label=chess.square_name(square), moves=[], square=square))
+    return out[:4]
+
+
+def examine_piece(probe: Probe, board: chess.Board, *, user_colour: chess.Color) -> str:
+    """The board on one piece or square: what stands there, where it can go, what it
+    attacks and defends, what attacks and defends it, whether it is pinned. Static facts
+    of the position, no search."""
+    assert probe.square is not None
+    square = probe.square
+    head = f"Engine on {probe.label}, which you asked about:"
+    piece = board.piece_at(square)
+    if piece is None:
+        holders = sorted(board.attackers(user_colour, square))
+        theirs = sorted(board.attackers(not user_colour, square))
+        parts = [f"{chess.square_name(square)} is empty"]
+        if holders:
+            parts.append(
+                "you control it with the "
+                + " and the ".join(name_of(board, s) for s in holders[:3])
+            )
+        if theirs:
+            parts.append(
+                "they control it with the "
+                + " and the ".join(name_of(board, s) for s in theirs[:3])
+            )
+        if not holders and not theirs:
+            parts.append("nobody controls it")
+        return f"{head} " + "; ".join(parts) + "."
+    whose = "your" if piece.color == user_colour else "their"
+    name = f"{whose} {PIECE_NAMES[piece.piece_type]} on {chess.square_name(square)}"
+    parts = [f"{name} stands there"]
+    # Where it can go, on the board as it stands, with its own side to move.
+    view = board.copy(stack=False)
+    view.turn = piece.color
+    moves = [m for m in view.legal_moves if m.from_square == square]
+    if moves:
+        parts.append(
+            "it can go to " + ", ".join(sorted({chess.square_name(m.to_square) for m in moves}))
+        )
+    else:
+        parts.append("it has no legal move")
+    attacks = [
+        t for t in board.attacks(square) if (o := board.piece_at(t)) and o.color != piece.color
+    ]
+    defends = [
+        t
+        for t in board.attacks(square)
+        if (o := board.piece_at(t)) and o.color == piece.color and o.piece_type != chess.KING
+    ]
+    if attacks:
+        parts.append("it attacks the " + " and the ".join(name_of(board, t) for t in attacks[:4]))
+    if defends:
+        parts.append("it defends the " + " and the ".join(name_of(board, t) for t in defends[:4]))
+    attackers = sorted(board.attackers(not piece.color, square))
+    defenders = sorted(board.attackers(piece.color, square))
+    if attackers:
+        parts.append(
+            "it is attacked by the " + " and the ".join(name_of(board, s) for s in attackers[:3])
+        )
+    else:
+        parts.append("nothing attacks it")
+    if piece.piece_type != chess.KING:
+        if defenders:
+            parts.append(
+                "it is defended by the "
+                + " and the ".join(name_of(board, s) for s in defenders[:3])
+            )
+        else:
+            parts.append("nothing defends it")
+        pin = pin_target(board, square)
+        if pin is not None:
+            parts.append(
+                f"it is pinned to the {name_of(board, pin[1])} by the {name_of(board, pin[0])}"
+            )
+    return f"{head} " + "; ".join(parts) + "."
 
 
 def _replay(board: chess.Board, sans: list[str]) -> list[chess.Move]:
@@ -139,10 +253,20 @@ def plan_probes(
     for item in (data.get("probes") if isinstance(data, dict) else None) or []:
         if not isinstance(item, dict):
             continue
-        moves = [str(m) for m in item.get("moves", []) if str(m).strip()]
-        if not moves:
-            continue
-        probes.append(parse_probe(str(item.get("label") or " ".join(moves)), moves, board))
+        square = str(item.get("square") or "").strip().lower()
+        if square and re.fullmatch(r"[a-h][1-8]", square):
+            probes.append(
+                Probe(
+                    label=str(item.get("label") or square),
+                    moves=[],
+                    square=chess.parse_square(square),
+                )
+            )
+        else:
+            moves = [str(m) for m in item.get("moves", []) if str(m).strip()]
+            if not moves:
+                continue
+            probes.append(parse_probe(str(item.get("label") or " ".join(moves)), moves, board))
         if len(probes) >= 4:
             break
     return probes or probes_by_words(text, board)
@@ -281,16 +405,7 @@ def spoken(fact: str) -> str:
     return f"{label}: {body}"
 
 
-def _standing(score: float) -> str:
-    if score >= 0.85:
-        return "you are winning"
-    if score >= 0.62:
-        return "you are better"
-    if score > 0.38:
-        return "it is about equal"
-    if score > 0.15:
-        return "you are worse"
-    return "you are losing"
+_standing = standing_words
 
 
 def _gap_words(gap: float) -> str:
@@ -306,7 +421,7 @@ def _gap_words(gap: float) -> str:
 def analyse_named(
     text: str,
     board: chess.Board,
-    engine: EngineLike,
+    engine: EngineLike | None,
     *,
     user_colour: chess.Color,
     level: DisclosureLevel,
@@ -315,19 +430,31 @@ def analyse_named(
 ) -> list[str]:
     """The engine's word on what the player asked about: one line per probe, or none when
     their words name nothing to examine. The planner (a model) decides the probes; without
-    one, the moves named in the words are examined as one line."""
-    if board.turn != user_colour:
-        return []  # only the position the player faces is theirs to ask about
+    one, the moves named in the words are examined as one line, or the pieces and squares
+    named each on their own. A piece or square needs no engine; a move does, and without
+    one those probes are dropped."""
     probes = (
         plan_probes(text, board, planner, user_colour=user_colour)
         if planner is not None
         else probes_by_words(text, board)
     )
+    if board.turn != user_colour or engine is None:
+        # Only the position the player faces is theirs to ask lines about; the board's
+        # pieces are theirs to ask about at any time.
+        probes = [p for p in probes if p.square is not None]
     if not probes:
         return []
-    before = engine.analyse(board, depth=depth)
-    best = before[0] if before else None
-    return [
-        examine(p, board, engine, best, user_colour=user_colour, level=level, depth=depth)
-        for p in probes
-    ]
+    out: list[str] = []
+    best: Line | None = None
+    if any(p.square is None for p in probes):
+        assert engine is not None
+        before = engine.analyse(board, depth=depth)
+        best = before[0] if before else None
+    for p in probes:
+        if p.square is not None:
+            out.append(examine_piece(p, board, user_colour=user_colour))
+        elif engine is not None:
+            out.append(
+                examine(p, board, engine, best, user_colour=user_colour, level=level, depth=depth)
+            )
+    return out

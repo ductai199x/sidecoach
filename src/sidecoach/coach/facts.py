@@ -85,6 +85,19 @@ _VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess
 CANDIDATE_MARGIN = 0.02
 
 
+def standing_words(score: float) -> str:
+    """An expected score from the player's side, as a coach says it."""
+    if score >= 0.85:
+        return "you are winning"
+    if score >= 0.62:
+        return "you are better"
+    if score > 0.38:
+        return "it is about equal"
+    if score > 0.15:
+        return "you are worse"
+    return "you are losing"
+
+
 def phase_of(board: chess.Board, in_book: bool = False) -> str:
     """Opening, middlegame or endgame, from the book and what is left on the board."""
     if in_book or board.fullmove_number <= 8:

@@ -39,12 +39,14 @@ import chess
 from sidecoach.analysis.engine import san_line
 from sidecoach.coach.disclosure import PositionFacts, visible_facts
 from sidecoach.coach.effects import effects_text
-from sidecoach.coach.facts import ascii_board, material_text
+from sidecoach.coach.facts import ascii_board, material_text, standing_words
+from sidecoach.coach.inventory import inventory_text
 from sidecoach.events import (
     Analysis,
     DisclosureLevel,
     GameEnded,
     GameStarted,
+    Line,
     MoveAssessment,
     MovePlayed,
     Resync,
@@ -333,6 +335,12 @@ class Conversation:
         lines.extend(
             self._grounding_text(record, board_after, user_colour, level, with_lines=recent)
         )
+        # 6. What stands on the board: hanging, attacked, pinned, checks and captures on
+        # offer. On the recent plies only, and not for the position the user faces below
+        # PIECE, where naming a piece would give the hint away.
+        user_to_move = board_after.turn == user_colour
+        if recent and not (user_to_move and current and level < DisclosureLevel.PIECE):
+            lines.append(inventory_text(board_after, user_colour))
         if move.by_user:
             lines.append(self._tally_text(record))
         return "\n".join(line for line in lines if line)
@@ -408,10 +416,11 @@ class Conversation:
         user_to_move = to_move == user_colour
         if user_to_move and level < DisclosureLevel.CANDIDATE:
             # The position the user faces: the lines are withheld at this level; what may be
-            # said is in the grounding facts below.
+            # said is in the grounding facts below. Who stands better is never withheld.
             return [
+                self._standing_text(analysis.lines[0], to_move, user_colour),
                 f"Engine lines for the position now: withheld (disclosure level "
-                f"{level.name.lower()}: {self._level_words(level)})."
+                f"{level.name.lower()}: {self._level_words(level)}).",
             ]
         out: list[str] = []
         whose = "your" if user_to_move else "your opponent's"
@@ -420,6 +429,7 @@ class Conversation:
         ranked = analysis.lines
         best = ranked[:BEST_LINES]
         weaker = ranked[BEST_LINES : BEST_LINES + WEAKER_LINES]
+        out.append(self._standing_text(analysis.lines[0], to_move, user_colour))
         out.append(f"Engine lines for the position now ({whose} move; scores from your side):")
         for i, line in enumerate(best, start=1):
             out.append(
@@ -437,6 +447,21 @@ class Conversation:
                     f"({drop:.2f} behind the best)"
                 )
         return out
+
+    def _standing_text(self, top: Line, to_move: chess.Color, user_colour: chess.Color) -> str:
+        """Who stands better, in words, with the number: "Standing: you are better (0.66
+        from your side; about +1.2 pawns)". A number alone is read wrong; the words are
+        what a coach says, and what the model repeats."""
+        score = top.expected_score if to_move == user_colour else 1.0 - top.expected_score
+        text = f"Standing: {standing_words(score)} ({score:.2f} from your side"
+        if top.mate is not None:
+            n = abs(top.mate)
+            ours = (top.mate > 0) == (to_move == user_colour)
+            text += f"; mate in {n} for {'you' if ours else 'them'}"
+        elif top.score_cp is not None:
+            cp = top.score_cp if to_move == user_colour else -top.score_cp
+            text += f"; about {cp / 100:+.1f} pawns"
+        return text + ")."
 
     @staticmethod
     def _threat_words(board: chess.Board, san: str) -> str:

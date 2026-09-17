@@ -888,7 +888,7 @@ class Coach:
 
         if self.claims is None or not may_carry_claims(text):
             verdicts: list[str] = []
-            if self.engine is not None and may_carry_claims(text):
+            if may_carry_claims(text):
                 verdicts = examined()
             self._speak(
                 Trigger.USER_ASK,
@@ -1109,9 +1109,8 @@ class Coach:
 
     def _named_analysis(self, text: str, position: _Position, level: DisclosureLevel) -> list[str]:
         """The engine's word on what the player asked about: the model decides what to
-        examine, the engine examines it; one line per probe, none when nothing was named."""
-        if self.engine is None:
-            return []
+        examine, the engine examines it; one line per probe, none when nothing was named.
+        A piece or square named needs no engine; a line does."""
         try:
             return analyse_named(
                 text,
@@ -1119,7 +1118,9 @@ class Coach:
                 self.engine,
                 user_colour=self.user_colour,
                 level=level,
-                planner=self.speaker.provider,
+                # Without an engine only pieces and squares can be examined, and the
+                # words name those well enough: no planner call.
+                planner=self.speaker.provider if self.engine is not None else None,
             )
         except Exception as exc:  # noqa: BLE001
             self.speaker.last_error = f"named analysis: {type(exc).__name__}: {exc}"
