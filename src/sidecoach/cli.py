@@ -855,6 +855,7 @@ class _Coaching:
             verifier=_verifier(settings, provider),  # type: ignore[arg-type]
             engine=_named_engine(settings),  # type: ignore[arg-type]
             summarise_every=settings.coach.summarise_every,
+            compact_record=settings.coach.compact_record,
         )
         self.coach.start()
         self.detail = f"{provider.name} ({detail})"

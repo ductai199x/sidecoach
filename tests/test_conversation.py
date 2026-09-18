@@ -247,3 +247,74 @@ def test_the_earlier_dialogue_folds_into_a_summary_and_the_last_plies_stay_verba
     # Nothing older to fold the second time: no call is made.
     assert not summarise(convo, summariser, keep=2)
     assert len(summariser.prompts) == 1
+
+
+def test_the_compact_record_drops_stale_nods_and_runs_sound_moves_together() -> None:
+    """The routine nod after a sound move was most of a mid-game harness. With the
+    compact record, nods older than the last few plies leave the record (the verdict is
+    on the move's line), exchanges stay, and sound moves nobody spoke after run together
+    as a move list; a move that lost ground keeps its line."""
+    from sidecoach.coach.conversation import NOD_PLIES
+
+    convo = Conversation(compact_record=True)
+    convo.new_game(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.Board().fen()))
+    board = chess.Board()
+    sans = [
+        "e4",
+        "e5",
+        "Nf3",
+        "Nc6",
+        "Bb5",
+        "a6",
+        "Ba4",
+        "Nf6",
+        "O-O",
+        "Be7",
+        "Re1",
+        "b5",
+        "Bb3",
+        "d6",
+    ]
+    for ply, san in enumerate(sans, start=1):
+        move = board.parse_san(san)
+        fen_before = board.fen()
+        board.push(move)
+        convo.move(
+            MovePlayed(
+                game_id="g",
+                ply=ply,
+                san=san,
+                uci=move.uci(),
+                fen_before=fen_before,
+                fen_after=board.fen(),
+                by_user=ply % 2 == 1,
+            )
+        )
+        severity = Severity.INACCURACY if ply == 5 else Severity.NONE
+        convo.assess(
+            MoveAssessment(
+                game_id="g",
+                ply=ply,
+                uci=move.uci(),
+                expected_loss=0.05 if ply == 5 else 0.0,
+                severity=severity,
+                best=[move.uci()] if ply != 5 else ["f1c4"],
+                label=Label.INACCURACY if ply == 5 else Label.BOOK,
+            )
+        )
+        if ply % 2 == 1:
+            convo.coach_said(f"Nod after {san}.", nod=True)
+        if ply == 6:
+            convo.user_said("what now?")
+            convo.coach_said("An answer.")
+    text = convo.render()
+    record = text.split("# Game so far\n", 1)[1].split("# Position now", 1)[0]
+    assert "Nod after e4." not in record and "Nod after Nf3." not in record, "stale nods are gone"
+    assert f"Nod after {sans[-2]}." in record, "the last nods stay"
+    assert 'PLAYER said: "what now?"' in record and 'YOU (the coach) said: "An answer."' in record
+    assert "3. Bb5 (the player): inaccuracy, cost 0.05" in record, "a slip keeps its line"
+    assert "Moves: 1. e4 e5 2. Nf3 Nc6" in record
+    # Stale nods are not summarised either: only the exchange is offered to the summariser.
+    pending = convo.foldable(2)
+    assert [e.text for _, e in pending] == ['"what now?"', "An answer."]
+    assert NOD_PLIES == 6

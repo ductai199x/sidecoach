@@ -31,6 +31,7 @@ The `Coach` owns one of these per game and asks it for the messages of every req
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import chess
@@ -63,6 +64,17 @@ RECENT_PLIES = 2
 BEST_LINES = 3
 WEAKER_LINES = 3
 LINE_PLIES = 8
+# With the compact record, a routine nod is written out for this many plies, so the coach
+# still sees its own last words and varies them; older ones go.
+NOD_PLIES = 6
+
+# A record line whose verdict is a bare label: "12. Bxf6 (the player): best." Such a move
+# joins the compact record's move list; one with a cost, a preferred move or a note stands.
+_BARE_VERDICT = re.compile(
+    r"^(\d+\.(?:\.\.)? \S+) \((?:the player|the opponent)\): "
+    r"(?:best|excellent|great|brilliant|good|book)\.$"
+)
+
 # The motifs worth naming on a move. The tagger also emits bookkeeping tags (quietMove,
 # defensiveMove, capture, check) and geometric ones that hold on most quiet moves
 # (interference, clearance); named in the harness they had the coach narrating "a6 cuts the
@@ -138,6 +150,9 @@ class Entry:
     record: PlyRecord | None = None
     frozen: str | None = None
     folded: bool = False  # dialogue folded into the summary: no longer written out
+    # A routine word after a sound move (the POST_MOVE nod): the verdict is on the move's
+    # line, so the nod is written out only while recent, and never summarised.
+    nod: bool = False
 
 
 @dataclass
@@ -152,6 +167,10 @@ class Conversation:
     level: DisclosureLevel = DisclosureLevel.QUESTION
     # The earlier dialogue, summarised (see `summarise`); empty until the first fold.
     summary: str = ""
+    # The record compacted: the coach's routine nods after sound moves are written out
+    # only for the last NOD_PLIES plies (the verdict is on the move's line), and sound
+    # moves with nothing said after them run together as a move list.
+    compact_record: bool = False
     _drained: int = 0
 
     # ---- the game's events, in the order they happen -----------------------------------
@@ -253,8 +272,8 @@ class Conversation:
             body += " -- their claims, checked against the board: " + "; ".join(verdicts)
         self.entries.append(Entry("user", "ask", body))
 
-    def coach_said(self, text: str) -> None:
-        self.entries.append(Entry("assistant", "coach", text))
+    def coach_said(self, text: str, *, nod: bool = False) -> None:
+        self.entries.append(Entry("assistant", "coach", text, nod=nod))
 
     # ---- rendering ---------------------------------------------------------------------
 
@@ -277,8 +296,9 @@ class Conversation:
         sink = game
         if self.summary:
             game.append(f"Earlier dialogue, summarised: {self.summary}")
+        stale_nods = self._stale_nods() if self.compact_record else set()
         for entry in self.entries:
-            if entry.kind == "game" or entry.folded:
+            if entry.kind == "game" or entry.folded or id(entry) in stale_nods:
                 continue
             if entry.kind == "ply":
                 assert entry.record is not None
@@ -301,6 +321,8 @@ class Conversation:
                 sink.append(f"    EVENT: {entry.text}")
         sections = [f"# Setting\n{header}"]
         if game:
+            if self.compact_record:
+                game = self._compact(game)
             sections.append("# Game so far\n" + "\n".join(game))
         if now:
             said = [x for x in now[1:]]
@@ -310,6 +332,55 @@ class Conversation:
                 + ("\n\n## Said here\n" + "\n".join(said) if said else "")
             )
         return "\n\n".join(x for x in sections if x)
+
+    def _stale_nods(self) -> set[int]:
+        """The nods older than the last NOD_PLIES plies, by id: left out of the record."""
+        ply_entries = [e for e in self.entries if e.kind == "ply"]
+        if len(ply_entries) <= NOD_PLIES:
+            return set()
+        cutoff = ply_entries[-NOD_PLIES]
+        stale: set[int] = set()
+        for entry in self.entries:
+            if entry is cutoff:
+                break
+            if entry.kind == "coach" and entry.nod:
+                stale.add(id(entry))
+        return stale
+
+    def _compact(self, lines: list[str]) -> list[str]:
+        """The record's lines with the quiet plies run together: a ply line followed by no
+        annotation, whose verdict is a bare label, joins a move list; every other line
+        stands. "12. Bxf6 (the player): best." x 40 was most of the record."""
+        out: list[str] = []
+        run: list[str] = []
+
+        def flush() -> None:
+            if run:
+                out.append("Moves: " + " ".join(run))
+                run.clear()
+
+        n = len(lines)
+        for i, line in enumerate(lines):
+            is_ply = line[:1].isdigit()
+            annotated = i + 1 < n and lines[i + 1].startswith("    ")
+            if is_ply and not annotated and _BARE_VERDICT.match(line):
+                numbered = _BARE_VERDICT.match(line).group(1)  # type: ignore[union-attr]
+                san = numbered.split(" ", 1)[1]
+                if "..." in numbered and run and not run[-1].endswith("."):
+                    run.append(san)  # Black's reply right after White's move: bare
+                else:
+                    run.append(numbered)
+                continue
+            flush()
+            out.append(line)
+        flush()
+        if any(x.startswith("Moves: ") for x in out):
+            out.insert(
+                0,
+                "(A move in a 'Moves:' list was sound -- best, excellent, great, good or book "
+                "-- and nothing was said after it.)",
+            )
+        return out
 
     # ---- dialogue compaction -------------------------------------------------------------
 
@@ -328,6 +399,9 @@ class Conversation:
             if entry.kind == "ply" and entry.record is not None:
                 after = self._numbered(entry.record.move)
             elif entry.kind in ("ask", "coach") and not entry.folded:
+                if self.compact_record and entry.nod:
+                    entry.folded = True  # a nod is not summarised: the verdict is on its line
+                    continue
                 out.append((after, entry))
         return out
 

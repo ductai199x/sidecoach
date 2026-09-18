@@ -724,6 +724,7 @@ class Coach:
         engine: NamedEngine | None = None,
         summarise_every: int = 0,
         summariser: LLMProvider | None = None,
+        compact_record: bool = False,
     ) -> None:
         self.policy = policy or InterjectionPolicy()
         self.speaker = Speaker(provider, draft_check=draft_check, verifier=verifier)
@@ -750,7 +751,7 @@ class Coach:
         self.positions: dict[int, _Position] = {}
         self.moves: dict[int, MovePlayed] = {}
         # The game as the model sees it: one message per move, the coach's turns between.
-        self.conversation = Conversation()
+        self.conversation = Conversation(compact_record=compact_record)
         self.spoken: list[Spoken] = []
         self._current: _Position | None = None
         self._clock_peak_ms: int | None = None
@@ -944,7 +945,9 @@ class Coach:
                 continue
             if not spoken.recorded:
                 with self._lock:
-                    self.conversation.coach_said(spoken.message.text)
+                    self.conversation.coach_said(
+                        spoken.message.text, nod=spoken.message.trigger is Trigger.POST_MOVE
+                    )
             out.append(spoken.message)
         return out
 

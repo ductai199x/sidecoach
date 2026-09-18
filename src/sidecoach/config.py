@@ -71,6 +71,8 @@ class CoachSettings(BaseModel):
     # Dialogue compaction: every this many plies, what was said earlier than the last this
     # many plies is folded into a summary at the top of the record. 0 is off.
     summarise_every: int = 0
+    # The record compacted: sound moves nobody spoke after run together as a move list.
+    compact_record: bool = False
     # Fitted to chess.com's review tallies over six games; see analysis.score.Thresholds.
     inaccuracy: float = 0.04
     mistake: float = 0.10
