@@ -1198,7 +1198,14 @@ def best_move_idea(
             (to,),
         )
 
-    if phase != "endgame" and piece_type in (chess.KNIGHT, chess.BISHOP):
+    # A minor piece leaving its home square is development while the game is young; past
+    # that it may have gone back there, and "finish your development" at move 40 was
+    # nonsense.
+    if (
+        phase != "endgame"
+        and board.fullmove_number <= DEVELOPMENT_MOVES
+        and piece_type in (chess.KNIGHT, chess.BISHOP)
+    ):
         home = _HOME_MINORS[us]
         if move.from_square in home and not board.is_capture(move):
             name = PIECE_NAMES[piece_type]

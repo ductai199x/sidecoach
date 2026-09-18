@@ -636,7 +636,7 @@ _ASK_EVAL = re.compile(
 )
 # A bare request for a hint, with nothing claimed: "hint", "give me a hint", "a clue".
 _ASK_HINT = re.compile(
-    r"^\W*(?:(?:give me |i need |can i have |i want |any )?(?:a |an |some )?"
+    r"^\W*(?:(?:give me |i need |can i have |i want |any |another |one more )?(?:a |an |some )?"
     r"(?:hint|clue|nudge|help|tip)s?(?: please)?)\W*$",
     re.IGNORECASE,
 )
@@ -832,9 +832,13 @@ class Coach:
             if before is not None and before.facts is not None:
                 position, level = before, DisclosureLevel.LINE
         assert position.facts is not None
-        canned = unlock in (Unlock.HINT, Unlock.ASK_MOVE, Unlock.ASK_LINE) and not may_carry_claims(
-            text
-        )
+        # The quick answer, shown before the model has started: the template for a bare
+        # "hint", the move or the line. A question about the plan earns the hint's level
+        # but not its template -- "What is your opponent's most dangerous idea?" as the
+        # first of two answers to "what should I be aiming for?" was noise.
+        canned = (
+            unlock in (Unlock.ASK_MOVE, Unlock.ASK_LINE) or bool(_ASK_HINT.match(text))
+        ) and not may_carry_claims(text)
         if canned:
             _, quick = self._instruction(Trigger.USER_ASK, position, level, text, (), None, None)
             self._queue_plain(
@@ -1316,6 +1320,17 @@ class Coach:
         assert facts is not None
         theme = facts.theme or facts.plan or "the position"
         region = facts.region or "the whole board"
+        # The theme-level template: the idea when there is one; when the sheet names none,
+        # what the nature says ("The idea here is the position" was said, once).
+        if facts.theme or facts.plan:
+            theme_hint = f"The idea here is {theme}. What would make it count?"
+        elif facts.nature and facts.nature.startswith("forcing"):
+            theme_hint = "The answer is forcing: which check or capture is worth calculating first?"
+        else:
+            theme_hint = (
+                "Nothing forcing is on. Which of your pieces is doing the least, and where "
+                "would it do more?"
+            )
         if trigger is Trigger.DECISIVE_QUESTION:
             return (
                 "The player is to move and this is a critical moment. Ask one orienting "
@@ -1328,7 +1343,7 @@ class Coach:
             if level >= DisclosureLevel.REGION:
                 fallback = f"Look at {region}. Something is going on there."
             elif level >= DisclosureLevel.THEME:
-                fallback = f"The idea here is {theme}. What would make it count?"
+                fallback = theme_hint
             else:
                 fallback = "Take stock: what changed with the last move, and what does it allow?"
             return (
@@ -1411,7 +1426,7 @@ class Coach:
         elif level >= DisclosureLevel.REGION:
             fallback = f"Look at {region}."
         elif level >= DisclosureLevel.THEME:
-            fallback = f"The idea here is {theme}. What would make it count?"
+            fallback = theme_hint
         elif facts.nature and facts.nature.startswith("forcing"):
             # The one fact the QUESTION level allows: whether the answer is forcing. The
             # generic "opponent's idea" question pointed the wrong way in a position where

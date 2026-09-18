@@ -478,12 +478,15 @@ class Conversation:
         else:
             parts.append("it cost nothing")
         if assessment.best and loss >= 0.005 and assessment.best[0] != move.uci:
-            # The engine's line, when its first move is not the one played. (Comparing
-            # the line's last move to the one played dropped the line whenever a four-ply
-            # line happened to end on the same move: castling, most often.)
+            # The engine's line, when its first move is not the one played, and where it
+            # leads: the reason the move was better, computed, so a "why was that bad?"
+            # has an answer when the better move's own effects are nothing to say.
+            # (Comparing the line's last move to the one played dropped the line whenever
+            # a four-ply line happened to end on the same move: castling, most often.)
             better = san_line(board_before, assessment.best, limit=4)
             if better:
-                parts.append(f"the engine preferred {better}")
+                leads = line_outcome(board_before, assessment.best[:LINE_PLIES], user_colour)
+                parts.append(f"the engine preferred {better}" + (f" -> {leads}" if leads else ""))
         text = "; ".join(parts) + f". Material: {material}."
         # What the move did on the board, and what the better move would have done: the
         # mechanism, computed, so the coach has a true reason to give instead of one it
@@ -510,8 +513,13 @@ class Conversation:
         tags = [t for t in assessment.tags if t.name in MOVE_MOTIFS]
         if tags:
             # By name only: the squares a tag carries are the tagger's evidence, and named
-            # in the harness they were narrated as "the f7/f6/f4 piece sequence".
-            named = ", ".join(dict.fromkeys(motif_words(t.name) for t in tags[:4]))
+            # in the harness they were narrated as "the f7/f6/f4 piece sequence". The words
+            # are the mover's ("your opponent's exposed king"), so they are set in the
+            # third person for the side that moved.
+            mover = "player" if move.by_user else "opponent"
+            named = ", ".join(
+                dict.fromkeys(third_person(motif_words(t.name), side=mover) for t in tags[:4])
+            )
             text += f" Motifs in the move: {named}."
         return text
 

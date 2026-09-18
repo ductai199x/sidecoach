@@ -63,7 +63,13 @@ THEMES: tuple[tuple[str, str], ...] = (
     ("deflection", "a defender that can be pulled away"),
     ("attraction", "a piece that can be lured onto a bad square"),
     ("sacrifice", "a sacrifice"),
-    ("exposedKing", "king safety"),
+    # The best move saves a piece that is attacked: the hint a stuck player needs most,
+    # and the one the coach could not give while this was not a theme ("make your King
+    # safer" with the rook en prise, and the rook was left there).
+    ("defensiveMove", "a piece under attack"),
+    # The tagger's exposed king is always the enemy's: said as "king safety" the coach
+    # told a player with a won endgame to make their own king safer.
+    ("exposedKing", "your opponent's exposed king"),
     ("attackingF2F7", "the weak point next to the king"),
     ("promotion", "a passed pawn"),
     ("advancedPawn", "a passed pawn"),
@@ -187,9 +193,7 @@ def material_text(board: chess.Board, perspective: chess.Color | None = None) ->
 # Tags that never headline: they hold on most quiet moves (a line that could be cut, a
 # square that could be cleared, a bishop eyeing f7 in a book Ruy Lopez), and as the theme
 # they sent the stuck hint asking "which line could be cut?" in positions about nothing.
-_NOT_A_THEME = frozenset(
-    {"interference", "clearance", "attackingF2F7", "quietMove", "defensiveMove"}
-)
+_NOT_A_THEME = frozenset({"interference", "clearance", "attackingF2F7", "quietMove"})
 
 
 def theme_of(tags: Sequence[MotifTag]) -> MotifTag | None:
