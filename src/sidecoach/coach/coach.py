@@ -120,6 +120,56 @@ _SENTENCE_END = re.compile(r"[.!?…][\"'”’)\]]*(?=\s|$)")
 
 _PIECE_WORD = {"K": "king", "Q": "queen", "R": "rook", "B": "bishop", "N": "knight"}
 
+_WORD_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
+_LIMIT_WORDS = re.compile(
+    r"\b(?:(?:at most|no more than) (one|two|three|four|five|six) sentences?"
+    r"|(one|two|three|four|five|six)(?: or (one|two|three|four|five|six))? (?:short )?sentences?"
+    r"|(one|two|three|four|five|six) sentences? at most"
+    r"|(?:fifteen|twenty) words at most)\b",
+    re.IGNORECASE,
+)
+
+
+def directive_limits(directive: str) -> tuple[int | None, bool | None]:
+    """The length the directive states, in sentences, and whether it asks for a closing
+    question (True), forbids one (False) or says nothing (None)."""
+    limit: int | None = None
+    for m in _LIMIT_WORDS.finditer(directive):
+        if m.group(0).lower().endswith("words at most"):
+            n = 1
+        else:
+            n = max(_WORD_NUMBERS[g.lower()] for g in m.groups() if g)
+        limit = n if limit is None else max(limit, n)
+    low = directive.lower()
+    question: bool | None = None
+    if re.search(r"\bthen(?:, if you like,)? one question\b", low):
+        # A question asked for on top of the sentences: one more is allowed.
+        question = True
+        limit = None if limit is None else limit + 1
+    elif re.search(r"\bending with (?:one |a )?question\b", low):
+        question = True
+    if re.search(r"\bno question\b|\bdo not answer with a question\b", low):
+        question = False
+    return limit, question
+
+
+def trim_to_limit(text: str, limit: int, wants_question: bool | None) -> str:
+    """The first `limit` complete sentences of `text`; the closing question kept in place
+    of the last one when the directive asks for a question and the text ends with one."""
+    ends = [m.end() for m in _SENTENCE_END.finditer(text)]
+    if len(ends) <= limit:
+        return text
+    sentences = [text[a:b].strip() for a, b in zip([0, *ends[:-1]], ends, strict=True)]
+    if wants_question and sentences[-1].endswith("?") and limit >= 2:
+        kept = [*sentences[: limit - 1], sentences[-1]]
+    else:
+        kept = sentences[:limit]
+    return " ".join(kept)
+
+
+def _sentence_total(text: str) -> int:
+    return len(_SENTENCE_END.findall(text))
+
 
 def _vs_wrap(messages: list[ChatMessage], candidates: int = VS_CANDIDATES) -> list[ChatMessage]:
     """Append the verbalized-sampling directive to the final user turn."""
@@ -440,6 +490,22 @@ class Speaker:
                 for prob, candidate in _parse_candidates(raw)
             ]
             passed = [(prob, candidate) for prob, candidate, faults in scored if not faults]
+            if (
+                not passed
+                and scored
+                and all(
+                    faults and all(f.startswith("too long") for f in faults)
+                    for _, _, faults in scored
+                )
+            ):
+                # Every candidate clean but for its length: the likeliest, cut to the limit,
+                # instead of a second call or the template.
+                directive = str(request.messages[-1]["content"]).rsplit("# Task", 1)[-1]
+                limit, wants_question = directive_limits(directive)
+                prob, candidate, _ = max(scored, key=lambda x: x[0])
+                trimmed = trim_to_limit(candidate, limit or 2, wants_question)
+                if not self._problems(trimmed, request):
+                    passed = [(prob, trimmed)]
             given = "\n\n---\n\n".join(str(m["content"]) for m in messages[-2:])
             calls.append(ModelCall(raw, stats, len(scored), len(passed), given))
             if passed and self.verifier is not None:
@@ -574,6 +640,14 @@ class Speaker:
             f"withheld {item}"
             for item in leak_check(text, request.facts, request.level, said=said or None)
         ]
+        # The length the directive states: a reply over it is a fault of its own, so
+        # a shorter candidate wins the draw, or the likeliest is cut to size.
+        directive = (
+            str(request.messages[-1]["content"]).rsplit("# Task", 1)[-1] if request.messages else ""
+        )
+        limit, _ = directive_limits(directive)
+        if limit is not None and _sentence_total(text) > limit:
+            found.append(f"too long: {_sentence_total(text)} sentences, {limit} allowed")
         if self.draft_check is not None:
             for problem in self.draft_check(text, request.board, _after_best(request)):
                 san = problem.split(":", 1)[0].strip()
