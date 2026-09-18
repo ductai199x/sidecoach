@@ -9,6 +9,9 @@ stay verbatim, so the coach still knows its own last words.
 
 from __future__ import annotations
 
+import threading
+from contextlib import nullcontext
+
 from sidecoach.coach.conversation import Conversation
 from sidecoach.llm.base import ChatMessage, LLMProvider
 
@@ -23,10 +26,20 @@ SUMMARY_SYSTEM = (
 )
 
 
-def summarise(convo: Conversation, provider: LLMProvider, *, keep: int = 20) -> bool:
+def summarise(
+    convo: Conversation,
+    provider: LLMProvider,
+    *,
+    keep: int = 20,
+    lock: threading.Lock | threading.RLock | None = None,
+) -> bool:
     """Fold the dialogue older than the last `keep` plies into the summary. Returns
-    whether anything was folded; a failed call folds nothing."""
-    pending = convo.foldable(keep)
+    whether anything was folded; a failed call folds nothing. `lock` guards the
+    conversation while it is read and folded; the model call runs outside it."""
+    guard = lock if lock is not None else nullcontext()
+    with guard:
+        pending = convo.foldable(keep)
+        summary_before = convo.summary
     if not pending:
         return False
     lines = []
@@ -35,18 +48,22 @@ def summarise(convo: Conversation, provider: LLMProvider, *, keep: int = 20) -> 
         lines.append(f"after {after}, {who}: {entry.text}")
     content = (
         "Summary so far:\n"
-        + (convo.summary or "(nothing yet)")
+        + (summary_before or "(nothing yet)")
         + "\n\nNewest exchanges:\n"
         + "\n".join(lines)
         + "\n\nThe new summary:"
     )
     messages: list[ChatMessage] = [{"role": "user", "content": content}]
     try:
-        completion = provider.chat(SUMMARY_SYSTEM, messages, max_tokens=400, temperature=0.1)
+        # A rewrite, not a reasoning task: no thinking, where the provider can turn it off.
+        completion = provider.chat(
+            SUMMARY_SYSTEM, messages, max_tokens=400, temperature=0.1, thinking=False
+        )
     except Exception:  # noqa: BLE001
         return False
     text = (completion.text or "").strip()
     if not text:
         return False
-    convo.fold([e for _, e in pending], text)
+    with guard:
+        convo.fold([e for _, e in pending], text)
     return True

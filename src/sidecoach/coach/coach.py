@@ -728,6 +728,9 @@ class Coach:
         # Run the claims check on the caller's thread (replay and evaluation) instead of a
         # worker: live it is threaded so a button press never stalls the pipeline.
         self.sync_claims = False
+        # The same for the dialogue summary: live it folds in the background, a few seconds
+        # after the move; in evaluation it folds before the next moment, so runs repeat.
+        self.sync_summaries = False
         self.game_id: str | None = None
         self.user_side: Side = Side.WHITE
         self.finished = False  # the game is over: everything may be said
@@ -982,8 +985,22 @@ class Coach:
         self._current = position
         self.policy.new_position(event.ply, ts, user_to_move=self.user_to_move)
         if self.summarise_every and event.ply % self.summarise_every == 0:
-            with self._lock:
-                summarise(self.conversation, self.summariser, keep=self.summarise_every)
+            if self.sync_summaries:
+                self._summarise()
+            else:
+                threading.Thread(
+                    target=self._summarise, name="sidecoach-summary", daemon=True
+                ).start()
+
+    def _summarise(self) -> None:
+        """Fold the earlier dialogue into the summary. The model call runs outside the
+        lock (seconds); the fold itself takes it."""
+        try:
+            summarise(
+                self.conversation, self.summariser, keep=self.summarise_every, lock=self._lock
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.speaker.last_error = f"summary: {type(exc).__name__}: {exc}"
 
     def _on_takeback(self, event: Takeback, ts: float) -> None:
         """Moves withdrawn: the conversation says so, and the game goes on from the position
