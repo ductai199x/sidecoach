@@ -32,19 +32,20 @@ def test_corrections_are_appended_only_when_the_file_has_content(
     empty.write_text("   \n", encoding="utf-8")
     monkeypatch.setattr(prompt, "CORRECTIONS_PATH", empty)
     prompt.corrections.cache_clear()
-    assert "Demonstrations from earlier games" not in prompt.system_message()
+    assert "Lessons from earlier games" not in prompt.system_message()
 
     filled = tmp_path / "c.md"
     filled.write_text(
-        '### 1\nMoves so far: 1. e4\n\nReply: "e4, still theory."\n', encoding="utf-8"
+        "When asked about the opening: state its name as the message gives it.\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(prompt, "CORRECTIONS_PATH", filled)
     prompt.corrections.cache_clear()
     text = prompt.system_message()
     assert text.endswith(
-        'as these replies do.\n### 1\nMoves so far: 1. e4\n\nReply: "e4, still theory."'
+        "in front of you.\nWhen asked about the opening: state its name as the message gives it."
     )
-    assert text.index(prompt.REPLY_FORMAT) < text.index("Demonstrations from earlier games")
+    assert text.index(prompt.REPLY_FORMAT) < text.index("Lessons from earlier games")
     prompt.corrections.cache_clear()
 
     missing = tmp_path / "missing.md"

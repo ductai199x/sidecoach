@@ -123,9 +123,12 @@ def system_message(*, with_corrections: bool = True) -> str:
     parts = [PERSONA, CONTRACT, RULES, REPLY_FORMAT]
     c = corrections() if with_corrections else ""
     if c:
+        # C: the lessons distilled from the coach's own corrected replies in earlier games
+        # (tools/eval/icr_play.py --distil): one line per situation, general, with a
+        # placeholder example. Held out, 320 moments: pass .94, completeness .91,
+        # fabrication .03 against .93/.86/.06 without it, at ~0.6k tokens.
         parts.append(
-            "Demonstrations from earlier games. Each is a moment as it reached you -- the "
-            "game as it stood, the task -- and the reply that was right for it. Reply to the "
-            "game in front of you as these replies do.\n" + c
+            "Lessons from earlier games -- what a reply must do in each situation. Every "
+            "fact in your reply comes from the game in front of you.\n" + c
         )
     return "\n\n".join(parts)
