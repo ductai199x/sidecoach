@@ -145,6 +145,8 @@ def directive_limits(directive: str) -> tuple[int | None, bool | None]:
         limit = n if limit is None else max(limit, n)
     low = directive.lower()
     question: bool | None = None
+    if re.search(r"\bask one (?:orienting )?question\b", low):
+        question = True
     if re.search(r"\bthen(?:, if you like,)? one question\b", low):
         # A question asked for on top of the sentences: one more is allowed.
         question = True

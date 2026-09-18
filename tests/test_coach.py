@@ -399,14 +399,14 @@ def test_the_draft_checker_can_veto_a_false_claim() -> None:
     def checker(text: str, board: chess.Board, after: Sequence[chess.Board] = ()) -> list[str]:
         return ["the rook on f7 is not there"] if "rook on f7" in text else []
 
-    provider = ScriptedProvider(["Your rook on f7 is strong.", "Your king is safe for now."])
+    provider = ScriptedProvider(["Your rook on f7 is strong.", "Your king is safe for now, is it not?"])
     coach = Coach(
         provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), draft_check=checker
     )
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6), 7.0)
     out = _messages(coach)
-    assert out[0].text == "Your king is safe for now."
+    assert out[0].text == "Your king is safe for now, is it not?"
     assert coach.spoken[-1].attempts == 2 and coach.speaker.fallbacks == 0
 
 
@@ -431,7 +431,7 @@ def test_verbalized_sampling_keeps_the_checked_candidate() -> None:
     def checker(text: str, board: chess.Board, after: Sequence[chess.Board] = ()) -> list[str]:
         return ["the rook on f7 is not there"] if "rook on f7" in text else []
 
-    block = "[p=0.6] Your rook on f7 is strong.\n[p=0.4] Your king is safe for now."
+    block = "[p=0.6] Your rook on f7 is strong.\n[p=0.4] Your king is safe for now, is it not?"
     provider = ScriptedProvider([block])
     coach = Coach(
         provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), draft_check=checker
@@ -439,7 +439,7 @@ def test_verbalized_sampling_keeps_the_checked_candidate() -> None:
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6), 7.0)
     out = _messages(coach)
-    assert out[0].text == "Your king is safe for now."
+    assert out[0].text == "Your king is safe for now, is it not?"
     assert coach.spoken[-1].attempts == 1 and coach.speaker.fallbacks == 0
 
 
