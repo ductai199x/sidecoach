@@ -6,8 +6,8 @@ from collections.abc import Sequence
 
 import chess
 
-from sidecoach.coach.coach import Coach, fact_sheet, unlock_for
-from sidecoach.coach.disclosure import PositionFacts, Unlock
+from sidecoach.coach.coach import Coach, unlock_for
+from sidecoach.coach.disclosure import PositionFacts, Unlock, visible_facts
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
 from sidecoach.events import (
     Analysis,
@@ -115,15 +115,31 @@ def _given(provider: ScriptedProvider, index: int = -1) -> list[ChatMessage]:
     return provider.prompts[index][1]
 
 
+def _harness(messages: list[ChatMessage]) -> str:
+    """The one user message: the harness with the task at its end."""
+    assert len(messages) == 1 and messages[0]["role"] == "user"
+    return messages[0]["content"]
+
+
 def _current_move_message(messages: list[ChatMessage]) -> str:
-    """The last move message: the position the player faces, at the level in force."""
-    moves = [m["content"] for m in messages if m["role"] == "user" and "Move: " in m["content"]]
-    assert moves, "no move message in the conversation"
-    return moves[-1]
+    """The 'Position now' section: the position the player faces, at the level in force."""
+    text = _harness(messages)
+    assert "# Position now" in text, "no position in the harness"
+    return text.split("# Position now", 1)[1].split("# Task", 1)[0]
 
 
 def _directive(messages: list[ChatMessage]) -> str:
-    return messages[-1]["content"]
+    return _harness(messages).rsplit("# Task" + chr(10), 1)[1]
+
+
+def _record(messages: list[ChatMessage]) -> str:
+    """The 'Game so far' section."""
+    text = _harness(messages)
+    return (
+        text.split("# Game so far", 1)[1].split("# Position now", 1)[0]
+        if "# Game so far" in text
+        else ""
+    )
 
 
 def test_a_decisive_moment_earns_one_question_that_names_nothing() -> None:
@@ -133,23 +149,25 @@ def test_a_decisive_moment_earns_one_question_that_names_nothing() -> None:
     out = _messages(coach)
     assert len(out) == 1 and out[0].trigger is Trigger.DECISIVE_QUESTION
     assert out[0].level is DisclosureLevel.QUESTION
-    # The model was handed the game as messages: one per move, the last one the position
-    # the player faces, drawn as a board, with the engine's lines withheld at this level.
+    # The model was handed the game as one message: the setting, the record one line per
+    # move, the position the player faces in full with the engine's lines withheld.
     messages = _given(provider, 0)
-    assert messages[0]["content"].startswith("New game. You coach the player, who is White")
-    moves = [m for m in messages if m["role"] == "user" and "Move: " in m["content"]]
-    assert [m["content"].split("Move: ")[1].split(" by")[0] for m in moves] == [
+    harness = _harness(messages)
+    assert harness.startswith("# Setting\nYou coach White.")
+    record = _record(messages)
+    assert [line.split(" (")[0] for line in record.strip().splitlines()] == [
         "1. e4",
         "1... e5",
         "2. Bc4",
         "2... Nc6",
         "3. Qh5",
-        "3... Nf6",
     ]
     current = _current_move_message(messages)
     assert "White to move." in current and "decisive: True" in current
-    assert "a b c d e f g h" in current, "the position is drawn as a board"
-    assert "Engine lines for the position now: withheld" in current
+    assert "3... Nf6 by the opponent" in current
+    assert "Pieces -- White: K e1, Q h5" in current, "the position is given piece by piece"
+    assert "Legal moves" not in current, "the moves are withheld with the lines at this level"
+    assert "## Engine lines" + chr(10) + "withheld" in current
     for secret in ("Qxf7", "mating", "queen", "h5f7", "candidates"):
         assert secret not in current, secret
     assert "an orienting question only" in _directive(messages)
@@ -190,30 +208,28 @@ def test_a_hint_unlocks_the_theme_and_asking_for_the_move_unlocks_it() -> None:
     assert out[0].level is DisclosureLevel.QUESTION
     current = _current_move_message(_given(provider, 0))
     assert "theme:" not in current and "Qxf7" not in current
-    # The player's words are a message of the conversation, verbatim.
-    asks = [m["content"] for m in _given(provider, 0) if m["content"].startswith("The player says")]
-    assert asks == ['The player says: "give me a hint"']
+    # The player's words stand under the position, verbatim.
+    assert '## Said here\n    PLAYER said: "give me a hint"' in current
     coach.ask("another hint", 8.5)
     out = _messages(coach)
     assert out[0].level is DisclosureLevel.THEME
     current = _current_move_message(_given(provider, 1))
     assert "theme: a mating attack" in current and "Qxf7" not in current
-    assert "queen" not in current.split("Facts for the position you face")[1]
+    assert "queen" not in current.split("## Facts (the player to move)")[1].split("## Said here")[0]
     coach.ask("ok just tell me the move", 9.0)
     out = _messages(coach)
     assert out[0].level is DisclosureLevel.CANDIDATE and "Qxf7" in out[0].text
     current = _current_move_message(_given(provider, 2))
-    assert "Engine lines for the position now" in current and "Qxf7#" in current
-    # Every earlier coach turn is in the conversation as an assistant message: two hints,
-    # each answered at once with the template and then by the model -- and this ask's own
-    # quick answer is already a turn when the model is asked to build on it.
-    given = _given(provider, 2)
-    roles = [m["role"] for m in given]
-    assert roles.count("assistant") == 5
-    assert roles[-3:] == ["user", "assistant", "user"]
-    assert given[-3]["content"] == 'The player says: "ok just tell me the move"'
-    assert given[-2]["content"].startswith("The move is Qxf7")
-    assert "have just been shown that it is Qxf7" in given[-1]["content"]
+    assert "Engine lines" in current and "Qxf7#" in current
+    # Every earlier coach turn stands under the position as an annotation: two hints, each
+    # answered at once with the template and then by the model -- and this ask's own quick
+    # answer is already there when the model is asked to build on it.
+    said = current.split("## Said here\n", 1)[1]
+    lines = said.strip().splitlines()
+    assert sum(line.startswith("    YOU (the coach) said: ") for line in lines) == 5
+    assert lines[-2] == '    PLAYER said: "ok just tell me the move"'
+    assert lines[-1].startswith('    YOU (the coach) said: "The move is Qxf7')
+    assert "have just been shown that it is Qxf7" in _directive(_given(provider, 2))
 
 
 def test_naming_the_move_yourself_earns_the_candidate_level() -> None:
@@ -273,11 +289,10 @@ def test_feedback_after_the_users_move_may_say_everything_about_that_position() 
     # position before it, now history, shows its lines in full.
     messages = _given(provider)
     played = _current_move_message(messages)
-    assert "Move: 4. Bxf7+ by you" in played
-    assert "Engine verdict on Bxf7+: miss; it cost 0.45 of expected score" in played
+    assert "4. Bxf7+ by the player: miss; it cost 0.45 of expected score" in played
     assert "the engine preferred 4. Qxf7#" in played
-    before = [m["content"] for m in messages if "Move: 3... Nf6" in m["content"]][0]
-    assert "1. 4. Qxf7#" in before, "history is at full disclosure"
+    # The record is at full disclosure: the earlier verdicts stand in full.
+    assert "3... Nf6 (the opponent)" in _record(messages)
 
 
 def test_stuck_gives_a_hint_once_and_the_opponents_turn_is_silent() -> None:
@@ -441,10 +456,10 @@ def test_the_fact_sheet_hides_by_level() -> None:
         line=["Qxf7#"],
         decisive=True,
     )
-    assert "theme" not in fact_sheet(facts, DisclosureLevel.QUESTION)
-    assert "region: the kingside, around f7" in fact_sheet(facts, DisclosureLevel.REGION)
-    assert "candidates" not in fact_sheet(facts, DisclosureLevel.REGION)
-    assert "line: Qxf7#" in fact_sheet(facts, DisclosureLevel.LINE)
+    assert "theme" not in visible_facts(facts, DisclosureLevel.QUESTION)
+    assert visible_facts(facts, DisclosureLevel.REGION)["region"] == "the kingside, around f7"
+    assert "candidates" not in visible_facts(facts, DisclosureLevel.REGION)
+    assert visible_facts(facts, DisclosureLevel.LINE)["line"] == ["Qxf7#"]
 
 
 def test_the_conversation_is_the_game_one_message_per_move_with_the_tally() -> None:
@@ -469,20 +484,14 @@ def test_the_conversation_is_the_game_one_message_per_move_with_the_tally() -> N
     coach.ask("how is my opening?", 9.0)
     _messages(coach)
     messages = _given(provider)
-    e4 = [m["content"] for m in messages if "Move: 1. e4 by you" in m["content"]][0]
-    assert "Engine verdict on e4: book; it cost nothing" in e4
-    assert "Your moves so far (1 judged): 1 book." in e4
-    bc4 = [m["content"] for m in messages if "Move: 2. Bc4 by you" in m["content"]][0]
-    assert "Your moves so far (2 judged): 1 excellent, 1 book." in bc4
-    # The moves so far are written on the current message only; a history message carries
-    # its own move and no copy of the growing list.
-    assert "Moves so far:" not in bc4
-    current = [
-        m["content"] for m in messages if m["role"] == "user" and "Moves so far:" in m["content"]
-    ]
-    assert len(current) == 1
-    assert current[0].startswith("Moves so far: 1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6")
-    assert messages[-2]["content"] == 'The player says: "how is my opening?"'
+    record = _record(messages).strip().splitlines()
+    assert record[0] == "1. e4 (the player): book."
+    assert record[2] == "2. Bc4 (the player): excellent."
+    assert len(record) == 5, "one line per move played before the position now"
+    current = _current_move_message(messages)
+    assert "3... Nf6 by the opponent" in current
+    assert "The player's moves so far (2 judged): 1 excellent, 1 book." in current
+    assert current.rstrip().endswith('PLAYER said: "how is my opening?"')
 
 
 def test_a_takeback_is_a_message_that_says_so_and_history_keeps_the_withdrawn_move() -> None:
@@ -525,16 +534,15 @@ def test_a_takeback_is_a_message_that_says_so_and_history_keeps_the_withdrawn_mo
     coach.on_event(_mate_analysis(6, decisive=False), 12.5)  # facts for the ask below
     coach.ask("what happened there?", 13.0)
     _messages(coach)
-    texts = [m["content"] for m in _given(provider)]
-    withdrawn = [t for t in texts if "Move: 4. Bxf7+ by you" in t]
-    takeback = [t for t in texts if t.startswith("Takeback: 4. Bxf7+ withdrawn")]
-    replacement = [t for t in texts if "Move: 4. Qxf7# by you" in t]
-    assert withdrawn and takeback and replacement
-    assert texts.index(withdrawn[0]) < texts.index(takeback[0]) < texts.index(replacement[0])
-    assert "back at the position after 3... Nf6" in takeback[0]
-    # The move list in the replacement's message no longer holds the withdrawn move.
-    assert "Moves so far: 1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7#" in replacement[0]
-    assert "Bxf7+" not in replacement[0].split("Moves so far:")[1].split("\n")[0]
+    harness = _harness(_given(provider))
+    withdrawn = harness.index("4. Bxf7+ (the player)")
+    takeback = harness.index("    EVENT: Takeback: 4. Bxf7+ withdrawn")
+    replacement = harness.index("4. Qxf7# by the player")
+    assert withdrawn < takeback < replacement
+    assert "back at the position after 3... Nf6" in harness
+    # The withdrawn move stays in the record as something that happened, marked so; the
+    # position now is the replacement's.
+    assert harness.count("4. Bxf7+") == 2, "the withdrawn move: its line and the takeback"
 
 
 def test_a_reread_of_the_board_is_a_message_and_the_numbering_restarts() -> None:
@@ -574,12 +582,10 @@ def test_a_reread_of_the_board_is_a_message_and_the_numbering_restarts() -> None
     )
     coach.ask("what now?", 23.0)
     _messages(coach)
-    texts = [m["content"] for m in _given(provider)]
-    reread = [t for t in texts if t.startswith("The board was re-read")]
-    assert reread and "Moves may have gone unseen" in reread[0]
+    harness = _harness(_given(provider))
+    assert "    EVENT: The board was re-read" in harness and "Moves may have gone unseen" in harness
     # The numbering follows the position the board was read at, not a ply count.
-    after = [t for t in texts if "Move: 4... d6 by your opponent" in t]
-    assert after and "Moves so far: 4... d6" in after[0]
+    assert "4... d6 by the opponent" in _current_move_message(_given(provider))
 
 
 def test_asking_before_anything_is_analysed_gets_an_honest_answer() -> None:
@@ -762,9 +768,7 @@ def test_material_is_always_from_the_users_side_and_the_review_draws_on_the_tall
     assert facts is not None
     assert facts.material == "you are up a pawn", "from the user's side, not the mover's"
     assert facts.user_side == "white" and facts.side_to_move == "black"
-    sheet = fact_sheet(facts, DisclosureLevel.QUESTION)
-    assert "Black (your opponent) to move; you are white" in sheet
-    assert "Material: you are up a pawn." in coach.conversation.render_ply(
+    assert "Material: the player is up a pawn." in coach.conversation.render_ply(
         coach.conversation.records[-1], DisclosureLevel.LINE
     )
     # The user's moves get their labels tallied.
@@ -797,10 +801,10 @@ def test_material_is_always_from_the_users_side_and_the_review_draws_on_the_tall
     directive = _directive(messages)
     assert "They asked how they did overall" in directive
     assert "do not infer the course of the game from the position" in directive
-    last_own = [m["content"] for m in messages if "Move: 3. Qxe5+ by you" in m["content"]][0]
-    assert "Your moves so far (3 judged): 1 best, 1 book, 1 inaccuracy." in last_own
-    assert "Ground lost at: 2. Qh5 (inaccuracy)" in last_own
-    assert any(m["content"].startswith("Game over: 1-0") for m in messages)
+    harness = _harness(messages)
+    assert "The player's moves so far (3 judged): 1 best, 1 book, 1 inaccuracy." in harness
+    assert "Ground lost at: 2. Qh5 (inaccuracy)" in harness
+    assert "    EVENT: Game over: 1-0" in harness
     # Other ways of asking are reviews too, and when the model's review fails the checks
     # the template is the record, not "I have no line for this yet".
     from sidecoach.coach.coach import _ASK_REVIEW
@@ -829,10 +833,11 @@ def test_a_quick_answer_is_a_turn_before_the_model_and_a_failed_reply_adds_nothi
     assert [m.text for m in out] == [quick]
     # The request carried the quick answer as the coach's own turn, then the directive.
     given = _given(provider, 0)
-    assert given[-3]["content"] == 'The player says: "hint"'
-    assert given[-2]["role"] == "assistant" and given[-2]["content"].startswith("Something forcing")
-    assert given[-1]["role"] == "user" and "build on it, do not repeat it" in given[-1]["content"]
-    assert "The player says" not in given[-1]["content"]
+    said = _current_move_message(given).split("## Said here", 1)[1].strip(chr(10)).splitlines()
+    assert said[-2] == '    PLAYER said: "hint"'
+    assert said[-1].startswith('    YOU (the coach) said: "Something forcing')
+    assert "build on it, do not repeat it" in _directive(given)
+    assert "PLAYER said" not in _directive(given)
     # The rejected reply is in the log, with its calls, and nowhere else.
     rejected = [s for s in coach.spoken if not s.message.text]
     assert len(rejected) == 1 and rejected[0].attempts == 2 and rejected[0].problems
@@ -1051,16 +1056,21 @@ def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> No
         "3... Bc5 4. d3; Bc4 attacks the pawn on f7.",
         "Bc4 is fine: a little behind the best. What does it aim at?",
     ]
-    history = _given(provider)[:-1]
-    assert history[-1]["role"] == "assistant" and history[-1]["content"].startswith("your Bc4:")
+    said = (
+        _current_move_message(_given(provider))
+        .split("## Said here", 1)[1]
+        .strip(chr(10))
+        .splitlines()
+    )
+    assert said[-1].startswith('    YOU (the coach) said: "your Bc4:')
     directive = _directive(_given(provider))
     assert "have just been shown the engine's word on it" in directive
     assert (
-        "Engine on your Bc4, which you asked about: after 3. Bc4 the expected score is 0.52"
-        in directive
+        "Engine on your Bc4, which the player asked about: after 3. Bc4 the expected score "
+        "is 0.52" in directive
     )
     assert "0.03 behind the engine's best;" in directive
-    assert "the engine's reply would be 3... Bc5 4. d3" in directive
+    assert "the opponent's reply would be 3... Bc5 4. d3" in directive
     assert "what Bc4 does: attacks the pawn on f7" in directive
     # Below LINE the engine's own preferred move is not named.
     assert "Bb5" not in directive

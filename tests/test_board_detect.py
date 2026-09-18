@@ -10,6 +10,8 @@ from sidecoach.events import Region
 from sidecoach.vision.board_detect import detect_boards, fit_score, square_colours, to_gray
 from tests.synth import DARK, LIGHT, bulky_pieces, render_board, synthetic_board, with_overlays
 
+pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
+
 
 def test_overlays_do_not_move_detection() -> None:
     clean = synthetic_board(x0=300, y0=120, cell=64)

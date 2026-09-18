@@ -21,6 +21,8 @@ from sidecoach.state.pipeline import GamePipeline
 from tests.synth import synthetic_board
 from tests.test_occlusion import with_dialog
 
+pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
+
 BOTTOMS = [Side.WHITE, Side.BLACK]
 Queue = tuple[chess.Move, ...]
 
@@ -79,6 +81,7 @@ def _uci(*ucis: str) -> tuple[str, ...]:
     return ucis
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("bottom", BOTTOMS)
 def test_a_single_premove_executes_with_the_opponents_move(bottom: Side) -> None:
     g = Game(bottom)
@@ -103,6 +106,7 @@ def test_a_single_premove_executes_with_the_opponents_move(bottom: Side) -> None
         assert g.sans == ["e4", "e5", "Nf3", "Nf6"], g.sans
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("bottom", BOTTOMS)
 def test_a_queue_of_two_steps_executes_one_step_per_opponent_move(bottom: Side) -> None:
     g = Game(bottom)
@@ -197,6 +201,7 @@ def test_a_premove_the_opponents_move_makes_illegal_is_cleared() -> None:
     assert g.sans[-2:] == ["Bb4+", "c3"], g.sans
 
 
+@pytest.mark.slow
 def test_premoves_that_end_in_mate_under_the_dialog_commit_the_real_line() -> None:
     """The third live game's finish, move for move: 65. Qgg3 (seen only in flight) Kc2
     66. Qhh2+ Kd1 67. Qgg1#, both queens premoved, the mate's one clean frame followed
@@ -289,6 +294,7 @@ def _run_queue(
 LADDER = "7k/p5pp/8/8/8/8/8/3Q2K1 w - - 0 1"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("frames_per_state", [3, 1])
 def test_a_six_step_queue_of_one_piece_ends_in_mate(frames_per_state: int) -> None:
     g = Game(Side.WHITE, fen=LADDER)
@@ -305,6 +311,7 @@ def test_a_six_step_queue_of_one_piece_ends_in_mate(frames_per_state: int) -> No
     assert g.ended and g.ended[0].result == "1-0"
 
 
+@pytest.mark.slow
 def test_a_long_queue_against_a_bot_faster_than_the_capture() -> None:
     """Every other picture is never captured: two plies of each side land between frames.
     The pictures then admit a shorter legal story (a7-a5 in one push, the queen two
@@ -331,6 +338,7 @@ def test_a_long_queue_against_a_bot_faster_than_the_capture() -> None:
 TWO_PIECES = "7k/pp4pp/8/8/8/1Q6/8/K1R5 w - - 0 1"
 
 
+@pytest.mark.slow
 def test_a_seven_step_queue_over_two_pieces_ends_in_mate() -> None:
     g = Game(Side.WHITE, fen=TWO_PIECES)
     _run_queue(
@@ -452,6 +460,7 @@ def test_the_users_king_in_check_on_a_red_square_is_not_a_ghost() -> None:
     assert g.sans[-2:] == ["Qh4+", "g3"], g.sans
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("frames_per_state", [3, 1])
 def test_black_runs_a_long_queue_to_mate(frames_per_state: int) -> None:
     """The same ladder from Black's side, black at the bottom: the queen climbs the d-file

@@ -98,7 +98,7 @@ def test_the_nature_of_the_best_move_is_forcing_or_quiet() -> None:
     from being the same pawn-advance homily in every position (the first live game's
     endgame had a promotion with mate to find and got "support your central pawns", four
     times over)."""
-    from sidecoach.coach.coach import fact_sheet
+    from sidecoach.coach.disclosure import visible_facts
     from sidecoach.events import DisclosureLevel
 
     def analysed(fen: str, best: str) -> Analysis:
@@ -113,9 +113,9 @@ def test_the_nature_of_the_best_move_is_forcing_or_quiet() -> None:
 
     mate = facts_from_analysis(chess.Board(SCHOLAR), analysed(SCHOLAR, "h5f7"))
     assert mate.nature is not None and mate.nature.startswith("forcing")
-    sheet = fact_sheet(mate, DisclosureLevel.QUESTION)
-    assert "nature: forcing: the answer is a check, a capture or a promotion" in sheet
-    assert "f7" not in sheet.split("Fact sheet:")[1] and "queen" not in sheet
+    shown = visible_facts(mate, DisclosureLevel.QUESTION)
+    assert shown["nature"] == "forcing: the answer is a check, a capture or a promotion"
+    assert not any("f7" in str(v) or "queen" in str(v) for v in shown.values())
     # The trial game's endgame: a rook up, a pawn on d7, dxe8=Q+ leads to mate.
     fen = "1q2r2k/3P4/p6p/1pRQ2p1/8/5P2/PP4PP/5R1K w - - 1 34"
     promote = facts_from_analysis(chess.Board(fen), analysed(fen, "d7e8q"))
@@ -123,4 +123,4 @@ def test_the_nature_of_the_best_move_is_forcing_or_quiet() -> None:
     quiet_fen = "r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 4"
     quiet = facts_from_analysis(chess.Board(quiet_fen), analysed(quiet_fen, "b1c3"))
     assert quiet.nature is not None and quiet.nature.startswith("quiet")
-    assert "nature: quiet" in fact_sheet(quiet, DisclosureLevel.QUESTION)
+    assert str(visible_facts(quiet, DisclosureLevel.QUESTION)["nature"]).startswith("quiet")

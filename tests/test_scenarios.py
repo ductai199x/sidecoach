@@ -13,6 +13,8 @@ from sidecoach.events import GameStarted, MovePlayed, Resync
 from sidecoach.state.pipeline import GamePipeline
 from tests.synth import busy_background, synthetic_board
 
+pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
+
 FRAME = dict(width=1280, height=800)
 
 
@@ -103,6 +105,7 @@ def test_board_fully_covered_while_moves_happen() -> None:
     assert out == ["Nf3", "Nc6"], s.events[-8:]
 
 
+@pytest.mark.slow
 def test_board_minimised_then_restored() -> None:
     s = Session()
     s.start()

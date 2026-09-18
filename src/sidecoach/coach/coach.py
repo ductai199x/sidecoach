@@ -34,9 +34,8 @@ from sidecoach.coach.disclosure import (
     PositionFacts,
     Unlock,
     leak_check,
-    visible_facts,
 )
-from sidecoach.coach.facts import ascii_board, describe_move, facts_from_analysis
+from sidecoach.coach.facts import describe_move, facts_from_analysis
 from sidecoach.coach.named import EngineLike as NamedEngine
 from sidecoach.coach.named import analyse_named, disclosed_frames
 from sidecoach.coach.named import spoken as spoken_examination
@@ -689,40 +688,6 @@ def _in_words(board: chess.Board, san: str) -> str:
         return san
 
 
-def fact_sheet(facts: PositionFacts, level: DisclosureLevel) -> str:
-    visible = visible_facts(facts, level)
-    board = chess.Board(facts.fen)
-    who = "White" if board.turn == chess.WHITE else "Black"
-    yours = facts.user_side or facts.side_to_move
-    if yours == facts.side_to_move:
-        turn = f"{who} to move; you are {yours}."
-    else:
-        turn = (
-            f"{who} (your opponent) to move; you are {yours}. The candidates, threats and "
-            "plan below are your opponent's."
-        )
-    if board.is_game_over():
-        turn = f"The game is over ({board.result()}); you are {yours}."
-    lines = [
-        "The position (white at the bottom, capitals are white):",
-        ascii_board(board),
-        turn,
-        "",
-        "Fact sheet:",
-    ]
-    for key, value in visible.items():
-        if key in ("fen", "side_to_move", "user_side") or value in (None, "", [], False):
-            continue
-        if isinstance(value, list):
-            value = (
-                ", ".join(str(item) for item in value)
-                if value and not isinstance(value[0], dict)
-                else value
-            )
-        lines.append(f"- {key.replace('_', ' ')}: {value}")
-    return "\n".join(lines)
-
-
 class Coach:
     """The coach in a game: takes events and the user's words, hands back messages."""
 
@@ -1218,9 +1183,9 @@ class Coach:
         directive = f"{self._level_line(level, position)}{instruction}"
         with self._lock:
             self.conversation.level = level
+            harness = self.conversation.render()
             messages: list[ChatMessage] = [
-                *self.conversation.messages(),
-                {"role": "user", "content": directive},
+                {"role": "user", "content": f"{harness}\n\n# Task\n{directive}"},
             ]
         request = _Request(
             trigger=trigger,

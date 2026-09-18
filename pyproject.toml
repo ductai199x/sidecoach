@@ -84,6 +84,14 @@ line-ending = "native"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The default run is the fast unit suite. `-m vision` adds the synthetic vision-pipeline
+# behaviour tests (about a minute); `-m slow` the recordings, server and engine replays
+# (minutes); `-m ""` everything.
+addopts = "-m 'not slow and not vision' -p no:cacheprovider"
+markers = [
+    "slow: replays a recording, starts the server or runs Stockfish; minutes, run deliberately",
+    "vision: the synthetic vision-pipeline behaviour suite; about a minute",
+]
 
 [tool.pyright]
 include = ["src", "tests", "scripts"]

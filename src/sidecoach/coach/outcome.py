@@ -69,8 +69,9 @@ def play_out(
 
 
 def line_outcome(board: chess.Board, moves: list[str], user_colour: chess.Color) -> str:
-    """What the line changes, from the player's side: "you win a pawn; you get a passed
-    pawn on d5; the e-file opens; your king castles". Empty when nothing of note changes."""
+    """What the line changes, from the player's side, written for the harness: "the player
+    wins a pawn; the player gets a passed pawn on d5; the e-file opens; the player's king
+    castles". Empty when nothing of note changes."""
     after, played, castled = play_out(board, moves)
     if played == 0:
         return ""
@@ -78,25 +79,25 @@ def line_outcome(board: chess.Board, moves: list[str], user_colour: chess.Color)
     parts: list[str] = []
     diff = _material(after, us) - _material(board, us)
     if diff > 0:
-        parts.append(f"you win {_amount(diff)}")
+        parts.append(f"the player wins {_amount(diff)}")
     elif diff < 0:
-        parts.append(f"you give up {_amount(diff)}")
+        parts.append(f"the player gives up {_amount(diff)}")
     new_ours = _passed(after, us) - _passed(board, us)
     new_theirs = _passed(after, them) - _passed(board, them)
     if new_ours:
         parts.append(
-            "you get a passed pawn on "
+            "the player gets a passed pawn on "
             + " and ".join(chess.square_name(s) for s in sorted(new_ours))
         )
     if new_theirs:
         parts.append(
-            "they get a passed pawn on "
+            "the opponent gets a passed pawn on "
             + " and ".join(chess.square_name(s) for s in sorted(new_theirs))
         )
     opened = _open_files(after) - _open_files(board)
     if opened:
         parts.append("the " + " and ".join(f"{_FILES[f]}-file" for f in sorted(opened)) + " opens")
-    for colour, whose in ((us, "your"), (them, "their")):
+    for colour, whose in ((us, "the player's"), (them, "the opponent's")):
         if castled[colour]:
             parts.append(f"{whose} king castles")
         else:
@@ -107,5 +108,5 @@ def line_outcome(board: chess.Board, moves: list[str], user_colour: chess.Color)
     if both_queens and not after.pieces(chess.QUEEN, us) and not after.pieces(chess.QUEEN, them):
         parts.append("queens come off")
     if after.is_checkmate():
-        parts.append("it is mate" if after.turn == them else "you are mated")
+        parts.append("the opponent is mated" if after.turn == them else "the player is mated")
     return "; ".join(parts)

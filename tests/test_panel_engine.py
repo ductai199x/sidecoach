@@ -26,6 +26,7 @@ def _frames(limit: int) -> Iterator[tuple[int, float, object]]:
         yield (i, tick.ts, frame)
 
 
+@pytest.mark.slow
 def test_engine_follows_a_recorded_game_and_reports_it(tmp_path: Path) -> None:
     settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
     engine = PanelEngine(

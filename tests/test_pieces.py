@@ -20,6 +20,9 @@ from sidecoach.vision.pieces import (
 from sidecoach.vision.squares import BoardGeometry, row_col, square_at
 from tests.synth import DARK, LIGHT, blend_outline, blend_rect, draw_piece, synthetic_board
 
+pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
+
+
 GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
 
 
@@ -310,6 +313,7 @@ def test_recognition_survives_a_lock_a_pixel_off() -> None:
         assert not _every_piece_reads(readings, later, Side.WHITE, settled=False), (dx, dy, pitch)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("cell", [43, 32])
 @pytest.mark.parametrize("thickness", [1, 2, 3, 4])
 @pytest.mark.parametrize("inset", [0, 1])
@@ -354,6 +358,7 @@ OUTLINE_WHITE = (255, 255, 255)
 RING_GREY = (40, 40, 40)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("alpha", [0.3, 0.5, 0.7])
 @pytest.mark.parametrize("overlay", [*TINTS, "outline", "ring"])
 @pytest.mark.parametrize("piece", [None, "N", "b"])

@@ -10,6 +10,8 @@ from sidecoach.vision.board_detect import fit_score, to_gray
 from sidecoach.vision.tracker import BoardTracker
 from tests.synth import DARK, LIGHT, bulky_pieces, render_board, synthetic_board
 
+pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
+
 
 def test_tracker_locks_and_validates_cheaply() -> None:
     tracker = BoardTracker()

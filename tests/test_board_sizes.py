@@ -22,6 +22,8 @@ from sidecoach.state.pipeline import GamePipeline
 from sidecoach.vision.squares import BoardGeometry, row_col, square_at
 from tests.synth import synthetic_board
 
+pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
+
 BASE_CELL = 96
 SANS = ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "d6"]
 
@@ -38,6 +40,7 @@ def frame_at(size: int, **kw: object) -> np.ndarray:
     return out
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("size", [297, 333, 555, 641, 851, 1053])
 def test_the_pipeline_follows_a_game_at_this_board_size(size: int) -> None:
     pipe = GamePipeline()

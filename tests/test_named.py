@@ -69,8 +69,8 @@ def test_examine_reports_the_score_the_gap_the_reply_and_the_effects() -> None:
         level=DisclosureLevel.QUESTION,
     )
     assert fact == (
-        "Engine on your Bc4, which you asked about: after 3. Bc4 the expected score is 0.52 "
-        "from your side, 0.03 behind the engine's best; the engine's reply would be "
+        "Engine on your Bc4, which the player asked about: after 3. Bc4 the expected score is 0.52 "
+        "from the player's side, 0.03 behind the engine's best; the opponent's reply would be "
         "3... Bc5 4. d3; what Bc4 does: attacks the pawn on f7."
     )
     # Below LINE the engine's own best move is not named; at LINE it is.
@@ -88,8 +88,8 @@ def test_examine_reports_the_score_the_gap_the_reply_and_the_effects() -> None:
 
 def test_spoken_puts_the_same_facts_in_plain_words() -> None:
     fact = (
-        "Engine on your Bc4, which you asked about: after 3. Bc4 the expected score is 0.52 "
-        "from your side, 0.03 behind the engine's best; the engine's reply would be "
+        "Engine on your Bc4, which the player asked about: after 3. Bc4 the expected score is 0.52 "
+        "from the player's side, 0.03 behind the engine's best; the opponent's reply would be "
         "3... Bc5 4. d3; what Bc4 does: attacks the pawn on f7."
     )
     assert spoken(fact) == (
@@ -97,8 +97,8 @@ def test_spoken_puts_the_same_facts_in_plain_words() -> None:
         "answer 3... Bc5 4. d3; Bc4 attacks the pawn on f7."
     )
     worse = (
-        "Engine on Nb1, which you asked about: after 10. Nb1 the expected score is 0.30 "
-        "from your side, 0.20 behind the engine's best (Nd5); the engine then plays "
+        "Engine on Nb1, which the player asked about: after 10. Nb1 the expected score is 0.30 "
+        "from the player's side, 0.20 behind the engine's best (Nd5); the engine then plays "
         "10... Nxe4."
     )
     assert spoken(worse) == (
@@ -111,16 +111,16 @@ def test_spoken_puts_the_same_facts_in_plain_words() -> None:
 def test_disclosed_frames_follow_the_probe_and_the_reply() -> None:
     board = chess.Board(ITALIAN_START)
     fact = (
-        "Engine on your Bc4, which you asked about: after 3. Bc4 the expected score is 0.52 "
-        "from your side, 0.03 behind the engine's best; the engine's reply would be "
+        "Engine on your Bc4, which the player asked about: after 3. Bc4 the expected score is 0.52 "
+        "from the player's side, 0.03 behind the engine's best; the opponent's reply would be "
         "3... Bc5 4. d3; what Bc4 does: attacks the pawn on f7."
     )
     frames = disclosed_frames(board, [fact])
     assert [f.peek().uci() for f in frames] == ["f1c4", "f8c5", "d2d3"]
     # A pass for the opponent's move first is a null move.
     theirs = (
-        "Engine on if they play Bc5, which you asked about: after pass Bc5 the expected "
-        "score is 0.50 from your side, as good as the engine's best; the engine then plays "
+        "Engine on if they play Bc5, which the player asked about: after pass Bc5 the expected "
+        "score is 0.50 from the player's side, as good as the engine's best; the engine then plays "
         "3. Bc4 Nf6."
     )
     frames = disclosed_frames(board, [theirs])
@@ -130,8 +130,8 @@ def test_disclosed_frames_follow_the_probe_and_the_reply() -> None:
 def test_a_move_recited_from_the_examined_line_is_not_faulted() -> None:
     board = chess.Board("r1bq1rk1/1pp1bppp/p1np1n2/4p3/2B1P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 0 10")
     fact = (
-        "Engine on 10. h3, which you asked about: after 10. h3 the expected score is 0.45 "
-        "from your side, 0.08 behind the engine's best; the engine's reply would be "
+        "Engine on 10. h3, which the player asked about: after 10. h3 the expected score is 0.45 "
+        "from the player's side, 0.08 behind the engine's best; the opponent's reply would be "
         "10... Na5 11. Re1."
     )
     draft = "After h3 Na5 Re1 they can play Nxc4."

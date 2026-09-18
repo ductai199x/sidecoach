@@ -24,6 +24,8 @@ from sidecoach.state.reconcile import Readings
 from sidecoach.vision.pieces import OVERLAY_MAX, CellReading, silhouette
 from sidecoach.vision.squares import BoardGeometry, square_at
 
+pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
+
 REC = Path("data/recordings/20260916-000902")  # the trial game; local, not committed
 ARROW_FRAMES = (640.0, 662.0)  # the d4->e5 arrow is on the board
 CLEAN_FRAME = 590.0  # after 22...e5, before any arrow was drawn
@@ -83,6 +85,7 @@ def test_a_badge_on_the_corner_is_not_a_drawing() -> None:
     assert silhouette(cell).overlay < OVERLAY_MAX
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(not (REC / "index.jsonl").exists(), reason="the trial recording is local")
 def test_cells_under_the_arrow_are_unreadable_and_the_move_is_not_committed() -> None:
     rec = Recording(REC)

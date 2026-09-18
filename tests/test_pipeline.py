@@ -1,10 +1,14 @@
 from typing import Any
 
 import chess
+import pytest
 
 from sidecoach.events import GameEnded, GameStarted, MovePlayed, Side
 from sidecoach.state.pipeline import GamePipeline
 from tests.synth import synthetic_board
+
+pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
+
 
 BROWN_LIGHT = (181, 217, 240)
 BROWN_DARK = (99, 136, 181)

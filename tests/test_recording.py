@@ -15,6 +15,9 @@ from sidecoach.replay.recording import (
     shrink_recording,
 )
 
+pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
+
+
 LOGGER = "sidecoach.replay.recording"
 
 

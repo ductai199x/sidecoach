@@ -13,6 +13,8 @@ from sidecoach.vision.squares import BoardGeometry, row_col
 from sidecoach.vision.tracker import BoardTracker
 from tests.synth import synthetic_board
 
+pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
+
 GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
 BOTTOMS = [Side.WHITE, Side.BLACK]
 
@@ -90,6 +92,7 @@ def test_covered_cells_read_as_unknown_and_visible_cells_still_read(bottom: Side
         assert readings[r][c].symbol == "r"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("bottom", BOTTOMS)
 def test_mating_move_commits_while_the_game_over_dialog_covers_the_board(bottom: Side) -> None:
     """The last move is seen only with the dialog already up, as chess.com does it."""
@@ -284,6 +287,7 @@ def test_junk_next_to_a_strip_is_not_relabelled_but_next_to_a_dialog_it_is() -> 
     assert readings[r5][c5].covered and not readings[r5][c5].hover, readings[r5][c5]
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("bottom", BOTTOMS)
 def test_a_dialog_that_stays_over_a_live_board_covers_the_game_but_ends_nothing(
     bottom: Side,
@@ -334,6 +338,7 @@ def test_a_dialog_that_stays_over_a_live_board_covers_the_game_but_ends_nothing(
     assert pipe.end_game("0-1", "changed my mind", ts) == []
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("bottom", BOTTOMS)
 def test_the_dialog_confirms_a_mate_read_once(bottom: Side) -> None:
     """The mating move is read in one clean frame and the dialog comes before a second:

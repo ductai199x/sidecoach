@@ -1,12 +1,15 @@
 """Premove queues: the piece is drawn at the end of the queue while its square is empty."""
 
 import chess
+import pytest
 
 from sidecoach.events import MovePlayed, Region, Resync, Side
 from sidecoach.state.reconcile import Reconciler
 from sidecoach.vision.pieces import ThemeModel
 from sidecoach.vision.squares import BoardGeometry
 from tests.synth import synthetic_board
+
+pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
 
 GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
 # After 59...Kf7 in the game of 2026-09-14 20:06: white Kc7, pawns a4 b6 f4 g3 h4, Be5.

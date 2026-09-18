@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import chess
 import numpy as np
+import pytest
 
 from sidecoach.events import Event, ScreenState, ScreenStateChanged, Side
 from sidecoach.state.pipeline import GamePipeline
 from sidecoach.state.reconcile import Reconciler
 from tests.synth import synthetic_board
+
+pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
 
 
 def _states(events: list[Event]) -> list[ScreenState]:

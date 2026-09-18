@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from sidecoach.config import Settings, VoiceSettings
@@ -24,6 +25,7 @@ def _settings(tmp_path: Path) -> Settings:
     return Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
 
 
+@pytest.mark.slow
 def test_controls_and_static_page(tmp_path: Path) -> None:
     engine = PanelEngine(_settings(tmp_path), analysis=False, coach=False, frame_source=iter(()))
     client = TestClient(build_app(engine))
@@ -46,6 +48,7 @@ def test_controls_and_static_page(tmp_path: Path) -> None:
     assert client.get("/app.js").status_code == 200
 
 
+@pytest.mark.slow
 def test_poll_reports_a_replayed_game(tmp_path: Path) -> None:
     def frames() -> Iterator[tuple[int, float, object]]:
         for i, (tick, frame) in enumerate(Recording(REC).frames()):

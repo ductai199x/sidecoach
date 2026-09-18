@@ -282,9 +282,9 @@ def to_move_lines(board: chess.Board, *, own: str) -> list[str]:
 def inventory_text(board: chess.Board, user_colour: chess.Color) -> str:
     """One block: the player's pieces, the opponent's, and what the side to move can do.
     Empty when nothing is hanging, attacked, pinned or on offer."""
-    mine = side_lines(board, user_colour, own="Your", their="their")
-    theirs = side_lines(board, not user_colour, own="Their", their="your")
-    mover = "Your" if board.turn == user_colour else "Their"
+    mine = side_lines(board, user_colour, own="The player's", their="the opponent's")
+    theirs = side_lines(board, not user_colour, own="The opponent's", their="the player's")
+    mover = "The player's" if board.turn == user_colour else "The opponent's"
     now = to_move_lines(board, own=mover)
     lines = [*mine, *theirs, *now]
     if not lines:

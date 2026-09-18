@@ -229,6 +229,7 @@ def test_the_reader_is_cheap_enough_for_every_changed_frame() -> None:
     assert per_frame_ms < 5.0, per_frame_ms
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(not RECORDINGS.exists(), reason="data/recordings is not checked in")
 def test_think_times_from_a_recording_match_chesscom() -> None:
     import sys

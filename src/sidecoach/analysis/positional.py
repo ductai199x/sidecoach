@@ -870,7 +870,7 @@ def development(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
         facts.append(
             PositionalFact(
                 "undeveloped",
-                f"you still have {count} at home ({names}); they are not in the game yet",
+                f"you still have {count} at home ({names}), not yet in the game",
                 tuple(_name(sq) for sq in home),
             )
         )

@@ -1,11 +1,15 @@
 import chess
 import numpy as np
+import pytest
 
 from sidecoach.events import GameEnded, GameStarted, MovePlayed, Region, Resync, Side, Takeback
 from sidecoach.state.reconcile import Reconciler, cell_agrees
 from sidecoach.vision.pieces import CellReading, ThemeModel
 from sidecoach.vision.squares import BoardGeometry, row_col
 from tests.synth import DARK, LIGHT, RED, YELLOW, synthetic_board, tint
+
+pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
+
 
 GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
 
@@ -632,6 +636,7 @@ def test_mate_settles_with_two_badge_cells_as_wildcards() -> None:
     assert any(isinstance(e, GameEnded) for e in events)
 
 
+@pytest.mark.slow
 def test_browsing_to_the_start_of_a_long_game_is_not_a_new_game() -> None:
     """The move list's first entry shows the start position; a game of 42 plies is still on."""
     model, rec = _setup()

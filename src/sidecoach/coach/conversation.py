@@ -39,9 +39,10 @@ import chess
 from sidecoach.analysis.engine import san_line
 from sidecoach.coach.disclosure import PositionFacts, visible_facts
 from sidecoach.coach.effects import effects_text
-from sidecoach.coach.facts import ascii_board, material_text, standing_words
+from sidecoach.coach.facts import material_text, motif_words, position_text, standing_words
 from sidecoach.coach.inventory import inventory_text
 from sidecoach.coach.outcome import line_outcome
+from sidecoach.coach.person import third_person
 from sidecoach.events import (
     Analysis,
     DisclosureLevel,
@@ -164,11 +165,11 @@ class Conversation:
         self.records = []
         self._drained = 0
         side = "White" if event.user_side == Side.WHITE else "Black"
-        text = f"New game. You coach the player, who is {side}, against {opponent}."
+        text = f"You coach {side}."
         if control:
             text += f" Time control: {control}."
         if event.start_fen != chess.STARTING_FEN:
-            text += "\nThe game is joined in progress; the position is:\n" + ascii_board(
+            text += "\nThe game is joined in progress; the position is:\n" + position_text(
                 chess.Board(event.start_fen)
             )
         self.entries.append(Entry("user", "game", text))
@@ -212,7 +213,7 @@ class Conversation:
         names = ", ".join(self._numbered(r.move) for r in withdrawn) or "the last move"
         text = (
             f"Takeback: {names} withdrawn. The game is back at the position after "
-            f"{self._last_active_name()}, {self._turn_text(board)}:\n{ascii_board(board)}\n"
+            f"{self._last_active_name()}, {self._turn_text(board)}:\n{position_text(board)}\n"
             "Play continues from here; the next message is the replacement move."
         )
         self.entries.append(Entry("user", "takeback", text))
@@ -223,7 +224,7 @@ class Conversation:
             record.superseded = True  # the move list restarts here
         text = (
             f"The board was re-read ({event.reason}). Moves may have gone unseen. The position "
-            f"is now, {self._turn_text(board)}:\n{ascii_board(board)}\n"
+            f"is now, {self._turn_text(board)}:\n{position_text(board)}\n"
             "The move numbering restarts from this position."
         )
         self.entries.append(Entry("user", "resync", text))
@@ -243,9 +244,9 @@ class Conversation:
         self.entries.append(Entry("user", "ended", f"Game over: {event.result}{how}."))
 
     def user_said(self, text: str, verdicts: list[str] | None = None) -> None:
-        body = f'The player says: "{text}"'
+        body = f'"{text}"'
         if verdicts:
-            body += "\nTheir claims, checked against the board:\n- " + "\n- ".join(verdicts)
+            body += " -- their claims, checked against the board: " + "; ".join(verdicts)
         self.entries.append(Entry("user", "ask", body))
 
     def coach_said(self, text: str) -> None:
@@ -254,33 +255,55 @@ class Conversation:
     # ---- rendering ---------------------------------------------------------------------
 
     def messages(self) -> list[ChatMessage]:
-        """The conversation as the model sees it. Ply messages are frozen as they go out;
-        the last ply message stays live until the next move, since the disclosure level
-        for the position the user faces can rise while they think."""
-        out: list[ChatMessage] = []
-        ply_indexes = [i for i, e in enumerate(self.entries) if e.kind == "ply"]
-        last_ply = ply_indexes[-1] if ply_indexes else None
-        # The position the user faces and the one they moved from carry the diagram; an
-        # older ply carries its FEN -- the same position, a quarter of the tokens.
-        recent = set(ply_indexes[-RECENT_PLIES:])
-        for i, entry in enumerate(self.entries):
-            if entry.kind != "ply":
-                out.append({"role": entry.role, "content": entry.text})  # type: ignore[typeddict-item]
+        """The harness output: one user message, in sections. The coach appends its task
+        to it and answers as the assistant."""
+        return [{"role": "user", "content": self.render()}]
+
+    def render(self) -> str:
+        """The sections: the setting; the game so far -- one line per move with its verdict,
+        and under each move, indented, what was said after it (the player's words, your
+        reply) and any event, the way a game record carries its annotations; the position
+        now in full (the last ply, at the disclosure level in force), with what was said
+        after it under it. Nothing is written twice: the move list is the record."""
+        header = next((e.text for e in self.entries if e.kind == "game"), "")
+        ply_entries = [e for e in self.entries if e.kind == "ply"]
+        last = ply_entries[-1] if ply_entries else None
+        game: list[str] = []
+        now: list[str] = []
+        sink = game
+        for entry in self.entries:
+            if entry.kind == "game":
                 continue
-            if entry.frozen is not None and i not in recent:
-                text = entry.frozen
-            else:
+            if entry.kind == "ply":
                 assert entry.record is not None
-                # History is at full disclosure: a position already played through hides
-                # nothing. Only the position the user faces now is rendered at the level.
-                level = self.level if i == last_ply else DisclosureLevel.LINE
-                text = self.render_ply(
-                    entry.record, level, current=i == last_ply, recent=i in recent
-                )
-                if i not in recent:
-                    entry.frozen = text  # its final form: frozen from here on
-            out.append({"role": "user", "content": text})
-        return out
+                if entry is last:
+                    sink = now
+                    sink.append(
+                        self.render_ply(entry.record, self.level, current=True, recent=True)
+                    )
+                    continue
+                if entry.frozen is None:
+                    entry.frozen = self.render_ply(
+                        entry.record, DisclosureLevel.LINE, current=False, recent=False
+                    )
+                sink.append(entry.frozen)
+            elif entry.kind == "ask":
+                sink.append(f"    PLAYER said: {entry.text}")
+            elif entry.kind == "coach":
+                sink.append(f'    YOU (the coach) said: "{entry.text}"')
+            else:  # takeback, resync, covered, ended, note
+                sink.append(f"    EVENT: {entry.text}")
+        sections = [f"# Setting\n{header}"]
+        if game:
+            sections.append("# Game so far\n" + "\n".join(game))
+        if now:
+            said = [x for x in now[1:]]
+            sections.append(
+                "# Position now\n"
+                + now[0]
+                + ("\n\n## Said here\n" + "\n".join(said) if said else "")
+            )
+        return "\n\n".join(x for x in sections if x)
 
     def drain_new(self) -> list[Entry]:
         """Entries added since the last call, for the panel's conversation view."""
@@ -296,55 +319,101 @@ class Conversation:
         current: bool = True,
         recent: bool = True,
     ) -> str:
-        """The message for one ply. `current` is the position the user faces (it alone
-        carries the moves so far); `recent` is one of the last two plies (they carry the
-        board diagram; older plies carry the FEN, the lines without move numbers, and
-        no copy of the candidates and line the lines block already gives)."""
+        """The message for one ply. The current ply -- the position the user faces, or the
+        one they just moved into -- carries everything: the moves so far, the position in
+        full, the verdict, the standing, the lines, the facts, what stands on the board,
+        the tally. The ply before it carries its position and verdict. Every older ply is
+        one line: the move and its verdict -- the record, at a fortieth of the cost."""
         level = self.level if level is None else level
         move = record.move
         board_after = chess.Board(move.fen_after)
         board_before = chess.Board(move.fen_before)
         user_colour = chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
-        who = "you" if move.by_user else "your opponent"
+        who = "the player" if move.by_user else "the opponent"
+        if not recent:
+            return f"{self._numbered(move)} ({who}): {self._verdict_line(record, board_before)}"
         lines: list[str] = []
-        # 1. Board state. The moves so far are written on the current message only: every
-        # earlier message carries its own move, so the sequence is there in full, and the
-        # line repeated on each of them was the one part of a message that grew with the
-        # game (a fifth of a 165-ply game's tokens, all of it duplicate).
         if current:
-            pgn = self._pgn_through(record)
-            lines.append(f"Moves so far: {pgn}" if pgn else "Moves so far: (none)")
-        if recent:
-            lines.append(ascii_board(board_after))
+            # The legal moves name every move, the mating one with its mark: for the
+            # position the player faces they are shown only once moves may be named.
+            user_to_move = board_after.turn == user_colour
+            lines.append(
+                position_text(
+                    board_after, legal=not (user_to_move and level < DisclosureLevel.CANDIDATE)
+                )
+            )
         else:
-            lines.append(f"Position (FEN): {board_after.fen()}")
+            lines.append(f"FEN: {board_after.fen()}")
         lines.append(self._turn_text(board_after).capitalize() + ".")
-        # 2. The move.
-        took = f", {move.think_ms / 1000:.1f} s" if move.think_ms is not None else ""
         clock = ""
         if record.white_ms is not None or record.black_ms is not None:
             clock = (
                 f" Clock: white {self._clock(record.white_ms)}, "
                 f"black {self._clock(record.black_ms)}."
             )
-        lines.append(f"Move: {self._numbered(move)} by {who}{took}.{clock}")
-        # 3. The engine's verdict on the move.
-        lines.append(self._verdict_text(record, board_before, user_colour))
-        # 4. The lines for the position now, subject to disclosure when it is the user's move.
-        lines.extend(self._lines_text(record, board_after, user_colour, level, numbered=recent))
-        # 5. Everything else.
-        lines.extend(
-            self._grounding_text(record, board_after, user_colour, level, with_lines=recent)
+        took = f" ({move.think_ms / 1000:.1f} s)" if move.think_ms is not None and clock else ""
+        lines.append(
+            f"{self._numbered(move)} by {who}{took}: "
+            + third_person(self._verdict_text(record, board_before, user_colour))
+            + clock
         )
-        # 6. What stands on the board: hanging, attacked, pinned, checks and captures on
-        # offer. On the recent plies only, and not for the position the user faces below
-        # PIECE, where naming a piece would give the hint away.
+        if not current:
+            return "\n".join(line for line in lines if line)
+        # The current ply, in labelled sections.
+        blocks: list[str] = [
+            "## Board\n" + "\n".join(lines[:2]),
+            "## Last move\n" + lines[2],
+        ]
+        engine = self._lines_text(record, board_after, user_colour, level, numbered=True)
+        standing = next((x for x in engine if x.startswith("Standing: ")), None)
+        if standing:
+            blocks.append("## Standing\n" + standing.removeprefix("Standing: "))
+        rest = [x for x in engine if not x.startswith("Standing: ")]
+        if rest:
+            head, body = rest[0], rest[1:]
+            head = head.removeprefix("Engine lines for the position now").strip(": ")
+            if head.startswith("withheld"):
+                blocks.append("## Engine lines\n" + head)
+            else:
+                blocks.append(f"## Engine lines {head}".rstrip(":") + "\n" + "\n".join(body))
+        for fact in self._grounding_text(record, board_after, user_colour, level, with_lines=True):
+            if fact.startswith("Facts ("):
+                owner, _, body = fact.removeprefix("Facts ").partition(": ")
+                blocks.append(f"## Facts {owner}\n" + third_person(body))
+            else:
+                blocks.append("## Disclosure\n" + fact)
         user_to_move = board_after.turn == user_colour
-        if recent and not (user_to_move and current and level < DisclosureLevel.PIECE):
-            lines.append(inventory_text(board_after, user_colour))
-        if move.by_user:
-            lines.append(self._tally_text(record))
-        return "\n".join(line for line in lines if line)
+        if not (user_to_move and level < DisclosureLevel.PIECE):
+            inventory = inventory_text(board_after, user_colour)
+            head, _, body = inventory.partition(": ")
+            blocks.append(
+                "## On the board (complete lists)\n" + (body.replace(" | ", "\n") if body else head)
+            )
+        tally = self._tally_text(record)
+        if tally:
+            blocks.append("## The player's record\n" + tally)
+        return "\n\n".join(blocks)
+
+    def _verdict_line(self, record: PlyRecord, board_before: chess.Board) -> str:
+        """The record's line for an older ply: label, cost, the engine's preferred move and
+        what it would have done."""
+        a = record.assessment
+        if a is None:
+            return "verdict not in."
+        label = a.label.value if a.label else a.severity.value
+        if a.expected_loss < 0.005:
+            return f"{label}."
+        text = f"{label}, cost {a.expected_loss:.2f}"
+        if a.best and a.best[0] != record.move.uci:
+            try:
+                better = chess.Move.from_uci(a.best[0])
+                text += f"; engine preferred {board_before.san(better)}"
+                would = effects_text(board_before, better, hazards=False)
+                if would:
+                    text += f" ({would})"
+            except ValueError:
+                pass
+        return text + "."
 
     # ---- pieces of a ply message -------------------------------------------------------
 
@@ -355,10 +424,10 @@ class Conversation:
         assessment = record.assessment
         material = material_text(chess.Board(move.fen_after), user_colour)
         if assessment is None:
-            return f"Engine verdict on {move.san}: not in yet. Material: {material}."
+            return f"verdict not in yet. Material: {material}."
         label = assessment.label.value if assessment.label else assessment.severity.value
         loss = assessment.expected_loss
-        parts = [f"Engine verdict on {move.san}: {label}"]
+        parts = [label]
         if loss >= 0.005:
             parts.append(f"it cost {loss:.2f} of expected score")
         else:
@@ -396,7 +465,8 @@ class Conversation:
         tags = [t for t in assessment.tags if t.name not in ("quietMove", "capture", "check")]
         if tags:
             named = ", ".join(
-                f"{t.name}" + (f" ({'/'.join(t.squares)})" if t.squares else "") for t in tags[:4]
+                motif_words(t.name) + (f" ({'/'.join(t.squares)})" if t.squares else "")
+                for t in tags[:4]
             )
             text += f" Motifs in the move: {named}."
         return text
@@ -424,14 +494,16 @@ class Conversation:
                 f"{level.name.lower()}: {self._level_words(level)}).",
             ]
         out: list[str] = []
-        whose = "your" if user_to_move else "your opponent's"
+        whose = "the player's" if user_to_move else "the opponent's"
         top = analysis.lines[0].expected_score
         limit = LINE_PLIES if (not user_to_move or level >= DisclosureLevel.LINE) else 1
         ranked = analysis.lines
         best = ranked[:BEST_LINES]
         weaker = ranked[BEST_LINES : BEST_LINES + WEAKER_LINES]
         out.append(self._standing_text(analysis.lines[0], to_move, user_colour))
-        out.append(f"Engine lines for the position now ({whose} move; scores from your side):")
+        out.append(
+            f"Engine lines for the position now ({whose} move; scores from the player's side):"
+        )
         for i, line in enumerate(best, start=1):
             out.append(
                 f"  {i}. {san_line(board, line.moves, limit=limit, numbered=numbered)}  "
@@ -456,7 +528,7 @@ class Conversation:
         bare 0-1 number was read as a pawn score, or not at all; the words are what a
         coach says, and the side named leaves no sign to guess."""
         score = top.expected_score if to_move == user_colour else 1.0 - top.expected_score
-        text = f"Standing: {standing_words(score)} (Stockfish: "
+        text = f"Standing: {standing_words(score, third_person=True)} (Stockfish: "
         if top.mate is not None:
             n = abs(top.mate)
             winner = to_move if top.mate > 0 else not to_move
@@ -470,7 +542,7 @@ class Conversation:
                 text += f"{ahead} ahead by about {abs(cp_white) / 100:.1f} pawns"
         else:
             text += "no number"
-        return text + f"; your winning chances about {round(score * 100)}%)."
+        return text + ")."
 
     @staticmethod
     def _threat_words(board: chess.Board, san: str) -> str:
@@ -553,14 +625,17 @@ class Conversation:
                 text = _theirs(text)
             shown.append(f"{key.replace('_', ' ')}: {text}")
         if record.analysis is not None and record.analysis.opening:
-            shown.insert(0, f"opening: {record.analysis.opening}")
+            previous = self._record_before(record)
+            before = previous.analysis.opening if previous and previous.analysis else None
+            if before != record.analysis.opening:
+                shown.insert(0, f"opening: {record.analysis.opening}")
         if shown:
             owner = (
-                "for the position you face"
+                "the player to move"
                 if user_to_move
-                else "for the position your opponent faces (their plan, their ideas)"
+                else "the opponent to move: the opponent's plan, the opponent's ideas"
             )
-            out.append(f"Facts {owner}: " + "; ".join(shown) + ".")
+            out.append(f"Facts ({owner}): " + "; ".join(shown) + ".")
         if user_to_move and level < DisclosureLevel.CANDIDATE:
             out.append(f"Disclosure now: {level.name.lower()} -- {self._level_words(level)}.")
         return out
@@ -588,7 +663,7 @@ class Conversation:
         if not n:
             return ""
         tally = ", ".join(f"{counts[k]} {k}" for k in LABEL_ORDER if k in counts)
-        text = f"Your moves so far ({n} judged): {tally}."
+        text = f"The player's moves so far ({n} judged): {tally}."
         if lost:
             text += " Ground lost at: " + "; ".join(lost[-6:]) + "."
         return text
@@ -602,6 +677,11 @@ class Conversation:
     def judged_records(self) -> list[PlyRecord]:
         """Every move that was played and judged, across re-reads, for the tally."""
         return [r for r in self.records if not r.withdrawn]
+
+    def _record_before(self, record: PlyRecord) -> PlyRecord | None:
+        active = self.active_records()
+        i = next((k for k, r in enumerate(active) if r is record), None)
+        return active[i - 1] if i else None
 
     def _record_at(self, ply: int) -> PlyRecord | None:
         for record in reversed(self.records):

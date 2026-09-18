@@ -149,6 +149,7 @@ def test_parakeet_states_its_device_before_loading() -> None:
 # ---- hear -> correct -> ask over HTTP, with the real ear -------------------------------------
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(find_spec("onnx_asr") is None, reason="voice extras not installed")
 def test_a_spoken_move_reaches_the_coach_as_san(tmp_path: Path) -> None:
     from fastapi.testclient import TestClient

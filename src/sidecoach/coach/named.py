@@ -153,7 +153,7 @@ def examine_piece(probe: Probe, board: chess.Board, *, user_colour: chess.Color)
     of the position, no search."""
     assert probe.square is not None
     square = probe.square
-    head = f"Engine on {probe.label}, which you asked about:"
+    head = f"Engine on {probe.label}, which the player asked about:"
     piece = board.piece_at(square)
     if piece is None:
         holders = sorted(board.attackers(user_colour, square))
@@ -161,18 +161,18 @@ def examine_piece(probe: Probe, board: chess.Board, *, user_colour: chess.Color)
         parts = [f"{chess.square_name(square)} is empty"]
         if holders:
             parts.append(
-                "you control it with the "
+                "the player controls it with the "
                 + " and the ".join(name_of(board, s) for s in holders[:3])
             )
         if theirs:
             parts.append(
-                "they control it with the "
+                "the opponent controls it with the "
                 + " and the ".join(name_of(board, s) for s in theirs[:3])
             )
         if not holders and not theirs:
             parts.append("nobody controls it")
         return f"{head} " + "; ".join(parts) + "."
-    whose = "your" if piece.color == user_colour else "their"
+    whose = "the player's" if piece.color == user_colour else "the opponent's"
     name = f"{whose} {PIECE_NAMES[piece.piece_type]} on {chess.square_name(square)}"
     parts = [f"{name} stands there"]
     # Where it can go, on the board as it stands, with its own side to move.
@@ -234,7 +234,7 @@ def _parse(board: chess.Board, token: str) -> chess.Move:
 def examine_static(probe: Probe, board: chess.Board) -> str:
     """Without an engine: the position the probe's moves lead to, and what the first move
     does. No score; the FEN so the position can be read."""
-    head = f"Engine on {probe.label}, which you asked about:"
+    head = f"Engine on {probe.label}, which the player asked about:"
     if not probe.parsed:
         return f"{head} {probe.illegal} is not a legal move here."
     after = board.copy(stack=False)
@@ -322,7 +322,7 @@ def examine(
     depth: int = 14,
 ) -> str:
     """The engine's word on one probe, one line of text for the object."""
-    head = f"Engine on {probe.label}, which you asked about:"
+    head = f"Engine on {probe.label}, which the player asked about:"
     if not probe.parsed:
         return f"{head} {probe.illegal} is not a legal move here."
     after = board.copy(stack=False)
@@ -343,7 +343,7 @@ def examine(
     if not lines:
         return f"{head} the engine has nothing to say about the position after {played}."
     score = lines[0].expected_score if after.turn == user_colour else 1.0 - lines[0].expected_score
-    parts.append(f"after {played} the expected score is {score:.2f} from your side")
+    parts.append(f"after {played} the expected score is {score:.2f} from the player's side")
     if best is not None:
         gap = best.expected_score - score
         if gap > 0.005:
@@ -359,7 +359,9 @@ def examine(
     reply = san_line(after, lines[0].moves, limit=reply_plies)
     if reply:
         whose = (
-            "the engine's reply would be" if after.turn != user_colour else "the engine then plays"
+            "the opponent's reply would be"
+            if after.turn != user_colour
+            else "the engine then plays"
         )
         parts.append(f"{whose} {reply};")
     first = next((m for m in probe.parsed if m != chess.Move.null()), None)
@@ -373,10 +375,12 @@ def examine(
 
 
 _ENGINE_ON = re.compile(
-    r"^Engine on (?P<label>.+?), which you asked about: (?P<body>.*)$", re.DOTALL
+    r"^Engine on (?P<label>.+?), which the player asked about: (?P<body>.*)$", re.DOTALL
 )
 _PROBE_LINE = re.compile(r"after (?P<moves>.+?) the expected score is")
-_REPLY_LINE = re.compile(r"(?:the engine's reply would be|the engine then plays) (?P<moves>[^;]+)")
+_REPLY_LINE = re.compile(
+    r"(?:the opponent's reply would be|the engine then plays) (?P<moves>[^;]+)"
+)
 
 
 def disclosed_frames(board: chess.Board, facts: list[str]) -> list[chess.Board]:
@@ -421,7 +425,7 @@ def spoken(fact: str) -> str:
         return fact
     label, body = m.group("label"), m.group("body").strip()
     body = re.sub(
-        r"^after (.+?) the expected score is (\d\.\d\d) from your side",
+        r"^after (.+?) the expected score is (\d\.\d\d) from the player's side",
         lambda mm: f"after {mm.group(1)} {_standing(float(mm.group(2)))}",
         body,
     )
@@ -437,7 +441,7 @@ def spoken(fact: str) -> str:
     body = body.replace(", as good as the engine's best", ", as good as the best move").replace(
         ", better than the engine's first line", ", better than the engine's first choice"
     )
-    body = body.replace("the engine's reply would be", "they would answer").replace(
+    body = body.replace("the opponent's reply would be", "they would answer").replace(
         "the engine then plays", "then the engine plays"
     )
     body = re.sub(r"what (\S+) does: ", r"\1 ", body)

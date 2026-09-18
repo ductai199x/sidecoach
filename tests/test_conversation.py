@@ -62,8 +62,8 @@ def test_the_opponents_facts_are_reworded_whole_word_from_the_first_word() -> No
     opponent: the old table matched " you " with a space on each side."""
     from sidecoach.coach.conversation import _theirs
 
-    assert _theirs("you still have 2 pieces at home (b8, c8); they are not in the game yet") == (
-        "they still have 2 pieces at home (b8, c8); they are not in the game yet"
+    assert _theirs("you still have 2 pieces at home (b8, c8), not yet in the game") == (
+        "they still have 2 pieces at home (b8, c8), not yet in the game"
     )
     assert _theirs("your king is still in the centre on e8 and can still castle") == (
         "their king is still in the centre on e8 and can still castle"

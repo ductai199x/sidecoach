@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import chess
+import pytest
 
 from sidecoach.events import GameStarted
 from sidecoach.replay.recording import Recording
@@ -17,9 +18,12 @@ from sidecoach.state.pipeline import GamePipeline
 from sidecoach.vision.squares import BoardGeometry
 from sidecoach.vision.theme_cache import ThemeCache
 
+pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
+
 REC = Path("data/recordings/g01-david-green")
 
 
+@pytest.mark.slow
 def test_cold_start_reads_a_mid_game_position_from_the_cache(tmp_path: Path) -> None:
     cache = ThemeCache(tmp_path)
 
@@ -72,6 +76,7 @@ def test_cold_start_reads_a_mid_game_position_from_the_cache(tmp_path: Path) -> 
     assert not disagree, f"cold read disagrees with the tracked position on {disagree}"
 
 
+@pytest.mark.slow
 def test_cold_start_refuses_a_board_caught_mid_move(tmp_path: Path) -> None:
     """A frame with a piece in flight must not be adopted: the cold read is refused so the
     caller retries, rather than a lifted piece being read as an empty square."""

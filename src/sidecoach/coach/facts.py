@@ -9,6 +9,7 @@ the notation a person reads.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 import chess
@@ -85,17 +86,28 @@ _VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess
 CANDIDATE_MARGIN = 0.02
 
 
-def standing_words(score: float) -> str:
-    """An expected score from the player's side, as a coach says it."""
+def standing_words(score: float, *, third_person: bool = False) -> str:
+    """An expected score from the player's side, in words: as the coach says it to the
+    player ("you are better"), or as the harness writes it ("the player is better")."""
+    who = "the player is" if third_person else "you are"
     if score >= 0.85:
-        return "you are winning"
+        return f"{who} winning"
     if score >= 0.62:
-        return "you are better"
+        return f"{who} better"
     if score > 0.38:
         return "it is about equal"
     if score > 0.15:
-        return "you are worse"
-    return "you are losing"
+        return f"{who} worse"
+    return f"{who} losing"
+
+
+def motif_words(name: str) -> str:
+    """A motif tag's name in plain words: the theme table's phrase when it has one, else
+    the camelCase name split into words ("discoveredAttack" -> "discovered attack")."""
+    for tag, words in THEMES:
+        if tag == name:
+            return words
+    return re.sub(r"(?<=[a-z])(?=[A-Z0-9])", " ", name).lower()
 
 
 def phase_of(board: chess.Board, in_book: bool = False) -> str:
@@ -229,6 +241,40 @@ def _tactic_on(board: chess.Board, name: str, squares: Sequence[str]) -> str | N
     elif name in ("discoveredAttack", "capturingDefender") and len(sqs) >= 2 and all(pieces[:2]):
         return f"{named(0)} bears on {named(1)}"
     return None
+
+
+def position_text(board: chess.Board, *, legal: bool = True) -> str:
+    """The position as a model reads it best: the FEN, every piece by colour and type with
+    its squares, and the legal moves for the side to move. On ChessQA a piece list beat the
+    FEN alone and the ASCII diagram lost to both on every board-reading tier; the legal-move
+    list is what the paper's own prompt carries."""
+    names = {
+        chess.KING: "K",
+        chess.QUEEN: "Q",
+        chess.ROOK: "R",
+        chess.BISHOP: "B",
+        chess.KNIGHT: "N",
+        chess.PAWN: "P",
+    }
+    sides: list[str] = []
+    for colour, word in ((chess.WHITE, "White"), (chess.BLACK, "Black")):
+        parts = []
+        for piece_type in (
+            chess.KING,
+            chess.QUEEN,
+            chess.ROOK,
+            chess.BISHOP,
+            chess.KNIGHT,
+            chess.PAWN,
+        ):
+            squares = sorted(chess.square_name(s) for s in board.pieces(piece_type, colour))
+            if squares:
+                parts.append(f"{names[piece_type]} {' '.join(squares)}")
+        sides.append(f"{word}: " + ", ".join(parts))
+    lines = [f"FEN: {board.fen()}", "Pieces -- " + " | ".join(sides)]
+    if legal and not board.is_game_over():
+        lines.append("Legal moves: " + " ".join(sorted(board.san(m) for m in board.legal_moves)))
+    return "\n".join(lines)
 
 
 def ascii_board(board: chess.Board) -> str:
