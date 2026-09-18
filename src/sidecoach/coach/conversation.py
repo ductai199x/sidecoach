@@ -1,30 +1,23 @@
-"""The game as one conversation with the model.
+"""The game as the harness the model reads: one user message, in sections.
 
-Every move on the board -- the user's and the opponent's -- is a `user` message, built from
-the live game state and written from the user's side. The coach is an `assistant` turn only
-when it was prompted. Nothing is ever edited once the model has seen it: a takeback, a
-re-read of the board, a dialog over it, the end of the game, each is a message of its own
-that says what changed, so the position never jumps silently. Asked how the game went, the
-model has the game in front of it, move by move, with the engine's word on each.
+`# Setting` says whom the coach coaches. `# Game so far` is the record: one line per move
+with the engine's verdict on it -- the label, the cost, the move the engine preferred and
+where its line leads -- and under each move, indented, what was said after it (the
+player's words, the coach's own replies) and any event (a takeback, a re-read of the board,
+a dialog, the end of the game), the way a game record carries its annotations. Once the
+model has seen a move's line it is frozen and never edited; facts that arrive later go in
+a note of their own. `# Position now` is the last ply in full at the disclosure level in
+force for the position the player faces: the board, the last move, the standing, the
+engine's lines (withheld on the player's own turn below CANDIDATE), the facts in the third
+person per side, the disclosure line, the complete inventory of what stands on the board,
+the player's record so far, and what was already said here. The coach appends its task and
+answers as the assistant.
 
-A move message carries, in order: the board state (the moves so far, the position, whose
-turn), the move and who made it, the engine's verdict on it and what it did to the game, the
-engine's lines -- the best three, the next three, and the played move with the replies it
-allows -- and everything else that grounds a reply: the motifs with their squares, the
-strategic features, the opponent's threats, the opening, the phase, the clock, and a running
-tally of the user's moves by label. What the message says about the position the user now
-faces obeys the disclosure level in force when it is rendered; a message is frozen the
-first time it is sent in its final form, and facts that arrive later go in a message of
-their own.
-
-The encoding spends tokens where the model reasons. The current message carries the moves so
-far and the last two plies carry the board diagram; an older ply's message says the same
-position as a FEN, writes its engine lines without move numbers, and does not repeat in its
-facts the candidates and line that its lines block already gives. Nothing is dropped: every
-verdict, every line, every fact, every tally is there for every ply. Measured on a 165-ply
-game the full form ran to about 130k tokens, past what a retry could fit in the model's
-context; this form is well under half, and a ply's message takes it once it is older than
-the last two, so the server's cached prefix stays valid.
+Two levers keep a long game's harness small. The dialogue older than the last N plies can
+be folded by a summariser into one "Earlier dialogue, summarised" line (`foldable`,
+`fold`; the coach runs it in the background). With `compact_record`, the coach's routine
+nods after sound moves are written out only while recent, and sound moves with nothing
+said after them run together as a move list.
 
 The `Coach` owns one of these per game and asks it for the messages of every request.
 """
@@ -58,9 +51,8 @@ from sidecoach.events import (
 )
 from sidecoach.llm.base import ChatMessage
 
-# The latest plies whose messages carry the full encoding: the board diagram, numbered
-# lines, the candidates and line in the facts. Older plies say the same with fewer tokens.
-RECENT_PLIES = 2
+# The engine lines the harness shows: the best three, then three weaker ones, each to
+# this many plies.
 BEST_LINES = 3
 WEAKER_LINES = 3
 LINE_PLIES = 8
@@ -304,14 +296,10 @@ class Conversation:
                 assert entry.record is not None
                 if entry is last:
                     sink = now
-                    sink.append(
-                        self.render_ply(entry.record, self.level, current=True, recent=True)
-                    )
+                    sink.append(self.render_ply(entry.record, self.level))
                     continue
                 if entry.frozen is None:
-                    entry.frozen = self.render_ply(
-                        entry.record, DisclosureLevel.LINE, current=False, recent=False
-                    )
+                    entry.frozen = self.render_ply(entry.record, full=False)
                 sink.append(entry.frozen)
             elif entry.kind == "ask":
                 sink.append(f"    PLAYER said: {entry.text}")
@@ -423,35 +411,29 @@ class Conversation:
         record: PlyRecord,
         level: DisclosureLevel | None = None,
         *,
-        current: bool = True,
-        recent: bool = True,
+        full: bool = True,
     ) -> str:
-        """The message for one ply. The current ply -- the position the user faces, or the
-        one they just moved into -- carries everything: the moves so far, the position in
-        full, the verdict, the standing, the lines, the facts, what stands on the board,
-        the tally. The ply before it carries its position and verdict. Every older ply is
-        one line: the move and its verdict -- the record, at a fortieth of the cost."""
+        """One ply of the harness. In `full`, the position now: the board, the last move
+        with its verdict, the standing, the lines, the facts, what stands on the board,
+        the player's record, in titled sections at `level`. Otherwise the record's one
+        line for it: the move and its verdict."""
         level = self.level if level is None else level
         move = record.move
         board_after = chess.Board(move.fen_after)
         board_before = chess.Board(move.fen_before)
         user_colour = chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
         who = "the player" if move.by_user else "the opponent"
-        if not recent:
+        if not full:
             return f"{self._numbered(move)} ({who}): {self._verdict_line(record, board_before)}"
-        lines: list[str] = []
-        if current:
-            # The legal moves name every move, the mating one with its mark: for the
-            # position the player faces they are shown only once moves may be named.
-            user_to_move = board_after.turn == user_colour
-            lines.append(
-                position_text(
-                    board_after, legal=not (user_to_move and level < DisclosureLevel.CANDIDATE)
-                )
-            )
-        else:
-            lines.append(f"FEN: {board_after.fen()}")
-        lines.append(self._turn_text(board_after).capitalize() + ".")
+        # The legal moves name every move, the mating one with its mark: for the position
+        # the player faces they are shown only once moves may be named.
+        user_to_move = board_after.turn == user_colour
+        lines: list[str] = [
+            position_text(
+                board_after, legal=not (user_to_move and level < DisclosureLevel.CANDIDATE)
+            ),
+            self._turn_text(board_after).capitalize() + ".",
+        ]
         clock = ""
         if record.white_ms is not None or record.black_ms is not None:
             clock = (
@@ -464,9 +446,6 @@ class Conversation:
             + third_person(self._verdict_text(record, board_before, user_colour))
             + clock
         )
-        if not current:
-            return "\n".join(line for line in lines if line)
-        # The current ply, in titled sections.
         sections = [("Board", "\n".join(lines[:2])), ("Last move", lines[2])]
         sections += self._position_sections(record, board_after, user_colour, level)
         return "\n\n".join(f"## {title}\n{body}" for title, body in sections)
@@ -868,23 +847,6 @@ class Conversation:
                     text = f"Engine note on the position after {name}:\n{shown}"
                 self.entries.append(Entry("user", "note", text))
                 return
-
-    def _pgn_through(self, record: PlyRecord) -> str:
-        board = chess.Board(self.start_fen)
-        parts: list[str] = []
-        for r in self.active_records():
-            move = chess.Move.from_uci(r.move.uci)
-            if move not in board.legal_moves:
-                break
-            if board.turn == chess.WHITE:
-                parts.append(f"{board.fullmove_number}.")
-            elif not parts:
-                parts.append(f"{board.fullmove_number}...")
-            parts.append(board.san(move))
-            board.push(move)
-            if r is record:
-                break
-        return " ".join(parts)
 
     @staticmethod
     def _numbered(move: MovePlayed) -> str:

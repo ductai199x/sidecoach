@@ -442,13 +442,6 @@ class PanelEngine:
             self._emit("voice", "debug", f"speaking ({self.voice}): {elide(text, 60)}")
         return action
 
-    def _say(self, text: str) -> None:
-        if self.muted:
-            self._emit("voice", "debug", f"muted, not spoken: {elide(text, 60)}")
-            return
-        self._tts.say(text)
-        self._emit("voice", "debug", f"speaking ({self.voice}): {elide(text, 60)}")
-
     def _session_dir(self, live: bool) -> Path:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         kind = "recordings" if live and self.record else "sessions"
