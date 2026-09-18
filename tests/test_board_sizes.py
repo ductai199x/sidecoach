@@ -40,7 +40,6 @@ def frame_at(size: int, **kw: object) -> np.ndarray:
     return out
 
 
-@pytest.mark.slow
 @pytest.mark.parametrize("size", [297, 333, 555, 641, 851, 1053])
 def test_the_pipeline_follows_a_game_at_this_board_size(size: int) -> None:
     pipe = GamePipeline()

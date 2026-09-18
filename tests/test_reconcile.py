@@ -636,7 +636,6 @@ def test_mate_settles_with_two_badge_cells_as_wildcards() -> None:
     assert any(isinstance(e, GameEnded) for e in events)
 
 
-@pytest.mark.slow
 def test_browsing_to_the_start_of_a_long_game_is_not_a_new_game() -> None:
     """The move list's first entry shows the start position; a game of 42 plies is still on."""
     model, rec = _setup()

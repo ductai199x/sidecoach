@@ -105,7 +105,6 @@ def test_board_fully_covered_while_moves_happen() -> None:
     assert out == ["Nf3", "Nc6"], s.events[-8:]
 
 
-@pytest.mark.slow
 def test_board_minimised_then_restored() -> None:
     s = Session()
     s.start()

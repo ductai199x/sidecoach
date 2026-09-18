@@ -25,6 +25,7 @@ dev = [
     "pytest>=8.3",
     "ruff>=0.6",
     "pyright>=1.1.380",
+    "pytest-xdist>=3.6",
 ]
 # The voice extras (TTS + STT + VAD) are heavy and optional: `uv sync --group voice`. Without
 # them the coach runs silent and deaf -- the providers report the extras missing and no-op.
@@ -84,13 +85,14 @@ line-ending = "native"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The default run is the fast unit suite. `-m vision` adds the synthetic vision-pipeline
-# behaviour tests (about a minute); `-m slow` the recordings, server and engine replays
-# (minutes); `-m ""` everything.
-addopts = "-m 'not slow and not vision' -p no:cacheprovider"
+# The default run is everything that needs no local data: the unit suite and the synthetic
+# vision-pipeline suite, in parallel (about ten seconds). `-m slow` adds the recording
+# replays, the server and Stockfish (a minute or two, serial: `-p no:xdist` or `-n 0`);
+# `-m ""` is everything.
+addopts = "-m 'not slow' -n auto -p no:cacheprovider"
 markers = [
     "slow: replays a recording, starts the server or runs Stockfish; minutes, run deliberately",
-    "vision: the synthetic vision-pipeline behaviour suite; about a minute",
+    "vision: the synthetic vision-pipeline behaviour suite (in the default run)",
 ]
 
 [tool.pyright]
