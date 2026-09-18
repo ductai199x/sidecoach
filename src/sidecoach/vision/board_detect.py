@@ -98,13 +98,21 @@ def _ring_means(gray: np.ndarray, cell: int, band: int = 1) -> np.ndarray:
     return (outer - inner) / float(cell * cell - inner_size * inner_size)
 
 
-def _checker_response(gray: np.ndarray, cell: int) -> tuple[np.ndarray, np.ndarray]:
+def _checker_response(
+    gray: np.ndarray, cell: int, *, min_contrast: float | None = None
+) -> tuple[np.ndarray, np.ndarray]:
     """(score, amplitude) maps for a board whose top-left cell starts at each position.
 
     The score is |sum(sign * mean)| / sum|mean - board mean|, 1 for a perfect empty board.
     The amplitude |sum(sign * mean)| / 64 is half the gap between the two square colours
     for a board and is only lowered by cells that are not board, unlike the deviation,
     which background cells inflate; it is the contrast gate.
+
+    The signed and plain sums over the 8x8 grid of cell means are separable -- eight
+    shifted adds along the columns, then eight along the rows -- so they cost sixteen
+    passes over the map, not sixty-four. The deviation is not separable; with
+    `min_contrast` it is summed only where the amplitude passes the gate (a few thousand
+    positions of a frame's million), and the score is zero elsewhere.
     """
     means = _ring_means(gray, cell)
     h = means.shape[0] - 7 * cell
@@ -112,22 +120,44 @@ def _checker_response(gray: np.ndarray, cell: int) -> tuple[np.ndarray, np.ndarr
     if h <= 0 or w <= 0:
         empty = np.zeros((0, 0))
         return empty, empty
-    blocks = [
-        (_SIGNS[r, c], means[r * cell : r * cell + h, c * cell : c * cell + w])
-        for r in range(8)
-        for c in range(8)
-    ]
+    # Along the columns: the signed and plain sums of the eight cells of each row of the
+    # board, for every row position of the map.
+    rows_h = means.shape[0]
+    signed_cols = np.zeros((rows_h, w), dtype=np.float64)
+    plain_cols = np.zeros((rows_h, w), dtype=np.float64)
+    for c in range(8):
+        block = means[:, c * cell : c * cell + w]
+        plain_cols += block
+        if c % 2 == 0:
+            signed_cols += block
+        else:
+            signed_cols -= block
     acc = np.zeros((h, w), dtype=np.float64)
     total = np.zeros((h, w), dtype=np.float64)
-    for sign, block in blocks:
-        acc += sign * block
-        total += block
+    for r in range(8):
+        acc += (1.0 if r % 2 == 0 else -1.0) * signed_cols[r * cell : r * cell + h]
+        total += plain_cols[r * cell : r * cell + h]
+    amplitude = np.abs(acc) / 64.0
     board_mean = total / 64.0
-    deviation = np.zeros((h, w), dtype=np.float64)
-    for _, block in blocks:
-        deviation += np.abs(block - board_mean)
-    score = np.abs(acc) / (deviation + 1e-6)
-    return score, np.abs(acc) / 64.0
+    score = np.zeros((h, w), dtype=np.float64)
+    if min_contrast is None:
+        deviation = np.zeros((h, w), dtype=np.float64)
+        for r in range(8):
+            for c in range(8):
+                deviation += np.abs(
+                    means[r * cell : r * cell + h, c * cell : c * cell + w] - board_mean
+                )
+        score = np.abs(acc) / (deviation + 1e-6)
+        return score, amplitude
+    ys, xs = np.nonzero(amplitude >= min_contrast)
+    if ys.size:
+        deviation = np.zeros(ys.size, dtype=np.float64)
+        mean_at = board_mean[ys, xs]
+        for r in range(8):
+            for c in range(8):
+                deviation += np.abs(means[ys + r * cell, xs + c * cell] - mean_at)
+        score[ys, xs] = np.abs(acc[ys, xs]) / (deviation + 1e-6)
+    return score, amplitude
 
 
 def _local_maxima(
@@ -205,7 +235,7 @@ def coarse_search(
         else:
             small = gray
             cell = int(round(size))
-        score, contrast = _checker_response(small, cell)
+        score, contrast = _checker_response(small, cell, min_contrast=min_contrast)
         if score.size:
             mask = (score >= min_score) & (contrast >= min_contrast)
             full_cell = cell / factor
@@ -321,17 +351,52 @@ def _ring_median(gray: np.ndarray, box: tuple[int, int, int, int], band: int) ->
     return float(np.median(ring))
 
 
-def cell_medians(gray: np.ndarray, region: Region, cell: float) -> np.ndarray | None:
-    """8x8 border-ring medians, or None when the board runs off the frame."""
-    medians = np.zeros((8, 8), dtype=np.float64)
+def _ring_indices(
+    shape: tuple[int, int], region: Region, cell: float
+) -> list[tuple[list[int], np.ndarray]] | None:
+    """The flat pixel indices of every cell's border ring, grouped by ring length so each
+    group's medians come from one call: (cells of the group, an (n, length) index array).
+    None when a cell runs off the frame. The geometry holds for as long as a lock does,
+    so the result is cached on it."""
+    height, width = shape
     band = _ring_band(cell)
+    groups: dict[int, tuple[list[int], list[np.ndarray]]] = {}
     for r in range(8):
         for c in range(8):
-            value = _ring_median(gray, cell_bounds(region, cell, r, c), band)
-            if value is None:
+            x0, y0, x1, y1 = cell_bounds(region, cell, r, c)
+            if x0 < 0 or y0 < 0 or x1 > width or y1 > height:
                 return None
-            medians[r, c] = value
-    return medians
+            if x1 - x0 <= 2 * band or y1 - y0 <= 2 * band:
+                return None
+            ys, xs = np.mgrid[y0:y1, x0:x1]
+            on_ring = (ys < y0 + band) | (ys >= y1 - band) | (xs < x0 + band) | (xs >= x1 - band)
+            flat = (ys * width + xs)[on_ring]
+            cells, rows = groups.setdefault(flat.size, ([], []))
+            cells.append(r * 8 + c)
+            rows.append(flat)
+    return [(cells, np.stack(rows)) for cells, rows in groups.values()]
+
+
+_RING_CACHE: dict[
+    tuple[tuple[int, int], Region, float], list[tuple[list[int], np.ndarray]] | None
+] = {}
+
+
+def cell_medians(gray: np.ndarray, region: Region, cell: float) -> np.ndarray | None:
+    """8x8 border-ring medians, or None when the board runs off the frame."""
+    key = (gray.shape, region, cell)
+    groups = _RING_CACHE.get(key)
+    if key not in _RING_CACHE:
+        if len(_RING_CACHE) > 64:
+            _RING_CACHE.clear()
+        groups = _RING_CACHE[key] = _ring_indices(gray.shape, region, cell)
+    if groups is None:
+        return None
+    flat = gray.reshape(-1)
+    medians = np.zeros(64, dtype=np.float64)
+    for cells, indices in groups:
+        medians[cells] = np.median(flat[indices], axis=1)
+    return medians.reshape(8, 8)
 
 
 def palette(medians: np.ndarray) -> Colours:

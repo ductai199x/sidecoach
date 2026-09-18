@@ -18,7 +18,7 @@ from sidecoach.state.pipeline import GamePipeline
 from sidecoach.vision.squares import BoardGeometry
 from sidecoach.vision.theme_cache import ThemeCache
 
-pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
+pytestmark = pytest.mark.slow  # replays a local recording: minutes, run with -m slow
 
 REC = Path("data/recordings/g01-david-green")
 

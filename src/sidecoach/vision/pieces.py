@@ -633,6 +633,13 @@ class ThemeModel:
     # Whether the pieces are white and black rather than a coloured set: only then can a
     # saturated patch over a square be called something drawn on it (see OVERLAY_MAX).
     achromatic_pieces: bool = True
+    # The last frame's cells, by (row, col): the crop's pixels, its silhouette, and the
+    # reading made of it, with the covered flag and cell size it was made with. Between
+    # one frame and the next most cells do not change a pixel, and a cell that did not
+    # change reads the same: its silhouette and reading are reused, most of a frame's cost.
+    _cells: dict[tuple[int, int], tuple[np.ndarray, Silhouette, bool, float, CellReading]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     @property
     def symbols(self) -> set[str]:
@@ -818,16 +825,38 @@ class ThemeModel:
         return covered | reached
 
     def classify_frame(self, frame: np.ndarray, geometry: BoardGeometry) -> list[list[CellReading]]:
-        sils = [
-            [silhouette(geometry.crop(frame, r, c, size=2 * CELL)) for c in range(8)]
-            for r in range(8)
-        ]
+        crops = [[geometry.crop(frame, r, c, size=2 * CELL) for c in range(8)] for r in range(8)]
+        sils: list[list[Silhouette]] = []
+        for r in range(8):
+            row: list[Silhouette] = []
+            for c in range(8):
+                last = self._cells.get((r, c))
+                if last is not None and np.array_equal(last[0], crops[r][c]):
+                    row.append(last[1])
+                else:
+                    row.append(silhouette(crops[r][c]))
+            sils.append(row)
         covered = self.covered_cells(sils)
         cell_px = geometry.cell_px
-        readings = [
-            [self._classify(sils[r][c], r, c, bool(covered[r, c]), cell_px) for c in range(8)]
-            for r in range(8)
-        ]
+        readings: list[list[CellReading]] = []
+        for r in range(8):
+            row_readings: list[CellReading] = []
+            for c in range(8):
+                last = self._cells.get((r, c))
+                is_covered = bool(covered[r, c])
+                if (
+                    last is not None
+                    and last[1] is sils[r][c]
+                    and last[2] == is_covered
+                    and last[3] == cell_px
+                    and np.array_equal(last[0], crops[r][c])
+                ):
+                    row_readings.append(last[4])
+                    continue
+                reading = self._classify(sils[r][c], r, c, is_covered, cell_px)
+                self._cells[(r, c)] = (crops[r][c], sils[r][c], is_covered, cell_px, reading)
+                row_readings.append(reading)
+            readings.append(row_readings)
         tinted = sum(1 for row in readings for reading in row if reading.tint is not None)
         if tinted >= THEME_MIN_TINTED:
             # Highlights, marks and queues tint a few squares; a tint over half the board

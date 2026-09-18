@@ -24,7 +24,7 @@ from sidecoach.state.reconcile import Readings
 from sidecoach.vision.pieces import OVERLAY_MAX, CellReading, silhouette
 from sidecoach.vision.squares import BoardGeometry, square_at
 
-pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
+pytestmark = pytest.mark.slow  # replays a local recording: minutes, run with -m slow
 
 REC = Path("data/recordings/20260916-000902")  # the trial game; local, not committed
 ARROW_FRAMES = (640.0, 662.0)  # the d4->e5 arrow is on the board
