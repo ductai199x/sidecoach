@@ -735,7 +735,21 @@ class Conversation:
         text = f"The player's moves so far ({n} judged): {tally}."
         if lost:
             text += " Ground lost at: " + "; ".join(lost[-6:]) + "."
+        # The opening the game was in, as the book last named it: it was shown only at
+        # the ply where the name changed, and asked later the coach named one from memory.
+        opening = self._opening_through(through)
+        if opening:
+            text += f" Opening: {opening}."
         return text
+
+    def _opening_through(self, through: PlyRecord) -> str | None:
+        """The last opening name the book gave, up to `through`."""
+        for record in reversed(self.records[: self.records.index(through) + 1]):
+            if record.withdrawn or record.analysis is None:
+                continue
+            if record.analysis.opening:
+                return record.analysis.opening
+        return None
 
     # ---- helpers -----------------------------------------------------------------------
 

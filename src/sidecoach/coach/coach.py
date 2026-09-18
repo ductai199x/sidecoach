@@ -628,6 +628,18 @@ _ASK_LAST_MOVE = re.compile(
     r"what did i do wrong|did i (?:just )?(?:blunder|mess up))\b",
     re.IGNORECASE,
 )
+# A question about the opponent's last move: what it does, why it was played, whether it
+# was good. Its verdict and effects are in the record ("Last move") and are the player's
+# to hear in full; answered as a generic ask, the coach gave a question back and named
+# neither the move nor its verdict in most of them.
+_ASK_OPPONENT_MOVE = re.compile(
+    r"\b(?:why did (?:he|she|they) (?:play|do) that|what does that (?:move )?do|"
+    r"what(?:'s| is) the (?:point|idea) of that(?: move)?|was that a (?:blunder|mistake|good move)|"
+    r"did (?:he|she|they) (?:just )?(?:mess up|blunder)|"
+    r"what (?:is|was) (?:he|she|they) (?:going for|up to|doing)|"
+    r"why (?:that|this) move)\b",
+    re.IGNORECASE,
+)
 _ASK_EVAL = re.compile(
     r"\b(?:am i (?:winning|losing|better|worse|ok|okay|in trouble)|who'?s (?:better|winning)|"
     r"how am i doing|is this (?:position )?good for me|what'?s the (?:eval|evaluation|score)|"
@@ -1141,6 +1153,14 @@ class Coach:
                 return records[-1]
         return None
 
+    def _last_opponent_move(self) -> PlyRecord | None:
+        """The opponent's move, when it is the last move played and has its verdict."""
+        with self._lock:
+            records = self.conversation.active_records()
+            if records and not records[-1].move.by_user and records[-1].assessment is not None:
+                return records[-1]
+        return None
+
     def _standing_template(self, position: _Position) -> str:
         """Who stands better, from the engine's score for the position, in plain words."""
         analysis = position.analysis
@@ -1407,7 +1427,7 @@ class Coach:
                 instruction = (
                     f"The player just played {played.san} ({words}), which was fine but not "
                     f"the strongest: {best} ({better_words}) was better, by a little. One or "
-                    f"two sentences. No lecture."
+                    f"two sentences. No lecture, no question."
                 )
             return instruction, fallback
         # An explicit ask. The player's words are already the last message of the
@@ -1527,6 +1547,19 @@ class Coach:
                 "at the idea. Name no move the messages do not give."
             )
             fallback = ""
+        elif _ASK_OPPONENT_MOVE.search(said) and (their := self._last_opponent_move()) is not None:
+            assert their.assessment is not None
+            verdict = their.assessment
+            san = their.move.san
+            label = verdict.label.value if verdict.label else verdict.severity.value
+            fallback = f"Their {san} was {label}."
+            directive = (
+                f"They ask about the opponent's last move, {san}. It is in the record under "
+                f"'Last move' with its verdict ({label}) and what it does; all of that is theirs "
+                "to hear. Name the move, say how it rated and what it does, in plain words, "
+                "two or three sentences; then, if you like, one question about what it asks "
+                "of them. Never answer about the player's own move instead."
+            )
         elif _ASK_LAST_MOVE.search(said) and (record := self._last_own_move()) is not None:
             # Asked about their own last move. Its verdict was given in its move message and
             # the facts of the position it was played from in the message before: all of it
