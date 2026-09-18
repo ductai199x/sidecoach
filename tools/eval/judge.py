@@ -2099,17 +2099,12 @@ _BINARY: dict[int, Any] = {}
 
 
 def binary_judge(provider):
-    """The provider for the yes-or-no checks: the judge's model with reasoning off (an
-    OpenAI model at effort none); any other provider as it is, thinking off."""
+    """The provider for the yes-or-no checks: the judge's model with reasoning off."""
     key = id(provider)
     if key not in _BINARY:
-        model = getattr(provider, "model", None)
-        if getattr(provider, "name", "") == "openai" and model:
-            from providers import OpenAIReasoning
+        from providers import without_reasoning
 
-            _BINARY[key] = OpenAIReasoning(model, "none", timeout_s=120)
-        else:
-            _BINARY[key] = provider
+        _BINARY[key] = without_reasoning(provider)
     return _BINARY[key]
 
 

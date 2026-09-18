@@ -51,7 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from chessqa_prompt_utils import PromptConfig, format_prompt, get_context  # noqa: E402
 from judge import JudgeFailed, Ledger, _chat_with_backoff  # noqa: E402
-from providers import OpenAIReasoning, coach_provider  # noqa: E402
+from providers import coach_provider  # noqa: E402
 
 from sidecoach.analysis.annotator import GameAnnotator  # noqa: E402
 from sidecoach.analysis.engine import Engine  # noqa: E402
@@ -425,7 +425,7 @@ def run(
         return
     ledger = Ledger(f"chessqa-{config}", "chessqa", tag or model, budget)
     if model == "openai":
-        provider = OpenAIReasoning(openai_model or "gpt-5.6-luna", effort)
+        provider = coach_provider(f"openai:{openai_model or 'gpt-5.6-luna'}@{effort or ''}")
     elif model == "local" and local_model:
         from sidecoach.config import LLMSettings
         from sidecoach.llm.factory import make_provider

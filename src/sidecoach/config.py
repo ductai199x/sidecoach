@@ -42,14 +42,20 @@ class EngineSettings(BaseModel):
 
 
 class LLMSettings(BaseModel):
-    # "local" (LM Studio) or "dashscope". Unset fields fall back to the provider defaults
-    # in sidecoach.llm.factory. API keys come from the environment, never from this file.
+    # A preset -- "local" (LM Studio), "dashscope", "openai" -- or any other name for a custom
+    # OpenAI-compatible endpoint, which then needs base_url and model. Unset fields fall
+    # back to the preset's defaults in sidecoach.llm.factory. API keys come from the
+    # environment (api_key_env names the variable), never from this file.
     provider: str = "local"
     model: str | None = None
     base_url: str | None = None
     api_key_env: str | None = None
-    # How reasoning is switched off: "prefill", "param", or "none". Provider default if unset.
+    # How reasoning is controlled: "prefill" (an empty think block, LM Studio), "param"
+    # (enable_thinking, DashScope), "effort" (reasoning_effort, OpenAI's reasoning models)
+    # or "none". Preset default if unset.
     thinking_control: str | None = None
+    # For "effort" providers: none | low | medium | high | ... ; the preset's if unset.
+    reasoning_effort: str | None = None
     thinking: bool = False
     # Total output budget. Reasoning tokens count against it when thinking is on.
     max_output_tokens: int = 1500

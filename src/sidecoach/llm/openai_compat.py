@@ -1,16 +1,23 @@
-"""Provider for any OpenAI-compatible chat endpoint: LM Studio locally, DashScope hosted.
+"""One provider for every OpenAI-compatible chat endpoint: LM Studio locally, DashScope,
+OpenAI itself, or anything else that serves `/v1/chat/completions`.
 
-Thinking control differs by server. Measured 2026-09-14:
+What differs between servers is how reasoning is controlled, and that is the one thing a
+provider is configured with (`thinking_control`). Measured 2026-09-14 on the first two:
 
-- LM Studio serving the Qwen 3.8 GGUFs ignores `/no_think` and every reasoning parameter,
-  but honours a trailing assistant message holding an empty think block: the server
-  continues that message and the model skips reasoning. That is the "prefill" strategy.
-- DashScope honours `enable_thinking` in the request body, the "param" strategy. With
-  qwen3.8-max a turn took 9.7 s with thinking and 1.8 s without; qwen3.8-flash 6.1 s and
-  1.1 s. Streaming first token about 1.1 s for both.
-- "none" sends nothing and leaves the model to its default.
+- "prefill": LM Studio serving the Qwen 3.8 GGUFs ignores `/no_think` and every reasoning
+  parameter, but honours a trailing assistant message holding an empty think block: the
+  server continues that message and the model skips reasoning.
+- "param": DashScope honours `enable_thinking` in the request body. With qwen3.8-max a
+  turn took 9.7 s with thinking and 1.8 s without; qwen3.8-flash 6.1 s and 1.1 s.
+- "effort": OpenAI's reasoning models take `reasoning_effort` (none, low, medium, high,
+  ...) and reject `max_tokens` and `temperature`; the answer budget goes in
+  `max_completion_tokens`, with headroom for the reasoning tokens that count against it.
+  The effort is a property of the provider, not of the call: a coach at medium and a
+  judge at none are two providers of the same model (`with_effort`).
+- "none": nothing is sent and the model keeps its default.
 
-Reasoning text, when produced, comes back in `message.reasoning_content` on both servers.
+Reasoning text, when the server returns it, comes back in `message.reasoning_content`;
+the cached share of the prompt in `usage.prompt_tokens_details.cached_tokens`.
 """
 
 from __future__ import annotations
@@ -23,9 +30,12 @@ import httpx
 
 from sidecoach.llm.base import ChatMessage, Completion
 
-ThinkingControl = Literal["prefill", "param", "none"]
-THINKING_CONTROLS: tuple[str, ...] = ("prefill", "param", "none")
+ThinkingControl = Literal["prefill", "param", "effort", "none"]
+THINKING_CONTROLS: tuple[str, ...] = ("prefill", "param", "effort", "none")
 EMPTY_THINK_PREFILL = "<think>\n\n</think>\n\n"
+# Reasoning tokens count against max_completion_tokens: a caller's budget is for the
+# answer, so the reasoning gets headroom of its own or a short answer comes back empty.
+REASONING_HEADROOM = 4000
 
 
 def build_messages(
@@ -52,6 +62,7 @@ class OpenAICompatProvider:
         *,
         api_key: str | None = None,
         thinking_control: ThinkingControl = "none",
+        reasoning_effort: str | None = None,
         timeout_s: float = 60.0,
         extra_body: dict[str, Any] | None = None,
         transport: httpx.BaseTransport | None = None,
@@ -60,9 +71,30 @@ class OpenAICompatProvider:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.thinking_control: ThinkingControl = thinking_control
+        self.reasoning_effort = reasoning_effort
         self.extra_body = dict(extra_body or {})
+        self.timeout_s = timeout_s
+        self._api_key = api_key
+        self._transport = transport
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = httpx.Client(timeout=timeout_s, headers=headers, transport=transport)
+
+    def with_effort(self, effort: str | None) -> OpenAICompatProvider:
+        """The same endpoint and model at another reasoning effort (an "effort" provider);
+        any other kind of provider is returned as it is."""
+        if self.thinking_control != "effort" or effort == self.reasoning_effort:
+            return self
+        return OpenAICompatProvider(
+            self.name,
+            self.base_url,
+            self.model,
+            api_key=self._api_key,
+            thinking_control=self.thinking_control,
+            reasoning_effort=effort,
+            timeout_s=self.timeout_s,
+            extra_body=self.extra_body,
+            transport=self._transport,
+        )
 
     def healthcheck(self) -> tuple[bool, str]:
         try:
@@ -89,10 +121,17 @@ class OpenAICompatProvider:
             "messages": build_messages(
                 system, messages, thinking=thinking, control=self.thinking_control
             ),
-            "max_tokens": max_tokens,
-            "temperature": temperature,
             **self.extra_body,
         }
+        if self.thinking_control == "effort":
+            body["max_completion_tokens"] = max_tokens + (
+                REASONING_HEADROOM if self.reasoning_effort else 0
+            )
+            if self.reasoning_effort:
+                body["reasoning_effort"] = self.reasoning_effort
+        else:
+            body["max_tokens"] = max_tokens
+            body["temperature"] = temperature
         if self.thinking_control == "param":
             body["enable_thinking"] = thinking
         return body
@@ -111,19 +150,23 @@ class OpenAICompatProvider:
         )
         started = time.perf_counter()
         response = self._client.post(f"{self.base_url}/chat/completions", json=body)
-        response.raise_for_status()
+        if response.status_code != 200:
+            # The status code stays in the message: the callers' backoff keys on "429".
+            raise RuntimeError(f"{response.status_code}: {response.text[:200]}")
         data = response.json()
         elapsed = time.perf_counter() - started
 
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         usage = data.get("usage") or {}
-        details = usage.get("completion_tokens_details") or {}
+        completion_details = usage.get("completion_tokens_details") or {}
+        prompt_details = usage.get("prompt_tokens_details") or {}
         stats = {
             "elapsed_s": round(elapsed, 3),
             "prompt_tokens": usage.get("prompt_tokens"),
+            "cached_tokens": prompt_details.get("cached_tokens"),
             "completion_tokens": usage.get("completion_tokens"),
-            "reasoning_tokens": details.get("reasoning_tokens"),
+            "reasoning_tokens": completion_details.get("reasoning_tokens"),
             "finish_reason": choice.get("finish_reason"),
         }
         return Completion(
@@ -138,3 +181,13 @@ class OpenAICompatProvider:
 
     def close(self) -> None:
         self._client.close()
+
+
+__all__ = [
+    "EMPTY_THINK_PREFILL",
+    "REASONING_HEADROOM",
+    "THINKING_CONTROLS",
+    "OpenAICompatProvider",
+    "ThinkingControl",
+    "build_messages",
+]

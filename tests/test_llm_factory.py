@@ -49,3 +49,43 @@ def test_unknown_provider_and_control() -> None:
         make_provider(LLMSettings(provider="nope"))
     with pytest.raises(ValueError, match="thinking_control"):
         make_provider(LLMSettings(thinking_control="maybe"))
+
+
+def test_openai_preset_is_an_effort_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    provider = make_provider(LLMSettings(provider="openai"))
+    assert provider.base_url == "https://api.openai.com/v1"
+    assert provider.thinking_control == "effort"
+    assert provider.reasoning_effort == "medium"
+    quiet = provider.with_effort("none")
+    assert quiet is not provider and quiet.reasoning_effort == "none"
+    assert quiet.model == provider.model and quiet.base_url == provider.base_url
+    assert provider.with_effort("medium") is provider
+
+
+def test_custom_endpoint_needs_only_base_url_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    provider = make_provider(
+        LLMSettings(
+            provider="groq",
+            base_url="https://api.groq.com/openai/v1",
+            model="llama-3.3-70b-versatile",
+            api_key_env="GROQ_API_KEY",
+        )
+    )
+    assert provider.name == "groq"
+    assert provider.thinking_control == "none"
+    with pytest.raises(ValueError, match="custom OpenAI-compatible endpoint"):
+        make_provider(LLMSettings(provider="groq"))
+
+
+def test_provider_from_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sidecoach.llm.factory import provider_from_spec
+
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "k")
+    provider = provider_from_spec("openai:gpt-5.6-luna@none")
+    assert (provider.model, provider.reasoning_effort) == ("gpt-5.6-luna", "none")
+    assert provider_from_spec("flash").model == "qwen3.8-flash"
+    assert provider_from_spec("local").name == "local"

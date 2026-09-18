@@ -767,7 +767,7 @@ class _Assessing:
 
     def reset(self) -> None:
         if self.analyser is not None:
-            self.analyser.annotator.reset()
+            self.analyser.reset()
             self._from.clear()
 
     def drain(self, log: TextIO | None = None, indent: str = "  ") -> list[Event]:

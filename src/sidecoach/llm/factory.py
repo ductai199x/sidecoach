@@ -1,4 +1,19 @@
-"""Build the configured LLM provider. Per-provider defaults live here, secrets in the env."""
+"""Build the configured LLM provider. Any OpenAI-compatible endpoint works: a preset name
+fills in the endpoint, the model, the key's environment variable and how reasoning is
+controlled; any other name is a custom provider and needs `base_url` and `model` in the
+settings. Secrets live in the environment, never in the settings file.
+
+  [llm]
+  provider = "openai"                 # local | dashscope | openai | <anything else>
+  model = "gpt-5.6-luna"              # overrides the preset's
+  reasoning_effort = "medium"         # "effort" providers: none | low | medium | high | ...
+  # a custom endpoint:
+  provider = "groq"
+  base_url = "https://api.groq.com/openai/v1"
+  model = "llama-3.3-70b-versatile"
+  api_key_env = "GROQ_API_KEY"
+  thinking_control = "none"
+"""
 
 from __future__ import annotations
 
@@ -15,7 +30,8 @@ class ProviderDefaults:
     model: str
     api_key_env: str | None
     thinking_control: ThinkingControl
-    # An env var that overrides base_url: a hosted provider's endpoint is per account.
+    reasoning_effort: str | None = None
+    # An env var that overrides base_url: a hosted provider's endpoint can be per account.
     base_url_env: str | None = None
 
 
@@ -35,14 +51,35 @@ PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         thinking_control="param",
         base_url_env="DASHSCOPE_BASE_URL",
     ),
+    # OpenAI's reasoning models: the effort is the model's setting, not the call's. This is
+    # what the coach was evaluated on (docs/eval-results.md).
+    "openai": ProviderDefaults(
+        base_url="https://api.openai.com/v1",
+        model="gpt-5.6-luna",
+        api_key_env="OPENAI_API_KEY",
+        thinking_control="effort",
+        reasoning_effort="medium",
+        base_url_env="OPENAI_BASE_URL",
+    ),
 }
 
 
 def make_provider(settings: LLMSettings, *, timeout_s: float | None = None) -> OpenAICompatProvider:
     defaults = PROVIDER_DEFAULTS.get(settings.provider)
     if defaults is None:
-        known = ", ".join(sorted(PROVIDER_DEFAULTS))
-        raise ValueError(f"unknown llm.provider {settings.provider!r}; known: {known}")
+        # A custom endpoint: everything comes from the settings.
+        if not settings.base_url or not settings.model:
+            known = ", ".join(sorted(PROVIDER_DEFAULTS))
+            raise ValueError(
+                f"unknown llm.provider {settings.provider!r}: use one of {known}, or set "
+                "llm.base_url and llm.model for a custom OpenAI-compatible endpoint"
+            )
+        defaults = ProviderDefaults(
+            base_url=settings.base_url,
+            model=settings.model,
+            api_key_env=settings.api_key_env,
+            thinking_control="none",
+        )
 
     key_env = settings.api_key_env or defaults.api_key_env
     api_key = os.environ.get(key_env) if key_env else None
@@ -54,6 +91,7 @@ def make_provider(settings: LLMSettings, *, timeout_s: float | None = None) -> O
         raise ValueError(
             f"llm.thinking_control must be one of {THINKING_CONTROLS}, got {control!r}"
         )
+    effort = settings.reasoning_effort or defaults.reasoning_effort
 
     env_url = os.environ.get(defaults.base_url_env) if defaults.base_url_env else None
     return OpenAICompatProvider(
@@ -62,6 +100,23 @@ def make_provider(settings: LLMSettings, *, timeout_s: float | None = None) -> O
         settings.model or defaults.model,
         api_key=api_key,
         thinking_control=control,  # type: ignore[arg-type]
+        reasoning_effort=effort,
         timeout_s=timeout_s if timeout_s is not None else settings.timeout_s,
         extra_body=dict(settings.extra_body),
+    )
+
+
+def provider_from_spec(spec: str, *, timeout_s: float | None = None) -> OpenAICompatProvider:
+    """A provider from a short spec, for command lines: `local`, `dashscope`, `flash`
+    (dashscope's qwen3.8-flash), `openai`, `openai:<model>`, `openai:<model>@<effort>`,
+    or `<provider>:<model>` for any preset."""
+    if spec == "flash":
+        return make_provider(
+            LLMSettings(provider="dashscope", model="qwen3.8-flash"), timeout_s=timeout_s
+        )
+    provider, _, rest = spec.partition(":")
+    model, _, effort = rest.partition("@")
+    return make_provider(
+        LLMSettings(provider=provider, model=model or None, reasoning_effort=effort or None),
+        timeout_s=timeout_s,
     )

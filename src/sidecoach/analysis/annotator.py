@@ -327,15 +327,16 @@ class Analyser:
     def submit_position(self, game_id: str, board: chess.Board, ply: int) -> None:
         self._submit(_Request(game_id, ply, board.copy(stack=False), None))
 
-    def reset(self, game_id: str | None = None) -> None:
-        """A new game: drop what is queued, since none of it is about this game."""
+    def reset(self) -> None:
+        """A new game: drop what is queued and forget the measured positions, since none
+        of it is about this game. What the worker is busy with finishes and is delivered;
+        the pipeline ignores an event for a game that is over."""
         while True:
             try:
                 self._requests.get_nowait()
             except queue.Empty:
                 break
-        self._requests.put(_Request(game_id or "", 0, chess.Board(), None))
-        self._requests.get()  # keep the queue's unfinished count honest after the drain
+        self.annotator.reset()
 
     def poll(self) -> list[Event]:
         out: list[Event] = []
