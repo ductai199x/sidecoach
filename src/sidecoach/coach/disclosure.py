@@ -175,6 +175,21 @@ class Disclosure:
         return self.level
 
 
+# Where a piece word is never a hint at the piece to move: an opening's name, the material
+# balance, a check or capture said of the move just played.
+_PIECE = r"(?:king|queen|rook|bishop|knight|pawn)"
+_PIECE_WORD_CONTEXTS = re.compile(
+    r"(?:king's|queen's|bishop's|knight's|rook's) "
+    r"(?:indian|gambit|pawn|opening|attack|defen[cs]e)"
+    r"|(?:up|down|ahead|behind|level|even|for|against|exchange)(?: a| an| two| three| the)? "
+    rf"(?:{_PIECE}|piece)s?(?: (?:and|for) (?:a |an |two |three |the )?(?:{_PIECE}|piece)s?)*"
+    r"|(?:checks?|attacks?|takes|took|captures?d?|removes?d?|hits?) (?:your|their|the|my) "
+    rf"{_PIECE} on [a-h][1-8]"
+    rf"|(?:your|their|my|the) {_PIECE} on [a-h][1-8] (?:is|was|remains|stays) (?:in )?"
+    r"(?:check|attacked|under attack|hanging|loose|defended|undefended|pinned)",
+    re.IGNORECASE,
+)
+
 # A token is a bare square ("f7") or a SAN move ending in its destination square
 # ("Ng5", "Nxf7+", "exd5", "R1e1", "e8=Q"). Group 1 is the destination square.
 _SQUARE_TOKEN = re.compile(r"[KQRBN]?[a-h]?[1-8]?x?([a-h][1-8])(?:=[QRBN])?[+#]?[!?]*")
@@ -253,8 +268,10 @@ def leak_check(
 
     if level < DisclosureLevel.PIECE and facts.piece:
         piece_word = facts.piece.lower().split()[-1]
-        if piece_word not in said_words and re.search(
-            rf"\b{re.escape(piece_word)}\b", text.lower()
-        ):
+        # The word is a hint only where it could point at the piece to move: not in an
+        # opening's name ("Queen's Gambit"), not in the material balance ("down a pawn"),
+        # not said of a move already played -- the caller's `said` carries those.
+        scrubbed = _PIECE_WORD_CONTEXTS.sub(" ", text.lower())
+        if piece_word not in said_words and re.search(rf"\b{re.escape(piece_word)}\b", scrubbed):
             add(f"piece {piece_word}")
     return leaks

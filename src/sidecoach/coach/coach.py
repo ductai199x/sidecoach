@@ -118,6 +118,9 @@ _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
 _SENTENCE_END = re.compile(r"[.!?…][\"'”’)\]]*(?=\s|$)")
 
 
+_PIECE_WORD = {"K": "king", "Q": "queen", "R": "rook", "B": "bishop", "N": "knight"}
+
+
 def _vs_wrap(messages: list[ChatMessage], candidates: int = VS_CANDIDATES) -> list[ChatMessage]:
     """Append the verbalized-sampling directive to the final user turn."""
     if not messages:
@@ -557,8 +560,15 @@ class Speaker:
         # What the user said this turn, what the directive itself disclosed (the engine on
         # what they asked about) and the moves of the game so far are not leaks: a move
         # already played may be discussed in full, whatever the level in force.
+        # The piece a played move moved may be named too: "your opponent's rook took on
+        # c6" about a move of the record is no hint, but the word "rook" was a leak
+        # whenever the withheld piece happened to be a rook as well.
+        moved = {_PIECE_WORD.get(san[0], "pawn") for san in request.played if san and san[0] != "O"}
         said = " ".join(
-            filter(None, [request.user_text, request.disclosed, *sorted(request.played)])
+            filter(
+                None,
+                [request.user_text, request.disclosed, *sorted(request.played), *sorted(moved)],
+            )
         )
         found = [
             f"withheld {item}"
