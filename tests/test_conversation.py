@@ -57,21 +57,31 @@ def test_the_preferred_line_is_dropped_only_when_its_first_move_was_played() -> 
     assert "the engine preferred" not in convo.render_ply(record)
 
 
-def test_the_opponents_facts_are_reworded_whole_word_from_the_first_word() -> None:
-    """A fact for the side to move that began with "you" kept it when reworded for the
-    opponent: the old table matched " you " with a space on each side."""
-    from sidecoach.coach.conversation import _theirs
+def test_the_facts_are_reworded_in_the_third_person_for_the_side_to_move() -> None:
+    """A fact is written for the side to move as "you"; the harness names the side. One
+    pass: a pattern table turned "your opponent's" into "your" and then into "their", and
+    the opponent's isolated pawn became the player's."""
+    from sidecoach.coach.person import third_person
 
-    assert _theirs("you still have 2 pieces at home (b8, c8), not yet in the game") == (
-        "they still have 2 pieces at home (b8, c8), not yet in the game"
+    assert third_person("you still have 2 pieces at home (b8, c8), not yet in the game") == (
+        "the player still has 2 pieces at home (b8, c8), not yet in the game"
     )
-    assert _theirs("your king is still in the centre on e8 and can still castle") == (
-        "their king is still in the centre on e8 and can still castle"
+    assert third_person("your king is still in the centre on e8", side="opponent") == (
+        "the opponent's king is still in the centre on e8"
     )
-    assert _theirs("Your opponent's rook holds the file; it attacks you.") == (
-        "Their rook holds the file; it attacks them."
+    assert third_person("Your opponent's rook holds the file; it attacks you.") == (
+        "The opponent's rook holds the file; it attacks the player."
     )
-    assert _theirs("yours is the better bishop") == "theirs is the better bishop"
+    assert third_person("your opponent's isolated d-pawn on d5", side="opponent") == (
+        "the player's isolated d-pawn on d5"
+    )
+    assert third_person("storming the pawns in front of your opponent's king", side="opponent") == (
+        "storming the pawns in front of the player's king"
+    )
+    assert third_person("you win a pawn; they are worse; you need to castle") == (
+        "the player wins a pawn; the opponent is worse; the player needs to castle"
+    )
+    assert third_person("yours is the better bishop") == "the player's is the better bishop"
 
 
 def test_the_verdict_says_what_the_move_does_and_what_the_better_move_would_do() -> None:
@@ -118,3 +128,122 @@ def test_the_verdict_says_what_the_move_does_and_what_the_better_move_would_do()
     text = convo.render_ply(record)
     assert "What Bb5 would do: attacks the knight on c6." in text
     assert "What Nc3 does:" not in text  # a quiet developing move: nothing the board can name
+
+
+def test_the_position_sections_on_the_opponents_turn() -> None:
+    """After the player's capture, with the opponent to move: the facts heading closes its
+    bracket and says whose plan they are; the weaker lines say whose; the material notes
+    the recapture the engine expects, so "up a knight" is not read as a knight won."""
+    from sidecoach.coach.facts import facts_from_analysis
+    from sidecoach.events import Analysis, DisclosureLevel, Line
+
+    convo = Conversation()
+    convo.new_game(GameStarted(game_id="g", user_side=Side.BLACK, start_fen=chess.Board().fen()))
+    # Black (the player) takes a knight on e6 that a pawn on d5 recaptures.
+    fen_before = "4k3/2n5/4N3/3P4/8/8/8/4K3 b - - 0 40"
+    board = chess.Board(fen_before)
+    move = board.parse_san("Nxe6")
+    board.push(move)
+    record = convo.move(
+        MovePlayed(
+            game_id="g",
+            ply=79,
+            san="Nxe6",
+            uci=move.uci(),
+            fen_before=fen_before,
+            fen_after=board.fen(),
+            by_user=True,
+        )
+    )
+    convo.assess(
+        MoveAssessment(
+            game_id="g",
+            ply=79,
+            uci=move.uci(),
+            expected_loss=0.0,
+            severity=Severity.NONE,
+            best=[move.uci()],
+            label=Label.BEST,
+        )
+    )
+    analysis = Analysis(
+        game_id="g",
+        fen=board.fen(),
+        ply=79,
+        lines=[
+            Line(moves=["d5e6", "e8e7"], depth=20, expected_score=0.5),
+            Line(moves=["e1e2", "e6d4"], depth=20, expected_score=0.1),
+            Line(moves=["e1d1", "e6d4"], depth=20, expected_score=0.1),
+            Line(moves=["e1f1", "e6d4"], depth=20, expected_score=0.1),
+        ],
+        decisive=True,
+        only_move=True,
+    )
+    convo.analysed(analysis, facts_from_analysis(board, analysis, user=chess.BLACK))
+    text = convo.render_ply(record, DisclosureLevel.QUESTION)
+    assert (
+        "Material: the player is up a knight for a pawn before the expected recapture dxe6, "
+        "then the player is down a pawn."
+    ) in text
+    assert "## Facts (the opponent to move; the opponent's plan and ideas)\n" in text
+    assert "decisive: yes\nonly move: yes\n" in text
+    assert "  weaker for the opponent:\n" in text
+    assert "## Standing\nIt is about equal" in text
+
+
+def test_the_earlier_dialogue_folds_into_a_summary_and_the_last_plies_stay_verbatim() -> None:
+    """Dialogue compaction: what was said earlier than the last `keep` plies is folded into
+    one summary block at the top of the record; the summariser sees only the dialogue, each
+    line with the move it followed; the last plies keep their words."""
+    from sidecoach.coach.summarise import summarise
+    from sidecoach.llm.base import Completion
+
+    class Summariser:
+        name = "s"
+        prompts: list[str] = []
+
+        def healthcheck(self) -> tuple[bool, str]:
+            return True, "s"
+
+        def chat(self, system: str, messages, *, max_tokens=1500, temperature=0.7, thinking=False):
+            self.prompts.append(str(messages[-1]["content"]))
+            return Completion(text="The coach praised 1. e4 and told the player to develop.")
+
+    convo = Conversation()
+    convo.new_game(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.Board().fen()))
+    board = chess.Board()
+    for ply, san in enumerate(["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"], start=1):
+        move = board.parse_san(san)
+        fen_before = board.fen()
+        board.push(move)
+        convo.move(
+            MovePlayed(
+                game_id="g",
+                ply=ply,
+                san=san,
+                uci=move.uci(),
+                fen_before=fen_before,
+                fen_after=board.fen(),
+                by_user=ply % 2 == 1,
+            )
+        )
+        if ply == 1:
+            convo.coach_said("A fine first move.")
+        if ply == 2:
+            convo.user_said("what now?")
+            convo.coach_said("Develop a piece.")
+        if ply == 5:
+            convo.coach_said("The Ruy Lopez.")
+    summariser = Summariser()
+    assert summarise(convo, summariser, keep=2)
+    prompt = summariser.prompts[-1]
+    assert "after 1. e4, COACH: A fine first move." in prompt
+    assert 'after 1... e5, PLAYER: "what now?"' in prompt
+    assert "The Ruy Lopez" not in prompt, "within the last two plies: kept verbatim"
+    text = convo.render()
+    assert "Earlier dialogue, summarised: The coach praised 1. e4" in text
+    assert "A fine first move." not in text and "Develop a piece." not in text
+    assert 'YOU (the coach) said: "The Ruy Lopez."' in text
+    # Nothing older to fold the second time: no call is made.
+    assert not summarise(convo, summariser, keep=2)
+    assert len(summariser.prompts) == 1

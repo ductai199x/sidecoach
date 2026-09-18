@@ -31,7 +31,6 @@ The `Coach` owns one of these per game and asks it for the messages of every req
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 import chess
@@ -40,7 +39,7 @@ from sidecoach.analysis.engine import san_line
 from sidecoach.coach.disclosure import PositionFacts, visible_facts
 from sidecoach.coach.effects import effects_text
 from sidecoach.coach.facts import material_text, motif_words, position_text, standing_words
-from sidecoach.coach.inventory import inventory_text
+from sidecoach.coach.inventory import inventory_lines
 from sidecoach.coach.outcome import line_outcome
 from sidecoach.coach.person import third_person
 from sidecoach.events import (
@@ -64,6 +63,40 @@ RECENT_PLIES = 2
 BEST_LINES = 3
 WEAKER_LINES = 3
 LINE_PLIES = 8
+# The motifs worth naming on a move. The tagger also emits bookkeeping tags (quietMove,
+# defensiveMove, capture, check) and geometric ones that hold on most quiet moves
+# (interference, clearance); named in the harness they had the coach narrating "a6 cuts the
+# h5/f3/d1 line" on book moves.
+MOVE_MOTIFS = frozenset(
+    {
+        "fork",
+        "pin",
+        "absolutePin",
+        "skewer",
+        "discoveredAttack",
+        "discoveredCheck",
+        "doubleCheck",
+        "sacrifice",
+        "deflection",
+        "attraction",
+        "capturingDefender",
+        "trappedPiece",
+        "hangingPiece",
+        "xRayAttack",
+        "backRankMate",
+        "smotheredMate",
+        "mate",
+        "mateIn1",
+        "mateIn2",
+        "mateIn3",
+        "promotion",
+        "underPromotion",
+        "zugzwang",
+        "exposedKing",
+        "attackingF2F7",
+        "advancedPawn",
+    }
+)
 LABEL_ORDER = (
     "brilliant",
     "great",
@@ -76,38 +109,6 @@ LABEL_ORDER = (
     "miss",
     "blunder",
 )
-
-
-# Whole words, in this order: the opponent's things become the player's first, then the
-# side to move's become theirs. "you" is "them" at the end of a clause, "they" elsewhere.
-_THEIRS = (
-    (re.compile(r"\bYour opponent's\b"), "Your"),
-    (re.compile(r"\bYour opponent\b"), "You"),
-    (re.compile(r"\byour opponent's\b"), "your"),
-    (re.compile(r"\byour opponent\b"), "you"),
-    (re.compile(r"\bYou are\b"), "They are"),
-    (re.compile(r"\byou are\b"), "they are"),
-    (re.compile(r"\bYou have\b"), "They have"),
-    (re.compile(r"\byou have\b"), "they have"),
-    (re.compile(r"\bYours\b"), "Theirs"),
-    (re.compile(r"\byours\b"), "theirs"),
-    (re.compile(r"\bYour\b"), "Their"),
-    (re.compile(r"\byour\b"), "their"),
-    (re.compile(r"\bYou\b(?=\s*(?:[.,;:!?)]|$))"), "Them"),
-    (re.compile(r"\byou\b(?=\s*(?:[.,;:!?)]|$))"), "them"),
-    (re.compile(r"\bYou\b"), "They"),
-    (re.compile(r"\byou\b"), "they"),
-)
-
-
-def _theirs(text: str) -> str:
-    """A fact written for the side to move, reworded for the opponent: 'your king is
-    still in the centre' becomes 'their king is still in the centre'. (A fact that began
-    with "you still have ..." once kept its "you": the old table matched " you " with a
-    space on each side, and a value's first word has none.)"""
-    for pattern, new in _THEIRS:
-        text = pattern.sub(new, text)
-    return text
 
 
 @dataclass
@@ -136,6 +137,7 @@ class Entry:
     text: str = ""
     record: PlyRecord | None = None
     frozen: str | None = None
+    folded: bool = False  # dialogue folded into the summary: no longer written out
 
 
 @dataclass
@@ -148,6 +150,8 @@ class Conversation:
     # The disclosure level to render the position the user faces with, set by the coach
     # before each request from the current position's disclosure state.
     level: DisclosureLevel = DisclosureLevel.QUESTION
+    # The earlier dialogue, summarised (see `summarise`); empty until the first fold.
+    summary: str = ""
     _drained: int = 0
 
     # ---- the game's events, in the order they happen -----------------------------------
@@ -271,8 +275,10 @@ class Conversation:
         game: list[str] = []
         now: list[str] = []
         sink = game
+        if self.summary:
+            game.append(f"Earlier dialogue, summarised: {self.summary}")
         for entry in self.entries:
-            if entry.kind == "game":
+            if entry.kind == "game" or entry.folded:
                 continue
             if entry.kind == "ply":
                 assert entry.record is not None
@@ -304,6 +310,33 @@ class Conversation:
                 + ("\n\n## Said here\n" + "\n".join(said) if said else "")
             )
         return "\n\n".join(x for x in sections if x)
+
+    # ---- dialogue compaction -------------------------------------------------------------
+
+    def foldable(self, keep_plies: int) -> list[tuple[str, Entry]]:
+        """The dialogue entries older than the last `keep_plies` plies that are not yet in
+        the summary, each with the move it followed."""
+        ply_entries = [e for e in self.entries if e.kind == "ply"]
+        if len(ply_entries) <= keep_plies:
+            return []
+        cutoff = ply_entries[-keep_plies]
+        out: list[tuple[str, Entry]] = []
+        after = "the start"
+        for entry in self.entries:
+            if entry is cutoff:
+                break
+            if entry.kind == "ply" and entry.record is not None:
+                after = self._numbered(entry.record.move)
+            elif entry.kind in ("ask", "coach") and not entry.folded:
+                out.append((after, entry))
+        return out
+
+    def fold(self, entries: list[Entry], summary: str) -> None:
+        """Replace `entries` in the record by `summary` (the whole earlier dialogue, as
+        the summariser rewrote it)."""
+        for entry in entries:
+            entry.folded = True
+        self.summary = summary.strip()
 
     def drain_new(self) -> list[Entry]:
         """Entries added since the last call, for the panel's conversation view."""
@@ -359,40 +392,43 @@ class Conversation:
         )
         if not current:
             return "\n".join(line for line in lines if line)
-        # The current ply, in labelled sections.
-        blocks: list[str] = [
-            "## Board\n" + "\n".join(lines[:2]),
-            "## Last move\n" + lines[2],
-        ]
-        engine = self._lines_text(record, board_after, user_colour, level, numbered=True)
-        standing = next((x for x in engine if x.startswith("Standing: ")), None)
-        if standing:
-            blocks.append("## Standing\n" + standing.removeprefix("Standing: "))
-        rest = [x for x in engine if not x.startswith("Standing: ")]
-        if rest:
-            head, body = rest[0], rest[1:]
-            head = head.removeprefix("Engine lines for the position now").strip(": ")
-            if head.startswith("withheld"):
-                blocks.append("## Engine lines\n" + head)
-            else:
-                blocks.append(f"## Engine lines {head}".rstrip(":") + "\n" + "\n".join(body))
-        for fact in self._grounding_text(record, board_after, user_colour, level, with_lines=True):
-            if fact.startswith("Facts ("):
-                owner, _, body = fact.removeprefix("Facts ").partition(": ")
-                blocks.append(f"## Facts {owner}\n" + third_person(body))
-            else:
-                blocks.append("## Disclosure\n" + fact)
-        user_to_move = board_after.turn == user_colour
+        # The current ply, in titled sections.
+        sections = [("Board", "\n".join(lines[:2])), ("Last move", lines[2])]
+        sections += self._position_sections(record, board_after, user_colour, level)
+        return "\n\n".join(f"## {title}\n{body}" for title, body in sections)
+
+    def _position_sections(
+        self,
+        record: PlyRecord,
+        board: chess.Board,
+        user_colour: chess.Color,
+        level: DisclosureLevel,
+    ) -> list[tuple[str, str]]:
+        """The position the side to move faces, as (title, body) sections: the standing,
+        the engine lines, the facts, the disclosure level, what stands on the board, the
+        player's record."""
+        user_to_move = board.turn == user_colour
+        out: list[tuple[str, str]] = []
+        analysis = record.analysis
+        if analysis is not None and analysis.lines:
+            out.append(
+                ("Standing", self._standing_text(analysis.lines[0], board.turn, user_colour))
+            )
+        head, body = self._lines_block(record, board, user_colour, level)
+        out.append((f"Engine lines {head}".rstrip(), "\n".join(body)))
+        facts = self._facts_lines(record, board, user_colour, level)
+        if facts:
+            out.append((f"Facts ({self._facts_owner(user_to_move)})", "\n".join(facts)))
+        if user_to_move and level < DisclosureLevel.CANDIDATE:
+            out.append(("Disclosure", f"Level {level.name.lower()}: {self._level_words(level)}."))
         if not (user_to_move and level < DisclosureLevel.PIECE):
-            inventory = inventory_text(board_after, user_colour)
-            head, _, body = inventory.partition(": ")
-            blocks.append(
-                "## On the board (complete lists)\n" + (body.replace(" | ", "\n") if body else head)
+            out.append(
+                ("On the board (complete lists)", "\n".join(inventory_lines(board, user_colour)))
             )
         tally = self._tally_text(record)
         if tally:
-            blocks.append("## The player's record\n" + tally)
-        return "\n\n".join(blocks)
+            out.append(("The player's record", tally))
+        return out
 
     def _verdict_line(self, record: PlyRecord, board_before: chess.Board) -> str:
         """The record's line for an older ply: label, cost, the engine's preferred move and
@@ -422,7 +458,16 @@ class Conversation:
     ) -> str:
         move = record.move
         assessment = record.assessment
-        material = material_text(chess.Board(move.fen_after), user_colour)
+        board_after = chess.Board(move.fen_after)
+        material = material_text(board_after, user_colour)
+        recapture = self._expected_recapture(record, board_before, board_after)
+        if recapture is not None:
+            # A capture the engine expects to be answered: "up a knight" after Nxe6 was
+            # read as a knight won, and the coach said so, with dxe6 to come.
+            san, then = recapture
+            material += (
+                f" before the expected recapture {san}, then {material_text(then, user_colour)}"
+            )
         if assessment is None:
             return f"verdict not in yet. Material: {material}."
         label = assessment.label.value if assessment.label else assessment.severity.value
@@ -462,73 +507,87 @@ class Conversation:
                 would, better_san = "", ""
             if would:
                 text += f" What {better_san} would do: {would}."
-        tags = [t for t in assessment.tags if t.name not in ("quietMove", "capture", "check")]
+        tags = [t for t in assessment.tags if t.name in MOVE_MOTIFS]
         if tags:
-            named = ", ".join(
-                motif_words(t.name) + (f" ({'/'.join(t.squares)})" if t.squares else "")
-                for t in tags[:4]
-            )
+            # By name only: the squares a tag carries are the tagger's evidence, and named
+            # in the harness they were narrated as "the f7/f6/f4 piece sequence".
+            named = ", ".join(dict.fromkeys(motif_words(t.name) for t in tags[:4]))
             text += f" Motifs in the move: {named}."
         return text
 
-    def _lines_text(
+    @staticmethod
+    def _expected_recapture(
+        record: PlyRecord, board_before: chess.Board, board_after: chess.Board
+    ) -> tuple[str, chess.Board] | None:
+        """When the move was a capture and the engine's reply takes back on the same
+        square: that reply in SAN, and the board after it."""
+        analysis = record.analysis
+        if analysis is None or not analysis.lines or not analysis.lines[0].moves:
+            return None
+        try:
+            played = chess.Move.from_uci(record.move.uci)
+            reply = chess.Move.from_uci(analysis.lines[0].moves[0])
+        except ValueError:
+            return None
+        if not board_before.is_capture(played) or reply not in board_after.legal_moves:
+            return None
+        if reply.to_square != played.to_square or not board_after.is_capture(reply):
+            return None
+        then = board_after.copy(stack=False)
+        then.push(reply)
+        return board_after.san(reply), then
+
+    def _lines_block(
         self,
         record: PlyRecord,
         board: chess.Board,
         user_colour: chess.Color,
         level: DisclosureLevel,
-        *,
-        numbered: bool = True,
-    ) -> list[str]:
+    ) -> tuple[str, list[str]]:
+        """The engine lines section: its title's tail (whose move, whose scores) and its
+        lines. Withheld below the candidate level on the player's turn -- what may be
+        said is in the facts -- and the standing is a section of its own."""
         analysis = record.analysis
         if analysis is None or not analysis.lines:
-            return ["Engine lines for the position now: not in yet."]
+            return "", ["not in yet."]
         to_move = board.turn
         user_to_move = to_move == user_colour
         if user_to_move and level < DisclosureLevel.CANDIDATE:
-            # The position the user faces: the lines are withheld at this level; what may be
-            # said is in the grounding facts below. Who stands better is never withheld.
-            return [
-                self._standing_text(analysis.lines[0], to_move, user_colour),
-                f"Engine lines for the position now: withheld (disclosure level "
-                f"{level.name.lower()}: {self._level_words(level)}).",
-            ]
-        out: list[str] = []
+            return "", ["withheld at this disclosure level."]
         whose = "the player's" if user_to_move else "the opponent's"
         top = analysis.lines[0].expected_score
         limit = LINE_PLIES if (not user_to_move or level >= DisclosureLevel.LINE) else 1
-        ranked = analysis.lines
-        best = ranked[:BEST_LINES]
-        weaker = ranked[BEST_LINES : BEST_LINES + WEAKER_LINES]
-        out.append(self._standing_text(analysis.lines[0], to_move, user_colour))
-        out.append(
-            f"Engine lines for the position now ({whose} move; scores from the player's side):"
-        )
+        best = analysis.lines[:BEST_LINES]
+        weaker = analysis.lines[BEST_LINES : BEST_LINES + WEAKER_LINES]
+        out: list[str] = []
         for i, line in enumerate(best, start=1):
             out.append(
-                f"  {i}. {san_line(board, line.moves, limit=limit, numbered=numbered)}  "
+                f"  {i}. {san_line(board, line.moves, limit=limit)}  "
                 f"{self._score(line.expected_score, to_move, user_colour)}"
                 + self._does(board, line.moves)
-                + (self._leads(board, line.moves[:limit], user_colour) if numbered else "")
+                + self._leads(board, line.moves[:limit], user_colour)
             )
         if weaker:
-            out.append("  weaker:")
+            # The scores are from the player's side, so on the opponent's turn a weaker
+            # line for them shows a higher number: the title says whose.
+            out.append(f"  weaker for {whose.removesuffix("'s")}:")
             for i, line in enumerate(weaker, start=len(best) + 1):
                 drop = top - line.expected_score
+                gap = f"{drop:.2f} behind the best" if drop >= 0.005 else "level with the best"
                 out.append(
-                    f"  {i}. {san_line(board, line.moves, limit=limit, numbered=numbered)}  "
-                    f"{self._score(line.expected_score, to_move, user_colour)} "
-                    f"({drop:.2f} behind the best)"
+                    f"  {i}. {san_line(board, line.moves, limit=limit)}  "
+                    f"{self._score(line.expected_score, to_move, user_colour)} ({gap})"
                 )
-        return out
+        return f"({whose} move; scores from the player's side)", out
 
     def _standing_text(self, top: Line, to_move: chess.Color, user_colour: chess.Color) -> str:
-        """Who stands better, in words, with the engine's number named by side: "Standing:
-        you are better (Stockfish: White +1.2 pawns; your winning chances about 66%)". A
-        bare 0-1 number was read as a pawn score, or not at all; the words are what a
-        coach says, and the side named leaves no sign to guess."""
+        """Who stands better, in words, with the engine's number named by side: "The player
+        is better (Stockfish: White ahead by about 1.2 pawns)." A bare 0-1 number was read
+        as a pawn score, or not at all; the words are what a coach says, and the side named
+        leaves no sign to guess."""
         score = top.expected_score if to_move == user_colour else 1.0 - top.expected_score
-        text = f"Standing: {standing_words(score, third_person=True)} (Stockfish: "
+        words = standing_words(score, third_person=True)
+        text = f"{words[:1].upper()}{words[1:]} (Stockfish: "
         if top.mate is not None:
             n = abs(top.mate)
             winner = to_move if top.mate > 0 else not to_move
@@ -574,70 +633,72 @@ class Conversation:
             return ""
         return f"  ({text})" if text else ""
 
-    def _grounding_text(
+    # The facts in the order a coach reads them: what kind of moment, then the idea.
+    _FACT_KEYS = (
+        "phase",
+        "decisive",
+        "only_move",
+        "nature",
+        "theme",
+        "plan",
+        "region",
+        "piece",
+        "tactic",
+        "threats",
+        "ideas",
+        "focus",
+    )
+
+    @staticmethod
+    def _facts_owner(user_to_move: bool) -> str:
+        return (
+            "the player to move"
+            if user_to_move
+            else "the opponent to move; the opponent's plan and ideas"
+        )
+
+    def _facts_lines(
         self,
         record: PlyRecord,
         board: chess.Board,
         user_colour: chess.Color,
         level: DisclosureLevel,
-        *,
-        with_lines: bool = True,
     ) -> list[str]:
+        """The facts of the position, one per line, in the third person for the side to
+        move: the opponent's facts are the opponent's plan and ideas, and say so."""
         facts = record.facts
         if facts is None:
             return []
         user_to_move = board.turn == user_colour
         level = level if user_to_move else DisclosureLevel.LINE
         visible = visible_facts(facts, level)
-        if not with_lines and record.analysis is not None and record.analysis.lines:
-            # The candidates and the line are the lines block's first moves and first line;
-            # an older ply's message does not write them twice.
-            visible = {k: v for k, v in visible.items() if k not in ("candidates", "line")}
+        side = "player" if user_to_move else "opponent"
         out: list[str] = []
-        shown: list[str] = []
-        keys = (
-            "phase",
-            "decisive",
-            "only_move",
-            "nature",
-            "theme",
-            "plan",
-            "region",
-            "piece",
-            "tactic",
-            "threats",
-            "ideas",
-            "focus",
-        )
-        for key in keys:
-            value = visible.get(key)
-            if value in (None, "", [], False):
-                continue
-            if key == "threats" and isinstance(value, list):
-                # A threat is the opponent's move if the side to move passed; what it does
-                # is computed on that position, so the coach can say it in words.
-                value = [self._threat_words(board, str(v)) for v in value]
-            if isinstance(value, list):
-                value = ", ".join(str(v) for v in value)
-            text = str(value)
-            if not user_to_move:
-                # The facts are the side to move's; said of the opponent, in their words.
-                text = _theirs(text)
-            shown.append(f"{key.replace('_', ' ')}: {text}")
         if record.analysis is not None and record.analysis.opening:
             previous = self._record_before(record)
             before = previous.analysis.opening if previous and previous.analysis else None
             if before != record.analysis.opening:
-                shown.insert(0, f"opening: {record.analysis.opening}")
-        if shown:
-            owner = (
-                "the player to move"
-                if user_to_move
-                else "the opponent to move: the opponent's plan, the opponent's ideas"
-            )
-            out.append(f"Facts ({owner}): " + "; ".join(shown) + ".")
-        if user_to_move and level < DisclosureLevel.CANDIDATE:
-            out.append(f"Disclosure now: {level.name.lower()} -- {self._level_words(level)}.")
+                out.append(f"opening: {record.analysis.opening}")
+        for key in self._FACT_KEYS:
+            value = visible.get(key)
+            if value in (None, "", [], False):
+                continue
+            name = key.replace("_", " ")
+            if value is True:
+                out.append(f"{name}: yes")
+            elif key == "ideas":
+                out.append("ideas:")
+                out.extend(f"  - {third_person(str(v), side=side)}" for v in value)
+            elif key == "threats":
+                # A threat is the opponent's move if the side to move passed; what it does
+                # is computed on that position, so the coach can say it in words.
+                out.append(
+                    f"{name}: " + ", ".join(self._threat_words(board, str(v)) for v in value)
+                )
+            elif isinstance(value, list):
+                out.append(f"{name}: " + ", ".join(str(v) for v in value))
+            else:
+                out.append(f"{name}: {third_person(str(value), side=side)}")
         return out
 
     def _tally_text(self, through: PlyRecord) -> str:
@@ -702,7 +763,11 @@ class Conversation:
                 else:
                     after = chess.Board(record.move.fen_after)
                     shown = "\n".join(
-                        self._lines_text(record, after, user_colour, DisclosureLevel.LINE)
+                        f"{title}: {body}"
+                        for title, body in self._position_sections(
+                            record, after, user_colour, DisclosureLevel.LINE
+                        )
+                        if title in ("Standing", "Engine lines")
                     )
                     text = f"Engine note on the position after {name}:\n{shown}"
                 self.entries.append(Entry("user", "note", text))

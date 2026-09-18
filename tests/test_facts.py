@@ -114,7 +114,7 @@ def test_the_nature_of_the_best_move_is_forcing_or_quiet() -> None:
     mate = facts_from_analysis(chess.Board(SCHOLAR), analysed(SCHOLAR, "h5f7"))
     assert mate.nature is not None and mate.nature.startswith("forcing")
     shown = visible_facts(mate, DisclosureLevel.QUESTION)
-    assert shown["nature"] == "forcing: the answer is a check, a capture or a promotion"
+    assert shown["nature"] == "forcing -- the answer is a check, a capture or a promotion"
     assert not any("f7" in str(v) or "queen" in str(v) for v in shown.values())
     # The trial game's endgame: a rook up, a pawn on d7, dxe8=Q+ leads to mate.
     fen = "1q2r2k/3P4/p6p/1pRQ2p1/8/5P2/PP4PP/5R1K w - - 1 34"
@@ -124,3 +124,31 @@ def test_the_nature_of_the_best_move_is_forcing_or_quiet() -> None:
     quiet = facts_from_analysis(chess.Board(quiet_fen), analysed(quiet_fen, "b1c3"))
     assert quiet.nature is not None and quiet.nature.startswith("quiet")
     assert str(visible_facts(quiet, DisclosureLevel.QUESTION)["nature"]).startswith("quiet")
+
+
+def test_a_quiet_move_whose_line_wins_material_is_a_tactic_not_quiet() -> None:
+    """ "Quiet: there is no tactic to find here" was said of a won position whose best move,
+    a quiet knight move, uncovered a rook on the queen: the nature looks down the line."""
+    # White to move: Nh6, a quiet move, uncovers the rook on g6; the line wins the knight.
+    fen = "5k2/3n1p2/b5p1/3P4/5QN1/qr1p2RP/5PPK/8 w - - 0 34"
+    line = ["g4h6", "d7f6", "f4f6", "a3a2"]
+    analysis = Analysis(
+        game_id="g",
+        fen=fen,
+        ply=66,
+        lines=[Line(moves=line, depth=20, expected_score=0.97)],
+        decisive=True,
+        only_move=True,
+    )
+    facts = facts_from_analysis(chess.Board(fen), analysis)
+    assert facts.nature is not None and facts.nature.startswith("a tactic")
+    # The same first move with no line given is judged by the move alone.
+    alone = Analysis(
+        game_id="g",
+        fen=fen,
+        ply=66,
+        lines=[Line(moves=["g4h6"], depth=20, expected_score=0.97)],
+        decisive=True,
+        only_move=True,
+    )
+    assert str(facts_from_analysis(chess.Board(fen), alone).nature).startswith("quiet")

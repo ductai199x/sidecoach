@@ -131,6 +131,9 @@ def test_theme_ranks_the_most_specific_tag_first() -> None:
     chosen = theme_of(tags)
     assert chosen is not None and chosen.name == "fork"
     assert theme_of([MotifTag(name="quietMove", squares=["e4"])]) is None
+    # Bookkeeping tags never headline: they hold on most quiet moves.
+    assert theme_of([MotifTag(name="interference", squares=["e4"])]) is None
+    assert theme_of([MotifTag(name="attackingF2F7", squares=["f7"])]) is None
 
 
 def test_regions_and_anchors() -> None:
@@ -138,6 +141,8 @@ def test_regions_and_anchors() -> None:
     assert region_of(["b2", "a1"]) == "the queenside, around b2"
     assert region_of(["d4", "e5"]) == "the centre, around d4"
     assert region_of([]) is None
+    # The anchor lies in the region the squares chose.
+    assert region_of(["g4", "d7", "c8"]) == "the queenside, around d7"
 
 
 def test_phase_and_material_in_the_users_words() -> None:
@@ -148,15 +153,26 @@ def test_phase_and_material_in_the_users_words() -> None:
         "r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 w - - 0 12"
     )
     assert phase_of(middlegame) == "middlegame"
-    assert material_text(chess.Board()) == "material is level"
+    assert material_text(chess.Board()) == "level"
     assert material_text(
         chess.Board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1")
-    ) == ("you are down a queen or more")
+    ) == ("you are down a queen")
     assert material_text(
         chess.Board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR b KQkq - 0 1")
-    ) == ("you are up a queen or more")
-    assert (
-        material_text(chess.Board("4k3/8/8/8/8/8/8/4KN2 w - - 0 1")) == "you are up a minor piece"
+    ) == ("you are up a queen")
+    assert material_text(chess.Board("4k3/8/8/8/8/8/8/4KN2 w - - 0 1")) == "you are up a knight"
+    # The pieces, not a sum: a bishop against a pawn is not "down two pawns".
+    assert material_text(chess.Board("4k3/4p3/8/8/8/8/8/2B1K3 b - - 0 1")) == (
+        "you are down a bishop for a pawn"
+    )
+    assert material_text(chess.Board("4k3/8/8/8/8/8/8/2B1K2R b - - 0 1")) == (
+        "you are down a rook and a bishop"
+    )
+    assert material_text(chess.Board("2b1k3/8/8/8/8/8/8/4K2R w - - 0 1")) == (
+        "you are up the exchange"
+    )
+    assert material_text(chess.Board("2b1k3/8/8/8/8/8/8/1N2K3 w - - 0 1")) == (
+        "level in value: your knight against their bishop"
     )
 
 
@@ -264,3 +280,26 @@ def test_priority_order_for_colliding_triggers() -> None:
         Trigger.POST_MOVE,
         Trigger.STUCK,
     ]
+
+
+def test_the_decisive_question_is_asked_once_per_decisive_stretch() -> None:
+    """A won endgame is decisive at every move (the lines diverge at each turn), and the
+    question was asked after every one of them: "before making a quiet move, what forcing
+    possibilities ..." six times in a row. Once asked, it waits for a quiet position in
+    between, or eight plies."""
+    policy = InterjectionPolicy()
+    policy.new_position(60, 0.0, user_to_move=True)
+    assert policy.on_position_analysed(60, decisive=True) is Trigger.DECISIVE_QUESTION
+    policy.said(60)
+    policy.new_position(62, 10.0, user_to_move=True)
+    assert policy.on_position_analysed(62, decisive=True) is None
+    assert policy.last_reason is not None and "already pointed at" in policy.last_reason
+    policy.new_position(64, 20.0, user_to_move=True)
+    assert policy.on_position_analysed(64, decisive=False) is None, "a quiet position between"
+    policy.new_position(66, 30.0, user_to_move=True)
+    assert policy.on_position_analysed(66, decisive=True) is Trigger.DECISIVE_QUESTION
+    policy.said(66)
+    policy.new_position(74, 40.0, user_to_move=True)
+    assert policy.on_position_analysed(74, decisive=True) is Trigger.DECISIVE_QUESTION, (
+        "eight plies on, even with no quiet position between"
+    )

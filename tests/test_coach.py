@@ -163,7 +163,7 @@ def test_a_decisive_moment_earns_one_question_that_names_nothing() -> None:
         "3. Qh5",
     ]
     current = _current_move_message(messages)
-    assert "White to move." in current and "decisive: True" in current
+    assert "White to move." in current and "decisive: yes" in current
     assert "3... Nf6 by the opponent" in current
     assert "Pieces -- White: K e1, Q h5" in current, "the position is given piece by piece"
     assert "Legal moves" not in current, "the moves are withheld with the lines at this level"
@@ -448,7 +448,7 @@ def test_the_fact_sheet_hides_by_level() -> None:
         fen=SCHOLAR,
         side_to_move="white",
         phase="opening",
-        material="material is level",
+        material="level",
         theme="a mating attack",
         region="the kingside, around f7",
         piece="your queen",

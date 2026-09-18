@@ -127,41 +127,74 @@ def phase_of(board: chess.Board, in_book: bool = False) -> str:
     return "middlegame"
 
 
+_COUNTED = (chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN)
+_PLURALS = {
+    "queen": "queens",
+    "rook": "rooks",
+    "bishop": "bishops",
+    "knight": "knights",
+    "pawn": "pawns",
+}
+_NUMBERS = {1: "a", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}
+
+
+def _pieces_words(counts: dict[int, int], *, article: bool = True) -> str:
+    """The surplus pieces of one side, most valuable first: "a rook and two pawns"; without
+    the article after a possessive ("your knight")."""
+    parts = []
+    for piece_type in _COUNTED:
+        n = counts.get(piece_type, 0)
+        if n <= 0:
+            continue
+        name = PIECE_NAMES[piece_type]
+        if n == 1:
+            parts.append(f"a {name}" if article else name)
+        else:
+            parts.append(f"{_NUMBERS.get(n, str(n))} {_PLURALS[name]}")
+    if len(parts) <= 1:
+        return "".join(parts)
+    return ", ".join(parts[:-1]) + f" and {parts[-1]}"
+
+
 def material_text(board: chess.Board, perspective: chess.Color | None = None) -> str:
     """The material balance as `perspective` (the user; by default the side to move) would
-    say it. The first live games' coach told a player a queen up that they were a queen
+    say it, by the pieces: "you are up a bishop for a pawn", "you are down the exchange".
+    A sum in pawns' worth ("down two pawns" for a bishop against a pawn) read as a pawn
+    count. The first live games' coach told a player a queen up that they were a queen
     down: the balance had been read from the opponent's side whenever the opponent was
     to move, and the memory carried it into the post-game verdict."""
     who = board.turn if perspective is None else perspective
-    us = not_us = 0
-    for piece in board.piece_map().values():
-        value = _VALUES.get(piece.piece_type, 0)
-        if piece.color == who:
-            us += value
-        else:
-            not_us += value
-    diff = us - not_us
-    if diff == 0:
-        return "material is level"
-    amount = abs(diff)
-    if amount == 1:
-        what = "a pawn"
-    elif amount == 2:
-        what = "two pawns"
-    elif amount == 3:
-        what = "a minor piece"
-    elif amount in (4, 5):
-        what = "a rook"
-    elif amount < 9:
-        what = "a rook and more"
-    else:
-        what = "a queen or more"
-    return f"you are {'up' if diff > 0 else 'down'} {what}"
+    surplus = {t: len(board.pieces(t, who)) - len(board.pieces(t, not who)) for t in _COUNTED}
+    ours = {t: n for t, n in surplus.items() if n > 0}
+    theirs = {t: -n for t, n in surplus.items() if n < 0}
+    if not ours and not theirs:
+        return "level"
+    diff = sum(_VALUES[t] * n for t, n in surplus.items())
+    if ours and theirs:
+        more, less = (ours, theirs) if diff >= 0 else (theirs, ours)
+        # A rook against a bishop or knight, and nothing else: the exchange.
+        exchange = more == {chess.ROOK: 1} and sum(less.values()) == 1 and chess.PAWN not in less
+        what = "the exchange" if exchange else f"{_pieces_words(more)} for {_pieces_words(less)}"
+        if diff == 0:
+            return (
+                f"level in value: your {_pieces_words(ours, article=False)} against their "
+                f"{_pieces_words(theirs, article=False)}"
+            )
+        return f"you are {'up' if diff > 0 else 'down'} {what}"
+    return f"you are {'up' if ours else 'down'} {_pieces_words(ours or theirs)}"
+
+
+# Tags that never headline: they hold on most quiet moves (a line that could be cut, a
+# square that could be cleared, a bishop eyeing f7 in a book Ruy Lopez), and as the theme
+# they sent the stuck hint asking "which line could be cut?" in positions about nothing.
+_NOT_A_THEME = frozenset(
+    {"interference", "clearance", "attackingF2F7", "quietMove", "defensiveMove"}
+)
 
 
 def theme_of(tags: Sequence[MotifTag]) -> MotifTag | None:
     """The tag a coach would name as the idea, most specific first."""
-    ranked = [tag for tag in tags if tag.name in _THEME_RANK]
+    ranked = [tag for tag in tags if tag.name in _THEME_RANK and tag.name not in _NOT_A_THEME]
     if not ranked:
         return None
     return min(ranked, key=lambda tag: _THEME_RANK[tag.name])
@@ -185,7 +218,14 @@ def region_of(squares: Sequence[str]) -> str | None:
         where = "the queenside"
     else:
         where = "the centre"
-    anchor = squares[0]
+    # The anchor lies in the region: "the queenside, around g4" was the first focus square
+    # named for a region the other two squares had chosen.
+    in_region = {
+        "the kingside": lambda f: f >= 4,
+        "the queenside": lambda f: f < 4,
+        "the centre": lambda f: 2 <= f <= 5,
+    }[where]
+    anchor = next((sq for sq, f in zip(squares, files, strict=True) if in_region(f)), squares[0])
     return f"{where}, around {anchor}"
 
 
@@ -335,11 +375,44 @@ def _to_move(uci: str) -> chess.Move | None:
         return None
 
 
-def nature_of(board: chess.Board, best: chess.Move) -> str:
-    """Whether the best move is forcing or quiet, in the words the sheet uses."""
+# A line whose play-out gains this much material (in pawns' worth) is a tactic even when
+# its first move is quiet: a discovered attack, a knight move that forks next.
+TACTIC_GAIN = 2
+
+
+def nature_of(board: chess.Board, best: chess.Move, line: Sequence[str] = ()) -> str:
+    """Whether the answer is forcing, a quiet move that wins material, or quiet, in the
+    words the sheet uses. `line` is the engine's line from `best` (UCI), played out to
+    see whether it wins material: "quiet: there is no tactic" was said of a won endgame
+    whose best move, a quiet knight move, uncovered a rook on the queen."""
     if board.is_capture(best) or board.gives_check(best) or best.promotion:
-        return "forcing: the answer is a check, a capture or a promotion"
-    return "quiet: there is no tactic to find here; the move improves your position"
+        return "forcing -- the answer is a check, a capture or a promotion"
+    if line and _line_gain(board, line) >= TACTIC_GAIN:
+        return "a tactic -- the best move is quiet, but the line after it wins material"
+    return "quiet -- no tactic to find; the move improves your position"
+
+
+def _line_gain(board: chess.Board, line: Sequence[str]) -> int:
+    """Material gained by the side to move over `line` (UCI), in pawns' worth; the line
+    stops at the first illegal move."""
+    us = board.turn
+    after = board.copy(stack=False)
+    for uci in line:
+        try:
+            move = chess.Move.from_uci(uci)
+        except ValueError:
+            break
+        if move not in after.legal_moves:
+            break
+        after.push(move)
+
+    def balance(b: chess.Board) -> int:
+        return sum(
+            _VALUES.get(p.piece_type, 0) * (1 if p.color == us else -1)
+            for p in b.piece_map().values()
+        )
+
+    return balance(after) - balance(board)
 
 
 def facts_from_analysis(
@@ -416,7 +489,7 @@ def facts_from_analysis(
         moving = board.piece_at(best.from_square)
         if moving is not None:
             piece = f"your {PIECE_NAMES[moving.piece_type]}"
-        nature = nature_of(board, best)
+        nature = nature_of(board, best, lines[0].moves if lines else ())
 
     candidates: list[str] = []
     if lines:

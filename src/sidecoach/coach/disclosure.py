@@ -155,7 +155,11 @@ class Disclosure:
         """Apply an unlock. Returns the new level, or None when nothing changed."""
         before = self.level
         match unlock:
-            case Unlock.STUCK | Unlock.DECISIVE:
+            case Unlock.STUCK:
+                # A player stuck for a while gets the theme at once, the region next.
+                if self.level < AUTONOMOUS_CEILING:
+                    self.level = DisclosureLevel(max(self.level + 1, DisclosureLevel.THEME))
+            case Unlock.DECISIVE:
                 if self.level < AUTONOMOUS_CEILING:
                     self.level = DisclosureLevel(self.level + 1)
             case Unlock.HINT:

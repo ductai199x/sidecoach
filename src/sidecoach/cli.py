@@ -854,6 +854,7 @@ class _Coaching:
             claims=_claims_check(provider),
             verifier=_verifier(settings, provider),  # type: ignore[arg-type]
             engine=_named_engine(settings),  # type: ignore[arg-type]
+            summarise_every=settings.coach.summarise_every,
         )
         self.coach.start()
         self.detail = f"{provider.name} ({detail})"

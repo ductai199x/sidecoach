@@ -859,6 +859,12 @@ def bad_bishop(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     return facts
 
 
+# Past this move a minor piece on its home square is as likely to have gone back there as
+# never to have left (a bishop retreating to f1 at move 35), so it is a piece on its home
+# square, ranked with the small features, not "not yet in the game" at the top.
+DEVELOPMENT_MOVES = 20
+
+
 def development(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     """Minor pieces still on their home squares, and whether the king has castled."""
     home = [sq for sq in _HOME_MINORS[us] if board.piece_at(sq) and board.color_at(sq) == us]
@@ -867,13 +873,14 @@ def development(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     if home:
         names = ", ".join(_name(sq) for sq in home)
         count = "a piece" if len(home) == 1 else f"{len(home)} pieces"
-        facts.append(
-            PositionalFact(
-                "undeveloped",
-                f"you still have {count} at home ({names}), not yet in the game",
-                tuple(_name(sq) for sq in home),
-            )
-        )
+        if board.fullmove_number <= DEVELOPMENT_MOVES:
+            kind = "undeveloped"
+            text = f"you still have {count} at home ({names}), not yet in the game"
+        else:
+            kind = "homeSquare"
+            where = "its home square" if len(home) == 1 else "their home squares"
+            text = f"you have {count} on {where} ({names})"
+        facts.append(PositionalFact(kind, text, tuple(_name(sq) for sq in home)))
     return facts
 
 
@@ -1295,6 +1302,7 @@ _FEATURE_RANK: dict[str, int] = {
     "complicate": 9,
     "spaceAdvantage": 10,
     "spaceCramp": 11,
+    "homeSquare": 12,
     "outpost": 10,
     "badBishop": 11,
     "openFile": 12,

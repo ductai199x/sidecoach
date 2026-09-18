@@ -279,14 +279,19 @@ def to_move_lines(board: chess.Board, *, own: str) -> list[str]:
     return out
 
 
-def inventory_text(board: chess.Board, user_colour: chess.Color) -> str:
-    """One block: the player's pieces, the opponent's, and what the side to move can do.
-    Empty when nothing is hanging, attacked, pinned or on offer."""
+def inventory_lines(board: chess.Board, user_colour: chess.Color) -> list[str]:
+    """The player's pieces, the opponent's, and what the side to move can do, one list per
+    line; one line saying so when nothing hangs, is pinned or is on offer."""
     mine = side_lines(board, user_colour, own="The player's", their="the opponent's")
     theirs = side_lines(board, not user_colour, own="The opponent's", their="the player's")
     mover = "The player's" if board.turn == user_colour else "The opponent's"
-    now = to_move_lines(board, own=mover)
-    lines = [*mine, *theirs, *now]
-    if not lines:
+    lines = [*mine, *theirs, *to_move_lines(board, own=mover)]
+    return lines or ["Nothing hangs, nothing is pinned, no check or capture is on."]
+
+
+def inventory_text(board: chess.Board, user_colour: chess.Color) -> str:
+    """The inventory as one block, for a message that is not sectioned."""
+    lines = inventory_lines(board, user_colour)
+    if len(lines) == 1 and lines[0].startswith("Nothing"):
         return "On the board now: nothing hangs, nothing is pinned, no check or capture is on."
     return "On the board now (complete lists): " + " | ".join(lines) + "."

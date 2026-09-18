@@ -68,6 +68,9 @@ class CoachSettings(BaseModel):
     # verify_model "qwen3.8-flash" is what the evaluation measured: fabrication 0.33 -> 0.15).
     verify: str = ""
     verify_model: str | None = None
+    # Dialogue compaction: every this many plies, what was said earlier than the last this
+    # many plies is folded into a summary at the top of the record. 0 is off.
+    summarise_every: int = 0
     # Fitted to chess.com's review tallies over six games; see analysis.score.Thresholds.
     inaccuracy: float = 0.04
     mistake: float = 0.10

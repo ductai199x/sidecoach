@@ -41,6 +41,7 @@ from sidecoach.coach.named import analyse_named, disclosed_frames
 from sidecoach.coach.named import spoken as spoken_examination
 from sidecoach.coach.policy import InterjectionPolicy, TimeControl, time_control_of
 from sidecoach.coach.prompt import system_message
+from sidecoach.coach.summarise import summarise
 from sidecoach.events import (
     Analysis,
     Annotation,
@@ -591,7 +592,16 @@ class Speaker:
 
 # What the user's words mean for disclosure. Deterministic on purpose: the model never
 # decides how much may be said.
-_HINT = re.compile(r"\b(hint|clue|nudge|help me|help|stuck|where should i look)\b", re.I)
+# A hint, or a question about the plan ("what should I be aiming for?", "what's the idea
+# here?"): both earn the next level, where the theme and the plan may be named. Answered at
+# the question level, a question about the plan got a question back.
+_HINT = re.compile(
+    r"\b(hint|clue|nudge|help me|help|stuck|where should i look|"
+    r"what (?:should|do|can|could) i (?:be )?(?:aim|go|look|play|work|strive)(?:ing)? for|"
+    r"what(?:'s| is) (?:the|my) (?:plan|idea|goal|aim)|what to (?:aim|go) for|"
+    r"what am i (?:aiming|going|playing) for)\b",
+    re.I,
+)
 # An overall verdict on the game: "how did I do", "how was my game", "overall", "summary".
 _ASK_REVIEW = re.compile(
     r"\b(?:how (?:did|have|am) i (?:do|play|done|played|playing|doing)|how was (?:my|the) game|"
@@ -700,10 +710,17 @@ class Coach:
         claims: Callable[[str, chess.Board, PositionFacts | None], list[str]] | None = None,
         verifier: LLMProvider | None = None,
         engine: NamedEngine | None = None,
+        summarise_every: int = 0,
+        summariser: LLMProvider | None = None,
     ) -> None:
         self.policy = policy or InterjectionPolicy()
         self.speaker = Speaker(provider, draft_check=draft_check, verifier=verifier)
         self.claims = claims
+        # Dialogue compaction: every `summarise_every` plies the dialogue older than the
+        # last `summarise_every` plies is folded into a summary by `summariser` (the
+        # coach's own model when None). 0 is off.
+        self.summarise_every = summarise_every
+        self.summariser = summariser or provider
         # The engine that analyses a move or line the player names, on demand; without
         # one, a named move is only checked against the candidates the facts hold.
         self.engine = engine
@@ -960,6 +977,9 @@ class Coach:
             del self.positions[old]
         self._current = position
         self.policy.new_position(event.ply, ts, user_to_move=self.user_to_move)
+        if self.summarise_every and event.ply % self.summarise_every == 0:
+            with self._lock:
+                summarise(self.conversation, self.summariser, keep=self.summarise_every)
 
     def _on_takeback(self, event: Takeback, ts: float) -> None:
         """Moves withdrawn: the conversation says so, and the game goes on from the position
@@ -1308,7 +1328,7 @@ class Coach:
             if level >= DisclosureLevel.REGION:
                 fallback = f"Look at {region}. Something is going on there."
             elif level >= DisclosureLevel.THEME:
-                fallback = f"Think about {theme}."
+                fallback = f"The idea here is {theme}. What would make it count?"
             else:
                 fallback = "Take stock: what changed with the last move, and what does it allow?"
             return (
@@ -1391,7 +1411,7 @@ class Coach:
         elif level >= DisclosureLevel.REGION:
             fallback = f"Look at {region}."
         elif level >= DisclosureLevel.THEME:
-            fallback = f"Think about {theme}."
+            fallback = f"The idea here is {theme}. What would make it count?"
         elif facts.nature and facts.nature.startswith("forcing"):
             # The one fact the QUESTION level allows: whether the answer is forcing. The
             # generic "opponent's idea" question pointed the wrong way in a position where
@@ -1494,8 +1514,10 @@ class Coach:
                 except ValueError:
                     best = ""
             # The request's facts are those of the position the move was played from when
-            # the coach has them (ask() chose that position); the idea is theirs.
-            idea = facts.theme or facts.plan or (facts.ideas[0] if facts.ideas else "")
+            # the coach has them (ask() chose that position); the idea is theirs. The theme
+            # or the plan, never a static feature: "the idea was the isolated d-pawn ..."
+            # became the reason a bishop retreat was an inaccuracy.
+            idea = facts.theme or facts.plan or ""
             if verdict.severity is Severity.NONE:
                 fallback = self._verdict(san, label)
                 directive = (
@@ -1527,6 +1549,8 @@ class Coach:
                 "or line they named is given above, that analysis is theirs to hear in full: "
                 "the score after it, how far behind the best, the reply, what the move does. "
                 "Only the engine's better move or line is withheld: never reveal that unless "
-                "the sheet lists it, but do point them toward the right idea with a question."
+                "the sheet lists it, but do point them toward the right idea with a question. "
+                "What you already said in this position is under 'Said here': do not say it "
+                "again in other words; give them something it did not."
             )
         return f"{checks}{directive}", fallback

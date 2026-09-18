@@ -41,6 +41,11 @@ def time_control_of(initial_ms: int | None, increment_ms: int = 0) -> TimeContro
     return TimeControl.BULLET
 
 
+# In a run of decisive positions (a won endgame: every move is "the" move), the decisive
+# question is asked at most once in this many plies.
+DECISIVE_EVERY = 8
+
+
 @dataclass
 class PolicySettings:
     stuck_seconds: float = 45.0
@@ -74,6 +79,8 @@ class InterjectionPolicy:
     # Why the last unprompted trigger did not fire, in a few words, for the debug log --
     # the answer to "why is the coach quiet?". None once a trigger fires.
     last_reason: str | None = field(default=None, init=False)
+    # The last ply the decisive question was asked at, while the positions stay decisive.
+    _last_decisive_ply: int | None = field(default=None, init=False)
 
     # What the board is doing
 
@@ -112,11 +119,20 @@ class InterjectionPolicy:
         return Trigger.POST_MOVE
 
     def on_position_analysed(self, ply: int, *, decisive: bool) -> Trigger | None:
-        """The engine has looked at the position the user is thinking in."""
+        """The engine has looked at the position the user is thinking in. The decisive
+        question is asked when a position turns decisive, not on every move of a won
+        endgame, where the lines diverge at each turn: once a stretch of decisive
+        positions has been pointed at, the next question waits for a quiet position in
+        between, or `DECISIVE_EVERY` plies."""
         if not self._may_speak_now(ply):
             return None
         if not decisive:
+            self._last_decisive_ply = None
             return self._silent("position not decisive")
+        last = self._last_decisive_ply
+        if last is not None and ply - last < DECISIVE_EVERY:
+            return self._silent(f"decisive stretch already pointed at (ply {last})")
+        self._last_decisive_ply = ply
         self.last_reason = None
         return Trigger.DECISIVE_QUESTION
 
