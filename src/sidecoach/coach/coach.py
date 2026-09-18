@@ -124,6 +124,59 @@ _PIECE_WORD = {"K": "king", "Q": "queen", "R": "rook", "B": "bishop", "N": "knig
 # faulted: the length is reasonable, not strict.
 LENGTH_SLACK = 2
 _WORD_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
+_SAYS_BEST = re.compile(
+    r"\b(?:the |your )?(?:best|strongest|top|engine's) (?:move|choice)\b|\bwas best\b|\bis best\b",
+    re.IGNORECASE,
+)
+_SAYS_SLIP = re.compile(r"\b(?:blunder|mistake|inaccuracy|a miss)\b", re.IGNORECASE)
+_SAYS_COST = re.compile(
+    r"\b(?:cost|costing|costs|lost|losing)\b[^.;]{0,30}?(\d+(?:\.\d+)?)\s*(%|percent)?",
+    re.IGNORECASE,
+)
+
+
+def _verdict_problems(text: str, request: _Request) -> list[str]:
+    """Faults in what a reply says of the move just assessed: a "best" that was not, a
+    slip word for a sound move, a cost that is not the recorded one."""
+    a = request.assessment
+    played = request.played_san
+    if a is None or not played:
+        return []
+    # Only when the reply speaks of that move, and of no other move by name.
+    others = [m for m in _SAN.findall(text) if m.rstrip("+#") != played.rstrip("+#")]
+    if others or not re.search(
+        rf"(?<![A-Za-z]){re.escape(played.rstrip('+#'))}[+#]?(?![A-Za-z0-9])", text
+    ):
+        return []
+    label = a.label.value if a.label else a.severity.value
+    problems: list[str] = []
+    if (
+        _SAYS_BEST.search(text)
+        and label not in ("best", "excellent")
+        and not re.search(
+            r"\bnot (?:the )?(?:best|strongest)\b|\bwas better\b|\bwas stronger\b", text, re.I
+        )
+    ):
+        problems.append(f"called {played} the best move; its verdict is {label}")
+    if (
+        _SAYS_SLIP.search(text)
+        and a.severity is Severity.NONE
+        and not re.search(
+            r"\bnot (?:a )?(?:blunder|mistake)\b|\bno (?:blunder|mistake)\b", text, re.I
+        )
+    ):
+        problems.append(f"called {played} a slip; its verdict is {label}")
+    for found in _SAYS_COST.finditer(text):
+        value = float(found.group(1))
+        if found.group(2) or value > 1.0:
+            value /= 100.0
+        if abs(value - a.expected_loss) > max(0.02, 0.35 * a.expected_loss):
+            problems.append(
+                f"gave the cost of {played} as {found.group(1)}; it was {a.expected_loss:.2f}"
+            )
+    return problems
+
+
 _LIMIT_WORDS = re.compile(
     r"\b(?:(?:at most|no more than) (one|two|three|four|five|six) sentences?"
     r"|(one|two|three|four|five|six)(?: or (one|two|three|four|five|six))? (?:short )?sentences?"
@@ -314,6 +367,10 @@ class _Request:
     # better. A reply about the game as it went may name either; the board checker must
     # not fault "Rg6" from move 30 as unplayable now, nor the leak check count it.
     played: frozenset[str] = frozenset()
+    # The move just assessed and its assessment, when the turn is about it: what the reply
+    # says of its verdict and cost is checked against them.
+    played_san: str | None = None
+    assessment: MoveAssessment | None = None
 
 
 def _after_best(request: _Request) -> list[chess.Board]:
@@ -653,6 +710,10 @@ class Speaker:
         limit, wants_question = directive_limits(directive)
         if limit is not None and _sentence_total(text) > limit + LENGTH_SLACK:
             found.append(f"too long: {_sentence_total(text)} sentences, {limit} asked for")
+        # The verdict word and the cost the reply gives for the move just played must be
+        # the assessment's own: "best" for an excellent move, "cost 0.10" for a 0.05 loss,
+        # were the judge's commonest remaining faults, and the coach holds the facts.
+        found.extend(_verdict_problems(text, request))
         # The closing question the directive asks for: without this check the length
         # rule let a shorter candidate without one win the draw.
         if wants_question is True and not text.rstrip().endswith("?"):
@@ -1369,6 +1430,8 @@ class Coach:
             candidates=candidates
             or (VS_ASK_CANDIDATES if trigger is Trigger.USER_ASK else VS_CANDIDATES),
             played=self._record_moves(),
+            played_san=played.san if played else None,
+            assessment=assessment,
         )
         self.speaker.submit(request)
 
