@@ -27,6 +27,7 @@ import random
 import re
 import sys
 import time
+from collections.abc import Collection
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -476,7 +477,7 @@ def catalogue_of(items: list[dict]) -> dict[str, list[dict]]:
 
 
 def sample_moments(
-    items: list[dict], per_game: int, seed: int, *, exclude: set[str] = frozenset()
+    items: list[dict], per_game: int, seed: int, *, exclude: Collection[str] = ()
 ) -> list[dict]:
     """`per_game` moments of every game to judge, drawn at random with `seed` (a different
     seed each round draws a different batch), weighted toward the classes that teach;
@@ -552,7 +553,6 @@ def play_round(
                 path,
                 rng,
                 annotations,
-                None,
                 engine,
                 provider=provider,
                 system=system,

@@ -69,26 +69,25 @@ def test_up_a_piece_is_a_convert_plan_and_down_a_piece_a_complicate_plan() -> No
     assert kinds(P.material_plan(up, chess.BLACK)) == ["complicate"]
 
 
+def _idea_kind(board: chess.Board, san: str, us: chess.Color, **kw) -> str | None:
+    idea = P.best_move_idea(board, board.parse_san(san), us, **kw)
+    return idea.kind if idea is not None else None
+
+
 def test_best_move_idea_reads_the_strategic_point_of_the_move() -> None:
     italian = "rnbqk2r/pppp1ppp/5n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
     board = chess.Board(italian)
-    assert (
-        P.best_move_idea(board, board.parse_san("O-O"), chess.WHITE, phase="opening").kind
-        == "castle"
-    )
-    assert (
-        P.best_move_idea(board, board.parse_san("Nc3"), chess.WHITE, phase="opening").kind
-        == "develop"
-    )
+    assert _idea_kind(board, "O-O", chess.WHITE, phase="opening") == "castle"
+    assert _idea_kind(board, "Nc3", chess.WHITE, phase="opening") == "develop"
     # A knight to a pawn-guarded square in enemy ground is an outpost move.
     board = chess.Board("4k3/8/8/8/4P3/2N5/8/4K3 w - - 0 1")
-    assert P.best_move_idea(board, board.parse_san("Nd5"), chess.WHITE).kind == "outpostMove"
+    assert _idea_kind(board, "Nd5", chess.WHITE) == "outpostMove"
     # A rook onto a file with no friendly pawn takes the file.
     board = chess.Board("3rk3/8/8/8/8/8/4P3/R3K3 w - - 0 1")
-    assert P.best_move_idea(board, board.parse_san("Rd1"), chess.WHITE).kind == "takeFile"
+    assert _idea_kind(board, "Rd1", chess.WHITE) == "takeFile"
     # Pushing a passed pawn.
     board = chess.Board("4k3/8/8/P7/8/8/8/4K3 w - - 0 1")
-    assert P.best_move_idea(board, board.parse_san("a6"), chess.WHITE).kind == "pushPasser"
+    assert _idea_kind(board, "a6", chess.WHITE) == "pushPasser"
 
 
 def test_best_move_idea_rescues_a_piece_in_danger() -> None:
@@ -153,22 +152,20 @@ def test_endgame_king_activity_and_pawn_break_and_rook_behind_passer() -> None:
     board = chess.Board("6k1/8/8/8/8/8/8/6K1 w - - 0 1")
     assert kinds(P.king_activity(board, chess.WHITE, phase="endgame")) == ["passiveKing"]
     board = chess.Board("8/8/8/8/8/8/4K3/6k1 w - - 0 1")
-    assert P.best_move_idea(board, board.parse_san("Kd3"), chess.WHITE, phase="endgame").kind == (
-        "activateKing"
-    )
+    assert _idea_kind(board, "Kd3", chess.WHITE, phase="endgame") == ("activateKing")
     # A pawn push that hits an enemy pawn is a break.
     board = chess.Board("4k3/8/3p4/8/2P5/8/8/4K3 w - - 0 1")
-    assert P.best_move_idea(board, board.parse_san("c5"), chess.WHITE).kind == "break"
+    assert _idea_kind(board, "c5", chess.WHITE) == "break"
     # A rook dropping behind a passed pawn is the classic rook-behind-passer idea.
     board = chess.Board("4k3/8/8/P7/8/8/8/1R2K3 w - - 0 1")
-    assert P.best_move_idea(board, board.parse_san("Ra1"), chess.WHITE).kind == "rookBehindPasser"
+    assert _idea_kind(board, "Ra1", chess.WHITE) == "rookBehindPasser"
 
 
 def test_pawn_storm_is_a_pawn_push_at_the_castled_king() -> None:
     # Black has castled kingside (g8); g4 storms that wing, a4 is only queenside space.
     board = chess.Board("r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/2NP1N2/PPP1QPPP/R1B1K2R w KQ - 0 7")
-    assert P.best_move_idea(board, board.parse_san("g4"), chess.WHITE).kind == "pawnStorm"
-    assert P.best_move_idea(board, board.parse_san("a4"), chess.WHITE).kind == "space"
+    assert _idea_kind(board, "g4", chess.WHITE) == "pawnStorm"
+    assert _idea_kind(board, "a4", chess.WHITE) == "space"
 
 
 def test_prophylaxis_is_a_quiet_move_that_stops_the_opponent_s_threat() -> None:
@@ -186,9 +183,7 @@ def test_prophylaxis_is_a_quiet_move_that_stops_the_opponent_s_threat() -> None:
         is None
     )
     # With no threat supplied, Nc3 is read as ordinary development, not prophylaxis.
-    assert P.best_move_idea(board, board.parse_san("Nc3"), chess.WHITE, phase="opening").kind == (
-        "develop"
-    )
+    assert _idea_kind(board, "Nc3", chess.WHITE, phase="opening") == ("develop")
 
 
 def test_central_infiltration_is_not_called_centralising() -> None:

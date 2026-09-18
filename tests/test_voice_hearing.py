@@ -180,5 +180,7 @@ def test_a_spoken_move_reaches_the_coach_as_san(tmp_path: Path) -> None:
     name, payload = engine._commands.get_nowait()
     assert (name, payload) == ("ask_spoken", "Nf3")
     # The ear was loaded once and says where.
-    assert engine._stt.device is not None
-    assert engine._stt.device.name == "cpu"
+    ear = engine._stt
+    assert isinstance(ear, ParakeetSTT)
+    assert ear.device is not None
+    assert ear.device.name == "cpu"

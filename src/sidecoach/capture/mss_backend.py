@@ -11,6 +11,8 @@ from sidecoach.events import Region
 
 
 class MssCapture:
+    name = "mss"
+
     def __init__(self) -> None:
         self._sct = mss.mss()
 

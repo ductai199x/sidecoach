@@ -25,7 +25,7 @@ from sidecoach.cli import _claims_check, _draft_check, _load_book, _load_tagger
 from sidecoach.coach.coach import Coach
 from sidecoach.coach.facts import facts_from_analysis
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
-from sidecoach.config import find_stockfish, load_settings
+from sidecoach.config import load_settings, require_stockfish
 from sidecoach.events import GameStarted, Side
 from sidecoach.llm.factory import make_provider
 
@@ -85,10 +85,10 @@ def cases(board: chess.Board, solution: chess.Move, facts):
         )
     hang, safe = hanging_and_safe(board, us)
     if hang is not None:
-        p = _PIECE[board.piece_type_at(hang)]
+        p = _PIECE[board.piece_type_at(hang) or chess.PAWN]
         out.append((f"I think their {p} on {chess.square_name(hang)} is hanging, right?", True))
     elif safe is not None:
-        p = _PIECE[board.piece_type_at(safe)]
+        p = _PIECE[board.piece_type_at(safe) or chess.PAWN]
         out.append(
             (f"Their {p} on {chess.square_name(safe)} looks like it's hanging to me.", False)
         )
@@ -99,7 +99,7 @@ def main() -> int:
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 6
     s = load_settings()
     provider = make_provider(s.llm)
-    eng = Engine(path=find_stockfish(s), threads=8, hash_mb=512, multipv=4, max_seconds=2.5)
+    eng = Engine(path=require_stockfish(s), threads=8, hash_mb=512, multipv=4, max_seconds=2.5)
     ann = GameAnnotator(
         engine=eng,
         depth=14,

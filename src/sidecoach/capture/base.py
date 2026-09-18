@@ -10,6 +10,8 @@ from sidecoach.events import Region
 
 
 class CaptureBackend(Protocol):
+    name: str  # "wgc" | "mss", for the doctor and the logs
+
     def monitors(self) -> list[Region]: ...
 
     def grab(self, region: Region) -> np.ndarray: ...

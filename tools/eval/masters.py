@@ -679,7 +679,7 @@ def align(game: BookGame, pgn: chess.pgn.Game) -> tuple[list[Aligned], int]:
         cut = text.find("Lessons from this game")  # the book's closing list, mid-line
         if cut >= 0:
             text = text[:cut].rstrip()
-        out[i].annotation = _note(_clean(text), game.book)
+        out[i].annotation = _note(_clean(text), game.book) or ""
     return out, len(pairs)
 
 

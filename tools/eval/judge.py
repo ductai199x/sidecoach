@@ -1158,9 +1158,8 @@ def score(
                     }
                 )
         try:
-            relevance = (
-                float(verdict.get("relevance")) if verdict.get("relevance") is not None else None
-            )
+            raw_relevance = verdict.get("relevance")
+            relevance = float(raw_relevance) if raw_relevance is not None else None
         except (TypeError, ValueError):
             relevance = None
         idea_raw = verdict.get("idea")
@@ -1409,7 +1408,7 @@ def opening_named(reply: str, name: str) -> bool:
 def _required_words(fact: dict) -> str:
     """A required fact as the two questions name it."""
     key = fact["key"].replace("_", " ")
-    return {
+    words: dict[str, str] = {
         "label": "a verdict on the move (how good or bad it was)",
         "move": "the move itself",
         "cost": "how much the move cost",
@@ -1426,7 +1425,8 @@ def _required_words(fact: dict) -> str:
         "named verdict": "the verdict on the move the player named",
         "strong moves": "how many of the player's moves were strong",
         "lost worst": "the move where the player lost the most ground",
-    }.get(key, key)
+    }
+    return words.get(key) or key
 
 
 _COUNT = re.compile(
@@ -1884,6 +1884,7 @@ def judge_one(
             + '\n"""'
         )
         parsed = None
+        raw = ""
         for _attempt in range(2):
             completion = _chat_with_backoff(
                 provider,
@@ -1895,14 +1896,13 @@ def judge_one(
                 temperature=0.0,
                 thinking=False,
             )
-            parsed = parse_judgment(completion.text)
+            raw = completion.text
+            parsed = parse_judgment(raw)
             if parsed is not None and isinstance(parsed.get("claims"), list):
                 break
             parsed = None
         if parsed is None:
-            raise JudgeFailed(
-                f"{rec['id']}: the decomposition never parsed: {completion.text[:120]!r}"
-            )
+            raise JudgeFailed(f"{rec['id']}: the decomposition never parsed: {raw[:120]!r}")
         claims = [
             str(c)
             for c in parsed.get("claims", [])
@@ -2095,7 +2095,7 @@ def judge_one(
     }
 
 
-_BINARY: dict[str, Any] = {}
+_BINARY: dict[int, Any] = {}
 
 
 def binary_judge(provider):

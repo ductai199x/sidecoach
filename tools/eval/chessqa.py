@@ -60,7 +60,7 @@ from sidecoach.cli import _load_book, _load_tagger  # noqa: E402
 from sidecoach.coach.conversation import Conversation, Entry, PlyRecord  # noqa: E402
 from sidecoach.coach.facts import ascii_board, facts_from_analysis  # noqa: E402
 from sidecoach.coach.named import analyse_named  # noqa: E402
-from sidecoach.config import find_stockfish, load_settings  # noqa: E402
+from sidecoach.config import load_settings, require_stockfish  # noqa: E402
 from sidecoach.events import (  # noqa: E402
     Analysis,
     DisclosureLevel,
@@ -165,7 +165,11 @@ def compute_facts(items: list[dict[str, Any]], *, depth: int, seconds: float, th
         return
     settings = load_settings()
     engine = Engine(
-        path=find_stockfish(settings), threads=threads, hash_mb=1024, multipv=6, max_seconds=seconds
+        path=require_stockfish(settings),
+        threads=threads,
+        hash_mb=1024,
+        multipv=6,
+        max_seconds=seconds,
     )
     ann = GameAnnotator(
         engine=engine,
@@ -270,7 +274,7 @@ def messages_for(
     ]
 
 
-def harness_messages(item: dict[str, Any], facts: dict[str, Any]) -> list[dict[str, str]]:
+def harness_messages(item: dict[str, Any], facts: dict[str, Any]) -> list[dict[str, Any]]:
     """The object for the item: a game joined at the position, the side to move as the
     player; for a Semantic item, the move played and the engine's verdict on it, as the
     coach's conversation renders a ply. Everything at LINE: a benchmark withholds nothing.
@@ -289,7 +293,7 @@ def _after_fen(facts: dict[str, Any]) -> str:
     return after.fen()
 
 
-def _harness_messages(item: dict[str, Any], facts: dict[str, Any]) -> list[dict[str, str]]:
+def _harness_messages(item: dict[str, Any], facts: dict[str, Any]) -> list[dict[str, Any]]:
     board = chess.Board(facts["fen"])
     user_side = Side.WHITE if board.turn == chess.WHITE else Side.BLACK
     user_colour = board.turn
@@ -429,12 +433,13 @@ def run(
         provider = make_provider(LLMSettings(provider="local", model=local_model), timeout_s=600)
     else:
         provider = coach_provider(model)
-        if effort:
+        if effort and hasattr(provider, "extra_body"):
             # DashScope passes reasoning_effort into the Qwen3.8 template (low / medium / xhigh).
-            provider.extra_body = {
-                **getattr(provider, "extra_body", {}),
-                "reasoning_effort": effort,
-            }
+            setattr(  # noqa: B010 -- a provider attribute the type does not declare
+                provider,
+                "extra_body",
+                {**getattr(provider, "extra_body", {}), "reasoning_effort": effort},
+            )
     lock = threading.Lock()
     n_ok = n_done = 0
 

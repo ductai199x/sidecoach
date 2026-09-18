@@ -345,12 +345,10 @@ class CachedEngine:
     def _open(self):
         if self._engine is None:
             from sidecoach.analysis.engine import Engine
-            from sidecoach.config import find_stockfish, load_settings
+            from sidecoach.config import load_settings, require_stockfish
 
             settings = load_settings()
-            path = find_stockfish(settings)
-            if path is None:
-                raise RuntimeError("Stockfish not found")
+            path = require_stockfish(settings)
             self._engine = Engine(
                 path=path,
                 threads=2,
@@ -412,7 +410,7 @@ def build_game(
     for a in facts.get("asks", []):
         live_by_ply.setdefault(a["ply"], []).append(a)
     coach = Coach(
-        provider=provider,
+        provider=provider,  # type: ignore[arg-type] -- None: the capture answers instead
         policy=InterjectionPolicy(PolicySettings(stuck_seconds=STUCK_SECONDS)),
         engine=engine,
         draft_check=draft_check,

@@ -174,6 +174,17 @@ def load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
     return Settings()
 
 
+def require_stockfish(settings: Settings) -> Path:
+    """The Stockfish binary, or a clear error for a tool that cannot run without it."""
+    path = find_stockfish(settings)
+    if path is None:
+        raise RuntimeError(
+            "Stockfish not found: set engine.stockfish_path in sidecoach.toml, put the binary "
+            "under tools/, or add it to PATH"
+        )
+    return path
+
+
 def find_stockfish(settings: Settings) -> Path | None:
     """Explicit path, then anything under tools/, then PATH."""
     if settings.engine.stockfish_path:

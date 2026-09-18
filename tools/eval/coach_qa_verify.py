@@ -22,7 +22,7 @@ from sidecoach.analysis.score import Thresholds
 from sidecoach.cli import _load_book, _load_tagger
 from sidecoach.coach.claims import Claim, ClaimKind, verify_claims
 from sidecoach.coach.facts import facts_from_analysis
-from sidecoach.config import find_stockfish, load_settings
+from sidecoach.config import load_settings, require_stockfish
 
 SAMPLE = Path("data/puzzles/sample.csv")
 
@@ -55,7 +55,7 @@ def safe_square(board: chess.Board, us: chess.Color) -> chess.Square | None:
 def main() -> int:
     n_puzzles = int(sys.argv[1]) if len(sys.argv) > 1 else 120
     s = load_settings()
-    eng = Engine(path=find_stockfish(s), threads=8, hash_mb=512, multipv=4, max_seconds=2.0)
+    eng = Engine(path=require_stockfish(s), threads=8, hash_mb=512, multipv=4, max_seconds=2.0)
     ann = GameAnnotator(
         engine=eng,
         depth=12,

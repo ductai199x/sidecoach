@@ -9,6 +9,8 @@ from sidecoach.events import Region
 
 
 class FlakyBackend:
+    name = "flaky"
+
     def __init__(self, failures: int, reopen_failures: int = 0) -> None:
         self.failures = failures
         self.reopen_failures = reopen_failures

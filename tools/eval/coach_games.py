@@ -20,7 +20,7 @@ from sidecoach.analysis.score import Thresholds
 from sidecoach.cli import _draft_check, _load_book, _load_tagger
 from sidecoach.coach.coach import Coach
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
-from sidecoach.config import find_stockfish, load_settings
+from sidecoach.config import load_settings, require_stockfish
 from sidecoach.events import (
     GameStarted,
     MovePlayed,
@@ -42,7 +42,9 @@ def coach_one(path: Path, engine: Engine, provider, settings, label: str) -> Non
         book=_load_book(settings),
         with_threats=True,
     )
-    game = chess.pgn.read_game(path.open(encoding="utf-8"))
+    with path.open(encoding="utf-8") as fh:
+        game = chess.pgn.read_game(fh)
+    assert game is not None, f"{path}: no game in the PGN"
     board = game.board()
     gid = label
     coach = Coach(
@@ -59,7 +61,7 @@ def coach_one(path: Path, engine: Engine, provider, settings, label: str) -> Non
             rec = coach.spoken[-1]
             if msg.text.endswith(": good.") and not rec.problems:
                 continue  # a terse nod, not a teaching moment; counted in the summary
-            f = facts_by_ply.get(msg.ply)
+            f = facts_by_ply.get(msg.ply or 0)
             plan = getattr(f, "plan", None)
             theme = getattr(f, "theme", None)
             ideas = getattr(f, "ideas", None)
@@ -120,7 +122,7 @@ def main() -> int:
     settings = load_settings()
     provider = make_provider(settings.llm)
     engine = Engine(
-        path=find_stockfish(settings), threads=8, hash_mb=512, multipv=4, max_seconds=CAP
+        path=require_stockfish(settings), threads=8, hash_mb=512, multipv=4, max_seconds=CAP
     )
     games = sorted(Path("data/recordings").glob("g*/truth.pgn"))
     only = sys.argv[1] if len(sys.argv) > 1 else None

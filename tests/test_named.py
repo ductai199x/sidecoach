@@ -55,11 +55,11 @@ def test_examine_reports_the_score_the_gap_the_reply_and_the_effects() -> None:
     engine = _Engine(
         {
             after.board_fen(): [
-                Line(rank=1, depth=14, moves=["f8c5", "d2d3"], expected_score=0.48, score_cp=-10)
+                Line(depth=14, moves=["f8c5", "d2d3"], expected_score=0.48, score_cp=-10)
             ]
         }
     )
-    best = Line(rank=1, depth=14, moves=["f1b5"], expected_score=0.55, score_cp=20)
+    best = Line(depth=14, moves=["f1b5"], expected_score=0.55, score_cp=20)
     fact = examine(
         parse_probe("your Bc4", ["Bc4"], board),
         board,

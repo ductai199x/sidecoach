@@ -35,7 +35,7 @@ from sidecoach.analysis.annotator import GameAnnotator  # noqa: E402
 from sidecoach.analysis.engine import Engine  # noqa: E402
 from sidecoach.analysis.score import Thresholds  # noqa: E402
 from sidecoach.cli import _load_book, _load_tagger  # noqa: E402
-from sidecoach.config import find_stockfish, load_settings  # noqa: E402
+from sidecoach.config import load_settings, require_stockfish  # noqa: E402
 
 OUT = ROOT / "data" / "eval" / "facts"
 USER_HANDLE = "nosegazm"  # Tai on chess.com
@@ -286,7 +286,7 @@ def main() -> None:
     args = ap.parse_args()
     settings = load_settings()
     engine = Engine(
-        path=find_stockfish(settings),
+        path=require_stockfish(settings),
         threads=args.threads,
         hash_mb=1024,
         multipv=6,

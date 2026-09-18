@@ -18,7 +18,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-import zstandard
+import zstandard  # pyright: ignore[reportMissingImports]  (uv run --with zstandard)
 
 URL = "https://database.lichess.org/lichess_db_puzzle.csv.zst"
 OUT = Path("data/puzzles/sample.csv")
