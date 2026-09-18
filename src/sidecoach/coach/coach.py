@@ -120,6 +120,9 @@ _SENTENCE_END = re.compile(r"[.!?…][\"'”’)\]]*(?=\s|$)")
 
 _PIECE_WORD = {"K": "king", "Q": "queen", "R": "rook", "B": "bishop", "N": "knight"}
 
+# A reply may run this many sentences past the number its directive gives before it is
+# faulted: the length is reasonable, not strict.
+LENGTH_SLACK = 2
 _WORD_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
 _LIMIT_WORDS = re.compile(
     r"\b(?:(?:at most|no more than) (one|two|three|four|five|six) sentences?"
@@ -503,7 +506,7 @@ class Speaker:
                 directive = str(request.messages[-1]["content"]).rsplit("# Task", 1)[-1]
                 limit, wants_question = directive_limits(directive)
                 prob, candidate, _ = max(scored, key=lambda x: x[0])
-                trimmed = trim_to_limit(candidate, limit or 2, wants_question)
+                trimmed = trim_to_limit(candidate, (limit or 2) + LENGTH_SLACK, wants_question)
                 if not self._problems(trimmed, request):
                     passed = [(prob, trimmed)]
             given = "\n\n---\n\n".join(str(m["content"]) for m in messages[-2:])
@@ -645,9 +648,15 @@ class Speaker:
         directive = (
             str(request.messages[-1]["content"]).rsplit("# Task", 1)[-1] if request.messages else ""
         )
-        limit, _ = directive_limits(directive)
-        if limit is not None and _sentence_total(text) > limit:
-            found.append(f"too long: {_sentence_total(text)} sentences, {limit} allowed")
+        limit, wants_question = directive_limits(directive)
+        if limit is not None and _sentence_total(text) > limit + LENGTH_SLACK:
+            found.append(f"too long: {_sentence_total(text)} sentences, {limit} asked for")
+        # The closing question the directive asks for: without this check the length
+        # rule let a shorter candidate without one win the draw.
+        if wants_question is True and not text.rstrip().endswith("?"):
+            found.append("no closing question")
+        if wants_question is False and text.rstrip().endswith("?"):
+            found.append("a question where the task allows none")
         if self.draft_check is not None:
             for problem in self.draft_check(text, request.board, _after_best(request)):
                 san = problem.split(":", 1)[0].strip()
