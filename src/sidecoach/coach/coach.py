@@ -129,8 +129,11 @@ _SAYS_BEST = re.compile(
     re.IGNORECASE,
 )
 _SAYS_SLIP = re.compile(r"\b(?:blunder|mistake|inaccuracy|a miss)\b", re.IGNORECASE)
+# A figure after "cost": a share of the game (0.10, 10%), never a count of moves or pawns
+# ("lost the pawn on e4 2 moves ago" gave a cost of 2).
 _SAYS_COST = re.compile(
-    r"\b(?:cost|costing|costs|lost|losing)\b[^.;]{0,30}?(\d+(?:\.\d+)?)\s*(%|percent)?",
+    r"\b(?:cost|costing|costs|lost|losing)\b[^.;]{0,30}?(?<![A-Za-z0-9])(\d+(?:\.\d+)?)"
+    r"(?![.\d]*[A-Za-z])(?!\s*(?:moves?|plies|pawns?|pieces?|tempi|tempo|points?)\b)\s*(%|percent)?",
     re.IGNORECASE,
 )
 
