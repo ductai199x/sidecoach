@@ -11,7 +11,8 @@ wheels/
 
 # Sidecoach local state
 data/
-tools/
+tools/stockfish/
+tools/eval/.cache/
 sidecoach.toml
 .env
 *.log

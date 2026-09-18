@@ -14,5 +14,6 @@ Vision-first chess coaching companion. Watches the screen, finds the board, reco
 - No DOM reading, no browser automation. Board input is pixels only.
 - Disclosure is enforced by filtering the fact bundle before the LLM sees it, never by prompt instructions alone. See `sidecoach/coach/disclosure.py`.
 - Eval loss and decisive-moment gaps are in expected score, never centipawns.
-- Recordings under `data/` are the test suite. Do not commit `data/` or `tools/`.
+- Recordings under `data/` are the test suite. Do not commit `data/` or `tools/stockfish/`.
+- `tools/eval/` is the coach's evaluation and ICR tooling (committed); `docs/eval-results.md` holds the method, the numbers and the decisions; `data/eval/README.md` the data layout. Every paid model call goes through `judge.Ledger`.
 - The LLM is the local server on `http://localhost:1234` behind `sidecoach.llm`. Keep providers swappable.
