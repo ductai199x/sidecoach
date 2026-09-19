@@ -21,7 +21,7 @@ hash_mb = 256
 # other name for a custom OpenAI-compatible endpoint, which then needs base_url and model.
 # Unset fields use the preset's defaults from sidecoach.llm.factory. Keys come from .env
 # (gitignored): OPENAI_API_KEY=..., DASHSCOPE_API_KEY=...
-provider = "local"
+provider = "openai"                # gpt-5.6-luna at medium effort; "local" for LM Studio
 # model = "gpt-5.6-luna"          # openai; dashscope: qwen3.8-max (default) or qwen3.8-flash
 # reasoning_effort = "medium"     # openai (an "effort" provider): none, low, medium, high
 # base_url = "http://localhost:1234/v1"

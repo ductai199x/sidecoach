@@ -4,11 +4,16 @@ from sidecoach.config import LLMSettings
 from sidecoach.llm.factory import make_provider
 
 
-def test_local_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_default_is_luna_and_local_is_a_preset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     provider = make_provider(LLMSettings())
-    assert provider.name == "local"
-    assert provider.base_url == "http://localhost:1234/v1"
-    assert provider.thinking_control == "prefill"
+    assert provider.name == "openai" and provider.model == "gpt-5.6-luna"
+    assert provider.thinking_control == "effort" and provider.reasoning_effort == "medium"
+    local = make_provider(LLMSettings(provider="local"))
+    assert local.name == "local"
+    assert local.base_url == "http://localhost:1234/v1"
+    assert local.thinking_control == "prefill"
 
 
 def test_dashscope_defaults_and_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -48,7 +53,7 @@ def test_unknown_provider_and_control() -> None:
     with pytest.raises(ValueError, match="unknown llm.provider"):
         make_provider(LLMSettings(provider="nope"))
     with pytest.raises(ValueError, match="thinking_control"):
-        make_provider(LLMSettings(thinking_control="maybe"))
+        make_provider(LLMSettings(provider="local", thinking_control="maybe"))
 
 
 def test_openai_preset_is_an_effort_provider(monkeypatch: pytest.MonkeyPatch) -> None:

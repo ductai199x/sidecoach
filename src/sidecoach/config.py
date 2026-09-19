@@ -42,11 +42,12 @@ class EngineSettings(BaseModel):
 
 
 class LLMSettings(BaseModel):
-    # A preset -- "local" (LM Studio), "dashscope", "openai" -- or any other name for a custom
-    # OpenAI-compatible endpoint, which then needs base_url and model. Unset fields fall
-    # back to the preset's defaults in sidecoach.llm.factory. API keys come from the
-    # environment (api_key_env names the variable), never from this file.
-    provider: str = "local"
+    # A preset -- "openai" (gpt-5.6-luna at medium effort, what the coach was evaluated on
+    # and runs on since 2026-09-19), "local" (LM Studio), "dashscope" -- or any other name
+    # for a custom OpenAI-compatible endpoint, which then needs base_url and model. Unset
+    # fields fall back to the preset's defaults in sidecoach.llm.factory. API keys come
+    # from the environment (api_key_env names the variable), never from this file.
+    provider: str = "openai"
     model: str | None = None
     base_url: str | None = None
     api_key_env: str | None = None
