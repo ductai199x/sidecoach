@@ -814,6 +814,11 @@ class Reconciler:
                 ways.append(way)
         return ways
 
+    @property
+    def pending_story(self) -> bool:
+        """Whether a move story seen once is waiting for its confirming frame."""
+        return self._pending_story() is not None
+
     def pending_terminal(self) -> tuple[Explanation, chess.Board] | None:
         """The story seen once and still pending, when it ends the game: the mate the
         site's dialog then covered before a second clean frame could confirm it."""

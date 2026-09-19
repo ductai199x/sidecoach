@@ -32,6 +32,7 @@ from sidecoach.vision.pieces import (
     orientation_from_start,
     start_shaped,
 )
+from sidecoach.vision.result_badges import read_result
 from sidecoach.vision.squares import BoardGeometry, square_at
 from sidecoach.vision.theme_cache import ThemeCache, sample_palette
 from sidecoach.vision.tracker import BoardTracker
@@ -46,6 +47,13 @@ CLOCK_MIN_CONFIDENCE = 0.4
 # Chess.com's covers about thirty-five cells; a promotion picker four.
 DIALOG_CELLS = 12
 DIALOG_SECONDS = 2.0
+# The site's result badges on the two kings end the game once they have been read on
+# this many consecutive frames with the same result; a story of moves still pending is
+# given this many more frames to settle first, so the record keeps the last move.
+BADGE_FRAMES = 2
+BADGE_PATIENCE = 10
+# A loser whose clock read this little at the end lost on time.
+FLAG_MS = 1000
 CLOCK_MAX_MS = 3 * 60 * 60 * 1000  # three hours; anything above is a misread, not a clock
 
 
@@ -105,6 +113,8 @@ class GamePipeline:
     # whether one has stayed long enough to count as covering the board.
     _dialog_since: float | None = None
     _covered: bool = False
+    # The result the site's badges showed on the last read frames, and for how many.
+    _badges: tuple[str, int] | None = None
 
     def process(
         self, frame: np.ndarray, ts: float, changed: bool = True, frame_id: int | None = None
@@ -166,6 +176,8 @@ class GamePipeline:
             return self._stamp(events, ts, frame_id)
         was_started = self.reconciler.started
         events += self.reconciler.update(self._readings, ts)
+        if changed:
+            events += self._end_on_badges(frame, geometry)
         events += self._dialog_over_the_board(self._readings, ts)
         if (
             was_started
@@ -216,6 +228,57 @@ class GamePipeline:
         self._covered = True
         return []
 
+    def _end_on_badges(self, frame: np.ndarray, geometry: BoardGeometry) -> list[Event]:
+        """The game ends on the site's result badges (vision/result_badges.py).
+
+        Read at the two kings on every frame of a live game; the pair must agree with
+        itself for BADGE_FRAMES frames. A mating story the badges confirm is committed
+        first, so the record has the move; any other pending story is given a few frames
+        to settle. The reason is what the pipeline knows: a mate or a stalemate on the
+        board, a repetition or the material, a clock at zero; otherwise a resignation, or
+        an agreed draw.
+        """
+        rec = self.reconciler
+        if rec is None or not rec.started or rec.finished or self.bottom is None:
+            self._badges = None
+            return []
+        result = read_result(frame, geometry, rec.board, self.bottom)
+        if result is None:
+            self._badges = None
+            return []
+        seen = self._badges[1] + 1 if self._badges is not None and self._badges[0] == result else 1
+        self._badges = (result, seen)
+        if seen < BADGE_FRAMES:
+            return []
+        pending = rec.pending_terminal()
+        if pending is not None and pending[1].result() == result:
+            events = rec.commit_pending_terminal()
+            if events:
+                return events
+        if rec.pending_story and seen < BADGE_PATIENCE:
+            return []
+        return rec.end(result, self._end_reason(rec.board, result))
+
+    def _end_reason(self, board: chess.Board, result: str) -> str:
+        if result == "1/2-1/2":
+            if board.is_stalemate():
+                return "stalemate"
+            if board.is_insufficient_material():
+                return "insufficient material"
+            if board.can_claim_threefold_repetition():
+                return "repetition"
+            if board.can_claim_fifty_moves():
+                return "fifty-move rule"
+            return "draw agreed"
+        if board.is_checkmate():
+            return "checkmate"
+        if self._last_clock is not None:
+            white_ms, black_ms, _ = self._last_clock
+            loser_ms = black_ms if result == "1-0" else white_ms
+            if loser_ms is not None and loser_ms <= FLAG_MS:
+                return "lost on time"
+        return "resignation"
+
     def end_game(
         self, result: str, reason: str, ts: float, frame_id: int | None = None
     ) -> list[Event]:
@@ -238,6 +301,7 @@ class GamePipeline:
         self._last_clock = None
         self._dialog_since = None
         self._covered = False
+        self._badges = None
         if self.clock is not None:
             self.clock.reset()
 

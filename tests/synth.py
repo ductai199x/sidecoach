@@ -391,6 +391,54 @@ def draw_badge(
     )
 
 
+# chess.com's result badges, as measured on the live games: the winner's green, the
+# loser's red, a grey for a draw (BGR).
+RESULT_COLOURS = {"win": (96, 187, 141), "loss": (38, 38, 211), "draw": (150, 150, 150)}
+
+
+def draw_result_badge(
+    frame: np.ndarray,
+    x0: int,
+    y0: int,
+    cell: int,
+    bottom: Side,
+    square: chess.Square,
+    kind: str,
+    icon: tuple[int, int, int] = (255, 255, 255),
+) -> None:
+    """The site's end-of-game badge on a king's square: a disc about a third of a square
+    across just inside the top-right corner on screen, pushed inward on the board's top
+    row and right column, with an icon at its centre (a crown for the winner, the fallen
+    king in the loser's colour, a half for a draw)."""
+    r, c = row_col(square, bottom)
+    radius = max(4, int(round(0.17 * cell)))
+    cx = x0 + (c + 1) * cell - (0.21 if c == 7 else 0.04) * cell
+    cy = y0 + r * cell + (0.21 if r == 0 else 0.08) * cell
+    centre = (int(round(cx)), int(round(cy)))
+    cv2.circle(frame, centre, radius, RESULT_COLOURS[kind], -1, lineType=cv2.LINE_AA)
+    h = radius * 0.55
+    if kind == "win":
+        pts = [(-0.9, 0.4), (-0.9, -0.3), (-0.45, 0.1), (0, -0.7), (0.45, 0.1), (0.9, -0.3)]
+        pts.append((0.9, 0.4))
+        poly = np.array([[cx + px * h, cy + py * h] for px, py in pts], dtype=np.int32)
+        cv2.fillPoly(frame, [poly], icon, lineType=cv2.LINE_AA)
+    elif kind == "loss":
+        pts = [(-0.9, -0.2), (0.3, 0.7), (0.8, 0.2), (-0.1, -0.7), (-0.6, -0.9), (-0.9, -0.6)]
+        poly = np.array([[cx + px * h, cy + py * h] for px, py in pts], dtype=np.int32)
+        cv2.fillPoly(frame, [poly], icon, lineType=cv2.LINE_AA)
+    else:
+        cv2.putText(
+            frame,
+            "=",
+            (int(cx - h * 0.7), int(cy + h * 0.6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            radius / 14,
+            icon,
+            max(1, radius // 5),
+            lineType=cv2.LINE_AA,
+        )
+
+
 def draw_coordinates(
     frame: np.ndarray,
     x0: int,
@@ -458,6 +506,7 @@ def render_board(
     selected: chess.Square | None = None,
     check: bool = False,
     animating: tuple[chess.Square, chess.Square, float] | None = None,
+    result: str | None = None,
 ) -> None:
     """Render `board`. `dragging` = (origin, hovered square, dx, dy): the origin's piece is
     drawn over the hovered square displaced by (dx, dy) cells, under a hover outline.
@@ -474,6 +523,8 @@ def render_board(
     the end of its queue and its real square is left empty. A queue is a tuple of moves
     of one piece, each from the last one's destination; several queues are several
     pieces.
+
+    `result` ("1-0", "0-1", "1/2-1/2") stamps the site's badges on the two kings.
     """
     for r in range(8):
         for c in range(8):
@@ -544,6 +595,13 @@ def render_board(
         draw_arrow(frame, x0, y0, cell, bottom, arrow, colour=arrow_colour, width=arrow_width)
     if badge is not None:
         draw_badge(frame, x0, y0, cell, bottom, badge[0], badge[1])
+    if result is not None:
+        kinds = {"1-0": ("win", "loss"), "0-1": ("loss", "win"), "1/2-1/2": ("draw", "draw")}
+        for colour, kind in zip((chess.WHITE, chess.BLACK), kinds[result], strict=True):
+            king = board.king(colour)
+            if king is not None:
+                icon = (255, 255, 255) if colour == chess.WHITE or kind != "loss" else (20, 20, 20)
+                draw_result_badge(frame, x0, y0, cell, bottom, king, kind, icon)
     if animating is not None:
         origin, destination, progress = animating
         piece = board.piece_at(origin)
@@ -696,6 +754,7 @@ def synthetic_board(
     selected: chess.Square | None = None,
     check: bool = False,
     animating: tuple[chess.Square, chess.Square, float] | None = None,
+    result: str | None = None,
 ) -> np.ndarray:
     """A board on a busy background. `pieces=False` renders an empty board; `theme` names
     the square colours (see THEMES) unless `light` and `dark` are given; `style` the piece
@@ -730,6 +789,7 @@ def synthetic_board(
         selected=selected,
         check=check,
         animating=animating,
+        result=result,
     )
     return frame
 

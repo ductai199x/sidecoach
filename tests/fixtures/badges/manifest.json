@@ -1,0 +1,66 @@
+[
+  {
+    "file": "win_g1_80px_1915.png",
+    "kind": "win",
+    "cell": 80.1176,
+    "x0": 39.706,
+    "y0": 39.823,
+    "source": "20260916-102830 frame 1915, g1"
+  },
+  {
+    "file": "loss_h5_80px_1915.png",
+    "kind": "loss",
+    "cell": 80.1176,
+    "x0": 39.823,
+    "y0": 40.353,
+    "source": "20260916-102830 frame 1915, h5"
+  },
+  {
+    "file": "none_g1_80px_1649.png",
+    "kind": "none",
+    "cell": 80.1176,
+    "x0": 39.706,
+    "y0": 39.823,
+    "source": "20260916-102830 frame 1649, g1"
+  },
+  {
+    "file": "none_h5_80px_1649.png",
+    "kind": "none",
+    "cell": 80.1176,
+    "x0": 39.823,
+    "y0": 40.353,
+    "source": "20260916-102830 frame 1649, h5"
+  },
+  {
+    "file": "loss_g1_43px_1300.png",
+    "kind": "loss",
+    "cell": 43.0233,
+    "x0": 21.14,
+    "y0": 21.163,
+    "source": "g06-antonio-loss frame 1300, g1"
+  },
+  {
+    "file": "win_g8_43px_1300.png",
+    "kind": "win",
+    "cell": 43.0233,
+    "x0": 21.14,
+    "y0": 22.0,
+    "source": "g06-antonio-loss frame 1300, g8"
+  },
+  {
+    "file": "none_g1_43px_1200.png",
+    "kind": "none",
+    "cell": 43.0233,
+    "x0": 21.14,
+    "y0": 21.163,
+    "source": "g06-antonio-loss frame 1200, g1"
+  },
+  {
+    "file": "none_g8_43px_1200.png",
+    "kind": "none",
+    "cell": 43.0233,
+    "x0": 21.14,
+    "y0": 22.0,
+    "source": "g06-antonio-loss frame 1200, g8"
+  }
+]
