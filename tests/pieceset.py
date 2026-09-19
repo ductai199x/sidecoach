@@ -13,6 +13,10 @@ coloured variant of the set is drawn.
 Sprites are rendered once per colouring at `SPRITE` pixels, premultiplied, and scaled to
 each cell with area interpolation, which is what a vector rasterised at the cell's size
 looks like to within the anti-aliasing.
+
+The other sets come as sprite sheets under tests/fixtures/pieces (see the README there):
+lichess's SVGs rasterised once by Chrome, twelve pieces a row, `SHEET` pixels each.
+`sheet_sets()` lists them; `draw_sprite(..., sheet=name)` draws from one.
 """
 
 from __future__ import annotations
@@ -21,12 +25,16 @@ import math
 import re
 import xml.etree.ElementTree as ET
 from functools import cache
+from pathlib import Path
 
 import chess.svg
 import cv2
 import numpy as np
 
 SPRITE = 512
+SHEET = 192  # a sheet's sprites, tests/fixtures/pieces/<set>.png
+SHEET_ORDER = "KQRBNPkqrbnp"
+SHEETS = Path(__file__).parent / "fixtures" / "pieces"
 UNITS = 45.0  # the pieces' viewBox
 _SUPER = 2  # rendered at twice the sprite size, then averaged down
 _NUMBER = re.compile(r"[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?")
@@ -320,6 +328,24 @@ def sprite(symbol: str, colouring: Colouring | None = None) -> tuple[np.ndarray,
     return _sprites(tuple(sorted((colouring or {}).items())))[symbol]
 
 
+def sheet_sets() -> list[str]:
+    """The names of the sets that come as sprite sheets."""
+    return sorted(p.stem for p in SHEETS.glob("*.png"))
+
+
+@cache
+def _sheet(name: str) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    image = cv2.imread(str(SHEETS / f"{name}.png"), cv2.IMREAD_UNCHANGED)
+    if image is None or image.shape != (SHEET, SHEET * 12, 4):
+        raise ValueError(f"no sprite sheet for {name!r}")
+    out = {}
+    for i, symbol in enumerate(SHEET_ORDER):
+        tile = image[:, i * SHEET : (i + 1) * SHEET].astype(np.float32)
+        alpha = tile[..., 3] / 255
+        out[symbol] = (tile[..., :3] * alpha[..., None], alpha)  # premultiplied
+    return out
+
+
 def draw_sprite(
     frame: np.ndarray,
     x: int,
@@ -327,10 +353,12 @@ def draw_sprite(
     size: int,
     symbol: str,
     colouring: Colouring | None = None,
+    sheet: str | None = None,
 ) -> None:
     """Composite a piece, scaled to `size` pixels square, with its top-left corner at
-    (x, y), clipped to the frame."""
-    rgb, alpha = sprite(symbol, colouring)
+    (x, y), clipped to the frame: from the cburnett vectors in `colouring`, or from the
+    sprite sheet `sheet`."""
+    rgb, alpha = _sheet(sheet)[symbol] if sheet else sprite(symbol, colouring)
     rgb = cv2.resize(rgb, (size, size), interpolation=cv2.INTER_AREA)
     alpha = cv2.resize(alpha, (size, size), interpolation=cv2.INTER_AREA)
     h, w = frame.shape[:2]

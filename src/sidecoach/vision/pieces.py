@@ -524,11 +524,12 @@ def _overlay_fraction(
     background: np.ndarray,
     distance: np.ndarray,
     chroma_map: np.ndarray,
-    colours: PieceColours,
+    palette: tuple[np.ndarray, ...],
 ) -> float:
     """The share of inner pixels that are a drawing: chromatic, far from the square's colour,
-    and off the lines from that colour to black, to white and to each of the set's colours,
-    and off the line from each side's fill to its outline, where piece edges blend.
+    and off the lines from that colour to black, to white and to each colour of the set's
+    palette, and off the lines between any two of those, where piece edges and details
+    blend.
 
     The badge's quarter-disc at the top-right corner is left out: a move-classification
     badge is saturated colour drawn over the square that stays until the next move, and the
@@ -544,22 +545,27 @@ def _overlay_fraction(
         return 0.0
     pixels = inner[candidates].astype(np.float32)
     square = background.astype(np.float32)
-    segments = [
-        (square, np.zeros(3, dtype=np.float32)),
-        (square, np.full(3, 255.0, dtype=np.float32)),
-    ]
-    for fill, edge in colours:
-        segments.append((square, fill.astype(np.float32)))
-        if edge is not None:
-            segments.append((square, edge.astype(np.float32)))
-            segments.append((fill.astype(np.float32), edge.astype(np.float32)))
+    # The lines a piece's pixels may lie on: from the square to each colour of the
+    # palette, and between any two of them -- a set draws one side's detail in the other
+    # side's colour (a pink emblem on a navy piece), and the blend of those two is no
+    # drawing.
+    colours = [np.zeros(3, dtype=np.float32), np.full(3, 255.0, dtype=np.float32)]
+    colours += [colour.astype(np.float32) for colour in palette]
+    segments = [(square, colour) for colour in colours]
+    segments += [(a, b) for i, a in enumerate(colours) for b in colours[i + 1 :]]
     off = np.min([_off_line(pixels, start, end) for start, end in segments], axis=0)
     return float(np.count_nonzero(off > OVERLAY_OFF_LINE)) / candidates.size
 
 
-def silhouette(patch: np.ndarray, size: int = CELL, colours: PieceColours = ()) -> Silhouette:
+def silhouette(
+    patch: np.ndarray,
+    size: int = CELL,
+    colours: PieceColours = (),
+    palette: tuple[np.ndarray, ...] = (),
+) -> Silhouette:
     """Silhouette mask, foreground fraction, colour statistics, centroid, hover, background.
-    `colours` are the piece set's, for telling a drawing from a piece's edge."""
+    `colours` are the set's fills and outlines, for the tones; `palette` every colour the
+    set draws with, for telling a drawing from a piece's detail."""
     background, spread = _ring_median_and_spread(patch)
     border = int(round(patch.shape[0] * INNER))
     inner = patch[border : patch.shape[0] - border, border : patch.shape[1] - border]
@@ -576,7 +582,7 @@ def silhouette(patch: np.ndarray, size: int = CELL, colours: PieceColours = ()) 
     mask = _centred(cv2.morphologyEx(mask, cv2.MORPH_OPEN, _KERNEL))
     fraction = float(mask.mean())
     chroma_map = inner.max(axis=2).astype(np.float32) - inner.min(axis=2).astype(np.float32)
-    overlay = _overlay_fraction(inner, background, distance, chroma_map, colours)
+    overlay = _overlay_fraction(inner, background, distance, chroma_map, palette)
     luminance = 0.0
     brightness = 0.0
     centroid = (0.5, 0.5)
@@ -819,6 +825,9 @@ class ThemeModel:
     # The set's colours, a (fill, outline) pair for each side, learned from the start
     # position: what a saturated patch over a square may be before it is called a drawing.
     piece_colours: PieceColours = ()
+    # Every colour the set draws with (its ink clustered at the start), the palette a
+    # drawing over a square is told from.
+    palette: tuple[np.ndarray, ...] = ()
     # The last frame's cells, by (row, col): the crop's pixels, its silhouette, and the
     # reading made of it, with the covered flag and cell size it was made with. Between
     # one frame and the next most cells do not change a pixel, and a cell that did not
@@ -1034,7 +1043,9 @@ class ThemeModel:
                 if last is not None and np.array_equal(last[0], crops[r][c]):
                     row.append(last[1])
                 else:
-                    row.append(silhouette(crops[r][c], colours=self.piece_colours))
+                    row.append(
+                        silhouette(crops[r][c], colours=self.piece_colours, palette=self.palette)
+                    )
             sils.append(row)
         covered = self.covered_cells(sils)
         cell_px = geometry.cell_px
@@ -1144,10 +1155,11 @@ class ThemeModel:
                 if piece is not None:
                     first.setdefault(piece.symbol(), []).append(silhouette(crops[r][c]))
         colours = _piece_colours(first)
+        palette = _set_palette(first)
         samples: dict[str, list[Silhouette]] = {}
         for r in range(8):
             for c in range(8):
-                sil = silhouette(crops[r][c], colours=colours)
+                sil = silhouette(crops[r][c], colours=colours, palette=palette)
                 piece = start.piece_at(square_at(r, c, bottom))
                 if piece is None:
                     (light_bgs if is_light(r, c) else dark_bgs).append(sil.background)
@@ -1171,6 +1183,7 @@ class ThemeModel:
             fused[symbol] = _fuse(symbol, [best])
         model = cls()
         model.piece_colours = colours
+        model.palette = palette
         for symbol in samples:
             exemplar = fused[symbol]
             if float(exemplar.tone.mean()) < EXEMPLAR_MIN_TONE:
@@ -1227,6 +1240,36 @@ def _piece_colours(samples: dict[str, list[Silhouette]]) -> PieceColours:
         edge = _pooled_colour(colours, weight, edge_group) if edge_group.any() else None
         out.append((fill, edge))
     return tuple(out)
+
+
+# Clusters of the set's ink, and the share of the ink a cluster must hold to be a colour
+# of the set: a queen's crown is one piece of thirty-two, a gold highlight a sliver of
+# every gold piece, and both were drawings at eight clusters and one percent.
+PALETTE_COLOURS = 16
+PALETTE_MIN_SHARE = 0.002
+PALETTE_SAMPLE = 30000  # ink pixels clustered, at most
+
+
+def _set_palette(samples: dict[str, list[Silhouette]]) -> tuple[np.ndarray, ...]:
+    """Every colour the set draws with: the ink of all its pieces on the start frame,
+    clustered. A set's fills and outlines are two colours a side; its details may be
+    more (a pink emblem and red lettering on a navy piece, a gold crown on a teal king),
+    and each is a colour a drawing is told from."""
+    ink = [sil.inner[sil.mask].reshape(-1, 3) for sils in samples.values() for sil in sils]
+    if not ink:
+        return ()
+    pixels = np.concatenate(ink).astype(np.float32)
+    if len(pixels) > PALETTE_SAMPLE:
+        pixels = pixels[np.linspace(0, len(pixels) - 1, PALETTE_SAMPLE).astype(int)]
+    k = min(PALETTE_COLOURS, len(pixels))
+    if k < 1:
+        return ()
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+    labels = np.zeros((len(pixels), 1), dtype=np.int32)
+    _, labels, centres = cv2.kmeans(pixels, k, labels, criteria, 3, cv2.KMEANS_PP_CENTERS)
+    counts = np.bincount(labels.ravel().astype(np.int64), minlength=k)
+    keep = counts >= PALETTE_MIN_SHARE * len(pixels)
+    return tuple(centre.astype(np.float32) for centre in centres[keep])
 
 
 def _pooled_colour(colours: np.ndarray, weight: np.ndarray, group: np.ndarray) -> np.ndarray:

@@ -27,7 +27,7 @@ from sidecoach.events import Region, Side
 from sidecoach.vision.board_detect import BoardCandidate
 from sidecoach.vision.clock import GlyphTemplates
 from sidecoach.vision.squares import row_col
-from tests.pieceset import WOODEN_SET, draw_sprite
+from tests.pieceset import WOODEN_SET, draw_sprite, sheet_sets
 
 LIGHT = (208, 236, 238)
 DARK = (86, 150, 118)
@@ -72,6 +72,7 @@ class PieceStyle:
     detail: bool = False
     real: bool = False
     colouring: tuple[tuple[str, str], ...] = ()
+    sheet: str = ""  # a set from tests/fixtures/pieces, drawn instead of the vectors
 
 
 PIECE_STYLES: dict[str, PieceStyle] = {
@@ -103,6 +104,8 @@ PIECE_STYLES: dict[str, PieceStyle] = {
     ),
     "cburnett-small": PieceStyle(real=True, scale=0.85),
 }
+# Every set lichess draws, from its sprite sheets (tests/fixtures/pieces/README.md).
+PIECE_STYLES.update({name: PieceStyle(real=True, sheet=name) for name in sheet_sets()})
 # chess.com's legal-move hints when a piece is selected: a grey translucent disc on an
 # empty destination, a ring around a capturable piece.
 HINT = (0, 0, 0)
@@ -172,7 +175,15 @@ def draw_piece(
 ) -> None:
     if style.real:
         size = max(1, int(round(cell * style.scale)))
-        draw_sprite(frame, cx - size // 2, cy - size // 2, size, symbol, dict(style.colouring))
+        draw_sprite(
+            frame,
+            cx - size // 2,
+            cy - size // 2,
+            size,
+            symbol,
+            dict(style.colouring),
+            sheet=style.sheet or None,
+        )
         return
     white = symbol.isupper()
     fill = style.white_fill if white else style.black_fill

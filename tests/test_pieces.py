@@ -18,6 +18,7 @@ from sidecoach.vision.pieces import (
     translucent_cover,
 )
 from sidecoach.vision.squares import BoardGeometry, row_col, square_at
+from tests.pieceset import sheet_sets
 from tests.synth import DARK, LIGHT, blend_outline, blend_rect, draw_piece, synthetic_board
 
 pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
@@ -499,6 +500,25 @@ def test_every_theme_and_piece_style_reads_every_square(theme: str, style: str, 
         )
         off = _every_piece_reads(model.classify_frame(frame, geometry), later, bottom)
         assert not off, f"{theme}/{style} at {cell} px, {bottom.value} at the bottom: {off}"
+
+
+@pytest.mark.parametrize("name", sheet_sets())
+def test_every_lichess_set_reads_every_square(name: str) -> None:
+    """Every set lichess draws (tests/fixtures/pieces): learned from a start position on
+    the brown board at 64-pixel cells, both orientations, and a middlegame read square by
+    square."""
+    cell = 64
+    geometry = BoardGeometry(Region(300, 120, 8 * cell, 8 * cell), float(cell))
+    later = chess.Board()
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "O-O", "d5", "exd5", "Nxd5"):
+        later.push_san(san)
+    for bottom in (Side.WHITE, Side.BLACK):
+        start = synthetic_board(cell=cell, theme="brown", style=name, bottom=bottom)
+        model = ThemeModel.from_start_position(start, geometry, bottom)
+        assert model is not None, f"no recogniser for {name}"
+        frame = synthetic_board(board=later, cell=cell, theme="brown", style=name, bottom=bottom)
+        off = _every_piece_reads(model.classify_frame(frame, geometry), later, bottom)
+        assert not off, f"{name}, {bottom.value} at the bottom: {off}"
 
 
 def test_a_fractional_cell_never_wears_a_phantom_hover_outline() -> None:
