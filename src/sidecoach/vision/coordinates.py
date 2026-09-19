@@ -24,7 +24,11 @@ from sidecoach.vision.squares import BoardGeometry
 GLYPH = 24  # rank-digit exemplars are normalised to this square before matching
 _CORNER_H = 0.40  # the digit sits in the top-left of the cell: this fraction of its height
 _CORNER_W = 0.32  # ... and this fraction of its width
-_INK = 60.0  # a pixel this far from the square colour is the digit, not the square
+# A pixel this far from the square colour is the digit, not the square. The digits are
+# drawn in the other square's colour, and on a dark board the two lie 48 levels apart:
+# at 60 a 44-pixel digit, all anti-aliased blends, was a scatter of specks and nothing
+# was learned but the 8. A wood grain strays 20 at most.
+_INK = 30.0
 _MIN_INK = 4  # fewer foreground pixels than this is no label
 
 

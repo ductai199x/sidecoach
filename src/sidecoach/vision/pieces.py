@@ -76,6 +76,7 @@ RING_BAND = 0.07
 # is not an option: on the recorded games rooks and bishops reach blocks at 12% and beyond.
 CORNER_INSET = (0.10, 0.20)
 BG_TOLERANCE = 25.0
+POCKET_TOLERANCE = 8.0
 HIGHLIGHT_TOLERANCE = 30.0
 # A tint shifts the ring and the corners the same way; an outline or an edge does not. Each
 # corner pixel is read on its own: clean (at the square colour), shifted like the ring, or
@@ -112,16 +113,19 @@ MIN_IOU = 0.35
 MIN_MARGIN = 0.03
 BRIGHTNESS_WEIGHT = 1.5
 _KERNEL = np.ones((3, 3), dtype=np.uint8)
-# The colour of a piece is read over its whole silhouette with every pixel weighted by
-# the square of its distance from the silhouette's edge, so the rim, the outline and the
-# anti-aliasing count for almost nothing and the deep inside for most; and the fill is
-# the tone that carries the most of that weight (the mode of the luminance in bins of
-# FILL_BIN levels, with its neighbours), not the median: a real rook draws lines across
-# the deepest part of its body, and where the two tones share the weight evenly the
-# median lands on their blend. A fixed erosion was three pixels, and a bold set's outline
-# is wider than that; the deepest tenth alone was tried next, and on a real queen the
-# deepest band of the body is where the set draws its detail lines.
-FILL_BIN = 16
+# The colour of a piece is its fill's. A silhouette's ink (its pixels that are not the
+# square's colour; the pockets the outline encloses are not ink) is two tones, the fill
+# and the outline with the detail drawn in it, and the fill is the tone that forms the
+# widest region of its own: the tone whose deepest pixel lies farthest from any other
+# tone, so a line however long weighs nothing against a body. Once the set's two fills
+# are known
+# (learned from the start position, each side's pooled over its sixteen pieces) the
+# tones are the pixels nearer one fill or the other; before that, Otsu splits them. A
+# fixed erosion was three pixels, and a bold set's outline is wider; the deepest tenth
+# of the silhouette was tried next, and on a real queen the deepest band of the body is
+# where the set draws its lines; then the weighted mode over the whole silhouette, and a
+# real queen's crown, open to the square between its spikes, weighed black on a dark
+# square and white on a light one.
 
 Kind = Literal["empty", "piece", "unknown"]
 TintKind = Literal["none", "tint", "foreign"]
@@ -222,10 +226,12 @@ class Silhouette:
     # The share of inner pixels that are saturated colour far from the square's own colour
     # and the set's (an arrow drawn over the square).
     overlay: float = 0.0
-    # The median colour of the piece's core (its fill) and of the rest of its silhouette
-    # (its outline), when there is one: the set's colours, learned at the start.
+    # The colour of the piece's fill and of the rest of its silhouette (its outline),
+    # when there is one: the set's colours, learned at the start.
     core_colour: np.ndarray | None = None
     edge_colour: np.ndarray | None = None
+    # The two tones of the ink, each as (colour, weight), the fill first.
+    tones: tuple[tuple[np.ndarray, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -282,6 +288,14 @@ _BADGE_BLIND = _badge_blind(CELL)
 def ring_median_color(
     patch: np.ndarray, skip: float = RING_SKIP, band: float = RING_BAND
 ) -> np.ndarray:
+    return _ring_median_and_spread(patch, skip, band)[0]
+
+
+def _ring_median_and_spread(
+    patch: np.ndarray, skip: float = RING_SKIP, band: float = RING_BAND
+) -> tuple[np.ndarray, float]:
+    """The square's colour (the ring's median) and how far its own pixels stray from it
+    (the median distance): nothing on a flat square, a dozen levels on a wood grain."""
     n = patch.shape[0]
     outer = max(1, int(round(n * skip)))
     inner = outer + max(1, int(round(n * band)))
@@ -295,7 +309,9 @@ def ring_median_color(
     )
     if ring.shape[0] == 0:  # a patch too small to have a ring at all
         ring = patch.reshape(-1, patch.shape[2])
-    return np.median(ring, axis=0)
+    median = np.median(ring, axis=0)
+    spread = float(np.median(np.linalg.norm(ring.astype(np.float32) - median, axis=1)))
+    return median, spread
 
 
 def corner_pixels(patch: np.ndarray, inset: tuple[float, float] = CORNER_INSET) -> np.ndarray:
@@ -327,7 +343,7 @@ def _centred(mask: np.ndarray) -> np.ndarray:
     n = mask.shape[0]
     lo, hi = n // 4, n - n // 4
     count, labels = cv2.connectedComponents(mask, connectivity=8)
-    if count <= 2:
+    if count <= 1:
         return mask
     keep = np.unique(labels[lo:hi, lo:hi])
     return np.isin(labels, keep[keep != 0]).astype(np.uint8)
@@ -420,24 +436,47 @@ def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
 
 
 def _fill_colour(
-    pixels: np.ndarray, gray: np.ndarray, weights: np.ndarray
-) -> tuple[np.ndarray, float]:
-    """The fill's colour and luminance: the weighted mode of the luminance (see FILL_BIN),
-    then the weighted medians over the pixels of that tone."""
-    bins = np.minimum(gray.astype(np.int64) // FILL_BIN, 256 // FILL_BIN - 1)
-    mass = np.bincount(bins, weights=weights, minlength=256 // FILL_BIN)
-    around = mass.copy()
-    around[1:] += mass[:-1]
-    around[:-1] += mass[1:]
-    tone = int(np.argmax(around))
-    chosen = np.abs(bins - tone) <= 1
-    if not chosen.any() or float(weights[chosen].sum()) <= 0:
-        chosen = np.ones_like(chosen)
-    picked = weights[chosen]
-    colour = np.array(
-        [_weighted_median(pixels[chosen, ch], picked) for ch in range(3)], dtype=np.float32
-    )
-    return colour, _weighted_median(gray[chosen], picked)
+    inner: np.ndarray,
+    gray: np.ndarray,
+    ink: np.ndarray,
+    keep: np.ndarray,
+    fills: tuple[np.ndarray, ...],
+) -> tuple[np.ndarray, float, tuple[tuple[np.ndarray, float], ...]]:
+    """The fill's colour and luminance, and the ink's tones as (colour, weight), the fill
+    first (see the note above `Kind`). `keep` is where the weights count (not the badge
+    corner); `fills` are the set's, when known."""
+    if len(fills) >= 2:
+        pixels = inner.astype(np.float32)
+        to = [np.linalg.norm(pixels - fill.astype(np.float32), axis=2) for fill in fills]
+        nearest = np.argmin(np.stack(to), axis=0)
+        classes = [ink & (nearest == i) for i in range(len(fills))]
+    else:
+        values = gray[ink].astype(np.uint8).reshape(-1, 1)
+        split, _ = cv2.threshold(values, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        classes = [ink & (gray > split), ink & (gray <= split)]
+    limit = float(ink.shape[0])
+    tones: list[tuple[np.ndarray, float, float]] = []
+    for tone in classes:
+        if not tone.any():
+            continue
+        # Measured from the patch's edge as well, or a piece reaching the edge (a bold
+        # cross's arm) has a tone that runs off it and no edge to be shallow against.
+        padded = cv2.copyMakeBorder(tone.astype(np.uint8), 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+        depth = cv2.distanceTransform(padded, cv2.DIST_L2, 3)[1:-1, 1:-1]
+        depth = np.minimum(depth, limit) * keep
+        weights = (depth * depth)[tone]
+        if float(weights.sum()) <= 0:
+            weights = np.ones_like(weights)
+        pixels = inner[tone].astype(np.float32)
+        colour = np.array([_weighted_median(pixels[:, ch], weights) for ch in range(3)], np.float32)
+        # A tone's weight is the depth of its deepest pixel: the widest region of one
+        # tone is the fill. Summed depths favoured the outline, which runs round every
+        # region of fill and is long, on a queen whose fill is cut into bands by its
+        # lines.
+        tones.append((colour, float(depth.max()), _weighted_median(gray[tone], weights)))
+    tones.sort(key=lambda t: t[1], reverse=True)
+    colour, _, luminance = tones[0]
+    return colour, luminance, tuple((c, w) for c, w, _ in tones)
 
 
 def _centroid(mask: np.ndarray) -> tuple[float, float]:
@@ -521,7 +560,7 @@ def _overlay_fraction(
 def silhouette(patch: np.ndarray, size: int = CELL, colours: PieceColours = ()) -> Silhouette:
     """Silhouette mask, foreground fraction, colour statistics, centroid, hover, background.
     `colours` are the piece set's, for telling a drawing from a piece's edge."""
-    background = ring_median_color(patch)
+    background, spread = _ring_median_and_spread(patch)
     border = int(round(patch.shape[0] * INNER))
     inner = patch[border : patch.shape[0] - border, border : patch.shape[1] - border]
     inner = cv2.resize(inner, (size, size), interpolation=cv2.INTER_AREA)
@@ -544,21 +583,25 @@ def silhouette(patch: np.ndarray, size: int = CELL, colours: PieceColours = ()) 
     tone = mask.astype(bool)
     core_colour: np.ndarray | None = None
     edge_colour: np.ndarray | None = None
+    tones: tuple[tuple[np.ndarray, float], ...] = ()
     if fraction > 0:
-        # The fill's colour: the depth-weighted median over the silhouette (see the note
-        # above `Kind`), so that neither the outline nor the detail lines inside a piece
-        # decide it. Not the badge corner: a classification badge's disc lies inside
-        # the mask, and its bright ink swung a black queen to white.
+        # The fill's colour (see the note above `Kind`). Not the badge corner: a
+        # classification badge's disc lies inside the mask, and its bright ink swung a
+        # black queen to white.
         on = mask.astype(bool)
-        # A patch with no background at all (a cover, a strip) has no edge to measure
-        # from; the transform then returns the largest float, which squares to nothing.
-        depth = np.minimum(cv2.distanceTransform(mask, cv2.DIST_L2, 3), float(mask.shape[0]))
-        weights = depth * depth
-        if (on & _BADGE_BLIND).any():
-            weights = weights * _BADGE_BLIND
-        weights = weights[on]
         gray = cv2.cvtColor(inner, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        core, luminance = _fill_colour(inner[on].astype(np.float32), gray[on], weights)
+        keep = _BADGE_BLIND if (on & _BADGE_BLIND).any() else np.ones_like(_BADGE_BLIND)
+        # The ink: the silhouette less the pockets where the square itself shows through
+        # (between a queen's crown spikes), to the square's own spread (a wood grain).
+        # A pocket a shade off the square is fill: a cream set on a cream board differs
+        # from it by a dozen levels, under what makes foreground, and its fill is the
+        # pocket its outline encloses.
+        ink = on & (distance > min(BG_TOLERANCE, max(POCKET_TOLERANCE, 3.0 * spread)))
+        if not ink.any():
+            ink = on
+        core, luminance, tones = _fill_colour(
+            inner, gray, ink, keep.astype(np.float32), tuple(fill for fill, _ in colours)
+        )
         core_colour = core
         tone = _tone_mask(on, inner, core, background)
         brightness = luminance / 255.0
@@ -585,6 +628,7 @@ def silhouette(patch: np.ndarray, size: int = CELL, colours: PieceColours = ()) 
         overlay,
         core_colour,
         edge_colour,
+        tones,
     )
 
 
@@ -1090,10 +1134,20 @@ class ThemeModel:
         start = chess.Board()
         light_bgs: list[np.ndarray] = []
         dark_bgs: list[np.ndarray] = []
+        # Two passes: the first learns the set's colours from every piece, the second
+        # reads every piece with those colours, as every later frame will be read.
+        crops = [[geometry.crop(frame, r, c, size=2 * CELL) for c in range(8)] for r in range(8)]
+        first: dict[str, list[Silhouette]] = {}
+        for r in range(8):
+            for c in range(8):
+                piece = start.piece_at(square_at(r, c, bottom))
+                if piece is not None:
+                    first.setdefault(piece.symbol(), []).append(silhouette(crops[r][c]))
+        colours = _piece_colours(first)
         samples: dict[str, list[Silhouette]] = {}
         for r in range(8):
             for c in range(8):
-                sil = silhouette(geometry.crop(frame, r, c, size=2 * CELL))
+                sil = silhouette(crops[r][c], colours=colours)
                 piece = start.piece_at(square_at(r, c, bottom))
                 if piece is None:
                     (light_bgs if is_light(r, c) else dark_bgs).append(sil.background)
@@ -1116,7 +1170,7 @@ class ThemeModel:
             best = max(samples[symbol], key=lambda sil: iou(sil.tone, reference_tone))
             fused[symbol] = _fuse(symbol, [best])
         model = cls()
-        model.piece_colours = _piece_colours(samples)
+        model.piece_colours = colours
         for symbol in samples:
             exemplar = fused[symbol]
             if float(exemplar.tone.mean()) < EXEMPLAR_MIN_TONE:
@@ -1147,18 +1201,37 @@ PAIR_MAX_CENTROID = 0.06  # of a cell
 
 
 def _piece_colours(samples: dict[str, list[Silhouette]]) -> PieceColours:
-    """Each side's fill and outline: the medians over its sixteen pieces."""
+    """Each side's fill and outline, pooled over its sixteen pieces: every piece's ink is
+    two tones, and pooled by luminance the heavier cluster is the fill. Pooled, because a
+    piece whose fill is the square's own colour shows only its outline there, and read
+    on its own would name the outline its fill."""
     out: list[tuple[np.ndarray, np.ndarray | None]] = []
     for white in (True, False):
         sils = [s for symbol, ss in samples.items() for s in ss if symbol.isupper() == white]
-        fills = [s.core_colour for s in sils if s.core_colour is not None]
-        edges = [s.edge_colour for s in sils if s.edge_colour is not None]
-        if not fills:
+        tones = [tone for sil in sils for tone in sil.tones]
+        if not tones:
             continue
-        fill = np.median(np.array(fills), axis=0)
-        edge = np.median(np.array(edges), axis=0) if len(edges) >= len(sils) // 2 else None
+        lum = np.array([0.114 * c[0] + 0.587 * c[1] + 0.299 * c[2] for c, _ in tones])
+        weight = np.array([w for _, w in tones])
+        if len(tones) >= 2 and lum.max() - lum.min() > 1:
+            split = float(_weighted_median(lum, weight))
+            groups = [lum > split, lum <= split]
+            if not all(g.any() for g in groups):
+                groups = [lum >= split, lum < split]
+        else:
+            groups = [np.ones(len(tones), dtype=bool), np.zeros(len(tones), dtype=bool)]
+        groups.sort(key=lambda g: float(weight[g].sum()) if g.any() else -1.0, reverse=True)
+        fill_group, edge_group = groups[0], groups[1]
+        colours = np.array([c for c, _ in tones], dtype=np.float32)
+        fill = _pooled_colour(colours, weight, fill_group)
+        edge = _pooled_colour(colours, weight, edge_group) if edge_group.any() else None
         out.append((fill, edge))
     return tuple(out)
+
+
+def _pooled_colour(colours: np.ndarray, weight: np.ndarray, group: np.ndarray) -> np.ndarray:
+    picked, weights = colours[group], weight[group]
+    return np.array([_weighted_median(picked[:, ch], weights) for ch in range(3)], np.float32)
 
 
 def _plausible_exemplar(sil: Silhouette) -> bool:

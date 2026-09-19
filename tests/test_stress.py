@@ -1,13 +1,16 @@
 """Random games through the whole vision pipeline, rendered every way a site draws them.
 
 The renderer is used against the pipeline: a seeded generator picks a theme (bright, dark,
-textured), a piece style (outline width, size, a coloured set), a board size, the highlight
-and arrow colours and the arrow's width, whether coordinates are drawn, an orientation and
-a game, then shows every move with what a session throws at the recogniser -- the last-move
-highlight, a drag on the way to the move, an arrow the player drew, the classification
-badge, a premove queue -- and the pipeline must commit exactly the moves played, nothing
-else, in order. A handful of seeds run in the suite; `--seeds` runs a sweep to hunt for
-the next weakness:
+textured), a piece style (the real cburnett set in three colourings, polygons of several
+outline widths and sizes), a board size, the highlight and arrow colours and the arrow's
+width, whether coordinates are drawn, an orientation and a game, then shows every move
+with what a session throws at the recogniser -- the last-move highlight, a drag on the way
+to the move at any speed, the site's own animation of a move at any speed, an arrow the
+player drew, the classification badge, a premove queue, a selected piece with its hints
+-- and the pipeline must commit exactly the moves played, nothing else, in order. At the
+end the learned theme goes through the cache and a second pipeline must recognise the
+final position cold. A handful of seeds run in the suite; `--seeds` runs a sweep to hunt
+for the next weakness:
 
     uv run pytest tests/test_stress.py -q -n auto --seeds 250
 
@@ -22,21 +25,31 @@ search's budget could not reach (it counts expansions now). With the real set
 queen's body, which is where the set draws its lines (the fill is the depth-weighted
 mode now); a rank of piece bases pulling the board lock at 144-pixel cells (piece pixels
 are masked out of the boundary fit); a cream knight on a cream square that was only its
-outline (the outline is closed and what it encloses filled). Open at 1000 seeds: seed 6,
-the wooden set at 44-pixel cells on the grey board, whose bishops' brightness differs by
-square.
+outline (the outline is closed and what it encloses filled). With moves animated and drags
+at any speed, and the cache round-trip: a bishop sliding across a square read as unknown
+committed as a move to that square (a move's destination must be read); a lone label in
+a corner kept an empty square from reading empty (a part of a silhouette that does not
+reach the middle is dropped, however alone); a 44-pixel digit on a dark board was all
+blends (the label ink threshold is 30); and a queen's colour, read off the deepest band
+of its body, then off the whole silhouette's weighted mode, both wrong somewhere, is now
+the tone that forms the widest region of its own, classes by the set's learned fills.
+Open at 1000 seeds: 5, all the wooden colouring of the real set at 44-64 pixel cells.
 """
 
 from __future__ import annotations
 
 import random
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 import chess
+import numpy as np
 import pytest
 
 from sidecoach.events import GameEnded, GameStarted, MovePlayed, Side
 from sidecoach.state.pipeline import GamePipeline
+from sidecoach.vision.squares import BoardGeometry, row_col, square_at
+from sidecoach.vision.theme_cache import ThemeCache
 from tests.synth import ARROWS, HIGHLIGHTS, PIECE_STYLES, THEMES, synthetic_board
 
 pytestmark = pytest.mark.vision
@@ -54,7 +67,8 @@ class Scenario:
     bottom: Side
     sans: tuple[str, ...]
     # Per ply: "plain" | "drag" | "arrow" | "badge" | "premove" | "select" (the user clicks
-    # a piece before moving it: its square highlighted, its legal moves hinted).
+    # a piece before moving it: its square highlighted, its legal moves hinted) | "animate"
+    # (the site slides the piece to its square over a few frames).
     decorations: tuple[str, ...]
     style: str = "classic"
     highlight_colour: str = "yellow"
@@ -86,7 +100,10 @@ def scenario(seed: int) -> Scenario:
         sans.append(board.san(move))
         board.push(move)
     decorations = tuple(
-        rng.choices(["plain", "drag", "arrow", "badge", "premove", "select"], [4, 2, 1, 2, 1, 1])[0]
+        rng.choices(
+            ["plain", "drag", "arrow", "badge", "premove", "select", "animate"],
+            [4, 2, 1, 2, 1, 1, 2],
+        )[0]
         for _ in sans
     )
     return Scenario(
@@ -107,9 +124,36 @@ def scenario(seed: int) -> Scenario:
     )
 
 
-def play(sc: Scenario) -> tuple[list[str], list[str], bool]:
-    """The moves the pipeline committed, the ones played, and whether the pipeline's board
-    is the game's at the end."""
+def _drag_path(
+    move: chess.Move, bottom: Side, rng: random.Random
+) -> list[tuple[chess.Square, chess.Square, float, float]]:
+    """The frames of a drag from the move's origin to its destination, as (origin, square
+    under the cursor, dx, dy) for the renderer: one to five frames along the straight
+    line, a touch of wobble, the piece off the cursor's square centre by up to a third
+    of a cell -- a flick or a slow deliberate drag."""
+    r0, c0 = row_col(move.from_square, bottom)
+    r1, c1 = row_col(move.to_square, bottom)
+    frames = rng.choice([1, 2, 3, 5])
+    out = []
+    for i in range(1, frames + 1):
+        t = i / (frames + 1)
+        row = r0 + (r1 - r0) * t + rng.uniform(-0.2, 0.2)
+        col = c0 + (c1 - c0) * t + rng.uniform(-0.2, 0.2)
+        over_r, over_c = min(7, max(0, round(row))), min(7, max(0, round(col)))
+        over = square_at(over_r, over_c, bottom)
+        out.append((move.from_square, over, col - over_c, row - over_r))
+    return out
+
+
+@dataclass(frozen=True)
+class Played:
+    got: list[str]  # the moves the pipeline committed
+    played: list[str]
+    same_board: bool  # the pipeline's board is the game's at the end
+    cold: str | None  # the placement a second pipeline read cold from the cache, or None
+
+
+def play(sc: Scenario, cache_dir: Path | None = None) -> Played:
     rng = random.Random(sc.seed)
     pipe = GamePipeline()
     board = chess.Board()
@@ -117,24 +161,26 @@ def play(sc: Scenario) -> tuple[list[str], list[str], bool]:
     got: list[str] = []
     ended = 0
 
+    def frame_for(**kw: object) -> np.ndarray:
+        return synthetic_board(
+            width=8 * sc.cell + 600,
+            height=8 * sc.cell + 240,
+            board=board,
+            theme=sc.theme,
+            cell=sc.cell,
+            bottom=sc.bottom,
+            coordinates=sc.coordinates,
+            style=sc.style,
+            highlight_colour=sc.highlight_colour,
+            arrow_colour=sc.arrow_colour,
+            arrow_width=sc.arrow_width,
+            **kw,  # type: ignore[arg-type]
+        )
+
     def show(frames: int, **kw: object) -> None:
         nonlocal ts, ended
         for _ in range(frames):
-            frame = synthetic_board(
-                width=8 * sc.cell + 600,
-                height=8 * sc.cell + 240,
-                board=board,
-                theme=sc.theme,
-                cell=sc.cell,
-                bottom=sc.bottom,
-                coordinates=sc.coordinates,
-                style=sc.style,
-                highlight_colour=sc.highlight_colour,
-                arrow_colour=sc.arrow_colour,
-                arrow_width=sc.arrow_width,
-                **kw,  # type: ignore[arg-type]
-            )
-            for event in pipe.process(frame, ts):
+            for event in pipe.process(frame_for(**kw), ts):
                 if isinstance(event, MovePlayed):
                     got.append(event.san)
                 elif isinstance(event, GameEnded):
@@ -148,9 +194,19 @@ def play(sc: Scenario) -> tuple[list[str], list[str], bool]:
         move = board.parse_san(san)
         mover = board.turn
         if decoration == "drag" and mover == user_colour:
-            # The piece lifted and carried over two squares on its way, under the outline.
-            for over in (move.from_square, move.to_square):
-                show(1, dragging=(move.from_square, over, 0.15, 0.1))
+            # The piece lifted and carried to its square under the outline, fast or slow.
+            for step in _drag_path(move, sc.bottom, rng):
+                show(1, dragging=step)
+        if decoration == "animate":
+            # The site slides the piece to its square, a fast bot reply or a slow setting,
+            # with the move's highlight already on both squares.
+            frames = rng.choice([1, 2, 3, 5])
+            for i in range(1, frames + 1):
+                show(
+                    1,
+                    highlight=move,
+                    animating=(move.from_square, move.to_square, i / (frames + 1)),
+                )
         if decoration == "select" and mover == user_colour:
             # The piece clicked: its square lit and its legal moves hinted, for a moment.
             show(2, selected=move.from_square)
@@ -177,7 +233,23 @@ def play(sc: Scenario) -> tuple[list[str], list[str], bool]:
         show(3, **extra)
     show(5)  # quiet frames at the end, so a pending story can settle
     assert pipe.reconciler is not None
-    return got, list(sc.sans), pipe.reconciler.board.board_fen() == board.board_fen()
+    same_board = pipe.reconciler.board.board_fen() == board.board_fen()
+    cold: str | None = None
+    if cache_dir is not None and pipe.model is not None and pipe.board is not None:
+        # The theme learned in this game through the cache: a second pipeline, told
+        # nothing, must read the final position cold from the same frame.
+        cache = ThemeCache(cache_dir)
+        assert cache.save(pipe.model) is not None
+        other = GamePipeline(cache=cache)
+        geometry = BoardGeometry(pipe.board.region, pipe.board.cell_px)
+        events = other.cold_start(
+            frame_for(), geometry, bottom=None if sc.coordinates else sc.bottom
+        )
+        if any(isinstance(e, GameStarted) for e in events) and other.reconciler is not None:
+            cold = other.reconciler.board.board_fen()
+            if other.bottom != sc.bottom:
+                cold = f"{cold} (read {other.bottom} at the bottom)"
+    return Played(got, list(sc.sans), same_board, cold)
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
@@ -193,15 +265,23 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
         metafunc.parametrize("seed", seeds)
 
 
-def test_a_random_game_is_followed_to_its_position(seed: int) -> None:
-    """Every move committed, nothing invented, the board the game's at the end. Two moves
-    that commute (b4 and g4 across an opponent's reply) may commit in either order when a
-    drag or an arrow held the frames in between: the pixels do not say which came first,
-    and highlight colours are, by design, never consulted."""
+def test_a_random_game_is_followed_to_its_position(seed: int, tmp_path: Path) -> None:
+    """Every move committed, nothing invented, the board the game's at the end, and the
+    final position read cold from the cached theme. Two moves that commute (b4 and g4
+    across an opponent's reply) may commit in either order when a drag or an arrow held
+    the frames in between: the pixels do not say which came first, and highlight colours
+    are, by design, never consulted."""
     sc = scenario(seed)
-    got, played, same_board = play(sc)
-    assert same_board and sorted(got) == sorted(played), (
-        f"{sc.where}: committed {got}, played {played}; decorations {sc.decorations}"
+    result = play(sc, tmp_path)
+    assert result.same_board and sorted(result.got) == sorted(result.played), (
+        f"{sc.where}: committed {result.got}, played {result.played}; decorations {sc.decorations}"
+    )
+    final = chess.Board()
+    for san in sc.sans:
+        final.push_san(san)
+    assert result.cold == final.board_fen(), (
+        f"{sc.where}: read cold from the cache as {result.cold}, the position is "
+        f"{final.board_fen()}"
     )
 
 
@@ -234,7 +314,9 @@ def test_a_theme_that_hides_the_black_outline_is_still_followed() -> None:
     synth.THEMES["grey"] = synth.LOW_CONTRAST_GREY
     try:
         sc = replace(scenario(5), theme="grey", style="classic", cell=64)
-        got, played, same = play(sc)
+        result = play(sc)
     finally:
         synth.THEMES["grey"] = kept
-    assert same and sorted(got) == sorted(played), f"committed {got}, played {played}"
+    assert result.same_board and sorted(result.got) == sorted(result.played), (
+        f"committed {result.got}, played {result.played}"
+    )

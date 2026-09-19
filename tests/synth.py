@@ -446,9 +446,13 @@ def render_board(
     seed: int = 0,
     selected: chess.Square | None = None,
     check: bool = False,
+    animating: tuple[chess.Square, chess.Square, float] | None = None,
 ) -> None:
     """Render `board`. `dragging` = (origin, hovered square, dx, dy): the origin's piece is
     drawn over the hovered square displaced by (dx, dy) cells, under a hover outline.
+    `animating` = (origin, destination, progress): the site animating a move it has
+    already made -- the origin's piece drawn that far along the straight line to the
+    destination, no outline, whatever is on the destination still there under it.
     `arrows` are drawn over the pieces; `badge` is (square, label); `coordinates` draws
     the rank and file labels; `style` is the piece set; `texture` gives the squares a
     wood grain; `selected` is a piece the user has clicked, its square highlighted and
@@ -501,8 +505,9 @@ def render_board(
     if check and king is not None and board.is_check():
         draw_check(frame, x0, y0, cell, bottom, king)
     lifted = dragging[0] if dragging else None
+    flying = animating[0] if animating else None
     for square, piece in board.piece_map().items():
-        if square == lifted:
+        if square in (lifted, flying):
             continue
         if square in queued_from:
             continue  # drawn at the end of its queue instead
@@ -528,6 +533,20 @@ def render_board(
         draw_arrow(frame, x0, y0, cell, bottom, arrow, colour=arrow_colour, width=arrow_width)
     if badge is not None:
         draw_badge(frame, x0, y0, cell, bottom, badge[0], badge[1])
+    if animating is not None:
+        origin, destination, progress = animating
+        piece = board.piece_at(origin)
+        r0, c0 = row_col(origin, bottom)
+        r1, c1 = row_col(destination, bottom)
+        if piece is not None:
+            draw_piece(
+                frame,
+                x0 + int(round((c0 + (c1 - c0) * progress) * cell)) + cell // 2,
+                y0 + int(round((r0 + (r1 - r0) * progress) * cell)) + cell // 2,
+                cell,
+                piece.symbol(),
+                style,
+            )
     if dragging is not None:
         origin, over, dx, dy = dragging
         piece = board.piece_at(origin)
@@ -665,6 +684,7 @@ def synthetic_board(
     seed: int = 0,
     selected: chess.Square | None = None,
     check: bool = False,
+    animating: tuple[chess.Square, chess.Square, float] | None = None,
 ) -> np.ndarray:
     """A board on a busy background. `pieces=False` renders an empty board; `theme` names
     the square colours (see THEMES) unless `light` and `dark` are given; `style` the piece
@@ -698,6 +718,7 @@ def synthetic_board(
         seed=seed,
         selected=selected,
         check=check,
+        animating=animating,
     )
     return frame
 

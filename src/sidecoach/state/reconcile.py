@@ -465,10 +465,11 @@ class Reconciler:
         A settled piece is drawn exactly where its exemplar from the start position sits in
         the square; a dragged piece follows the cursor and an animating piece is between
         squares, so neither is centred. During a drag the site also outlines the hovered
-        square. So every square the moves touch must hold a settled piece or be empty, and no
-        square on the board may carry a hover outline. A square with an arrow over it is no
-        witness either: an arrowhead over a piece can look like another piece, so nothing
-        commits through it, while the arrow, which is no drag, holds nothing else back.
+        square. So every square the moves touch must hold a settled piece or be empty, the
+        square a move lands on must be read at all, and no square on the board may carry a
+        hover outline. A square with an arrow over it is no witness either: an arrowhead
+        over a piece can look like another piece, so nothing commits through it, while the
+        arrow, which is no drag, holds nothing else back.
         Highlights are not consulted: their colours vary by theme and by what the user
         clicks, and the reconciler stays agnostic to them by design (DESIGN.md section 5.3).
         """
@@ -478,6 +479,11 @@ class Reconciler:
         board = (base if base is not None else self.board).copy(stack=False)
         for move in moves:
             if move not in board.legal_moves:
+                return False
+            if move.to_square not in wild and move.to_square not in obs:
+                # The piece must be seen where it landed. A bishop animated across a
+                # square read as unknown while it passed over it, and the square it
+                # had left explained the move to that square on its own.
                 return False
             touched |= touched_squares(board, move)
             board.push(move)
