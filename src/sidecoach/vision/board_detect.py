@@ -585,14 +585,12 @@ def refine(
     # the strips (their bases sit at 0.87 of the cell), and a rank of them draws one
     # line as strong as a boundary a tenth of a cell above it: at 144-pixel cells the
     # comb settled between the two, a pitch two percent long and the top edge a quarter
-    # of a cell off. So within the board a pixel brighter than the lighter square colour
-    # or darker than the darker one, by more than the palette's tolerance, takes no
-    # part: a piece's fill and outline are gone, so are the labels and a dialog, while
-    # the blends at a boundary, which lie between the two colours, stay, and the fit
-    # keeps its sub-pixel precision (a mask against each cell's own colour dropped them,
-    # and the comb drifted a third of a percent). Outside the board nothing is masked:
-    # the outer edge's gradient lies on both sides of it, and dropping the outer side
-    # moved the last tooth a pixel in.
+    # of a cell off. So within the board a pixel that is not its cell's own colour, to
+    # the palette's tolerance, takes no part: a piece's fill and outline are gone, so
+    # are the labels and a dialog. The mask is grown by a pixel so that the blends at a
+    # boundary stay and the fit keeps its sub-pixel precision (without that the comb
+    # drifted a third of a percent, and dropping the outer side of the board's edge
+    # moved the last tooth a pixel in). Outside the board nothing is masked.
     weight = np.ones(crop.shape, dtype=np.float32)
     medians = cell_medians(gray, cand.region, cell)
     readable = np.ones((8, 8), dtype=bool)
@@ -604,15 +602,25 @@ def refine(
             # the fit and contrast measured there, which is a fit of zero.
             fit, contrast = fit_score(gray, cand.region, cell, colours)
             return Refinement(replace(cand, fit=fit, contrast=contrast), 0.0, 0.0)
-        lo, hi = min(read[0], read[1]) - read[2], max(read[0], read[1]) + read[2]
-        x0, y0 = cand.region.x - x_lo, cand.region.y - y_lo
-        x1, y1 = x0 + int(round(8 * cell)), y0 + int(round(8 * cell))
-        x0, y0, x1, y1 = max(0, x0), max(0, y0), min(crop.shape[1], x1), min(crop.shape[0], y1)
-        inside = crop[y0:y1, x0:x1]
-        own = ((inside >= lo) & (inside <= hi)).astype(np.uint8)
-        # Grown by a pixel: an edge's gradient lies on both sides of it, and the far
-        # side of the board's own edge is the surroundings.
-        weight[y0:y1, x0:x1] *= cv2.dilate(own, _DILATE).astype(np.float32)
+        # Each cell's pixels against its own colour: a set whose pieces are mid-tones (a
+        # tan set) lies within the range of the two square colours and would pass a
+        # test against that range. Grown by a pixel: an edge's gradient lies on both
+        # sides of it, the far side of a boundary is the other square and the far side
+        # of the board's own edge is the surroundings.
+        own = np.zeros(crop.shape, dtype=np.uint8)
+        for r in range(8):
+            for c in range(8):
+                x0, y0, x1, y1 = cell_bounds(cand.region, cell, r, c)
+                x0, y0 = max(0, x0 - x_lo), max(0, y0 - y_lo)
+                x1, y1 = min(crop.shape[1], x1 - x_lo), min(crop.shape[0], y1 - y_lo)
+                if x1 > x0 and y1 > y0:
+                    block = crop[y0:y1, x0:x1]
+                    own[y0:y1, x0:x1] = np.abs(block - medians[r, c]) <= read[2]
+        x0, y0 = max(0, cand.region.x - x_lo), max(0, cand.region.y - y_lo)
+        x1 = min(crop.shape[1], cand.region.x - x_lo + int(round(8 * cell)))
+        y1 = min(crop.shape[0], cand.region.y - y_lo + int(round(8 * cell)))
+        grown = cv2.dilate(own, _DILATE).astype(np.float32)
+        weight[y0:y1, x0:x1] *= grown[y0:y1, x0:x1]
     for r in range(8):
         for c in range(8):
             inset = int(round(cell * (0.2 if readable[r, c] else 0.08)))
