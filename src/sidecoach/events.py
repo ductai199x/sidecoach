@@ -267,7 +267,13 @@ class CoachMessage(Event):
     annotations: list[Annotation] = Field(default_factory=list)
 
 
+# Profile (DESIGN section 5.6)
+
+
 class ProfileEvidence(Event):
+    """One mistake of the player's, placed on the two axes: why (the cause) and what
+    (the motif), in which phase, and what it cost."""
+
     game_id: str
     ply: int
     phase: str
@@ -275,3 +281,73 @@ class ProfileEvidence(Event):
     motif: str | None = None
     cause: str | None = None
     time_pressure: bool = False
+
+
+class TurningPoint(BaseModel):
+    """A move of the player's that cost real ground, with what was better and why it
+    happened, for the review."""
+
+    ply: int
+    san: str
+    label: str
+    expected_loss: float
+    segment: int = 0
+    best_san: str | None = None
+    cause: str | None = None
+    motif: str | None = None
+    phase: str = "middlegame"
+    fen_before: str | None = None
+
+
+class PhaseSummary(BaseModel):
+    phase: str
+    moves: int
+    expected_loss: float
+    mistakes: int
+
+
+class GameReview(Event):
+    """The game in numbers once it is over: the tally of the player's moves by label,
+    their accuracy, where the game turned, and how the phases went. Computed from the
+    engine's verdicts, so the coach can sum the game up without inventing it."""
+
+    game_id: str
+    user_side: Side
+    result: str
+    reason: str | None = None
+    opening: str | None = None
+    moves: int = 0
+    accuracy: float | None = None
+    tallies: dict[str, int] = Field(default_factory=dict)
+    turning_points: list[TurningPoint] = Field(default_factory=list)
+    phases: list[PhaseSummary] = Field(default_factory=list)
+    # Expected score lost by cause over the game, largest first.
+    causes: dict[str, float] = Field(default_factory=dict)
+    # The review in sentences, for the coach's summary and the panel's card.
+    lines: list[str] = Field(default_factory=list)
+
+
+class ProfileCell(BaseModel):
+    """One cell of the error taxonomy: a Beta-distributed error rate as counts. `errors`
+    mistakes out of `chances` occasions; the mean rate is (errors + 1) / (chances + 2)."""
+
+    cause: str | None = None
+    motif: str | None = None
+    phase: str | None = None
+    errors: int = 0
+    chances: int = 0
+    expected_loss: float = 0.0
+
+    @property
+    def rate(self) -> float:
+        return (self.errors + 1) / (self.chances + 2)
+
+
+class ProfileSnapshot(Event):
+    """The player model as it stands: the cells with evidence, what they add up to in
+    words, and the last session's summary, for the coach's continuity."""
+
+    games: int = 0
+    cells: list[ProfileCell] = Field(default_factory=list)
+    insights: list[str] = Field(default_factory=list)
+    last_session: str | None = None

@@ -16,6 +16,7 @@ import chess
 
 from sidecoach.analysis import positional
 from sidecoach.analysis.engine import san_line
+from sidecoach.analysis.phase import phase_of
 from sidecoach.coach.disclosure import PositionFacts
 from sidecoach.events import Analysis, MotifTag
 
@@ -114,23 +115,6 @@ def motif_words(name: str) -> str:
         if tag == name:
             return words
     return re.sub(r"(?<=[a-z])(?=[A-Z0-9])", " ", name).lower()
-
-
-def phase_of(board: chess.Board, in_book: bool = False) -> str:
-    """Opening, middlegame or endgame, from the book and what is left on the board."""
-    if in_book or board.fullmove_number <= 8:
-        return "opening"
-    material = sum(
-        _VALUES[piece.piece_type]
-        for piece in board.piece_map().values()
-        if piece.piece_type not in (chess.PAWN, chess.KING)
-    )
-    queens = len(board.pieces(chess.QUEEN, chess.WHITE)) + len(
-        board.pieces(chess.QUEEN, chess.BLACK)
-    )
-    if material <= 13 or (queens == 0 and material <= 20):
-        return "endgame"
-    return "middlegame"
 
 
 _COUNTED = (chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN)
