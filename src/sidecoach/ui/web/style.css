@@ -18,13 +18,18 @@
   --sq-dark: #769656;
   --sq-light-hl: #f6f669;
   --sq-dark-hl: #baca2b;
-  /* The board is sized by the viewport only, never by its siblings, so it cannot shrink
-     as the move list or the coach grow. */
-  --board: min(calc(100vh - 336px), calc(100vw - 430px));
+  /* The board's side. app.js sets it from the room the main area actually has (its
+     height less the info line, its width less the panel), so the board never runs
+     under the footer or squeezes the panel; this is the fallback before the first
+     measure. Never sized by its siblings, so it cannot shrink as the coach grows. */
+  --board: min(calc(100vh - 400px), calc(100vw - 460px));
+  --panel-min: 340px;
+  --panel-max: 880px;
   color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 html, body {
   margin: 0;
@@ -34,21 +39,38 @@ html, body {
   font: 14px/1.45 "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
 }
 
+/* An app shell: header, the board and panel, the debug footer; the page itself never
+   scrolls. The one column is the viewport, whatever the terminal's longest line is. */
 body {
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+#bar, main, footer { min-width: 0; }
+
+/* Thin, quiet scrollbars wherever something scrolls. */
+.moves-wrap, .coach, .terminal, .conversation {
+  scrollbar-width: thin; scrollbar-color: #5a5654 transparent;
 }
 
-/* ---- header ---- */
+/* ---- header: the session on the left, the controls on the right; on a narrow window
+   the controls drop to their own line as a group, and their selects share it ---- */
 #bar {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
   align-items: center;
-  gap: 10px;
+  gap: 8px 14px;
   padding: 8px 14px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
+#bar .group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-width: 0; }
+#bar .controls { margin-left: auto; justify-content: flex-end; }
+#bar .game { flex-wrap: nowrap; }
 .brand { font-weight: 800; letter-spacing: 0.2px; margin-right: 6px; font-size: 15px; }
 .spacer { flex: 1; }
 .status { color: var(--muted); font-size: 12px; }
@@ -72,15 +94,36 @@ button.small { padding: 2px 8px; font-size: 12px; font-weight: 500; }
 button.running { background: var(--error); color: #fff; box-shadow: 0 3px 0 #b02a1c; }
 button.running:hover { background: #ff5a47; }
 
-/* ---- main: board left (fixed), panel right ---- */
+/* ---- main: board left (fixed), a divider, panel right; the trio centred in what is
+   left. The panel is as tall as the main area, so a board dragged smaller gives it a
+   wider panel, not a shorter one. ---- */
 main {
   display: grid;
-  grid-template-columns: var(--board) minmax(380px, 1fr);
-  gap: 14px;
+  grid-template-columns: var(--board) 14px minmax(var(--panel-min), var(--panel-max));
+  grid-template-rows: minmax(0, 1fr);
+  justify-content: center;
   padding: 14px;
   min-height: 0;
+  overflow: hidden;
   align-items: start;
 }
+
+/* ---- dividers: drag to resize, double-click to reset (desktop only) ---- */
+.vsplit, .hsplit, .tsplit { position: relative; touch-action: none; user-select: none; }
+.vsplit { cursor: col-resize; align-self: stretch; }
+.hsplit, .tsplit { cursor: row-resize; }
+.vsplit::after, .hsplit::after, .tsplit::after {
+  content: ""; position: absolute; border-radius: 2px; background: transparent; transition: background .12s;
+}
+.vsplit::after { top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; }
+.hsplit::after, .tsplit::after { left: 0; right: 0; top: 50%; height: 2px; margin-top: -1px; }
+.vsplit:hover::after, .hsplit:hover::after, .tsplit:hover::after { background: var(--panel3); }
+.vsplit.live::after, .hsplit.live::after, .tsplit.live::after { background: var(--accent); }
+.hsplit { flex: 0 0 6px; margin: -8px 0; z-index: 1; }
+.tsplit { height: 7px; margin: -4px 0 -3px; z-index: 2; }
+footer.folded .tsplit { display: none; }
+body.dragging-x { cursor: col-resize; user-select: none; }
+body.dragging-y { cursor: row-resize; user-select: none; }
 
 #left { display: flex; flex-direction: column; gap: 8px; width: var(--board); }
 
@@ -130,7 +173,7 @@ main {
   background-repeat: no-repeat; background-position: center; background-size: 100% 100%;
 }
 .coord {
-  position: absolute; font-size: calc(var(--board) / 60); font-weight: 700; line-height: 1;
+  position: absolute; font-size: max(8px, calc(var(--board) / 60)); font-weight: 700; line-height: 1;
   pointer-events: none;
 }
 .coord.rank { top: 3px; left: 4px; }
@@ -146,29 +189,32 @@ main {
 .pc.bR { background-image: url(pieces/bR.svg); } .pc.bB { background-image: url(pieces/bB.svg); }
 .pc.bN { background-image: url(pieces/bN.svg); } .pc.bP { background-image: url(pieces/bP.svg); }
 
-.gameinfo { display: flex; gap: 14px; align-items: center; font-size: 13px; color: var(--muted); padding: 0 2px; }
+.gameinfo {
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+  font-size: 13px; color: var(--muted); padding: 0 2px; min-height: 22px;
+}
 .gameinfo .strong { color: var(--ink); font-weight: 600; }
 
 /* ---- right panel: moves (fixed height, scrolls) then coach ---- */
 #right {
   display: flex; flex-direction: column; gap: 10px;
-  min-height: 0; height: var(--board);
+  min-height: 0; align-self: stretch;
   background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px;
 }
 .panel-title { font-weight: 700; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
 
 .moves-wrap {
-  flex: 0 0 auto;
-  height: 36%;
-  min-height: 120px;
+  flex: 0 0 var(--moves, clamp(112px, 32%, 320px));
   overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 5px;
   background: #2b2926;
   font-variant-numeric: tabular-nums;
 }
+/* Two moves a row at a fixed pitch, so the black move does not drift to the far side
+   of a wide panel; the rest of the row is the row's own colour. */
 .mrow {
-  display: grid; grid-template-columns: 2.6em 1fr 1fr; align-items: center;
+  display: grid; grid-template-columns: 2.6em minmax(5.5em, 9em) minmax(5.5em, 9em) 1fr; align-items: center;
   height: 28px; padding: 0 6px; font-size: 13.5px;
 }
 .mrow:nth-child(even) { background: #262522; }
@@ -207,7 +253,7 @@ main {
 .badge.blunder::after    { content: "??"; }
 .moves-hint { font-size: 11px; color: var(--muted); padding: 2px 8px; }
 
-.coach { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 0; padding-right: 2px; }
+.coach { flex: 1 1 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 72px; padding-right: 2px; }
 .msg { background: var(--panel2); border-left: 3px solid var(--coach); border-radius: 5px; padding: 8px 10px; }
 .msg.linked { cursor: default; }
 .msg.linked:hover { background: var(--panel3); }
@@ -274,20 +320,31 @@ main {
 
 /* ---- terminal ---- */
 footer { border-top: 1px solid var(--line); background: var(--panel); }
+/* The debug area folds to its status strip and tab row: a player does not need the
+   terminal open, and on a short screen it is the board's room. */
+footer.folded .terminal, footer.folded .conversation { display: none; }
+footer.folded .term-head { display: none; }
+#fold { padding: 0 8px; font-size: 10.5px; font-weight: 600; flex: 0 0 auto; margin-left: 8px; white-space: nowrap; }
 
-/* The status strip: health that changes continuously, kept current rather than logged. */
+/* The status strip: health that changes continuously, kept current rather than logged.
+   One line; on a narrow window the readings scroll sideways and the fold button stays. */
 .health {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px;
+  display: flex; align-items: center; gap: 8px;
   padding: 5px 14px; border-bottom: 1px solid var(--line);
   font: 11.5px/1.4 "Cascadia Code", "Consolas", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
 }
+.health .stats {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 4px 6px;
+  white-space: nowrap; overflow-x: auto; scrollbar-width: none;
+}
+.health .stats::-webkit-scrollbar { display: none; }
 .health .hk { color: var(--muted); text-transform: uppercase; letter-spacing: .4px; font-size: 10px; }
 .health .hv { color: var(--ink); margin-right: 10px; }
 .health .hv.bad { color: var(--error); }
 .health .hv.warn { color: var(--warn); }
 
-.term-head { display: flex; align-items: center; gap: 10px; padding: 5px 14px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--line); }
+.term-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 5px 14px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--line); }
 .tabs { display: flex; gap: 2px; }
 .tab { padding: 2px 10px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); }
 .tab:hover { background: transparent; color: var(--ink); }
@@ -295,7 +352,7 @@ footer { border-top: 1px solid var(--line); background: var(--panel); }
 
 /* The conversation: what you and the coach said, in order, each coach turn with the
    exact turn the model was given and what it wrote, folded under it. */
-.conversation { height: 190px; overflow: auto; padding: 8px 14px; display: flex; flex-direction: column; gap: 6px; background: #1f1e1b; }
+.conversation { height: var(--term, clamp(90px, 20vh, 260px)); overflow: auto; padding: 8px 14px; display: flex; flex-direction: column; gap: 6px; background: #1f1e1b; }
 .conversation .turn { max-width: 78%; padding: 6px 10px; border-radius: 12px; font-size: 13px; line-height: 1.4; }
 .conversation .turn.you { align-self: flex-end; background: #3b4a2f; border-bottom-right-radius: 3px; }
 .conversation .turn.coach { align-self: flex-start; background: var(--panel2); border-bottom-left-radius: 3px; }
@@ -306,7 +363,7 @@ footer { border-top: 1px solid var(--line); background: var(--panel); }
 .conversation .turn details summary { cursor: pointer; }
 .conversation .turn details pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0; padding: 6px 8px; background: #16151300; border-left: 2px solid var(--panel3); font: 11px/1.45 "Cascadia Code", "Consolas", ui-monospace, monospace; max-height: 260px; overflow: auto; }
 .conversation .turn details pre.raw { border-left-color: var(--accent); }
-.chips { display: flex; gap: 4px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip { padding: 1px 8px; font-size: 11px; font-weight: 600; border-radius: 10px; background: transparent; color: var(--muted); border: 1px solid var(--line); }
 .chip.on { color: var(--ink); background: var(--panel2); border-color: var(--panel3); }
 .chip.on[data-chan="game"]   { border-color: var(--accent); }
@@ -315,11 +372,14 @@ footer { border-top: 1px solid var(--line); background: var(--panel); }
 .chip.on[data-chan="vision"] { border-color: #c9a86a; }
 .chip.on[data-chan="voice"]  { border-color: #b08bd9; }
 .chip.on[data-chan="user"]   { border-color: #e6e5e3; }
-.search { width: 160px; padding: 2px 8px; font-size: 11px; }
+.search { flex: 0 1 160px; min-width: 90px; width: 160px; padding: 2px 8px; font-size: 11px; }
 select.end { font-weight: 600; }
 
+/* The terminal's height follows the screen (a fifth of it, within bounds) unless the
+   divider above the footer was dragged; the board re-measures itself when it changes. */
 .terminal {
-  height: 190px; overflow: auto; padding: 6px 14px; margin: 0;
+  height: var(--term, clamp(90px, 20vh, 260px));
+  overflow: auto; padding: 6px 14px; margin: 0;
   font: 12px/1.5 "Cascadia Code", "Consolas", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
   background: #1f1e1b;
@@ -351,5 +411,43 @@ select.end { font-weight: 600; }
 .lvl-error .m { color: var(--error); font-weight: 600; }
 .sev-mistake .m, .sev-blunder .m { color: #ffa459; }
 .sev-inaccuracy .m { color: var(--warn); }
+
+/* ---- stacked: the board over the panel, the page scrolls, the terminal folded, no
+   dividers. app.js puts the class on <html> when the window is portrait or too small
+   for the board to sit beside the panel (a phone, a tablet held upright, a narrow
+   window); the desktop layout above is everything else, landscape phones included. ---- */
+html.stacked body { display: block; height: auto; min-height: 100vh; overflow: auto; }
+html.stacked #bar { padding: 8px 12px; gap: 8px 12px; }
+html.stacked #bar .controls { flex: 1 1 auto; }
+html.stacked #bar .controls .ctl, html.stacked #bar .controls .game { flex: 1 1 auto; }
+html.stacked #bar .controls select { flex: 1 1 110px; min-width: 0; max-width: 100%; }
+html.stacked main {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 10px; gap: 10px; overflow: visible;
+}
+html.stacked #left { width: 100%; max-width: 640px; }
+html.stacked .board-wrap, html.stacked .board { width: 100%; height: auto; aspect-ratio: 1 / 1; }
+html.stacked .coord { font-size: max(9px, 1.6vw); }
+html.stacked #right { width: 100%; max-width: 640px; height: auto; max-height: none; align-self: center; }
+html.stacked .moves-wrap { flex-basis: 150px; }
+html.stacked .coach { flex-basis: auto; max-height: 40vh; min-height: 120px; }
+html.stacked .terminal, html.stacked .conversation { height: clamp(120px, 30vh, 300px); }
+html.stacked .search { flex: 1 1 100px; width: auto; }
+html.stacked .health .hv { margin-right: 6px; }
+html.stacked .vsplit, html.stacked .hsplit, html.stacked .tsplit { display: none; }
+
+/* A short side-by-side window (a landscape phone): tighter header and panel, and the
+   move list and the coach give way to each other down to a couple of rows each. */
+@media (max-height: 479px) {
+  html:not(.stacked) #bar { padding: 5px 12px; gap: 6px 10px; }
+  html:not(.stacked) #bar button, html:not(.stacked) #bar select { padding: 4px 10px; font-size: 13px; }
+  html:not(.stacked) main { padding: 8px; }
+  html:not(.stacked) #right { padding: 8px; gap: 6px; }
+  html:not(.stacked) .moves-wrap { flex: 0 1 var(--moves, 32%); min-height: 56px; }
+  html:not(.stacked) .coach { min-height: 48px; }
+  html:not(.stacked) .composer { gap: 6px; }
+  html:not(.stacked) .qchip { padding: 3px 10px; font-size: 12px; }
+  html:not(.stacked) .hsplit { margin: -6px 0; }
+}
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

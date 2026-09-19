@@ -623,6 +623,124 @@ function wire() {
   el("search").oninput = (e) => { filters.query = e.target.value.trim().toLowerCase(); applyFilters(); };
 }
 
+// Side by side (board left, panel right, nothing scrolls but the panes) whenever the
+// window is landscape and a board sized by its height or its width would be at least
+// 220 px beside the panel at its minimum width; otherwise the page stacks the board
+// over the panel and scrolls (a phone, a tablet held upright, a narrow window). The
+// stylesheet keys off html.stacked; the dividers and the sizes they set are desktop
+// only. The numbers are the header, the health strip, the info line and the padding
+// above and below the board, and the divider, the panel's minimum and the padding
+// beside it.
+function layoutMode() {
+  const w = window.innerWidth, h = window.innerHeight;
+  const side = Math.min(h - 140, w - 382);
+  const fits = w >= h && side >= 220;
+  document.documentElement.classList.toggle("stacked", !fits);
+  return !fits;
+}
+const stacked = () => document.documentElement.classList.contains("stacked");
+
+// The sizes the player set by dragging a divider, remembered across sessions.
+const prefs = {
+  get(key) { const v = parseFloat(localStorage.getItem("sidecoach." + key)); return Number.isFinite(v) ? v : null; },
+  set(key, v) { if (v === null) localStorage.removeItem("sidecoach." + key); else localStorage.setItem("sidecoach." + key, String(Math.round(v))); },
+};
+
+// The board's side from the room the main area has: its height less the info line and
+// its width less the panel's minimum, whichever is smaller, so the board never runs
+// under the footer or squeezes the panel off the screen; smaller still if the player
+// dragged the divider. Re-measured on every resize and whenever the footer changes.
+// When the page is stacked the board is sized by width instead.
+function fitBoard() {
+  const root = document.documentElement;
+  const mainEl = document.querySelector("main");
+  if (!mainEl || layoutMode()) { root.style.removeProperty("--board"); return; }
+  const cs = getComputedStyle(mainEl);
+  const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+  const divider = el("splitBoard") ? el("splitBoard").getBoundingClientRect().width : 14;
+  const info = el("gameinfo") ? el("gameinfo").getBoundingClientRect().height + 8 : 30;
+  const panelMin = parseFloat(getComputedStyle(root).getPropertyValue("--panel-min")) || 340;
+  const byHeight = mainEl.clientHeight - padY - info;
+  const byWidth = mainEl.clientWidth - padX - divider - panelMin;
+  const wanted = prefs.get("board") ?? 1200;
+  const side = Math.max(200, Math.floor(Math.min(byHeight, byWidth, wanted)));
+  root.style.setProperty("--board", side + "px");
+}
+
+// A divider the pointer drags: `size` reads the size it controls at the start of a
+// drag, `apply` gets that and the distance moved; a double-click restores the default.
+function splitter(handle, axis, size, apply, reset) {
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || stacked()) return;
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    const origin = axis === "x" ? e.clientX : e.clientY;
+    const start = size();
+    document.body.classList.add("dragging-" + axis);
+    handle.classList.add("live");
+    const move = (ev) => apply(start, (axis === "x" ? ev.clientX : ev.clientY) - origin);
+    const done = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", done);
+      handle.removeEventListener("pointercancel", done);
+      document.body.classList.remove("dragging-" + axis);
+      handle.classList.remove("live");
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", done);
+    handle.addEventListener("pointercancel", done);
+  });
+  handle.addEventListener("dblclick", reset);
+}
+
+// The three dividers: board | panel, moves / coach, main / terminal.
+function wireSplitters() {
+  const root = document.documentElement;
+  const right = el("right");
+  const boardSide = () => parseFloat(getComputedStyle(root).getPropertyValue("--board")) || 0;
+  splitter(el("splitBoard"), "x", boardSide,
+    (start, d) => { prefs.set("board", Math.max(200, start + d)); fitBoard(); },
+    () => { prefs.set("board", null); fitBoard(); });
+
+  const moves = document.querySelector(".moves-wrap");
+  splitter(el("splitMoves"), "y", () => moves.getBoundingClientRect().height,
+    (start, d) => {
+      const room = Math.max(80, right.clientHeight - 260);   // the coach and the composer keep theirs
+      const h = Math.max(80, Math.min(room, start + d));
+      right.style.setProperty("--moves", h + "px"); prefs.set("moves", h);
+    },
+    () => { right.style.removeProperty("--moves"); prefs.set("moves", null); });
+  if (prefs.get("moves") !== null) right.style.setProperty("--moves", prefs.get("moves") + "px");
+
+  const pane = () => (el("terminal").hidden ? el("conversation") : el("terminal"));
+  splitter(el("splitTerm"), "y", () => pane().getBoundingClientRect().height,
+    (start, d) => {
+      const h = Math.max(60, Math.min(window.innerHeight * 0.6, start - d));
+      root.style.setProperty("--term", h + "px"); prefs.set("term", h);
+    },
+    () => { root.style.removeProperty("--term"); prefs.set("term", null); });
+  if (prefs.get("term") !== null) root.style.setProperty("--term", prefs.get("term") + "px");
+}
+
+// The debug area folds to its status strip; the choice is remembered, and a small
+// screen (stacked, or under 800 px tall) starts folded so the board has the room.
+function wireFold() {
+  const footer = document.querySelector("footer");
+  const button = el("fold");
+  const key = "sidecoach.fold";
+  let folded = localStorage.getItem(key);
+  if (folded === null) folded = stacked() || window.innerHeight < 800 ? "1" : "0";
+  const apply = () => {
+    footer.classList.toggle("folded", folded === "1");
+    button.textContent = folded === "1" ? "show terminal" : "hide terminal";
+    button.title = folded === "1" ? "Show the debug terminal" : "Hide the debug terminal";
+    fitBoard();
+  };
+  button.onclick = () => { folded = folded === "1" ? "0" : "1"; localStorage.setItem(key, folded); apply(); };
+  apply();
+}
+
 function sendAsk() {
   const input = el("askInput");
   const text = input.value.trim();
@@ -634,7 +752,13 @@ function sendAsk() {
 }
 
 async function main() {
+  layoutMode();
   wire();
+  wireFold();
+  wireSplitters();
+  window.addEventListener("resize", fitBoard);
+  if (window.ResizeObserver) new ResizeObserver(fitBoard).observe(document.querySelector("footer"));
+  fitBoard();
   const first = await api.poll(0);
   if (first.state) { fillVoices(first.state.voices || [], first.state.voice); renderState(first.state); }
   if (first.lines) for (const line of first.lines) addLine(line);
