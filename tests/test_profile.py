@@ -895,3 +895,54 @@ def test_a_refused_query_goes_back_to_the_model_and_the_rounds_are_bounded() -> 
     got = answer("how many games?", store, provider, rounds=2)  # type: ignore[arg-type]
     assert got.failed and got.calls == 3 and got.text == "From the record: games 1."
     assert "Answer now in prose" in provider.prompts[2][1][-1]["content"]
+
+
+# ---- self-reports ----------------------------------------------------------------------
+
+
+def test_the_players_words_after_a_lesson_are_kept_beside_the_mistake() -> None:
+    from sidecoach.events import CoachMessage, DisclosureLevel, Trigger, UserUtterance
+
+    f = Feed()
+    f.play("e4")
+    f.play("e5")
+    f.play("Qh5", loss=0.12, label=Label.MISTAKE, after_tags=[FORK])
+    assert f.store.evidence("g")[0].cause == causes.MISSED_THREAT
+    # The lesson on 2. Qh5 is spoken from the position it was played in (ply 2).
+    f.send(
+        CoachMessage(
+            text="Qh5 cost you; Nf3 was better. What did you see there?",
+            level=DisclosureLevel.LINE,
+            trigger=Trigger.POST_MISTAKE,
+            game_id="g",
+            ply=2,
+        )
+    )
+    f.send(
+        UserUtterance(text="I saw the knight coming but thought the queen was safe", source="voice")
+    )
+    row = f.store.evidence("g")[0]
+    assert row.self_report == "I saw the knight coming but thought the queen was safe"
+    assert row.cause == causes.MISCALCULATED and row.corrected
+    # Only the first words after the lesson count, and only soon after it.
+    f.send(UserUtterance(text="I was rushing", source="text"))
+    assert f.store.evidence("g")[0].cause == causes.MISCALCULATED
+    f.send(
+        CoachMessage(
+            text="lesson",
+            level=DisclosureLevel.LINE,
+            trigger=Trigger.POST_MISTAKE,
+            game_id="g",
+            ply=2,
+        )
+    )
+    f.ts += 120.0
+    f.send(UserUtterance(text="I was rushing", source="text"))
+    assert f.store.evidence("g")[0].cause == causes.MISCALCULATED
+
+
+def test_words_that_say_nothing_change_nothing() -> None:
+    assert causes.from_words("ok") is None
+    assert causes.from_words("what should I play now?") is None
+    assert causes.from_words("I completely missed it") == causes.MISSED_THREAT
+    assert causes.from_words("no time, I premoved") == causes.TIME_PRESSURE

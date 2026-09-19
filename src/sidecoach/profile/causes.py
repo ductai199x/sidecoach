@@ -15,6 +15,7 @@ considered into a line miscalculated -- and every entry is the user's to correct
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 import chess
@@ -126,3 +127,44 @@ def classify(
     if phase == "opening" or left_book:
         return OPENING_GAP, None
     return POSITIONAL, None
+
+
+# What a player says about a mistake, when it says plainly what happened.
+_WORDS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"\b(?:time|clock|rush(?:ed|ing)?|hurr(?:y|ied)|in a hurry|too fast|quick(?:ly)?|"
+            r"premove[sd]?|no time)\b",
+            re.I,
+        ),
+        TIME_PRESSURE,
+    ),
+    (
+        re.compile(
+            r"\b(?:(?:i )?(?:thought|figured|calculated|expected|assumed|believed|saw)\b.*"
+            r"\b(?:but|work|would|could|was|wasn'?t|didn'?t)|misjudg|miscalculat|"
+            r"(?:saw|knew) (?:it|that|the (?:threat|idea|move|fork|pin|mate)))",
+            re.I,
+        ),
+        MISCALCULATED,
+    ),
+    (
+        re.compile(
+            r"\b(?:didn'?t (?:see|notice|spot|consider|look|think)|missed|overlooked|"
+            r"never (?:saw|considered|thought)|no idea|blind|forgot|"
+            r"wasn'?t (?:looking|paying attention)|completely missed)\b",
+            re.I,
+        ),
+        MISSED_THREAT,
+    ),
+)
+
+
+def from_words(text: str) -> str | None:
+    """The cause a player's own words name, or None when they do not say. "I missed it"
+    is a threat missed; "I thought it worked" a line miscalculated; "I was rushing"
+    time pressure."""
+    for pattern, cause in _WORDS:
+        if pattern.search(text):
+            return cause
+    return None

@@ -50,6 +50,9 @@ from sidecoach.profile.store import Store
 # A finished game waits this long for the engine's last verdicts before its review is
 # built from what is there.
 REVIEW_GRACE_S = 90.0
+# The player's first words within this long after the coach's lesson on a mistake are
+# about that mistake: kept beside it as their self-report.
+SELF_REPORT_S = 60.0
 
 
 _VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
@@ -101,6 +104,9 @@ class _Game:
     last_fen: str = chess.STARTING_FEN
     time_control: str | None = None
     ended: bool = False
+    # The mistake the coach last gave a lesson on, and when: the player's next words are
+    # its self-report.
+    lesson: tuple[tuple[int, int], float] | None = None
     # The game is over; its review waits for the last verdicts (see `_maybe_review`).
     end: GameEnded | None = None
     ended_at: float = 0.0
@@ -173,9 +179,13 @@ class Profiler:
                 event.ply,
                 at.move_id if at is not None else None,
             )
+            if event.trigger.value == "post_mistake" and event.ply is not None:
+                # The lesson is about the move played from `ply`: the next ply's record.
+                game.lesson = ((game.segment, event.ply + 1), ts)
             return []
         if isinstance(event, UserUtterance):
             self.store.add_dialogue(game.game_id, ts, "user", event.source, event.text, None)
+            self._self_report(game, event.text, ts)
             return []
         if isinstance(event, GameEnded):
             return self._end(game, event, ts)
@@ -485,15 +495,24 @@ class Profiler:
                 item.cause = cause
         return True
 
-    def self_report(self, text: str) -> None:
-        """What the player said about their last mistake, kept beside it."""
-        game = self._game
-        if game is None:
+    def _self_report(self, game: _Game, text: str, ts: float) -> None:
+        """The player's first words within SELF_REPORT_S of the coach's lesson on a mistake
+        are kept beside that mistake; when they say plainly what happened, the cause
+        follows their word (causes.from_words)."""
+        if game.lesson is None:
             return
-        placed = [k for k, p in game.plies.items() if p.placed]
-        if not placed:
+        key, when = game.lesson
+        game.lesson = None
+        if ts - when > SELF_REPORT_S:
             return
-        self.store.self_report(game.plies[max(placed)].move_id, text)
+        ply = game.plies.get(key)
+        if ply is None or not ply.placed or ply.move_id == 0:
+            return
+        self.store.self_report(ply.move_id, text)
+        said = causes.from_words(text)
+        if said is not None and said != ply.cause:
+            self.store.correct_evidence(game.game_id, key[0], key[1], said)
+            ply.cause = said
 
     # ---- the session -------------------------------------------------------------------
 

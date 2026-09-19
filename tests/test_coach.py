@@ -1188,3 +1188,40 @@ def test_a_question_about_the_player_over_their_games_goes_to_the_record() -> No
     # A question about this position never goes to the record.
     coach.ask("what should I play here?", 8.0)
     assert asked == ["why am I always losing in the middlegame?"]
+
+
+def test_every_third_mistake_ends_by_asking_what_the_player_saw() -> None:
+    from sidecoach.coach.coach import ELICIT_EVERY
+
+    coach, _ = _coach([])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6), 6.5)
+    position = coach.positions[6]
+    assert position.facts is not None
+    board = chess.Board(SCHOLAR)
+    played = MovePlayed(
+        game_id="g",
+        ply=7,
+        san="a3",
+        uci="a2a3",
+        fen_before=SCHOLAR,
+        fen_after=board.fen(),
+        by_user=True,
+    )
+    assessment = MoveAssessment(
+        game_id="g",
+        ply=7,
+        uci="a2a3",
+        expected_loss=0.5,
+        severity=Severity.BLUNDER,
+        best=["h5f7"],
+        label=Label.BLUNDER,
+    )
+    asked = []
+    for n in range(1, 2 * ELICIT_EVERY + 1):
+        coach._mistakes = n
+        instruction, fallback = coach._instruction(
+            Trigger.POST_MISTAKE, position, DisclosureLevel.LINE, None, (), assessment, played
+        )
+        asked.append("what they saw" in instruction and "What did you see there" in fallback)
+    assert asked == [n % ELICIT_EVERY == 0 for n in range(1, 2 * ELICIT_EVERY + 1)]

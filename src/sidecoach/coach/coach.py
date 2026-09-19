@@ -66,6 +66,9 @@ from sidecoach.events import (
 from sidecoach.llm.base import ChatMessage, LLMProvider
 
 MAX_TOKENS = 220
+# After every this-many mistakes the lesson ends by asking what the player saw: a
+# self-report the profile keeps beside the mistake (DESIGN 5.6, "sparingly").
+ELICIT_EVERY = 3
 # A move that lost less than this gets a two-word confirmation, without the model.
 TRIVIAL_LOSS = 0.02
 # The confirmations, by the move's label, in the vocabulary chess.com uses; "{san}" is the
@@ -947,6 +950,7 @@ class Coach:
         # the answers it gave, with their queries, for the panel's log.
         self.profile_ask: Callable[[str], Any] | None = None
         self.profile_answers: list[tuple[str, Any]] = []
+        self._mistakes = 0  # the player's mistakes this game, for ELICIT_EVERY
 
     # Lifecycle
 
@@ -1187,6 +1191,7 @@ class Coach:
         self.positions = {0: _Position(ply=0, board=self.board.copy())}
         self.moves = {}
         self.conversation.new_game(event, profile=self._profile_lines())
+        self._mistakes = 0
         self.finished = False
         self._current = self.positions[0]
         self.policy.new_position(0, ts, user_to_move=self.user_to_move)
@@ -1321,6 +1326,8 @@ class Coach:
         trigger = self.policy.on_user_move_assessed(event)
         if trigger is None:
             return
+        if trigger is Trigger.POST_MISTAKE:
+            self._mistakes += 1
         before.disclosure.apply(Unlock.MOVE_PLAYED)
         # Every move of the player's gets a word from the coach. A lecture is only for a
         # move that cost something; a fine move gets one sentence, and that sentence comes
@@ -1671,6 +1678,17 @@ class Coach:
                     f"Explain the difference as a pattern to remember, in three sentences at "
                     f"most, then ask one question that checks they see it."
                 )
+                if self._mistakes % ELICIT_EVERY == 0:
+                    # Sparingly: what they saw at that moment, for the profile's record.
+                    fallback += " What did you see there -- did you miss the idea, or misjudge it?"
+                    instruction = (
+                        f"The player just played {played.san} ({words}), which was a {label}: "
+                        f"it cost {loss:.0%} of the game. The better move was {best} "
+                        f"({better_words}). Explain the difference as a pattern to remember, in "
+                        "three sentences at most, then ask what they saw at that moment: "
+                        "whether they missed the opponent's idea altogether, or saw it and "
+                        "misjudged the line."
+                    )
             elif routine:
                 fallback = self._verdict(played.san, label)
                 meaning = {
