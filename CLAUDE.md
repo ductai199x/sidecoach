@@ -14,6 +14,6 @@ Vision-first chess coaching companion. Watches the screen, finds the board, reco
 - No DOM reading, no browser automation. Board input is pixels only.
 - Disclosure is enforced by filtering the fact bundle before the LLM sees it, never by prompt instructions alone. See `sidecoach/coach/disclosure.py`.
 - Eval loss and decisive-moment gaps are in expected score, never centipawns.
-- Tests use rendered boards (`tests/synth.py`) and a few committed board crops (`tests/fixtures/`); nothing under `data/` is needed to run them. Recordings under `data/` are for replays and the validation scripts. Do not commit `data/` or `tools/stockfish/`.
+- Tests use rendered boards (`tests/synth.py`, real piece sets from `tests/pieceset.py` and the sprite sheets under `tests/fixtures/pieces/`) and a few committed board crops (`tests/fixtures/`); nothing under `data/` is needed to run them. `uv run pytest tests/test_stress.py --seeds 1000` sweeps random games over every theme, set, size and decoration (about seven minutes). Recordings under `data/` are for replays and the validation scripts. Do not commit `data/` or `tools/stockfish/`.
 - `tools/eval/` is the coach's evaluation and ICR tooling (committed); `docs/eval-results.md` holds the method, the numbers and the decisions; `data/eval/README.md` the data layout. Every paid model call goes through `judge.Ledger`.
 - The LLM is the local server on `http://localhost:1234` behind `sidecoach.llm`. Keep providers swappable.
