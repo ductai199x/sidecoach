@@ -48,7 +48,8 @@ landed, keeps a boundary's blends on the grid lines only, and weighs a re-fit ag
 the geometry it was handed. Open at 1000 seeds: about one game in seventy, mostly dark
 shaded sets on the dark board (riohacha, pirouetti: a piece's shaded half is the
 square's colour) and 44-pixel cells on which a set's piece does not land where its
-exemplar did.
+exemplar did -- the two tolerances explained at the top of sidecoach/vision/pieces.py,
+left where they are by decision (2026-09-19).
 """
 
 from __future__ import annotations

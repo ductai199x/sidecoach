@@ -51,6 +51,36 @@ What sits on top of the board is told apart by geometry, never by colour:
   nothing is in flight, and the rest of the board reads on. An arrow a player leaves on
   the board for several moves once held every one of them back.
 
+Two tolerances bound what this can read, and the failures the stress sweep leaves
+(tests/test_stress.py) are all one or the other:
+
+- Foreground. A pixel is piece when it lies more than BG_TOLERANCE (25 levels) from the
+  square's colour; the cutoff exists because anti-aliasing and a wood grain put pixels a
+  few levels off the square that are not piece. A shaded set on a board of its own tone
+  (a dark grey knight on a dark grey square) has its lit side 35 off and its shaded side
+  12 off: the shaded side is not in the silhouette, the silhouette is half a knight, and
+  which half depends on the square it stands on, so the knight has two shapes and the
+  one learned on a light square does not match the one seen on a dark one. Lowering the
+  cutoff for every cell was tried twice (18, and the square's own spread): the
+  anti-aliased edge of a coordinate label then counts as piece, touches the rook beside
+  it, and the rook's silhouette grows a lump. What is in: once the set's fills are known
+  a piece whose fill has little contrast against its square is read again at half that
+  contrast, never below BG_TOLERANCE_MIN (8), which recovers a greyish white on a pale
+  board but not a shaded half nearer than that.
+- Landing. A piece has settled when its silhouette's centroid is within SETTLED_TOLERANCE
+  (0.08 of a cell, never under SETTLED_FLOOR_PX = 3 source pixels) of where its exemplar's
+  centroid sat at the start; a dragged or animating piece is further off than that, and
+  no move commits on a cell that has not settled. When the foreground cutoff loses part
+  of a piece, the centroid of what remains is 4 to 7 pixels off at 44-pixel cells, over
+  the limit, and the piece reads as forever in flight: the reconciler carries a stale
+  cell, but a cold start from the theme cache refuses a board with a piece in flight.
+  Loosening the limit would let a piece a third of the way to its square look settled
+  for a frame, which is the phantom move the limit is there to refuse.
+
+Both knobs cost more elsewhere than they buy here (Tai, 2026-09-19: document and leave
+it), so the shaded-set-on-its-own-tone board and a few 44-pixel landings are the known
+limit, about one random game in seventy over every set, theme and size the sweep draws.
+
 This is theme-specific by construction and needs no training. The learned classifier planned
 in DESIGN.md section 5.2 generalises across themes later and can be trained on the crops this
 module labels.
