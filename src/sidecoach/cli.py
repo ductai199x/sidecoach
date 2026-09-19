@@ -327,7 +327,9 @@ def replay(
     )
     if moves or pgn is not None:
         truth = pgn if pgn is not None else recording / "truth.pgn"
-        assessing = _Assessing(settings, assess or coach, depth=depth)
+        assessing = _Assessing(
+            settings, assess or coach, depth=depth, keep_every_position=profile is not None
+        )
         coaching = _Coaching(settings, coach and assessing.on)
         try:
             _replay_moves(
@@ -768,8 +770,19 @@ class _Assessing:
     board, which is what the disclosure rules require.
     """
 
-    def __init__(self, settings: Settings, enabled: bool, *, depth: int | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        enabled: bool,
+        *,
+        depth: int | None = None,
+        keep_every_position: bool = False,
+    ) -> None:
         self.analyser = _make_analyser(settings, depth=depth) if enabled else None
+        if self.analyser is not None and keep_every_position:
+            # A record built from a recording must judge every move: the replay outruns
+            # the engine, and the analyser's queue would otherwise drop the oldest.
+            self.analyser.max_pending = 1_000_000
         # A few words on the engine's state, for the panel's log: on (with its depth), or why not.
         if not enabled:
             self.detail = "off"
