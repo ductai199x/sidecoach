@@ -39,6 +39,7 @@ _SIGNS = np.array(
     [[1.0 if (r + c) % 2 == 0 else -1.0 for c in range(8)] for r in range(8)], dtype=np.float64
 )
 MIN_READABLE_CELLS = 24
+_DILATE = np.ones((3, 3), dtype=np.uint8)
 
 # (light, dark, tolerance): the square colours a board is read with. `light` is the colour of
 # the cells the checker pattern puts a light square on, the top-left cell and its parity,
@@ -282,7 +283,11 @@ def _comb_fit(
 
     Coarse to fine: whole pixels and one-percent pitch steps over the whole window first,
     then quarter pixels and 0.2 percent steps around the best, which is twenty times
-    cheaper than a fine grid everywhere and lands on the same optimum.
+    cheaper than a fine grid everywhere and lands on the same optimum. The fine pass
+    searches offsets as far as a coarse pitch step moves the far teeth: a pitch a step
+    off wants its offset a few pixels off to hold the middle of the board, and a window
+    of one pixel kept the comb there, three pixels early and a quarter of a percent
+    long at 144-pixel cells.
     """
     n = len(profile)
     xs = np.arange(n, dtype=np.float64)
@@ -304,16 +309,18 @@ def _comb_fit(
         return best
 
     reach = pitch * offset_cells
+    step = max(0.25, pitch * 0.01)
     coarse = best_over(
-        np.arange(pitch * (1 - search), pitch * (1 + search), max(0.25, pitch * 0.01)),
+        np.arange(pitch * (1 - search), pitch * (1 + search), step),
         np.arange(max(0.0, start - reach), min(n - 1.0, start + reach), 1.0),
     )
     if coarse[2] == -np.inf:
         return start, pitch, 0.0
     o, p, _ = coarse
+    span = max(1.0, 4.0 * step)
     fine = best_over(
         np.arange(p * 0.99, p * 1.01, max(0.05, p * 0.002)),
-        np.arange(max(0.0, o - 1.0), min(n - 1.0, o + 1.0) + 0.01, 0.25),
+        np.arange(max(0.0, o - span), min(n - 1.0, o + span) + 0.01, 0.25),
     )
     return fine if fine[2] >= coarse[2] else coarse
 
@@ -568,22 +575,44 @@ def refine(
     if crop.size == 0:
         return Refinement(cand, 0.0, 0.0)
 
-    # Only the strips around the cell boundaries take part in the boundary fit. Pieces sit
-    # in the middle of their squares and their outlines out-gradient faint boundaries on
-    # a low-contrast theme; a dialog over part of the board has straight edges and text
-    # that would pull the grid towards them. The mask repeats with the cell pitch, so a
-    # board that slid by a whole cell still has its boundaries in unmasked strips, and
-    # everything outside the candidate, such as the board's outer edge, stays.
+    # Only the strips around the cell boundaries take part in the boundary fit, and in
+    # them only the pixels of the square's own colour. Pieces sit in the middle of their
+    # squares and their outlines out-gradient faint boundaries on a low-contrast theme;
+    # a dialog over part of the board has straight edges and text that would pull the
+    # grid towards them. The mask repeats with the cell pitch, so a board that slid by a
+    # whole cell still has its boundaries in unmasked strips, and everything outside the
+    # candidate, such as the board's outer edge, stays. A real set's pieces reach into
+    # the strips (their bases sit at 0.87 of the cell), and a rank of them draws one
+    # line as strong as a boundary a tenth of a cell above it: at 144-pixel cells the
+    # comb settled between the two, a pitch two percent long and the top edge a quarter
+    # of a cell off. So within the board a pixel brighter than the lighter square colour
+    # or darker than the darker one, by more than the palette's tolerance, takes no
+    # part: a piece's fill and outline are gone, so are the labels and a dialog, while
+    # the blends at a boundary, which lie between the two colours, stay, and the fit
+    # keeps its sub-pixel precision (a mask against each cell's own colour dropped them,
+    # and the comb drifted a third of a percent). Outside the board nothing is masked:
+    # the outer edge's gradient lies on both sides of it, and dropping the outer side
+    # moved the last tooth a pixel in.
     weight = np.ones(crop.shape, dtype=np.float32)
     medians = cell_medians(gray, cand.region, cell)
     readable = np.ones((8, 8), dtype=bool)
     if medians is not None:
-        readable = readable_against(medians, colours or palette(medians))
+        read = colours or palette(medians)
+        readable = readable_against(medians, read)
         if int(readable.sum()) < MIN_READABLE_CELLS:
             # Too few cells to place the mask; the candidate stays where it is and carries
             # the fit and contrast measured there, which is a fit of zero.
             fit, contrast = fit_score(gray, cand.region, cell, colours)
             return Refinement(replace(cand, fit=fit, contrast=contrast), 0.0, 0.0)
+        lo, hi = min(read[0], read[1]) - read[2], max(read[0], read[1]) + read[2]
+        x0, y0 = cand.region.x - x_lo, cand.region.y - y_lo
+        x1, y1 = x0 + int(round(8 * cell)), y0 + int(round(8 * cell))
+        x0, y0, x1, y1 = max(0, x0), max(0, y0), min(crop.shape[1], x1), min(crop.shape[0], y1)
+        inside = crop[y0:y1, x0:x1]
+        own = ((inside >= lo) & (inside <= hi)).astype(np.uint8)
+        # Grown by a pixel: an edge's gradient lies on both sides of it, and the far
+        # side of the board's own edge is the surroundings.
+        weight[y0:y1, x0:x1] *= cv2.dilate(own, _DILATE).astype(np.float32)
     for r in range(8):
         for c in range(8):
             inset = int(round(cell * (0.2 if readable[r, c] else 0.08)))

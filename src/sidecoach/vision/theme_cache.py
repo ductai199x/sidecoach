@@ -28,8 +28,8 @@ from sidecoach.vision.pieces import ThemeModel
 from sidecoach.vision.squares import CELL, BoardGeometry, is_light
 
 # 2: exemplars are tone masks; 3: tone is nearer the core than the square; 4: the set's
-# colours are learned, for the drawing rule; 5: the fill is the core least like the outline.
-CACHE_VERSION = 5
+# colours are learned, for the drawing rule; 5, 6: the fill is the depth-weighted median.
+CACHE_VERSION = 6
 _QUANTUM = 8  # square colours within this many levels share a fingerprint (tolerates lighting)
 MATCH_TOLERANCE = 20.0  # palettes closer than this (in BGR) are treated as the same theme
 

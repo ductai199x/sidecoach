@@ -112,13 +112,16 @@ MIN_IOU = 0.35
 MIN_MARGIN = 0.03
 BRIGHTNESS_WEIGHT = 1.5
 _KERNEL = np.ones((3, 3), dtype=np.uint8)
-# The core of a piece, where its colour is read: the pixels at least this far inside the
-# silhouette's edge, as a share of the deepest pixel's distance, and never nearer than
-# CORE_MIN_DEPTH. A fixed erosion was three pixels, and a bold set's outline is wider
-# than that at 56-pixel cells: the rim it left in the core made a white queen, whose
-# fill is a thin star inside its outline, as grey as the black one.
-CORE_DEPTH = 0.5
-CORE_MIN_DEPTH = 3.0
+# The colour of a piece is read over its whole silhouette with every pixel weighted by
+# the square of its distance from the silhouette's edge, so the rim, the outline and the
+# anti-aliasing count for almost nothing and the deep inside for most; and the fill is
+# the tone that carries the most of that weight (the mode of the luminance in bins of
+# FILL_BIN levels, with its neighbours), not the median: a real rook draws lines across
+# the deepest part of its body, and where the two tones share the weight evenly the
+# median lands on their blend. A fixed erosion was three pixels, and a bold set's outline
+# is wider than that; the deepest tenth alone was tried next, and on a real queen the
+# deepest band of the body is where the set draws its detail lines.
+FILL_BIN = 16
 
 Kind = Literal["empty", "piece", "unknown"]
 TintKind = Literal["none", "tint", "foreign"]
@@ -316,6 +319,20 @@ def corner_pixels(patch: np.ndarray, inset: tuple[float, float] = CORNER_INSET) 
     return pixels.astype(np.float32)
 
 
+def _centred(mask: np.ndarray) -> np.ndarray:
+    """The connected parts of the mask that reach the middle half of the patch: a piece,
+    dragged or not, does; a coordinate label in a corner, a badge, a hint ring at the
+    edge do not. A label the closing above made solid enough to survive the opening
+    moved the a-file pawns' centroids past the landing tolerance."""
+    n = mask.shape[0]
+    lo, hi = n // 4, n - n // 4
+    count, labels = cv2.connectedComponents(mask, connectivity=8)
+    if count <= 2:
+        return mask
+    keep = np.unique(labels[lo:hi, lo:hi])
+    return np.isin(labels, keep[keep != 0]).astype(np.uint8)
+
+
 def _fill_enclosed(foreground: np.ndarray) -> np.ndarray:
     h, w = foreground.shape
     padded = np.zeros((h + 2, w + 2), dtype=np.uint8)
@@ -394,25 +411,33 @@ def _hover_outline(patch: np.ndarray, background: np.ndarray) -> bool:
     return weak[0] >= HOVER_LINE_FILL and strong[1] >= HOVER_LINE_FILL
 
 
-def _fill_colour(core: np.ndarray, boundary: np.ndarray | None) -> np.ndarray:
-    """The colour of a piece's fill: the median of the half of its core pixels that lie
-    farthest from its outline's colour (the median of the silhouette's outermost ring).
-    A set draws detail inside its pieces in the outline's colour, and a queen whose
-    centre is half such lines had a core as grey as the other side's queen; the half of
-    the core least like the outline is the fill whatever is drawn on it."""
-    if boundary is None or len(boundary) == 0 or len(core) < 2:
-        return np.median(core, axis=0)
-    edge = np.median(boundary.astype(np.float32), axis=0)
-    away = np.linalg.norm(core - edge, axis=1)
-    return np.median(core[away >= np.median(away)], axis=0)
+def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    order = np.argsort(values)
+    cumulative = np.cumsum(weights[order])
+    return float(
+        values[order][min(len(order) - 1, int(np.searchsorted(cumulative, cumulative[-1] / 2)))]
+    )
 
 
-def _core_mask(mask: np.ndarray) -> np.ndarray:
-    """The deep inside of the silhouette (see CORE_DEPTH), or the whole of it when it is
-    too thin to have one."""
-    depth = cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 3)
-    core = depth >= max(CORE_MIN_DEPTH, CORE_DEPTH * float(depth.max()))
-    return core if core.any() else mask.astype(bool)
+def _fill_colour(
+    pixels: np.ndarray, gray: np.ndarray, weights: np.ndarray
+) -> tuple[np.ndarray, float]:
+    """The fill's colour and luminance: the weighted mode of the luminance (see FILL_BIN),
+    then the weighted medians over the pixels of that tone."""
+    bins = np.minimum(gray.astype(np.int64) // FILL_BIN, 256 // FILL_BIN - 1)
+    mass = np.bincount(bins, weights=weights, minlength=256 // FILL_BIN)
+    around = mass.copy()
+    around[1:] += mass[:-1]
+    around[:-1] += mass[1:]
+    tone = int(np.argmax(around))
+    chosen = np.abs(bins - tone) <= 1
+    if not chosen.any() or float(weights[chosen].sum()) <= 0:
+        chosen = np.ones_like(chosen)
+    picked = weights[chosen]
+    colour = np.array(
+        [_weighted_median(pixels[chosen, ch], picked) for ch in range(3)], dtype=np.float32
+    )
+    return colour, _weighted_median(gray[chosen], picked)
 
 
 def _centroid(mask: np.ndarray) -> tuple[float, float]:
@@ -501,8 +526,15 @@ def silhouette(patch: np.ndarray, size: int = CELL, colours: PieceColours = ()) 
     inner = patch[border : patch.shape[0] - border, border : patch.shape[1] - border]
     inner = cv2.resize(inner, (size, size), interpolation=cv2.INTER_AREA)
     distance = np.linalg.norm(inner.astype(np.float32) - background.astype(np.float32), axis=2)
-    mask = _fill_enclosed(distance > BG_TOLERANCE)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, _KERNEL)
+    # A piece whose fill is the square's own colour (a cream set on a light board) is
+    # only its outline, so what the outline encloses is filled in; the outline is closed
+    # first, since a thin stroke breaks at its anti-aliased joins, and a broken outline
+    # enclosed nothing: a wooden knight read as its bare outline on light squares.
+    foreground = cv2.morphologyEx(
+        (distance > BG_TOLERANCE).astype(np.uint8), cv2.MORPH_CLOSE, _KERNEL
+    )
+    mask = _fill_enclosed(foreground.astype(bool))
+    mask = _centred(cv2.morphologyEx(mask, cv2.MORPH_OPEN, _KERNEL))
     fraction = float(mask.mean())
     chroma_map = inner.max(axis=2).astype(np.float32) - inner.min(axis=2).astype(np.float32)
     overlay = _overlay_fraction(inner, background, distance, chroma_map, colours)
@@ -513,24 +545,22 @@ def silhouette(patch: np.ndarray, size: int = CELL, colours: PieceColours = ()) 
     core_colour: np.ndarray | None = None
     edge_colour: np.ndarray | None = None
     if fraction > 0:
-        # Colour statistics come from the core of the piece, not its outline: white pieces
-        # carry dark outlines and black pieces light ones, and thin pieces are mostly outline.
-        sample_mask = _core_mask(mask)
-        # Not the badge corner: a classification badge's disc lies inside the mask, and its
-        # bright ink swung a black queen's median luminance to a white one's.
-        blinded = sample_mask & _BADGE_BLIND
-        if blinded.any():
-            sample_mask = blinded
-        boundary = mask.astype(bool) & ~cv2.erode(mask, _KERNEL).astype(bool)
-        core = _fill_colour(inner[sample_mask].astype(np.float32), inner[boundary])
+        # The fill's colour: the depth-weighted median over the silhouette (see the note
+        # above `Kind`), so that neither the outline nor the detail lines inside a piece
+        # decide it. Not the badge corner: a classification badge's disc lies inside
+        # the mask, and its bright ink swung a black queen to white.
+        on = mask.astype(bool)
+        # A patch with no background at all (a cover, a strip) has no edge to measure
+        # from; the transform then returns the largest float, which squares to nothing.
+        depth = np.minimum(cv2.distanceTransform(mask, cv2.DIST_L2, 3), float(mask.shape[0]))
+        weights = depth * depth
+        if (on & _BADGE_BLIND).any():
+            weights = weights * _BADGE_BLIND
+        weights = weights[on]
+        gray = cv2.cvtColor(inner, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        core, luminance = _fill_colour(inner[on].astype(np.float32), gray[on], weights)
         core_colour = core
-        tone = _tone_mask(mask.astype(bool), inner, core, background)
-        # The fill's luminance, 0 to 1. The share of core pixels over mid-grey was the
-        # measure before: with anti-aliased outlines the core of a black piece keeps a ring
-        # of its light outline on a dark square and none on a light one (0.17 against 0.03
-        # at 48-pixel cells), and that square-dependent noise ate the margin between a pawn
-        # and a bishop. A median does not move for a ring.
-        luminance = float(0.114 * core[0] + 0.587 * core[1] + 0.299 * core[2])
+        tone = _tone_mask(on, inner, core, background)
         brightness = luminance / 255.0
         centroid = _centroid(mask)
         outline = mask.astype(bool) & ~tone

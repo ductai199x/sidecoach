@@ -156,16 +156,18 @@ def test_bootstrap_fuses_pawns_so_one_odd_pawn_does_not_spoil_them() -> None:
     r, c = row_col(chess.E2, Side.WHITE)
     x0, y0, x1, y1 = GEOM.cell_box(r, c)
     odd = frame.copy()
-    # A badge in the top-left corner, which silhouette comparison does not ignore (only
-    # the top-right corner is blind), so it is fusion that has to remove it.
-    cv2.circle(odd, (x0 + 10, y0 + 10), 7, (40, 40, 220), -1)
+    # A badge on the pawn's upper left, touching it, so it is part of the silhouette
+    # (a blob in a corner on its own is dropped by the silhouette itself) and in a
+    # corner silhouette comparison does not ignore (only the top-right corner is
+    # blind), so it is fusion that has to remove it.
+    cv2.circle(odd, (x0 + 14, y0 + 14), 9, (40, 40, 220), -1)
     spoiled = silhouette(GEOM.crop(odd, r, c, size=2 * CELL)).mask
     clean_pawn = silhouette(GEOM.crop(frame, r, c, size=2 * CELL)).mask
-    assert spoiled[:12, :12].any() and not clean_pawn[:12, :12].any()
+    assert spoiled[:8, :8].any() and not clean_pawn[:8, :8].any()
     model = ThemeModel.from_start_position(odd, GEOM, Side.WHITE)
     assert model is not None
     exemplar = next(e for e in model.exemplars if e.symbol == "P")
-    assert not exemplar.mask[:12, :12].any(), "the badge survived fusion"
+    assert not exemplar.mask[:8, :8].any(), "the badge survived fusion"
     clean = model.classify_frame(frame, GEOM)
     for square in (chess.A2, chess.E2, chess.H2):
         r, c = row_col(square, Side.WHITE)
@@ -462,20 +464,39 @@ def test_recogniser_works_at_small_cell_sizes(cell: int) -> None:
         ("wood", "wooden", 64),
         ("purple", "wooden", 48),
         ("blue", "thin", 44),
+        # The real set (tests/pieceset.py): thin strokes, a knight's mane, a bishop's
+        # slit, detail in the other side's colour inside every piece.
+        ("green", "cburnett", 64),
+        ("brown", "cburnett", 44),
+        ("dark", "cburnett", 56),
+        ("ice", "cburnett", 96),
+        ("wood", "cburnett-wood", 64),
+        ("grey", "cburnett-small", 44),
     ],
 )
 def test_every_theme_and_piece_style_reads_every_square(theme: str, style: str, cell: int) -> None:
     """The stress sweep's finds, kept as the cases they were found on: a start position
     and a middlegame on this theme and set, every square read as what it holds."""
     geometry = BoardGeometry(Region(300, 120, 8 * cell, 8 * cell), float(cell))
+    width, height = 8 * cell + 600, 8 * cell + 240
     for bottom in (Side.WHITE, Side.BLACK):
-        start = synthetic_board(cell=cell, theme=theme, style=style, bottom=bottom)
+        start = synthetic_board(
+            width=width, height=height, cell=cell, theme=theme, style=style, bottom=bottom
+        )
         model = ThemeModel.from_start_position(start, geometry, bottom)
         assert model is not None, f"no recogniser for {theme}/{style} at {cell} px"
         later = chess.Board()
         for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "O-O", "d5", "exd5", "Nxd5"):
             later.push_san(san)
-        frame = synthetic_board(board=later, cell=cell, theme=theme, style=style, bottom=bottom)
+        frame = synthetic_board(
+            width=width,
+            height=height,
+            board=later,
+            cell=cell,
+            theme=theme,
+            style=style,
+            bottom=bottom,
+        )
         off = _every_piece_reads(model.classify_frame(frame, geometry), later, bottom)
         assert not off, f"{theme}/{style} at {cell} px, {bottom.value} at the bottom: {off}"
 

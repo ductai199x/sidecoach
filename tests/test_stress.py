@@ -17,7 +17,14 @@ black set's grey outline lost on a dark board (the tone is now what lies nearer 
 than the square); a bold set's outline wider than the erosion the core was read with (the
 core is now the deep inside of the silhouette); an arrow standing across four plies holding
 every one of them back (a drawing is no longer a hover) and a four-ply gap the missed-move
-search's budget could not reach (it counts expansions now). 250 seeds pass.
+search's budget could not reach (it counts expansions now). With the real set
+(tests/pieceset.py) in half the games: a fill colour read off the deepest band of a
+queen's body, which is where the set draws its lines (the fill is the depth-weighted
+mode now); a rank of piece bases pulling the board lock at 144-pixel cells (piece pixels
+are masked out of the boundary fit); a cream knight on a cream square that was only its
+outline (the outline is closed and what it encloses filled). Open at 1000 seeds: seed 6,
+the wooden set at 44-pixel cells on the grey board, whose bishops' brightness differs by
+square.
 """
 
 from __future__ import annotations
@@ -89,7 +96,10 @@ def scenario(seed: int) -> Scenario:
         rng.choice([Side.WHITE, Side.BLACK]),
         tuple(sans),
         decorations,
-        rng.choice(list(PIECE_STYLES)),
+        # Half the games on the real set, half on the polygons and their variants.
+        rng.choice([s for s in PIECE_STYLES if PIECE_STYLES[s].real])
+        if rng.random() < 0.5
+        else rng.choice([s for s in PIECE_STYLES if not PIECE_STYLES[s].real]),
         rng.choice(list(HIGHLIGHTS)),
         rng.choice(list(ARROWS)),
         rng.choice(ARROW_WIDTHS),

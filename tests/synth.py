@@ -27,6 +27,7 @@ from sidecoach.events import Region, Side
 from sidecoach.vision.board_detect import BoardCandidate
 from sidecoach.vision.clock import GlyphTemplates
 from sidecoach.vision.squares import row_col
+from tests.pieceset import WOODEN_SET, draw_sprite
 
 LIGHT = (208, 236, 238)
 DARK = (86, 150, 118)
@@ -56,7 +57,9 @@ TEXTURE_AMPLITUDE = 12
 @dataclass(frozen=True)
 class PieceStyle:
     """How a set draws its pieces: the fills and outlines of the two sides, the outline's
-    width as a share of the cell, and the size of the pieces in their squares."""
+    width as a share of the cell, and the size of the pieces in their squares. A style
+    with `real` set draws the cburnett set (tests/pieceset.py) instead of the polygons,
+    in the colours `colouring` swaps in; `scale` then sizes the sprite in the cell."""
 
     white_fill: tuple[int, int, int] = (245, 245, 245)
     white_edge: tuple[int, int, int] = (0, 0, 0)
@@ -67,6 +70,8 @@ class PieceStyle:
     # Detail lines inside the piece in the outline's colour, as most real sets draw them
     # (a queen's crown, a rook's crenellations): the interior is then two tones.
     detail: bool = False
+    real: bool = False
+    colouring: tuple[tuple[str, str], ...] = ()
 
 
 PIECE_STYLES: dict[str, PieceStyle] = {
@@ -85,6 +90,18 @@ PIECE_STYLES: dict[str, PieceStyle] = {
     "flat": PieceStyle(white_edge=(160, 160, 160), black_edge=(90, 90, 90), outline=1 / 40),
     # A set with lines drawn inside every piece.
     "detailed": PieceStyle(detail=True),
+    # The real thing: lichess's default set, drawn at the size of the cell as sites draw
+    # their vectors; then the same set in a wooden colouring, and drawn small.
+    "cburnett": PieceStyle(real=True),
+    "cburnett-wood": PieceStyle(
+        real=True,
+        colouring=tuple(sorted(WOODEN_SET.items())),
+        white_fill=(190, 225, 245),
+        white_edge=(45, 70, 90),
+        black_fill=(45, 70, 90),
+        black_edge=(143, 188, 215),
+    ),
+    "cburnett-small": PieceStyle(real=True, scale=0.85),
 }
 # chess.com's legal-move hints when a piece is selected: a grey translucent disc on an
 # empty destination, a ring around a capturable piece.
@@ -153,6 +170,10 @@ def draw_piece(
     symbol: str,
     style: PieceStyle = PIECE_STYLES["classic"],
 ) -> None:
+    if style.real:
+        size = max(1, int(round(cell * style.scale)))
+        draw_sprite(frame, cx - size // 2, cy - size // 2, size, symbol, dict(style.colouring))
+        return
     white = symbol.isupper()
     fill = style.white_fill if white else style.black_fill
     edge = style.white_edge if white else style.black_edge
