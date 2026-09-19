@@ -6,7 +6,7 @@ Vision-first chess coaching companion. Watches the screen, finds the board, reco
 
 - `uv sync` installs everything. Python 3.12 is pinned in `.python-version`.
 - `uv run sidecoach --help` for the CLI. `uv run sidecoach doctor` checks the local setup.
-- `uv run pytest` runs the default suite: the unit and synthetic-vision tests, in parallel, about ten seconds; `uv run pytest -m slow -n 0` adds the recording replays, the server and Stockfish (a minute or two). `uv run ruff check .` and `uv run ruff format .` for lint and format. `uv run pyright` for types.
+- `uv run pytest` runs the suite: unit, synthetic-vision, panel and server tests, in parallel, about ten seconds; `-m slow` adds the tests that need the voice models. `uv run ruff check .` and `uv run ruff format .` for lint and format. `uv run pyright` for types.
 
 ## Conventions
 
@@ -14,6 +14,6 @@ Vision-first chess coaching companion. Watches the screen, finds the board, reco
 - No DOM reading, no browser automation. Board input is pixels only.
 - Disclosure is enforced by filtering the fact bundle before the LLM sees it, never by prompt instructions alone. See `sidecoach/coach/disclosure.py`.
 - Eval loss and decisive-moment gaps are in expected score, never centipawns.
-- Recordings under `data/` are the test suite. Do not commit `data/` or `tools/stockfish/`.
+- Tests use rendered boards (`tests/synth.py`) and a few committed board crops (`tests/fixtures/`); nothing under `data/` is needed to run them. Recordings under `data/` are for replays and the validation scripts. Do not commit `data/` or `tools/stockfish/`.
 - `tools/eval/` is the coach's evaluation and ICR tooling (committed); `docs/eval-results.md` holds the method, the numbers and the decisions; `data/eval/README.md` the data layout. Every paid model call goes through `judge.Ledger`.
 - The LLM is the local server on `http://localhost:1234` behind `sidecoach.llm`. Keep providers swappable.

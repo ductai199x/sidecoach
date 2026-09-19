@@ -1,45 +1,35 @@
-"""The panel's live engine, driven headlessly from a recording (no window, no screen).
+"""The panel's live engine, driven headlessly from rendered frames (no window, no screen).
 
-It runs the same capture -> pipeline -> engine loop `watch` runs, so feeding it real frames
-must lock the board, bootstrap the start position, follow the moves, and surface all of that
-as state and as debug-terminal lines -- the thread-safe surface the web page polls.
+It runs the same capture -> pipeline -> engine loop `watch` runs, so feeding it the frames
+of a game must lock the board, bootstrap the start position, follow the moves, and surface
+all of that as state and as debug-terminal lines -- the thread-safe surface the web page
+polls.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from sidecoach.config import Settings, VoiceSettings
-from sidecoach.replay.recording import Recording
 from sidecoach.ui.panel import PanelApi, PanelEngine
-
-REC = Path("data/recordings/g01-david-green")
-
-
-def _frames(limit: int) -> Iterator[tuple[int, float, object]]:
-    for i, (tick, frame) in enumerate(Recording(REC).frames()):
-        if i >= limit:
-            return
-        yield (i, tick.ts, frame)
+from tests.synth import game_frames
 
 
-@pytest.mark.slow
-def test_engine_follows_a_recorded_game_and_reports_it(tmp_path: Path) -> None:
+def test_engine_follows_a_game_and_reports_it(tmp_path: Path) -> None:
     settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
     engine = PanelEngine(
         settings,
         analysis=False,  # no Stockfish needed in a unit test
         coach=False,  # no LLM needed in a unit test
         record=False,
-        frame_source=_frames(520),
+        frame_source=game_frames(),
     )
     engine.start()
     assert engine._thread is not None
     engine._thread.join(timeout=90)
-    assert not engine._thread.is_alive(), "engine loop did not finish the recording in time"
+    assert not engine._thread.is_alive(), "engine loop did not finish the game in time"
 
     snap = engine.poll(0)
     state, lines = snap["state"], snap["lines"]

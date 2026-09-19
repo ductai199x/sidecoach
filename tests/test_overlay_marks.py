@@ -1,10 +1,14 @@
-"""Arrows and marks drawn on the board are not moves.
+"""Arrows and badges drawn over the board must not read as pieces.
 
-From the first live trial: an orange chess.com arrow from d4 to e5 (with a red mark on e5)
-read as the pawn capturing -- the arrowhead over the black pawn made a bright blob that
-classified as a white piece -- and the reconciler committed a phantom 23.dxe5, then could
-not reconcile the real board for the rest of the game. A square with saturated colour drawn
-over it is now unreadable until the drawing is gone, and no move commits through it.
+In the trial game of 2026-09-16 an orange arrow from d4 to e5 put its head over the black
+pawn on e5, and the arrowhead's saturated pixels read as a white piece: the recogniser saw
+a white pawn on e5 for as long as the arrow was drawn, and the reconciler took it for dxe5
+-- a move nobody played. The rule since: on a set whose pieces are white and black, a
+cell with saturated colour over it is something drawn, and it waits.
+
+The first three tests are the measure on hand-made patches; the next two render the
+arrow on the brown theme the game was on and run the recogniser and the whole pipeline;
+the last reads the real frames of that game (board crops under tests/fixtures).
 """
 
 from __future__ import annotations
@@ -17,34 +21,18 @@ import cv2
 import numpy as np
 import pytest
 
-from sidecoach.events import MovePlayed
-from sidecoach.replay.recording import Recording
+from sidecoach.events import MovePlayed, Region, Side
 from sidecoach.state.pipeline import GamePipeline
 from sidecoach.state.reconcile import Readings
-from sidecoach.vision.pieces import OVERLAY_MAX, CellReading, silhouette
+from sidecoach.vision.pieces import OVERLAY_MAX, CellReading, ThemeModel, silhouette
 from sidecoach.vision.squares import BoardGeometry, square_at
+from tests.synth import synthetic_board
 
-pytestmark = pytest.mark.slow  # replays a local recording: minutes, run with -m slow
+pytestmark = pytest.mark.vision
 
-REC = Path("data/recordings/20260916-000902")  # the trial game; local, not committed
-ARROW_FRAMES = (640.0, 662.0)  # the d4->e5 arrow is on the board
-CLEAN_FRAME = 590.0  # after 22...e5, before any arrow was drawn
-
-
-def _frames_at(rec: Recording, wanted: list[float]) -> dict[float, np.ndarray]:
-    ticks = [
-        json.loads(line) for line in (REC / "index.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    t0 = ticks[0]["ts"]
-    got: dict[float, np.ndarray] = {}
-    for tick, frame in rec.frames():
-        t = tick.ts - t0
-        for w in wanted:
-            if w not in got and t >= w and tick.stored is not None:
-                got[w] = frame.copy()
-        if len(got) == len(wanted):
-            break
-    return got
+FIXTURES = Path(__file__).parent / "fixtures"
+# After 22...e5 in the trial game: the d4 pawn faces the e5 pawn, the arrow ran d4 -> e5.
+POSITION = "r2q1rk1/1b3ppp/p1nbpn2/1p2p3/3P4/1BN1PN2/PP3PPP/R2Q1RK1 w - - 0 23"
 
 
 def test_an_orange_arrow_is_a_saturated_overlay() -> None:
@@ -85,62 +73,97 @@ def test_a_badge_on_the_corner_is_not_a_drawing() -> None:
     assert silhouette(cell).overlay < OVERLAY_MAX
 
 
-@pytest.mark.slow
-@pytest.mark.skipif(not (REC / "index.jsonl").exists(), reason="the trial recording is local")
-def test_cells_under_the_arrow_are_unreadable_and_the_move_is_not_committed() -> None:
-    rec = Recording(REC)
-    # Learn the theme from the game's own start, as the live engine did.
+def _cell(readings: Readings, name: str, bottom: Side) -> CellReading:
+    target = chess.parse_square(name)
+    for r in range(8):
+        for c in range(8):
+            if square_at(r, c, bottom) == target:
+                return readings[r][c]
+    raise AssertionError(name)
+
+
+def _assert_arrow_reads(readings: Readings, bottom: Side) -> None:
+    # The arrowhead over the black pawn on e5 is what read as a white piece.
+    head = _cell(readings, "e5", bottom)
+    assert head.kind == "unknown" and head.hover, f"e5 read as {head.kind} {head.symbol}"
+    # The tail leaves d4 by its top-right corner, where a badge would sit; the pawn there
+    # is still readable, and read right, or the cell waits. Never anything else.
+    tail = _cell(readings, "d4", bottom)
+    assert tail.symbol in (None, "P"), f"d4 read as {tail.symbol}"
+
+
+@pytest.mark.parametrize("bottom", [Side.WHITE, Side.BLACK])
+def test_a_rendered_arrow_over_a_pawn_waits_and_the_badge_does_not(bottom: Side) -> None:
+    geometry = BoardGeometry(Region(300, 120, 512, 512), 64.0)
+    model = ThemeModel.from_start_position(
+        synthetic_board(theme="brown", bottom=bottom), geometry, bottom
+    )
+    assert model is not None and model.achromatic_pieces
+    board = chess.Board(POSITION)
+    arrow = chess.Move.from_uci("d4e5")
+    # The badge sits on the moved piece's square: the knight that just came to f3.
+    for badge in (None, (chess.F3, "best"), (chess.F3, "blunder")):
+        frame = synthetic_board(
+            board=board, theme="brown", bottom=bottom, arrows=(arrow,), badge=badge
+        )
+        readings = model.classify_frame(frame, geometry)
+        _assert_arrow_reads(readings, bottom)
+        if badge is not None:
+            assert _cell(readings, "f3", bottom).symbol == "N", "the badge hid the knight"
+
+
+def test_the_pipeline_commits_no_phantom_capture_under_a_rendered_arrow() -> None:
     pipe = GamePipeline()
-    ticks = [
-        json.loads(line) for line in (REC / "index.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    t0 = ticks[0]["ts"]
-    frames_iter = rec.frames()
-    for tick, frame in frames_iter:
-        pipe.process(frame, tick.ts, changed=tick.stored is not None)
-        if pipe.model is not None and tick.ts - t0 > 30:
-            break
+    ts = 0.0
+    for _ in range(3):
+        pipe.process(synthetic_board(theme="brown"), ts)
+        ts += 0.1
+    assert pipe.reconciler is not None and pipe.model is not None
+    board = chess.Board(POSITION)
+    rec = pipe.reconciler
+    rec.board = board.copy()
+    rec._base_fen = POSITION
+    moves: list[str] = []
+    for _ in range(3):
+        moves += [
+            e.san
+            for e in pipe.process(synthetic_board(board=board, theme="brown"), ts)
+            if isinstance(e, MovePlayed)
+        ]
+        ts += 0.1
+    arrow = chess.Move.from_uci("d4e5")
+    for _ in range(12):
+        frame = synthetic_board(board=board, theme="brown", arrows=(arrow,))
+        moves += [e.san for e in pipe.process(frame, ts) if isinstance(e, MovePlayed)]
+        ts += 0.1
+    assert moves == [], f"phantom moves under the arrow: {moves}"
+    # The arrow gone, the game goes on from where it was.
+    move = board.push_san("dxe5")
+    for _ in range(3):
+        frame = synthetic_board(board=board, theme="brown", highlight=move)
+        moves += [e.san for e in pipe.process(frame, ts) if isinstance(e, MovePlayed)]
+        ts += 0.1
+    assert moves == ["dxe5"]
+
+
+def test_the_real_arrow_frames_read_the_same() -> None:
+    """The board crops of the trial game itself: the clean frame after 22...e5 and two
+    frames with the arrow on the board, the recogniser learned from the game's start."""
+    meta = json.loads((FIXTURES / "frames.json").read_text(encoding="utf-8"))
+    margin = meta["margin"]
+    start = cv2.imread(str(FIXTURES / "chesscom_start.png"))
+    pipe = GamePipeline()
+    for i in range(4):
+        pipe.process(start, 0.1 * i)
     assert pipe.model is not None and pipe.board is not None and pipe.bottom is not None
     assert pipe.model.achromatic_pieces, "chess.com's pieces are white and black"
-    grabbed = _frames_at(Recording(REC), [CLEAN_FRAME, *ARROW_FRAMES])
-    # The window was moved during the game; let the tracker re-lock on the later frame
-    # (it backs off for a few frames after a miss) so the geometry is that frame's.
-    for _ in range(40):
-        pipe.tracker.update(grabbed[CLEAN_FRAME])
-    assert pipe.tracker.board is not None and pipe.tracker.verified
-    geometry = BoardGeometry(pipe.tracker.board.region, pipe.tracker.board.cell_px)
-
-    bottom = pipe.bottom
-
-    def cell(readings: Readings, name: str) -> CellReading:
-        target = chess.parse_square(name)
-        for r in range(8):
-            for c in range(8):
-                if square_at(r, c, bottom) == target:
-                    return readings[r][c]
-        raise AssertionError(name)
-
-    clean = pipe.model.classify_frame(grabbed[CLEAN_FRAME], geometry)
-    assert cell(clean, "d4").symbol == "P" and cell(clean, "e5").symbol == "p"
-    for t in ARROW_FRAMES:
-        readings = pipe.model.classify_frame(grabbed[t], geometry)
-        # The arrowhead over the black pawn on e5 is what read as a white piece.
-        head = cell(readings, "e5")
-        assert head.kind == "unknown" and head.hover, f"e5 at t={t} read as {head.kind}"
-        # The tail leaves d4 by its top-right corner, where a badge would sit; the pawn
-        # there is still readable, and read right, or the cell waits. Never anything else.
-        tail = cell(readings, "d4")
-        assert tail.symbol in (None, "P"), f"d4 at t={t} read as {tail.symbol}"
-
-    # The whole pipeline over the arrow period: no phantom dxe5.
-    moves: list[str] = []
-    for tick, frame in frames_iter:
-        t = tick.ts - t0
-        if t < 575:
-            continue
-        if t > 700:
-            break
-        for event in pipe.process(frame, tick.ts, changed=tick.stored is not None):
-            if isinstance(event, MovePlayed):
-                moves.append(event.san)
-    assert "dxe5" not in moves, moves
+    side = meta["chesscom_start"]["region"][2]
+    geometry = BoardGeometry(Region(margin, margin, side, side), side / 8)
+    clean = pipe.model.classify_frame(
+        cv2.imread(str(FIXTURES / "chesscom_arrow_clean.png")), geometry
+    )
+    assert _cell(clean, "d4", pipe.bottom).symbol == "P"
+    assert _cell(clean, "e5", pipe.bottom).symbol == "p"
+    for name in ("chesscom_arrow_640.png", "chesscom_arrow_662.png"):
+        readings = pipe.model.classify_frame(cv2.imread(str(FIXTURES / name)), geometry)
+        _assert_arrow_reads(readings, pipe.bottom)

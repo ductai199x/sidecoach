@@ -85,13 +85,13 @@ line-ending = "native"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The default run is everything that needs no local data: the unit suite and the synthetic
-# vision-pipeline suite, in parallel (about ten seconds). `-m slow` adds the recording
-# replays, the server and Stockfish (a minute or two, serial: `-p no:xdist` or `-n 0`);
-# `-m ""` is everything.
+# The default run needs no local data: unit tests, the synthetic vision-pipeline suite (on
+# rendered boards and a few committed board crops), the panel and the server, in parallel
+# (about ten seconds). `-m slow` adds what needs the optional voice models; `-m ""` is
+# everything.
 addopts = "-m 'not slow' -n auto -p no:cacheprovider"
 markers = [
-    "slow: replays a recording, starts the server or runs Stockfish; minutes, run deliberately",
+    "slow: needs the optional voice models; run deliberately",
     "vision: the synthetic vision-pipeline behaviour suite (in the default run)",
 ]
 

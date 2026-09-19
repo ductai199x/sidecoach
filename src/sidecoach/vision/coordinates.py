@@ -44,6 +44,23 @@ def _corner_glyph(cell: np.ndarray) -> np.ndarray | None:
     mask = diff > _INK
     if int(mask.sum()) < _MIN_INK:
         return None
+    # The digit is one component of ink, inset from the cell's edge. A lock a pixel off
+    # puts a strip of the neighbouring cell along the window's top or left edge, and a
+    # pawn on a small cell reaches into the window from the lower right: neither is the
+    # digit. Components touching the top or left edge go first, then the component nearest
+    # the corner is the digit. Taken all together, the box stretched over a piece fragment
+    # and the same digit no longer matched once the piece had moved on.
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
+    if count > 2:
+        inset = [
+            k
+            for k in range(1, count)
+            if stats[k, cv2.CC_STAT_LEFT] > 0 and stats[k, cv2.CC_STAT_TOP] > 0
+        ] or list(range(1, count))
+        nearest = min(inset, key=lambda k: stats[k, cv2.CC_STAT_LEFT] + stats[k, cv2.CC_STAT_TOP])
+        mask = labels == nearest
+        if int(mask.sum()) < _MIN_INK:
+            return None
     rows, cols = np.where(mask)
     cropped = mask[rows.min() : rows.max() + 1, cols.min() : cols.max() + 1].astype(np.uint8)
     resized = cv2.resize(cropped * 255, (GLYPH, GLYPH), interpolation=cv2.INTER_NEAREST)

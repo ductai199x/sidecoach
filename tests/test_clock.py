@@ -9,7 +9,6 @@ comparison on one recording when `data/` is present.
 
 from __future__ import annotations
 
-import json
 import math
 from pathlib import Path
 
@@ -20,8 +19,6 @@ from sidecoach.events import Region
 from sidecoach.vision.board_detect import BoardCandidate
 from sidecoach.vision.clock import ClockReader, ClockReading, GlyphTemplates, parse_clock
 from tests.synth import board_with_clocks, busy_background
-
-RECORDINGS = Path(__file__).resolve().parents[1] / "data" / "recordings"
 
 # A second theme: a cream box with brown text above, the inverse below.
 CREAM = ((236, 96), (96, 236))
@@ -227,23 +224,3 @@ def test_the_reader_is_cheap_enough_for_every_changed_frame() -> None:
     # The budget is about 5 ms at 720p; the recordings measure well under 1 ms, so a
     # generous bound here still catches a change that makes the reader expensive.
     assert per_frame_ms < 5.0, per_frame_ms
-
-
-@pytest.mark.slow
-@pytest.mark.skipif(not RECORDINGS.exists(), reason="data/recordings is not checked in")
-def test_think_times_from_a_recording_match_chesscom() -> None:
-    import sys
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-    from validate_clocks import validate  # type: ignore[import-not-found]
-
-    folder = RECORDINGS / "g01-david-green"
-    if not folder.exists():
-        pytest.skip(f"{folder} is not there")
-    summary = validate(folder, verbose=False)
-    plies = json.loads((folder / "chesscom.json").read_text(encoding="utf-8"))["moves"]
-    assert summary["measured"] >= 0.9 * len(plies)
-    assert summary["within_0_5"] >= 0.95
-    assert summary["mae"] < 0.3
-    assert summary["cost_ms"] < 5.0
-    assert summary["time_control"] is not None

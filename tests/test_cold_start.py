@@ -1,112 +1,127 @@
-"""Cold-start recognition: read an arbitrary position from the theme cache, no move-0 bootstrap.
+"""Cold start: a mid-game board recognised from the theme cache, no move-0 bootstrap.
 
-Learn a theme from a real game's start (which caches the piece style and the rank labels), then,
-with a fresh pipeline that has only the cache, read a mid-game board of that theme cold and begin
-a game from the position on it -- the puzzle / mid-game-analysis capability.
+A theme learned once from a start position is cached with its palette and its rank-digit
+exemplars. Later, a board of that theme caught in the middle of a game -- a puzzle, a game
+joined late, a restart -- is classified cold: the palette finds the cached recogniser, the
+edge digits give the orientation, and a fully quiet, fully readable position is adopted as
+the game's start. A board caught mid-move is refused, so a lifted piece is never read as an
+empty square (the c1 bishop that read empty in flight over f4).
+
+Rendered boards first, on two themes and both orientations, the orientation read from the
+rendered coordinates; then the real frames of a recorded game (board crops under
+tests/fixtures), where the digits are chess.com's.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import chess
+import cv2
+import numpy as np
 import pytest
 
-from sidecoach.events import GameStarted
-from sidecoach.replay.recording import Recording
+from sidecoach.events import GameStarted, Region, Side
 from sidecoach.state.pipeline import GamePipeline
 from sidecoach.vision.squares import BoardGeometry
 from sidecoach.vision.theme_cache import ThemeCache
+from tests.synth import synthetic_board
 
-pytestmark = pytest.mark.slow  # replays a local recording: minutes, run with -m slow
+pytestmark = pytest.mark.vision
 
-REC = Path("data/recordings/g01-david-green")
+FIXTURES = Path(__file__).parent / "fixtures"
+GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
+# After 10 moves of a Ruy Lopez, with both sides castled: a quiet middlegame board.
+MIDGAME = "r1bq1rk1/2ppbppp/p1n2n2/1p2p3/4P3/1B3N2/PPPP1PPP/RNBQR1K1 w - - 4 8"
 
 
-@pytest.mark.slow
-def test_cold_start_reads_a_mid_game_position_from_the_cache(tmp_path: Path) -> None:
-    cache = ThemeCache(tmp_path)
-
-    # Warm run: learn and cache the theme, then note a genuinely quiet mid-game frame -- one
-    # the recogniser reads as a fully settled, fully readable board (no piece in flight) and
-    # the reconciler has no move pending on, so the tracked position matches the pixels exactly.
+def _warm(cache: ThemeCache, theme: str, bottom: Side) -> None:
+    """Learn the theme from a rendered start position, as a live session does, into `cache`."""
     warm = GamePipeline(cache=cache)
-    captured: tuple = ()
-    for i, (tick, frame) in enumerate(Recording(REC).frames()):
-        warm.process(frame, tick.ts, changed=tick.stored is not None)
-        if not (
-            warm.reconciler is not None
-            and warm.model is not None
-            and warm.bottom is not None
-            and warm.board is not None
-            and warm.tracker.verified
-            and len(warm.reconciler.board.move_stack) >= 8
-            and warm.reconciler._pending is None  # no move mid-commit: pixels == tracked board
-            and i > 500
-        ):
-            continue
-        geom = BoardGeometry(warm.board.region, warm.board.cell_px)
-        readings = warm.model.classify_frame(frame, geom)
-        # A fully quiet, fully readable board -- the same bar cold_start adopts on.
-        if GamePipeline._placement_from_readings(readings, warm.bottom) is None:
-            continue
-        captured = (frame, geom, warm.reconciler.board.board_fen())
-        break
-    assert captured, "no settled mid-game frame found"
-    frame, geom, true_placement = captured
+    for i in range(3):
+        warm.process(synthetic_board(theme=theme, bottom=bottom, coordinates=True), 0.1 * i)
+    assert warm.model is not None and warm.model.rank_labels, "no theme learned"
 
-    # Cold run: a fresh pipeline with only the cache, no start position ever seen.
-    cold = GamePipeline(cache=cache)
-    events = cold.cold_start(frame, geom)
-    assert any(isinstance(e, GameStarted) for e in events), "cold start did not begin a game"
-    assert cold.reconciler is not None
-    cold_board = cold.reconciler.board
-    assert cold_board.is_valid()
-    assert cold_board.king(chess.WHITE) is not None and cold_board.king(chess.BLACK) is not None
 
-    # On a quiet board the cold read must reproduce the move-by-move tracked position exactly:
-    # every one of the 64 squares. A single misread piece would poison the coach's analysis,
-    # so nothing less than a perfect read is adopted.
-    true_board = chess.Board(true_placement + " w - - 0 1")
-    disagree = [
-        chess.square_name(sq)
-        for sq in chess.SQUARES
-        if cold_board.piece_at(sq) != true_board.piece_at(sq)
+def _squares_off(board: chess.Board, truth: chess.Board) -> list[str]:
+    return [
+        chess.square_name(sq) for sq in chess.SQUARES if board.piece_at(sq) != truth.piece_at(sq)
     ]
-    assert not disagree, f"cold read disagrees with the tracked position on {disagree}"
 
 
-@pytest.mark.slow
-def test_cold_start_refuses_a_board_caught_mid_move(tmp_path: Path) -> None:
-    """A frame with a piece in flight must not be adopted: the cold read is refused so the
-    caller retries, rather than a lifted piece being read as an empty square."""
+@pytest.mark.parametrize("theme", ["green", "brown"])
+@pytest.mark.parametrize("bottom", [Side.WHITE, Side.BLACK])
+def test_cold_start_reads_a_rendered_mid_game_board(
+    tmp_path: Path, theme: str, bottom: Side
+) -> None:
+    cache = ThemeCache(tmp_path)
+    _warm(cache, theme, bottom)
+    truth = chess.Board(MIDGAME)
+    frame = synthetic_board(board=truth, theme=theme, bottom=bottom, coordinates=True)
+    cold = GamePipeline(cache=cache)
+    events = cold.cold_start(frame, GEOM)  # the orientation is read from the digits
+    assert any(isinstance(e, GameStarted) for e in events), "cold start did not begin a game"
+    assert cold.bottom == bottom, "the orientation was misread from the coordinates"
+    assert cold.reconciler is not None
+    board = cold.reconciler.board
+    assert board.is_valid()
+    # Every one of the 64 squares: a single misread piece would poison the analysis.
+    assert not _squares_off(board, truth), f"cold read off on {_squares_off(board, truth)}"
+
+
+def test_cold_start_refuses_a_rendered_board_caught_mid_move(tmp_path: Path) -> None:
+    cache = ThemeCache(tmp_path)
+    _warm(cache, "green", Side.WHITE)
+    truth = chess.Board(MIDGAME)
+    # The c1 bishop in flight over f4, under the hover outline.
+    frame = synthetic_board(board=truth, coordinates=True, dragging=(chess.C1, chess.F4, 0.1, 0.1))
+    cold = GamePipeline(cache=cache)
+    assert cold.cold_start(frame, GEOM) == []
+    assert cold.reconciler is None and cold.model is None
+
+
+def test_cold_start_without_coordinates_takes_the_side_it_is_told(tmp_path: Path) -> None:
+    """Coordinates turned off: the digits cannot be read, the caller says which side is at
+    the bottom (the panel's flip control), and the board is adopted with that."""
+    cache = ThemeCache(tmp_path)
+    _warm(cache, "green", Side.BLACK)
+    truth = chess.Board(MIDGAME)
+    frame = synthetic_board(board=truth, bottom=Side.BLACK)
+    cold = GamePipeline(cache=cache)
+    assert cold.cold_start(frame, GEOM) == [], "no digits, no orientation, nothing adopted"
+    events = cold.cold_start(frame, GEOM, bottom=Side.BLACK)
+    assert any(isinstance(e, GameStarted) for e in events)
+    assert cold.reconciler is not None and not _squares_off(cold.reconciler.board, truth)
+
+
+def _real(name: str) -> np.ndarray:
+    return cv2.imread(str(FIXTURES / name))
+
+
+def test_cold_start_reads_the_real_frames_the_same(tmp_path: Path) -> None:
+    """The recorded game g01: the theme learned from its start frame, then a settled
+    mid-game frame adopted and compared square by square with the tracked position, and
+    a frame with a piece in flight refused."""
+    meta = json.loads((FIXTURES / "frames.json").read_text(encoding="utf-8"))
+    margin = meta["margin"]
     cache = ThemeCache(tmp_path)
     warm = GamePipeline(cache=cache)
-    mid_move: tuple = ()
-    for i, (tick, frame) in enumerate(Recording(REC).frames()):
-        warm.process(frame, tick.ts, changed=tick.stored is not None)
-        if not (
-            warm.model is not None
-            and warm.bottom is not None
-            and warm.board is not None
-            and warm.tracker.verified
-            and i > 500
-        ):
-            continue
-        geom = BoardGeometry(warm.board.region, warm.board.cell_px)
-        readings = warm.model.classify_frame(frame, geom)
-        # A frame the recogniser reads as not-fully-quiet: a piece is being dragged.
-        if any(
-            readings[r][c].hover or (readings[r][c].kind == "piece" and not readings[r][c].settled)
-            for r in range(8)
-            for c in range(8)
-        ):
-            mid_move = (frame, geom)
-            break
-    assert mid_move, "no mid-move frame found to exercise the refusal"
-    frame, geom = mid_move
+    start = _real("g01_start.png")
+    for i in range(4):
+        warm.process(start, 0.1 * i)
+    assert warm.model is not None and warm.model.rank_labels, "no theme learned from g01"
+    side = meta["g01_settled"]["region"][2]
+    geometry = BoardGeometry(Region(margin, margin, side, side), side / 8)
 
     cold = GamePipeline(cache=cache)
-    events = cold.cold_start(frame, geom)
-    assert events == [], "cold start adopted a board caught mid-move"
-    assert cold.reconciler is None, "a refused cold start must leave the pipeline untouched"
+    events = cold.cold_start(_real("g01_settled.png"), geometry)
+    assert any(isinstance(e, GameStarted) for e in events), "cold start did not begin a game"
+    assert cold.bottom is not None and cold.bottom.value == meta["g01_settled"]["bottom"]
+    assert cold.reconciler is not None
+    truth = chess.Board(meta["g01_settled"]["placement"] + " w - - 0 1")
+    off = _squares_off(cold.reconciler.board, truth)
+    assert not off, f"cold read disagrees with the tracked position on {off}"
+
+    refused = GamePipeline(cache=cache)
+    assert refused.cold_start(_real("g01_in_flight.png"), geometry) == []

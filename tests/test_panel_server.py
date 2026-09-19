@@ -1,31 +1,26 @@
 """The panel's FastAPI backend, exercised over real HTTP with the test client.
 
 The controls map to the engine and the poll returns its state and terminal lines; feeding the
-engine a recording, the API reports the game it followed -- the whole front-to-back path bar
-the browser, which chrome-devtools drives separately.
+engine the frames of a game, the API reports the game it followed -- the whole front-to-back
+path bar the browser, which chrome-devtools drives separately.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from sidecoach.config import Settings, VoiceSettings
-from sidecoach.replay.recording import Recording
 from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.server import build_app
-
-REC = Path("data/recordings/g01-david-green")
+from tests.synth import game_frames
 
 
 def _settings(tmp_path: Path) -> Settings:
     return Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
 
 
-@pytest.mark.slow
 def test_controls_and_static_page(tmp_path: Path) -> None:
     engine = PanelEngine(_settings(tmp_path), analysis=False, coach=False, frame_source=iter(()))
     client = TestClient(build_app(engine))
@@ -48,15 +43,10 @@ def test_controls_and_static_page(tmp_path: Path) -> None:
     assert client.get("/app.js").status_code == 200
 
 
-@pytest.mark.slow
-def test_poll_reports_a_replayed_game(tmp_path: Path) -> None:
-    def frames() -> Iterator[tuple[int, float, object]]:
-        for i, (tick, frame) in enumerate(Recording(REC).frames()):
-            if i >= 520:
-                return
-            yield (i, tick.ts, frame)
-
-    engine = PanelEngine(_settings(tmp_path), analysis=False, coach=False, frame_source=frames())
+def test_poll_reports_a_game(tmp_path: Path) -> None:
+    engine = PanelEngine(
+        _settings(tmp_path), analysis=False, coach=False, frame_source=game_frames()
+    )
     client = TestClient(build_app(engine))
     assert client.post("/api/start").json()["ok"] is True
     assert engine._thread is not None

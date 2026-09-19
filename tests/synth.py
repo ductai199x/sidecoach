@@ -16,6 +16,8 @@ orientation is read from (`coordinates=True`), clocks, and dialogs (test_occlusi
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import chess
 import cv2
 import numpy as np
@@ -650,3 +652,40 @@ def board_with_clocks(
         region=Region(x0, y0, side, side), cell_px=float(cell), score=1.0, contrast=60.0, fit=1.0
     )
     return frame, board
+
+
+def game_frames(
+    sans: tuple[str, ...] = ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7"),
+    *,
+    frames_per_state: int = 3,
+    fps: float = 10.0,
+    cell: int = 64,
+    theme: str = "green",
+    coordinates: bool = True,
+) -> Iterator[tuple[int, float, np.ndarray]]:
+    """The frames of a short game as a capture loop would hand them over: (frame id,
+    timestamp, frame). The start position sits for a few frames, then every move for a
+    few, with the last-move highlight. What a whole-game recording replay stood in for."""
+    board = chess.Board()
+    frame_id = 0
+
+    def emit(**kw: object) -> Iterator[tuple[int, float, np.ndarray]]:
+        nonlocal frame_id
+        for _ in range(frames_per_state):
+            yield (
+                frame_id,
+                frame_id / fps,
+                synthetic_board(
+                    board=board,
+                    cell=cell,
+                    theme=theme,
+                    coordinates=coordinates,
+                    **kw,  # type: ignore[arg-type]
+                ),
+            )
+            frame_id += 1
+
+    yield from emit()
+    for san in sans:
+        move = board.push_san(san)
+        yield from emit(highlight=move)
