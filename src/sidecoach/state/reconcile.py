@@ -190,6 +190,9 @@ class Reconciler:
     # Squares something is drawn over in the current frame: unreadable, and no move
     # commits through them, though the drawing blocks nothing else.
     _drawn: set[chess.Square] = field(default_factory=set)
+    # In the retry that ignores stale cells: the exact, settled readings among the ignored
+    # cells. A story need not explain them, but may not contradict one it changes.
+    _denied: Observation = field(default_factory=dict)
     _frame_index: int = 0
     _blocked: bool = False
     _ts: float = 0.0
@@ -328,7 +331,13 @@ class Reconciler:
         `wild` cells are stale junk a badge left, ignored by the caller: a move may touch
         them instead of an unexplained cell, and they need no exact reading, so that the
         mating move still settles when the checkmate badge has made the king's square
-        unreadable.
+        unreadable. One move of a story may live on wild cells alone; a second is a
+        move nobody saw invented to fill a turn, and a piece that goes and comes straight
+        back is the same invention in one piece. An ignored cell that reads exactly
+        (`_denied`) may stay as wrong as it was, but a story that changes it must agree
+        with it: a stale empty square is no place to land a queen. All three once told a
+        queen's shuffle, or its tour to a square that read empty, through the cells a
+        badge and a stale reading had hidden, while the queen's real move went untold.
 
         This is the catch-up for missed moves: the window was minimised, a dialog covered the
         board, or a badge hid a piece until the next move. Every move must touch a still
@@ -343,6 +352,7 @@ class Reconciler:
         if len(diff) + len(wild) < 3 or len(diff) > 4 * self.max_plies:
             return []
 
+        start = base if base is not None else self.board
         # Iterative deepening: the shortest story is searched exhaustively before any
         # longer one is attempted, so a budget spent on deep branches can never hide a
         # simple two-ply explanation. Each depth also prunes branches whose remaining
@@ -355,6 +365,7 @@ class Reconciler:
                 board: chess.Board,
                 remaining: set[chess.Square],
                 path: list[chess.Move],
+                unseen: int,
                 depth: int = depth,
                 solutions: list[Explanation] = solutions,
                 budget: list[int] = budget,
@@ -365,9 +376,16 @@ class Reconciler:
                 if len(remaining) > 4 * plies_left:
                     return
                 for move in board.legal_moves:
+                    if (
+                        len(path) >= 2
+                        and move.from_square == path[-2].to_square
+                        and move.to_square == path[-2].from_square
+                    ):
+                        continue  # there and straight back: no trace, no story
                     touched = touched_squares(board, move)
-                    if not (touched & (remaining | wild)):
-                        continue
+                    seen = bool(touched & remaining)
+                    if not seen and (unseen >= 1 or not touched & wild):
+                        continue  # a second move told through wild cells alone
                     if not all(sq in wild or (sq in obs and exact(obs[sq])) for sq in touched):
                         continue
                     budget[0] -= 1
@@ -378,14 +396,13 @@ class Reconciler:
                     path.append(move)
                     still = remaining - touched
                     if not still:
-                        if matches(after, obs, set(obs) - wild):
+                        if matches(after, obs, set(obs) - wild) and self._not_denied(after, start):
                             solutions.append(tuple(path))
                     else:
-                        search(after, still, path)
+                        search(after, still, path, unseen + (0 if seen else 1))
                     path.pop()
 
-            start = base if base is not None else self.board
-            search(start, set(diff), [])
+            search(start, set(diff), [], 0)
             if not solutions:
                 continue
             finals: set[str] = set()
@@ -398,6 +415,13 @@ class Reconciler:
                 return solutions
             return [solutions[0]]
         return []
+
+    def _not_denied(self, after: chess.Board, start: chess.Board) -> bool:
+        """Whether `after` agrees with every ignored exact reading on a cell it changed."""
+        return all(
+            after.piece_at(sq) == start.piece_at(sq) or cell_agrees(reading, after.piece_at(sq))
+            for sq, reading in self._denied.items()
+        )
 
     def _history_index(self, obs: Observation, diff: set[chess.Square]) -> int | None:
         """Index of the earlier position of this game the frame shows, if any.
@@ -569,9 +593,15 @@ class Reconciler:
                 if not fresh:
                     continue
                 live_obs = {sq: r for sq, r in obs.items() if sq not in ignored}
-                explained = self._explain(
-                    live_obs, fresh, obs, allow_paths=True, cautious=True, wild=wild
-                )
+                self._denied = {
+                    sq: obs[sq] for sq in ignored if exact(obs[sq]) and not is_junk(obs[sq])
+                }
+                try:
+                    explained = self._explain(
+                        live_obs, fresh, obs, allow_paths=True, cautious=True, wild=wild
+                    )
+                finally:
+                    self._denied = {}
                 if explained is not None:
                     return events + explained
             if stale == diff and len(stale) < self.resync_cells:

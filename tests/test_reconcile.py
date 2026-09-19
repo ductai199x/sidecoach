@@ -636,6 +636,45 @@ def test_mate_settles_with_two_badge_cells_as_wildcards() -> None:
     assert any(isinstance(e, GameEnded) for e in events)
 
 
+@pytest.mark.parametrize("frames", [3, 4, 5])
+def test_a_queen_nobody_can_read_is_not_moved_there_and_back(frames: int) -> None:
+    """Both queens read as pieces of no known kind for a whole game (a set whose queens the
+    recogniser could not tell apart), so every cell a queen touches is a soft wildcard.
+    After ...Qd7, h3, ...Qxg4, e4 (badged) the search once told d8-d7, h3, d7-d8, e4: a
+    queen shuffle invented to fill Black's turns through the cells nobody could read; at
+    another cadence a tour, d8-c7, h3, c7-h2, e4, onto a square that read empty but had
+    gone stale. A piece that goes and comes straight back explains nothing, a second move
+    told through wild cells alone is invented, and a stale exact reading may not be
+    contradicted by a story that changes its square. What is told is what was played."""
+    model, rec = _setup(Side.BLACK)
+    board = chess.Board()
+    _feed(model, rec, board, Side.BLACK, 0.0)
+    _play(model, rec, board, ["g4", "d5", "c4", "c5", "b4"], bottom=Side.BLACK)
+
+    def blind_queens(readings):
+        for r in range(8):
+            for c in range(8):
+                reading = readings[r][c]
+                if reading.symbol in ("Q", "q"):
+                    readings[r][c] = CellReading(
+                        "piece", None, reading.colour, 0.5, 0.4, 100.0, settled=False
+                    )
+        return readings
+
+    played = ("Qd7", "h3", "Qxg4", "e4", "Kd8", "e5")
+    events = []
+    ts = 1.0
+    for san in played:
+        move = board.push_san(san)
+        badge = (move.to_square, "best") if san == "e4" else None
+        for _ in range(frames):
+            ts += 0.1
+            frame = synthetic_board(board=board, bottom=Side.BLACK, highlight=move, badge=badge)
+            events += rec.update(blind_queens(model.classify_frame(frame, GEOM)), ts)
+    told = _played(events)
+    assert all(san in played for san in told), told
+
+
 def test_browsing_to_the_start_of_a_long_game_is_not_a_new_game() -> None:
     """The move list's first entry shows the start position; a game of 42 plies is still on."""
     model, rec = _setup()

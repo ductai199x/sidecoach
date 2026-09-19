@@ -64,6 +64,9 @@ class PieceStyle:
     black_edge: tuple[int, int, int] = (210, 210, 210)
     outline: float = 1 / 32  # of the cell
     scale: float = 1.0  # 1.0 is the default radius; sites draw pieces at 0.85 to 1.15
+    # Detail lines inside the piece in the outline's colour, as most real sets draw them
+    # (a queen's crown, a rook's crenellations): the interior is then two tones.
+    detail: bool = False
 
 
 PIECE_STYLES: dict[str, PieceStyle] = {
@@ -80,7 +83,15 @@ PIECE_STYLES: dict[str, PieceStyle] = {
     # A set whose outlines are faint: white on white, black on black, as some flat
     # sets draw them.
     "flat": PieceStyle(white_edge=(160, 160, 160), black_edge=(90, 90, 90), outline=1 / 40),
+    # A set with lines drawn inside every piece.
+    "detailed": PieceStyle(detail=True),
 }
+# chess.com's legal-move hints when a piece is selected: a grey translucent disc on an
+# empty destination, a ring around a capturable piece.
+HINT = (0, 0, 0)
+HINT_ALPHA = 0.14
+# The check glow: a red radial gradient under the checked king, opaque at the centre.
+CHECK = (0, 0, 255)
 # Highlight colours other sites use for the last move: chess.com's yellow, lichess's green,
 # a blue.
 HIGHLIGHTS: dict[str, tuple[int, int, int]] = {
@@ -188,6 +199,73 @@ def draw_piece(
         )
     cv2.fillPoly(frame, [pts], fill, lineType=cv2.LINE_AA)
     cv2.polylines(frame, [pts], True, edge, thickness, lineType=cv2.LINE_AA)
+    if style.detail:
+        # A few strokes inside the shape, thinner than the outline as sets draw them:
+        # chords across it at a third and two thirds of its height, and one down the
+        # middle for the taller pieces.
+        thickness = max(1, thickness // 2)
+        span = radius * 0.5
+        for dy in (-radius * 0.3, radius * 0.3):
+            y = int(round(cy + dy))
+            cv2.line(
+                frame,
+                (int(round(cx - span)), y),
+                (int(round(cx + span)), y),
+                edge,
+                thickness,
+                lineType=cv2.LINE_AA,
+            )
+        if kind in "kq":
+            cv2.line(
+                frame,
+                (cx, int(round(cy - radius * 0.6))),
+                (cx, int(round(cy + radius * 0.6))),
+                edge,
+                thickness,
+                lineType=cv2.LINE_AA,
+            )
+
+
+def draw_hints(
+    frame: np.ndarray,
+    x0: int,
+    y0: int,
+    cell: int,
+    bottom: Side,
+    board: chess.Board,
+    square: chess.Square,
+) -> None:
+    """The legal-move hints chess.com shows for the selected piece on `square`: a small
+    translucent disc on every empty destination, a translucent ring round every capture."""
+    overlay = frame.copy()
+    for move in board.legal_moves:
+        if move.from_square != square:
+            continue
+        r, c = row_col(move.to_square, bottom)
+        centre = (x0 + c * cell + cell // 2, y0 + r * cell + cell // 2)
+        if board.is_capture(move):
+            cv2.circle(
+                overlay, centre, cell // 2 - 1, HINT, max(2, cell // 12), lineType=cv2.LINE_AA
+            )
+        else:
+            cv2.circle(overlay, centre, max(3, int(cell * 0.17)), HINT, -1, lineType=cv2.LINE_AA)
+    cv2.addWeighted(overlay, HINT_ALPHA, frame, 1.0 - HINT_ALPHA, 0.0, frame)
+
+
+def draw_check(
+    frame: np.ndarray, x0: int, y0: int, cell: int, bottom: Side, square: chess.Square
+) -> None:
+    """chess.com's check mark: a red radial glow under the king, solid at the centre and
+    fading to the square's colour at the edge."""
+    r, c = row_col(square, bottom)
+    patch = frame[y0 + r * cell : y0 + (r + 1) * cell, x0 + c * cell : x0 + (c + 1) * cell]
+    ys, xs = np.mgrid[0:cell, 0:cell]
+    distance = np.hypot(xs - (cell - 1) / 2, ys - (cell - 1) / 2) / (cell / 2)
+    alpha = np.clip(1.0 - distance, 0.0, 1.0)[..., None].astype(np.float32)
+    red = np.array(CHECK, dtype=np.float32)
+    patch[:] = np.clip(patch.astype(np.float32) * (1 - alpha) + red * alpha, 0, 255).astype(
+        np.uint8
+    )
 
 
 def draw_arrow(
@@ -204,31 +282,52 @@ def draw_arrow(
 ) -> None:
     """An arrow from one square's centre to another's, the way chess.com draws it: a shaft
     `width` of a cell wide and a triangular head half a cell across, translucent, with
-    anti-aliased edges, over whatever is on the squares -- the head lands on the piece."""
+    anti-aliased edges, over whatever is on the squares -- the head lands on the piece. A
+    knight's move is drawn as chess.com draws it, an L: two cells along the long leg,
+    then the turn, so the arrow crosses different squares than the straight line would."""
     r0, c0 = row_col(move.from_square, bottom)
     r1, c1 = row_col(move.to_square, bottom)
     start = np.array([x0 + c0 * cell + cell / 2, y0 + r0 * cell + cell / 2])
     end = np.array([x0 + c1 * cell + cell / 2, y0 + r1 * cell + cell / 2])
-    direction = end - start
-    length = float(np.linalg.norm(direction))
-    if length < 1:
-        return
-    unit = direction / length
-    normal = np.array([-unit[1], unit[0]])
-    head_length, head_width, shaft_width = cell * 0.5, cell * 0.5, cell * width
-    base = end - unit * head_length
-    shaft = np.array(
-        [
-            start + normal * shaft_width / 2,
-            base + normal * shaft_width / 2,
-            base - normal * shaft_width / 2,
-            start - normal * shaft_width / 2,
-        ]
-    )
-    head = np.array([base + normal * head_width / 2, end, base - normal * head_width / 2])
+    knight = {abs(r1 - r0), abs(c1 - c0)} == {1, 2}
+    if knight:
+        corner = np.array([end[0], start[1]]) if abs(c1 - c0) == 2 else np.array([start[0], end[1]])
+        legs = [(start, corner), (corner, end)]
+    else:
+        legs = [(start, end)]
+    shaft_width = cell * width
     overlay = frame.copy()
-    for polygon in (shaft, head):
-        cv2.fillPoly(overlay, [np.round(polygon).astype(np.int32)], colour, lineType=cv2.LINE_AA)
+    for i, (a, b) in enumerate(legs):
+        direction = b - a
+        length = float(np.linalg.norm(direction))
+        if length < 1:
+            continue
+        unit = direction / length
+        normal = np.array([-unit[1], unit[0]])
+        last = i == len(legs) - 1
+        head_length = cell * 0.5 if last else 0.0
+        base = b - unit * head_length
+        # The first leg of an L runs on past the corner by half the shaft, to meet the
+        # second leg squarely.
+        far = base if last else base + unit * shaft_width / 2
+        shaft = np.array(
+            [
+                a + normal * shaft_width / 2,
+                far + normal * shaft_width / 2,
+                far - normal * shaft_width / 2,
+                a - normal * shaft_width / 2,
+            ]
+        )
+        polygons = [shaft]
+        if last:
+            head_width = cell * 0.5
+            polygons.append(
+                np.array([base + normal * head_width / 2, b, base - normal * head_width / 2])
+            )
+        for polygon in polygons:
+            cv2.fillPoly(
+                overlay, [np.round(polygon).astype(np.int32)], colour, lineType=cv2.LINE_AA
+            )
     cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0.0, frame)
 
 
@@ -324,12 +423,15 @@ def render_board(
     arrow_width: float = 0.2,
     texture: bool = False,
     seed: int = 0,
+    selected: chess.Square | None = None,
+    check: bool = False,
 ) -> None:
     """Render `board`. `dragging` = (origin, hovered square, dx, dy): the origin's piece is
     drawn over the hovered square displaced by (dx, dy) cells, under a hover outline.
     `arrows` are drawn over the pieces; `badge` is (square, label); `coordinates` draws
     the rank and file labels; `style` is the piece set; `texture` gives the squares a
-    wood grain.
+    wood grain; `selected` is a piece the user has clicked, its square highlighted and
+    its legal moves hinted; `check` draws the red glow under a king in check.
 
     `premoves` are queues the user has set up while the opponent thinks, drawn the way
     chess.com draws them: every square of a queue is tinted red, the piece is drawn at
@@ -355,6 +457,8 @@ def render_board(
             (highlight.from_square, highlight_colour),
             (highlight.to_square, highlight_colour),
         ]
+    if selected is not None:
+        tinted.append((selected, highlight_colour))
     tinted += [(square, RED) for square in red_marks]
     queued_from: dict[chess.Square, chess.Square] = {}  # the piece's real square -> queue end
     for queue in premoves:
@@ -372,6 +476,9 @@ def render_board(
             tint(base, overlay),
             -1,
         )
+    king = board.king(board.turn)
+    if check and king is not None and board.is_check():
+        draw_check(frame, x0, y0, cell, bottom, king)
     lifted = dragging[0] if dragging else None
     for square, piece in board.piece_map().items():
         if square == lifted:
@@ -394,6 +501,8 @@ def render_board(
         )
     if coordinates:
         draw_coordinates(frame, x0, y0, cell, bottom, light, dark)
+    if selected is not None:
+        draw_hints(frame, x0, y0, cell, bottom, board, selected)
     for arrow in arrows:
         draw_arrow(frame, x0, y0, cell, bottom, arrow, colour=arrow_colour, width=arrow_width)
     if badge is not None:
@@ -533,6 +642,8 @@ def synthetic_board(
     arrow_colour: str = "orange",
     arrow_width: float = 0.2,
     seed: int = 0,
+    selected: chess.Square | None = None,
+    check: bool = False,
 ) -> np.ndarray:
     """A board on a busy background. `pieces=False` renders an empty board; `theme` names
     the square colours (see THEMES) unless `light` and `dark` are given; `style` the piece
@@ -564,6 +675,8 @@ def synthetic_board(
         arrow_width=arrow_width,
         texture=theme in TEXTURED,
         seed=seed,
+        selected=selected,
+        check=check,
     )
     return frame
 

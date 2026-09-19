@@ -34,7 +34,7 @@ from tests.synth import ARROWS, HIGHLIGHTS, PIECE_STYLES, THEMES, synthetic_boar
 
 pytestmark = pytest.mark.vision
 
-SIZES = (44, 56, 64, 80, 96, 112, 128)
+SIZES = (44, 56, 64, 80, 96, 112, 128, 144)
 ARROW_WIDTHS = (0.12, 0.2, 0.3)  # thin lichess-like, chess.com's, a fat one
 PLIES = 16
 
@@ -46,7 +46,9 @@ class Scenario:
     cell: int
     bottom: Side
     sans: tuple[str, ...]
-    decorations: tuple[str, ...]  # per ply: "plain" | "drag" | "arrow" | "badge" | "premove"
+    # Per ply: "plain" | "drag" | "arrow" | "badge" | "premove" | "select" (the user clicks
+    # a piece before moving it: its square highlighted, its legal moves hinted).
+    decorations: tuple[str, ...]
     style: str = "classic"
     highlight_colour: str = "yellow"
     arrow_colour: str = "orange"
@@ -77,7 +79,7 @@ def scenario(seed: int) -> Scenario:
         sans.append(board.san(move))
         board.push(move)
     decorations = tuple(
-        rng.choices(["plain", "drag", "arrow", "badge", "premove"], [4, 2, 1, 2, 1])[0]
+        rng.choices(["plain", "drag", "arrow", "badge", "premove", "select"], [4, 2, 1, 2, 1, 1])[0]
         for _ in sans
     )
     return Scenario(
@@ -139,6 +141,9 @@ def play(sc: Scenario) -> tuple[list[str], list[str], bool]:
             # The piece lifted and carried over two squares on its way, under the outline.
             for over in (move.from_square, move.to_square):
                 show(1, dragging=(move.from_square, over, 0.15, 0.1))
+        if decoration == "select" and mover == user_colour:
+            # The piece clicked: its square lit and its legal moves hinted, for a moment.
+            show(2, selected=move.from_square)
         if decoration == "premove" and mover != user_colour:
             # While the opponent thinks, the user queues a legal reply of theirs.
             after = board.copy()
@@ -152,7 +157,7 @@ def play(sc: Scenario) -> tuple[list[str], list[str], bool]:
                 queued = rng.choice(replies)
                 show(2, premoves=((queued,),))
         board.push(move)
-        extra: dict[str, object] = {"highlight": move}
+        extra: dict[str, object] = {"highlight": move, "check": True}
         if decoration == "arrow":
             targets = [m for m in board.legal_moves if not board.is_capture(m)]
             if targets:

@@ -394,6 +394,19 @@ def _hover_outline(patch: np.ndarray, background: np.ndarray) -> bool:
     return weak[0] >= HOVER_LINE_FILL and strong[1] >= HOVER_LINE_FILL
 
 
+def _fill_colour(core: np.ndarray, boundary: np.ndarray | None) -> np.ndarray:
+    """The colour of a piece's fill: the median of the half of its core pixels that lie
+    farthest from its outline's colour (the median of the silhouette's outermost ring).
+    A set draws detail inside its pieces in the outline's colour, and a queen whose
+    centre is half such lines had a core as grey as the other side's queen; the half of
+    the core least like the outline is the fill whatever is drawn on it."""
+    if boundary is None or len(boundary) == 0 or len(core) < 2:
+        return np.median(core, axis=0)
+    edge = np.median(boundary.astype(np.float32), axis=0)
+    away = np.linalg.norm(core - edge, axis=1)
+    return np.median(core[away >= np.median(away)], axis=0)
+
+
 def _core_mask(mask: np.ndarray) -> np.ndarray:
     """The deep inside of the silhouette (see CORE_DEPTH), or the whole of it when it is
     too thin to have one."""
@@ -508,17 +521,16 @@ def silhouette(patch: np.ndarray, size: int = CELL, colours: PieceColours = ()) 
         blinded = sample_mask & _BADGE_BLIND
         if blinded.any():
             sample_mask = blinded
-        gray = cv2.cvtColor(inner, cv2.COLOR_BGR2GRAY)
-        sample = gray[sample_mask]
-        luminance = float(np.median(sample))
-        core = np.median(inner[sample_mask], axis=0)
+        boundary = mask.astype(bool) & ~cv2.erode(mask, _KERNEL).astype(bool)
+        core = _fill_colour(inner[sample_mask].astype(np.float32), inner[boundary])
         core_colour = core
         tone = _tone_mask(mask.astype(bool), inner, core, background)
-        # The core's median luminance, 0 to 1. The share of pixels over mid-grey was the
+        # The fill's luminance, 0 to 1. The share of core pixels over mid-grey was the
         # measure before: with anti-aliased outlines the core of a black piece keeps a ring
         # of its light outline on a dark square and none on a light one (0.17 against 0.03
         # at 48-pixel cells), and that square-dependent noise ate the margin between a pawn
         # and a bishop. A median does not move for a ring.
+        luminance = float(0.114 * core[0] + 0.587 * core[1] + 0.299 * core[2])
         brightness = luminance / 255.0
         centroid = _centroid(mask)
         outline = mask.astype(bool) & ~tone
