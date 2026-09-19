@@ -105,7 +105,10 @@ def test_replay_is_paced_to_its_timestamps(tmp_path: Path) -> None:
     assert fast.frame_source is not None
     t0 = time.monotonic()
     assert [ts for _, ts, _ in fast.frame_source] == [0.0, 1.0, 2.0]
-    assert time.monotonic() - t0 < 0.5, "unpaced replay waited"
+    # Two seconds of recording: unpaced it reads in milliseconds, paced at 1x it would
+    # take two seconds. The bound is loose because the suite runs on every core at once
+    # and decoding three frames has taken most of half a second under that load.
+    assert time.monotonic() - t0 < 1.0, "unpaced replay waited"
 
     paced = make_engine(settings, replay=rec, speed=4.0)
     assert paced.frame_source is not None
