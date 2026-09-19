@@ -423,7 +423,12 @@ def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
         gray = cv2.cvtColor(inner, cv2.COLOR_BGR2GRAY)
         sample = gray[sample_mask]
         luminance = float(np.median(sample))
-        brightness = float((sample > 128).mean())
+        # The core's median luminance, 0 to 1. The share of pixels over mid-grey was the
+        # measure before: with anti-aliased outlines the core of a black piece keeps a ring
+        # of its light outline on a dark square and none on a light one (0.17 against 0.03
+        # at 48-pixel cells), and that square-dependent noise ate the margin between a pawn
+        # and a bishop. A median does not move for a ring.
+        brightness = luminance / 255.0
         chroma = float(np.median(chroma_map[sample_mask]))
         centroid = _centroid(mask)
     # Chess.com's hover outline is about 5% of the cell wide and sits at its edge, so the

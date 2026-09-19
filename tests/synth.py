@@ -2,7 +2,16 @@
 
 Piece types get distinct silhouettes so recognition can be tested: pawn circle, knight
 triangle, bishop diamond, rook square, queen star, king cross. White pieces are light with a
-dark outline, black pieces dark with a light outline, like every real piece set.
+dark outline, black pieces dark with a light outline, like every real piece set, and the
+edges are anti-aliased, as a site draws them: the blend of piece and square along an edge
+is what a naive overlay measure took for an arrow.
+
+What real use put on the board, and what this renders: the site's themes (`THEMES`: the
+green default, chess.com's brown, a blue and a grey), the last-move and selection
+highlights, right-click red marks, premove queues, a piece in flight under the hover
+outline, translucent arrows with a head that lands on a piece (`draw_arrow`), the
+move-classification badge in a cell's corner (`draw_badge`), the coordinate labels the
+orientation is read from (`coordinates=True`), clocks, and dialogs (test_occlusion).
 """
 
 from __future__ import annotations
@@ -21,6 +30,30 @@ DARK = (86, 150, 118)
 YELLOW = (0, 255, 255)
 RED = (0, 0, 255)
 TINT_ALPHA = 0.5
+# Square colours (light, dark) in BGR, as the sites draw them. Brown is chess.com's default
+# (the trial games were played on it); green is chess.com's green and the default here.
+THEMES: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
+    "green": (LIGHT, DARK),
+    "brown": ((181, 217, 240), (99, 136, 181)),
+    "blue": ((222, 227, 234), (166, 130, 93)),
+    "grey": ((214, 214, 214), (140, 140, 140)),
+}
+# chess.com's arrow: orange, drawn translucent over squares and pieces alike.
+ARROW = (36, 179, 252)
+ARROW_ALPHA = 0.8
+# The classification badges: the fill colour of each, white glyph on top.
+BADGES: dict[str, tuple[int, int, int]] = {
+    "brilliant": (170, 165, 38),
+    "great": (216, 156, 91),
+    "best": (86, 172, 129),
+    "excellent": (86, 172, 129),
+    "good": (150, 160, 120),
+    "book": (118, 106, 90),
+    "inaccuracy": (66, 187, 245),
+    "mistake": (52, 141, 255),
+    "miss": (73, 88, 255),
+    "blunder": (72, 62, 250),
+}
 
 
 def tint(base: tuple[int, int, int], overlay: tuple[int, int, int]) -> tuple[int, int, int]:
@@ -44,9 +77,10 @@ def draw_piece(frame: np.ndarray, cx: int, cy: int, cell: int, symbol: str) -> N
     edge = (0, 0, 0) if white else (210, 210, 210)
     kind = symbol.lower()
     radius = cell * 0.36
+    thickness = max(2, int(round(cell / 32)))
     if kind == "p":
-        cv2.circle(frame, (cx, cy), int(cell * 0.24), fill, -1)
-        cv2.circle(frame, (cx, cy), int(cell * 0.24), edge, 2)
+        cv2.circle(frame, (cx, cy), int(cell * 0.24), fill, -1, lineType=cv2.LINE_AA)
+        cv2.circle(frame, (cx, cy), int(cell * 0.24), edge, thickness, lineType=cv2.LINE_AA)
         return
     if kind == "n":
         pts = _polygon(cx, cy, radius, [(-0.9, 0.8), (0.9, 0.8), (0.1, -0.9)])
@@ -81,8 +115,118 @@ def draw_piece(frame: np.ndarray, cx: int, cy: int, cell: int, symbol: str) -> N
                 (-0.3, -0.3),
             ],
         )
-    cv2.fillPoly(frame, [pts], fill)
-    cv2.polylines(frame, [pts], True, edge, 2)
+    cv2.fillPoly(frame, [pts], fill, lineType=cv2.LINE_AA)
+    cv2.polylines(frame, [pts], True, edge, thickness, lineType=cv2.LINE_AA)
+
+
+def draw_arrow(
+    frame: np.ndarray,
+    x0: int,
+    y0: int,
+    cell: int,
+    bottom: Side,
+    move: chess.Move,
+    *,
+    colour: tuple[int, int, int] = ARROW,
+    alpha: float = ARROW_ALPHA,
+) -> None:
+    """An arrow from one square's centre to another's, the way chess.com draws it: a shaft
+    a fifth of a cell wide and a triangular head half a cell across, translucent, with
+    anti-aliased edges, over whatever is on the squares -- the head lands on the piece."""
+    r0, c0 = row_col(move.from_square, bottom)
+    r1, c1 = row_col(move.to_square, bottom)
+    start = np.array([x0 + c0 * cell + cell / 2, y0 + r0 * cell + cell / 2])
+    end = np.array([x0 + c1 * cell + cell / 2, y0 + r1 * cell + cell / 2])
+    direction = end - start
+    length = float(np.linalg.norm(direction))
+    if length < 1:
+        return
+    unit = direction / length
+    normal = np.array([-unit[1], unit[0]])
+    head_length, head_width, shaft_width = cell * 0.5, cell * 0.5, cell * 0.2
+    base = end - unit * head_length
+    shaft = np.array(
+        [
+            start + normal * shaft_width / 2,
+            base + normal * shaft_width / 2,
+            base - normal * shaft_width / 2,
+            start - normal * shaft_width / 2,
+        ]
+    )
+    head = np.array([base + normal * head_width / 2, end, base - normal * head_width / 2])
+    overlay = frame.copy()
+    for polygon in (shaft, head):
+        cv2.fillPoly(overlay, [np.round(polygon).astype(np.int32)], colour, lineType=cv2.LINE_AA)
+    cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0.0, frame)
+
+
+def draw_badge(
+    frame: np.ndarray,
+    x0: int,
+    y0: int,
+    cell: int,
+    bottom: Side,
+    square: chess.Square,
+    label: str = "best",
+) -> None:
+    """A move-classification badge on the square's top-right corner, overlapping the cell's
+    edge as chess.com's do: a filled disc with a white glyph."""
+    r, c = row_col(square, bottom)
+    centre = (x0 + (c + 1) * cell - cell // 6, y0 + r * cell + cell // 6)
+    radius = max(4, cell // 5)
+    cv2.circle(frame, centre, radius, BADGES.get(label, BADGES["best"]), -1, lineType=cv2.LINE_AA)
+    glyph = {"blunder": "??", "mistake": "?", "brilliant": "!!", "great": "!"}.get(label, "*")
+    cv2.putText(
+        frame,
+        glyph,
+        (centre[0] - radius // 2, centre[1] + radius // 2),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        cell / 130,
+        (255, 255, 255),
+        1,
+        lineType=cv2.LINE_AA,
+    )
+
+
+def draw_coordinates(
+    frame: np.ndarray,
+    x0: int,
+    y0: int,
+    cell: int,
+    bottom: Side,
+    light: tuple[int, int, int],
+    dark: tuple[int, int, int],
+) -> None:
+    """Rank digits in the top-left corner of the left-edge cells and file letters in the
+    bottom-right corner of the bottom-edge cells, each in the other square colour, as
+    chess.com draws them; the orientation reader learns the digits from a start frame."""
+    scale = cell / 110
+    for row in range(8):
+        rank = (8 - row) if bottom == Side.WHITE else (row + 1)
+        ink = dark if row % 2 == 0 else light  # the top-left cell is light
+        cv2.putText(
+            frame,
+            str(rank),
+            (x0 + max(2, cell // 20), y0 + row * cell + int(cell * 0.28)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            scale,
+            ink,
+            max(1, cell // 40),
+            lineType=cv2.LINE_AA,
+        )
+    for col in range(8):
+        letter = "abcdefgh"[col] if bottom == Side.WHITE else "hgfedcba"[col]
+        ink = light if (7 + col) % 2 == 0 else dark
+        cv2.putText(
+            frame,
+            letter,
+            (x0 + (col + 1) * cell - int(cell * 0.22), y0 + 8 * cell - max(2, cell // 20)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            scale,
+            ink,
+            max(1, cell // 40),
+            lineType=cv2.LINE_AA,
+        )
 
 
 def render_board(
@@ -99,9 +243,14 @@ def render_board(
     red_marks: tuple[chess.Square, ...] = (),
     dragging: tuple[chess.Square, chess.Square, float, float] | None = None,
     premoves: tuple[tuple[chess.Move, ...], ...] = (),
+    arrows: tuple[chess.Move, ...] = (),
+    badge: tuple[chess.Square, str] | None = None,
+    coordinates: bool = False,
 ) -> None:
     """Render `board`. `dragging` = (origin, hovered square, dx, dy): the origin's piece is
     drawn over the hovered square displaced by (dx, dy) cells, under a hover outline.
+    `arrows` are drawn over the pieces; `badge` is (square, label); `coordinates` draws
+    the rank and file labels.
 
     `premoves` are queues the user has set up while the opponent thinks, drawn the way
     chess.com draws them: every square of a queue is tinted red, the piece is drawn at
@@ -159,6 +308,12 @@ def render_board(
         draw_piece(
             frame, x0 + c * cell + cell // 2, y0 + r * cell + cell // 2, cell, piece.symbol()
         )
+    if coordinates:
+        draw_coordinates(frame, x0, y0, cell, bottom, light, dark)
+    for arrow in arrows:
+        draw_arrow(frame, x0, y0, cell, bottom, arrow)
+    if badge is not None:
+        draw_badge(frame, x0, y0, cell, bottom, badge[0], badge[1])
     if dragging is not None:
         origin, over, dx, dy = dragging
         piece = board.piece_at(origin)
@@ -263,8 +418,9 @@ def synthetic_board(
     x0: int = 300,
     y0: int = 120,
     cell: int = 64,
-    light: tuple[int, int, int] = LIGHT,
-    dark: tuple[int, int, int] = DARK,
+    light: tuple[int, int, int] | None = None,
+    dark: tuple[int, int, int] | None = None,
+    theme: str = "green",
     pieces: bool = True,
     board: chess.Board | None = None,
     bottom: Side = Side.WHITE,
@@ -272,9 +428,16 @@ def synthetic_board(
     red_marks: tuple[chess.Square, ...] = (),
     dragging: tuple[chess.Square, chess.Square, float, float] | None = None,
     premoves: tuple[tuple[chess.Move, ...], ...] = (),
+    arrows: tuple[chess.Move, ...] = (),
+    badge: tuple[chess.Square, str] | None = None,
+    coordinates: bool = False,
     seed: int = 0,
 ) -> np.ndarray:
-    """A board on a busy background. `pieces=False` renders an empty board."""
+    """A board on a busy background. `pieces=False` renders an empty board; `theme` names
+    the square colours (see THEMES) unless `light` and `dark` are given."""
+    theme_light, theme_dark = THEMES[theme]
+    light = theme_light if light is None else light
+    dark = theme_dark if dark is None else dark
     frame = busy_background(width, height, seed)
     position = board if board is not None else (chess.Board() if pieces else chess.Board(None))
     render_board(
@@ -290,6 +453,9 @@ def synthetic_board(
         red_marks=red_marks,
         dragging=dragging,
         premoves=premoves,
+        arrows=arrows,
+        badge=badge,
+        coordinates=coordinates,
     )
     return frame
 

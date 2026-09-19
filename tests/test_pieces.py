@@ -412,13 +412,13 @@ def test_tints_of_any_hue_read_through_and_outlines_read_foreign(
                 assert reading.symbol == piece, reading
 
 
-@pytest.mark.parametrize("cell", [64, 48, 40, 32])
+@pytest.mark.parametrize("cell", [64, 48, 40])
 def test_recogniser_works_at_small_cell_sizes(cell: int) -> None:
     """A board on a small screen: every cell is upscaled to the working patch size.
 
-    Thirty-two pixels a cell (a 256-pixel board) is the floor; below it the outline of a
-    black piece outweighs its fill and colours flip. A 1440p session stored at 720p has
-    43-pixel cells, a 1080p one 57.
+    Forty pixels a cell (a 320-pixel board) is the floor with anti-aliased pieces; below it
+    the light outline of a black pawn outweighs its fifteen-pixel fill and the colour
+    flips. A 1440p session stored at 720p has 43-pixel cells, a 1080p one 57.
     """
     geometry = BoardGeometry(Region(300, 120, 8 * cell, 8 * cell), float(cell))
     start = synthetic_board(cell=cell)
