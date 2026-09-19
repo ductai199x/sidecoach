@@ -38,8 +38,14 @@ THEMES: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
     "green": (LIGHT, DARK),
     "brown": ((181, 217, 240), (99, 136, 181)),
     "blue": ((222, 227, 234), (166, 130, 93)),
-    "grey": ((214, 214, 214), (140, 140, 140)),
+    "grey": ((190, 190, 190), (120, 120, 120)),
 }
+# The stress sweep's first find (tests/test_stress.py): a theme whose light squares lie
+# within BG_TOLERANCE (25 grey levels) of the black pieces' light outline -- (214, 214,
+# 214) against an outline of 210 -- hides that outline on light squares, so a black piece
+# had one silhouette on light squares and another on dark ones. Matching on the piece's
+# own tone (pieces.Silhouette.tone) made it readable; kept as the regression case.
+LOW_CONTRAST_GREY = ((214, 214, 214), (140, 140, 140))
 # chess.com's arrow: orange, drawn translucent over squares and pieces alike.
 ARROW = (36, 179, 252)
 ARROW_ALPHA = 0.8

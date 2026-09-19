@@ -96,7 +96,9 @@ def test_cold_start_without_coordinates_takes_the_side_it_is_told(tmp_path: Path
 
 
 def _real(name: str) -> np.ndarray:
-    return cv2.imread(str(FIXTURES / name))
+    frame = cv2.imread(str(FIXTURES / name))
+    assert frame is not None, name
+    return frame
 
 
 def test_cold_start_reads_the_real_frames_the_same(tmp_path: Path) -> None:

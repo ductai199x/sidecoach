@@ -50,7 +50,9 @@ def _corner_glyph(cell: np.ndarray) -> np.ndarray | None:
     # digit. Components touching the top or left edge go first, then the component nearest
     # the corner is the digit. Taken all together, the box stretched over a piece fragment
     # and the same digit no longer matched once the piece had moved on.
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask.astype(np.uint8), connectivity=8
+    )
     if count > 2:
         inset = [
             k

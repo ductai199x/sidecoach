@@ -73,6 +73,12 @@ def test_a_badge_on_the_corner_is_not_a_drawing() -> None:
     assert silhouette(cell).overlay < OVERLAY_MAX
 
 
+def _real(name: str) -> np.ndarray:
+    frame = cv2.imread(str(FIXTURES / name))
+    assert frame is not None, name
+    return frame
+
+
 def _cell(readings: Readings, name: str, bottom: Side) -> CellReading:
     target = chess.parse_square(name)
     for r in range(8):
@@ -151,7 +157,7 @@ def test_the_real_arrow_frames_read_the_same() -> None:
     frames with the arrow on the board, the recogniser learned from the game's start."""
     meta = json.loads((FIXTURES / "frames.json").read_text(encoding="utf-8"))
     margin = meta["margin"]
-    start = cv2.imread(str(FIXTURES / "chesscom_start.png"))
+    start = _real("chesscom_start.png")
     pipe = GamePipeline()
     for i in range(4):
         pipe.process(start, 0.1 * i)
@@ -159,11 +165,9 @@ def test_the_real_arrow_frames_read_the_same() -> None:
     assert pipe.model.achromatic_pieces, "chess.com's pieces are white and black"
     side = meta["chesscom_start"]["region"][2]
     geometry = BoardGeometry(Region(margin, margin, side, side), side / 8)
-    clean = pipe.model.classify_frame(
-        cv2.imread(str(FIXTURES / "chesscom_arrow_clean.png")), geometry
-    )
+    clean = pipe.model.classify_frame(_real("chesscom_arrow_clean.png"), geometry)
     assert _cell(clean, "d4", pipe.bottom).symbol == "P"
     assert _cell(clean, "e5", pipe.bottom).symbol == "p"
     for name in ("chesscom_arrow_640.png", "chesscom_arrow_662.png"):
-        readings = pipe.model.classify_frame(cv2.imread(str(FIXTURES / name)), geometry)
+        readings = pipe.model.classify_frame(_real(name), geometry)
         _assert_arrow_reads(readings, pipe.bottom)

@@ -181,6 +181,13 @@ def _reading(
 @dataclass(frozen=True)
 class Silhouette:
     mask: np.ndarray
+    # The mask restricted to the piece's own tone -- the dark fill of a black piece, the
+    # bright fill of a white one -- with its enclosed detail filled in. A piece's outline
+    # is the other tone, and whether it shows depends on the square under it: a light
+    # outline vanishes on a light square and stands out on a dark one, so the full mask
+    # of one piece is two shapes, and at small cells a black queen on a dark square
+    # matched the pawn learned on a light one. Shapes are compared on this mask.
+    tone: np.ndarray
     fraction: float
     luminance: float
     brightness: float
@@ -200,12 +207,16 @@ class Silhouette:
 @dataclass(frozen=True)
 class Exemplar:
     symbol: str
-    mask: np.ndarray
+    mask: np.ndarray  # the full silhouette, fused over the piece's cells
+    tone: np.ndarray  # its tone mask (see Silhouette.tone), fused the same way
     brightness: float
     centroid: tuple[float, float]
-    # Centroid of the mask outside the badge corner, the reference a reading's mask is moved
-    # onto before overlap is measured, so a badge on either side moves nothing.
+    # Centroid of the tone mask outside the badge corner, the reference a reading's mask is
+    # moved onto before overlap is measured, so a badge on either side moves nothing.
     align_centroid: tuple[float, float]
+    # The same for the full mask: where the piece's ink sits, which is what decides
+    # whether it has landed. The fuller shape moves less under a lock a pixel off.
+    landing_centroid: tuple[float, float]
 
 
 SETTLED_TOLERANCE = 0.08  # of a cell; a dragged piece follows the cursor, far off centre
@@ -291,6 +302,21 @@ def _fill_enclosed(foreground: np.ndarray) -> np.ndarray:
     padded[0, :] = padded[-1, :] = padded[:, 0] = padded[:, -1] = 1
     cv2.floodFill(padded, None, (0, 0), 2)
     return (padded[1:-1, 1:-1] != 2).astype(np.uint8)
+
+
+# A tone mask smaller than this share of the full mask is a piece of no clear tone (a
+# mid-grey set, a glass set): the full mask serves.
+TONE_MIN_SHARE = 0.4
+TONE_SPLIT = 128.0
+
+
+def _tone_mask(mask: np.ndarray, gray: np.ndarray, luminance: float) -> np.ndarray:
+    """The mask restricted to the piece's own tone (see `Silhouette.tone`)."""
+    own = (gray < TONE_SPLIT) if luminance < TONE_SPLIT else (gray >= TONE_SPLIT)
+    core = mask & own
+    if int(core.sum()) < TONE_MIN_SHARE * int(mask.sum()):
+        return mask
+    return _fill_enclosed(core).astype(bool) & mask
 
 
 def _hover_outline(patch: np.ndarray, background: np.ndarray) -> bool:
@@ -415,14 +441,21 @@ def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
     brightness = 0.0
     chroma = 0.0
     centroid = (0.5, 0.5)
+    tone = mask.astype(bool)
     if fraction > 0:
         # Colour statistics come from the core of the piece, not its outline: white pieces
         # carry dark outlines and black pieces light ones, and thin pieces are mostly outline.
         core = cv2.erode(mask, _CORE_KERNEL)
         sample_mask = (core if core.any() else mask).astype(bool)
+        # Not the badge corner: a classification badge's disc lies inside the mask, and its
+        # bright ink swung a black queen's median luminance to a white one's.
+        blinded = sample_mask & _BADGE_BLIND
+        if blinded.any():
+            sample_mask = blinded
         gray = cv2.cvtColor(inner, cv2.COLOR_BGR2GRAY)
         sample = gray[sample_mask]
         luminance = float(np.median(sample))
+        tone = _tone_mask(mask.astype(bool), gray, luminance)
         # The core's median luminance, 0 to 1. The share of pixels over mid-grey was the
         # measure before: with anti-aliased outlines the core of a black piece keeps a ring
         # of its light outline on a dark square and none on a light one (0.17 against 0.03
@@ -438,6 +471,7 @@ def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
     hover = _hover_outline(patch, background)
     return Silhouette(
         mask.astype(bool),
+        tone,
         fraction,
         luminance,
         brightness,
@@ -748,16 +782,22 @@ class ThemeModel:
         # place, whichever fits better, so a lock a pixel or two off, or a piece drawn
         # slightly off its square, still matches by shape and a centroid pulled off by
         # something small on the square costs nothing; where the piece sits is judged by
-        # `offset` on its own.
-        align = _align_centroid(sil.mask)
-        size = sil.mask.shape[0]
+        # `offset` on its own. Both shapes are tried and the better overlap counts: the
+        # tone mask tells a piece from another whatever the square did to its outline,
+        # the full mask, fatter, forgives a lock a pixel off on a small cell.
+        align = _align_centroid(sil.tone)
+        size = sil.tone.shape[0]
         best_by_symbol: dict[str, tuple[float, float, Exemplar]] = {}
         for exemplar in self.exemplars:
-            overlap = iou(sil.mask, exemplar.mask)
+            overlap = max(iou(sil.tone, exemplar.tone), iou(sil.mask, exemplar.mask))
             dx = int(round((exemplar.align_centroid[0] - align[0]) * size))
             dy = int(round((exemplar.align_centroid[1] - align[1]) * size))
             if dx or dy:
-                overlap = max(overlap, iou(shift_mask(sil.mask, dx, dy), exemplar.mask))
+                overlap = max(
+                    overlap,
+                    iou(shift_mask(sil.tone, dx, dy), exemplar.tone),
+                    iou(shift_mask(sil.mask, dx, dy), exemplar.mask),
+                )
             score = overlap - BRIGHTNESS_WEIGHT * abs(sil.brightness - exemplar.brightness)
             previous = best_by_symbol.get(exemplar.symbol)
             if previous is None or score > previous[0]:
@@ -765,8 +805,16 @@ class ThemeModel:
         ranked = sorted(best_by_symbol.items(), key=lambda item: item[1][0], reverse=True)
         symbol, (score, overlap, exemplar) = ranked[0]
         runner_up = ranked[1][1][0] if len(ranked) > 1 else -1.0
+        # Where the piece sits, judged outside the badge corner like the alignment is: a
+        # classification badge on a small cell adds enough ink to pull the whole mask's
+        # centroid a tenth of a cell toward the corner, and the piece under it then never
+        # settled, so a move onto a badged square could not commit until the badge left.
+        landing = _align_centroid(sil.mask)
         offset = float(
-            np.hypot(sil.centroid[0] - exemplar.centroid[0], sil.centroid[1] - exemplar.centroid[1])
+            np.hypot(
+                landing[0] - exemplar.landing_centroid[0],
+                landing[1] - exemplar.landing_centroid[1],
+            )
         )
         settled = offset <= settle_tolerance(cell_px) and not sil.hover
         if overlap >= MIN_IOU and score - runner_up >= MIN_MARGIN:
@@ -961,15 +1009,15 @@ class ThemeModel:
             reference = fused.get(symbol.swapcase())
             if reference is None:
                 return None  # both colours' pairs are spoiled; the next start frame gets a chance
-            reference_mask = reference.mask
-            best = max(samples[symbol], key=lambda sil: iou(sil.mask, reference_mask))
+            reference_tone = reference.tone
+            best = max(samples[symbol], key=lambda sil: iou(sil.tone, reference_tone))
             fused[symbol] = _fuse(symbol, [best])
         model = cls()
         chromas = [sil.chroma for sils in samples.values() for sil in sils]
         model.achromatic_pieces = bool(chromas) and float(np.median(chromas)) < PIECE_CHROMA_MAX
         for symbol in samples:
             exemplar = fused[symbol]
-            if float(exemplar.mask.mean()) < PIECE_MIN_FRACTION:
+            if float(exemplar.tone.mean()) < EXEMPLAR_MIN_TONE:
                 return None
             model.exemplars.append(exemplar)
         model.light_bg = np.median(np.array(light_bgs), axis=0)
@@ -981,6 +1029,9 @@ class ThemeModel:
 
 
 EXEMPLAR_MAX_FRACTION = 0.9
+# A fused exemplar (a tone mask: the fill without the outline) must keep at least this much
+# of the inner patch; a queen's star is 0.16 of it on the 64-pixel synthetic set.
+EXEMPLAR_MIN_TONE = 0.08
 # A piece is drawn on the middle of its file; how high it sits in the square is its own
 # business (a pawn's centre of mass lies well below the centre, a king's near it).
 EXEMPLAR_MAX_SIDEWAYS = 0.12  # of a cell
@@ -1006,20 +1057,23 @@ def _plausible_exemplar(sil: Silhouette) -> bool:
 def _pair_agrees(a: Silhouette, b: Silhouette) -> bool:
     """Whether two cells of one piece kind show the same silhouette in the same place."""
     distance = float(np.hypot(a.centroid[0] - b.centroid[0], a.centroid[1] - b.centroid[1]))
-    return iou(a.mask, b.mask) >= PAIR_MIN_IOU and distance <= PAIR_MAX_CENTROID
+    overlap = max(iou(a.tone, b.tone), iou(a.mask, b.mask))
+    return overlap >= PAIR_MIN_IOU and distance <= PAIR_MAX_CENTROID
 
 
 def _fuse(symbol: str, sils: list[Silhouette]) -> Exemplar:
     """One exemplar from the silhouettes of the cells holding this piece kind: the pixels
     at least half of them share (the union of a pair), the median brightness and centroid."""
-    votes = np.mean([sil.mask for sil in sils], axis=0)
-    mask = votes >= 0.5
+    mask = np.mean([sil.mask for sil in sils], axis=0) >= 0.5
+    tone = np.mean([sil.tone for sil in sils], axis=0) >= 0.5
     brightness = float(np.median([sil.brightness for sil in sils]))
     centroid = (
         float(np.median([sil.centroid[0] for sil in sils])),
         float(np.median([sil.centroid[1] for sil in sils])),
     )
-    return Exemplar(symbol, mask, brightness, centroid, _align_centroid(mask))
+    return Exemplar(
+        symbol, mask, tone, brightness, centroid, _align_centroid(tone), _align_centroid(mask)
+    )
 
 
 def occupancy(frame: np.ndarray, geometry: BoardGeometry) -> np.ndarray:
