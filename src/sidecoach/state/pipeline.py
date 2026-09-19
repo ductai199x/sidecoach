@@ -52,7 +52,7 @@ DIALOG_SECONDS = 2.0
 # this many consecutive frames with the same result; a story of moves still pending is
 # given this many more frames to settle first, so the record keeps the last move.
 BADGE_FRAMES = 2
-BADGE_PATIENCE = 10
+BADGE_PATIENCE = 12
 # A loser whose clock read this little at the end lost on time.
 FLAG_MS = 1000
 CLOCK_MAX_MS = 3 * 60 * 60 * 1000  # three hours; anything above is a misread, not a clock
@@ -311,6 +311,8 @@ class GamePipeline:
                 continue  # a badge beside an empty square belongs to a neighbour
             if reading.kind == "piece" and reading.symbol == symbol and reading.settled:
                 continue
+            # What is drawn on the square is the badge, and it names the king: not a
+            # mark to wait out, not a drag.
             readings[r][c] = replace(
                 reading,
                 kind="piece",
@@ -319,6 +321,7 @@ class GamePipeline:
                 confidence=1.0,
                 settled=True,
                 hover=False,
+                drawn=False,
                 guess=symbol,
             )
         return result, wk, bk
@@ -327,9 +330,10 @@ class GamePipeline:
         """The game ends on the site's result badges when the board could not end it:
         the pair must agree with itself for BADGE_FRAMES frames. A mating story still
         pending that the badges confirm is committed first, so the record has the move;
-        any other pending story is given a few frames to settle. The reason is what the
-        pipeline knows: a mate or a stalemate on the board, a repetition or the material,
-        a clock at zero; otherwise a resignation, or an agreed draw.
+        a frame the record has not caught up with is given a few frames to be told. The
+        reason is what the pipeline knows: a mate or a stalemate on the board, a
+        repetition or the material, a clock at zero; otherwise a resignation, or an
+        agreed draw.
         """
         rec = self.reconciler
         if rec is None or not rec.started or rec.finished or self._badge_frame is None:
@@ -345,7 +349,12 @@ class GamePipeline:
             events = rec.commit_pending_terminal()
             if events:
                 return events
-        if rec.pending_story and seen < BADGE_PATIENCE:
+        if not rec.agrees and seen < BADGE_PATIENCE:
+            # The screen is ahead of the record -- the mating move is on the board and
+            # not told yet: its story pending, the badge's spill on its cells still to
+            # turn stale, or a premove's reply just committed with the mate behind it --
+            # so the record gets a few frames to catch up before the badges end the
+            # game without the move.
             return []
         return rec.end(result, self._end_reason(rec.board, result))
 

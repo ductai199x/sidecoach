@@ -439,6 +439,135 @@ def draw_result_badge(
         )
 
 
+def draw_result_label(
+    frame: np.ndarray,
+    x0: int,
+    y0: int,
+    cell: int,
+    bottom: Side,
+    square: chess.Square,
+    kind: str,
+    alpha: float = 1.0,
+) -> None:
+    """The label a site shows on a king the moment the game ends, before its dialog: a
+    light pill straddling the square's top edge, the word in the result's colour
+    ("Checkmate" in red, "Winner" in green), fading in with `alpha`. It runs over the
+    neighbouring squares, to the left when the square is on the right edge."""
+    r, c = row_col(square, bottom)
+    width = int(round(1.7 * cell))
+    height = max(8, int(round(0.34 * cell)))
+    top = y0 + r * cell - height // 2
+    left = x0 + c * cell + int(round(0.25 * cell))
+    if c >= 6:
+        left = x0 + (c + 1) * cell - int(round(0.25 * cell)) - width
+    overlay = frame.copy()
+    radius = height // 2
+    cv2.rectangle(
+        overlay, (left + radius, top), (left + width - radius, top + height), (255, 255, 255), -1
+    )
+    cv2.circle(
+        overlay, (left + radius, top + radius), radius, (255, 255, 255), -1, lineType=cv2.LINE_AA
+    )
+    cv2.circle(
+        overlay,
+        (left + width - radius, top + radius),
+        radius,
+        (255, 255, 255),
+        -1,
+        lineType=cv2.LINE_AA,
+    )
+    word = {"win": "Winner", "loss": "Checkmate", "draw": "Draw"}[kind]
+    colour = {"win": (70, 170, 110), "loss": (53, 59, 225), "draw": (120, 120, 120)}[kind]
+    scale = height / 28.0
+    cv2.putText(
+        overlay,
+        word,
+        (left + radius, top + height - max(2, int(round(0.28 * height)))),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        scale,
+        colour,
+        max(1, int(round(scale * 2))),
+        lineType=cv2.LINE_AA,
+    )
+    cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0.0, dst=frame)
+
+
+def draw_dialog(frame: np.ndarray, x0: int, y0: int, cell: int, alpha: float = 1.0) -> None:
+    """A site's game-over dialog over the middle of the board, fading in with `alpha`: a
+    dark rounded panel about five squares across, a darker header with a title, a
+    round avatar, a wide green button and two grey ones below it -- a body of several
+    colours, as the real ones have."""
+    width, height = int(5.2 * cell), int(5.6 * cell)
+    left = x0 + 4 * cell - width // 2
+    top = y0 + 4 * cell - height // 2 - int(0.3 * cell)
+    overlay = frame.copy()
+    panel = (41, 38, 43)
+    cv2.rectangle(overlay, (left, top), (left + width, top + height), panel, -1)
+    cv2.rectangle(overlay, (left, top), (left + width, top + int(1.3 * cell)), (33, 31, 35), -1)
+    title = max(0.3, cell / 90.0)
+    cv2.putText(
+        overlay,
+        "You Won!",
+        (left + int(1.2 * cell), top + int(0.8 * cell)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        title,
+        (235, 235, 235),
+        max(1, int(title * 2)),
+        lineType=cv2.LINE_AA,
+    )
+    cv2.putText(
+        overlay,
+        "by checkmate",
+        (left + int(1.6 * cell), top + int(1.15 * cell)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        title * 0.55,
+        (170, 170, 170),
+        1,
+        lineType=cv2.LINE_AA,
+    )
+    cv2.circle(
+        overlay,
+        (left + int(0.9 * cell), top + int(2.2 * cell)),
+        int(0.45 * cell),
+        (120, 110, 100),
+        -1,
+    )
+    cv2.rectangle(
+        overlay,
+        (left + int(1.6 * cell), top + int(1.8 * cell)),
+        (left + width - int(0.4 * cell), top + int(2.7 * cell)),
+        (60, 58, 62),
+        -1,
+    )
+    cv2.rectangle(
+        overlay,
+        (left + int(0.4 * cell), top + int(3.5 * cell)),
+        (left + width - int(0.4 * cell), top + int(4.3 * cell)),
+        (76, 182, 129),
+        -1,
+    )
+    cv2.putText(
+        overlay,
+        "Game Review",
+        (left + int(1.3 * cell), top + int(4.05 * cell)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        title * 0.8,
+        (255, 255, 255),
+        max(1, int(title * 2)),
+        lineType=cv2.LINE_AA,
+    )
+    for i in range(2):
+        bx = left + int(0.4 * cell) + i * int(2.3 * cell)
+        cv2.rectangle(
+            overlay,
+            (bx, top + int(4.6 * cell)),
+            (bx + int(2.1 * cell), top + int(5.2 * cell)),
+            (58, 56, 60),
+            -1,
+        )
+    cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0.0, dst=frame)
+
+
 def draw_coordinates(
     frame: np.ndarray,
     x0: int,
@@ -507,6 +636,9 @@ def render_board(
     check: bool = False,
     animating: tuple[chess.Square, chess.Square, float] | None = None,
     result: str | None = None,
+    labels: float | None = None,
+    dialog: float | None = None,
+    badges: bool = True,
 ) -> None:
     """Render `board`. `dragging` = (origin, hovered square, dx, dy): the origin's piece is
     drawn over the hovered square displaced by (dx, dy) cells, under a hover outline.
@@ -524,7 +656,9 @@ def render_board(
     of one piece, each from the last one's destination; several queues are several
     pieces.
 
-    `result` ("1-0", "0-1", "1/2-1/2") stamps the site's badges on the two kings.
+    `result` ("1-0", "0-1", "1/2-1/2") stamps the site's badges on the two kings;
+    `labels` (an alpha) shows the result labels on them instead of, or as well as, the
+    badges; `dialog` (an alpha) draws the game-over dialog over the middle of the board.
     """
     for r in range(8):
         for c in range(8):
@@ -595,13 +729,21 @@ def render_board(
         draw_arrow(frame, x0, y0, cell, bottom, arrow, colour=arrow_colour, width=arrow_width)
     if badge is not None:
         draw_badge(frame, x0, y0, cell, bottom, badge[0], badge[1])
-    if result is not None:
+    if result is not None and badges:
         kinds = {"1-0": ("win", "loss"), "0-1": ("loss", "win"), "1/2-1/2": ("draw", "draw")}
         for colour, kind in zip((chess.WHITE, chess.BLACK), kinds[result], strict=True):
             king = board.king(colour)
             if king is not None:
                 icon = (255, 255, 255) if colour == chess.WHITE or kind != "loss" else (20, 20, 20)
                 draw_result_badge(frame, x0, y0, cell, bottom, king, kind, icon)
+    if labels is not None and result is not None:
+        kinds = {"1-0": ("win", "loss"), "0-1": ("loss", "win"), "1/2-1/2": ("draw", "draw")}
+        for colour, kind in zip((chess.WHITE, chess.BLACK), kinds[result], strict=True):
+            king = board.king(colour)
+            if king is not None:
+                draw_result_label(frame, x0, y0, cell, bottom, king, kind, alpha=labels)
+    if dialog is not None:
+        draw_dialog(frame, x0, y0, cell, alpha=dialog)
     if animating is not None:
         origin, destination, progress = animating
         piece = board.piece_at(origin)
@@ -755,6 +897,9 @@ def synthetic_board(
     check: bool = False,
     animating: tuple[chess.Square, chess.Square, float] | None = None,
     result: str | None = None,
+    labels: float | None = None,
+    dialog: float | None = None,
+    badges: bool = True,
 ) -> np.ndarray:
     """A board on a busy background. `pieces=False` renders an empty board; `theme` names
     the square colours (see THEMES) unless `light` and `dark` are given; `style` the piece
@@ -790,6 +935,9 @@ def synthetic_board(
         check=check,
         animating=animating,
         result=result,
+        labels=labels,
+        dialog=dialog,
+        badges=badges,
     )
     return frame
 

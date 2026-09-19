@@ -336,3 +336,186 @@ def test_a_theme_that_hides_the_black_outline_is_still_followed() -> None:
     assert result.same_board and sorted(result.got) == sorted(result.played), (
         f"committed {result.got}, played {result.played}"
     )
+
+
+# ---- how games end on screen ------------------------------------------------------------
+
+# A random game that ends in mate within this many plies; the seed's draws are retried
+# until one does, so every seed has an ending.
+ENDING_PLIES = 30
+
+
+@dataclass(frozen=True)
+class Ending:
+    """The way a site shows the end: whether the mate lands in the same frame as the
+    opponent's premoved move before it (a queued king step, then the mate); whether the
+    site stamps result badges on the kings; whether it shows labels first, fading in;
+    whether a dialog then covers the board, fading in."""
+
+    together: bool
+    badges: bool
+    labels: bool
+    dialog: bool
+
+
+def ending_scenario(seed: int) -> tuple[Scenario, Ending]:
+    for attempt in range(60):
+        rng = random.Random(seed * 1000 + attempt)
+        board = chess.Board()
+        sans: list[str] = []
+        mated = False
+        for ply in range(ENDING_PLIES):
+            moves = list(board.legal_moves)
+            if not moves or board.is_game_over():
+                break
+            if ply >= 6:
+                mate = next((m for m in moves if _mates(board, m)), None)
+                if mate is not None:
+                    sans.append(board.san(mate))
+                    board.push(mate)
+                    mated = True
+                    break
+            captures = [m for m in moves if board.is_capture(m)]
+            move = rng.choice(captures) if captures and rng.random() < 0.3 else rng.choice(moves)
+            sans.append(board.san(move))
+            board.push(move)
+        if mated:
+            break
+    else:  # pragma: no cover - sixty draws without a mate
+        raise AssertionError(f"seed {seed}: no random game mates within {ENDING_PLIES} plies")
+    base = scenario(seed)
+    sc = Scenario(
+        seed,
+        base.theme,
+        base.cell,
+        base.bottom,
+        tuple(sans),
+        tuple("plain" for _ in sans),
+        base.style,
+        base.highlight_colour,
+        base.arrow_colour,
+        base.arrow_width,
+        base.coordinates,
+    )
+    ending = Ending(
+        together=rng.random() < 0.35,
+        badges=rng.random() < 0.7,
+        labels=rng.random() < 0.6,
+        dialog=rng.random() < 0.8,
+    )
+    return sc, ending
+
+
+def _mates(board: chess.Board, move: chess.Move) -> bool:
+    board.push(move)
+    try:
+        return board.is_checkmate()
+    finally:
+        board.pop()
+
+
+@dataclass(frozen=True)
+class Ended:
+    got: list[str]
+    result: str | None  # the GameEnded's result, or None
+    # The phase the game ended in: "labels" (the mate on screen with the site's labels
+    # over it), "clean" (the labels gone, badges at most), "dialog" (the dialog fading
+    # in or up), "after" (the dialog closed, the board clean again), or "never".
+    when: str
+
+
+def play_ending(sc: Scenario, ending: Ending) -> Ended:
+    """The game to its last move, then the end as the site shows it."""
+    pipe = GamePipeline()
+    board = chess.Board()
+    ts = 0.0
+    got: list[str] = []
+    results: list[str] = []
+    phase = "clean"
+    when: str | None = None
+
+    def frame_for(**kw: object) -> np.ndarray:
+        return synthetic_board(
+            width=8 * sc.cell + 600,
+            height=8 * sc.cell + 240,
+            board=board,
+            theme=sc.theme,
+            cell=sc.cell,
+            bottom=sc.bottom,
+            coordinates=sc.coordinates,
+            style=sc.style,
+            highlight_colour=sc.highlight_colour,
+            arrow_colour=sc.arrow_colour,
+            arrow_width=sc.arrow_width,
+            **kw,  # type: ignore[arg-type]
+        )
+
+    def show(frames: int, **kw: object) -> None:
+        nonlocal ts, when
+        for _ in range(frames):
+            for event in pipe.process(frame_for(**kw), ts):
+                if isinstance(event, MovePlayed):
+                    got.append(event.san)
+                elif isinstance(event, GameEnded):
+                    results.append(event.result)
+                    if when is None:
+                        when = phase
+            ts += 0.1
+
+    show(3)
+    assert pipe.reconciler is not None and pipe.reconciler.started
+    sans = list(sc.sans)
+    # The game up to the position before the ending: two frames a move.
+    last = 2 if ending.together and len(sans) >= 2 else 1
+    for san in sans[:-last]:
+        move = board.push_san(san)
+        show(2, highlight=move)
+    show(3)
+    if ending.together:
+        # The user queues the mate while the opponent thinks, then both land at once.
+        mate = board.copy()
+        mate.push_san(sans[-2])
+        queued = mate.parse_san(sans[-1])
+        show(2, premoves=((queued,),))
+        board.push_san(sans[-2])
+    final = board.push_san(sans[-1])
+    result = board.result()
+    decorated: dict[str, object] = {
+        "highlight": final,
+        "check": True,
+        "result": result,
+        "badges": ending.badges,
+    }
+    # The end as a site shows it: the labels over the kings for about a second (they
+    # fade in over the first frame), then gone; the dialog fading in and staying a
+    # while; the dialog closed and the board clean again, the badges at most.
+    if ending.labels:
+        phase = "labels"
+        show(1, **{**decorated, "labels": 0.4})
+        show(7, **{**decorated, "labels": 1.0})
+    phase = "clean"
+    show(6, **decorated)
+    if ending.dialog:
+        phase = "dialog"
+        for alpha in (0.35, 0.7, 1.0, 1.0, 1.0, 1.0):
+            show(1, **{**decorated, "dialog": alpha})
+        phase = "after"
+        show(6, **decorated)
+    return Ended(got, results[0] if results else None, when or "never")
+
+
+def test_a_random_game_ends_on_screen(seed: int) -> None:
+    """The mate is committed and the game ends, from a clean view of the board, however
+    the site decorates the end: the mated king's glow, badges, labels over the kings for
+    a second, the mate landing with the premoved move before it, the dialog fading in
+    over the board and closing again. The labels and the dialog are passing; the clean
+    frames before and after them are where the mate is read."""
+    sc, ending = ending_scenario(seed)
+    ended = play_ending(sc, ending)
+    board = chess.Board()
+    for san in sc.sans:
+        board.push_san(san)
+    where = f"{sc.where}, ending {ending}"
+    assert ended.result == board.result(), f"{where}: ended {ended.result}, committed {ended.got}"
+    assert sc.sans[-1] in ended.got, f"{where}: the mating move was not committed ({ended.got})"
+    assert ended.when in ("labels", "clean", "dialog", "after"), f"{where}: ended {ended.when}"

@@ -66,9 +66,12 @@ def test_every_theme_size_and_orientation_reads_the_result(
     theme: str, cell: int, bottom: Side
 ) -> None:
     board = chess.Board(LOST)
-    for result in ("1-0", "0-1", "1/2-1/2", None):
+    for result in ("1-0", "0-1", None):
         frame = _frame(board, cell, theme=theme, bottom=bottom, result=result)
         assert read_result(frame, _geometry(cell), board, bottom) == result, (result, theme)
+    # The draw badge is unseen; a rendered guess at it reads as nothing.
+    frame = _frame(board, cell, theme=theme, bottom=bottom, result="1/2-1/2")
+    assert read_result(frame, _geometry(cell), board, bottom) is None
 
 
 def test_kings_on_the_boards_edges_are_read_where_the_site_pushes_the_badge_in() -> None:
@@ -76,7 +79,7 @@ def test_kings_on_the_boards_edges_are_read_where_the_site_pushes_the_badge_in()
     # and down on the top row, and mirrored for the other orientation.
     board = chess.Board("k7/8/8/8/8/8/8/7K w - - 0 1")
     for bottom in (Side.WHITE, Side.BLACK):
-        for result in ("1-0", "0-1", "1/2-1/2"):
+        for result in ("1-0", "0-1"):
             frame = _frame(board, 56, bottom=bottom, result=result)
             assert read_result(frame, _geometry(56), board, bottom) == result
 
@@ -194,12 +197,15 @@ def test_a_resignation_ends_the_game_with_the_sites_result(bottom: Side) -> None
     assert not any(isinstance(e, GameEnded) for e in again)
 
 
-def test_a_draw_agreed_ends_the_game_as_a_draw() -> None:
+def test_a_draw_badge_is_not_read_until_one_is_on_record() -> None:
+    """The rendered guess at a draw badge (grey discs) ends nothing: a draw ends through
+    the dialog's cover or the End game menu, which carries the reason."""
     g = Game()
     g.play("e4", "e5", "Nf3", "Nc6")
-    new = g.show(BADGE_FRAMES, highlight=chess.Move.from_uci("b8c6"), result="1/2-1/2")
-    ended = [e for e in new if isinstance(e, GameEnded)]
-    assert [(e.result, e.reason) for e in ended] == [("1/2-1/2", "draw agreed")]
+    new = g.show(BADGE_FRAMES + 2, highlight=chess.Move.from_uci("b8c6"), result="1/2-1/2")
+    assert not any(isinstance(e, GameEnded) for e in new)
+    pipe = GamePipeline()
+    assert pipe._end_reason(chess.Board(), "1/2-1/2") == "draw agreed"
 
 
 def test_a_flag_is_a_loss_on_time() -> None:

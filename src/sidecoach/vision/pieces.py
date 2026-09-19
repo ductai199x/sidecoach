@@ -312,6 +312,13 @@ HOVER_BAND = 0.05  # of the cell
 HOVER_LINE_FILL = 0.9
 # The outermost edge, judged as a whole by its median: chess.com's outline fills most of it.
 HOVER_EDGE = 0.04  # of the cell
+# The portion at each end of a side where an outline's step is read: an outline runs
+# through the corners, a piece's base and a label do not.
+HOVER_CORNER = 0.2  # of the cell
+# The change between one row and the next that makes a line: a thin outline upscaled
+# from a small cell spreads over two or three rows and still steps this much; a check's
+# glow ramps a few levels a row.
+HOVER_STEP = 10.0
 
 
 def settle_tolerance(cell_px: float | None) -> float:
@@ -475,17 +482,37 @@ def _hover_outline(patch: np.ndarray, background: np.ndarray) -> bool:
         return False  # a patch too small to have an outer band
     distance = np.linalg.norm(patch.astype(np.float32) - background.astype(np.float32), axis=2)
     sides = (distance, distance[::-1], distance.T, distance.T[::-1])
+    colours = (patch, patch[::-1], patch.transpose(1, 0, 2), patch.transpose(1, 0, 2)[::-1])
     strong: list[float] = []
     weak: list[float] = []
     medians: list[float] = []
-    for side in sides:
+    steps: list[float] = []
+    for side, colour in zip(sides, colours, strict=True):
         rows = side[:band, band : n - band]
         strong.append(float((rows > HOVER_TOLERANCE).mean(axis=1).max()))
         weak.append(float((rows > HOVER_TOLERANCE / 2).mean(axis=1).max()))
         medians.append(float(np.median(side[:edge])))
+        # An outline is a step between one row and the next, and it runs through both
+        # ends of the side; a tint that fades toward the edge (a check's glow) is a ramp
+        # of a few levels a row, and a piece's base or a label reaches one end at most.
+        # So the step is read at each end of the side, and the smaller counts.
+        reach = max(2, int(round(n * HOVER_CORNER)))
+        ends = []
+        for lo, hi in ((band, band + reach), (n - band - reach, n - band)):
+            lines = [
+                np.median(colour[k, lo:hi].astype(np.float32), axis=0)
+                for k in range(min(n, 2 * band + 1))
+            ]
+            ends.append(
+                max(float(np.linalg.norm(lines[k + 1] - lines[k])) for k in range(len(lines) - 1))
+            )
+        steps.append(min(ends))
     strong.sort()
     weak.sort()
     medians.sort()
+    steps.sort()
+    if steps[1] < HOVER_STEP:
+        return False  # no step on three sides: a ramp, not a line
     # Either the outermost edge differs from the background on every side, taken as a
     # whole (an outline thick enough to fill most of it), or one row of the band does so
     # end to end on every side (a thin outline a pixel inside the edge).

@@ -195,6 +195,7 @@ class Reconciler:
     _denied: Observation = field(default_factory=dict)
     _frame_index: int = 0
     _blocked: bool = False
+    _last_obs: Observation = field(default_factory=dict)
     _ts: float = 0.0
     _last_commit_ts: float | None = None
 
@@ -366,6 +367,7 @@ class Reconciler:
                 remaining: set[chess.Square],
                 path: list[chess.Move],
                 unseen: int,
+                decorated: set[chess.Square] = frozenset(),  # type: ignore[assignment]
                 depth: int = depth,
                 solutions: list[Explanation] = solutions,
                 budget: list[int] = budget,
@@ -386,7 +388,17 @@ class Reconciler:
                     seen = bool(touched & remaining)
                     if not seen and (unseen >= 1 or not touched & wild):
                         continue  # a second move told through wild cells alone
-                    if not all(sq in wild or (sq in obs and exact(obs[sq])) for sq in touched):
+                    lenient = {
+                        sq
+                        for sq in touched
+                        if sq not in wild
+                        and not (sq in obs and exact(obs[sq]))
+                        and self._king_lands(board, move, sq, obs)
+                    }
+                    if not all(
+                        sq in wild or (sq in obs and exact(obs[sq])) or sq in lenient
+                        for sq in touched
+                    ):
                         continue
                     budget[0] -= 1
                     if budget[0] < 0:
@@ -395,11 +407,16 @@ class Reconciler:
                     after.push(move)
                     path.append(move)
                     still = remaining - touched
+                    used = set(decorated) | lenient
                     if not still:
-                        if matches(after, obs, set(obs) - wild) and self._not_denied(after, start):
+                        if (
+                            matches(after, obs, set(obs) - wild)
+                            and self._not_denied(after, start)
+                            and self._checked_kings(after, used)
+                        ):
                             solutions.append(tuple(path))
                     else:
-                        search(after, still, path, unseen + (0 if seen else 1))
+                        search(after, still, path, unseen + (0 if seen else 1), used)
                     path.pop()
 
             search(start, set(diff), [], 0)
@@ -415,6 +432,52 @@ class Reconciler:
                 return solutions
             return [solutions[0]]
         return []
+
+    def _decorated_king(self, square: chess.Square, reading: CellReading) -> bool:
+        """Whether an unsettled reading of a piece of no known kind is a king under the
+        site's decoration: on the king's own square, or one step from it (a king that
+        just moved, its square decorated in the same frame). The colour, when read,
+        must be the king's."""
+        if reading.symbol is not None:
+            return False
+        for colour in chess.COLORS:
+            if reading.colour is not None and reading.colour != (
+                Side.WHITE if colour == chess.WHITE else Side.BLACK
+            ):
+                continue
+            king = self.board.king(colour)
+            if king is not None and chess.square_distance(king, square) <= 1:
+                return True
+        return False
+
+    @staticmethod
+    def _king_lands(
+        board: chess.Board, move: chess.Move, square: chess.Square, obs: Observation
+    ) -> bool:
+        """Whether `move` is a king's move onto `square`, where the reading is a piece of
+        the king's colour whose kind could not be read: the king under its decoration.
+        A site decorates a king's square when the king is in check, so a story that uses
+        this must end with that king in check (`_checked_kings`): a king moves into no
+        check of its own, and the decoration on the square it landed on is the reply's."""
+        if move.to_square != square or square not in obs:
+            return False
+        piece = board.piece_at(move.from_square)
+        if piece is None or piece.piece_type != chess.KING:
+            return False
+        reading = obs[square]
+        if reading.kind != "piece" or reading.symbol is not None:
+            return False
+        return reading.colour is None or reading.colour == (
+            Side.WHITE if piece.color == chess.WHITE else Side.BLACK
+        )
+
+    @staticmethod
+    def _checked_kings(after: chess.Board, decorated: set[chess.Square]) -> bool:
+        """Whether every decorated landing square of a story holds a king in check at
+        its end -- the mate, or the check, that the decoration marks."""
+        if not decorated:
+            return True
+        return after.is_check() and after.king(after.turn) in decorated
 
     def _not_denied(self, after: chess.Board, start: chess.Board) -> bool:
         """Whether `after` agrees with every ignored exact reading on a cell it changed."""
@@ -476,6 +539,9 @@ class Reconciler:
         if self._hover_seen or any(reading.hover for reading in obs.values()):
             return False
         touched: set[chess.Square] = set()
+        # The squares a king of the story lands on: its reading may be unsettled and of
+        # no known kind, the king under what the site draws on it (see `_king_lands`).
+        decorated: set[chess.Square] = set()
         board = (base if base is not None else self.board).copy(stack=False)
         for move in moves:
             if move not in board.legal_moves:
@@ -485,10 +551,14 @@ class Reconciler:
                 # square read as unknown while it passed over it, and the square it
                 # had left explained the move to that square on its own.
                 return False
+            if self._king_lands(board, move, move.to_square, obs):
+                decorated.add(move.to_square)
             touched |= touched_squares(board, move)
             board.push(move)
+        if not self._checked_kings(board, decorated):
+            return False
         for sq in touched:
-            if sq in wild:
+            if sq in wild or sq in decorated:
                 continue
             if sq in self._drawn:
                 return False
@@ -516,8 +586,15 @@ class Reconciler:
         # A drag in progress blocks every explanation without contradicting any. A story
         # seen settled just before the drag stays pending through it, so that the frames
         # after the drop can confirm or extend it; a quiet frame that fits nothing drops it.
+        # A piece of no known kind, off its centre, on a king's square or the one next to
+        # it is not a drag but the king under what the site draws on it -- the check glow,
+        # the badge, the label at the end -- and blocks nothing.
         self._blocked = self._hover_seen or any(
-            reading.kind == "piece" and not reading.settled for row in readings for reading in row
+            reading.kind == "piece"
+            and not reading.settled
+            and not self._decorated_king(square_at(r, c, self.bottom), reading)
+            for r, row in enumerate(readings)
+            for c, reading in enumerate(row)
         )
         obs = self._unqueue(self._observe(readings))  # premove ghosts put back
         if len(obs) < self.min_readable_cells:
@@ -533,6 +610,7 @@ class Reconciler:
             # stale retries below.
             obs = {sq: r for sq, r in obs.items() if sq not in ghosts}
             diff = diff - ghosts
+        self._last_obs = obs
 
         if not diff:
             # The frame shows the latest position: live again if the user was browsing.
@@ -829,6 +907,14 @@ class Reconciler:
     def unexplained(self) -> bool:
         """Whether the last frame disagreed with the position and no story explained it."""
         return self._unexplained_frames > 0
+
+    @property
+    def agrees(self) -> bool:
+        """Whether the last readable frame shows the latest position, ghosts aside: the
+        record is up to date with the screen. False while a story is pending or a frame
+        is unexplained, and in the frame a story's first move commits with its second
+        still to be told (a premove landing on the opponent's reply)."""
+        return not self.disagreements(self._last_obs)
 
     def pending_terminal(self) -> tuple[Explanation, chess.Board] | None:
         """The story seen once and still pending, when it ends the game: the mate the

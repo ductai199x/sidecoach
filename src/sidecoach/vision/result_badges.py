@@ -71,9 +71,10 @@ def classes(colours: np.ndarray) -> np.ndarray:
     b, g, r = c[:, 0], c[:, 1], c[:, 2]
     win = (g >= 120) & (g - r >= 25) & (g - b >= 60)
     loss = (r >= 150) & (r - g >= 70) & (r - b >= 70)
-    spread = c.max(axis=1) - c.min(axis=1)
-    draw = (spread <= 20) & (c.max(axis=1) >= 90) & (c.max(axis=1) <= 200)
-    return np.select([win, loss, draw], [1, 2, 3], default=0)
+    # The draw badge is unseen so far. A grey disc was tried for it and read the rounded
+    # end of a white label, so a draw ends the game through the dialog's cover or the
+    # End game menu until one is on record.
+    return np.select([win, loss], [1, 2], default=0)
 
 
 _BADGES = {1: Badge.WIN, 2: Badge.LOSS, 3: Badge.DRAW}
