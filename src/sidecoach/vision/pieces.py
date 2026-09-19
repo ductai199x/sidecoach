@@ -923,6 +923,14 @@ class ThemeModel:
         default_factory=dict, repr=False, compare=False
     )
 
+    def __getstate__(self) -> dict[str, object]:
+        # The last frame's cells are this session's, not the theme's: pickled, they made
+        # a 60 KB theme file 2.8 MB, and a cached theme would have begun its next game
+        # believing it had read a frame.
+        state = dict(self.__dict__)
+        state["_cells"] = {}
+        return state
+
     @property
     def symbols(self) -> set[str]:
         return {e.symbol for e in self.exemplars}

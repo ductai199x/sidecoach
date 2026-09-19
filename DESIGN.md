@@ -223,9 +223,9 @@ Later. Local only: faster-whisper for STT with post-correction against the legal
 
 ### 5.10 Replay and recording
 
-Every stage is replayable. Recordings hold frame sequences with timestamps and the events each stage emitted. The test suite is recordings plus expected outputs, so a vision or reconciliation regression fails a test instead of a live game.
+Every stage is replayable. Recordings hold frame sequences with timestamps and the events each stage emitted, so anything that looked wrong in a live game can be replayed stage by stage.
 
-Recordings are the regression suite (2026-09-14): `data/recordings/gNN-<opponent>-<note>/` holds one game each, with `truth.pgn` from chess.com beside it. Each is stored at half scale (1280x720 for a 1440p session) with `sidecoach shrink`, lossless FFV1, the whole screen kept: the program's input is the screen, a recording of less would test an easier problem, and the clocks and the move list are inputs for later stages. The half-scale copies double as the size-invariance test, and `sidecoach replay --scale` resizes further on the fly (Tai, 2026-09-14).
+Recordings were the regression suite at first (2026-09-14): `data/recordings/gNN-<opponent>-<note>/` holds one game each, with `truth.pgn` from chess.com beside it, stored at half scale (1280x720 for a 1440p session) with `sidecoach shrink`, lossless FFV1, the whole screen kept. Since 2026-09-18 the test suite depends on nothing under `data/` (Tai: recordings are neither committable nor stable enough to hang tests on): tests render their boards (`tests/synth.py`, `tests/pieceset.py`, the sprite sheets and the seven real crops under `tests/fixtures/`), and `tests/test_stress.py` plays seeded random games through the whole pipeline over every theme, set, size and decoration the sites draw. The recordings remain the way to replay a live session and the material for the validation scripts under `scripts/`.
 
 ## 6. Storage
 
@@ -297,6 +297,15 @@ M3 Coach: disclosure state machine, interjection policy with clock scaling, fact
 M4 Review and profile: post-game review, SQLite, error taxonomy, session summaries, self-report elicitation.
 
 M5 Companion panel. M6 Recommendations from Lichess puzzles and the chess.com catalogue. M7 Voice. M8 Overlay. M9 Maia and remaining motif groups tuned. Later: macOS and Linux capture, Android, iOS, EULA, public release.
+
+State of the milestones (2026-09-19):
+
+- M3 Coach: shipped and evaluated. The game is one conversation in a single harness message (section 5.5); disclosure, the policy, the fact bundle, claim verification both ways, and the coach's context C as twelve distilled lessons; `openai:gpt-5.6-luna` at medium effort by default with any OpenAI-compatible endpoint behind `sidecoach.llm`. Held-out pass rate .994 on 320 moments under the binary judge (docs/eval-results.md); the play-through ICR method and the judge are in `tools/eval/`.
+- M5 Panel: shipped (`sidecoach panel`): board, coach messages, voice, orientation flip, cold analysis of a board joined mid-game, debug terminal; verified end to end in Chrome and in live bot games.
+- M7 Voice: shipped, optional (`uv sync --group voice`): Kokoro TTS, Parakeet STT on CPU with chess correction, Silero VAD, a speak/skip/supersede policy so the voice never talks about a position the board has left.
+- Vision after the synthetic sweep (section 5.2, 2026-09-18/19): the suite reads nothing under `data/`; 38 real piece sets, 8 themes, 44-144 px, every decoration; about one random game in seventy still fails, on the two tolerances documented in `sidecoach/vision/pieces.py`.
+- M2 leftovers still open: OCR of the move list (a browser extension may serve better), the screen-state detector beyond the current cues.
+- M4 Review and profile: not started (`sidecoach/profile` is a stub). M6, M8, M9: not started.
 
 ## 11. Open items
 

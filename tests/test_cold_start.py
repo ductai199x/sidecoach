@@ -44,6 +44,23 @@ def _warm(cache: ThemeCache, theme: str, bottom: Side) -> None:
     assert warm.model is not None and warm.model.rank_labels, "no theme learned"
 
 
+def test_a_cached_theme_carries_no_frame(tmp_path: Path) -> None:
+    """The theme file holds the exemplars, the palette and the digits, not the last
+    frame's 64 cells: pickled with them it was 2.8 MB instead of 60 KB, and a theme read
+    back would have started its next game believing it had read a frame."""
+    cache = ThemeCache(tmp_path)
+    warm = GamePipeline(cache=cache)
+    for i in range(3):
+        warm.process(synthetic_board(theme="green", coordinates=True), 0.1 * i)
+    assert warm.model is not None and warm.model._cells, "the live model caches its cells"
+    files = list(tmp_path.glob("theme-*.pkl"))
+    assert len(files) == 1 and files[0].stat().st_size < 200_000, files[0].stat().st_size
+    light, dark = warm.model.light_bg, warm.model.dark_bg
+    assert light is not None and dark is not None
+    again = cache.get(light, dark)
+    assert again is not None and again._cells == {}
+
+
 def _squares_off(board: chess.Board, truth: chess.Board) -> list[str]:
     return [
         chess.square_name(sq) for sq in chess.SQUARES if board.piece_at(sq) != truth.piece_at(sq)

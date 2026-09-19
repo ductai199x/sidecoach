@@ -104,79 +104,6 @@ BINARY_SYSTEM = (
     "asks for the reply's atomic claims, answer in JSON only."
 )
 
-VERIFY_SYSTEM = (
-    "You are a strict grader of a chess coach's replies. You are given the evidence the coach "
-    "had (engine facts about one position and the game so far), a numbered list of atomic "
-    "claims taken from the reply, the facts a good reply must contain, and the reply itself. "
-    "You answer in JSON only.\n"
-    "For each claim answer one question: does the evidence support it? 'supported' is true "
-    "when the evidence states it, or it follows directly from the move itself -- a capture "
-    "takes the piece or pawn on that square, a check makes the king answer, a move lands "
-    "where it lands, a promotion makes a queen -- or it restates a fact of the evidence in "
-    "other words. It is false when the evidence does not state it (a piece said to attack, "
-    "pin, defend or threaten something the evidence does not say; a plan, structure or "
-    "evaluation the evidence does not give; a move, a win or a loss that did not happen; a "
-    "habit the record does not show) or when it contradicts the evidence. Do not mark a claim "
-    "false for imprecision: approximate or hedged wording of a supported fact ('undoes your "
-    "advantage' for a large loss, 'most moves' for a majority), a plain inference from the "
-    "evidence (a chance that 'appeared after' the move listed as the one before), or ordinary "
-    "chess usage (a king on e1 or e8 'in the centre', a rook on an open file 'active') is "
-    "supported. Mark false only what is specific and either absent from or contrary to the "
-    "evidence. A claim about what "
-    "a piece attacks, defends, pins or stands on may be checked on the board diagram given "
-    "with the evidence; read the diagram carefully (rank 8 at the top, capitals White) and "
-    "when you cannot tell, do not call the claim unsupported. Judge each claim on its own.\n"
-    "For each required fact answer two questions: is it mentioned in the reply, and if so, "
-    "is what the reply says about it correct according to the evidence? How a fact counts as "
-    "mentioned depends on its 'how': 'named' means the move, square or name itself appears "
-    "(a capture described as 'taking on e4' names Rxe4); 'sense' means its gist is conveyed "
-    "in any words -- for a label, approval of any strength ('exactly right', 'spot on', "
-    "'strong', 'the pin is right') conveys best, excellent, great or brilliant, mild approval "
-    "('fine', 'solid', 'okay') conveys good, and any criticism or 'cost you' conveys "
-    "inaccuracy, mistake, miss or blunder; for the nature of a position, 'forcing' is conveyed "
-    "by any call to look for a check, capture or forcing move and 'quiet' by saying there is "
-    "no tactic or that it is a moment to improve; 'words' means the gist in the reply's own "
-    "words. A label counts as correct when its tier matches: praise for a best or excellent "
-    "move is correct, praise for a mistake is not.\n"
-    "Relevance, 0 to 1. When the player asked a question: whether the reply answers it. A "
-    "question the evidence answers (the last move and what it does, the verdict on it, the "
-    "material, the standing, the opening, the game so far are never withheld) answered only "
-    "with a question back, or with an answer to a different question, is 0; a partial answer "
-    "is 0.5. When the coach spoke on its own (a verdict, a hint, a question at a critical "
-    "moment): whether it is about this moment -- the move just played, or what the evidence "
-    "says matters now (the nature of the position, the theme, the plan) -- 1 when it is, 0.5 "
-    "when it is generic, 0 only when it is about something else.\n"
-    "A claim that names a piece with a colour or an owner ('Black's rook', 'your bishop') "
-    "is false when the piece on that square belongs to the other side: the player's colour "
-    "is stated at the top of the evidence, and the diagram uses capitals for White.\n"
-    "When a master's note on the move just played is given, first state the master's point "
-    "in one sentence -- its core only: the judgment on the move (good, the best, a mistake, "
-    "the wrong piece), or the one reason the note gives for it, or the better move it "
-    "names; not the supporting variations. Then answer two yes-or-no questions about that "
-    "one point. in_reply: does the reply make that point, in any words -- the same judgment, "
-    "the same reason, or the same better move? in_facts: is that point stated, in any words, "
-    "in the evidence -- the verdict on the move (its label, the move the engine preferred), "
-    "the engine's lines, the facts (a theme, a plan, a threat, an idea)? Name under 'where' "
-    "the part of the evidence that states it ('verdict', 'lines', 'facts: plan'), or null. "
-    "The note may have lost the piece letters of its moves to scanning ('xd8' is a capture "
-    "on d8 by some piece) or a move altogether ('28 .'): read it for its point, not its "
-    "notation. With no note, idea is null.\n"
-    "For each claim you mark unsupported, also say which it is: 'false' when the board or "
-    "the evidence contradicts it, 'unstated' when nothing in the evidence says it either way; "
-    "and write the lesson in one short clause, general enough to apply in any game, about "
-    "what the coach did (for example 'described what a move attacks with no fact saying so', "
-    "'attributed the player's plan to the opponent', 'placed the given tactic on other "
-    "pieces', 'judged a move with a word the evidence does not use', 'narrated the course "
-    "of the game beyond the tally'). For each required fact left out, write the lesson "
-    "too ('left out the cost of the move').\n"
-    'Output exactly: {"claims": [{"n": int, "supported": bool, "why": str, '
-    '"kind": "false"|"unstated"|null, "lesson": str|null}], '
-    '"required": [{"key": str, "mentioned": bool, "correct": bool|null, '
-    '"lesson": str|null}], '
-    '"relevance": number, "idea": {"point": str, "in_reply": bool, '
-    '"in_facts": bool, "where": str|null}|null}'
-)
-
 
 class Ledger:
     """Every paid call on the record, with a budget that stops the run."""
@@ -1049,22 +976,6 @@ def decompose_messages(reply: str, record: str | None = None) -> list[dict[str, 
     return [{"role": "user", "content": content}]
 
 
-def verify_messages(item: dict, reply: str, claims: list[str]) -> list[dict[str, str]]:
-    listed = "\n".join(f"{i}. {c}" for i, c in enumerate(claims, start=1)) or "(none)"
-    return [
-        {
-            "role": "user",
-            "content": evidence_block(item)
-            + '\n\nThe coach\'s reply:\n"""\n'
-            + reply
-            + '\n"""\n'
-            + "\nIts atomic claims:\n"
-            + listed
-            + "\n\nGrade it. JSON only.",
-        }
-    ]
-
-
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 
 
@@ -1201,10 +1112,6 @@ def score(
         "idea_where": idea["where"] if idea else None,
         "pass": not hard and not det["form"]["problems"],
     }
-
-
-def estimate_tokens(text: str) -> int:
-    return len(text) // 3 + 1
 
 
 class JudgeFailed(RuntimeError):
