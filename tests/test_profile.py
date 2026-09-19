@@ -41,62 +41,144 @@ def test_store_keeps_games_moves_evidence_and_cells_in_memory() -> None:
     store = Store(None)
     store.start_session("s1", 0.0)
     store.start_game("g1", 1.0, "white", chess.STARTING_FEN, "s1")
-    store.add_move(
+    move_id = store.add_move(
         "g1",
         0,
         1,
-        "e4",
-        "e2e4",
+        move_number=1,
+        san="e4",
+        uci="e2e4",
         by_user=True,
         fen_before=chess.STARTING_FEN,
         fen_after="x",
+        phase="opening",
         think_ms=1200,
+        clock_ms=598_000,
+        capture=False,
+        gives_check=False,
+        material=0,
         ts=1.5,
     )
     store.assess_move(
-        "g1",
-        0,
-        1,
+        move_id,
         label="best",
         severity="none",
         expected_loss=0.0,
         best_uci="e2e4",
+        best_san="e4",
         accuracy=99.0,
         tags=["quietMove"],
+        available_tags=["fork"],
         depth=14,
     )
+    store.analyse_move(move_id, score_after=0.55, allowed_tags=[])
     moves = store.moves("g1")
-    assert len(moves) == 1 and moves[0].label == "best" and moves[0].tags == ["quietMove"]
-    assert moves[0].think_ms == 1200
-    store.add_evidence(
+    assert len(moves) == 1 and moves[0].move_id == move_id
+    assert moves[0].label == "best" and moves[0].tags == ["quietMove"]
+    assert moves[0].think_ms == 1200 and moves[0].clock_ms == 598_000
+    assert moves[0].score_after == 0.55 and moves[0].available_tags == ["fork"]
+    second = store.add_move(
         "g1",
         0,
         7,
+        move_number=4,
+        san="Qd3",
+        uci="d1d3",
+        by_user=True,
+        fen_before=chess.STARTING_FEN,
+        fen_after="y",
+        phase="middlegame",
+        think_ms=None,
+        clock_ms=None,
+        capture=False,
+        gives_check=False,
+        material=-3,
+        ts=2.0,
+    )
+    store.assess_move(
+        second,
+        label="mistake",
+        severity="mistake",
+        expected_loss=0.15,
+        best_uci=None,
+        best_san=None,
+        accuracy=40.0,
+        tags=[],
+        available_tags=["fork"],
+        depth=14,
+    )
+    store.add_evidence(
+        second,
+        game_id="g1",
+        segment=0,
+        ply=7,
         phase="middlegame",
         expected_loss=0.15,
         cause="missed opponent threat",
         motif="fork",
         time_pressure=False,
     )
-    store.bump_cell("missed opponent threat", "fork", "middlegame", errors=1, loss=0.15)
-    store.bump_cell(None, "fork", "middlegame", chances=1)
     cells = {(c.cause, c.motif, c.phase): c for c in store.cells()}
     assert cells[("missed opponent threat", "fork", "middlegame")].errors == 1
-    assert cells[(None, "fork", "middlegame")].chances == 1
-    # The user's correction moves the error to the new cause.
+    assert cells[(None, "fork", "middlegame")].chances == 1  # the tactic was on the board
+    assert cells[(None, "fork", "opening")].chances == 1
+    assert cells[(None, None, "middlegame")].chances == 1
+    # The user's correction moves the error to the new cause; the cells follow.
     row = store.correct_evidence("g1", 0, 7, "miscalculated line")
     assert row is not None and row.corrected and row.cause == "miscalculated line"
     cells = {(c.cause, c.motif, c.phase): c for c in store.cells()}
     assert cells[("miscalculated line", "fork", "middlegame")].errors == 1
-    assert cells.get(("missed opponent threat", "fork", "middlegame")) is None or (
-        cells[("missed opponent threat", "fork", "middlegame")].errors == 0
-    )
-    store.end_game("g1", 9.0, "1-0", "checkmate", accuracy=88.0)
+    assert ("missed opponent threat", "fork", "middlegame") not in cells
+    store.self_report(second, "I thought the knight was pinned")
+    assert store.evidence("g1")[0].self_report == "I thought the knight was pinned"
+    store.end_game("g1", 9.0, "1-0", "checkmate", accuracy=88.0, final_score=1.0)
     assert store.games_count() == 1
-    assert store.game("g1") is not None and store.game("g1").accuracy == 88.0  # type: ignore[union-attr]
+    game = store.game("g1")
+    assert game is not None and game.accuracy == 88.0 and game.final_score == 1.0
+    store.set_game("g1", time_control="10 min")
+    game = store.game("g1")
+    assert game is not None and game.time_control == "10 min"
     store.end_session("s1", 10.0, "one game")
     assert store.last_session(before="s2") is not None
     assert store.last_session(before="s1") is None
+    store.close()
+
+
+def test_the_coachs_queries_are_read_only_and_bounded() -> None:
+    from sidecoach.profile.store import QueryRefused
+
+    store = Store(None)
+    store.start_game("g1", 1.0, "white", chess.STARTING_FEN)
+    names, rows = store.query("SELECT game_id, user_side FROM games")
+    assert names == ["game_id", "user_side"] and rows == [("g1", "white")]
+    names, rows = store.query("WITH g AS (SELECT * FROM games) SELECT COUNT(*) AS n FROM g")
+    assert rows == [(1,)]
+    for bad in (
+        "DELETE FROM games",
+        "UPDATE games SET result = '1-0'",
+        "INSERT INTO sessions (session_id, started_at) VALUES ('x', 0)",
+        "DROP TABLE games",
+        "PRAGMA table_info(games)",
+        "ATTACH DATABASE 'x.db' AS x",
+        "SELECT 1; DELETE FROM games",
+        "",
+        "SELECT * FROM nowhere",
+    ):
+        with pytest.raises(QueryRefused):
+            store.query(bad)
+    assert store.game("g1") is not None  # nothing was written
+    # A runaway query is interrupted, and the row cap holds.
+    with pytest.raises(QueryRefused):
+        store.query(
+            "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n)"
+            " SELECT COUNT(*) FROM n",
+            seconds=0.2,
+        )
+    _, rows = store.query(
+        "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n LIMIT 500) SELECT x FROM n",
+        rows=10,
+    )
+    assert len(rows) == 10
     store.close()
 
 
@@ -400,9 +482,18 @@ class Feed:
             )
         )
         if analysis:
-            lines = [
-                Line(moves=[reply] if reply else [], depth=14, expected_score=0.5, mate=reply_mate)
-            ]
+            lines = (
+                []
+                if self.board.is_game_over()
+                else [
+                    Line(
+                        moves=[reply] if reply else [],
+                        depth=14,
+                        expected_score=0.5,
+                        mate=reply_mate,
+                    )
+                ]
+            )
             got += self.send(
                 Analysis(
                     game_id="g",
@@ -682,3 +773,125 @@ def test_the_next_game_flushes_the_last_games_review() -> None:
     assert not any(isinstance(e, GameReview) for e in f.end())
     got = f.send(GameStarted(game_id="g2", user_side=Side.WHITE, start_fen=chess.STARTING_FEN))
     assert any(isinstance(e, GameReview) and e.game_id == "g" for e in got)
+
+
+# ---- the coach's own queries -------------------------------------------------------------
+
+
+class ScriptedProvider:
+    name = "scripted"
+
+    def __init__(self, replies: list[str]) -> None:
+        self.replies = list(replies)
+        self.prompts: list[tuple[str, list]] = []
+
+    def healthcheck(self) -> tuple[bool, str]:
+        return True, "scripted"
+
+    def chat(
+        self,
+        system: str,
+        messages,
+        *,
+        max_tokens: int = 900,
+        temperature: float = 0.7,
+        thinking: bool = False,
+    ):
+        from sidecoach.llm.base import Completion
+
+        self.prompts.append((system, list(messages)))
+        return Completion(text=self.replies.pop(0) if self.replies else "")
+
+
+def _played_store() -> Store:
+    """A store with one judged game in it, the way the profiler writes one."""
+    f = Feed()
+    f.send(ClockObservation(white_ms=600_000, black_ms=600_000, running=Side.WHITE))
+    f.play("e4", label=Label.BOOK)
+    f.play("e5", label=Label.BOOK)
+    f.play("Qh5", loss=0.12, label=Label.MISTAKE, after_tags=[FORK])
+    f.play("Nc6")
+    f.send(ClockObservation(white_ms=20_000, black_ms=500_000, running=Side.WHITE))
+    f.play("Bc4", label=Label.BEST, tags=[], after_tags=[])
+    f.play("Nf6", loss=0.3, label=Label.BLUNDER)
+    f.play("Qxf7#", label=Label.BEST)
+    f.end("1-0", "game over on board")
+    f.profiler.end_session(f.ts + 1)
+    return f.store
+
+
+def test_every_worked_query_in_the_schema_doc_runs() -> None:
+    from sidecoach.profile.ask import EXAMPLES, SCHEMA_DOC, system_message
+
+    store = _played_store()
+    for question, sql in EXAMPLES:
+        columns, rows = store.query(sql)
+        assert columns, question
+    # The doc names every column the tables have, and no other.
+    import re
+
+    for table in ("games", "moves", "evidence", "dialogue", "sessions"):
+        names, _ = store.query(f"SELECT * FROM {table} LIMIT 0")
+        block = SCHEMA_DOC.split(f"TABLE {table}", 1)[1].split("\nTABLE ", 1)[0]
+        for name in names:
+            assert re.search(rf"\b{name}\b", block), f"{table}.{name} is not documented"
+    assert "json_each" in system_message()
+
+
+def test_the_record_carries_what_a_question_needs() -> None:
+    store = _played_store()
+    moves = store.moves("g")
+    assert [m.phase for m in moves][:3] == ["opening", "opening", "opening"]
+    assert moves[0].clock_ms == 600_000 and moves[4].clock_ms == 20_000
+    assert moves[0].move_number == 1 and moves[1].move_number == 1 and moves[2].move_number == 2
+    assert all(m.score_after is not None for m in moves)
+    assert moves[-1].score_after == 1.0  # mate: the player won
+    assert moves[-1].gives_check and moves[-1].capture
+    assert moves[2].allowed_tags == ["fork"] and moves[3].available_tags == ["fork"]
+    assert moves[2].best_san == "Nf3"
+    game = store.game("g")
+    assert game is not None and game.time_control == "10 min" and game.final_score == 1.0
+    assert game.reason == "checkmate"
+
+
+def test_the_model_queries_then_answers_in_prose() -> None:
+    from sidecoach.profile.ask import answer
+
+    store = _played_store()
+    provider = ScriptedProvider(
+        [
+            "```sql\nSELECT phase, COUNT(*) AS n FROM evidence GROUP BY phase\n```",
+            "Your one mistake so far was in the opening, so there is not much of a pattern yet.",
+        ]
+    )
+    got = answer("why do I lose in the middlegame?", store, provider)  # type: ignore[arg-type]
+    assert got.text.startswith("Your one mistake") and not got.failed
+    assert got.calls == 2 and len(got.exchanges) == 1
+    assert got.exchanges[0].columns == ["phase", "n"] and got.exchanges[0].rows == [("opening", 1)]
+    system, messages = provider.prompts[1]
+    assert "TABLE moves" in system and "Worked queries" in system
+    assert messages[0]["content"] == "Question: why do I lose in the middlegame?"
+    assert "Rows:\nphase | n\nopening | 1" in messages[2]["content"]
+
+
+def test_a_refused_query_goes_back_to_the_model_and_the_rounds_are_bounded() -> None:
+    from sidecoach.profile.ask import answer
+
+    store = _played_store()
+    provider = ScriptedProvider(
+        [
+            "```sql\nDELETE FROM games\n```",
+            "```sql\nSELECT COUNT(*) AS games FROM games\n```",
+            "You have played 1 game.",
+        ]
+    )
+    got = answer("how many games?", store, provider)  # type: ignore[arg-type]
+    assert got.text == "You have played 1 game." and got.calls == 3
+    assert got.exchanges[0].error and "only SELECT" in got.exchanges[0].error
+    assert "Query refused" in provider.prompts[1][1][2]["content"]
+    assert store.games_count() == 1
+    # A model that never writes prose: the rounds run out and the last rows stand in.
+    provider = ScriptedProvider(["```sql\nSELECT COUNT(*) AS games FROM games\n```"] * 6)
+    got = answer("how many games?", store, provider, rounds=2)  # type: ignore[arg-type]
+    assert got.failed and got.calls == 3 and got.text == "From the record: games 1."
+    assert "Answer now in prose" in provider.prompts[2][1][-1]["content"]

@@ -772,6 +772,26 @@ _ASK_REVIEW = re.compile(
     r"what should i work on)\b",
     re.IGNORECASE,
 )
+# A question about the player over their games, not about this position: the record
+# answers it, the coach writing its own queries (profile/ask.py). "This game" and "the
+# last move" stay with the game's own paths above.
+_ASK_PROFILE = re.compile(
+    r"\b(?:my (?:games|history|record|profile|stats|statistics|weakness(?:es)?|"
+    r"strengths?|habits?|pattern|trend|progress|results?|last (?:few |\d+ )?games)|"
+    r"(?:over|in) (?:the )?(?:last|past|previous) (?:few |\d+ )?"
+    r"(?:games|days|weeks|months|sessions)|"
+    r"(?:all|previous|earlier|other|past|recent) (?:games|sessions)|last session|"
+    r"(?:across|between|over) (?:games|sessions)|how many games|"
+    r"(?:do|am|have) i (?:always|usually|often|tend to|keep|generally|typically|normally)|"
+    r"why (?:do|am) i (?:always|usually|often|keep|so|bad|weak|losing|blundering)|"
+    r"(?:am|are) i (?:getting )?(?:better|worse|improving)|"
+    r"(?:what|which) (?:openings?|tactics?|motifs?|phase) (?:do|am|have) i|"
+    r"(?:my|the) (?:biggest|worst|most common|main|recurring) "
+    r"(?:weakness|problem|mistake|cost|leak)s?|"
+    r"what should i (?:study|practise|practice|train|focus on|"
+    r"work on (?:in general|next|overall)))\b",
+    re.IGNORECASE,
+)
 # Questions about facts that are never withheld: the material, the opening, who stands better.
 _ASK_MATERIAL = re.compile(
     r"\b(?:material|(?:how many|what) (?:pieces|pawns)|(?:am|are) i up|who'?s up|up material|"
@@ -923,6 +943,10 @@ class Coach:
         # game just ended, for the coach's summary.
         self.profile: ProfileSnapshot | None = None
         self._review_lines: list[str] = []
+        # The record's question-answerer (profile/ask.py), set by whoever owns the store;
+        # the answers it gave, with their queries, for the panel's log.
+        self.profile_ask: Callable[[str], Any] | None = None
+        self.profile_answers: list[tuple[str, Any]] = []
 
     # Lifecycle
 
@@ -990,6 +1014,9 @@ class Coach:
         its own, and run on the caller's thread it stalled the whole pipeline for seconds
         (the first live games: every button press froze the vision until it returned).
         """
+        if self.profile_ask is not None and _ASK_PROFILE.search(text):
+            self._ask_profile(text, ts)
+            return
         position = self._current
         if position is None or position.facts is None:
             position = self._latest_with_facts()
@@ -1094,6 +1121,37 @@ class Coach:
             checked()  # replay and evaluation: the request must exist when ask() returns
         else:
             threading.Thread(target=checked, name="sidecoach-claims", daemon=True).start()
+
+    def _ask_profile(self, text: str, ts: float) -> None:
+        """A question about the player over their games: answered from the record by the
+        profile's own model loop, off this thread (several model calls), and spoken as
+        the coach's turn when it lands. The queries it ran are kept for the log."""
+        assert self.profile_ask is not None
+        with self._lock:
+            self.conversation.user_said(text)
+        ask = self.profile_ask
+
+        def run() -> None:
+            try:
+                answer = ask(text)
+            except Exception as exc:  # noqa: BLE001 - the record must not take the coach down
+                self._queue_plain(
+                    Trigger.USER_ASK,
+                    "I could not read the record just now; ask me again in a moment.",
+                    ts,
+                    record_now=True,
+                )
+                self.profile_answers.append(("error", repr(exc)))
+                return
+            with self._lock:
+                self.conversation.note(
+                    f"The coach looked the question up in the record ({len(answer.exchanges)} "
+                    f"quer{'y' if len(answer.exchanges) == 1 else 'ies'})."
+                )
+            self.profile_answers.append(("answer", answer))
+            self._queue_plain(Trigger.USER_ASK, answer.text, ts, record_now=True)
+
+        threading.Thread(target=run, name="profile-ask", daemon=True).start()
 
     def hint(self, ts: float) -> None:
         self.ask("hint", ts)

@@ -194,6 +194,7 @@ class PanelEngine:
             "profile": None,
         }
         self._profiler: Any = None
+        self._profile_seen = 0
         logging.getLogger("sidecoach.voice").addHandler(_VoiceLogHandler(self))
 
     # ---- control surface (called from the API / GUI thread) -------------------------------
@@ -568,6 +569,13 @@ class PanelEngine:
         first_snapshot = profiler.snapshot()
         self._set(profile=self._profile_state(first_snapshot))
         coaching.events([first_snapshot], time.monotonic())
+        if coaching.coach is not None:
+            # A question about the player over their games: the coach's model writes the
+            # queries itself (profile/ask.py), read-only over this store.
+            from sidecoach.profile import ask as profile_ask
+
+            provider = coaching.coach.speaker.provider
+            coaching.coach.profile_ask = lambda q: profile_ask.answer(q, store, provider)
         threading.Thread(target=self._warm_voice, name="voice-load", daemon=True).start()
         self._set(status="waiting for a board", coach_on=coaching.on, analysis_on=assessing.on)
 
@@ -995,6 +1003,25 @@ class PanelEngine:
                 kind=entry.kind,
                 body=text[:6000],
             )
+        for kind, answer in coach.profile_answers[self._profile_seen :]:
+            # What the coach looked up in the record for a question about the player.
+            if kind == "error":
+                self._emit("coach", "error", f"record lookup failed: {answer}")
+                continue
+            for i, exchange in enumerate(answer.exchanges, start=1):
+                head = exchange.error or f"{len(exchange.rows)} rows"
+                self._emit(
+                    "coach",
+                    "warn" if exchange.error else "info",
+                    f"record query {i}: {elide(' '.join(exchange.sql.split()), 90)} — {head}",
+                    sql=exchange.sql,
+                    columns=exchange.columns,
+                    rows=[[str(v) for v in row] for row in exchange.rows[:20]],
+                    error=exchange.error,
+                )
+            if answer.failed:
+                self._emit("coach", "warn", "record: the model wrote no answer; the rows stand in")
+        self._profile_seen = len(coach.profile_answers)
         for spoken in coach.spoken[seen:]:
             message = spoken.message
             if message.text:

@@ -187,9 +187,10 @@ def test_a_correction_moves_through_the_api(tmp_path: Path) -> None:
         GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.STARTING_FEN), 0.0
     )
     store.add_evidence(
-        "g",
-        0,
-        3,
+        7,
+        game_id="g",
+        segment=0,
+        ply=3,
         phase="opening",
         expected_loss=0.12,
         cause="positional misjudgment",

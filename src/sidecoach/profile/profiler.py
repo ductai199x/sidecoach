@@ -3,8 +3,9 @@ out (DESIGN sections 5.6 and 5.7).
 
 It keeps its own account of each game from the same events the coach reads -- the
 moves, the engine's verdicts, the analyses of the positions they lead to, the clocks --
-and writes everything to the store as it happens. A judged move of the player's counts
-as a chance in its phase and for every tactic that was on the board; a mistake or a
+and writes everything to the store as it happens, each move with the facts a question
+might later need (the phase, the player's clock, the material, the expected score after
+it from the player's side, the tactics on the board before and after). A mistake or a
 blunder is placed on the two axes (causes.py) once its assessment and the analysis of
 the position it left have both arrived, and becomes evidence. When the game ends the
 review is built from the record (review.py) and the snapshot of the whole profile is
@@ -22,6 +23,7 @@ from dataclasses import dataclass, field
 import chess
 
 from sidecoach.analysis.phase import phase_of
+from sidecoach.analysis.score import terminal_expected_score
 from sidecoach.events import (
     Analysis,
     ClockObservation,
@@ -50,15 +52,39 @@ from sidecoach.profile.store import Store
 REVIEW_GRACE_S = 90.0
 
 
+_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
+
+
+def material_balance(board: chess.Board, side: chess.Color) -> int:
+    """Material from `side`'s view, in pawns: positive is up."""
+    total = 0
+    for piece in board.piece_map().values():
+        value = _VALUES.get(piece.piece_type, 0)
+        total += value if piece.color == side else -value
+    return total
+
+
+def time_control_words(white_ms: int | None, black_ms: int | None) -> str | None:
+    """The time control from the clock's first reading: "10 min", "3 min", "30 s"."""
+    start = max((ms for ms in (white_ms, black_ms) if ms is not None), default=None)
+    if start is None or start <= 0:
+        return None
+    if start >= 60_000:
+        minutes = start / 60_000
+        return f"{minutes:g} min"
+    return f"{start // 1000} s"
+
+
 @dataclass
 class _Ply:
     move: MovePlayed
+    move_id: int = 0
     assessment: MoveAssessment | None = None
     clock_ms: int | None = None  # the mover's clock when the move was made
     phase: str = "middlegame"
     cause: str | None = None
     motif: str | None = None
-    placed: bool = False  # the evidence written, the cells bumped
+    placed: bool = False  # the evidence written
 
 
 @dataclass
@@ -73,6 +99,7 @@ class _Game:
     analyses: dict[tuple[int, int], Analysis] = field(default_factory=dict)
     opening: str | None = None
     last_fen: str = chess.STARTING_FEN
+    time_control: str | None = None
     ended: bool = False
     # The game is over; its review waits for the last verdicts (see `_maybe_review`).
     end: GameEnded | None = None
@@ -112,6 +139,11 @@ class Profiler:
             return [*self.flush(ts), *self._start(event, ts)]
         if isinstance(event, ClockObservation):
             self._clock = (event.white_ms, event.black_ms)
+            game = self._game
+            if game is not None and game.time_control is None and not game.ended:
+                game.time_control = time_control_words(event.white_ms, event.black_ms)
+                if game.time_control is not None:
+                    self.store.set_game(game.game_id, time_control=game.time_control)
             return []
         game = self._game
         if game is None:
@@ -131,8 +163,15 @@ class Profiler:
             game.last_fen = event.fen
             return []
         if isinstance(event, CoachMessage):
+            at = game.plies.get((game.segment, event.ply)) if event.ply is not None else None
             self.store.add_dialogue(
-                game.game_id, ts, "coach", event.trigger.value, event.text, event.ply
+                game.game_id,
+                ts,
+                "coach",
+                event.trigger.value,
+                event.text,
+                event.ply,
+                at.move_id if at is not None else None,
             )
             return []
         if isinstance(event, UserUtterance):
@@ -158,29 +197,62 @@ class Profiler:
     def _move(self, game: _Game, event: MovePlayed, ts: float) -> list[Event]:
         key = (game.segment, event.ply)
         ply = _Ply(move=event)
-        mover = chess.Board(event.fen_before).turn
+        before = chess.Board(event.fen_before)
+        after = chess.Board(event.fen_after)
+        move = chess.Move.from_uci(event.uci)
+        mover = before.turn
         ply.clock_ms = self._clock[0] if mover == chess.WHITE else self._clock[1]
+        ply.phase = phase_of(before)
         game.plies[key] = ply
         game.last_fen = event.fen_after
-        self.store.add_move(
+        user = chess.WHITE if game.user_side is Side.WHITE else chess.BLACK
+        ply.move_id = self.store.add_move(
             game.game_id,
             game.segment,
             event.ply,
-            event.san,
-            event.uci,
+            move_number=before.fullmove_number,
+            san=event.san,
+            uci=event.uci,
             by_user=event.by_user,
             fen_before=event.fen_before,
             fen_after=event.fen_after,
+            phase=ply.phase,
             think_ms=event.think_ms,
+            clock_ms=ply.clock_ms,
+            capture=before.is_capture(move) if move in before.legal_moves else False,
+            gives_check=after.is_check(),
+            material=material_balance(after, user),
             ts=ts,
         )
         return []
 
+    def _score_for_user(self, game: _Game, event: Analysis) -> float | None:
+        """The expected score of the analysed position from the player's side: the
+        engine's is from the side to move's."""
+        board = chess.Board(event.fen)
+        if event.lines:
+            score = event.lines[0].expected_score
+        else:
+            terminal = terminal_expected_score(board)
+            if terminal is None:
+                return None
+            score = terminal
+        user = chess.WHITE if game.user_side is Side.WHITE else chess.BLACK
+        return score if board.turn == user else 1.0 - score
+
     def _analysis(self, game: _Game, event: Analysis) -> list[Event]:
-        game.analyses[(game.segment, event.ply)] = event
+        key = (game.segment, event.ply)
+        game.analyses[key] = event
         if event.opening:
             game.opening = event.opening
-        return self._place(game, (game.segment, event.ply))
+        ply = game.plies.get(key)
+        if ply is not None and ply.move_id:
+            self.store.analyse_move(
+                ply.move_id,
+                score_after=self._score_for_user(game, event),
+                allowed_tags=[t.name for t in event.tags if t.name in causes.TACTICAL],
+            )
+        return self._place(game, key)
 
     def _assessment(self, game: _Game, event: MoveAssessment) -> list[Event]:
         key = (game.segment, event.ply)
@@ -190,27 +262,33 @@ class Profiler:
         ply.assessment = event
         before = chess.Board(ply.move.fen_before)
         ply.phase = phase_of(before, in_book=event.label is Label.BOOK)
+        faced = game.analyses.get((game.segment, event.ply - 1))
+        available = (
+            sorted({t.name for t in faced.tags if t.name in causes.TACTICAL})
+            if faced is not None
+            else []
+        )
+        best_uci = event.best[0] if event.best else None
+        best_san: str | None = None
+        if best_uci is not None:
+            best_move = chess.Move.from_uci(best_uci)
+            if best_move in before.legal_moves:
+                best_san = before.san(best_move)
         self.store.assess_move(
-            game.game_id,
-            game.segment,
-            event.ply,
+            ply.move_id,
             label=event.label.value if event.label else None,
             severity=event.severity.value,
             expected_loss=event.expected_loss,
-            best_uci=event.best[0] if event.best else None,
+            best_uci=best_uci,
+            best_san=best_san,
             accuracy=event.accuracy,
             tags=[t.name for t in event.tags],
+            available_tags=available,
             depth=event.depth,
+            phase=ply.phase,
         )
         if not ply.move.by_user:
             return []
-        # A judged move of the player's is a chance: in its phase, and for every tactic that
-        # was on the board for them.
-        self.store.bump_cell(None, None, ply.phase, chances=1)
-        faced = game.analyses.get((game.segment, event.ply - 1))
-        if faced is not None:
-            for name in {t.name for t in faced.tags if t.name in causes.TACTICAL}:
-                self.store.bump_cell(None, name, ply.phase, chances=1)
         return self._place(game, key)
 
     def _place(self, game: _Game, key: tuple[int, int]) -> list[Event]:
@@ -256,16 +334,16 @@ class Profiler:
         ply.cause, ply.motif, ply.placed = cause, motif, True
         loss = ply.assessment.expected_loss
         self.store.add_evidence(
-            game.game_id,
-            segment,
-            number,
+            ply.move_id,
+            game_id=game.game_id,
+            segment=segment,
+            ply=number,
             phase=ply.phase,
             expected_loss=loss,
             cause=cause,
             motif=motif,
             time_pressure=cause == causes.TIME_PRESSURE,
         )
-        self.store.bump_cell(cause, motif, ply.phase, errors=1, loss=loss)
         return ProfileEvidence(
             game_id=game.game_id,
             ply=number,
@@ -283,15 +361,7 @@ class Profiler:
         keep = max(0, len(plies) - event.plies)
         from_ply = plies[keep][1] if keep < len(plies) else plies[-1][1] + 1
         for key in plies[keep:]:
-            gone = game.plies.pop(key)
-            if gone.placed and gone.assessment is not None:
-                self.store.bump_cell(
-                    gone.cause,
-                    gone.motif,
-                    gone.phase,
-                    errors=-1,
-                    loss=-gone.assessment.expected_loss,
-                )
+            game.plies.pop(key)
             game.analyses.pop(key, None)
         self.store.withdraw_moves(game.game_id, game.segment, from_ply)
         game.last_fen = event.fen
@@ -322,14 +392,18 @@ class Profiler:
             return []
         game.reviewed = True
         review = self.review(game, game.end.result, _reason_words(game.end))
+        final = {"1-0": 1.0, "0-1": 0.0, "1/2-1/2": 0.5}.get(game.end.result)
+        if final is not None and game.user_side is Side.BLACK:
+            final = 1.0 - final
         self.store.end_game(
             game.game_id,
             game.ended_at,
             game.end.result,
-            game.end.reason,
+            _reason_words(game.end),
             pgn=game.end.pgn,
             final_fen=game.end.final_fen,
             accuracy=review.accuracy,
+            final_score=final,
             opening=game.opening,
         )
         self._reviews.append(review)
@@ -419,8 +493,7 @@ class Profiler:
         placed = [k for k, p in game.plies.items() if p.placed]
         if not placed:
             return
-        segment, ply = max(placed)
-        self.store.self_report(game.game_id, segment, ply, text)
+        self.store.self_report(game.plies[max(placed)].move_id, text)
 
     # ---- the session -------------------------------------------------------------------
 

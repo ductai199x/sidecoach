@@ -301,6 +301,13 @@ def replay(
     assess: Annotated[bool, typer.Option(help="Also run the engine over the moves found")] = False,
     coach: Annotated[bool, typer.Option(help="Also let the coach speak, as it would live")] = False,
     depth: Annotated[int | None, typer.Option(help="Engine depth for --assess")] = None,
+    profile: Annotated[
+        Path | None,
+        typer.Option(
+            help="With --assess: write the game into this profile database (a record built"
+            " from recordings), instead of the memory-only profile a replay keeps"
+        ),
+    ] = None,
     config: ConfigOpt = None,
 ) -> None:
     """Summarise a recording, track the board through it, or reconstruct the game.
@@ -323,7 +330,9 @@ def replay(
         assessing = _Assessing(settings, assess or coach, depth=depth)
         coaching = _Coaching(settings, coach and assessing.on)
         try:
-            _replay_moves(rec, truth if truth.exists() else None, game, scale, assessing, coaching)
+            _replay_moves(
+                rec, truth if truth.exists() else None, game, scale, assessing, coaching, profile
+            )
         finally:
             assessing.close()
             coaching.close()
@@ -375,6 +384,7 @@ def _replay_moves(
     scale: float = 1.0,
     assessing: _Assessing | None = None,
     coaching: _Coaching | None = None,
+    profile_path: Path | None = None,
 ) -> None:
     """Run the game pipeline over a recording and, if a truth PGN exists, score one game.
 
@@ -388,14 +398,17 @@ def _replay_moves(
     from sidecoach.state.pipeline import GamePipeline
     from sidecoach.vision.clock import ClockReader
 
-    # The profile follows a coached replay in memory: the review and the evidence are
-    # printed, and nothing is learned from a game that was already played.
+    # The profile follows an assessed replay: the review and the evidence are printed.
+    # In memory unless `profile_path` says otherwise, since nothing should be learned
+    # from a game that was already played -- except on purpose, to build a record from
+    # the recordings.
     profiling = (
-        _Profiling(load_settings(None), live=False)
-        if coaching is not None and coaching.on
+        _Profiling(load_settings(None), live=False, path=profile_path)
+        if assessing is not None and assessing.on
         else None
     )
     if profiling is not None and coaching is not None:
+        profiling.attach(coaching)
         coaching.events([profiling.snapshot()], time.monotonic())
     truth = _read_truth(truth_pgn) if truth_pgn is not None else []
     truth_placements: list[str] = []
@@ -430,13 +443,15 @@ def _replay_moves(
             )
         if assessing is not None:
             assessed = assessing.drain(indent="            ")
+            profile_events = (
+                profiling.events([*events, *assessed], indent="            ")
+                if profiling is not None
+                else []
+            )
             if coaching is not None:
                 coaching.events(events, tick.ts)
                 coaching.events(assessed, tick.ts)
-                if profiling is not None:
-                    coaching.events(
-                        profiling.events([*events, *assessed], indent="            "), tick.ts
-                    )
+                coaching.events(profile_events, tick.ts)
                 coaching.tick(tick.ts)
                 coaching.drain(indent="            ")
         for event in events:
@@ -502,12 +517,14 @@ def _replay_moves(
         # The engine and the model fall behind a replay that runs faster than the game did;
         # a replay waits for them, since nothing else is waiting on it.
         assessed = assessing.wait(timeout=1800.0, indent="            ")
+        profile_events = (
+            profiling.events(assessed, indent="            ", flush=True)
+            if profiling is not None
+            else []
+        )
         if coaching is not None:
             coaching.events(assessed, time.monotonic())
-            if profiling is not None:
-                coaching.events(
-                    profiling.events(assessed, indent="            ", flush=True), time.monotonic()
-                )
+            coaching.events(profile_events, time.monotonic())
             coaching.wait(timeout=1800.0, indent="            ")
             if coaching.on:
                 console.print(f"            [dim]{coaching.summary()}[/dim]")
@@ -942,11 +959,13 @@ class _Profiling:
     (to the coach, and to the console). A live session teaches the profile on disk; a
     replay a copy in memory that is forgotten with it."""
 
-    def __init__(self, settings: Settings, live: bool) -> None:
+    def __init__(self, settings: Settings, live: bool, path: Path | None = None) -> None:
         from sidecoach.profile.profiler import Profiler
         from sidecoach.profile.store import Store
 
-        self.store = Store(settings.data_dir / "profile.sqlite" if live else None)
+        if path is None and live:
+            path = settings.data_dir / "profile.sqlite"
+        self.store = Store(path)
         self.profiler = Profiler(self.store, ts=time.time())
 
     def events(
@@ -970,6 +989,16 @@ class _Profiling:
 
     def snapshot(self) -> Event:
         return self.profiler.snapshot()
+
+    def attach(self, coaching: _Coaching) -> None:
+        """Let the coach answer questions about the player from the record, its model
+        writing the queries (profile/ask.py)."""
+        if coaching.coach is None:
+            return
+        from sidecoach.profile import ask as profile_ask
+
+        store, provider = self.store, coaching.coach.speaker.provider
+        coaching.coach.profile_ask = lambda q: profile_ask.answer(q, store, provider)
 
     def close(self, indent: str = "") -> None:
         try:
@@ -1537,6 +1566,7 @@ def watch(
     coaching = _Coaching(settings, coach and assessing.on)
     coaching.log = log
     profiling = _Profiling(settings, live=True)
+    profiling.attach(coaching)
     coaching.events([profiling.snapshot()], time.monotonic())
     typed = _TypedLine()
 

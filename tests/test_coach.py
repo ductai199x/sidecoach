@@ -1148,3 +1148,43 @@ def test_the_review_is_spoken_from_the_profiles_facts_and_the_next_game_knows_th
     setting = coach.conversation.render()
     assert "What earlier games say about this player" in setting
     assert "missed opponent threat" in setting and "Last session: 2 games" in setting
+
+
+def test_a_question_about_the_player_over_their_games_goes_to_the_record() -> None:
+    """The record's answerer is asked off the coach's thread; the answer is spoken as the
+    coach's turn, the player's words and a note of the lookup join the conversation, and
+    the queries are kept for the log. Questions about this game stay with the game."""
+    import time
+
+    from sidecoach.profile.ask import Answer, Exchange
+
+    coach, provider = _coach(["Keep looking."])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6), 6.5)
+    asked: list[str] = []
+
+    def lookup(question: str) -> Answer:
+        asked.append(question)
+        return Answer(
+            text="Over 9 games you left the opening ahead 7 times and were behind by move 25.",
+            exchanges=[Exchange(sql="SELECT 1", columns=["n"], rows=[(1,)])],
+            calls=2,
+        )
+
+    coach.profile_ask = lookup
+    coach.ask("why am I always losing in the middlegame?", 7.0)
+    deadline = time.monotonic() + 5
+    while not coach.profile_answers and time.monotonic() < deadline:
+        time.sleep(0.02)
+    said = _messages(coach)
+    assert asked == ["why am I always losing in the middlegame?"]
+    assert (
+        said and said[-1].text.startswith("Over 9 games") and said[-1].trigger.value == "user_ask"
+    )
+    assert coach.profile_answers[0][0] == "answer"
+    record = coach.conversation.render()
+    assert 'PLAYER said: "why am I always losing in the middlegame?"' in record
+    assert "looked the question up in the record (1 query)" in record
+    # A question about this position never goes to the record.
+    coach.ask("what should I play here?", 8.0)
+    assert asked == ["why am I always losing in the middlegame?"]

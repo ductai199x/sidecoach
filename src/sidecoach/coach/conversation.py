@@ -268,6 +268,10 @@ class Conversation:
         how = f" ({event.reason})" if event.reason else ""
         self.entries.append(Entry("user", "ended", f"Game over: {event.result}{how}."))
 
+    def note(self, text: str) -> None:
+        """Something that happened, in a sentence, for the record."""
+        self.entries.append(Entry("user", "note", text))
+
     def review(self, lines: Sequence[str]) -> None:
         """The review of the game once it is over: the tally, the accuracy, where it turned
         and why, from the engine's verdicts (profile/review.py)."""
