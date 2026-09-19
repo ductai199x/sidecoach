@@ -89,7 +89,10 @@ limit, about one random game in seventy over every set, theme and size the sweep
 
 This is theme-specific by construction and needs no training. The learned classifier planned
 in DESIGN.md section 5.2 generalises across themes later and can be trained on the crops this
-module labels.
+module labels. A cookie-cutter matcher -- each exemplar laid over the cell, its pixels or its
+foreground compared under and around it -- was built beside the overlap and run against it
+(`cookie`, 2026-09-19): it lost on the sweep and the recordings, for reasons recorded there,
+and stays behind `cookie.MATCHER`.
 """
 
 from __future__ import annotations
@@ -102,6 +105,7 @@ import cv2
 import numpy as np
 
 from sidecoach.events import Side
+from sidecoach.vision import cookie
 from sidecoach.vision.squares import CELL, BoardGeometry, is_light, square_at
 
 INNER = 0.08
@@ -283,6 +287,8 @@ class Silhouette:
     edge_colour: np.ndarray | None = None
     # The two tones of the ink, each as (colour, weight), the fill first.
     tones: tuple[tuple[np.ndarray, float], ...] = ()
+    # How far the square's own pixels stray from its colour (a wood grain's texture).
+    spread: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -298,6 +304,10 @@ class Exemplar:
     # The same for the full mask: where the piece's ink sits, which is what decides
     # whether it has landed. The fuller shape moves less under a lock a pixel off.
     landing_centroid: tuple[float, float]
+    # The piece's own pixels: the working patch of its start cells and the square
+    # colour under it, one per square colour the piece stood on (the median over the
+    # cells of that colour). The cookie-cutter matcher's references (see `cookie`).
+    references: tuple[cookie.Reference, ...] = ()
 
 
 SETTLED_TOLERANCE = 0.08  # of a cell; a dragged piece follows the cursor, far off centre
@@ -755,6 +765,7 @@ def silhouette(
         core_colour,
         edge_colour,
         tones,
+        spread,
     )
 
 
@@ -999,14 +1010,46 @@ class ThemeModel:
     _cells: dict[tuple[int, int], tuple[np.ndarray, Silhouette, bool, float, CellReading]] = field(
         default_factory=dict, repr=False, compare=False
     )
+    # The cookie cutters built from the exemplars, by symbol and variant, on first use.
+    _cutters: dict[tuple[str, str], tuple[cookie.Cutter, ...]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     def __getstate__(self) -> dict[str, object]:
         # The last frame's cells are this session's, not the theme's: pickled, they made
         # a 60 KB theme file 2.8 MB, and a cached theme would have begun its next game
-        # believing it had read a frame.
+        # believing it had read a frame. The cutters are rebuilt from the exemplars, and
+        # the exemplars' references (190 KB of pixels) go with the theme only while the
+        # cookie cutter is the matcher; read back without them, the overlap reads on.
         state = dict(self.__dict__)
         state["_cells"] = {}
+        state["_cutters"] = {}
+        if cookie.MATCHER == "iou":
+            state["exemplars"] = [replace(e, references=()) for e in self.exemplars]
         return state
+
+    def __setstate__(self, state: dict[str, object]) -> None:
+        self.__dict__.update(state)
+        self.__dict__.setdefault("_cells", {})
+        self.__dict__.setdefault("_cutters", {})
+
+    @property
+    def matcher(self) -> str:
+        """The matcher in use: the cookie cutter when switched on and the exemplars carry
+        their pixels (a theme cached before they did falls back to the overlap)."""
+        if cookie.MATCHER == "iou" or any(not e.references for e in self.exemplars):
+            return "iou"
+        return cookie.MATCHER
+
+    def _cutter(self, exemplar: Exemplar, variant: str) -> tuple[cookie.Cutter, ...]:
+        key = (exemplar.symbol, variant)
+        cutters = self._cutters.get(key)
+        if cutters is None:
+            cutters = cookie.build_cutters(
+                exemplar.mask, exemplar.tone, exemplar.references, _BADGE_BLIND, variant
+            )
+            self._cutters[key] = cutters
+        return cutters
 
     @property
     def symbols(self) -> set[str]:
@@ -1119,39 +1162,54 @@ class ThemeModel:
         candidates = [
             e for e in self.exemplars if side is None or e.symbol.isupper() == (side == Side.WHITE)
         ] or self.exemplars
-        best_by_symbol: dict[str, tuple[float, float, Exemplar]] = {}
+        matcher = self.matcher
+        best_by_symbol: dict[str, tuple[float, float, Exemplar, tuple[int, int]]] = {}
         for exemplar in candidates:
-            overlap = max(iou(sil.tone, exemplar.tone), iou(sil.mask, exemplar.mask))
-            dx = int(round((exemplar.align_centroid[0] - align[0]) * size))
-            dy = int(round((exemplar.align_centroid[1] - align[1]) * size))
-            if dx or dy:
-                overlap = max(
-                    overlap,
-                    iou(shift_mask(sil.tone, dx, dy), exemplar.tone),
-                    iou(shift_mask(sil.mask, dx, dy), exemplar.mask),
+            shift = (0, 0)
+            if matcher == "iou":
+                overlap = max(iou(sil.tone, exemplar.tone), iou(sil.mask, exemplar.mask))
+                dx = int(round((exemplar.align_centroid[0] - align[0]) * size))
+                dy = int(round((exemplar.align_centroid[1] - align[1]) * size))
+                if dx or dy:
+                    overlap = max(
+                        overlap,
+                        iou(shift_mask(sil.tone, dx, dy), exemplar.tone),
+                        iou(shift_mask(sil.mask, dx, dy), exemplar.mask),
+                    )
+            else:
+                # The cutter laid over the cell at every shift in its window: the best
+                # fit names the piece, and its shift is where the piece sits.
+                overlap, shift = cookie.score(
+                    self._cutter(exemplar, matcher), sil.inner, sil.mask, sil.background, matcher
                 )
             score = overlap
             if side is None:
                 score -= BRIGHTNESS_WEIGHT * abs(sil.brightness - exemplar.brightness)
             previous = best_by_symbol.get(exemplar.symbol)
             if previous is None or score > previous[0]:
-                best_by_symbol[exemplar.symbol] = (score, overlap, exemplar)
+                best_by_symbol[exemplar.symbol] = (score, overlap, exemplar, shift)
         ranked = sorted(best_by_symbol.items(), key=lambda item: item[1][0], reverse=True)
-        symbol, (score, overlap, exemplar) = ranked[0]
+        symbol, (score, overlap, exemplar, shift) = ranked[0]
         runner_up = ranked[1][1][0] if len(ranked) > 1 else -1.0
-        # Where the piece sits, judged outside the badge corner like the alignment is: a
-        # classification badge on a small cell adds enough ink to pull the whole mask's
-        # centroid a tenth of a cell toward the corner, and the piece under it then never
-        # settled, so a move onto a badged square could not commit until the badge left.
-        landing = _align_centroid(sil.mask)
-        offset = float(
-            np.hypot(
-                landing[0] - exemplar.landing_centroid[0],
-                landing[1] - exemplar.landing_centroid[1],
+        if matcher == "iou":
+            # Where the piece sits, judged outside the badge corner like the alignment
+            # is: a classification badge on a small cell adds enough ink to pull the
+            # whole mask's centroid a tenth of a cell toward the corner, and the piece
+            # under it then never settled, so a move onto a badged square could not
+            # commit until the badge left.
+            landing = _align_centroid(sil.mask)
+            offset = float(
+                np.hypot(
+                    landing[0] - exemplar.landing_centroid[0],
+                    landing[1] - exemplar.landing_centroid[1],
+                )
             )
-        )
+            enough = overlap >= MIN_IOU and score - runner_up >= MIN_MARGIN
+        else:
+            offset = float(np.hypot(shift[0], shift[1])) / size
+            enough = overlap >= cookie.MIN_MATCH and score - runner_up >= cookie.MIN_MATCH_MARGIN
         settled = offset <= settle_tolerance(cell_px) and not sil.hover
-        if overlap >= MIN_IOU and score - runner_up >= MIN_MARGIN:
+        if enough:
             colour = Side.WHITE if symbol.isupper() else Side.BLACK
             return _reading(
                 sil,
@@ -1498,8 +1556,57 @@ def _fuse(symbol: str, sils: list[Silhouette]) -> Exemplar:
         float(np.median([sil.centroid[1] for sil in sils])),
     )
     return Exemplar(
-        symbol, mask, tone, brightness, centroid, _align_centroid(tone), _align_centroid(mask)
+        symbol,
+        mask,
+        tone,
+        brightness,
+        centroid,
+        _align_centroid(tone),
+        _align_centroid(mask),
+        _references(sils),
     )
+
+
+def _references(sils: list[Silhouette]) -> tuple[cookie.Reference, ...]:
+    """The piece as it stood on each square colour at the start: the cells grouped by
+    their square colour (within COVER_TOLERANCE of one another); each group's median
+    patch and colour, the pixels at least half of them show the piece on (the
+    silhouette less the pockets, which show the square within the pocket tolerance),
+    and the fill."""
+    groups: list[list[Silhouette]] = []
+    for sil in sils:
+        for group in groups:
+            if float(np.linalg.norm(group[0].background - sil.background)) <= COVER_TOLERANCE:
+                group.append(sil)
+                break
+        else:
+            groups.append([sil])
+    references = []
+    for group in groups:
+        shows = []
+        for sil in group:
+            pocket = min(BG_TOLERANCE, max(POCKET_TOLERANCE, 3.0 * sil.spread))
+            away = np.linalg.norm(
+                sil.inner.astype(np.float32) - sil.background.astype(np.float32), axis=2
+            )
+            shows.append(sil.mask & (away > pocket))
+        fills = [sil.core_colour for sil in group if sil.core_colour is not None]
+        piece = np.mean(shows, axis=0) >= 0.5
+        patch = np.median(np.stack([sil.inner for sil in group]), axis=0).astype(np.uint8)
+        fill = (
+            np.median(np.stack(fills), axis=0)
+            if fills
+            else (np.median(patch[piece], axis=0) if piece.any() else np.zeros(3))
+        )
+        references.append(
+            cookie.Reference(
+                patch,
+                np.median(np.stack([sil.background for sil in group]), axis=0),
+                piece,
+                np.asarray(fill, dtype=np.float32),
+            )
+        )
+    return tuple(references)
 
 
 def occupancy(frame: np.ndarray, geometry: BoardGeometry) -> np.ndarray:
