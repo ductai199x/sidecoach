@@ -591,59 +591,103 @@ def refine(
     # boundary stay and the fit keeps its sub-pixel precision (without that the comb
     # drifted a third of a percent, and dropping the outer side of the board's edge
     # moved the last tooth a pixel in). Outside the board nothing is masked.
-    weight = np.ones(crop.shape, dtype=np.float32)
-    medians = cell_medians(gray, cand.region, cell)
-    readable = np.ones((8, 8), dtype=bool)
-    if medians is not None:
-        read = colours or palette(medians)
-        readable = readable_against(medians, read)
-        if int(readable.sum()) < MIN_READABLE_CELLS:
-            # Too few cells to place the mask; the candidate stays where it is and carries
-            # the fit and contrast measured there, which is a fit of zero.
-            fit, contrast = fit_score(gray, cand.region, cell, colours)
-            return Refinement(replace(cand, fit=fit, contrast=contrast), 0.0, 0.0)
-        # Each cell's pixels against its own colour: a set whose pieces are mid-tones (a
-        # tan set) lies within the range of the two square colours and would pass a
-        # test against that range. Grown by a pixel: an edge's gradient lies on both
-        # sides of it, the far side of a boundary is the other square and the far side
-        # of the board's own edge is the surroundings.
-        own = np.zeros(crop.shape, dtype=np.uint8)
+    # The mask is laid out on a geometry, and a candidate a cell pitch or two percent off
+    # lays it a fraction of a cell off at the far side, where it then masks the boundaries
+    # themselves and keeps its own error: the comb settled two percent long there once.
+    # So the fit runs again, up to twice, while a pass moves it, each time with the mask
+    # laid out on the last pass's geometry.
+    fitted = cand
+    reference = 0.0
+    strength = 0.0
+    for attempt in range(3):
+        cell = fitted.cell_px
+        weight = np.ones(crop.shape, dtype=np.float32)
+        medians = cell_medians(gray, fitted.region, cell)
+        readable = np.ones((8, 8), dtype=bool)
+        if medians is not None:
+            read = colours or palette(medians)
+            readable = readable_against(medians, read)
+            if int(readable.sum()) < MIN_READABLE_CELLS:
+                # Too few cells to place the mask; the candidate stays where it is and
+                # carries the fit and contrast measured there, which is a fit of zero.
+                fit, contrast = fit_score(gray, cand.region, cand.cell_px, colours)
+                return Refinement(replace(cand, fit=fit, contrast=contrast), 0.0, 0.0)
+            own = np.zeros(crop.shape, dtype=np.uint8)
+            for r in range(8):
+                for c in range(8):
+                    x0, y0, x1, y1 = cell_bounds(fitted.region, cell, r, c)
+                    x0, y0 = max(0, x0 - x_lo), max(0, y0 - y_lo)
+                    x1, y1 = min(crop.shape[1], x1 - x_lo), min(crop.shape[0], y1 - y_lo)
+                    if x1 > x0 and y1 > y0:
+                        block = crop[y0:y1, x0:x1]
+                        own[y0:y1, x0:x1] = np.abs(block - medians[r, c]) <= read[2]
+            # The blends at a boundary, between the two square colours, lie on the grid
+            # lines and are kept there; a pixel grown from a piece's edge is not: eight
+            # bases in a rank, each one pixel of square kept beside black, summed to
+            # three boundaries' worth and pulled the comb a tenth of a cell.
+            lo, hi = min(read[0], read[1]) - read[2], max(read[0], read[1]) + read[2]
+            in_range = (crop >= lo) & (crop <= hi)
+            lines = np.zeros(crop.shape, dtype=bool)
+            # The first pass does not know where the lines are to within the search
+            # window (the tracker's re-fit hands in a lock a third of a cell off), so
+            # its bands span the window; the passes after it know to a few pixels.
+            band = 3 if attempt else int(round(cell * offset_cells)) + 3
+            for k in range(1, 8):
+                gx = int(round(fitted.region.x - x_lo + k * cell))
+                gy = int(round(fitted.region.y - y_lo + k * cell))
+                lines[:, max(0, gx - band) : gx + band + 1] = True
+                lines[max(0, gy - band) : gy + band + 1, :] = True
+            kept = own.astype(bool) | (in_range & lines)
+            x0, y0 = max(0, fitted.region.x - x_lo), max(0, fitted.region.y - y_lo)
+            x1 = min(crop.shape[1], fitted.region.x - x_lo + int(round(8 * cell)))
+            y1 = min(crop.shape[0], fitted.region.y - y_lo + int(round(8 * cell)))
+            # At the board's own edge both sides of the gradient are kept, as everywhere
+            # outside: dropping the outer side moved the last tooth a pixel in.
+            grown = cv2.dilate(own, _DILATE).astype(bool)
+            edge = np.zeros(crop.shape, dtype=bool)
+            edge[max(0, y0 - band) : y0 + band + 1, :] = True
+            edge[max(0, y1 - band) : y1 + band + 1, :] = True
+            edge[:, max(0, x0 - band) : x0 + band + 1] = True
+            edge[:, max(0, x1 - band) : x1 + band + 1] = True
+            kept |= grown & edge
+            weight[y0:y1, x0:x1] *= kept[y0:y1, x0:x1].astype(np.float32)
         for r in range(8):
             for c in range(8):
-                x0, y0, x1, y1 = cell_bounds(cand.region, cell, r, c)
-                x0, y0 = max(0, x0 - x_lo), max(0, y0 - y_lo)
-                x1, y1 = min(crop.shape[1], x1 - x_lo), min(crop.shape[0], y1 - y_lo)
+                inset = int(round(cell * (0.2 if readable[r, c] else 0.08)))
+                x0, y0, x1, y1 = cell_bounds(fitted.region, cell, r, c)
+                x0, y0 = x0 - x_lo + inset, y0 - y_lo + inset
+                x1, y1 = x1 - x_lo - inset, y1 - y_lo - inset
                 if x1 > x0 and y1 > y0:
-                    block = crop[y0:y1, x0:x1]
-                    own[y0:y1, x0:x1] = np.abs(block - medians[r, c]) <= read[2]
-        x0, y0 = max(0, cand.region.x - x_lo), max(0, cand.region.y - y_lo)
-        x1 = min(crop.shape[1], cand.region.x - x_lo + int(round(8 * cell)))
-        y1 = min(crop.shape[0], cand.region.y - y_lo + int(round(8 * cell)))
-        grown = cv2.dilate(own, _DILATE).astype(np.float32)
-        weight[y0:y1, x0:x1] *= grown[y0:y1, x0:x1]
-    for r in range(8):
-        for c in range(8):
-            inset = int(round(cell * (0.2 if readable[r, c] else 0.08)))
-            x0, y0, x1, y1 = cell_bounds(cand.region, cell, r, c)
-            x0, y0 = x0 - x_lo + inset, y0 - y_lo + inset
-            x1, y1 = x1 - x_lo - inset, y1 - y_lo - inset
-            if x1 > x0 and y1 > y0:
-                weight[max(0, y0) : y1, max(0, x0) : x1] = 0.0
+                    weight[max(0, y0) : y1, max(0, x0) : x1] = 0.0
 
-    profile_x = _gradient_profile(crop, axis=1, weight=weight)
-    profile_y = _gradient_profile(crop, axis=0, weight=weight)
-    start_x = cand.region.x - x_lo
-    start_y = cand.region.y - y_lo
-    ox, px, sx = _comb_fit(profile_x, start_x, cell, search, offset_cells)
-    oy, py, sy = _comb_fit(profile_y, start_y, cell, search, offset_cells)
-    reference = _comb_strength(profile_x, start_x, cell) + _comb_strength(profile_y, start_y, cell)
-    pitch = (px + py) / 2.0
-    region = Region(
-        int(round(x_lo + ox)),
-        int(round(y_lo + oy)),
-        int(round(8 * pitch)),
-        int(round(8 * pitch)),
-    )
+        profile_x = _gradient_profile(crop, axis=1, weight=weight)
+        profile_y = _gradient_profile(crop, axis=0, weight=weight)
+        start_x = fitted.region.x - x_lo
+        start_y = fitted.region.y - y_lo
+        ox, px, sx = _comb_fit(profile_x, start_x, cell, search, offset_cells)
+        oy, py, sy = _comb_fit(profile_y, start_y, cell, search, offset_cells)
+        # The strength the candidate itself has on this pass's profiles, for the caller
+        # to weigh the re-fit against: the geometry it was handed, not the last pass's.
+        reference = _comb_strength(profile_x, cand.region.x - x_lo, cand.cell_px) + _comb_strength(
+            profile_y, cand.region.y - y_lo, cand.cell_px
+        )
+        strength = sx + sy
+        pitch = (px + py) / 2.0
+        region = Region(
+            int(round(x_lo + ox)),
+            int(round(y_lo + oy)),
+            int(round(8 * pitch)),
+            int(round(8 * pitch)),
+        )
+        moved = (
+            abs(pitch - cell) > 0.005 * cell
+            or abs(region.x - fitted.region.x) > 2
+            or abs(region.y - fitted.region.y) > 2
+        )
+        fitted = replace(fitted, region=region, cell_px=pitch)
+        if not moved:
+            break
+    region, pitch = fitted.region, fitted.cell_px
     medians = cell_medians(gray, region, pitch)
     if medians is None:
         fit, contrast, occupied = 0.0, 0.0, 0
@@ -654,7 +698,7 @@ def refine(
     board = replace(
         cand, region=region, cell_px=pitch, fit=fit, contrast=contrast, occupied=occupied
     )
-    return Refinement(board, sx + sy, reference)
+    return Refinement(board, strength, reference)
 
 
 def to_gray(frame_bgr: np.ndarray) -> np.ndarray:

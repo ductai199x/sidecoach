@@ -40,10 +40,15 @@ bases pulled the boundary fit (each cell is masked against its own colour); a qu
 fill flipping colour by square (the fill is the tone forming the widest region of its
 own; a piece's side is read from its brightness against each side's exemplars, its shape
 among that side); the digit reader took a rook's colour for the square's, let a rook's
-corner into the digit's window, and gave up on the first digit it could not read. Open
-at 1000 seeds: about one game in seventy, mostly dark shaded sets on the dark board
-(riohacha, pirouetti, icpieces: a piece's shaded half is the square's colour) and a few
-sets whose piece does not land where its exemplar did on a small cell.
+corner into the digit's window, and gave up on the first digit it could not read. A set
+whose bishop is drawn apart from its base lost the base (a part of a silhouette is
+dropped only when it lies wholly in a corner); a piece with little contrast against its
+square is read again at a tolerance to match; the boundary fit runs again from where it
+landed, keeps a boundary's blends on the grid lines only, and weighs a re-fit against
+the geometry it was handed. Open at 1000 seeds: about one game in seventy, mostly dark
+shaded sets on the dark board (riohacha, pirouetti: a piece's shaded half is the
+square's colour) and 44-pixel cells on which a set's piece does not land where its
+exemplar did.
 """
 
 from __future__ import annotations

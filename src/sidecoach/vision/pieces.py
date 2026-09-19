@@ -76,6 +76,13 @@ RING_BAND = 0.07
 # is not an option: on the recorded games rooks and bishops reach blocks at 12% and beyond.
 CORNER_INSET = (0.10, 0.20)
 BG_TOLERANCE = 25.0
+# Once the set's fills are known, a piece whose fill has little contrast against its
+# square is read again with a tolerance of half that contrast, within these bounds: a
+# dark shaded set on a dark board, a greyish white on a pale one, had half of every
+# piece within 25 of the square and read as two shapes. Only that piece's own fill
+# counts: a lower tolerance for every piece let a label's anti-aliasing join a rook.
+BG_TOLERANCE_MIN = 8.0
+BG_CONTRAST_SHARE = 0.5
 POCKET_TOLERANCE = 8.0
 HIGHLIGHT_TOLERANCE = 30.0
 # A tint shifts the ring and the corners the same way; an outline or an edge does not. Each
@@ -343,18 +350,34 @@ def corner_pixels(patch: np.ndarray, inset: tuple[float, float] = CORNER_INSET) 
     return pixels.astype(np.float32)
 
 
+CORNER_BOX = 0.3  # of the patch: a component within one corner's box is no part of a piece
+
+
 def _centred(mask: np.ndarray) -> np.ndarray:
-    """The connected parts of the mask that reach the middle half of the patch: a piece,
-    dragged or not, does; a coordinate label in a corner, a badge, a hint ring at the
-    edge do not. A label the closing above made solid enough to survive the opening
-    moved the a-file pawns' centroids past the landing tolerance."""
+    """The connected parts of the mask that are not confined to a corner: a coordinate
+    label sits in the top-left or bottom-right corner, a badge in the top-right, and each
+    lies wholly within its corner's box; a piece, whatever it is made of, does not. A
+    label the closing above made solid enough to survive the opening moved the a-file
+    pawns' centroids past the landing tolerance. Keeping only the parts that reached the
+    middle of the patch was tried, and dropped the base of a set's bishop, drawn apart
+    from its head."""
     n = mask.shape[0]
-    lo, hi = n // 4, n - n // 4
-    count, labels = cv2.connectedComponents(mask, connectivity=8)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     if count <= 1:
         return mask
-    keep = np.unique(labels[lo:hi, lo:hi])
-    return np.isin(labels, keep[keep != 0]).astype(np.uint8)
+    box = n * CORNER_BOX
+    keep = np.ones(count, dtype=bool)
+    keep[0] = False
+    for k in range(1, count):
+        left = int(stats[k, cv2.CC_STAT_LEFT])
+        top = int(stats[k, cv2.CC_STAT_TOP])
+        right = left + int(stats[k, cv2.CC_STAT_WIDTH])
+        bottom = top + int(stats[k, cv2.CC_STAT_HEIGHT])
+        in_x = left >= n - box or right <= box
+        in_y = top >= n - box or bottom <= box
+        if in_x and in_y:
+            keep[k] = False
+    return np.take(keep, np.asarray(labels, dtype=np.int64)).astype(np.uint8)
 
 
 def _fill_enclosed(foreground: np.ndarray) -> np.ndarray:
@@ -565,6 +588,45 @@ def _overlay_fraction(
     return float(np.count_nonzero(off > OVERLAY_OFF_LINE)) / candidates.size
 
 
+def _mask_and_fill(
+    inner: np.ndarray,
+    gray: np.ndarray,
+    distance: np.ndarray,
+    tolerance: float,
+    pocket: float,
+    fills: tuple[np.ndarray, ...],
+) -> tuple[
+    np.ndarray, float, tuple[np.ndarray, float, tuple[tuple[np.ndarray, float], ...]] | None
+]:
+    """The silhouette at `tolerance` and, unless it is empty, its fill's colour, luminance
+    and tones (see `_fill_colour`).
+
+    A piece whose fill is the square's own colour (a cream set on a light board) is only
+    its outline, so what the outline encloses is filled in; the outline is closed first,
+    since a thin stroke breaks at its anti-aliased joins, and a broken outline enclosed
+    nothing: a wooden knight read as its bare outline on light squares.
+    """
+    foreground = cv2.morphologyEx((distance > tolerance).astype(np.uint8), cv2.MORPH_CLOSE, _KERNEL)
+    mask = _fill_enclosed(foreground.astype(bool))
+    mask = _centred(cv2.morphologyEx(mask, cv2.MORPH_OPEN, _KERNEL))
+    fraction = float(mask.mean())
+    if fraction <= 0:
+        return mask, fraction, None
+    # The fill's colour (see the note above `Kind`). Not the badge corner: a
+    # classification badge's disc lies inside the mask, and its bright ink swung a
+    # black queen to white. The ink: the silhouette less the pockets where the square
+    # itself shows through (between a queen's crown spikes), to the square's own spread
+    # (a wood grain). A pocket a shade off the square is fill: a cream set on a cream
+    # board differs from it by a dozen levels, under what makes foreground, and its fill
+    # is the pocket its outline encloses.
+    on = mask.astype(bool)
+    keep = _BADGE_BLIND if (on & _BADGE_BLIND).any() else np.ones_like(_BADGE_BLIND)
+    ink = on & (distance > pocket)
+    if not ink.any():
+        ink = on
+    return mask, fraction, _fill_colour(inner, gray, ink, keep.astype(np.float32), fills)
+
+
 def silhouette(
     patch: np.ndarray,
     size: int = CELL,
@@ -579,18 +641,21 @@ def silhouette(
     inner = patch[border : patch.shape[0] - border, border : patch.shape[1] - border]
     inner = cv2.resize(inner, (size, size), interpolation=cv2.INTER_AREA)
     distance = np.linalg.norm(inner.astype(np.float32) - background.astype(np.float32), axis=2)
-    # A piece whose fill is the square's own colour (a cream set on a light board) is
-    # only its outline, so what the outline encloses is filled in; the outline is closed
-    # first, since a thin stroke breaks at its anti-aliased joins, and a broken outline
-    # enclosed nothing: a wooden knight read as its bare outline on light squares.
-    foreground = cv2.morphologyEx(
-        (distance > BG_TOLERANCE).astype(np.uint8), cv2.MORPH_CLOSE, _KERNEL
-    )
-    mask = _fill_enclosed(foreground.astype(bool))
-    mask = _centred(cv2.morphologyEx(mask, cv2.MORPH_OPEN, _KERNEL))
-    fraction = float(mask.mean())
     chroma_map = inner.max(axis=2).astype(np.float32) - inner.min(axis=2).astype(np.float32)
     overlay = _overlay_fraction(inner, background, distance, chroma_map, palette)
+    gray = cv2.cvtColor(inner, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    fills = tuple(fill for fill, _ in colours)
+    pocket = min(BG_TOLERANCE, max(POCKET_TOLERANCE, 3.0 * spread))
+    mask, fraction, stats = _mask_and_fill(inner, gray, distance, BG_TOLERANCE, pocket, fills)
+    if stats is not None and fills:
+        # The piece's own fill against this square: with little contrast, read again with
+        # a tolerance to match (see BG_TOLERANCE_MIN).
+        core = stats[0]
+        nearest = min(fills, key=lambda f: float(np.linalg.norm(core - f.astype(np.float32))))
+        contrast = float(np.linalg.norm(nearest.astype(np.float32) - background.astype(np.float32)))
+        tolerance = max(BG_TOLERANCE_MIN, BG_CONTRAST_SHARE * contrast)
+        if tolerance < BG_TOLERANCE:
+            mask, fraction, stats = _mask_and_fill(inner, gray, distance, tolerance, pocket, fills)
     luminance = 0.0
     brightness = 0.0
     centroid = (0.5, 0.5)
@@ -598,26 +663,10 @@ def silhouette(
     core_colour: np.ndarray | None = None
     edge_colour: np.ndarray | None = None
     tones: tuple[tuple[np.ndarray, float], ...] = ()
-    if fraction > 0:
-        # The fill's colour (see the note above `Kind`). Not the badge corner: a
-        # classification badge's disc lies inside the mask, and its bright ink swung a
-        # black queen to white.
-        on = mask.astype(bool)
-        gray = cv2.cvtColor(inner, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        keep = _BADGE_BLIND if (on & _BADGE_BLIND).any() else np.ones_like(_BADGE_BLIND)
-        # The ink: the silhouette less the pockets where the square itself shows through
-        # (between a queen's crown spikes), to the square's own spread (a wood grain).
-        # A pocket a shade off the square is fill: a cream set on a cream board differs
-        # from it by a dozen levels, under what makes foreground, and its fill is the
-        # pocket its outline encloses.
-        ink = on & (distance > min(BG_TOLERANCE, max(POCKET_TOLERANCE, 3.0 * spread)))
-        if not ink.any():
-            ink = on
-        core, luminance, tones = _fill_colour(
-            inner, gray, ink, keep.astype(np.float32), tuple(fill for fill, _ in colours)
-        )
+    if stats is not None:
+        core, luminance, tones = stats
         core_colour = core
-        tone = _tone_mask(on, inner, core, background)
+        tone = _tone_mask(mask.astype(bool), inner, core, background)
         brightness = luminance / 255.0
         centroid = _centroid(mask)
         outline = mask.astype(bool) & ~tone
