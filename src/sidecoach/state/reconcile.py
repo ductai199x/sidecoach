@@ -819,6 +819,17 @@ class Reconciler:
         """Whether a move story seen once is waiting for its confirming frame."""
         return self._pending_story() is not None
 
+    @property
+    def blocked(self) -> bool:
+        """Whether the last frame held a drag in progress -- a hover outline, or a piece
+        not settled on its square -- which blocks every story without contradicting any."""
+        return self._blocked
+
+    @property
+    def unexplained(self) -> bool:
+        """Whether the last frame disagreed with the position and no story explained it."""
+        return self._unexplained_frames > 0
+
     def pending_terminal(self) -> tuple[Explanation, chess.Board] | None:
         """The story seen once and still pending, when it ends the game: the mate the
         site's dialog then covered before a second clean frame could confirm it."""

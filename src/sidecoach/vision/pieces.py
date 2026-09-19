@@ -35,10 +35,16 @@ What sits on top of the board is told apart by geometry, never by colour:
   nothing commits under it.
 - A cover is an opaque or translucent overlay confirmed by the neighbours: two adjacent
   cells that share one background away from their square colours, or a block of six or
-  more cells that all fit one translucent tint (a dialog fading in). The cells it reaches
-  into read as covered too: unknown, never a hover, and the reconciler may keep their last
-  stable reading for a while. Next to a dialog-sized cover (a block, never a strip), cells
-  that read as junk are relabelled as covered, since nothing is dragged under a dialog.
+  more cells that all fit one translucent tint (a dialog fading in). A dialog is a
+  rectangle whose body is not one colour -- a button, a row of buttons, text -- so while
+  it fades in the tint test takes its top and leaves its body as separate shifted cells;
+  cells off their colour that connect to a covered block and fill a rectangle with it
+  are that body (the second live game's mate, read once under the half-faded dialog with
+  the from-square in the body, was the story the cover then confirmed). The cells a cover
+  reaches into read as covered too: unknown, never a hover, and the reconciler may keep
+  their last stable reading for a while. Next to a dialog-sized cover (a block, never a
+  strip), cells that read as junk are relabelled as covered, since nothing is dragged
+  under a dialog.
 - A tint over half the board or more is no highlight but a theme this recogniser was not
   built on; those cells read as unknown until the pipeline rebuilds it from a start
   position.
@@ -733,6 +739,10 @@ TINT_BLOCK_FILL = 0.8  # of the block's bounding box; a dialog is a filled recta
 THEME_MIN_TINTED = 32  # one square colour re-themed tints half the board; no highlight does
 OVERLAY_SIDE_FILL = 0.9  # an overlay edge fills a whole side of the inner patch
 OVERLAY_BLOCK_FILL = 0.85  # an overlay corner is a solid rectangle
+# A cell this far off its square colour, joined to a covered block, is the dialog's body
+# when the block and such cells fill a rectangle this well: the dialog's fringe fades.
+COVER_BODY_SHIFT = 20.0
+COVER_BODY_FILL = 0.8
 
 
 def opaque_cover(backgrounds: np.ndarray, shifted: np.ndarray) -> np.ndarray:
@@ -850,6 +860,46 @@ def translucent_cover(
                 if around >= 2:
                     covered[r, c] = True
     return covered
+
+
+def cover_body(covered: np.ndarray, shifts: np.ndarray) -> np.ndarray:
+    """The covered cells plus the body of each dialog: cells off their square colour that
+    connect (4-neighbours) to a covered block and, with it, fill a rectangle at least two
+    cells each way and TINT_MIN_CELLS in all. A highlight or two beside a tooltip does not
+    fill a rectangle with it; a fading dialog's buttons and text do."""
+    candidate = covered | (shifts > COVER_BODY_SHIFT)
+    parent = list(range(64))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for r in range(8):
+        for c in range(8):
+            if not candidate[r, c]:
+                continue
+            for rr, cc in ((r, c + 1), (r + 1, c)):
+                if rr < 8 and cc < 8 and candidate[rr, cc]:
+                    parent[find(r * 8 + c)] = find(rr * 8 + cc)
+    members: dict[int, list[int]] = {}
+    for i in range(64):
+        if candidate[i // 8, i % 8]:
+            members.setdefault(find(i), []).append(i)
+    out = covered.copy()
+    for cells in members.values():
+        if len(cells) < TINT_MIN_CELLS or not any(covered[i // 8, i % 8] for i in cells):
+            continue
+        rows = [i // 8 for i in cells]
+        cols = [i % 8 for i in cells]
+        height = max(rows) - min(rows) + 1
+        width = max(cols) - min(cols) + 1
+        if height < 2 or width < 2 or len(cells) < COVER_BODY_FILL * height * width:
+            continue
+        for i in cells:
+            out[i // 8, i % 8] = True
+    return out
 
 
 def overlay_reaches(sil: Silhouette, colour: np.ndarray) -> bool:
@@ -1125,15 +1175,16 @@ class ThemeModel:
             return covered
         backgrounds = np.array([[sil.background for sil in row] for row in sils], dtype=np.float32)
         expected = np.zeros((8, 8, 3), dtype=np.float32)
-        shifted = np.zeros((8, 8), dtype=bool)
+        shifts = np.zeros((8, 8), dtype=np.float32)
         for r in range(8):
             for c in range(8):
                 expected[r, c] = self.light_bg if is_light(r, c) else self.dark_bg
-                shift = float(np.linalg.norm(backgrounds[r, c] - expected[r, c]))
-                shifted[r, c] = shift > HIGHLIGHT_TOLERANCE
+                shifts[r, c] = float(np.linalg.norm(backgrounds[r, c] - expected[r, c]))
+        shifted = shifts > HIGHLIGHT_TOLERANCE
         covered = opaque_cover(backgrounds, shifted) | translucent_cover(
             backgrounds, expected, shifted
         )
+        covered = cover_body(covered, shifts)
         reached = np.zeros((8, 8), dtype=bool)
         for r in range(8):
             for c in range(8):

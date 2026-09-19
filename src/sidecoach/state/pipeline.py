@@ -7,7 +7,7 @@ orientation is decided per game.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import chess
 import numpy as np
@@ -27,13 +27,14 @@ from sidecoach.vision.board_detect import BoardCandidate
 from sidecoach.vision.clock import ClockReader, ClockReading
 from sidecoach.vision.coordinates import learn_rank_labels, read_bottom_side
 from sidecoach.vision.pieces import (
+    CellReading,
     ThemeModel,
     looks_like_start_position,
     orientation_from_start,
     start_shaped,
 )
-from sidecoach.vision.result_badges import read_result
-from sidecoach.vision.squares import BoardGeometry, square_at
+from sidecoach.vision.result_badges import Badge, badge_on
+from sidecoach.vision.squares import BoardGeometry, row_col, square_at
 from sidecoach.vision.theme_cache import ThemeCache, sample_palette
 from sidecoach.vision.tracker import BoardTracker
 
@@ -113,8 +114,10 @@ class GamePipeline:
     # whether one has stayed long enough to count as covering the board.
     _dialog_since: float | None = None
     _covered: bool = False
-    # The result the site's badges showed on the last read frames, and for how many.
+    # The result the site's badges showed on the last read frames, and for how many; and
+    # what the last read frame showed: the result and the two kings' squares.
     _badges: tuple[str, int] | None = None
+    _badge_frame: tuple[str, chess.Square, chess.Square] | None = None
 
     def process(
         self, frame: np.ndarray, ts: float, changed: bool = True, frame_id: int | None = None
@@ -175,9 +178,11 @@ class GamePipeline:
             events += self._emit_screen_state(board_present=True)
             return self._stamp(events, ts, frame_id)
         was_started = self.reconciler.started
+        if changed:
+            self._badge_frame = self._badged_kings(frame, geometry)
         events += self.reconciler.update(self._readings, ts)
         if changed:
-            events += self._end_on_badges(frame, geometry)
+            events += self._end_on_badges()
         events += self._dialog_over_the_board(self._readings, ts)
         if (
             was_started
@@ -228,24 +233,109 @@ class GamePipeline:
         self._covered = True
         return []
 
-    def _end_on_badges(self, frame: np.ndarray, geometry: BoardGeometry) -> list[Event]:
-        """The game ends on the site's result badges (vision/result_badges.py).
+    def _badged_kings(
+        self, frame: np.ndarray, geometry: BoardGeometry
+    ) -> tuple[str, chess.Square, chess.Square] | None:
+        """The site's result badges on the kings (vision/result_badges.py): the result and
+        the two squares they sit on, or None.
 
-        Read at the two kings on every frame of a live game; the pair must agree with
-        itself for BADGE_FRAMES frames. A mating story the badges confirm is committed
-        first, so the record has the move; any other pending story is given a few frames
-        to settle. The reason is what the pipeline knows: a mate or a stalemate on the
-        board, a repetition or the material, a clock at zero; otherwise a resignation, or
-        an agreed draw.
+        The kings are looked for where the reconciler has them and, when the last frame
+        left something unexplained, on the neighbouring squares as well: the mate often
+        lands with the mated king's own move (a premoved king step, then the mate), and
+        the site stamps the badge and the check glow on that king in the same frame, so
+        its cell reads as an unsettled piece of no known kind and the reconciler holds
+        as for a drag. A badge names the king's square: the reading there is replaced by
+        a settled king, and the story confirms on the clean frames instead of waiting for
+        the dialog. Covered cells are never read: a green badge under a half-faded dialog
+        is a grey one.
         """
         rec = self.reconciler
+        readings = self._readings
         if rec is None or not rec.started or rec.finished or self.bottom is None:
+            return None
+        if readings is None:
+            return None
+        bottom = self.bottom
+        wide = rec.pending_story or rec.blocked or rec.unexplained
+
+        def reading_at(square: chess.Square) -> CellReading:
+            r, c = row_col(square, bottom)
+            return readings[r][c]
+
+        def candidates(colour: chess.Color) -> list[chess.Square]:
+            king = rec.board.king(colour)
+            if king is None:
+                return []
+            out = [king]
+            if wide:
+                out += [
+                    sq
+                    for sq in chess.SQUARES
+                    if sq != king and chess.square_distance(sq, king) == 1
+                ]
+            return out
+
+        def badged(colour: chess.Color) -> list[tuple[chess.Square, Badge]]:
+            found = []
+            for sq in candidates(colour):
+                reading = reading_at(sq)
+                if reading.covered or reading.kind == "empty":
+                    continue  # a label runs over the neighbours; the king's square is not empty
+                badge = badge_on(frame, geometry, sq, bottom)
+                if badge is not None:
+                    found.append((sq, badge))
+            return found
+
+        whites = badged(chess.WHITE)
+        if not whites:
+            return None
+        blacks = badged(chess.BLACK)
+        pairs = [
+            (result, wk, bk)
+            for wk, wb in whites
+            for bk, bb in blacks
+            for result, want in (
+                ("1-0", (Badge.WIN, Badge.LOSS)),
+                ("0-1", (Badge.LOSS, Badge.WIN)),
+                ("1/2-1/2", (Badge.DRAW, Badge.DRAW)),
+            )
+            if (wb, bb) == want and wk != bk
+        ]
+        if len(pairs) != 1:
+            return None
+        result, wk, bk = pairs[0]
+        for square, symbol, colour in ((wk, "K", Side.WHITE), (bk, "k", Side.BLACK)):
+            r, c = row_col(square, bottom)
+            reading = readings[r][c]
+            if reading.kind == "empty" or reading.covered:
+                continue  # a badge beside an empty square belongs to a neighbour
+            if reading.kind == "piece" and reading.symbol == symbol and reading.settled:
+                continue
+            readings[r][c] = replace(
+                reading,
+                kind="piece",
+                symbol=symbol,
+                colour=colour,
+                confidence=1.0,
+                settled=True,
+                hover=False,
+                guess=symbol,
+            )
+        return result, wk, bk
+
+    def _end_on_badges(self) -> list[Event]:
+        """The game ends on the site's result badges when the board could not end it:
+        the pair must agree with itself for BADGE_FRAMES frames. A mating story still
+        pending that the badges confirm is committed first, so the record has the move;
+        any other pending story is given a few frames to settle. The reason is what the
+        pipeline knows: a mate or a stalemate on the board, a repetition or the material,
+        a clock at zero; otherwise a resignation, or an agreed draw.
+        """
+        rec = self.reconciler
+        if rec is None or not rec.started or rec.finished or self._badge_frame is None:
             self._badges = None
             return []
-        result = read_result(frame, geometry, rec.board, self.bottom)
-        if result is None:
-            self._badges = None
-            return []
+        result = self._badge_frame[0]
         seen = self._badges[1] + 1 if self._badges is not None and self._badges[0] == result else 1
         self._badges = (result, seen)
         if seen < BADGE_FRAMES:
@@ -302,6 +392,7 @@ class GamePipeline:
         self._dialog_since = None
         self._covered = False
         self._badges = None
+        self._badge_frame = None
         if self.clock is not None:
             self.clock.reset()
 
