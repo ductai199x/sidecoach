@@ -112,6 +112,14 @@ PIECE_MIN_FRACTION = 0.16
 MIN_IOU = 0.35
 MIN_MARGIN = 0.03
 BRIGHTNESS_WEIGHT = 1.5
+# A piece's side is read from its brightness first: when it lies within one side's
+# exemplars' range of brightness, widened by this much, and not the other's, the shape
+# is matched among that side's pieces alone. A brightness in both ranges or neither (a
+# badge over the piece, a set whose sides are close, a queen whose fill read as dark as
+# the other side's) matches every piece with a brightness penalty, as before; a
+# pixel-art king, whose fill read a tenth brighter on the dark square than on the light
+# one, was outscored there by the queen's shape on the penalty.
+SIDE_MARGIN = 0.05
 _KERNEL = np.ones((3, 3), dtype=np.uint8)
 # The colour of a piece is its fill's. A silhouette's ink (its pixels that are not the
 # square's colour; the pockets the outline encloses are not ink) is two tones, the fill
@@ -943,8 +951,12 @@ class ThemeModel:
         # the full mask, fatter, forgives a lock a pixel off on a small cell.
         align = _align_centroid(sil.tone)
         size = sil.tone.shape[0]
+        side = self._side_of(sil)
+        candidates = [
+            e for e in self.exemplars if side is None or e.symbol.isupper() == (side == Side.WHITE)
+        ] or self.exemplars
         best_by_symbol: dict[str, tuple[float, float, Exemplar]] = {}
-        for exemplar in self.exemplars:
+        for exemplar in candidates:
             overlap = max(iou(sil.tone, exemplar.tone), iou(sil.mask, exemplar.mask))
             dx = int(round((exemplar.align_centroid[0] - align[0]) * size))
             dy = int(round((exemplar.align_centroid[1] - align[1]) * size))
@@ -954,7 +966,9 @@ class ThemeModel:
                     iou(shift_mask(sil.tone, dx, dy), exemplar.tone),
                     iou(shift_mask(sil.mask, dx, dy), exemplar.mask),
                 )
-            score = overlap - BRIGHTNESS_WEIGHT * abs(sil.brightness - exemplar.brightness)
+            score = overlap
+            if side is None:
+                score -= BRIGHTNESS_WEIGHT * abs(sil.brightness - exemplar.brightness)
             previous = best_by_symbol.get(exemplar.symbol)
             if previous is None or score > previous[0]:
                 best_by_symbol[exemplar.symbol] = (score, overlap, exemplar)
@@ -987,8 +1001,10 @@ class ThemeModel:
                 offset=offset,
                 tint=tint,
             )
-        nearest = min(self.exemplars, key=lambda e: abs(sil.brightness - e.brightness))
-        colour = Side.WHITE if nearest.symbol.isupper() else Side.BLACK
+        if side is None:
+            nearest = min(self.exemplars, key=lambda e: abs(sil.brightness - e.brightness))
+            side = Side.WHITE if nearest.symbol.isupper() else Side.BLACK
+        colour = side
         guess = symbol if symbol.isupper() == (colour == Side.WHITE) else None
         return _reading(
             sil,
@@ -1002,6 +1018,18 @@ class ThemeModel:
             guess=guess,
             tint=tint,
         )
+
+    def _side_of(self, sil: Silhouette) -> Side | None:
+        """The side whose exemplars' brightness the piece's falls among (see SIDE_MARGIN),
+        or None when it falls among both or neither."""
+        inside = []
+        for side in (Side.WHITE, Side.BLACK):
+            values = [
+                e.brightness for e in self.exemplars if e.symbol.isupper() == (side == Side.WHITE)
+            ]
+            if values and min(values) - SIDE_MARGIN <= sil.brightness <= max(values) + SIDE_MARGIN:
+                inside.append(side)
+        return inside[0] if len(inside) == 1 else None
 
     def covered_cells(self, sils: list[list[Silhouette]]) -> np.ndarray:
         """Cells under an opaque overlay, and the cells its edges reach into."""
