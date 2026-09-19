@@ -63,10 +63,14 @@ class Game:
                     self.ended.append(event)
             self.ts += 0.1
 
-    def play(self, san: str, frames: int = 2, **kw: object) -> chess.Move:
-        """A move made on the board, then its frames with the last-move highlight."""
-        move = self.board.push_san(san)
-        self.show(frames=frames, highlight=move, **kw)
+    def play(self, *sans: str, frames: int = 2, **kw: object) -> chess.Move:
+        """Moves made on the board, each followed by its frames with the last-move
+        highlight; the last move is returned."""
+        move: chess.Move | None = None
+        for san in sans:
+            move = self.board.push_san(san)
+            self.show(frames=frames, highlight=move, **kw)
+        assert move is not None, "no move to play"
         return move
 
     def queue(self, *queues: Iterable[str]) -> tuple[Queue, ...]:
@@ -88,7 +92,7 @@ def _uci(*ucis: str) -> tuple[str, ...]:
 def test_a_single_premove_executes_with_the_opponents_move(bottom: Side) -> None:
     g = Game(bottom)
     if bottom == Side.WHITE:
-        g.play("e4"), g.play("e5"), g.play("Nf3")
+        g.play("e4", "e5", "Nf3")
         premove = g.queue(_uci("f3g5"))
         g.show(frames=4, premoves=premove)  # the queue forms; nothing has happened
         assert g.sans == ["e4", "e5", "Nf3"]
@@ -98,7 +102,7 @@ def test_a_single_premove_executes_with_the_opponents_move(bottom: Side) -> None
         assert g.sans == ["e4", "e5", "Nf3", "Nc6", "Ng5"], g.sans
         del reply
     else:
-        g.play("e4"), g.play("e5")
+        g.play("e4", "e5")
         premove = g.queue(_uci("g8f6"))
         g.show(frames=4, premoves=premove)
         assert g.sans == ["e4", "e5"]
@@ -112,7 +116,7 @@ def test_a_single_premove_executes_with_the_opponents_move(bottom: Side) -> None
 def test_a_queue_of_two_steps_executes_one_step_per_opponent_move(bottom: Side) -> None:
     g = Game(bottom)
     if bottom == Side.WHITE:
-        g.play("e4"), g.play("e5"), g.play("Nf3")
+        g.play("e4", "e5", "Nf3")
         premove = g.queue(_uci("f3g5", "g5e6"))
         g.show(frames=4, premoves=premove)
         assert g.sans == ["e4", "e5", "Nf3"]
@@ -127,7 +131,7 @@ def test_a_queue_of_two_steps_executes_one_step_per_opponent_move(bottom: Side) 
         g.show(frames=3, highlight=executed)
         assert g.sans == ["e4", "e5", "Nf3", "d6", "Ng5", "Be7", "Ne6"], g.sans
     else:
-        g.play("e4"), g.play("e5")
+        g.play("e4", "e5")
         premove = g.queue(_uci("g8f6", "f6g4"))
         g.show(frames=4, premoves=premove)
         g.board.push_san("d4")
@@ -144,7 +148,7 @@ def test_two_pieces_queued_at_once_execute_in_order() -> None:
     """The third live game's shape: two queens premoved, the first executes on the
     opponent's move, the second stays queued, then executes on the next."""
     g = Game(Side.WHITE)
-    g.play("e4"), g.play("e5"), g.play("Qh5"), g.play("Nc6"), g.play("Bc4")
+    g.play("e4", "e5", "Qh5", "Nc6", "Bc4")
     queues = g.queue(_uci("h5h4"), _uci("c4b3"))
     g.show(frames=4, premoves=queues)
     assert g.sans == ["e4", "e5", "Qh5", "Nc6", "Bc4"]
@@ -163,7 +167,7 @@ def test_a_real_move_seen_only_in_flight_before_the_queue_formed_is_recovered() 
     never captured, only one frame with the piece in flight, then the queue picture with
     the piece's real square red and empty. Undoing the queue recovers the real move."""
     g = Game(Side.WHITE)
-    g.play("e4"), g.play("e5"), g.play("Nf3"), g.play("Nc6")
+    g.play("e4", "e5", "Nf3", "Nc6")
     # Bf1-c4 is played: one frame mid-drag, never a settled one.
     real = g.board.push_san("Bc4")
     g.show(frames=1, highlight=real, dragging=(chess.C4, chess.C4, 0.15, 0.1))
@@ -179,7 +183,7 @@ def test_a_real_move_seen_only_in_flight_before_the_queue_formed_is_recovered() 
 
 def test_a_queued_capture_is_drawn_over_its_victim() -> None:
     g = Game(Side.WHITE)
-    g.play("e4"), g.play("e5"), g.play("Qh5"), g.play("Nc6"), g.play("Bc4")
+    g.play("e4", "e5", "Qh5", "Nc6", "Bc4")
     g.show(frames=4, premoves=g.queue(_uci("h5f7")))  # Qxf7 queued: drawn over the f7 pawn
     assert g.sans == ["e4", "e5", "Qh5", "Nc6", "Bc4"]
     g.board.push_san("Nf6")
@@ -192,7 +196,7 @@ def test_a_queued_capture_is_drawn_over_its_victim() -> None:
 def test_a_premove_the_opponents_move_makes_illegal_is_cleared() -> None:
     """A check clears the queue: the piece snaps back to its square, nothing executes."""
     g = Game(Side.WHITE)
-    g.play("e4"), g.play("e5"), g.play("Bc4"), g.play("Nc6"), g.play("d3")
+    g.play("e4", "e5", "Bc4", "Nc6", "d3")
     g.show(frames=4, premoves=g.queue(_uci("c4b3")))  # Bb3 queued
     assert g.sans == ["e4", "e5", "Bc4", "Nc6", "d3"]
     check = g.board.push_san("Bb4+")  # illegal to answer with Bb3: the queue is cleared
@@ -388,7 +392,7 @@ def test_a_queue_the_user_cancels_leaves_no_trace() -> None:
     """The user premoves, thinks better of it and clicks the queue away: the piece is back
     on its square, nothing red, nothing moved."""
     g = Game(Side.WHITE)
-    g.play("e4"), g.play("e5"), g.play("Nf3")
+    g.play("e4", "e5", "Nf3")
     g.show(frames=4, premoves=g.queue(_uci("f3g5", "g5f7")))
     g.show(frames=4)  # cancelled: the plain position again
     assert g.sans == ["e4", "e5", "Nf3"]
@@ -401,7 +405,7 @@ def test_a_queue_replaced_by_another_pieces_queue() -> None:
     """Premove the knight, change your mind, premove the bishop instead: only the second
     queue is drawn, and only it executes."""
     g = Game(Side.WHITE)
-    g.play("e4"), g.play("e5"), g.play("Nf3"), g.play("Nc6"), g.play("Bc4")
+    g.play("e4", "e5", "Nf3", "Nc6", "Bc4")
     g.show(frames=3, premoves=g.queue(_uci("f3g5")))
     g.show(frames=3, premoves=g.queue(_uci("c4f7")))  # the knight's queue is gone
     assert g.sans == ["e4", "e5", "Nf3", "Nc6", "Bc4"]
@@ -415,7 +419,7 @@ def test_the_opponent_captures_the_queued_piece() -> None:
     """The queued piece is taken before its move executes: the queue is void, the capture
     is the only move, and the ghost must not be taken for a piece that survived."""
     g = Game(Side.WHITE)
-    g.play("e4"), g.play("e5"), g.play("Nf3"), g.play("Nc6"), g.play("Bc4"), g.play("Bc5")
+    g.play("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5")
     g.play("Ng5")  # White's knight goes to g5, where the queen can take it
     g.show(frames=3, premoves=g.queue(_uci("g5f7")))  # Nxf7 queued while Black thinks
     assert g.sans[-1] == "Ng5"
@@ -430,7 +434,7 @@ def test_the_opponent_moves_onto_the_queued_square_and_the_premove_captures_it()
     """The queue's destination is empty when queued and holds an enemy piece when the
     step executes: the premove executes as a capture."""
     g = Game(Side.WHITE)
-    g.play("e4"), g.play("e5"), g.play("Nf3"), g.play("Nc6"), g.play("Bc4")
+    g.play("e4", "e5", "Nf3", "Nc6", "Bc4")
     g.show(frames=3, premoves=g.queue(_uci("f3g5")))
     g.board.push_san("Nf6")  # not onto g5; a plain reply
     executed = g.board.push_san("Ng5")
@@ -448,7 +452,7 @@ def test_the_users_king_in_check_on_a_red_square_is_not_a_ghost() -> None:
     """Chess.com paints the checked king's square red; with a queue on the board too, the
     king must not be mistaken for a queued piece and moved to some red square."""
     g = Game(Side.WHITE)
-    g.play("e4"), g.play("e5"), g.play("f3"), g.play("Nc6"), g.play("Nc3")
+    g.play("e4", "e5", "f3", "Nc6", "Nc3")
     g.show(frames=3, premoves=g.queue(_uci("c3d5")))  # Nd5 queued
     check = g.board.push_san("Qh4+")  # check clears the queue; the king's square is red
     g.show(frames=3, highlight=check, red_marks=(chess.E1,))
