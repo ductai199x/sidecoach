@@ -4,7 +4,8 @@ In the trial game of 2026-09-16 an orange arrow from d4 to e5 put its head over 
 pawn on e5, and the arrowhead's saturated pixels read as a white piece: the recogniser saw
 a white pawn on e5 for as long as the arrow was drawn, and the reconciler took it for dxe5
 -- a move nobody played. The rule since: on a set whose pieces are white and black, a
-cell with saturated colour over it is something drawn, and it waits.
+cell with saturated colour over it is something drawn, and it waits -- that cell alone:
+a drawing is no drag, and the moves elsewhere on the board go on committing under it.
 
 The first three tests are the measure on hand-made patches; the next two render the
 arrow on the brown theme the game was on and run the recogniser and the whole pipeline;
@@ -91,7 +92,9 @@ def _cell(readings: Readings, name: str, bottom: Side) -> CellReading:
 def _assert_arrow_reads(readings: Readings, bottom: Side) -> None:
     # The arrowhead over the black pawn on e5 is what read as a white piece.
     head = _cell(readings, "e5", bottom)
-    assert head.kind == "unknown" and head.hover, f"e5 read as {head.kind} {head.symbol}"
+    assert head.kind == "unknown" and head.drawn and not head.hover, (
+        f"e5 read as {head.kind} {head.symbol}"
+    )
     # The tail leaves d4 by its top-right corner, where a badge would sit; the pawn there
     # is still readable, and read right, or the cell waits. Never anything else.
     tail = _cell(readings, "d4", bottom)
@@ -150,6 +153,41 @@ def test_the_pipeline_commits_no_phantom_capture_under_a_rendered_arrow() -> Non
         moves += [e.san for e in pipe.process(frame, ts) if isinstance(e, MovePlayed)]
         ts += 0.1
     assert moves == ["dxe5"]
+
+
+def test_moves_elsewhere_commit_under_a_standing_arrow() -> None:
+    """An arrow is a drawing, not a drag: while it stands, the moves on the rest of the
+    board commit as usual, and only a move onto or off its squares waits for it to go.
+    An arrow that stood across four plies once held all four back, past what the
+    missed-move search could bridge."""
+    pipe = GamePipeline()
+    ts = 0.0
+    for _ in range(3):
+        pipe.process(synthetic_board(theme="brown"), ts)
+        ts += 0.1
+    assert pipe.reconciler is not None
+    board = chess.Board()
+    arrow = chess.Move.from_uci("d2d4")  # standing over d2, d3 and d4 for the whole game
+    played: list[str] = []
+    for san in ("a3", "h6", "b3", "h5", "Nc3", "Nf6"):
+        move = board.push_san(san)
+        for _ in range(3):
+            frame = synthetic_board(board=board, theme="brown", highlight=move, arrows=(arrow,))
+            played += [e.san for e in pipe.process(frame, ts) if isinstance(e, MovePlayed)]
+            ts += 0.1
+    assert played == ["a3", "h6", "b3", "h5", "Nc3", "Nf6"], played
+    # A move that lands on the arrow's squares waits until the arrow is gone.
+    move = board.push_san("d4")
+    for _ in range(3):
+        frame = synthetic_board(board=board, theme="brown", highlight=move, arrows=(arrow,))
+        played += [e.san for e in pipe.process(frame, ts) if isinstance(e, MovePlayed)]
+        ts += 0.1
+    assert played[-1] == "Nf6", "d4 committed through the arrow"
+    for _ in range(3):
+        frame = synthetic_board(board=board, theme="brown", highlight=move)
+        played += [e.san for e in pipe.process(frame, ts) if isinstance(e, MovePlayed)]
+        ts += 0.1
+    assert played[-1] == "d4"
 
 
 def test_the_real_arrow_frames_read_the_same() -> None:

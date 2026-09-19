@@ -59,18 +59,19 @@ def test_no_board_in_noise() -> None:
     assert detect_boards(frame) == []
 
 
-REAL = sorted(Path("data/screenshots").glob("*_m1.png"))
-
-
-@pytest.mark.skipif(not REAL, reason="no real screenshot in data/screenshots")
-def test_real_chesscom_screenshot() -> None:
-    frame = cv2.imread(str(REAL[0]))
+def test_a_real_chesscom_page_yields_its_board() -> None:
+    """A chess.com bot game as the page shows it (tests/fixtures/chesscom_page.png, a
+    1440p screenshot cropped to the page): the board among the move list, the captured
+    pieces, the coach's chat and a badge on the king's square. Only the board is found,
+    where it is, at the size it is."""
+    frame = cv2.imread(str(Path(__file__).parent / "fixtures" / "chesscom_page.png"))
     assert frame is not None
     boards = detect_boards(frame)
-    assert boards, "no board found in the real screenshot"
+    assert boards, "no board found on the real page"
     best = boards[0]
     assert best.fit >= 0.85
-    assert 60 <= best.cell_px <= 120
+    assert abs(best.cell_px - 86) <= 1
+    assert abs(best.region.x - 290) <= 2 and abs(best.region.y - 65) <= 2
 
 
 def test_whole_cell_shifts_are_not_a_fit() -> None:

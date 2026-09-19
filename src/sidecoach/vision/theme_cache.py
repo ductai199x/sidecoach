@@ -27,7 +27,7 @@ import numpy as np
 from sidecoach.vision.pieces import ThemeModel
 from sidecoach.vision.squares import CELL, BoardGeometry, is_light
 
-CACHE_VERSION = 2  # 2: exemplars are tone masks
+CACHE_VERSION = 3  # 2: exemplars are tone masks; 3: tone is nearer the core than the square
 _QUANTUM = 8  # square colours within this many levels share a fingerprint (tolerates lighting)
 MATCH_TOLERANCE = 20.0  # palettes closer than this (in BGR) are treated as the same theme
 

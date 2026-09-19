@@ -3,8 +3,7 @@
 The synthetic boxes are drawn with the very templates the reader classifies against, so
 these tests check the locating, the segmentation, the running-clock decision and the
 failure behaviour, not the templates themselves. What the templates are worth is measured
-against the recordings, by `scripts/validate_clocks.py`; the last test here runs that
-comparison on one recording when `data/` is present.
+against the recordings, by `scripts/validate_clocks.py`, outside the suite.
 """
 
 from __future__ import annotations

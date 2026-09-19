@@ -17,6 +17,7 @@ orientation is read from (`coordinates=True`), clocks, and dialogs (test_occlusi
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 import chess
 import cv2
@@ -33,12 +34,69 @@ YELLOW = (0, 255, 255)
 RED = (0, 0, 255)
 TINT_ALPHA = 0.5
 # Square colours (light, dark) in BGR, as the sites draw them. Brown is chess.com's default
-# (the trial games were played on it); green is chess.com's green and the default here.
+# (the trial games were played on it); green is chess.com's green and the default here;
+# "dark" is a dark board (light squares darker than a white piece's outline is bright);
+# "purple" and "ice" are lichess-like; "wood" is brown with a grain texture (see
+# `TEXTURED`), the way chess.com's wood themes and lichess's "maple" draw their squares.
 THEMES: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
     "green": (LIGHT, DARK),
     "brown": ((181, 217, 240), (99, 136, 181)),
     "blue": ((222, 227, 234), (166, 130, 93)),
     "grey": ((190, 190, 190), (120, 120, 120)),
+    "dark": ((110, 110, 110), (62, 62, 62)),
+    "purple": ((224, 214, 240), (168, 132, 180)),
+    "ice": ((232, 226, 214), (172, 152, 124)),
+    "wood": ((150, 200, 230), (80, 120, 170)),
+}
+TEXTURED = frozenset({"wood"})
+# A grain: low-amplitude noise stretched along the rows, added to every square.
+TEXTURE_AMPLITUDE = 12
+
+
+@dataclass(frozen=True)
+class PieceStyle:
+    """How a set draws its pieces: the fills and outlines of the two sides, the outline's
+    width as a share of the cell, and the size of the pieces in their squares."""
+
+    white_fill: tuple[int, int, int] = (245, 245, 245)
+    white_edge: tuple[int, int, int] = (0, 0, 0)
+    black_fill: tuple[int, int, int] = (35, 35, 35)
+    black_edge: tuple[int, int, int] = (210, 210, 210)
+    outline: float = 1 / 32  # of the cell
+    scale: float = 1.0  # 1.0 is the default radius; sites draw pieces at 0.85 to 1.15
+
+
+PIECE_STYLES: dict[str, PieceStyle] = {
+    "classic": PieceStyle(),
+    "thin": PieceStyle(outline=1 / 48, scale=0.9),
+    "bold": PieceStyle(outline=1 / 20, scale=1.1),
+    # A coloured set: cream against dark brown, both sides chromatic.
+    "wooden": PieceStyle(
+        white_fill=(190, 225, 245),
+        white_edge=(40, 70, 100),
+        black_fill=(30, 55, 90),
+        black_edge=(150, 190, 215),
+    ),
+    # A set whose outlines are faint: white on white, black on black, as some flat
+    # sets draw them.
+    "flat": PieceStyle(white_edge=(160, 160, 160), black_edge=(90, 90, 90), outline=1 / 40),
+}
+# Highlight colours other sites use for the last move: chess.com's yellow, lichess's green,
+# a blue.
+HIGHLIGHTS: dict[str, tuple[int, int, int]] = {
+    "yellow": YELLOW,
+    "green": (60, 220, 140),
+    "blue": (230, 160, 60),
+}
+# chess.com's arrow: orange, drawn translucent over squares and pieces alike.
+ARROW = (36, 179, 252)
+ARROW_ALPHA = 0.8
+# Arrow colours a site or a user draws: chess.com's orange, and green, blue and red.
+ARROWS: dict[str, tuple[int, int, int]] = {
+    "orange": ARROW,
+    "green": (80, 170, 40),
+    "blue": (230, 130, 40),
+    "red": (50, 50, 220),
 }
 # The stress sweep's first find (tests/test_stress.py): a theme whose light squares lie
 # within BG_TOLERANCE (25 grey levels) of the black pieces' light outline -- (214, 214,
@@ -46,9 +104,6 @@ THEMES: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
 # had one silhouette on light squares and another on dark ones. Matching on the piece's
 # own tone (pieces.Silhouette.tone) made it readable; kept as the regression case.
 LOW_CONTRAST_GREY = ((214, 214, 214), (140, 140, 140))
-# chess.com's arrow: orange, drawn translucent over squares and pieces alike.
-ARROW = (36, 179, 252)
-ARROW_ALPHA = 0.8
 # The classification badges: the fill colour of each, white glyph on top.
 BADGES: dict[str, tuple[int, int, int]] = {
     "brilliant": (170, 165, 38),
@@ -79,16 +134,24 @@ def _polygon(cx: float, cy: float, radius: float, points: list[tuple[float, floa
     )
 
 
-def draw_piece(frame: np.ndarray, cx: int, cy: int, cell: int, symbol: str) -> None:
+def draw_piece(
+    frame: np.ndarray,
+    cx: int,
+    cy: int,
+    cell: int,
+    symbol: str,
+    style: PieceStyle = PIECE_STYLES["classic"],
+) -> None:
     white = symbol.isupper()
-    fill = (245, 245, 245) if white else (35, 35, 35)
-    edge = (0, 0, 0) if white else (210, 210, 210)
+    fill = style.white_fill if white else style.black_fill
+    edge = style.white_edge if white else style.black_edge
     kind = symbol.lower()
-    radius = cell * 0.36
-    thickness = max(2, int(round(cell / 32)))
+    radius = cell * 0.36 * style.scale
+    thickness = max(1, int(round(cell * style.outline)))
     if kind == "p":
-        cv2.circle(frame, (cx, cy), int(cell * 0.24), fill, -1, lineType=cv2.LINE_AA)
-        cv2.circle(frame, (cx, cy), int(cell * 0.24), edge, thickness, lineType=cv2.LINE_AA)
+        r = int(cell * 0.24 * style.scale)
+        cv2.circle(frame, (cx, cy), r, fill, -1, lineType=cv2.LINE_AA)
+        cv2.circle(frame, (cx, cy), r, edge, thickness, lineType=cv2.LINE_AA)
         return
     if kind == "n":
         pts = _polygon(cx, cy, radius, [(-0.9, 0.8), (0.9, 0.8), (0.1, -0.9)])
@@ -137,9 +200,10 @@ def draw_arrow(
     *,
     colour: tuple[int, int, int] = ARROW,
     alpha: float = ARROW_ALPHA,
+    width: float = 0.2,
 ) -> None:
     """An arrow from one square's centre to another's, the way chess.com draws it: a shaft
-    a fifth of a cell wide and a triangular head half a cell across, translucent, with
+    `width` of a cell wide and a triangular head half a cell across, translucent, with
     anti-aliased edges, over whatever is on the squares -- the head lands on the piece."""
     r0, c0 = row_col(move.from_square, bottom)
     r1, c1 = row_col(move.to_square, bottom)
@@ -151,7 +215,7 @@ def draw_arrow(
         return
     unit = direction / length
     normal = np.array([-unit[1], unit[0]])
-    head_length, head_width, shaft_width = cell * 0.5, cell * 0.5, cell * 0.2
+    head_length, head_width, shaft_width = cell * 0.5, cell * 0.5, cell * width
     base = end - unit * head_length
     shaft = np.array(
         [
@@ -254,11 +318,18 @@ def render_board(
     arrows: tuple[chess.Move, ...] = (),
     badge: tuple[chess.Square, str] | None = None,
     coordinates: bool = False,
+    style: PieceStyle = PIECE_STYLES["classic"],
+    highlight_colour: tuple[int, int, int] = YELLOW,
+    arrow_colour: tuple[int, int, int] = ARROW,
+    arrow_width: float = 0.2,
+    texture: bool = False,
+    seed: int = 0,
 ) -> None:
     """Render `board`. `dragging` = (origin, hovered square, dx, dy): the origin's piece is
     drawn over the hovered square displaced by (dx, dy) cells, under a hover outline.
     `arrows` are drawn over the pieces; `badge` is (square, label); `coordinates` draws
-    the rank and file labels.
+    the rank and file labels; `style` is the piece set; `texture` gives the squares a
+    wood grain.
 
     `premoves` are queues the user has set up while the opponent thinks, drawn the way
     chess.com draws them: every square of a queue is tinted red, the piece is drawn at
@@ -276,9 +347,14 @@ def render_board(
                 colour,
                 -1,
             )
+    if texture:
+        _grain(frame, x0, y0, 8 * cell, seed)
     tinted: list[tuple[chess.Square, tuple[int, int, int]]] = []
     if highlight is not None:
-        tinted += [(highlight.from_square, YELLOW), (highlight.to_square, YELLOW)]
+        tinted += [
+            (highlight.from_square, highlight_colour),
+            (highlight.to_square, highlight_colour),
+        ]
     tinted += [(square, RED) for square in red_marks]
     queued_from: dict[chess.Square, chess.Square] = {}  # the piece's real square -> queue end
     for queue in premoves:
@@ -306,7 +382,7 @@ def render_board(
             continue  # a queued capture: the premoved piece is drawn over it
         r, c = row_col(square, bottom)
         draw_piece(
-            frame, x0 + c * cell + cell // 2, y0 + r * cell + cell // 2, cell, piece.symbol()
+            frame, x0 + c * cell + cell // 2, y0 + r * cell + cell // 2, cell, piece.symbol(), style
         )
     for origin, end in queued_from.items():
         piece = board.piece_at(origin)
@@ -314,12 +390,12 @@ def render_board(
             continue
         r, c = row_col(end, bottom)
         draw_piece(
-            frame, x0 + c * cell + cell // 2, y0 + r * cell + cell // 2, cell, piece.symbol()
+            frame, x0 + c * cell + cell // 2, y0 + r * cell + cell // 2, cell, piece.symbol(), style
         )
     if coordinates:
         draw_coordinates(frame, x0, y0, cell, bottom, light, dark)
     for arrow in arrows:
-        draw_arrow(frame, x0, y0, cell, bottom, arrow)
+        draw_arrow(frame, x0, y0, cell, bottom, arrow, colour=arrow_colour, width=arrow_width)
     if badge is not None:
         draw_badge(frame, x0, y0, cell, bottom, badge[0], badge[1])
     if dragging is not None:
@@ -341,7 +417,20 @@ def render_board(
                 y0 + r * cell + cell // 2 + int(round(dy * cell)),
                 cell,
                 piece.symbol(),
+                style,
             )
+
+
+def _grain(frame: np.ndarray, x0: int, y0: int, side: int, seed: int) -> None:
+    """A wood grain over the board: noise stretched along the rows, a few levels deep."""
+    rng = np.random.default_rng(seed + 17)
+    rows = rng.normal(0.0, 1.0, (side // 6 + 1, side // 2 + 1)).astype(np.float32)
+    grain = cv2.resize(rows, (side, side), interpolation=cv2.INTER_CUBIC)
+    grain = np.clip(grain * TEXTURE_AMPLITUDE / 2, -TEXTURE_AMPLITUDE, TEXTURE_AMPLITUDE)
+    patch = frame[y0 : y0 + side, x0 : x0 + side].astype(np.float32)
+    frame[y0 : y0 + side, x0 : x0 + side] = np.clip(patch + grain[..., None], 0, 255).astype(
+        np.uint8
+    )
 
 
 def bulky_pieces(
@@ -439,10 +528,15 @@ def synthetic_board(
     arrows: tuple[chess.Move, ...] = (),
     badge: tuple[chess.Square, str] | None = None,
     coordinates: bool = False,
+    style: str = "classic",
+    highlight_colour: str = "yellow",
+    arrow_colour: str = "orange",
+    arrow_width: float = 0.2,
     seed: int = 0,
 ) -> np.ndarray:
     """A board on a busy background. `pieces=False` renders an empty board; `theme` names
-    the square colours (see THEMES) unless `light` and `dark` are given."""
+    the square colours (see THEMES) unless `light` and `dark` are given; `style` the piece
+    set (PIECE_STYLES); `highlight_colour` and `arrow_colour` name HIGHLIGHTS and ARROWS."""
     theme_light, theme_dark = THEMES[theme]
     light = theme_light if light is None else light
     dark = theme_dark if dark is None else dark
@@ -464,6 +558,12 @@ def synthetic_board(
         arrows=arrows,
         badge=badge,
         coordinates=coordinates,
+        style=PIECE_STYLES[style],
+        highlight_colour=HIGHLIGHTS[highlight_colour],
+        arrow_colour=ARROWS[arrow_colour],
+        arrow_width=arrow_width,
+        texture=theme in TEXTURED,
+        seed=seed,
     )
     return frame
 

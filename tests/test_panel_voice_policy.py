@@ -12,10 +12,12 @@ import time
 from pathlib import Path
 
 from sidecoach.config import Settings, VoiceSettings
+from sidecoach.events import Region
+from sidecoach.replay.recording import Recorder
 from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.server import make_engine
+from tests.synth import game_frames
 
-REC = Path("data/recordings/g01-david-green")
 LONG = "Your knight on f5 is loose; the queen check on g6 wins it. What defends it?"
 SHORT = "exf5: good."
 
@@ -88,23 +90,28 @@ def test_speak_records_the_action_and_stops_before_cutting_in(tmp_path: Path) ->
 
 
 def test_replay_is_paced_to_its_timestamps(tmp_path: Path) -> None:
+    """A recording of a rendered game whose ticks are a second apart, replayed at 4x:
+    the frames come a quarter of a second apart in wall time, not as fast as they read."""
+    frames = [frame for _, _, frame in game_frames(("e4", "e5"), frames_per_state=1)]
+    region = Region(0, 0, frames[0].shape[1], frames[0].shape[0])
+    rec = tmp_path / "rec"
+    recorder = Recorder(rec, monitor=0, region=region, fps=1, keyframe_interval_s=None)
+    for i, frame in enumerate(frames):
+        recorder.write(frame, ts=float(i), store=True)
+    recorder.close()
     settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
-    # Unpaced: the first frames arrive as fast as they can be read.
-    fast = make_engine(settings, replay=REC, speed=0)
+
+    fast = make_engine(settings, replay=rec, speed=0)
     assert fast.frame_source is not None
     t0 = time.monotonic()
-    first = [next(iter(fast.frame_source)) for _ in range(1)]
-    assert first and time.monotonic() - t0 < 2.0
-    # Paced at 4x: the gap between two frames a second apart in the recording is ~0.25s of
-    # wall time, not zero.
-    paced = make_engine(settings, replay=REC, speed=4.0)
+    assert [ts for _, ts, _ in fast.frame_source] == [0.0, 1.0, 2.0]
+    assert time.monotonic() - t0 < 0.5, "unpaced replay waited"
+
+    paced = make_engine(settings, replay=rec, speed=4.0)
     assert paced.frame_source is not None
     src = iter(paced.frame_source)
-    a = next(src)
-    t0 = time.monotonic()
-    b = next(src)
-    while b[1] - a[1] < 1.0:  # walk until the recording itself has advanced a second
-        b = next(src)
+    t0 = time.monotonic()  # the pace is kept from the first frame, whatever decoding cost
+    next(src)
+    next(src)
     elapsed = time.monotonic() - t0
-    expected = (b[1] - a[1]) / 4.0
-    assert elapsed >= expected * 0.6, f"replay ran unpaced: {elapsed:.2f}s for {expected:.2f}s"
+    assert elapsed >= 0.2, f"replay ran unpaced: {elapsed:.2f}s for a second at 4x"

@@ -439,6 +439,43 @@ def test_recogniser_works_at_small_cell_sizes(cell: int) -> None:
     assert not wrong, wrong
 
 
+@pytest.mark.parametrize(
+    ("theme", "style", "cell"),
+    [
+        # A dark board and a set whose black pieces wear a grey outline: on the dark
+        # squares that outline is a whisker from the square, its blend with the fill is
+        # the square's own colour, and a split at mid-grey kept the outline on light
+        # squares and lost it on dark ones, so a black pawn on a dark square matched the
+        # queen as well as the pawn. The tone is now what lies nearer the core than the
+        # square.
+        ("dark", "flat", 44),
+        ("grey", "flat", 44),
+        # A bold set: an outline wider than the fixed erosion the core was read with,
+        # whose rim made the white queen, a thin star inside its outline, as grey as
+        # the black one. The core is now the deep inside of the silhouette.
+        ("ice", "bold", 56),
+        ("brown", "bold", 56),
+        ("wood", "bold", 44),
+        ("purple", "wooden", 48),
+        ("blue", "thin", 44),
+    ],
+)
+def test_every_theme_and_piece_style_reads_every_square(theme: str, style: str, cell: int) -> None:
+    """The stress sweep's finds, kept as the cases they were found on: a start position
+    and a middlegame on this theme and set, every square read as what it holds."""
+    geometry = BoardGeometry(Region(300, 120, 8 * cell, 8 * cell), float(cell))
+    for bottom in (Side.WHITE, Side.BLACK):
+        start = synthetic_board(cell=cell, theme=theme, style=style, bottom=bottom)
+        model = ThemeModel.from_start_position(start, geometry, bottom)
+        assert model is not None, f"no recogniser for {theme}/{style} at {cell} px"
+        later = chess.Board()
+        for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "O-O", "d5", "exd5", "Nxd5"):
+            later.push_san(san)
+        frame = synthetic_board(board=later, cell=cell, theme=theme, style=style, bottom=bottom)
+        off = _every_piece_reads(model.classify_frame(frame, geometry), later, bottom)
+        assert not off, f"{theme}/{style} at {cell} px, {bottom.value} at the bottom: {off}"
+
+
 def test_a_fractional_cell_never_wears_a_phantom_hover_outline() -> None:
     """641 px for eight squares is 80.125 a square: the edges fall between pixels and the
     straddling pixels blend the two square colours. Rounding the crop to the nearest pixel

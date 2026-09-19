@@ -45,8 +45,10 @@ What sits on top of the board is told apart by geometry, never by colour:
 - A drawing -- an arrow, the edge of a mark -- is saturated colour that is neither the
   square's own colour nor a white or black piece nor the blend of the two where a piece's
   edge is smoothed onto the square. A cell with more than a sliver of such pixels reads as
-  unknown with `hover` set until the drawing is gone, since an arrowhead over a piece can
-  look like a different piece, and a move must not commit through it.
+  unknown with `drawn` set until the drawing is gone, since an arrowhead over a piece can
+  look like a different piece, and a move must not commit through it. It is not a hover:
+  nothing is in flight, and the rest of the board reads on. An arrow a player leaves on
+  the board for several moves once held every one of them back.
 
 This is theme-specific by construction and needs no training. The learned classifier planned
 in DESIGN.md section 5.2 generalises across themes later and can be trained on the crops this
@@ -105,7 +107,13 @@ MIN_IOU = 0.35
 MIN_MARGIN = 0.03
 BRIGHTNESS_WEIGHT = 1.5
 _KERNEL = np.ones((3, 3), dtype=np.uint8)
-_CORE_KERNEL = np.ones((7, 7), dtype=np.uint8)
+# The core of a piece, where its colour is read: the pixels at least this far inside the
+# silhouette's edge, as a share of the deepest pixel's distance, and never nearer than
+# CORE_MIN_DEPTH. A fixed erosion was three pixels, and a bold set's outline is wider
+# than that at 56-pixel cells: the rim it left in the core made a white queen, whose
+# fill is a thin star inside its outline, as grey as the black one.
+CORE_DEPTH = 0.5
+CORE_MIN_DEPTH = 3.0
 
 Kind = Literal["empty", "piece", "unknown"]
 TintKind = Literal["none", "tint", "foreign"]
@@ -141,6 +149,9 @@ class CellReading:
     # check, a right-click mark), or "other" (a green, blue or grey highlight on another
     # site or theme). None when the square shows its own colour.
     tint: str | None = None
+    # Something drawn over the square -- an arrow, a mark's edge -- makes it unreadable
+    # without anything being dragged: no move commits through it, and nothing else waits.
+    drawn: bool = False
 
 
 def _reading(
@@ -157,6 +168,7 @@ def _reading(
     guess: str | None = None,
     covered: bool = False,
     tint: str | None = None,
+    drawn: bool = False,
 ) -> CellReading:
     bg = (float(sil.background[0]), float(sil.background[1]), float(sil.background[2]))
     return CellReading(
@@ -175,6 +187,7 @@ def _reading(
         guess,
         covered,
         tint,
+        drawn,
     )
 
 
@@ -307,13 +320,21 @@ def _fill_enclosed(foreground: np.ndarray) -> np.ndarray:
 # A tone mask smaller than this share of the full mask is a piece of no clear tone (a
 # mid-grey set, a glass set): the full mask serves.
 TONE_MIN_SHARE = 0.4
-TONE_SPLIT = 128.0
 
 
-def _tone_mask(mask: np.ndarray, gray: np.ndarray, luminance: float) -> np.ndarray:
-    """The mask restricted to the piece's own tone (see `Silhouette.tone`)."""
-    own = (gray < TONE_SPLIT) if luminance < TONE_SPLIT else (gray >= TONE_SPLIT)
-    core = mask & own
+def _tone_mask(
+    mask: np.ndarray, inner: np.ndarray, core_colour: np.ndarray, background: np.ndarray
+) -> np.ndarray:
+    """The mask restricted to the piece's own tone (see `Silhouette.tone`): the pixels
+    nearer the colour of the piece's core than the square's. The outline is the other
+    tone, and it is nearer the square wherever the square can show it: a black piece's
+    grey outline on a dark board lies between its fill and the squares, and a split at
+    mid-grey kept it on light squares and lost it on dark ones, where its blend with the
+    fill is the square's own colour and the opening takes the detached line."""
+    pixels = inner.astype(np.float32)
+    to_core = np.linalg.norm(pixels - core_colour.astype(np.float32), axis=2)
+    to_square = np.linalg.norm(pixels - background.astype(np.float32), axis=2)
+    core = mask & (to_core < to_square)
     if int(core.sum()) < TONE_MIN_SHARE * int(mask.sum()):
         return mask
     return _fill_enclosed(core).astype(bool) & mask
@@ -359,6 +380,14 @@ def _hover_outline(patch: np.ndarray, background: np.ndarray) -> bool:
     if medians[0] > HOVER_TOLERANCE / 2 and medians[2] > HOVER_TOLERANCE:
         return True
     return weak[0] >= HOVER_LINE_FILL and strong[1] >= HOVER_LINE_FILL
+
+
+def _core_mask(mask: np.ndarray) -> np.ndarray:
+    """The deep inside of the silhouette (see CORE_DEPTH), or the whole of it when it is
+    too thin to have one."""
+    depth = cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 3)
+    core = depth >= max(CORE_MIN_DEPTH, CORE_DEPTH * float(depth.max()))
+    return core if core.any() else mask.astype(bool)
 
 
 def _centroid(mask: np.ndarray) -> tuple[float, float]:
@@ -445,8 +474,7 @@ def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
     if fraction > 0:
         # Colour statistics come from the core of the piece, not its outline: white pieces
         # carry dark outlines and black pieces light ones, and thin pieces are mostly outline.
-        core = cv2.erode(mask, _CORE_KERNEL)
-        sample_mask = (core if core.any() else mask).astype(bool)
+        sample_mask = _core_mask(mask)
         # Not the badge corner: a classification badge's disc lies inside the mask, and its
         # bright ink swung a black queen's median luminance to a white one's.
         blinded = sample_mask & _BADGE_BLIND
@@ -455,7 +483,8 @@ def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
         gray = cv2.cvtColor(inner, cv2.COLOR_BGR2GRAY)
         sample = gray[sample_mask]
         luminance = float(np.median(sample))
-        tone = _tone_mask(mask.astype(bool), gray, luminance)
+        core_colour = np.median(inner[sample_mask], axis=0)
+        tone = _tone_mask(mask.astype(bool), inner, core_colour, background)
         # The core's median luminance, 0 to 1. The share of pixels over mid-grey was the
         # measure before: with anti-aliased outlines the core of a black piece keeps a ring
         # of its light outline on a dark square and none on a light one (0.17 against 0.03
@@ -764,7 +793,7 @@ class ThemeModel:
             # An arrow or a mark drawn over the square: saturated colour a white or black
             # piece never has. Whatever the silhouette says now is not the position -- an
             # arrowhead over a black pawn reads as a white piece -- so the cell waits.
-            return _reading(sil, "unknown", hover=True)
+            return _reading(sil, "unknown", drawn=True)
         if sil.fraction <= EMPTY_MAX_FRACTION:
             return _reading(
                 sil,

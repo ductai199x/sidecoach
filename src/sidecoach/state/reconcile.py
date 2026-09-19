@@ -9,9 +9,11 @@ hides cells, an arrow makes a cell unreadable.
 Cell readings can be exact (a symbol), occupied (a piece whose type is hidden by a badge),
 empty, or unknown; unknown cells carry no evidence either way. A move is committed only after
 it has explained `settle_frames` consecutive frames in which every square it touches holds a
-settled piece or is empty and no square carries the hover outline of a drag. Highlight
-colours are never consulted. That is what stops a dragged piece drawn over a neighbouring
-square from being taken as a move.
+settled piece or is empty, none of them is under something drawn (an arrow), and no square
+carries the hover outline of a drag. Highlight colours are never consulted. That is what
+stops a dragged piece drawn over a neighbouring square from being taken as a move, and a
+move from committing through a square an arrow hides while the arrow, which is no drag,
+holds nothing else back.
 
 Browsing history is normal: the user steps back through the move list with the arrow keys
 or by clicking a move, and the board shows an earlier position. A frame that matches an
@@ -140,6 +142,10 @@ class Reconciler:
     user_side: Side = Side.WHITE
     settle_frames: int = 2
     max_plies: int = 4
+    # Positions the missed-move search may expand per depth. Only moves that touch an
+    # unexplained square are expanded, so a four-ply gap in a middlegame costs a few
+    # hundred; counting every legal move looked at, as before, spent the budget on the
+    # thirty rejected for each one expanded and left four-ply gaps unbridged.
     search_budget: int = 4000
     history_depth: int = 40
     stale_after: int = 5
@@ -181,6 +187,9 @@ class Reconciler:
     min_readable_cells: int = 32
     _last_seen: dict[chess.Square, tuple[CellReading, int]] = field(default_factory=dict)
     _previous: dict[chess.Square, tuple[object, ...]] = field(default_factory=dict)
+    # Squares something is drawn over in the current frame: unreadable, and no move
+    # commits through them, though the drawing blocks nothing else.
+    _drawn: set[chess.Square] = field(default_factory=set)
     _frame_index: int = 0
     _blocked: bool = False
     _ts: float = 0.0
@@ -225,10 +234,13 @@ class Reconciler:
         """
         self._frame_index += 1
         out: Observation = {}
+        self._drawn = set()
         for r in range(8):
             for c in range(8):
                 reading = readings[r][c]
                 sq = square_at(r, c, self.bottom)
+                if reading.drawn:
+                    self._drawn.add(sq)
                 if reading.kind == "unknown":
                     self._previous.pop(sq, None)
                     if reading.covered:
@@ -353,14 +365,14 @@ class Reconciler:
                 if len(remaining) > 4 * plies_left:
                     return
                 for move in board.legal_moves:
-                    budget[0] -= 1
-                    if budget[0] <= 0:
-                        return
                     touched = touched_squares(board, move)
                     if not (touched & (remaining | wild)):
                         continue
                     if not all(sq in wild or (sq in obs and exact(obs[sq])) for sq in touched):
                         continue
+                    budget[0] -= 1
+                    if budget[0] < 0:
+                        return
                     after = board.copy(stack=False)
                     after.push(move)
                     path.append(move)
@@ -430,9 +442,11 @@ class Reconciler:
         the square; a dragged piece follows the cursor and an animating piece is between
         squares, so neither is centred. During a drag the site also outlines the hovered
         square. So every square the moves touch must hold a settled piece or be empty, and no
-        square on the board may carry a hover outline. Highlights are not consulted: their
-        colours vary by theme and by what the user clicks, and the reconciler stays agnostic
-        to them by design (DESIGN.md section 5.3).
+        square on the board may carry a hover outline. A square with an arrow over it is no
+        witness either: an arrowhead over a piece can look like another piece, so nothing
+        commits through it, while the arrow, which is no drag, holds nothing else back.
+        Highlights are not consulted: their colours vary by theme and by what the user
+        clicks, and the reconciler stays agnostic to them by design (DESIGN.md section 5.3).
         """
         if self._hover_seen or any(reading.hover for reading in obs.values()):
             return False
@@ -444,9 +458,11 @@ class Reconciler:
             touched |= touched_squares(board, move)
             board.push(move)
         for sq in touched:
-            reading = obs.get(sq)
             if sq in wild:
                 continue
+            if sq in self._drawn:
+                return False
+            reading = obs.get(sq)
             if reading is not None and reading.kind == "piece" and not reading.settled:
                 return False
         return True
