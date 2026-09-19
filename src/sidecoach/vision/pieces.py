@@ -43,8 +43,9 @@ What sits on top of the board is told apart by geometry, never by colour:
   built on; those cells read as unknown until the pipeline rebuilds it from a start
   position.
 - A drawing -- an arrow, the edge of a mark -- is saturated colour that is neither the
-  square's own colour nor a white or black piece nor the blend of the two where a piece's
-  edge is smoothed onto the square. A cell with more than a sliver of such pixels reads as
+  square's own colour nor a colour of the piece set (the fill and the outline of either
+  side, learned from the start position) nor a blend of those where a piece's edge is
+  smoothed onto the square. A cell with more than a sliver of such pixels reads as
   unknown with `drawn` set until the drawing is gone, since an arrowhead over a piece can
   look like a different piece, and a move must not commit through it. It is not a hover:
   nothing is in flight, and the rest of the board reads on. An arrow a player leaves on
@@ -85,11 +86,14 @@ TINT_MIN_CORNER_SHIFT = HIGHLIGHT_TOLERANCE / 2
 CORNER_CLEAN_MAX = 0.25
 CORNER_MIN_KNOWN = 0.2
 # Something drawn over a square -- an arrow, a mark's edge -- is saturated colour far from
-# the square's own colour, which a white or black piece never is. The smoothed edge of a
+# the square's own colour and from every colour of the piece set. The smoothed edge of a
 # dark piece on a bright highlight is chromatic too, but it lies on the line from the
-# square's colour to black (a white piece's edge, to white); a drawing is off both lines
-# by more than OVERLAY_OFF_LINE. A cell with more than OVERLAY_MAX of its inner pixels
-# like that cannot be read, so no move commits through it.
+# square's colour to the piece's; a drawing is off every such line by more than
+# OVERLAY_OFF_LINE. The lines to black and to white are always among them, and a set's
+# own fills and outlines, learned from the start position, join them: a cream-and-brown
+# set is chromatic everywhere and once had no rule at all, so a thin red arrow over an
+# empty square read as a piece in flight and held the game. A cell with more than
+# OVERLAY_MAX of its inner pixels like that cannot be read, so no move commits through it.
 OVERLAY_DISTANCE = 60.0
 OVERLAY_CHROMA = 70.0
 OVERLAY_OFF_LINE = 40.0
@@ -97,8 +101,9 @@ OVERLAY_MAX = 0.03
 # The move-classification badge sits on the top-right corner; a quarter-disc of this
 # radius (as a share of the cell) around that corner is not measured for drawings.
 OVERLAY_BADGE_RADIUS = 0.4
-# Pieces whose core colour is this chromatic are a coloured set; the overlay rule is then off.
-PIECE_CHROMA_MAX = 40.0
+# An outline colour is read from a piece only when this many pixels of its silhouette
+# lie outside its own tone.
+EDGE_MIN_PIXELS = 8
 EMPTY_MAX_FRACTION = 0.04
 # Chess.com's legal-move hint dots cover about a tenth of a cell; the smallest piece, a pawn,
 # covers a third. Anything in between is reported as unknown, which carries no evidence.
@@ -212,9 +217,12 @@ class Silhouette:
     inner: np.ndarray
     corner_pixels: np.ndarray
     # The share of inner pixels that are saturated colour far from the square's own colour
-    # (an arrow drawn over the square), and the median chroma of the piece's core.
+    # and the set's (an arrow drawn over the square).
     overlay: float = 0.0
-    chroma: float = 0.0
+    # The median colour of the piece's core (its fill) and of the rest of its silhouette
+    # (its outline), when there is one: the set's colours, learned at the start.
+    core_colour: np.ndarray | None = None
+    edge_colour: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -317,9 +325,13 @@ def _fill_enclosed(foreground: np.ndarray) -> np.ndarray:
     return (padded[1:-1, 1:-1] != 2).astype(np.uint8)
 
 
-# A tone mask smaller than this share of the full mask is a piece of no clear tone (a
-# mid-grey set, a glass set): the full mask serves.
-TONE_MIN_SHARE = 0.4
+# A tone mask smaller than this share of the full mask, or this share of the patch, is a
+# piece of no clear tone (a mid-grey set, a glass set): the full mask serves. The share
+# was 0.4, and a wooden queen's fill, a thin star inside a wide tan outline, was 0.39 of
+# its silhouette on the dark squares (where the outline shows) and 0.87 on the light
+# ones (where it does not), so the queen had one shape on each colour of square.
+TONE_MIN_SHARE = 0.2
+TONE_MIN_AREA = 0.08
 
 
 def _tone_mask(
@@ -335,7 +347,7 @@ def _tone_mask(
     to_core = np.linalg.norm(pixels - core_colour.astype(np.float32), axis=2)
     to_square = np.linalg.norm(pixels - background.astype(np.float32), axis=2)
     core = mask & (to_core < to_square)
-    if int(core.sum()) < TONE_MIN_SHARE * int(mask.sum()):
+    if int(core.sum()) < max(TONE_MIN_SHARE * int(mask.sum()), TONE_MIN_AREA * core.size):
         return mask
     return _fill_enclosed(core).astype(bool) & mask
 
@@ -427,11 +439,19 @@ def _off_line(pixels: np.ndarray, start: np.ndarray, end: np.ndarray) -> np.ndar
     return np.linalg.norm(pixels - nearest, axis=1)
 
 
+PieceColours = tuple[tuple[np.ndarray, np.ndarray | None], ...]  # (fill, outline) a side
+
+
 def _overlay_fraction(
-    inner: np.ndarray, background: np.ndarray, distance: np.ndarray, chroma_map: np.ndarray
+    inner: np.ndarray,
+    background: np.ndarray,
+    distance: np.ndarray,
+    chroma_map: np.ndarray,
+    colours: PieceColours,
 ) -> float:
     """The share of inner pixels that are a drawing: chromatic, far from the square's colour,
-    and off the lines from that colour to black and to white where piece edges blend.
+    and off the lines from that colour to black, to white and to each of the set's colours,
+    and off the line from each side's fill to its outline, where piece edges blend.
 
     The badge's quarter-disc at the top-right corner is left out: a move-classification
     badge is saturated colour drawn over the square that stays until the next move, and the
@@ -446,16 +466,23 @@ def _overlay_fraction(
     if not candidates.any():
         return 0.0
     pixels = inner[candidates].astype(np.float32)
-    start = background.astype(np.float32)
-    off = np.minimum(
-        _off_line(pixels, start, np.zeros(3, dtype=np.float32)),
-        _off_line(pixels, start, np.full(3, 255.0, dtype=np.float32)),
-    )
+    square = background.astype(np.float32)
+    segments = [
+        (square, np.zeros(3, dtype=np.float32)),
+        (square, np.full(3, 255.0, dtype=np.float32)),
+    ]
+    for fill, edge in colours:
+        segments.append((square, fill.astype(np.float32)))
+        if edge is not None:
+            segments.append((square, edge.astype(np.float32)))
+            segments.append((fill.astype(np.float32), edge.astype(np.float32)))
+    off = np.min([_off_line(pixels, start, end) for start, end in segments], axis=0)
     return float(np.count_nonzero(off > OVERLAY_OFF_LINE)) / candidates.size
 
 
-def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
-    """Silhouette mask, foreground fraction, colour statistics, centroid, hover, background."""
+def silhouette(patch: np.ndarray, size: int = CELL, colours: PieceColours = ()) -> Silhouette:
+    """Silhouette mask, foreground fraction, colour statistics, centroid, hover, background.
+    `colours` are the piece set's, for telling a drawing from a piece's edge."""
     background = ring_median_color(patch)
     border = int(round(patch.shape[0] * INNER))
     inner = patch[border : patch.shape[0] - border, border : patch.shape[1] - border]
@@ -465,12 +492,13 @@ def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, _KERNEL)
     fraction = float(mask.mean())
     chroma_map = inner.max(axis=2).astype(np.float32) - inner.min(axis=2).astype(np.float32)
-    overlay = _overlay_fraction(inner, background, distance, chroma_map)
+    overlay = _overlay_fraction(inner, background, distance, chroma_map, colours)
     luminance = 0.0
     brightness = 0.0
-    chroma = 0.0
     centroid = (0.5, 0.5)
     tone = mask.astype(bool)
+    core_colour: np.ndarray | None = None
+    edge_colour: np.ndarray | None = None
     if fraction > 0:
         # Colour statistics come from the core of the piece, not its outline: white pieces
         # carry dark outlines and black pieces light ones, and thin pieces are mostly outline.
@@ -483,16 +511,19 @@ def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
         gray = cv2.cvtColor(inner, cv2.COLOR_BGR2GRAY)
         sample = gray[sample_mask]
         luminance = float(np.median(sample))
-        core_colour = np.median(inner[sample_mask], axis=0)
-        tone = _tone_mask(mask.astype(bool), inner, core_colour, background)
+        core = np.median(inner[sample_mask], axis=0)
+        core_colour = core
+        tone = _tone_mask(mask.astype(bool), inner, core, background)
         # The core's median luminance, 0 to 1. The share of pixels over mid-grey was the
         # measure before: with anti-aliased outlines the core of a black piece keeps a ring
         # of its light outline on a dark square and none on a light one (0.17 against 0.03
         # at 48-pixel cells), and that square-dependent noise ate the margin between a pawn
         # and a bishop. A median does not move for a ring.
         brightness = luminance / 255.0
-        chroma = float(np.median(chroma_map[sample_mask]))
         centroid = _centroid(mask)
+        outline = mask.astype(bool) & ~tone
+        if int(outline.sum()) >= EDGE_MIN_PIXELS:
+            edge_colour = np.median(inner[outline], axis=0)
     # Chess.com's hover outline is about 5% of the cell wide and sits at its edge, so the
     # ring the background is read from stays clean and serves as the reference. The corner
     # blocks are kept as well, for telling a tint (which reaches them) from an outline or
@@ -510,7 +541,8 @@ def silhouette(patch: np.ndarray, size: int = CELL) -> Silhouette:
         inner,
         corner_pixels(patch),
         overlay,
-        chroma,
+        core_colour,
+        edge_colour,
     )
 
 
@@ -698,9 +730,9 @@ class ThemeModel:
     # Rank-digit exemplars (value -> glyph) learned from the start position, where the
     # orientation is known; used to read the orientation cold from any board of this theme.
     rank_labels: dict[int, np.ndarray] = field(default_factory=dict)
-    # Whether the pieces are white and black rather than a coloured set: only then can a
-    # saturated patch over a square be called something drawn on it (see OVERLAY_MAX).
-    achromatic_pieces: bool = True
+    # The set's colours, a (fill, outline) pair for each side, learned from the start
+    # position: what a saturated patch over a square may be before it is called a drawing.
+    piece_colours: PieceColours = ()
     # The last frame's cells, by (row, col): the crop's pixels, its silhouette, and the
     # reading made of it, with the covered flag and cell size it was made with. Between
     # one frame and the next most cells do not change a pixel, and a cell that did not
@@ -789,7 +821,7 @@ class ThemeModel:
             # to fill the ring, a capture ring, an edge. The silhouette is not the board,
             # and a commit must wait until it is gone.
             return _reading(sil, "unknown", hover=True)
-        if getattr(self, "achromatic_pieces", True) and sil.overlay > OVERLAY_MAX:
+        if sil.overlay > OVERLAY_MAX:
             # An arrow or a mark drawn over the square: saturated colour a white or black
             # piece never has. Whatever the silhouette says now is not the position -- an
             # arrowhead over a black pawn reads as a white piece -- so the cell waits.
@@ -916,7 +948,7 @@ class ThemeModel:
                 if last is not None and np.array_equal(last[0], crops[r][c]):
                     row.append(last[1])
                 else:
-                    row.append(silhouette(crops[r][c]))
+                    row.append(silhouette(crops[r][c], colours=self.piece_colours))
             sils.append(row)
         covered = self.covered_cells(sils)
         cell_px = geometry.cell_px
@@ -1042,8 +1074,7 @@ class ThemeModel:
             best = max(samples[symbol], key=lambda sil: iou(sil.tone, reference_tone))
             fused[symbol] = _fuse(symbol, [best])
         model = cls()
-        chromas = [sil.chroma for sils in samples.values() for sil in sils]
-        model.achromatic_pieces = bool(chromas) and float(np.median(chromas)) < PIECE_CHROMA_MAX
+        model.piece_colours = _piece_colours(samples)
         for symbol in samples:
             exemplar = fused[symbol]
             if float(exemplar.tone.mean()) < EXEMPLAR_MIN_TONE:
@@ -1071,6 +1102,21 @@ EXEMPLAR_MAX_VERTICAL = 0.28  # of a cell
 # cell tall over one of them moves its centroid by 0.06 or more and 0.075 at 24%.
 PAIR_MIN_IOU = 0.8
 PAIR_MAX_CENTROID = 0.06  # of a cell
+
+
+def _piece_colours(samples: dict[str, list[Silhouette]]) -> PieceColours:
+    """Each side's fill and outline: the medians over its sixteen pieces."""
+    out: list[tuple[np.ndarray, np.ndarray | None]] = []
+    for white in (True, False):
+        sils = [s for symbol, ss in samples.items() for s in ss if symbol.isupper() == white]
+        fills = [s.core_colour for s in sils if s.core_colour is not None]
+        edges = [s.edge_colour for s in sils if s.edge_colour is not None]
+        if not fills:
+            continue
+        fill = np.median(np.array(fills), axis=0)
+        edge = np.median(np.array(edges), axis=0) if len(edges) >= len(sils) // 2 else None
+        out.append((fill, edge))
+    return tuple(out)
 
 
 def _plausible_exemplar(sil: Silhouette) -> bool:

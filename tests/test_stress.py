@@ -167,8 +167,15 @@ def play(sc: Scenario) -> tuple[list[str], list[str], bool]:
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     if "seed" in metafunc.fixturenames:
-        n = int(metafunc.config.getoption("--seeds") or 0)
-        metafunc.parametrize("seed", list(range(1, n + 1)) if n else [1, 2, 3, 4, 5, 6, 7, 8])
+        spec = str(metafunc.config.getoption("--seeds") or "")
+        if not spec:
+            seeds = [1, 2, 3, 4, 5, 6, 7, 8]
+        elif "-" in spec:  # "251-1000": a range of seeds
+            lo, hi = (int(x) for x in spec.split("-", 1))
+            seeds = list(range(lo, hi + 1))
+        else:
+            seeds = list(range(1, int(spec) + 1))
+        metafunc.parametrize("seed", seeds)
 
 
 def test_a_random_game_is_followed_to_its_position(seed: int) -> None:

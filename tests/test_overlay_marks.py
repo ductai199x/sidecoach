@@ -107,7 +107,7 @@ def test_a_rendered_arrow_over_a_pawn_waits_and_the_badge_does_not(bottom: Side)
     model = ThemeModel.from_start_position(
         synthetic_board(theme="brown", bottom=bottom), geometry, bottom
     )
-    assert model is not None and model.achromatic_pieces
+    assert model is not None and len(model.piece_colours) == 2
     board = chess.Board(POSITION)
     arrow = chess.Move.from_uci("d4e5")
     # The badge sits on the moved piece's square: the knight that just came to f3.
@@ -155,6 +155,51 @@ def test_the_pipeline_commits_no_phantom_capture_under_a_rendered_arrow() -> Non
     assert moves == ["dxe5"]
 
 
+def test_an_arrow_over_a_coloured_set_is_a_drawing_too() -> None:
+    """A cream-and-brown set is chromatic everywhere, so the rule that a drawing is
+    saturated colour a white or black piece never has did not apply, and a thin red
+    arrow over an empty square read as a piece in flight that held the whole game. The
+    set's own colours are learned at the start, and what is far from all of them is a
+    drawing."""
+    geometry = BoardGeometry(Region(300, 120, 512, 512), 64.0)
+    start = synthetic_board(theme="wood", style="wooden")
+    model = ThemeModel.from_start_position(start, geometry, Side.WHITE)
+    assert model is not None and len(model.piece_colours) == 2
+    (white_fill, white_edge), (black_fill, black_edge) = model.piece_colours
+    assert white_edge is not None and black_edge is not None
+    assert white_fill[2] > black_fill[2] and white_edge[2] < black_edge[2]  # BGR
+    board = chess.Board(POSITION)
+    for arrow, colour in (
+        (chess.Move.from_uci("d4e5"), "orange"),
+        (chess.Move.from_uci("c3d5"), "red"),
+    ):
+        frame = synthetic_board(
+            board=board,
+            theme="wood",
+            style="wooden",
+            arrows=(arrow,),
+            arrow_colour=colour,
+            arrow_width=0.12,
+        )
+        readings = model.classify_frame(frame, geometry)
+        head = _cell(readings, chess.square_name(arrow.to_square), Side.WHITE)
+        assert head.kind == "unknown" and head.drawn, f"{colour} arrowhead read as {head}"
+        # The pieces beside the arrow read as themselves.
+        assert _cell(readings, "f3", Side.WHITE).symbol == "N"
+        assert _cell(readings, "b7", Side.WHITE).symbol == "b"
+    # And without an arrow the set reads clean: no piece is mistaken for a drawing.
+    readings = model.classify_frame(
+        synthetic_board(board=board, theme="wood", style="wooden"), geometry
+    )
+    drawn = [
+        chess.square_name(square_at(r, c, Side.WHITE))
+        for r in range(8)
+        for c in range(8)
+        if readings[r][c].drawn
+    ]
+    assert not drawn, drawn
+
+
 def test_moves_elsewhere_commit_under_a_standing_arrow() -> None:
     """An arrow is a drawing, not a drag: while it stands, the moves on the rest of the
     board commit as usual, and only a move onto or off its squares waits for it to go.
@@ -200,7 +245,10 @@ def test_the_real_arrow_frames_read_the_same() -> None:
     for i in range(4):
         pipe.process(start, 0.1 * i)
     assert pipe.model is not None and pipe.board is not None and pipe.bottom is not None
-    assert pipe.model.achromatic_pieces, "chess.com's pieces are white and black"
+    (white_fill, _), (black_fill, _) = pipe.model.piece_colours
+    assert white_fill.min() > 200 and black_fill.max() < 80, (
+        "chess.com's pieces are white and black"
+    )
     side = meta["chesscom_start"]["region"][2]
     geometry = BoardGeometry(Region(margin, margin, side, side), side / 8)
     clean = pipe.model.classify_frame(_real("chesscom_arrow_clean.png"), geometry)

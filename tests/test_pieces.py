@@ -456,6 +456,10 @@ def test_recogniser_works_at_small_cell_sizes(cell: int) -> None:
         ("ice", "bold", 56),
         ("brown", "bold", 56),
         ("wood", "bold", 44),
+        # A coloured set on a textured board: the black queen's fill is a thin star inside
+        # a wide tan outline, 0.39 of its silhouette where the outline shows and 0.87 where
+        # it does not, and a tone floor of 0.4 gave it one shape on each colour of square.
+        ("wood", "wooden", 64),
         ("purple", "wooden", 48),
         ("blue", "thin", 44),
     ],
