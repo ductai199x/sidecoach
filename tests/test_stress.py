@@ -33,7 +33,17 @@ reach the middle is dropped, however alone); a 44-pixel digit on a dark board wa
 blends (the label ink threshold is 30); and a queen's colour, read off the deepest band
 of its body, then off the whole silhouette's weighted mode, both wrong somewhere, is now
 the tone that forms the widest region of its own, classes by the set's learned fills.
-Open at 1000 seeds: 5, all the wooden colouring of the real set at 44-64 pixel cells.
+With thirty-five of lichess's sets (tests/fixtures/pieces): a set's detail in colours
+its two sides' fills and outlines do not name (a pink emblem on a navy piece) read as a
+drawing (the set's palette is learned by clustering its ink); a mid-tone set's piece
+bases pulled the boundary fit (each cell is masked against its own colour); a queen's
+fill flipping colour by square (the fill is the tone forming the widest region of its
+own; a piece's side is read from its brightness against each side's exemplars, its shape
+among that side); the digit reader took a rook's colour for the square's, let a rook's
+corner into the digit's window, and gave up on the first digit it could not read. Open
+at 1000 seeds: about one game in seventy, mostly dark shaded sets on the dark board
+(riohacha, pirouetti, icpieces: a piece's shaded half is the square's colour) and a few
+sets whose piece does not land where its exemplar did on a small cell.
 """
 
 from __future__ import annotations

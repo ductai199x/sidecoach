@@ -22,14 +22,29 @@ from sidecoach.events import Side
 from sidecoach.vision.squares import BoardGeometry
 
 GLYPH = 24  # rank-digit exemplars are normalised to this square before matching
-_CORNER_H = 0.40  # the digit sits in the top-left of the cell: this fraction of its height
-_CORNER_W = 0.32  # ... and this fraction of its width
+_CORNER_H = 0.30  # the digit sits in the top-left of the cell: this fraction of its height
+_CORNER_W = 0.20  # ... and this fraction of its width (a rook reaches in from the lower right)
 # A pixel this far from the square colour is the digit, not the square. The digits are
 # drawn in the other square's colour, and on a dark board the two lie 48 levels apart:
 # at 60 a 44-pixel digit, all anti-aliased blends, was a scatter of specks and nothing
 # was learned but the 8. A wood grain strays 20 at most.
 _INK = 30.0
 _MIN_INK = 4  # fewer foreground pixels than this is no label
+
+
+def _square_colour(cell: np.ndarray) -> np.ndarray:
+    """The square's colour: the median of the bands along the cell's right and bottom
+    edges, a twentieth of the cell in from the edge and as deep again."""
+    n = min(cell.shape[:2])
+    outer = max(1, int(round(n * 0.05)))
+    inner = outer + max(1, int(round(n * 0.07)))
+    bands = np.concatenate(
+        [
+            cell[:, -inner:-outer].reshape(-1, cell.shape[2]),
+            cell[-inner:-outer, :].reshape(-1, cell.shape[2]),
+        ]
+    )
+    return np.median(bands, axis=0)
 
 
 def _corner_glyph(cell: np.ndarray) -> np.ndarray | None:
@@ -43,7 +58,12 @@ def _corner_glyph(cell: np.ndarray) -> np.ndarray | None:
         return None
     height, width = cell.shape[:2]
     corner = cell[: max(1, int(height * _CORNER_H)), : max(1, int(width * _CORNER_W))]
-    background = np.median(cell.reshape(-1, cell.shape[2]), axis=0)
+    # The square's colour from the bands just inside the cell's right and bottom edges,
+    # which neither the digit (top left) nor a piece (the middle) reaches: the median of
+    # the whole cell is the piece's colour when a rook fills half of it, and the whole
+    # corner was ink then -- the "1" learned from the rook's cell at the start was a
+    # solid block; the ring all round the cell has the digit in it.
+    background = _square_colour(cell)
     diff = np.linalg.norm(corner.astype(float) - background, axis=2)
     mask = diff > _INK
     if int(mask.sum()) < _MIN_INK:
@@ -102,25 +122,27 @@ def read_bottom_side(
 
     Each left-edge digit is matched against the learned exemplars; the sequence down the column
     is 8..1 for White at the bottom and 1..8 for Black. A clear majority (at least six of the
-    eight in one direction) decides it; anything less -- a missing label, coordinates turned off,
-    an inconsistent read -- returns None so the caller can ask the user instead of guessing.
+    eight in one direction) decides it; anything less -- coordinates turned off, an inconsistent
+    read -- returns None so the caller can ask the user instead of guessing. A cell whose digit
+    cannot be read (a piece over it, a piece whose ink touches it) is left out rather than
+    ending the read: on a mid-game board the edge cells hold pieces, and one of them was
+    enough to leave every cold start without an orientation.
     """
     if len(labels) < 6:
         return None
-    reads: list[int] = []
+    reads: dict[int, int] = {}
     for row in range(8):
         glyph = _corner_glyph(geometry.crop(frame, row, 0))
         if glyph is None:
-            return None
+            continue
         digit, score = max(
             ((value, _iou(glyph, exemplar)) for value, exemplar in labels.items()),
             key=lambda pair: pair[1],
         )
-        if score < 0.3:
-            return None
-        reads.append(digit)
-    descending = sum(reads[row] == 8 - row for row in range(8))
-    ascending = sum(reads[row] == row + 1 for row in range(8))
+        if score >= 0.3:
+            reads[row] = digit
+    descending = sum(digit == 8 - row for row, digit in reads.items())
+    ascending = sum(digit == row + 1 for row, digit in reads.items())
     if descending >= 6 and descending > ascending:
         return Side.WHITE
     if ascending >= 6 and ascending > descending:
