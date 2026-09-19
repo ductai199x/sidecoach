@@ -176,7 +176,10 @@ SYSTEM = (
     "and no lists. Say what the record shows, not what you assume; if the record is too "
     "small to say (a few games, a few mistakes), say that plainly and say what it does show. "
     "Never invent a number: every figure you give must come from the rows you were sent. "
-    "Prefer aggregates to raw rows, and leave out withdrawn moves.\n\n"
+    "Prefer aggregates to raw rows, and leave out withdrawn moves. When a grouping comes "
+    "back with a group missing (no moves under 30 seconds, no endgame), the record has "
+    "none: query the column's range or count once if you must, then answer; do not ask "
+    "the same question again in other words.\n\n"
     "# The record\n{schema}\n"
     "# Worked queries\n{examples}"
 )
