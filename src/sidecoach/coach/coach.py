@@ -50,9 +50,11 @@ from sidecoach.events import (
     DisclosureLevel,
     Event,
     GameEnded,
+    GameReview,
     GameStarted,
     MoveAssessment,
     MovePlayed,
+    ProfileSnapshot,
     Resync,
     ScreenState,
     ScreenStateChanged,
@@ -917,6 +919,10 @@ class Coach:
         # The conversation is read from the caller's thread and from a claims check.
         self._lock = threading.RLock()
         self._last_verdict: str | None = None
+        # The player model as the profile stage last reported it, and the review of the
+        # game just ended, for the coach's summary.
+        self.profile: ProfileSnapshot | None = None
+        self._review_lines: list[str] = []
 
     # Lifecycle
 
@@ -955,6 +961,10 @@ class Coach:
             self._current = None
             self.finished = True
             self.conversation.ended(event)
+        elif isinstance(event, GameReview):
+            self._on_review(event, ts)
+        elif isinstance(event, ProfileSnapshot):
+            self.profile = event
         elif isinstance(event, ScreenStateChanged):
             covered = event.state is ScreenState.COVERED
             if covered and not self.policy.covered:
@@ -1118,13 +1128,38 @@ class Coach:
         self.board = chess.Board(event.start_fen)
         self.positions = {0: _Position(ply=0, board=self.board.copy())}
         self.moves = {}
-        self.conversation.new_game(event)
+        self.conversation.new_game(event, profile=self._profile_lines())
         self.finished = False
         self._current = self.positions[0]
         self.policy.new_position(0, ts, user_to_move=self.user_to_move)
         self._clock_peak_ms = None
         self.policy.set_remaining(None)
         self.policy.time_control = TimeControl.UNTIMED
+
+    def _profile_lines(self) -> list[str]:
+        """What the player model says, for the setting of a new game: the insights, and
+        the last session in a sentence."""
+        if self.profile is None:
+            return []
+        lines = list(self.profile.insights)
+        if self.profile.last_session:
+            lines.append(f"Last session: {self.profile.last_session}")
+        return lines
+
+    def _on_review(self, event: GameReview, ts: float) -> None:
+        """The game is over and reviewed: the review joins the conversation and the coach
+        sums the game up from it -- through the model when a position with facts is there
+        to check the reply against, else the review's own sentences."""
+        if event.game_id != self.game_id:
+            return
+        with self._lock:
+            self.conversation.review(event.lines)
+        position = self._latest_with_facts()
+        if position is None or not event.lines:
+            self._queue_plain(Trigger.REVIEW, " ".join(event.lines[:4]), ts, record_now=True)
+            return
+        self._review_lines = list(event.lines)
+        self._speak(Trigger.REVIEW, position, DisclosureLevel.LINE, ts)
 
     def _on_clock(self, event: ClockObservation, ts: float) -> None:
         """The screen's clock, when one is drawn. It scales the interjection cadence: the
@@ -1531,6 +1566,15 @@ class Coach:
             theme_hint = (
                 "Nothing forcing is on. Which of your pieces is doing the least, and where "
                 "would it do more?"
+            )
+        if trigger is Trigger.REVIEW:
+            return (
+                "The game is over. Sum it up from the review in the last message and the "
+                "verdicts on the moves above, and from nothing else: the result, what went "
+                "well, and the one thing to work on -- the moment the game turned, the better "
+                "move there, and why it happened, in plain words. Three or four sentences, no "
+                "question. Do not infer the course of the game from the position on the board.",
+                " ".join(self._review_lines[:4]),
             )
         if trigger is Trigger.DECISIVE_QUESTION:
             return (

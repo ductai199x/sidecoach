@@ -189,7 +189,11 @@ class PanelEngine:
             "clock": None,
             "health": {},
             "session_dir": None,
+            # The review of the last game to end, and the player model as it stands.
+            "review": None,
+            "profile": None,
         }
+        self._profiler: Any = None
         logging.getLogger("sidecoach.voice").addHandler(_VoiceLogHandler(self))
 
     # ---- control surface (called from the API / GUI thread) -------------------------------
@@ -249,6 +253,38 @@ class PanelEngine:
         if outcome not in OUTCOMES:
             raise ValueError(f"outcome must be one of {OUTCOMES}")
         self.command("end", outcome)
+
+    def correct(self, game_id: str, segment: int, ply: int, cause: str | None) -> bool:
+        """The user's word on why a mistake happened, on the review's card: the profile
+        moves the evidence and the review is redrawn."""
+        from sidecoach.profile.causes import CAUSES
+
+        if cause is not None and cause not in CAUSES:
+            raise ValueError(f"cause must be one of {CAUSES}")
+        profiler = self._profiler
+        if profiler is None:
+            return False
+        ok = profiler.correct(game_id, int(segment), int(ply), cause)
+        if ok:
+            with self._lock:
+                review = self._state.get("review")
+            if review and review.get("game_id") == game_id:
+                for tp in review.get("turning_points", []):
+                    if tp.get("segment", 0) == int(segment) and tp.get("ply") == int(ply):
+                        tp["cause"] = cause
+                self._set(review=review, profile=self._profile_state(profiler.snapshot()))
+            self._emit(
+                "user", "info", f"you corrected the cause of the mistake at ply {ply}: {cause}"
+            )
+        return ok
+
+    @staticmethod
+    def _profile_state(snapshot: Any) -> dict[str, Any]:
+        return {
+            "games": snapshot.games,
+            "insights": list(snapshot.insights),
+            "last_session": snapshot.last_session,
+        }
 
     @staticmethod
     def outcome_result(outcome: str, user_side: str | None) -> tuple[str, str]:
@@ -520,6 +556,18 @@ class PanelEngine:
         coaching.sink = lambda _message: None
         self._emit("sys", "info" if assessing.on else "warn", f"engine: {assessing.detail}")
         self._emit("sys", "info" if coaching.on else "warn", f"coach: {coaching.detail}")
+        # The player model: a live session teaches the profile on disk, a replay a copy
+        # in memory that is forgotten with it.
+        from sidecoach.profile.profiler import Profiler
+        from sidecoach.profile.store import Store
+
+        store = Store(self.settings.data_dir / "profile.sqlite" if live else None)
+        profiler = Profiler(store, ts=time.time())
+        self._profiler = profiler
+        self._emit("sys", "info", f"profile: {store.path or 'in memory (replay)'}")
+        first_snapshot = profiler.snapshot()
+        self._set(profile=self._profile_state(first_snapshot))
+        coaching.events([first_snapshot], time.monotonic())
         threading.Thread(target=self._warm_voice, name="voice-load", daemon=True).start()
         self._set(status="waiting for a board", coach_on=coaching.on, analysis_on=assessing.on)
 
@@ -620,9 +668,11 @@ class PanelEngine:
                     for event in engine_events:
                         events_log.write(event.model_dump_json() + "\n")
                 opening = self._dispatch_engine(engine_events, opening, chess)
+                profile_events = self._profile(profiler, [*events, *engine_events], tick=True)
 
                 coaching.events(events, ts)
                 coaching.events(engine_events, ts)
+                coaching.events(profile_events, ts)
                 coaching.tick(ts)
                 coaching.drain()
                 spoken_seen, failures_seen = self._coach_meta(coaching, spoken_seen, failures_seen)
@@ -642,11 +692,24 @@ class PanelEngine:
         finally:
             with contextlib.suppress(Exception):
                 self._listener.set_mode("off")
-            coaching.events(assessing.wait(), time.monotonic())
+            # A replay that ran out on its own waits for the engine's backlog, as the
+            # terminal replay does, so the review has every verdict; a Stop is prompt.
+            patience = 5.0 if self._stop.is_set() else (30.0 if live else 1800.0)
+            late = assessing.wait(timeout=patience)
+            coaching.events(late, time.monotonic())
+            coaching.events(self._profile(profiler, late, flush=True), time.monotonic())
             assessing.close()
             coaching.wait()
             self._coach_meta(coaching, spoken_seen, failures_seen)
             coaching.close()
+            try:
+                summary = profiler.end_session(time.time())
+                if summary:
+                    self._emit("game", "info", f"session: {summary}")
+            except Exception as exc:  # noqa: BLE001 - the profile must not block the shutdown
+                self._emit("sys", "error", f"profile error at close: {exc!r}")
+            self._profiler = None
+            store.close()
             if recorder is not None:
                 recorder.close()
             if events_log is not None:
@@ -658,6 +721,51 @@ class PanelEngine:
             self._log.close()
 
     # ---- log sources ------------------------------------------------------------------------
+
+    def _profile(
+        self, profiler: Any, events: list[Any], *, tick: bool = False, flush: bool = False
+    ) -> list[Any]:
+        """Feed the profile stage; its own events go on to the coach, and the review and
+        the snapshot to the page (the review as a card in the coach's stream, with the
+        insights of the moment). `tick` lets a finished game's review time out waiting for
+        the engine; `flush` reviews it now."""
+        from sidecoach.events import GameReview, ProfileEvidence, ProfileSnapshot
+
+        out: list[Any] = []
+        now = time.time()
+        try:
+            for event in events:
+                out += profiler.on_event(event, now)
+            if flush:
+                out += profiler.flush(now)
+            elif tick:
+                out += profiler.tick(now)
+        except Exception as exc:  # noqa: BLE001 - a profile bug must not end the session
+            self._emit("sys", "error", f"profile error: {exc!r}")
+        snapshot = next((e for e in out if isinstance(e, ProfileSnapshot)), None)
+        for event in out:
+            if isinstance(event, GameReview):
+                review = event.model_dump(exclude={"ts", "source_frame_id"})
+                self._set(review=review)
+                insights = list(snapshot.insights) if snapshot is not None else []
+                self._emit(
+                    "coach",
+                    "info",
+                    "review: " + elide(" ".join(event.lines), 80),
+                    review=review,
+                    insights=insights,
+                )
+            elif isinstance(event, ProfileSnapshot):
+                self._set(profile=self._profile_state(event))
+            elif isinstance(event, ProfileEvidence):
+                motif = f" ({event.motif})" if event.motif else ""
+                self._emit(
+                    "game",
+                    "debug",
+                    f"evidence at ply {event.ply}: {event.cause}{motif}, {event.expected_loss:.2f}"
+                    f" in the {event.phase}",
+                )
+        return out
 
     def _check_degraded(self, pipe: Any, degraded: bool) -> bool:
         """Warn once when many cells cannot be read for a while (an overlay, a dialog), and
@@ -889,6 +997,8 @@ class PanelEngine:
             )
         for spoken in coach.spoken[seen:]:
             message = spoken.message
+            if message.text:
+                self._record_dialogue(message)
             meta = [
                 message.trigger.value,
                 f"L{int(spoken.level)}",
@@ -1029,9 +1139,20 @@ class PanelEngine:
 
     # ---- controls (loop thread) ---------------------------------------------------------------
 
+    def _record_dialogue(self, event: Any) -> None:
+        profiler = self._profiler
+        if profiler is None:
+            return
+        try:
+            profiler.on_event(event, time.time())
+        except Exception as exc:  # noqa: BLE001
+            self._emit("sys", "error", f"profile error: {exc!r}")
+
     def _drain_commands(
         self, pipe: Any, coaching: Any, frame: Any, geom: Any, ts: float
     ) -> list[Any]:
+        from sidecoach.events import UserUtterance
+
         events: list[Any] = []
         while True:
             try:
@@ -1043,6 +1164,11 @@ class PanelEngine:
                     if name == "ask":
                         self._emit("user", "info", f"you: {payload}")
                     coaching.ask(str(payload), ts)
+                    self._record_dialogue(
+                        UserUtterance(
+                            text=str(payload), source="voice" if name == "ask_spoken" else "text"
+                        )
+                    )
                 else:
                     self._emit("user", "warn", f"no coach to ask: {payload}")
             elif name == "end":
@@ -1199,6 +1325,9 @@ class PanelApi:
     def end(self, outcome: str) -> bool:
         self._engine.end_game(outcome)
         return True
+
+    def correct(self, game_id: str, segment: int, ply: int, cause: str | None) -> bool:
+        return self._engine.correct(game_id, segment, ply, cause)
 
     def set_muted(self, muted: bool) -> bool:
         self._engine.set_muted(bool(muted))

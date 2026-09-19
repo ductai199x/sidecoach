@@ -30,6 +30,7 @@ const api = {
   set_muted: (muted) => post("/api/muted", { muted }),
   set_listen: (mode) => post("/api/listen", { mode }),
   end: (outcome) => post("/api/end", { outcome }),
+  correct: (body) => post("/api/correct", body),
   exclude: (rect) => post("/api/exclude", rect),
   ptt: (down) => post("/api/ptt", { down }),
 };
@@ -228,6 +229,7 @@ function addLine(line) {
   if (el("autoscroll").checked) term.scrollTop = term.scrollHeight;
 
   if (line.chan === "coach" && line.data && line.data.full) addCoach(line);
+  if (line.chan === "coach" && line.data && line.data.review) addReview(line);
   addConvo(line);
 }
 
@@ -411,6 +413,81 @@ function addCoach(line) {
   coachCount++;
   latestMarks = { ply: d.ply, marks };
   renderOverlay();
+}
+
+// The review of a game that just ended: the game in numbers, where it turned and why,
+// and what the games so far add up to. A turning point shows its position while the
+// pointer is over it, and carries a menu to correct why it happened -- the profile is
+// the player's to correct.
+const CAUSES = [
+  "missed opponent threat", "miscalculated line", "never considered the candidate",
+  "positional misjudgment", "opening knowledge gap", "endgame technique", "time pressure",
+];
+const motifWords = (m) => (m || "").replace(/([a-z])([A-Z0-9])/g, "$1 $2").toLowerCase();
+
+function addReview(line) {
+  const c = el("coach");
+  const d = line.data;
+  const r = d.review;
+  if (pendingMsg) { pendingMsg.remove(); pendingMsg = null; }
+  const msg = document.createElement("div"); msg.className = "msg review";
+  const meta = document.createElement("div"); meta.className = "meta";
+  meta.textContent = "review · " + r.result + (r.reason ? " by " + r.reason : "")
+    + (r.accuracy != null ? " · accuracy " + r.accuracy.toFixed(1) : "");
+  const head = document.createElement("div"); head.className = "rv-head";
+  head.textContent = (r.lines && r.lines[0]) || "Game over.";
+  msg.append(meta, head);
+  const order = ["brilliant", "great", "best", "excellent", "good", "book", "inaccuracy", "mistake", "miss", "blunder"];
+  const tally = document.createElement("div"); tally.className = "rv-tally";
+  for (const k of order) {
+    if (!r.tallies || !r.tallies[k]) continue;
+    const chip = document.createElement("span"); chip.className = "rv-chip " + k;
+    chip.textContent = r.tallies[k] + " " + k;
+    tally.appendChild(chip);
+  }
+  if (tally.childElementCount) msg.appendChild(tally);
+  for (const tp of r.turning_points || []) {
+    const row = document.createElement("div"); row.className = "rv-turn";
+    const mv = document.createElement("span"); mv.className = "rv-move"; mv.textContent = tp.san;
+    const lab = document.createElement("span"); lab.className = "rv-label " + tp.label;
+    lab.textContent = tp.label + " \u2212" + tp.expected_loss.toFixed(2);
+    row.append(mv, lab);
+    if (tp.best_san) {
+      const b = document.createElement("span"); b.className = "rv-better";
+      b.textContent = "better: " + tp.best_san;
+      row.appendChild(b);
+    }
+    const sel = document.createElement("select"); sel.className = "rv-cause";
+    sel.title = "Why it happened, as the profile reads it. Change it if you know better.";
+    for (const cause of CAUSES) {
+      const o = document.createElement("option"); o.value = cause;
+      o.textContent = cause + (tp.motif && cause === tp.cause ? " (" + motifWords(tp.motif) + ")" : "");
+      if (cause === tp.cause) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.onchange = () => api.correct({ game_id: r.game_id, segment: tp.segment || 0, ply: tp.ply, cause: sel.value });
+    row.appendChild(sel);
+    if (tp.fen_before) {
+      row.onmouseenter = () => { ghost = true; renderBoard(tp.fen_before, currentBottom, null); };
+      row.onmouseleave = () => {
+        if (pinnedPly !== null) showPly(pinnedPly);
+        else { ghost = false; renderBoard(liveFen, currentBottom, liveLastMove); }
+      };
+    }
+    msg.appendChild(row);
+  }
+  const notes = (r.lines || []).filter((l) => /^(Expected score|Most ground|No move cost|The opening)/.test(l));
+  if (notes.length) {
+    const n = document.createElement("div"); n.className = "rv-notes"; n.textContent = notes.join(" ");
+    msg.appendChild(n);
+  }
+  if (d.insights && d.insights.length) {
+    const ins = document.createElement("div"); ins.className = "rv-insights";
+    ins.textContent = d.insights.join(" ");
+    msg.appendChild(ins);
+  }
+  c.appendChild(msg);
+  c.scrollTop = c.scrollHeight;
 }
 
 // --- the status strip ----------------------------------------------------------

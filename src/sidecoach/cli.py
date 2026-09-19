@@ -388,6 +388,15 @@ def _replay_moves(
     from sidecoach.state.pipeline import GamePipeline
     from sidecoach.vision.clock import ClockReader
 
+    # The profile follows a coached replay in memory: the review and the evidence are
+    # printed, and nothing is learned from a game that was already played.
+    profiling = (
+        _Profiling(load_settings(None), live=False)
+        if coaching is not None and coaching.on
+        else None
+    )
+    if profiling is not None and coaching is not None:
+        coaching.events([profiling.snapshot()], time.monotonic())
     truth = _read_truth(truth_pgn) if truth_pgn is not None else []
     truth_placements: list[str] = []
     if truth:
@@ -424,6 +433,10 @@ def _replay_moves(
             if coaching is not None:
                 coaching.events(events, tick.ts)
                 coaching.events(assessed, tick.ts)
+                if profiling is not None:
+                    coaching.events(
+                        profiling.events([*events, *assessed], indent="            "), tick.ts
+                    )
                 coaching.tick(tick.ts)
                 coaching.drain(indent="            ")
         for event in events:
@@ -491,9 +504,15 @@ def _replay_moves(
         assessed = assessing.wait(timeout=1800.0, indent="            ")
         if coaching is not None:
             coaching.events(assessed, time.monotonic())
+            if profiling is not None:
+                coaching.events(
+                    profiling.events(assessed, indent="            ", flush=True), time.monotonic()
+                )
             coaching.wait(timeout=1800.0, indent="            ")
             if coaching.on:
                 console.print(f"            [dim]{coaching.summary()}[/dim]")
+        if profiling is not None:
+            profiling.close(indent="            ")
     # A game still in progress when the recording ends is reported as it stands; a finished
     # one was already reported by its game-over event.
     if (
@@ -916,6 +935,49 @@ class _Coaching:
         if self.coach is not None:
             self.coach.close()
             self.coach = None
+
+
+class _Profiling:
+    """The profile stage alongside a game: the events in, the review and the evidence out
+    (to the coach, and to the console). A live session teaches the profile on disk; a
+    replay a copy in memory that is forgotten with it."""
+
+    def __init__(self, settings: Settings, live: bool) -> None:
+        from sidecoach.profile.profiler import Profiler
+        from sidecoach.profile.store import Store
+
+        self.store = Store(settings.data_dir / "profile.sqlite" if live else None)
+        self.profiler = Profiler(self.store, ts=time.time())
+
+    def events(
+        self, events: Sequence[Event], indent: str = "", *, flush: bool = False
+    ) -> list[Event]:
+        from sidecoach.events import GameReview
+
+        out: list[Event] = []
+        try:
+            for event in events:
+                out += self.profiler.on_event(event, time.time())
+            out += self.profiler.flush(time.time()) if flush else self.profiler.tick(time.time())
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[red]profile error:[/red] {exc!r}")
+        for event in out:
+            if isinstance(event, GameReview):
+                console.print(
+                    f"{indent}[bold magenta]review:[/bold magenta] " + " ".join(event.lines)
+                )
+        return out
+
+    def snapshot(self) -> Event:
+        return self.profiler.snapshot()
+
+    def close(self, indent: str = "") -> None:
+        try:
+            summary = self.profiler.end_session(time.time())
+            if summary:
+                console.print(f"{indent}[dim]session: {summary}[/dim]")
+        finally:
+            self.store.close()
 
 
 def _draft_check() -> Callable[[str, chess.Board, Sequence[chess.Board]], list[str]] | None:
@@ -1474,6 +1536,8 @@ def watch(
     assessing = _Assessing(settings, analysis)
     coaching = _Coaching(settings, coach and assessing.on)
     coaching.log = log
+    profiling = _Profiling(settings, live=True)
+    coaching.events([profiling.snapshot()], time.monotonic())
     typed = _TypedLine()
 
     locked = False
@@ -1593,8 +1657,10 @@ def watch(
                             games.append(event.pgn)
                             console.print(f"PGN: {event.pgn}")
 
+                assessed = assessing.drain(log)
                 coaching.events(events, ts)
-                coaching.events(assessing.drain(log), ts)
+                coaching.events(assessed, ts)
+                coaching.events(profiling.events([*events, *assessed]), ts)
                 coaching.tick(ts)
                 coaching.drain()
 
@@ -1632,12 +1698,15 @@ def watch(
         # the game so far is still reported below.
         console.print(f"[red]capture failed:[/red] {exc}")
     finally:
-        coaching.events(assessing.wait(log=log), time.monotonic())
+        late = assessing.wait(log=log)
+        coaching.events(late, time.monotonic())
+        coaching.events(profiling.events(late, flush=True), time.monotonic())
         assessing.close()
         coaching.wait()
         if coaching.on:
             console.print(f"[dim]{coaching.summary()}[/dim]")
         coaching.close()
+        profiling.close()
         if recorder is not None:
             recorder.close()
         if log is not None:

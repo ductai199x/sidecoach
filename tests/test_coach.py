@@ -1077,3 +1077,74 @@ def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> No
     # Below LINE the engine's own preferred move is not named.
     assert "Bb5" not in directive
     assert "Name no move the messages do not give" in directive
+
+
+def test_the_review_is_spoken_from_the_profiles_facts_and_the_next_game_knows_the_player() -> None:
+    """The game ends and the profile's review arrives: it joins the conversation as a
+    message of its own and the coach sums it up through the model, the review's sentences
+    as the template. The profile's snapshot puts what earlier games say into the next
+    game's setting."""
+    from sidecoach.events import GameEnded, GameReview, ProfileSnapshot, TurningPoint
+
+    summary = (
+        "You won by checkmate. Your one lapse was 3. Qh5, where Nf3 kept the edge; "
+        "the rest was clean. Work on spotting what your opponent threatens."
+    )
+    # The same reply to every call: the earlier triggers (the decisive question, the
+    # verdict on the mate) take their share of them; the review is the last.
+    coach, provider = _coach([summary] * 8)
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6), 6.5)  # facts for the position the review is checked on
+    _mate_in_one_played(coach)
+    coach.on_event(GameEnded(game_id="g", result="1-0", reason="checkmate"), 12.0)
+    review = GameReview(
+        game_id="g",
+        user_side=Side.WHITE,
+        result="1-0",
+        reason="checkmate",
+        moves=4,
+        accuracy=88.0,
+        tallies={"best": 3, "mistake": 1},
+        turning_points=[
+            TurningPoint(
+                ply=5,
+                san="3. Qh5",
+                label="mistake",
+                expected_loss=0.11,
+                best_san="Nf3",
+                cause="missed opponent threat",
+                motif="fork",
+            )
+        ],
+        lines=[
+            "You played white and won by checkmate in 4 moves.",
+            "Accuracy 88.0. Your 4 moves: 3 best, 1 mistake.",
+            "Ground lost at 3. Qh5, a mistake costing 0.11; Nf3 was better"
+            " (missed opponent threat: fork).",
+        ],
+    )
+    coach.on_event(review, 12.5)
+    said = _messages(coach)
+    assert said and said[-1].trigger.value == "review"
+    assert "Qh5" in said[-1].text and "Nf3" in said[-1].text
+    given = _given(provider)
+    assert "The review of the game:" in _harness(given)
+    assert "Sum it up from the review" in _directive(given)
+    # The snapshot's insights and last session frame the next game.
+    coach.on_event(
+        ProfileSnapshot(
+            games=3,
+            insights=[
+                "Your biggest cost over 3 games is missed opponent threat: 4 mistakes,"
+                " 0.70 expected score."
+            ],
+            last_session="2 games (1 won, 1 lost), accuracy 80.",
+        ),
+        13.0,
+    )
+    coach.on_event(
+        GameStarted(game_id="g2", user_side=Side.BLACK, start_fen=chess.Board().fen()), 14.0
+    )
+    setting = coach.conversation.render()
+    assert "What earlier games say about this player" in setting
+    assert "missed opponent threat" in setting and "Last session: 2 games" in setting

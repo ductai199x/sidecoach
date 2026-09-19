@@ -146,3 +146,65 @@ def test_legal_move_dots_are_not_a_degraded_reading(tmp_path: Path) -> None:
     for _ in range(DEGRADED_FRAMES + 2):
         degraded = engine._check_degraded(SimpleNamespace(readings=dialog), degraded)
     assert degraded is True
+
+
+def test_the_profile_records_the_game_and_the_review_reaches_the_page(tmp_path: Path) -> None:
+    """Without an engine there are no verdicts, but the game itself -- its moves and its
+    end -- reaches the profile store, the review card and the session summary; a replay
+    (an injected frame source) keeps the profile in memory and writes no file."""
+    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
+    engine = PanelEngine(
+        settings, analysis=False, coach=False, record=False, frame_source=game_frames()
+    )
+    engine.start()
+    assert engine._thread is not None
+    engine._thread.join(timeout=90)
+    snap = engine.poll(0)
+    state, lines = snap["state"], snap["lines"]
+    assert state["profile"] is not None and state["profile"]["games"] in (0, 1)
+    assert not (tmp_path / "profile.sqlite").exists(), "a replay must not write the profile"
+    texts = [ln["text"] for ln in lines]
+    if any("game over" in t for t in texts):
+        assert state["review"] is not None and state["review"]["moves"] == 0  # no engine
+        assert any(ln["chan"] == "coach" and "review" in ln.get("data", {}) for ln in lines)
+        assert any(t.startswith("session:") for t in texts)
+
+
+def test_a_correction_moves_through_the_api(tmp_path: Path) -> None:
+    import chess
+
+    from sidecoach.events import GameStarted, Side
+    from sidecoach.profile.profiler import Profiler
+    from sidecoach.profile.store import Store
+
+    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
+    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+    api = PanelApi(engine)
+    assert api.correct("g", 0, 3, "time pressure") is False  # no session, no profile
+    store = Store(None)
+    profiler = Profiler(store, session_id="s")
+    profiler.on_event(
+        GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.STARTING_FEN), 0.0
+    )
+    store.add_evidence(
+        "g",
+        0,
+        3,
+        phase="opening",
+        expected_loss=0.12,
+        cause="positional misjudgment",
+        motif=None,
+        time_pressure=False,
+    )
+    engine._profiler = profiler
+    engine._set(
+        review={
+            "game_id": "g",
+            "turning_points": [{"segment": 0, "ply": 3, "cause": "positional misjudgment"}],
+        }
+    )
+    assert api.correct("g", 0, 3, "time pressure") is True
+    assert store.evidence("g")[0].cause == "time pressure"
+    assert engine.poll(0)["state"]["review"]["turning_points"][0]["cause"] == "time pressure"
+    with pytest.raises(ValueError):
+        api.correct("g", 0, 3, "bad luck")

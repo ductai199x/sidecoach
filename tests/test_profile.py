@@ -469,7 +469,7 @@ def test_the_game_ends_with_a_review_and_a_snapshot() -> None:
     f.play("Bc4", label=Label.BEST)
     f.play("Nf6")
     f.play("Qxf7#", label=Label.BEST)
-    got = f.end("1-0", "checkmate")
+    got = f.end("1-0", "game over on board")  # the reconciler's words for a mate
     review = next(e for e in got if isinstance(e, GameReview))
     snapshot = next(e for e in got if isinstance(e, ProfileSnapshot))
     assert review.result == "1-0" and review.moves == 4
@@ -553,3 +553,132 @@ def test_the_player_may_be_either_colour(side: Side) -> None:
     f.play("e5", loss=0.12, label=Label.MISTAKE, after_tags=[FORK])
     rows = f.store.evidence("g")
     assert [r.ply for r in rows] == [1 if side is Side.WHITE else 2]
+
+
+def test_the_review_waits_for_the_engines_last_verdicts() -> None:
+    f = Feed()
+    f.play("e4")
+    f.play("e5")
+    # The player's last move reaches the profile before the engine has judged it.
+    move = f.board.parse_san("Nf3")
+    fen_before = f.board.fen()
+    f.board.push(move)
+    f.ply += 1
+    f.send(
+        MovePlayed(
+            game_id="g",
+            ply=f.ply,
+            san="Nf3",
+            uci=move.uci(),
+            fen_before=fen_before,
+            fen_after=f.board.fen(),
+            by_user=True,
+            think_ms=100,
+        )
+    )
+    got = f.end("1-0", "resignation")
+    assert not any(isinstance(e, GameReview) for e in got)
+    assert f.profiler.tick(f.ts + 10.0) == []  # still within the grace period
+    # The verdict arrives: the review follows at once, with the move counted.
+    got = f.send(
+        MoveAssessment(
+            game_id="g",
+            ply=f.ply,
+            uci=move.uci(),
+            expected_loss=0.0,
+            severity=Severity.NONE,
+            best=[move.uci()],
+            depth=14,
+            label=Label.BEST,
+            accuracy=100.0,
+        )
+    )
+    review = next(e for e in got if isinstance(e, GameReview))
+    assert review.moves == 2 and review.tallies == {"good": 1, "best": 1}
+    assert f.profiler.tick(f.ts + 1000.0) == []  # reviewed once
+
+
+def test_a_review_left_waiting_is_built_when_the_grace_period_is_up_or_at_the_close() -> None:
+    from sidecoach.profile.profiler import REVIEW_GRACE_S
+
+    f = Feed()
+    f.play("e4")
+    f.play("e5")
+    f.send(
+        MovePlayed(
+            game_id="g",
+            ply=3,
+            san="Nf3",
+            uci="g1f3",
+            fen_before=f.board.fen(),
+            fen_after=f.board.fen(),
+            by_user=True,
+            think_ms=100,
+        )
+    )
+    assert not any(isinstance(e, GameReview) for e in f.end())
+    got = f.profiler.tick(f.ts + REVIEW_GRACE_S + 1)
+    review = next(e for e in got if isinstance(e, GameReview))
+    assert review.moves == 1  # the judged move only
+    # And a session that closes flushes a waiting review instead of dropping it.
+    g = Feed()
+    g.play("e4")
+    g.send(
+        MovePlayed(
+            game_id="g",
+            ply=2,
+            san="e5",
+            uci="e7e5",
+            fen_before=g.board.fen(),
+            fen_after=g.board.fen(),
+            by_user=False,
+            think_ms=100,
+        )
+    )
+    g.send(
+        MovePlayed(
+            game_id="g",
+            ply=3,
+            san="Nf3",
+            uci="g1f3",
+            fen_before=g.board.fen(),
+            fen_after=g.board.fen(),
+            by_user=True,
+            think_ms=100,
+        )
+    )
+    assert not any(isinstance(e, GameReview) for e in g.end())
+    assert g.profiler.end_session(g.ts + 1) is not None
+    assert g.store.game("g") is not None and g.store.game("g").accuracy is not None  # type: ignore[union-attr]
+
+
+def test_the_next_game_flushes_the_last_games_review() -> None:
+    f = Feed()
+    f.play("e4")
+    f.send(
+        MovePlayed(
+            game_id="g",
+            ply=2,
+            san="e5",
+            uci="e7e5",
+            fen_before=f.board.fen(),
+            fen_after=f.board.fen(),
+            by_user=False,
+            think_ms=100,
+        )
+    )
+    f.send(
+        MovePlayed(
+            game_id="g",
+            ply=3,
+            san="Nf3",
+            uci="g1f3",
+            fen_before=f.board.fen(),
+            fen_after=f.board.fen(),
+            by_user=True,
+            think_ms=100,
+        )
+    )
+    assert not any(isinstance(e, GameReview) for e in f.end())
+    got = f.send(GameStarted(game_id="g2", user_side=Side.WHITE, start_fen=chess.STARTING_FEN))
+    assert any(isinstance(e, GameReview) and e.game_id == "g" for e in got)

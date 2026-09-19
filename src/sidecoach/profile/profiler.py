@@ -8,7 +8,9 @@ as a chance in its phase and for every tactic that was on the board; a mistake o
 blunder is placed on the two axes (causes.py) once its assessment and the analysis of
 the position it left have both arrived, and becomes evidence. When the game ends the
 review is built from the record (review.py) and the snapshot of the whole profile is
-refreshed, both as events for the coach and the panel.
+refreshed, both as events for the coach and the panel -- once the engine has caught up
+with the last moves (it trails a fast finish by a few positions), or after a grace
+period, or when the session closes, whichever comes first.
 """
 
 from __future__ import annotations
@@ -43,6 +45,10 @@ from sidecoach.profile.insights import as_cells, insights
 from sidecoach.profile.review import ERRORS, UserMove, build_review
 from sidecoach.profile.store import Store
 
+# A finished game waits this long for the engine's last verdicts before its review is
+# built from what is there.
+REVIEW_GRACE_S = 90.0
+
 
 @dataclass
 class _Ply:
@@ -68,6 +74,25 @@ class _Game:
     opening: str | None = None
     last_fen: str = chess.STARTING_FEN
     ended: bool = False
+    # The game is over; its review waits for the last verdicts (see `_maybe_review`).
+    end: GameEnded | None = None
+    ended_at: float = 0.0
+    reviewed: bool = False
+
+
+def _reason_words(event: GameEnded) -> str | None:
+    """The reason as the review says it: the reconciler's "game over on board" is a mate,
+    a stalemate or dead material, which the final position tells."""
+    if event.reason != "game over on board" or not event.final_fen:
+        return event.reason
+    board = chess.Board(event.final_fen)
+    if board.is_checkmate():
+        return "checkmate"
+    if board.is_stalemate():
+        return "stalemate"
+    if board.is_insufficient_material():
+        return "insufficient material"
+    return event.reason
 
 
 class Profiler:
@@ -84,19 +109,21 @@ class Profiler:
     def on_event(self, event: Event, ts: float) -> list[Event]:
         """Consume one event; the events the profile emits in return, if any."""
         if isinstance(event, GameStarted):
-            return self._start(event, ts)
+            return [*self.flush(ts), *self._start(event, ts)]
         if isinstance(event, ClockObservation):
             self._clock = (event.white_ms, event.black_ms)
             return []
         game = self._game
-        if game is None or game.ended and not isinstance(event, CoachMessage | UserUtterance):
+        if game is None:
+            return []
+        if game.ended and isinstance(event, MovePlayed | Takeback | Resync | GameEnded):
             return []
         if isinstance(event, MovePlayed):
             return self._move(game, event, ts)
         if isinstance(event, Analysis):
-            return self._analysis(game, event)
+            return [*self._analysis(game, event), *self._maybe_review(game, ts)]
         if isinstance(event, MoveAssessment):
-            return self._assessment(game, event)
+            return [*self._assessment(game, event), *self._maybe_review(game, ts)]
         if isinstance(event, Takeback):
             return self._takeback(game, event)
         if isinstance(event, Resync):
@@ -272,7 +299,8 @@ class Profiler:
 
     def _end(self, game: _Game, event: GameEnded, ts: float) -> list[Event]:
         game.ended = True
-        review = self.review(game, event.result, event.reason)
+        game.end = event
+        game.ended_at = ts
         self.store.end_game(
             game.game_id,
             ts,
@@ -280,11 +308,47 @@ class Profiler:
             event.reason,
             pgn=event.pgn,
             final_fen=event.final_fen,
+            opening=game.opening,
+        )
+        return self._maybe_review(game, ts)
+
+    def _maybe_review(self, game: _Game, ts: float, *, force: bool = False) -> list[Event]:
+        """The review of a finished game, once every move of the player's has its verdict
+        or the grace period is up; `force` builds it from what is there."""
+        if game.end is None or game.reviewed:
+            return []
+        waiting = any(p.assessment is None for p in game.plies.values() if p.move.by_user)
+        if waiting and not force and ts - game.ended_at < REVIEW_GRACE_S:
+            return []
+        game.reviewed = True
+        review = self.review(game, game.end.result, _reason_words(game.end))
+        self.store.end_game(
+            game.game_id,
+            game.ended_at,
+            game.end.result,
+            game.end.reason,
+            pgn=game.end.pgn,
+            final_fen=game.end.final_fen,
             accuracy=review.accuracy,
             opening=game.opening,
         )
         self._reviews.append(review)
         return [review, self.snapshot()]
+
+    def tick(self, ts: float) -> list[Event]:
+        """Time passing: a finished game whose verdicts never came is reviewed as it is."""
+        game = self._game
+        if game is None:
+            return []
+        return self._maybe_review(game, ts)
+
+    def flush(self, ts: float) -> list[Event]:
+        """Review a finished game now, from what is there: the session is closing, or the
+        next game is starting."""
+        game = self._game
+        if game is None:
+            return []
+        return self._maybe_review(game, ts, force=True)
 
     # ---- the review and the snapshot ---------------------------------------------------
 
@@ -361,7 +425,9 @@ class Profiler:
     # ---- the session -------------------------------------------------------------------
 
     def end_session(self, ts: float) -> str | None:
-        """Close the session with a summary of its games, for the next session's coach."""
+        """Close the session with a summary of its games, for the next session's coach. A
+        game still waiting for its review is reviewed as it stands first."""
+        self.flush(ts)
         reviews = self._reviews
         summary: str | None = None
         if reviews:

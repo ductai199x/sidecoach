@@ -25,6 +25,7 @@ The `Coach` owns one of these per game and asks it for the messages of every req
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import chess
@@ -173,7 +174,11 @@ class Conversation:
         *,
         opponent: str = "a bot",
         control: str = "",
+        profile: Sequence[str] = (),
     ) -> None:
+        """The setting of a new game. `profile` is what the player model says about this
+        player from earlier games -- the biggest cost, the last session -- in sentences the
+        profile stage computed, so the coach has continuity without inventing any."""
         self.user_side = event.user_side
         self.start_fen = event.start_fen
         self.entries = []
@@ -186,6 +191,11 @@ class Conversation:
         if event.start_fen != chess.STARTING_FEN:
             text += "\nThe game is joined in progress; the position is:\n" + position_text(
                 chess.Board(event.start_fen)
+            )
+        if profile:
+            text += (
+                "\nWhat earlier games say about this player (computed, not opinion): "
+                + " ".join(profile)
             )
         self.entries.append(Entry("user", "game", text))
 
@@ -257,6 +267,11 @@ class Conversation:
     def ended(self, event: GameEnded) -> None:
         how = f" ({event.reason})" if event.reason else ""
         self.entries.append(Entry("user", "ended", f"Game over: {event.result}{how}."))
+
+    def review(self, lines: Sequence[str]) -> None:
+        """The review of the game once it is over: the tally, the accuracy, where it turned
+        and why, from the engine's verdicts (profile/review.py)."""
+        self.entries.append(Entry("user", "review", "The review of the game: " + " ".join(lines)))
 
     def user_said(self, text: str, verdicts: list[str] | None = None) -> None:
         body = f'"{text}"'

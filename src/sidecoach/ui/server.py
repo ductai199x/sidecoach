@@ -53,6 +53,13 @@ class _Ptt(BaseModel):
     down: bool
 
 
+class _Correct(BaseModel):
+    game_id: str
+    segment: int = 0
+    ply: int
+    cause: str | None = None
+
+
 class _End(BaseModel):
     outcome: str
 
@@ -124,6 +131,10 @@ def build_app(engine: PanelEngine) -> FastAPI:
     @app.post("/api/end")
     def end(body: _End) -> dict[str, bool]:
         return {"ok": api.end(body.outcome)}
+
+    @app.post("/api/correct")
+    def correct(body: _Correct) -> dict[str, bool]:
+        return {"ok": api.correct(body.game_id, body.segment, body.ply, body.cause)}
 
     @app.post("/api/listen")
     def listen(body: _Listen) -> dict[str, Any]:
