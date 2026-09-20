@@ -197,6 +197,25 @@ def build_app(engine: PanelEngine) -> FastAPI:
     def puzzle_close(puzzle_id: str) -> dict[str, bool]:
         return {"ok": _room_command(rooms, puzzle_id, "close")}
 
+    @app.post("/api/reset_profile")
+    def reset_profile() -> dict[str, Any]:
+        return api.reset_profile()
+
+    @app.post("/api/clear_caches")
+    def clear_caches() -> dict[str, Any]:
+        # The rooms let go of the puzzle store first (a file held open cannot go), and
+        # open it again after -- rebuilt from the CSVs by the engine, or at the open.
+        from sidecoach.profile.puzzles import open_store
+
+        if rooms.puzzles is not None:
+            with contextlib.suppress(Exception):
+                rooms.puzzles.close()
+            rooms.puzzles = None
+        done = api.clear_caches()
+        with contextlib.suppress(Exception):
+            rooms.puzzles = open_store(engine.settings.data_dir)
+        return done
+
     @app.post("/api/correct")
     def correct(body: _Correct) -> dict[str, bool]:
         return {"ok": api.correct(body.game_id, body.segment, body.ply, body.cause)}

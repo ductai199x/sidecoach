@@ -157,7 +157,14 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(tmp_path
     client.post(f"/api/puzzle/{FORK.id}/move", json={"uci": "e2c3"})
     res = _wait(client, FORK.id, lambda s: s["status"] == "solved")
     assert res["state"]["message"] == "Solved, after a miss."
-    lines = [ln["text"] for ln in res["lines"]]
+    # The outcome's line follows the state by a moment; wait for it.
+    import time as _time
+
+    for _ in range(50):
+        lines = [ln["text"] for ln in client.get(f"/api/puzzle/{FORK.id}/poll").json()["lines"]]
+        if any(ln.startswith(f"puzzle {FORK.id} failed (fork)") for ln in lines):
+            break
+        _time.sleep(0.05)
     assert any(ln.startswith(f"puzzle {FORK.id} failed (fork)") for ln in lines), lines
     store = Store(tmp_path / "profile.sqlite")
     assert [a[0] for a in store.attempts()] == [FORK.id] and not store.attempts()[0][2]

@@ -20,6 +20,7 @@ one a fail -- and the attempt is recorded beside the motif.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import random
 import sqlite3
@@ -144,6 +145,14 @@ class PuzzleStore:
     def count(self) -> int:
         with self._lock:
             return int(self._db.execute("SELECT COUNT(*) FROM puzzles").fetchone()[0])
+
+    def clear(self) -> None:
+        """Every puzzle out; the store stays open for a fresh import."""
+        with self._lock:
+            self._db.execute("DELETE FROM puzzles")
+            self._db.commit()
+            with contextlib.suppress(sqlite3.OperationalError):
+                self._db.execute("VACUUM")
 
     def import_csv(self, path: Path, *, limit: int | None = None) -> int:
         """Load a Lichess puzzle CSV (the database's columns: PuzzleId,FEN,Moves,Rating,

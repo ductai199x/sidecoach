@@ -36,6 +36,16 @@
             <button role="menuitem" data-outcome="forget">Forget this game</button>
           </div>
         </div>
+        <!-- What the app keeps: the profile and the caches, each cleared on purpose. -->
+        <div class="ctlgroup menu" id="dataMenu">
+          <span class="ctllabel">data</span>
+          <button id="dataMenuBtn" class="ghost menubtn" aria-haspopup="menu" aria-expanded="false" title="The player model and the caches">Reset&hellip; &#9662;</button>
+          <div id="dataMenuList" class="menulist" role="menu" hidden>
+            <button role="menuitem" data-action="caches" title="The theme cache and the puzzle store; both come back on their own">Clear caches</button>
+            <div class="menusep" role="separator"></div>
+            <button role="menuitem" data-action="profile" title="Every game, verdict, attempt and insight the profile holds">Reset profile&hellip;</button>
+          </div>
+        </div>
         <!-- The voice: on or off, and which. -->
         <div class="ctlgroup" role="group" aria-label="Voice">
           <span class="ctllabel">voice</span>

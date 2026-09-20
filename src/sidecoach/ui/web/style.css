@@ -93,6 +93,7 @@ body {
 .menulist button { text-align: left; background: transparent; border: 0; border-radius: 5px; padding: 7px 10px; font-weight: 500; }
 .menulist button:hover, .menulist button:focus-visible { background: var(--panel3); }
 .menulist button[data-outcome="forget"] { color: var(--warn); }
+.menulist button[data-action="profile"] { color: var(--error); }
 .menusep { height: 1px; background: var(--line); margin: 4px 2px; }
 /* The mute: a speaker that is crossed out when pressed. */
 #mute.iconbtn { width: 30px; height: 30px; }

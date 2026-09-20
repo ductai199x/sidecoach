@@ -1560,6 +1560,47 @@ def puzzles(
     store.close()
 
 
+@app.command()
+def profile(
+    action: Annotated[str, typer.Argument(help="reset: empty the player model entirely")],
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Do it without asking")] = False,
+    config: ConfigOpt = None,
+) -> None:
+    """The player model under data/profile.sqlite: `reset` empties it -- every game, every
+    verdict, the taxonomy's counts, the sessions, the puzzle attempts and level. The
+    panel's DATA menu does the same."""
+    from sidecoach.maintenance import reset_profile
+
+    if action != "reset":
+        raise typer.BadParameter("profile reset")
+    settings = load_settings(config)
+    path = settings.data_dir / "profile.sqlite"
+    if not path.exists():
+        console.print(f"no profile at {path}")
+        return
+    if not yes and not typer.confirm(f"Empty the whole player model at {path}?"):
+        raise typer.Abort()
+    reset_profile(settings)
+    console.print(f"profile reset: {path} is empty")
+
+
+@app.command()
+def cache(
+    action: Annotated[str, typer.Argument(help="clear: remove the caches")],
+    config: ConfigOpt = None,
+) -> None:
+    """The caches under the data directory: the theme cache (a recogniser per board
+    palette, learned again from the next start position) and the puzzle store (built
+    again from data/puzzles/*.csv at the next start). `clear` removes them; recordings,
+    sessions and the profile are not caches and stay."""
+    from sidecoach.maintenance import clear_caches
+
+    if action != "clear":
+        raise typer.BadParameter("cache clear")
+    done = clear_caches(load_settings(config))
+    console.print("; ".join(done) if done else "nothing cached")
+
+
 @app.command("import-reviews")
 def import_reviews(
     page: Annotated[Path, typer.Argument(help="A saved chess.com page, any number of games")],

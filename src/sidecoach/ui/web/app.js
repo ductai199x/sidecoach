@@ -30,6 +30,8 @@ const api = {
   set_muted: (muted) => post("/api/muted", { muted }),
   set_listen: (mode) => post("/api/listen", { mode }),
   end: (outcome) => post("/api/end", { outcome }),
+  reset_profile: () => post("/api/reset_profile"),
+  clear_caches: () => post("/api/clear_caches"),
   correct: (body) => post("/api/correct", body),
   exclude: (rect) => post("/api/exclude", rect),
   ptt: (down) => post("/api/ptt", { down }),
@@ -758,6 +760,21 @@ function wire() {
   }
   document.addEventListener("click", () => { if (!menuList.hidden) openMenu(false); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !menuList.hidden) openMenu(false); });
+  // The data menu: the caches go without a word; the profile only after a confirmation.
+  const dataBtn = el("dataMenuBtn"), dataList = el("dataMenuList");
+  const openData = (open) => { dataList.hidden = !open; dataBtn.setAttribute("aria-expanded", open ? "true" : "false"); };
+  dataBtn.onclick = (e) => { e.stopPropagation(); openData(dataList.hidden); };
+  for (const item of dataList.querySelectorAll("[data-action]")) {
+    item.onclick = async (e) => {
+      e.stopPropagation(); openData(false);
+      if (item.dataset.action === "caches") { await api.clear_caches(); return; }
+      if (window.confirm("Reset the profile? Every game, verdict, puzzle attempt and insight the player model holds is deleted. This cannot be undone.")) {
+        await api.reset_profile();
+        el("coach").replaceChildren();
+      }
+    };
+  }
+  document.addEventListener("click", () => { if (!dataList.hidden) openData(false); });
   const input = el("askInput");
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") sendAsk(); });
   input.addEventListener("input", renderSend);

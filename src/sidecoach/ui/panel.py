@@ -268,6 +268,37 @@ class PanelEngine:
             self._listener.release()
         self._set(ptt=bool(down) and self._listener.mode == "ptt")
 
+    def reset_profile(self) -> str:
+        """Empty the player model (maintenance.reset_profile). The running profiler's
+        store stays open on the emptied file; its game in progress is dropped and the
+        panel shows a fresh, empty profile."""
+        from sidecoach.maintenance import reset_profile
+
+        path = reset_profile(self.settings)
+        profiler = self._profiler
+        if profiler is not None:
+            profiler._game = None
+            profiler._reviews = []
+            profiler._recommended_for = {}
+            self._set(profile=self._profile_state(profiler.snapshot()), review=None, practice=None)
+        self.practice_ids = []
+        self.puzzle_motifs.clear()
+        self._emit("user", "warn", f"profile reset: {path} is empty")
+        return str(path)
+
+    def clear_caches(self) -> list[str]:
+        """Remove the caches (maintenance.clear_caches): the theme files, and the puzzle
+        store rebuilt from its CSVs when this engine holds it open."""
+        from sidecoach.maintenance import clear_caches
+
+        puzzles = getattr(self._profiler, "puzzles", None)
+        done = clear_caches(self.settings, puzzles)
+        for line in done:
+            self._emit("user", "warn", f"cache: {line}")
+        if not done:
+            self._emit("user", "info", "cache: nothing to clear")
+        return done
+
     def end_game(self, outcome: str) -> None:
         """End the game on the user's word: they resigned or flagged, the opponent did, a
         draw was agreed -- or forget the game altogether and wait for the next start."""
@@ -1636,3 +1667,9 @@ class PanelApi:
     def set_muted(self, muted: bool) -> bool:
         self._engine.set_muted(bool(muted))
         return True
+
+    def reset_profile(self) -> dict[str, Any]:
+        return {"ok": True, "path": self._engine.reset_profile()}
+
+    def clear_caches(self) -> dict[str, Any]:
+        return {"ok": True, "done": self._engine.clear_caches()}
