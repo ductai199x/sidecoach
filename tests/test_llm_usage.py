@@ -85,8 +85,10 @@ def test_a_stream_closed_early_is_estimated() -> None:
     assert u.calls == 2 and u.estimated == 1 and u.prompt == 600 and u.completion == 10
 
 
-def test_prices_come_from_the_settings_or_nowhere() -> None:
-    assert not prices_for(Settings(), "gpt-5.6-luna").known
+def test_prices_come_from_the_settings_or_the_known_table() -> None:
+    luna = prices_for(Settings(), "gpt-5.6-luna")
+    assert luna.known and (luna.prompt, luna.cached, luna.completion) == (0.20, 0.02, 1.20)
+    assert not prices_for(Settings(), "some-other-model").known
     settings = Settings(llm=LLMSettings(price_prompt_per_m=1.25, price_completion_per_m=10.0))
     prices = prices_for(settings, "anything")
     assert prices.known and prices.cached is None

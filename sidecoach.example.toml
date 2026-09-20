@@ -27,10 +27,12 @@ provider = "openai"                # gpt-5.6-luna at medium effort; "local" for 
 # routine_effort = "none"         # the effort for a word on a fine move: "none" speaks in
                                   # under a second; "low" reasons as long as medium does
 # The model's prices, USD per million tokens, for the session's cost in the panel's status
-# strip (the tokens show regardless): fresh prompt, cached prompt, completion.
-# price_prompt_per_m = 0.0
-# price_cached_per_m = 0.0
-# price_completion_per_m = 0.0
+# strip (the tokens show regardless): fresh prompt, cached prompt, completion. The presets
+# know gpt-5.6-luna's (0.20 / 0.02 / 1.20 on 2026-09-20); set them for any other model or
+# when OpenAI moves them.
+# price_prompt_per_m = 0.20
+# price_cached_per_m = 0.02
+# price_completion_per_m = 1.20
 # base_url = "http://localhost:1234/v1"
 # api_key_env = "MY_KEY"          # a custom endpoint's key variable
 # thinking_control = "prefill"    # prefill (LM Studio), param (DashScope), effort (OpenAI), none

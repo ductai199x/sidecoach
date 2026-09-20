@@ -41,9 +41,13 @@ def prices_for(settings: Any, model: str | None = None) -> Prices:
     return KNOWN_PRICES.get(str(model or llm.model or ""), Prices())
 
 
-# Prices the presets know (USD per million tokens: fresh prompt, cached prompt,
-# completion). None yet: gpt-5.6-luna's are set in sidecoach.toml.
-KNOWN_PRICES: dict[str, Prices] = {}
+# Prices the presets know, USD per million tokens (fresh prompt, cached prompt,
+# completion, reasoning billed as completion), as OpenAI's model page gave them on
+# 2026-09-20 -- the standard tier; a prompt over 272K tokens costs 2x/1.5x, which the
+# coach never sends. Settings in sidecoach.toml override these.
+KNOWN_PRICES: dict[str, Prices] = {
+    "gpt-5.6-luna": Prices(0.20, 0.02, 1.20),
+}
 
 
 class Usage:

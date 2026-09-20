@@ -1121,10 +1121,6 @@ class Coach:
         # The conversation is read from the caller's thread and from a claims check.
         self._lock = threading.RLock()
         self._last_verdict: str | None = None
-        # Quiet: nothing unasked -- no word on a move, no nudge, no hint on its own --
-        # while a puzzle is worked on the panel's board (Tai: "no auto hint or anything
-        # from the coach"); a question of the player's is answered as ever.
-        self.quiet = False
         # What the game is (GameStarted.kind): a game from the start, or a position -- a
         # puzzle, an analysis board -- where the mating move gets no word and the end no
         # summary (Tai, 2026-09-20: a solved puzzle is left, not summed up); every other
@@ -1194,10 +1190,20 @@ class Coach:
                 self.conversation.covered()
             self.policy.covered = covered
 
+    @property
+    def quiet(self) -> bool:
+        """Nothing unasked -- no word on a move, no nudge, no hint on its own -- the
+        policy's quiet mode, turned on while a puzzle is worked on the panel's board
+        (Tai: "no auto hint or anything from the coach"). A question of the player's is
+        answered as ever."""
+        return self.policy.settings.quiet
+
+    @quiet.setter
+    def quiet(self, value: bool) -> None:
+        self.policy.settings.quiet = value
+
     def tick(self, ts: float) -> None:
         """Time passing: a hint if the user has been stuck long enough."""
-        if self.quiet:
-            return
         trigger = self.policy.tick(ts)
         if trigger is None or self._current is None or self._current.facts is None:
             return
@@ -1541,7 +1547,7 @@ class Coach:
             position.board, event, last_move=position.last_move, user=self.user_colour
         )
         self.conversation.analysed(event, position.facts)
-        if position is self._current and self.user_to_move and not self.quiet:
+        if position is self._current and self.user_to_move:
             trigger = self.policy.on_position_analysed(event.ply, decisive=event.decisive)
             if trigger is not None:
                 level = position.disclosure.apply(Unlock.DECISIVE) or position.disclosure.level
@@ -1557,7 +1563,7 @@ class Coach:
         if before is None or before.facts is None:
             return
         trigger = self.policy.on_user_move_assessed(event)
-        if trigger is None or self.quiet:
+        if trigger is None:
             return
         elicit = False
         if trigger is Trigger.POST_MISTAKE:
