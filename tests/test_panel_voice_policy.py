@@ -47,8 +47,21 @@ def test_short_verdicts_yield_to_a_busy_voice_and_substance_cuts_in() -> None:
     act = PanelEngine.voice_action
     assert act("post_move", SHORT, ply=4, ply_now=4, busy=False) == "speak"
     assert act("post_move", SHORT, ply=4, ply_now=4, busy=True) == "skip"
+    # Nothing known about what is playing: substance cuts in, as before.
     assert act("decisive_question", LONG, ply=4, ply_now=4, busy=True) == "supersede"
     assert act("stuck", LONG, ply=4, ply_now=4, busy=True) == "supersede"
+    # What is playing is about a moment the board has left: cut in.
+    assert (
+        act("post_mistake", LONG, ply=6, ply_now=7, busy=True, playing=("post_move", 3))
+        == "supersede"
+    )
+    # What is playing is still about the board as it stands: wait behind it -- the word
+    # on the last move, the review, the practice, each heard whole at a game's end.
+    assert act("review", LONG, ply=88, ply_now=88, busy=True, playing=("post_move", 87)) == "speak"
+    assert act("review", LONG, ply=None, ply_now=88, busy=True, playing=("review", 88)) == "speak"
+    assert act("stuck", LONG, ply=4, ply_now=4, busy=True, playing=("post_move", 3)) == "speak"
+    # The user's own question never waits.
+    assert act("user_ask", LONG, ply=4, ply_now=4, busy=True, playing=("review", 4)) == "supersede"
 
 
 def test_speak_records_the_action_and_stops_before_cutting_in(tmp_path: Path) -> None:
@@ -82,9 +95,15 @@ def test_speak_records_the_action_and_stops_before_cutting_in(tmp_path: Path) ->
     assert fake.calls == ["say:" + LONG]
     fake.calls.clear()
     fake.busy = True
-    assert engine._speak("stuck", LONG, ply=12) == "supersede"
+    assert engine._speak("stuck", LONG, ply=12) == "speak", "the lesson playing is current"
+    assert fake.calls == ["say:" + LONG]
+    fake.calls.clear()
+    engine._state["ply"] = 16  # the board moved on past what is playing
+    assert engine._speak("stuck", LONG, ply=16) == "supersede"
     assert fake.calls == ["stop", "say:" + LONG]
     fake.calls.clear()
+    engine._state["ply"] = 12
+    engine._voicing = ("post_move", 11)
     assert engine._speak("post_move", SHORT, ply=12) == "skip"
     assert engine._speak("post_move", SHORT, ply=8) == "stale"
     assert fake.calls == []

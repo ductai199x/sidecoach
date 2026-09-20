@@ -140,6 +140,9 @@ class PanelEngine:
     # the move list's badges.
     _labels: dict[int, str] = field(default_factory=dict, init=False)
     _bad_run: int = field(default=0, init=False)  # consecutive frames read as degraded
+    # What the voice was last given: the trigger and the ply of that message, so the
+    # next one knows whether what is playing is about a position the board has left.
+    _voicing: tuple[str, int | None] | None = field(default=None, init=False)
     # A puzzle being solved on the panel's own board (ui/puzzle.py), and the puzzles
     # recommended lately, for Next. While one is open the screen's game events are not
     # followed: the board, the coach and the engine are the puzzle's.
@@ -475,7 +478,14 @@ class PanelEngine:
             self._state.update(fields)
 
     @staticmethod
-    def voice_action(trigger: str, text: str, ply: int | None, ply_now: int, busy: bool) -> str:
+    def voice_action(
+        trigger: str,
+        text: str,
+        ply: int | None,
+        ply_now: int,
+        busy: bool,
+        playing: tuple[str, int | None] | None = None,
+    ) -> str:
         """What the voice should do with a coach message, so it never talks about a
         position the board has left behind.
 
@@ -485,8 +495,12 @@ class PanelEngine:
         user's move and the bot's instant reply; a hint about the live position does not
         survive the user moving) is shown but not spoken ("stale"); a short post-move
         verdict is dropped if the voice is busy rather than queued behind it ("skip");
-        anything substantive cuts off whatever is still playing about an older moment
-        ("supersede"). The answer to the user's own question is never stale: they asked.
+        anything substantive cuts off what is still playing when that is about a moment
+        the board has left ("supersede"), and waits its turn behind it otherwise
+        ("speak": the word on the last move, the review and the practice all come within
+        seconds of a game's end, and each cut the one before, so only the last was heard
+        -- Tai, 2026-09-20). The answer to the user's own question is never stale and
+        never waits: they asked.
         """
         if trigger == "user_ask":
             # The user asked; the answer is owed aloud even if the board has moved on.
@@ -496,7 +510,14 @@ class PanelEngine:
             return "stale"
         if trigger == "post_move" and len(text) < SHORT_VERDICT:
             return "skip" if busy else "speak"
-        return "supersede" if busy else "speak"
+        if not busy:
+            return "speak"
+        if playing is None:
+            return "supersede"
+        old_trigger, old_ply = playing
+        old_allowed = STALE_AFTER.get(old_trigger, STALE_PLIES - 1)
+        old_stale = old_ply is not None and ply_now - old_ply > old_allowed
+        return "supersede" if old_stale else "speak"
 
     def _stream_sink(self, trigger: Any, ply: int | None) -> Callable[[str], bool] | None:
         """The voice's sink for one coach reply written sentence by sentence (see
@@ -518,12 +539,15 @@ class PanelEngine:
             with self._lock:
                 ply_now = int(self._state.get("ply") or 0)
             if not started:
-                action = self.voice_action(name, sentence, ply, ply_now, self._tts.busy)
+                action = self.voice_action(
+                    name, sentence, ply, ply_now, self._tts.busy, self._voicing
+                )
                 if action == "supersede":
                     self._tts.stop()
                 if action not in ("speak", "supersede"):
                     return False
                 started.append(action)
+                self._voicing = (name, ply)
                 self._await_audio(name, ply, sentence)
             self._tts.say(sentence)
             self._emit("voice", "debug", f"speaking ({self.voice}): {elide(sentence, 60)}")
@@ -537,10 +561,11 @@ class PanelEngine:
             return "muted"
         with self._lock:
             ply_now = int(self._state.get("ply") or 0)
-        action = self.voice_action(trigger, text, ply, ply_now, self._tts.busy)
+        action = self.voice_action(trigger, text, ply, ply_now, self._tts.busy, self._voicing)
         if action == "supersede":
             self._tts.stop()
         if action in ("speak", "supersede"):
+            self._voicing = (trigger, ply)
             self._await_audio(trigger, ply, text)
             self._tts.say(text)
             self._emit("voice", "debug", f"speaking ({self.voice}): {elide(text, 60)}")
