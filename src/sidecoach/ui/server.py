@@ -64,6 +64,11 @@ class _End(BaseModel):
     outcome: str
 
 
+class _PuzzleAction(BaseModel):
+    action: str
+    value: str | None = None
+
+
 class _Rect(BaseModel):
     x: int
     y: int
@@ -131,6 +136,10 @@ def build_app(engine: PanelEngine) -> FastAPI:
     @app.post("/api/end")
     def end(body: _End) -> dict[str, bool]:
         return {"ok": api.end(body.outcome)}
+
+    @app.post("/api/puzzle")
+    def puzzle(body: _PuzzleAction) -> dict[str, Any]:
+        return api.puzzle(body.action, body.value)
 
     @app.post("/api/correct")
     def correct(body: _Correct) -> dict[str, bool]:

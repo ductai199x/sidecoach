@@ -59,6 +59,19 @@
           <span id="ply">ply 0</span>
           <span id="following">waiting for a start</span>
         </div>
+        <!-- A puzzle solved on this board: what it is, how it goes, and the way out. -->
+        <div id="puzzlebar" class="puzzlebar" hidden>
+          <div class="pz-what">
+            <span id="pz-title" class="strong">puzzle</span>
+            <span id="pz-msg" class="pz-msg">Your move.</span>
+          </div>
+          <div class="pz-actions">
+            <button id="pz-hint" class="qchip" title="A nudge from the coach at the current disclosure level">Hint</button>
+            <button id="pz-giveup" class="ghost small" title="Play the solution out">Give up</button>
+            <button id="pz-next" class="ghost small" title="The next recommended puzzle">Next</button>
+            <button id="pz-close" class="ghost small" title="Back to the screen">Close</button>
+          </div>
+        </div>
       </section>
 
       <div id="splitBoard" class="vsplit" title="Drag to resize the board; double-click to reset"></div>

@@ -140,6 +140,11 @@ class PanelEngine:
     # the move list's badges.
     _labels: dict[int, str] = field(default_factory=dict, init=False)
     _bad_run: int = field(default=0, init=False)  # consecutive frames read as degraded
+    # A puzzle being solved on the panel's own board (ui/puzzle.py), and the puzzles
+    # recommended lately, for Next. While one is open the screen's game events are not
+    # followed: the board, the coach and the engine are the puzzle's.
+    _puzzle: Any = field(default=None, init=False)
+    _practice_ids: list[str] = field(default_factory=list, init=False)
     # Latency, amortised over the session (see _health): when each move was committed
     # (ply -> monotonic), the reply's first sentence waiting for its audio (the line ->
     # the move's time), and the running (count, total, last) of move-to-first-sound and
@@ -260,6 +265,12 @@ class PanelEngine:
         else:
             self._listener.release()
         self._set(ptt=bool(down) and self._listener.mode == "ptt")
+
+    def puzzle_targets(self, square: str) -> list[str]:
+        """Where the piece on `square` may go in the open puzzle (read on the HTTP thread;
+        the session only changes on the loop thread, and a stale answer costs a click)."""
+        session = self._puzzle
+        return session.targets(square) if session is not None else []
 
     def end_game(self, outcome: str) -> None:
         """End the game on the user's word: they resigned or flagged, the opponent did, a
@@ -777,6 +788,10 @@ class PanelEngine:
                 if pipe.board is not None:
                     latest_geom = BoardGeometry(pipe.board.region, pipe.board.cell_px)
 
+                if self._puzzle is not None:
+                    # The screen's game is not followed while a puzzle is open on the
+                    # panel's board: the coach and the engine have the puzzle.
+                    events = []
                 events += self._drain_commands(pipe, coaching, latest, latest_geom, ts)
 
                 # Vision transitions: only the changes are logged, never every frame.
@@ -930,6 +945,7 @@ class PanelEngine:
                 )
             elif isinstance(event, Recommendation):
                 practice = event.model_dump(exclude={"ts", "source_frame_id"})
+                self._practice_ids = [p.id for p in event.puzzles]
                 self._set(practice=practice)
                 self._emit(
                     "coach",
@@ -940,16 +956,7 @@ class PanelEngine:
                     practice=practice,
                 )
             elif isinstance(event, PuzzleOutcome):
-                self._emit(
-                    "game",
-                    "info",
-                    f"puzzle {event.puzzle_id} {'solved' if event.solved else 'failed'}"
-                    + (f" ({event.motif})" if event.motif else "")
-                    + f"; puzzle level {event.level}",
-                    puzzle_id=event.puzzle_id,
-                    solved=event.solved,
-                    puzzle_level=event.level,
-                )
+                self._log_outcome(event)
             elif isinstance(event, ProfileSnapshot):
                 self._set(profile=self._profile_state(event))
             elif isinstance(event, ProfileEvidence):
@@ -1013,7 +1020,13 @@ class PanelEngine:
         if isinstance(event, GameStarted):
             self._fen_before.clear()
             self._labels.clear()
-            what = "new game" if event.kind == "game" else "position joined (puzzle or analysis)"
+            what = (
+                "new game"
+                if event.kind == "game"
+                else "puzzle on the panel's board"
+                if event.kind == "puzzle"
+                else "position joined (puzzle or analysis)"
+            )
             self._emit(
                 "game",
                 "info",
@@ -1418,7 +1431,102 @@ class PanelEngine:
                 events += self._flip(pipe, frame, geom, ts)
             elif name == "analyze":
                 events += self._analyze(pipe, frame, geom, ts)
+            elif name.startswith("puzzle_"):
+                events += self._puzzle_command(name[7:], payload, pipe, coaching, ts)
         return events
+
+    # ---- a puzzle on the panel's board (ui/puzzle.py) --------------------------------------
+
+    def _puzzle_command(
+        self, name: str, payload: Any, pipe: Any, coaching: Any, ts: float
+    ) -> list[Any]:
+        from sidecoach.ui.puzzle import PuzzleSession
+
+        profiler = self._profiler
+        session = self._puzzle
+        events: list[Any] = []
+        if name in ("start", "next"):
+            store = getattr(profiler, "puzzles", None) if profiler is not None else None
+            if store is None:
+                self._emit("user", "warn", "no puzzles: run `sidecoach puzzles fetch` first")
+                return []
+            if name == "next":
+                done = {session.puzzle.id} if session is not None else set()
+                payload = next((pid for pid in self._practice_ids if pid not in done), None)
+                if payload is None:
+                    self._emit("user", "info", "no more recommended puzzles; play a game for more")
+                    return []
+            puzzle = store.get(str(payload))
+            if puzzle is None:
+                self._emit("user", "warn", f"no puzzle {payload} in the store")
+                return []
+            if session is not None and not session.done:
+                events += self._puzzle_finish(session, solved=False, ts=ts)
+            if pipe.reconciler is not None and pipe.reconciler.started:
+                events += pipe.end_game("*", "puzzle opened on the panel", ts)
+                pipe.reset()
+            motif = profiler.recommended_motif(puzzle.id) if profiler is not None else None
+            session = PuzzleSession(puzzle, motif)
+            self._puzzle = session
+            if coaching.coach is not None:
+                coaching.coach.quiet = True
+            events.append(session.started())
+            self._emit(
+                "user",
+                "info",
+                f"puzzle {puzzle.id} on the panel's board: {motif or 'practice'}, rated "
+                f"{puzzle.rating}, {session.side.value} to move",
+            )
+        elif session is None:
+            return []
+        elif name == "move":
+            events += session.move(str(payload))
+            if session.done and session.status == "solved":
+                events += self._puzzle_finish(session, solved=not session.failed, ts=ts)
+        elif name == "retract":
+            session.retract()
+        elif name == "giveup":
+            events += session.give_up()
+            events += self._puzzle_finish(session, solved=False, ts=ts)
+        elif name == "close":
+            if not session.done:
+                events += self._puzzle_finish(session, solved=False, ts=ts)
+            self._puzzle = None
+            if coaching.coach is not None:
+                coaching.coach.quiet = False
+            self._set(puzzle=None)
+            self._emit("user", "info", "puzzle closed; following the screen again")
+            return events
+        self._set(puzzle=session.state())
+        return events
+
+    def _puzzle_finish(self, session: Any, *, solved: bool, ts: float) -> list[Any]:
+        """The outcome to the profile, once per puzzle."""
+        if getattr(session, "recorded", False) or self._profiler is None:
+            return []
+        session.recorded = True
+        try:
+            events = self._profiler.record_puzzle(
+                session.puzzle.id, session.motif, solved, list(session.sans), time.time()
+            )
+        except Exception as exc:  # noqa: BLE001 - the profile must not break the puzzle
+            self._emit("sys", "error", f"profile error: {exc!r}")
+            return []
+        for event in events:
+            self._log_outcome(event)
+        return events
+
+    def _log_outcome(self, event: Any) -> None:
+        self._emit(
+            "game",
+            "info",
+            f"puzzle {event.puzzle_id} {'solved' if event.solved else 'failed'}"
+            + (f" ({event.motif})" if event.motif else "")
+            + f"; puzzle level {event.level}",
+            puzzle_id=event.puzzle_id,
+            solved=event.solved,
+            puzzle_level=event.level,
+        )
 
     def _end(self, pipe: Any, outcome: str, ts: float) -> list[Any]:
         if pipe.reconciler is None or not pipe.reconciler.started:
@@ -1500,6 +1608,8 @@ class PanelEngine:
         return events
 
     def _refresh_state(self, pipe: Any) -> None:
+        if self._puzzle is not None:
+            return  # the board is the puzzle's (see _puzzle_command)
         rec = pipe.reconciler
         fen = rec.board.fen() if rec is not None else None
         moves = [m.uci() for m in rec.board.move_stack] if rec is not None else []
@@ -1591,6 +1701,16 @@ class PanelApi:
 
     def correct(self, game_id: str, segment: int, ply: int, cause: str | None) -> bool:
         return self._engine.correct(game_id, segment, ply, cause)
+
+    def puzzle(self, action: str, value: str | None = None) -> dict[str, Any]:
+        """The puzzle on the panel's board: start <id> | next | move <uci> | retract |
+        giveup | close, queued for the loop thread; `targets <square>` answers at once."""
+        if action == "targets":
+            return {"ok": True, "targets": self._engine.puzzle_targets(value or "")}
+        if action not in ("start", "next", "move", "retract", "giveup", "close"):
+            return {"ok": False, "error": f"unknown puzzle action {action!r}"}
+        self._engine.command(f"puzzle_{action}", value)
+        return {"ok": True}
 
     def set_muted(self, muted: bool) -> bool:
         self._engine.set_muted(bool(muted))

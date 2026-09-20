@@ -248,3 +248,7 @@ def test_the_coach_says_one_line_on_the_practice_and_a_word_on_a_fail() -> None:
     ]
     assert provider.prompts == [], "no model call"
     assert "Practice recommended" in coach.conversation.render()
+    # On the panel's own board (the coach kept quiet) the bar says it; the coach does not.
+    coach.quiet = True
+    coach.on_event(failed, 4.0)
+    assert _messages(coach) == []

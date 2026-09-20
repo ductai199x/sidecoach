@@ -188,7 +188,14 @@ class Conversation:
         text = f"You coach {side}."
         if control:
             text += f" Time control: {control}."
-        if event.kind != "game":
+        if event.kind == "puzzle":
+            text += (
+                f"\nThis is a puzzle the player is solving on the panel's board, {side} to "
+                "move and to find the best line. Say nothing unasked; when they ask for a "
+                "hint, give one at the level allowed, never the move itself unless asked "
+                "for it:\n" + position_text(chess.Board(event.start_fen))
+            )
+        elif event.kind != "game":
             text += (
                 "\nThis is a position, not a game from the start: a puzzle, an analysis "
                 "board, or a game joined from the middle. There is no earlier history to "

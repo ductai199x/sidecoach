@@ -31,6 +31,7 @@ const api = {
   set_listen: (mode) => post("/api/listen", { mode }),
   end: (outcome) => post("/api/end", { outcome }),
   correct: (body) => post("/api/correct", body),
+  puzzle: (action, value) => post("/api/puzzle", { action, value: value == null ? null : String(value) }),
   exclude: (rect) => post("/api/exclude", rect),
   ptt: (down) => post("/api/ptt", { down }),
 };
@@ -46,13 +47,16 @@ function moveSquares(uci) {
   return new Set([uci.slice(0, 2), uci.slice(2, 4)]);
 }
 
-function renderBoard(fen, bottom, lastMove) {
+function renderBoard(fen, bottom, lastMove, extra) {
   const board = el("board");
   if (!fen) {
     if (lastBoardKey !== null) { board.innerHTML = ""; lastBoardKey = null; }
     return;
   }
-  const key = fen + "|" + (bottom || "white") + "|" + (lastMove || "");
+  // `extra`: the puzzle's selection, targets and a wrong move, part of the key.
+  const sel = extra && extra.selected, targets = new Set((extra && extra.targets) || []);
+  const wrong = extra && extra.wrong ? moveSquares(extra.wrong) : new Set();
+  const key = fen + "|" + (bottom || "white") + "|" + (lastMove || "") + "|" + (sel || "") + "|" + [...targets].join("") + "|" + [...wrong].join("");
   if (key === lastBoardKey) return;
   lastBoardKey = key;
 
@@ -82,6 +86,10 @@ function renderBoard(fen, bottom, lastMove) {
       sq.className = "sq " + (((rank + file) % 2 === 0) ? "dark" : "light");
       if (r % 2 === 1) sq.classList.add("odd");  // the panel's own-board signature
       if (hl.has(name)) sq.classList.add("hl");
+      if (sel === name) sq.classList.add("sel");
+      if (wrong.has(name)) sq.classList.add("wrong");
+      if (targets.has(name)) sq.classList.add("target");
+      sq.dataset.square = name;
       const piece = ranks[7 - rank][file];
       if (piece) {
         const pc = document.createElement("div");
@@ -438,11 +446,17 @@ function addPractice(p) {
   head.textContent = p.reason ? p.reason.charAt(0).toUpperCase() + p.reason.slice(1) + "." : "Puzzles to practise.";
   const list = document.createElement("div"); list.className = "rv-puzzles";
   for (const z of p.puzzles || []) {
+    // The pill opens the puzzle on this board; the small arrow, on Lichess.
+    const b = document.createElement("button");
+    b.className = "rv-puzzle"; b.textContent = "puzzle " + z.id + " · " + z.rating;
+    b.title = "Solve it here: " + ((z.themes || []).map(motifWords).join(", ") || "practice");
+    b.onclick = () => api.puzzle("start", z.id);
     const a = document.createElement("a");
-    a.href = z.url; a.target = "_blank"; a.rel = "noopener"; a.className = "rv-puzzle";
-    a.textContent = "puzzle " + z.id + " · " + z.rating;
-    a.title = (z.themes || []).map(motifWords).join(", ");
-    list.appendChild(a);
+    a.href = z.url; a.target = "_blank"; a.rel = "noopener"; a.className = "rv-puzzle-link";
+    a.textContent = "\u2197"; a.title = "Open on Lichess instead";
+    const wrap = document.createElement("span"); wrap.className = "rv-puzzle-wrap";
+    wrap.append(b, a);
+    list.appendChild(wrap);
   }
   msg.append(meta, head, list);
   c.appendChild(msg);
@@ -621,6 +635,59 @@ function renderListen(s) {
   if (s.heard) { h.hidden = false; h.innerHTML = ""; h.appendChild(document.createTextNode("heard: ")); const b = document.createElement("b"); b.textContent = s.heard; h.appendChild(b); }
 }
 
+// --- a puzzle on this board ---------------------------------------------------------------
+//
+// While the engine has a puzzle open, the board is the puzzle's and takes clicks: one on a
+// piece of the solver's asks the engine where it may go (dots), one on a dot moves it. A
+// wrong move shows red for a moment and is taken back. The coach says nothing unasked;
+// the Hint chip asks it.
+
+let puzzle = null;         // the engine's puzzle state, or null
+let pzSelected = null;     // the square picked up
+let pzTargets = [];        // where it may go
+let pzRetracting = false;  // a wrong move is showing; the retract is on its way
+
+function renderPuzzle(p) {
+  const bar = el("puzzlebar");
+  const was = puzzle;
+  puzzle = p || null;
+  if (!puzzle) {
+    if (was) { bar.hidden = true; pzSelected = null; pzTargets = []; document.body.classList.remove("puzzling"); fitBoard(); }
+    return;
+  }
+  document.body.classList.add("puzzling");
+  if (bar.hidden) { bar.hidden = false; fitBoard(); requestAnimationFrame(fitBoard); }
+  if (!was || was.id !== puzzle.id) { pzSelected = null; pzTargets = []; pzRetracting = false; }
+  el("pz-title").textContent = "puzzle " + puzzle.id + " · " + (puzzle.motif ? motifWords(puzzle.motif) + " · " : "") + puzzle.rating + " · you play " + puzzle.bottom;
+  const msg = el("pz-msg");
+  msg.textContent = puzzle.message || "";
+  msg.className = "pz-msg " + (puzzle.status === "solved" ? "good" : puzzle.wrong ? "bad" : "");
+  el("pz-giveup").disabled = puzzle.status !== "playing";
+  if (puzzle.wrong && !pzRetracting) {
+    pzRetracting = true;
+    pzSelected = null; pzTargets = [];
+    setTimeout(() => { pzRetracting = false; api.puzzle("retract"); }, 900);
+  }
+  currentBottom = puzzle.bottom;
+  renderBoard(puzzle.fen, puzzle.bottom, puzzle.last_move, { selected: pzSelected, targets: pzTargets, wrong: puzzle.wrong });
+  renderMoves(puzzle.moves || [], {});
+}
+
+async function puzzleClick(square) {
+  if (!puzzle || !puzzle.your_move || pzRetracting) return;
+  if (pzSelected && pzTargets.includes(square)) {
+    const uci = pzSelected + square;
+    pzSelected = null; pzTargets = [];
+    await api.puzzle("move", uci);
+    return;
+  }
+  if (pzSelected === square) { pzSelected = null; pzTargets = []; renderPuzzle(puzzle); return; }
+  const res = await api.puzzle("targets", square);
+  pzTargets = (res && res.targets) || [];
+  pzSelected = pzTargets.length ? square : null;
+  renderPuzzle(puzzle);
+}
+
 function renderState(s) {
   el("status").textContent = s.status || "";
   el("side").textContent = s.user_side ? ("you play " + s.user_side) : "—";
@@ -634,6 +701,17 @@ function renderState(s) {
   const shown = s.view_flip ? (base === "white" ? "black" : "white") : base;
   renderOrientation(shown);
   renderMute(!!s.muted);
+  renderPuzzle(s.puzzle);
+  if (puzzle) {
+    // The board, the moves and the info line are the puzzle's while it is open.
+    el("side").textContent = "you play " + puzzle.bottom;
+    el("ply").textContent = "puzzle";
+    el("following").textContent = puzzle.status === "playing" ? "solving on this board" : puzzle.message;
+    renderHealth(s.health, s);
+    renderListen(s);
+    setRunning(s.running);
+    return;
+  }
   liveFen = s.fen; liveLastMove = s.last_move;
   moveFens = s.fens || []; moveUcis = s.ucis || [];
   if (!ghost) renderBoard(s.fen, shown, s.last_move);
@@ -736,6 +814,14 @@ function wire() {
     b.onclick = () => { if (b.getAttribute("aria-pressed") !== "true") api.flip(); };
   }
   el("analyze").onclick = () => api.analyze();
+  el("board").addEventListener("click", (e) => {
+    const sq = e.target.closest("[data-square]");
+    if (sq && puzzle) puzzleClick(sq.dataset.square);
+  });
+  el("pz-hint").onclick = () => { showPending(); api.hint(); };
+  el("pz-giveup").onclick = () => api.puzzle("giveup");
+  el("pz-next").onclick = () => api.puzzle("next");
+  el("pz-close").onclick = () => api.puzzle("close");
   el("mute").onclick = () => {
     const muted = el("mute").getAttribute("aria-pressed") !== "true";
     renderMute(muted);  // optimistic; the next poll confirms
@@ -831,7 +917,9 @@ function fitBoard() {
   const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
   const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
   const divider = el("splitBoard") ? el("splitBoard").getBoundingClientRect().width : 14;
-  const info = el("gameinfo") ? el("gameinfo").getBoundingClientRect().height + 8 : 30;
+  let info = el("gameinfo") ? el("gameinfo").getBoundingClientRect().height + 8 : 30;
+  const bar = el("puzzlebar");
+  if (bar && !bar.hidden) info += bar.getBoundingClientRect().height + 6;  // the puzzle's bar under the board
   const panelMin = parseFloat(getComputedStyle(root).getPropertyValue("--panel-min")) || 340;
   const byHeight = mainEl.clientHeight - padY - info;
   const byWidth = mainEl.clientWidth - padX - divider - panelMin;

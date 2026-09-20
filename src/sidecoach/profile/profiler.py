@@ -231,7 +231,9 @@ class Profiler:
             self._game = None
             self._attempt = None
             self._attempt_game = None
-            if self.puzzles is not None:
+            # A puzzle on the panel's own board (kind "puzzle") is scored by the panel
+            # through `record_puzzle`; one on the screen is matched here.
+            if self.puzzles is not None and event.kind == "position":
                 self._attempt = self._puzzle_at(event.start_fen)
                 self._attempt_game = event.game_id if self._attempt is not None else None
             return []
@@ -515,6 +517,29 @@ class Profiler:
                 return point.motif, f"{motif_words(point.motif)}: the turning point of this game"
         return None, ""
 
+    def recommended_motif(self, puzzle_id: str) -> str | None:
+        """The motif a puzzle was recommended for this session, if it was."""
+        return self._recommended_for.get(puzzle_id)
+
+    def record_puzzle(
+        self, puzzle_id: str, motif: str | None, solved: bool, moves: list[str], ts: float
+    ) -> list[Event]:
+        """An outcome the panel judged itself (a puzzle solved on its own board): kept
+        beside the motif, the level moved; the event for the coach and the panel."""
+        step = LEVEL_STEP if solved else -LEVEL_STEP
+        level = max(RATING_MIN, min(RATING_MAX, self.puzzle_level() + step))
+        self.store.set_setting("puzzle_level", str(level))
+        self.store.add_attempt(puzzle_id, ts, motif, solved, moves)
+        return [
+            PuzzleOutcome(
+                game_id=f"puzzle-{puzzle_id}",
+                puzzle_id=puzzle_id,
+                motif=motif,
+                solved=solved,
+                level=level,
+            )
+        ]
+
     def _puzzle_at(self, fen: str) -> Attempt | None:
         """The puzzle whose solver's position this is, a recommended one first."""
         assert self.puzzles is not None
@@ -536,21 +561,10 @@ class Profiler:
         outcome = attempt.move(event.uci, by_user=event.by_user)
         if outcome is None:
             return []
-        solved = outcome == "solved"
-        step = LEVEL_STEP if solved else -LEVEL_STEP
-        level = max(RATING_MIN, min(RATING_MAX, self.puzzle_level() + step))
-        self.store.set_setting("puzzle_level", str(level))
-        self.store.add_attempt(attempt.puzzle.id, ts, attempt.motif, solved, attempt.played)
         self._attempt = None
-        return [
-            PuzzleOutcome(
-                game_id=event.game_id,
-                puzzle_id=attempt.puzzle.id,
-                motif=attempt.motif,
-                solved=solved,
-                level=level,
-            )
-        ]
+        return self.record_puzzle(
+            attempt.puzzle.id, attempt.motif, outcome == "solved", attempt.played, ts
+        )
 
     def tick(self, ts: float) -> list[Event]:
         """Time passing: a finished game whose verdicts never came is reviewed as it is."""
