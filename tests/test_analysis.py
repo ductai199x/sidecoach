@@ -55,9 +55,11 @@ class FakeEngine(Engine):
         super().__init__(path=Path("fake"))
         self.answers = answers
         self.calls: list[str] = []
+        self.multipvs: list[int] = []
 
     def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
         self.calls.append(board.fen())
+        self.multipvs.append(int(kwargs.get("multipv", 1) or 1))  # type: ignore[call-overload]
         if board.is_game_over(claim_draw=True):
             return []
         return self.answers.get(board.fen(), [Line(moves=["a2a3"], depth=1, expected_score=0.5)])
@@ -278,6 +280,8 @@ def test_the_mate_distance_counts_the_move_being_judged() -> None:
 
 
 def test_each_position_is_measured_once() -> None:
+    """Measured whole once each; the verdict on a move searches the position it led to
+    for its best line alone first (a call of its own, one line), then the whole."""
     board = chess.Board()
     fake = FakeEngine({})
     annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
@@ -286,10 +290,13 @@ def test_each_position_is_measured_once() -> None:
     after = board.copy(stack=False)
     after.push(e2e4)
     annotator.assess("g", after, chess.Move.from_uci("e7e5"), 2)
-    assert len(fake.calls) == 3, "start, after e4, after e5: each measured once"
+    whole = [fen for fen, multipv in zip(fake.calls, fake.multipvs, strict=True) if multipv != 1]
+    assert len(whole) == 3, "start, after e4, after e5: each measured whole once"
+    assert fake.multipvs.count(1) == 2, "one verdict search per move"
     annotator.reset()
     annotator.assess("g", board, e2e4, 1)
-    assert len(fake.calls) == 5, "a new game measures again"
+    whole = [fen for fen, multipv in zip(fake.calls, fake.multipvs, strict=True) if multipv != 1]
+    assert len(whole) == 5, "a new game measures again"
 
 
 def test_assessment_carries_the_loss_the_best_line_and_the_tags() -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypedDict
 
@@ -33,3 +33,11 @@ class LLMProvider(Protocol):
         temperature: float = 0.7,
         thinking: bool = False,
     ) -> Completion: ...
+
+
+# A provider may also stream: `chat_stream(system, messages, *, max_tokens, temperature,
+# thinking, on_delta)` with the same result as `chat`, each piece of visible text going
+# to `on_delta` as it arrives; a callback returning False ends the stream early (the text
+# so far is the completion, the usage then unknown). The coach's Speaker uses it when it
+# is there (`getattr(provider, "chat_stream", None)`) and `chat` otherwise.
+StreamCallback = Callable[[str], bool]

@@ -57,6 +57,10 @@ class LLMSettings(BaseModel):
     thinking_control: str | None = None
     # For "effort" providers: none | low | medium | high | ... ; the preset's if unset.
     reasoning_effort: str | None = None
+    # The effort for a mundane coach reply (a word on a fine move): "none" gets the first
+    # sound out in under a second; "low" reasons about as long as medium (measured
+    # 2026-09-19: 2.7 s to the first token against 2.5 s). Unset keeps reasoning_effort.
+    routine_effort: str | None = "none"
     thinking: bool = False
     # Total output budget. Reasoning tokens count against it when thinking is on.
     max_output_tokens: int = 1500
@@ -80,6 +84,11 @@ class CoachSettings(BaseModel):
     summarise_every: int = 0
     # The record compacted: sound moves nobody spoke after run together as a move list.
     compact_record: bool = False
+    # Verbalized sampling (arxiv 2510.01171): the model offers several replies and one is
+    # spoken, for variety of phrasing. Off (the default, Tai 2026-09-19), it writes one
+    # reply. Streamed, the first reply is spoken as it is written and the rest never
+    # written, so on costs no time beyond the "[p=0.3]" marker before the first word.
+    verbalized_sampling: bool = False
     # Fitted to chess.com's review tallies over six games; see analysis.score.Thresholds.
     inaccuracy: float = 0.04
     mistake: float = 0.10

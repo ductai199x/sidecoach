@@ -33,7 +33,7 @@ import logging
 import queue
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
@@ -465,6 +465,38 @@ class PanelEngine:
             return "skip" if busy else "speak"
         return "supersede" if busy else "speak"
 
+    def _stream_sink(self, trigger: Any, ply: int | None) -> Callable[[str], bool] | None:
+        """The voice's sink for one coach reply written sentence by sentence (see
+        coach.Speaker): the first sentence decides, by `voice_action`, whether the reply
+        is spoken at all -- stale, skipped, superseding -- and each sentence is queued as
+        it comes, so the first is heard while the model writes the rest. A reply that
+        has begun is heard to its end whatever the board does meanwhile; only the next
+        reply, once ready to be spoken, cuts it (Tai: the opponent's move alone must not
+        stop the voice mid-sentence). Called on the coach's thread; the voice's queue
+        and the state lock are safe from there."""
+        if self.muted:
+            return None
+        name = getattr(trigger, "value", str(trigger))
+        started: list[str] = []
+
+        def sink(sentence: str) -> bool:
+            if self.muted:
+                return False
+            with self._lock:
+                ply_now = int(self._state.get("ply") or 0)
+            if not started:
+                action = self.voice_action(name, sentence, ply, ply_now, self._tts.busy)
+                if action == "supersede":
+                    self._tts.stop()
+                if action not in ("speak", "supersede"):
+                    return False
+                started.append(action)
+            self._tts.say(sentence)
+            self._emit("voice", "debug", f"speaking ({self.voice}): {elide(sentence, 60)}")
+            return True
+
+        return sink
+
     def _speak(self, trigger: str, text: str, ply: int | None) -> str:
         """Apply `voice_action` and speak accordingly; returns what was done, for the log."""
         if self.muted:
@@ -564,6 +596,8 @@ class PanelEngine:
         # the events, and coach messages are logged with their metadata below.
         assessing.sink = lambda _line: None
         coaching.sink = lambda _message: None
+        if coaching.coach is not None:
+            coaching.coach.stream_sink = self._stream_sink
         self._emit("sys", "info" if assessing.on else "warn", f"engine: {assessing.detail}")
         self._emit("sys", "info" if coaching.on else "warn", f"coach: {coaching.detail}")
         # The player model: a live session teaches the profile on disk, a replay a copy
@@ -1055,10 +1089,17 @@ class PanelEngine:
                     problems=spoken.problems,
                 )
             else:
-                if spoken.problems:
+                if spoken.problems and not spoken.streamed:
                     meta.append("draft rejected → template")
-                action = self._speak(message.trigger.value, message.text, message.ply)
-                if action == "stale":
+                elif spoken.problems:
+                    meta.append("cut short: " + "; ".join(spoken.problems))
+                if spoken.streamed:
+                    action = "streamed"
+                else:
+                    action = self._speak(message.trigger.value, message.text, message.ply)
+                if action == "streamed":
+                    meta.append("streamed")
+                elif action == "stale":
                     meta.append("not spoken: board moved on")
                 elif action == "skip":
                     meta.append("not spoken: voice busy")
@@ -1085,11 +1126,15 @@ class PanelEngine:
                 finish = call.stats.get("finish_reason") or "?"
                 tokens = call.stats.get("completion_tokens")
                 seconds = call.stats.get("elapsed_s")
+                first = call.stats.get("first_token_s")
+                stream_problems = call.stats.get("stream_problems")
                 summary = (
                     f"model reply {index}: {call.candidates} candidates, {call.passed} passed"
                     + (f", {tokens} tokens" if tokens is not None else "")
                     + (f" in {seconds:.1f}s" if isinstance(seconds, (int, float)) else "")
+                    + (f" (first token {first:.1f}s)" if isinstance(first, (int, float)) else "")
                     + (", cut off by the token budget" if finish == "length" else "")
+                    + (f"; stream stopped: {'; '.join(stream_problems)}" if stream_problems else "")
                 )
                 self._emit(
                     "coach",

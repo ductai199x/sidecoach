@@ -29,6 +29,11 @@ from sidecoach.voice.runtime import session as make_session
 log = logging.getLogger(__name__)
 
 ONNX_FILE = "kokoro-v1.0.onnx"
+# Silence appended to every line before it is played. `play` then `wait` returns, and
+# the stream is stopped, the moment the last sample has been handed to the device -- and
+# a Bluetooth headset is still a few hundred milliseconds behind, so the end of every
+# line was clipped (Tai, 2026-09-19). What the stop now cuts off is silence.
+TAIL_SILENCE_S = 0.35
 VOICES_FILE = "voices-v1.0.bin"
 
 
@@ -216,6 +221,11 @@ class KokoroTTS:
             if generation != self._generation:
                 return
         try:
+            import numpy as np
+
+            samples = np.asarray(samples)
+            pad = np.zeros((int(sample_rate * TAIL_SILENCE_S), *samples.shape[1:]), samples.dtype)
+            samples = np.concatenate([samples, pad])
             self._sd.play(samples, sample_rate, device=self.playback_device())  # type: ignore[attr-defined]
             self._sd.wait()  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - audio errors are not fatal

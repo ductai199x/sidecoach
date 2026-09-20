@@ -100,6 +100,14 @@ VS_MAX_TOKENS = 2048
 # hot sampling on top of that is where the invented sentence came from.
 VS_TEMPERATURE = 0.1
 _NUMBER_WORDS = {2: "TWO", 3: "THREE", 4: "FOUR", 5: "FIVE"}
+# The unprompted remarks carry no figures: the record says what a move cost in expected
+# score and the model was quoting it in every note ("costing 0.03"); a player who wants
+# the number asks for it (Tai, 2026-09-19).
+NO_NUMBERS = (
+    "Do not quote the cost or any number: say how the move rates in words, and keep the "
+    "figures for when the player asks. Name moves bare, as h3 or Bd5, never with a move "
+    "number in front."
+)
 
 
 def vs_directive(candidates: int = VS_CANDIDATES) -> str:
@@ -107,7 +115,8 @@ def vs_directive(candidates: int = VS_CANDIDATES) -> str:
     return (
         f"\n\nInstead of one reply, give {count} different ways you could say this, varied in "
         "wording and in the angle each takes, sampled from your full range rather than the "
-        "single most obvious phrasing. Put each on its own line as: [p=0.30] then the reply. "
+        "single most obvious phrasing. Put each on its own line as: [p=0.30] then the reply, "
+        "the replies in a random order, not the likeliest first. "
         "Each reply obeys every rule above and keeps to the length asked, on that one line. "
         "The p values are how likely you would be to choose each; they need not sum to one."
     )
@@ -120,7 +129,11 @@ _STRAY_MARKER = re.compile(r"\s*\[\s*p\s*=\s*[0-9.]*\]?\s*")
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
 # Where a reply's last complete sentence ends: terminal punctuation, then any closing
 # quote or bracket. What follows the last of these is a sentence the model never finished.
-_SENTENCE_END = re.compile(r"[.!?…][\"'”’)\]]*(?=\s|$)")
+# A move number's stop ("after 6. d3", "12. Bxc6+") ends no sentence: a bare number of
+# up to three digits, at the start or after a space, before the stop.
+_SENTENCE_END = re.compile(
+    r"(?<!(?<![\w.])\d)(?<!(?<![\w.])\d\d)(?<!(?<![\w.])\d\d\d)[.!?…][\"'”’)\]]*(?=\s|$)"
+)
 
 
 _PIECE_WORD = {"K": "king", "Q": "queen", "R": "rook", "B": "bishop", "N": "knight"}
@@ -238,8 +251,8 @@ def _sentence_total(text: str) -> int:
 
 
 def _vs_wrap(messages: list[ChatMessage], candidates: int = VS_CANDIDATES) -> list[ChatMessage]:
-    """Append the verbalized-sampling directive to the final user turn."""
-    if not messages:
+    """Append the verbalized-sampling directive to the final user turn; none for one reply."""
+    if not messages or candidates <= 1:
         return messages
     wrapped = list(messages)
     last = dict(wrapped[-1])
@@ -308,6 +321,85 @@ def _sample_reply(passed: list[tuple[float, str]]) -> str:
     return random.choices([text for _, text in passed], weights=weights, k=1)[0]
 
 
+class _FirstCandidate:
+    """Reads the first verbalized candidate off the model's stream and hands it to a sink
+    sentence by sentence. Each new complete sentence is checked (the leak and board
+    checks) before it goes; a fault stops the stream with what was said so far kept. The
+    stream is stopped once the candidate is complete -- the second marker seen -- so the
+    other candidates are never written. A reply with no marker at all is one candidate."""
+
+    def __init__(self, sink: Callable[[str], bool], check: Callable[[str], list[str]]) -> None:
+        self.sink = sink
+        self.check = check
+        self.buffer = ""
+        self.spoken = ""  # what the sink has been given
+        self.problems: list[str] = []
+        self.done = False
+
+    def _candidate(self) -> tuple[str, bool]:
+        """The first candidate's text so far, and whether it is complete."""
+        cleaned = _THINK_BLOCK.sub("", self.buffer)
+        markers = list(_VS_MARKER.finditer(cleaned))
+        if not markers:
+            # No marker yet: the model may be writing one, or writing a bare reply.
+            if cleaned.lstrip().startswith("[") or len(cleaned) < 12:
+                return "", False
+            return cleaned, False
+        start = markers[0].end()
+        if len(markers) > 1:
+            return cleaned[start : markers[1].start()], True
+        return cleaned[start:], False
+
+    def _offer(self, text: str, final: bool = False) -> bool:
+        """Hand the sink the complete sentences of `text` not yet given. False to stop.
+
+        A sentence has ended only once the space after its full stop has arrived: at
+        the buffer's end "costing 0." is the start of "costing 0.02", and a cost read
+        as 0 failed the check and stopped the stream. A chunk without letters ("6.", a
+        move number the model put first) waits for the sentence it introduces."""
+        cleaned = _STRAY_MARKER.sub("", text).strip()
+        ends = [m for m in _SENTENCE_END.finditer(cleaned) if final or m.end() < len(cleaned)]
+        complete = cleaned[: ends[-1].end()].strip() if ends else ""
+        if len(complete) <= len(self.spoken):
+            return True
+        fresh = complete[len(self.spoken) :].strip()
+        if sum(ch.isalpha() for ch in fresh) < 2:
+            return True  # a number and a stop: the sentence it begins is still coming
+        faults = self.check(fresh) if fresh else []
+        faults = [f for f in faults if not f.startswith("too long") and "question" not in f]
+        if faults:
+            self.problems = faults
+            return False
+        if not self.sink(fresh):
+            return False
+        self.spoken = complete
+        return True
+
+    def feed(self, delta: str) -> bool:
+        if self.done:
+            return False
+        self.buffer += delta
+        text, complete = self._candidate()
+        # A complete candidate (its successor's marker seen) ends on its last stop, with
+        # nothing after: that stop counts.
+        if not self._offer(text, final=complete):
+            self.done = True
+            return False
+        if complete:
+            self.done = True
+            return False
+        return True
+
+    def finish(self) -> None:
+        """The stream ended: whatever complete sentences remain go out."""
+        if self.done:
+            return
+        self.done = True
+        text, _ = self._candidate()
+        if text:
+            self._offer(text, final=True)
+
+
 @dataclass
 class ModelCall:
     """One call to the model: the turn it was given (the last user message: memory, fact
@@ -334,6 +426,9 @@ class Spoken:
     # Already a turn of the conversation (a quick answer recorded before the model was
     # asked to build on it), so polling it must not record it again.
     recorded: bool = False
+    # The reply went out through the request's sink as it was written: the voice has
+    # had it, sentence by sentence, and nothing is to be spoken again.
+    streamed: bool = False
     # What the verifier found, when one runs: per candidate the statements the messages do
     # not support, and whether the reply spoken was a repair of the best candidate.
     verified: list[list[str]] = field(default_factory=list)
@@ -379,6 +474,14 @@ class _Request:
     # says of its verdict and cost is checked against them.
     played_san: str | None = None
     assessment: MoveAssessment | None = None
+    # Where to send the reply sentence by sentence as the model writes it (the panel's
+    # voice), or None for a reply that goes out whole once checked. The sink returns
+    # False to stop the stream: the board has moved on, or the voice is not wanted.
+    stream_to: Callable[[str], bool] | None = None
+    # A mundane reply -- a word on a fine move -- which the Speaker's routine model
+    # writes (the same model at less reasoning, by default none: the first sound comes
+    # in under a second instead of three).
+    routine: bool = False
 
 
 def _after_best(request: _Request) -> list[chess.Board]:
@@ -450,8 +553,15 @@ class Speaker:
         *,
         draft_check: Callable[[str, chess.Board, Sequence[chess.Board]], list[str]] | None = None,
         verifier: LLMProvider | None = None,
+        routine_provider: LLMProvider | None = None,
     ) -> None:
         self.provider = provider
+        # The model for a mundane reply (a word on a fine move), where nothing is at
+        # stake and the first sound matters: the same model at less reasoning (Tai:
+        # low at most; none is what makes it fast, low reasons as long as medium).
+        # Everything else -- a mistake, a decisive moment, a nudge, a question of the
+        # player's -- keeps `provider` at its effort.
+        self.routine_provider = routine_provider or provider
         self.draft_check = draft_check
         self.verifier = verifier
         self.failures = 0
@@ -542,19 +652,61 @@ class Speaker:
         calls: list[ModelCall] = []
         verified: list[list[str]] = []
         repaired = False
+        streamed = False
+        provider = self.routine_provider if request.routine else self.provider
         while attempts < 2:
             attempts += 1
             stats: dict[str, Any] = {}
+            reader: _FirstCandidate | None = None
+            stream = getattr(provider, "chat_stream", None)
+            if (
+                request.stream_to is not None
+                and attempts == 1
+                and self.verifier is None
+                and stream is not None
+            ):
+                # The first candidate goes to the voice sentence by sentence as it is
+                # written, each sentence checked for leaks before it is said; the stream
+                # is closed once that candidate is complete, the others unwritten.
+                reader = _FirstCandidate(request.stream_to, lambda t: self._problems(t, request))
             try:
-                completion = self.provider.chat(
-                    request.system, messages, max_tokens=VS_MAX_TOKENS, temperature=VS_TEMPERATURE
-                )
+                if reader is not None and stream is not None:
+                    completion = stream(
+                        request.system,
+                        messages,
+                        max_tokens=VS_MAX_TOKENS,
+                        temperature=VS_TEMPERATURE,
+                        on_delta=reader.feed,
+                    )
+                else:
+                    completion = provider.chat(
+                        request.system,
+                        messages,
+                        max_tokens=VS_MAX_TOKENS,
+                        temperature=VS_TEMPERATURE,
+                    )
                 raw = completion.text
                 stats = dict(completion.stats)
             except Exception as exc:  # noqa: BLE001
                 self.failures += 1
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 raw = ""
+            if reader is not None:
+                reader.finish()
+                if reader.spoken:
+                    # Said already, in part at least: the record keeps what was said and
+                    # what, if anything, was wrong with the rest; no template follows a
+                    # voice that has spoken.
+                    text = reader.spoken
+                    problems = reader.problems
+                    streamed = True
+                    given = "\n\n---\n\n".join(str(m["content"]) for m in messages[-2:])
+                    calls.append(ModelCall(raw, stats, 1, 0 if problems else 1, given))
+                    break
+                # Nothing said: the first candidate failed its first sentence, or the
+                # voice declined. The reply is read whole from here, as without a sink;
+                # what stopped the stream goes in the call's stats for the log.
+                stats["stream_problems"] = reader.problems or ["the voice declined"]
             scored = [
                 (prob, candidate, self._problems(candidate, request))
                 for prob, candidate in _parse_candidates(raw)
@@ -593,11 +745,17 @@ class Speaker:
             retry["content"] = (
                 str(retry.get("content", ""))
                 + f"\n\nYour first attempt was:\n{shown}\n\nThose replies are not allowed: "
-                f"{rejected}. Give {_NUMBER_WORDS.get(request.candidates, request.candidates)} "
-                "fresh, varied replies that avoid those, keeping to the messages above."
+                + f"{rejected}. Give "
+                + (
+                    "a fresh reply that avoids those"
+                    if request.candidates <= 1
+                    else f"{_NUMBER_WORDS.get(request.candidates, request.candidates)} "
+                    "fresh, varied replies that avoid those"
+                )
+                + ", keeping to the messages above."
             )
             messages = [*messages[:-1], retry]  # type: ignore[list-item]
-        if problems:
+        if problems and not streamed:
             self.fallbacks += 1
             text = request.fallback
         message = CoachMessage(
@@ -617,6 +775,7 @@ class Speaker:
             calls=calls,
             verified=verified,
             repaired=repaired,
+            streamed=streamed,
         )
 
     def _verify(
@@ -909,9 +1068,20 @@ class Coach:
         summarise_every: int = 0,
         summariser: LLMProvider | None = None,
         compact_record: bool = False,
+        routine_provider: LLMProvider | None = None,
+        verbalized_sampling: bool = True,
     ) -> None:
         self.policy = policy or InterjectionPolicy()
-        self.speaker = Speaker(provider, draft_check=draft_check, verifier=verifier)
+        # One reply instead of a verbalized distribution (see config.CoachSettings).
+        self.verbalized_sampling = verbalized_sampling
+        self.speaker = Speaker(
+            provider, draft_check=draft_check, verifier=verifier, routine_provider=routine_provider
+        )
+        # The panel's voice, when it wants replies as they are written: a factory giving,
+        # for a trigger and a ply, the sink the reply's sentences go to, or None.
+        self.stream_sink: Callable[[Trigger, int | None], Callable[[str], bool] | None] | None = (
+            None
+        )
         self.claims = claims
         # Dialogue compaction: every `summarise_every` plies the dialogue older than the
         # last `summarise_every` plies is folded into a summary by `summariser` (the
@@ -1347,6 +1517,7 @@ class Coach:
                     assessment=event,
                     played=move,
                     candidates=VS_ROUTINE_CANDIDATES if routine else VS_CANDIDATES,
+                    routine=routine,
                 )
                 return
             text = self._verdict(move.san, event.label.value if event.label else None)
@@ -1494,6 +1665,7 @@ class Coach:
         played: MovePlayed | None = None,
         quick: bool = False,
         candidates: int | None = None,
+        routine: bool = False,
     ) -> None:
         assert position.facts is not None
         instruction, fallback = self._instruction(
@@ -1530,11 +1702,16 @@ class Coach:
                 played_san=played.san if played else None,
                 severity=assessment.severity.value if assessment else None,
             ),
-            candidates=candidates
-            or (VS_ASK_CANDIDATES if trigger is Trigger.USER_ASK else VS_CANDIDATES),
+            candidates=(
+                candidates or (VS_ASK_CANDIDATES if trigger is Trigger.USER_ASK else VS_CANDIDATES)
+            )
+            if self.verbalized_sampling
+            else 1,
             played=self._record_moves(),
             played_san=played.san if played else None,
             assessment=assessment,
+            stream_to=self.stream_sink(trigger, position.ply) if self.stream_sink else None,
+            routine=routine,
         )
         self.speaker.submit(request)
 
@@ -1676,7 +1853,7 @@ class Coach:
                     f"The player just played {played.san} ({words}), which was a {label}: it "
                     f"cost {loss:.0%} of the game. The better move was {best} ({better_words}). "
                     f"Explain the difference as a pattern to remember, in three sentences at "
-                    f"most, then ask one question that checks they see it."
+                    f"most, then ask one question that checks they see it. {NO_NUMBERS}"
                 )
                 if self._mistakes % ELICIT_EVERY == 0:
                     # Sparingly: what they saw at that moment, for the profile's record.
@@ -1687,7 +1864,7 @@ class Coach:
                         f"({better_words}). Explain the difference as a pattern to remember, in "
                         "three sentences at most, then ask what they saw at that moment: "
                         "whether they missed the opponent's idea altogether, or saw it and "
-                        "misjudged the line."
+                        f"misjudged the line. {NO_NUMBERS}"
                     )
             elif routine:
                 fallback = self._verdict(played.san, label)
@@ -1704,14 +1881,14 @@ class Coach:
                     "One short sentence, fifteen words at most, in your own voice: a nod, or "
                     "what the move does when a message says so. No question, no lecture, no "
                     "advice, no guess at what it allows or risks, and not the same words as "
-                    "your last such sentence."
+                    f"your last such sentence. {NO_NUMBERS}"
                 )
             else:
                 fallback = f"{played.san} was fine; {best} was a little tighter."
                 instruction = (
                     f"The player just played {played.san} ({words}), which was fine but not "
                     f"the strongest: {best} ({better_words}) was better, by a little. One or "
-                    f"two sentences. No lecture, no question."
+                    f"two sentences. No lecture, no question. {NO_NUMBERS}"
                 )
             return instruction, fallback
         # An explicit ask. The player's words are already the last message of the

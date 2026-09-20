@@ -22,8 +22,9 @@ the cached share of the prompt in `usage.prompt_tokens_details.cached_tokens`.
 
 from __future__ import annotations
 
+import json
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 import httpx
@@ -173,6 +174,83 @@ class OpenAICompatProvider:
             text=(message.get("content") or "").strip(),
             reasoning=(message.get("reasoning_content") or "").strip(),
             stats=stats,
+        )
+
+    def chat_stream(
+        self,
+        system: str,
+        messages: Sequence[ChatMessage],
+        *,
+        max_tokens: int = 1500,
+        temperature: float = 0.7,
+        thinking: bool = False,
+        on_delta: Callable[[str], bool],
+    ) -> Completion:
+        """The reply streamed: every visible delta to `on_delta` as it arrives, the first
+        one's latency and the stream's usage in the stats. A callback returning False
+        closes the stream; the usage is then whatever the server had sent, usually
+        nothing, and finish_reason is "stopped"."""
+        body = self.request_body(
+            system, messages, max_tokens=max_tokens, temperature=temperature, thinking=thinking
+        )
+        body = {**body, "stream": True, "stream_options": {"include_usage": True}}
+        started = time.perf_counter()
+        first: float | None = None
+        parts: list[str] = []
+        reasoning: list[str] = []
+        usage: dict[str, Any] = {}
+        finish: str | None = None
+        stopped = False
+        with self._client.stream(
+            "POST", f"{self.base_url}/chat/completions", json=body
+        ) as response:
+            if response.status_code != 200:
+                text = response.read().decode("utf-8", "replace")
+                raise RuntimeError(f"{response.status_code}: {text[:200]}")
+            for line in response.iter_lines():
+                if not line.startswith("data: "):
+                    continue
+                payload = line[6:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                if chunk.get("usage"):
+                    usage = chunk["usage"]
+                for choice in chunk.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    if delta.get("reasoning_content"):
+                        reasoning.append(str(delta["reasoning_content"]))
+                    if choice.get("finish_reason"):
+                        finish = choice["finish_reason"]
+                    text = delta.get("content")
+                    if not text:
+                        continue
+                    if first is None:
+                        first = time.perf_counter() - started
+                    parts.append(text)
+                    if not on_delta(text):
+                        stopped = True
+                        break
+                if stopped:
+                    break
+        elapsed = time.perf_counter() - started
+        completion_details = usage.get("completion_tokens_details") or {}
+        prompt_details = usage.get("prompt_tokens_details") or {}
+        stats = {
+            "elapsed_s": round(elapsed, 3),
+            "first_token_s": round(first, 3) if first is not None else None,
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "cached_tokens": prompt_details.get("cached_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "reasoning_tokens": completion_details.get("reasoning_tokens"),
+            "finish_reason": "stopped" if stopped else finish,
+            "streamed": True,
+        }
+        return Completion(
+            text="".join(parts).strip(), reasoning="".join(reasoning).strip(), stats=stats
         )
 
     def complete(self, system: str, user: str, **kwargs: Any) -> Completion:

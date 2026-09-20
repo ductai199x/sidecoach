@@ -905,6 +905,8 @@ class _Coaching:
             engine=_named_engine(settings),  # type: ignore[arg-type]
             summarise_every=settings.coach.summarise_every,
             compact_record=settings.coach.compact_record,
+            routine_provider=_routine_provider(settings, provider),  # type: ignore[arg-type]
+            verbalized_sampling=settings.coach.verbalized_sampling,
         )
         self.coach.start()
         self.detail = f"{provider.name} ({detail})"
@@ -1056,6 +1058,16 @@ def _named_engine(settings: Settings) -> object:
     )
     engine.open()
     return engine
+
+
+def _routine_provider(settings: Settings, provider: object) -> object:
+    """The coach's model at the effort for mundane replies (see LLMSettings.routine_effort);
+    the provider itself when that is unset or the provider has no effort to set."""
+    effort = settings.llm.routine_effort
+    with_effort = getattr(provider, "with_effort", None)
+    if not effort or with_effort is None:
+        return provider
+    return with_effort(effort)
 
 
 def _verifier(settings: Settings, provider: object) -> object:
