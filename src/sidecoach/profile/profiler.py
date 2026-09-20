@@ -37,7 +37,6 @@ from sidecoach.events import (
     MovePlayed,
     ProfileEvidence,
     ProfileSnapshot,
-    PuzzleOutcome,
     Recommendation,
     Resync,
     Side,
@@ -47,13 +46,11 @@ from sidecoach.events import (
 from sidecoach.profile import causes
 from sidecoach.profile.insights import MIN_CHANCES, as_cells, insights, motif_words
 from sidecoach.profile.puzzles import (
-    LEVEL_START,
-    LEVEL_STEP,
-    RATING_MAX,
-    RATING_MIN,
     Attempt,
     PuzzleStore,
     position_key,
+    puzzle_level,
+    record_attempt,
 )
 from sidecoach.profile.review import ERRORS, UserMove, build_review
 from sidecoach.profile.store import Store
@@ -467,8 +464,7 @@ class Profiler:
     # ---- puzzles (DESIGN section 5.7) ------------------------------------------------------
 
     def puzzle_level(self) -> int:
-        value = self.store.setting("puzzle_level")
-        return int(value) if value else LEVEL_START
+        return puzzle_level(self.store)
 
     def _recommend(self, game: _Game, review: GameReview, ts: float) -> list[Event]:
         """A few puzzles for the motif that costs the player most: the profile's worst
@@ -524,21 +520,9 @@ class Profiler:
     def record_puzzle(
         self, puzzle_id: str, motif: str | None, solved: bool, moves: list[str], ts: float
     ) -> list[Event]:
-        """An outcome the panel judged itself (a puzzle solved on its own board): kept
+        """An outcome judged elsewhere (a puzzle solved on the puzzle page's board): kept
         beside the motif, the level moved; the event for the coach and the panel."""
-        step = LEVEL_STEP if solved else -LEVEL_STEP
-        level = max(RATING_MIN, min(RATING_MAX, self.puzzle_level() + step))
-        self.store.set_setting("puzzle_level", str(level))
-        self.store.add_attempt(puzzle_id, ts, motif, solved, moves)
-        return [
-            PuzzleOutcome(
-                game_id=f"puzzle-{puzzle_id}",
-                puzzle_id=puzzle_id,
-                motif=motif,
-                solved=solved,
-                level=level,
-            )
-        ]
+        return [record_attempt(self.store, puzzle_id, motif, solved, moves, ts)]
 
     def _puzzle_at(self, fen: str) -> Attempt | None:
         """The puzzle whose solver's position this is, a recommended one first."""

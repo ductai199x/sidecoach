@@ -64,9 +64,16 @@ class _End(BaseModel):
     outcome: str
 
 
-class _PuzzleAction(BaseModel):
-    action: str
-    value: str | None = None
+class _Move(BaseModel):
+    uci: str
+
+
+class _Square(BaseModel):
+    square: str
+
+
+class _OnOff(BaseModel):
+    on: bool
 
 
 class _Rect(BaseModel):
@@ -137,9 +144,58 @@ def build_app(engine: PanelEngine) -> FastAPI:
     def end(body: _End) -> dict[str, bool]:
         return {"ok": api.end(body.outcome)}
 
-    @app.post("/api/puzzle")
-    def puzzle(body: _PuzzleAction) -> dict[str, Any]:
-        return api.puzzle(body.action, body.value)
+    # ---- a puzzle in a tab of its own (ui/puzzle_room.py) -------------------------------
+    from fastapi.responses import FileResponse
+
+    rooms = _rooms_for(engine)
+
+    @app.get("/puzzle/{puzzle_id}")
+    def puzzle_page(puzzle_id: str) -> Any:
+        return FileResponse(WEB / "puzzle.html")
+
+    @app.post("/api/puzzle/{puzzle_id}/open")
+    def puzzle_open(puzzle_id: str) -> dict[str, Any]:
+        room = rooms.open(puzzle_id)
+        if room is None:
+            return {"ok": False, "error": f"no puzzle {puzzle_id} in the store"}
+        following = [pid for pid in engine.practice_ids if pid != puzzle_id]
+        return {"ok": True, "next": following, "state": room.poll(0)["state"]}
+
+    @app.get("/api/puzzle/{puzzle_id}/poll")
+    def puzzle_poll(puzzle_id: str, since: int = 0) -> dict[str, Any]:
+        room = rooms.get(puzzle_id)
+        if room is None:
+            return {"ok": False, "closed": True}
+        return {"ok": True, **room.poll(since)}
+
+    @app.post("/api/puzzle/{puzzle_id}/targets")
+    def puzzle_targets(puzzle_id: str, body: _Square) -> dict[str, Any]:
+        room = rooms.get(puzzle_id)
+        return {"ok": room is not None, "targets": room.targets(body.square) if room else []}
+
+    @app.post("/api/puzzle/{puzzle_id}/move")
+    def puzzle_move(puzzle_id: str, body: _Move) -> dict[str, bool]:
+        return {"ok": _room_command(rooms, puzzle_id, "move", body.uci)}
+
+    @app.post("/api/puzzle/{puzzle_id}/retract")
+    def puzzle_retract(puzzle_id: str) -> dict[str, bool]:
+        return {"ok": _room_command(rooms, puzzle_id, "retract")}
+
+    @app.post("/api/puzzle/{puzzle_id}/giveup")
+    def puzzle_giveup(puzzle_id: str) -> dict[str, bool]:
+        return {"ok": _room_command(rooms, puzzle_id, "giveup")}
+
+    @app.post("/api/puzzle/{puzzle_id}/ask")
+    def puzzle_ask(puzzle_id: str, body: _Ask) -> dict[str, bool]:
+        return {"ok": _room_command(rooms, puzzle_id, "ask", body.text)}
+
+    @app.post("/api/puzzle/{puzzle_id}/voice")
+    def puzzle_voice(puzzle_id: str, body: _OnOff) -> dict[str, bool]:
+        return {"ok": _room_command(rooms, puzzle_id, "voice", body.on)}
+
+    @app.post("/api/puzzle/{puzzle_id}/close")
+    def puzzle_close(puzzle_id: str) -> dict[str, bool]:
+        return {"ok": _room_command(rooms, puzzle_id, "close")}
 
     @app.post("/api/correct")
     def correct(body: _Correct) -> dict[str, bool]:
@@ -175,6 +231,40 @@ def build_app(engine: PanelEngine) -> FastAPI:
     # Everything else is the static web UI; html=True serves index.html at /.
     app.mount("/", StaticFiles(directory=str(WEB), html=True), name="web")
     return app
+
+
+def _rooms_for(engine: PanelEngine) -> Any:
+    """The puzzle rooms of this server: the puzzle store under the data directory, the
+    profile store beside it for the outcomes, the panel's voice for the coach's answers,
+    and the motifs the engine's recommendations name."""
+    from sidecoach.profile.puzzles import open_store
+    from sidecoach.ui.puzzle_room import PuzzleRooms
+
+    puzzles = None
+    with contextlib.suppress(Exception):
+        puzzles = open_store(engine.settings.data_dir)
+    tts = getattr(engine, "_tts", None)
+    speak = getattr(tts, "say", None)
+    stop = getattr(tts, "stop", None)
+    rooms = PuzzleRooms(
+        engine.settings,
+        store_path=engine.settings.data_dir / "profile.sqlite",
+        puzzles=puzzles,
+        speak=speak,
+        stop_speaking=stop,
+        analysis=engine.analysis,
+        coach=engine.coach,
+    )
+    rooms.motifs = engine.puzzle_motifs
+    return rooms
+
+
+def _room_command(rooms: Any, puzzle_id: str, name: str, payload: Any = None) -> bool:
+    room = rooms.get(puzzle_id)
+    if room is None:
+        return False
+    room.command(name, payload)
+    return True
 
 
 def make_engine(

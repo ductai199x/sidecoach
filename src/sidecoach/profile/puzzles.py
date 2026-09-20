@@ -26,10 +26,11 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import chess
 
-from sidecoach.events import PuzzleRef
+from sidecoach.events import PuzzleOutcome, PuzzleRef
 
 # The ratings a puzzle may have to be kept at all: the band the coach serves (chess.com
 # 800-1600, DESIGN) with room to grow either way.
@@ -237,6 +238,27 @@ class PuzzleStore:
         rng.shuffle(rest)
         chosen += rest[: count - len(chosen)]
         return chosen
+
+
+def puzzle_level(store: Any) -> int:
+    """The player's puzzle level from the profile store (LEVEL_START to begin with)."""
+    value = store.setting("puzzle_level")
+    return int(value) if value else LEVEL_START
+
+
+def record_attempt(
+    store: Any, puzzle_id: str, motif: str | None, solved: bool, moves: list[str], ts: float
+) -> PuzzleOutcome:
+    """An attempt into the profile store: kept beside the motif, the level moved a step
+    up on a solve and down on a fail. Shared by the profiler (a puzzle followed on the
+    screen) and the puzzle page (one solved on its own board)."""
+    step = LEVEL_STEP if solved else -LEVEL_STEP
+    level = max(RATING_MIN, min(RATING_MAX, puzzle_level(store) + step))
+    store.set_setting("puzzle_level", str(level))
+    store.add_attempt(puzzle_id, ts, motif, solved, moves)
+    return PuzzleOutcome(
+        game_id=f"puzzle-{puzzle_id}", puzzle_id=puzzle_id, motif=motif, solved=solved, level=level
+    )
 
 
 class Attempt:

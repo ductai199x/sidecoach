@@ -328,26 +328,6 @@ body.dragging-y { cursor: row-resize; user-select: none; }
 }
 .rv-puzzle-link:hover { color: var(--ink); background: var(--panel3); }
 
-/* ---- a puzzle on the board: the bar under it, the picked-up piece, where it may go,
-   a wrong move in red ---- */
-.puzzlebar {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px 10px; flex-wrap: wrap;
-  padding: 5px 10px; margin-top: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-  font-size: 13px;
-}
-.pz-what { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; min-width: 0; }
-.pz-msg { color: var(--muted); }
-.pz-msg.good { color: var(--accent); font-weight: 600; }
-.pz-msg.bad { color: var(--error); font-weight: 600; }
-.pz-actions { display: flex; gap: 6px; align-items: center; }
-body.puzzling .sq[data-square] { cursor: pointer; }
-.sq.sel { box-shadow: inset 0 0 0 3px var(--accent); }
-.sq.target::after {
-  content: ""; position: absolute; left: 50%; top: 50%; width: 28%; height: 28%; border-radius: 50%;
-  transform: translate(-50%, -50%); background: #1b2a0f66; pointer-events: none;
-}
-.sq.target:has(.pc)::after { width: 88%; height: 88%; background: transparent; box-shadow: inset 0 0 0 4px #1b2a0f66; }
-.sq.wrong { box-shadow: inset 0 0 0 4px var(--error); }
 .rv-notes, .rv-insights { font-size: 12px; color: var(--muted); margin-top: 6px; }
 .rv-insights { color: #d9c8f2; }
 

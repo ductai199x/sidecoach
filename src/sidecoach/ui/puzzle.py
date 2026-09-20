@@ -65,6 +65,11 @@ class PuzzleSession:
             "bottom": self.side.value,
             "turn": "white" if self.board.turn else "black",
             "your_move": not self.done and self.board.turn == self.solver and self.wrong is None,
+            "check": (
+                chess.square_name(king)
+                if self.board.is_check() and (king := self.board.king(self.board.turn)) is not None
+                else None
+            ),
             "status": self.status,
             "message": self.message,
             "moves": list(self.sans),

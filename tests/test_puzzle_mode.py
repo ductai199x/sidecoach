@@ -1,7 +1,7 @@
-"""A puzzle solved on the panel's own board (ui/puzzle.py): the position from the solver's
-side, the line's replies, a wrong move shown and taken back, any mate where the line
-mates, the solution on give-up; and the engine's commands around it -- the coach quiet,
-the screen's game not followed, the outcome to the profile once."""
+"""A puzzle in a tab of its own (ui/puzzle.py, ui/puzzle_room.py): the position from the
+solver's side, the line's replies, a wrong move shown and taken back, any mate where the
+line mates, the solution on give-up; and the room around it, over the server's API --
+its own coach and log, the outcome to the profile once, the screen's engine untouched."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import chess
 
-from sidecoach.events import GameStarted, MovePlayed, PuzzleOutcome, Side
+from sidecoach.events import GameStarted, MovePlayed, Side
 from sidecoach.profile.puzzles import Puzzle
 from sidecoach.ui.puzzle import PuzzleSession
 
@@ -92,94 +92,97 @@ def test_a_mate_puzzle_and_giving_up_on_it() -> None:
     assert t.give_up() == [], "once"
 
 
-class _Coach:
-    quiet = False
+def _csv(tmp_path: Path) -> None:
+    header = (
+        "PuzzleId,FEN,Moves,Rating,RatingDeviation,Popularity,NbPlays,Themes,GameUrl,OpeningTags"
+    )
+    rows = [
+        f"{FORK.id},{FORK.fen},{' '.join(FORK.moves)},{FORK.rating},76,92,629,fork endgame,u,",
+        f"{MATE.id},{MATE.fen},{' '.join(MATE.moves)},{MATE.rating},70,95,900,mateIn1,u,",
+    ]
+    (tmp_path / "puzzles").mkdir()
+    lines = [header, *rows, ""]
+    (tmp_path / "puzzles" / "sample.csv").write_text("\n".join(lines), encoding="utf-8")
 
 
-class _Coaching:
-    coach = _Coach()
+def _wait(client, puzzle_id: str, want, timeout: float = 5.0):  # noqa: ANN001
+    """Poll the room until `want(state)` holds; the loop thread runs a quarter second apart."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    res: dict = {}
+    while time.monotonic() < deadline:
+        res = client.get(f"/api/puzzle/{puzzle_id}/poll").json()
+        if res.get("ok") and want(res["state"]):
+            return res
+        time.sleep(0.05)
+    raise AssertionError(f"the room never reached the state wanted: {res}")
 
 
-class _Profiler:
-    def __init__(self) -> None:
-        self.recorded: list[tuple[str, str | None, bool, list[str]]] = []
-        self.puzzles = _Store()
+def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
 
-    def recommended_motif(self, puzzle_id: str) -> str | None:
-        return "fork" if puzzle_id == FORK.id else None
-
-    def record_puzzle(self, puzzle_id, motif, solved, moves, ts):  # noqa: ANN001
-        self.recorded.append((puzzle_id, motif, solved, moves))
-        return [
-            PuzzleOutcome(
-                game_id=f"puzzle-{puzzle_id}",
-                puzzle_id=puzzle_id,
-                motif=motif,
-                solved=solved,
-                level=1100,
-            )
-        ]
-
-
-class _Store:
-    def get(self, puzzle_id: str) -> Puzzle | None:
-        return {FORK.id: FORK, MATE.id: MATE}.get(puzzle_id)
-
-
-class _Pipe:
-    reconciler = None
-    model = None
-    bottom = None
-
-
-def test_the_engine_runs_a_puzzle_on_its_board_and_records_the_outcome_once(
-    tmp_path: Path,
-) -> None:
     from sidecoach.config import Settings, VoiceSettings
+    from sidecoach.profile.store import Store
     from sidecoach.ui.panel import PanelEngine
+    from sidecoach.ui.server import build_app
 
-    engine = PanelEngine(
-        Settings(data_dir=tmp_path, voice=VoiceSettings(provider="null", stt_provider="null")),
-        analysis=False,
-        coach=False,
-        frame_source=iter(()),
+    _csv(tmp_path)
+    settings = Settings(
+        data_dir=tmp_path, voice=VoiceSettings(provider="null", stt_provider="null")
     )
-    profiler = _Profiler()
-    engine._profiler = profiler
-    coaching = _Coaching()
-    pipe = _Pipe()
-    events = engine._puzzle_command("start", FORK.id, pipe, coaching, 1.0)
-    assert [type(e).__name__ for e in events] == ["GameStarted"]
-    assert coaching.coach.quiet, "the coach says nothing unasked"
-    state = engine.poll(0)["state"]["puzzle"]
-    assert state["id"] == FORK.id and state["motif"] == "fork" and state["your_move"]
-    assert engine.puzzle_targets("d4") == ["b3", "b5", "c2", "c6", "e2", "f3", "f5"]
-    assert engine._puzzle_command("move", "d4c2", pipe, coaching, 2.0) == []
-    assert engine.poll(0)["state"]["puzzle"]["wrong"] == "d4c2"
-    engine._puzzle_command("retract", None, pipe, coaching, 2.5)
-    events = engine._puzzle_command("move", "d4e2", pipe, coaching, 3.0)
-    assert [e.san for e in events if isinstance(e, MovePlayed)] == ["Ne2+", "Kf1"]
-    assert profiler.recorded == []
-    events = engine._puzzle_command("move", "e2c3", pipe, coaching, 4.0)
-    kinds = [type(e).__name__ for e in events]
-    assert kinds == ["MovePlayed", "PuzzleOutcome"]
-    assert profiler.recorded == [(FORK.id, "fork", False, ["Ne2+", "Kf1", "Nxc3"])], (
-        "solved after a miss is a fail for the record"
-    )
-    assert engine.poll(0)["state"]["puzzle"]["status"] == "solved"
-    # Closing records nothing twice and gives the coach its voice back.
-    assert engine._puzzle_command("close", None, pipe, coaching, 5.0) == []
-    assert not coaching.coach.quiet and engine.poll(0)["state"]["puzzle"] is None
-    assert len(profiler.recorded) == 1
-    # Giving up on the next one is a fail, recorded once as well.
-    engine._puzzle_command("start", MATE.id, pipe, coaching, 6.0)
-    events = engine._puzzle_command("giveup", None, pipe, coaching, 7.0)
-    assert any(isinstance(e, PuzzleOutcome) and not e.solved for e in events)
-    assert profiler.recorded[-1][0] == MATE.id and profiler.recorded[-1][1] is None
-    assert engine._puzzle_command("close", None, pipe, coaching, 8.0) == []
-    assert len(profiler.recorded) == 2
-    # Next takes the recommended puzzles in turn; none recommended, a word in the log.
-    engine._practice_ids = [FORK.id]
-    events = engine._puzzle_command("next", None, pipe, coaching, 9.0)
-    assert [type(e).__name__ for e in events] == ["GameStarted"]
-    assert engine._puzzle_command("next", None, pipe, coaching, 10.0) == [], "none left"
+    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+    engine.puzzle_motifs[FORK.id] = "fork"
+    engine.practice_ids = [FORK.id, MATE.id]
+    client = TestClient(build_app(engine))
+    assert client.get(f"/puzzle/{FORK.id}").status_code == 200, "the page"
+    assert client.post("/api/puzzle/nope/open").json()["ok"] is False
+
+    opened = client.post(f"/api/puzzle/{FORK.id}/open").json()
+    assert opened["ok"] and opened["next"] == [MATE.id]
+    state = opened["state"]
+    assert state["id"] == FORK.id and state["motif"] == "fork" and state["bottom"] == "black"
+    assert state["your_move"] and not state["closed"]
+    targets = client.post(f"/api/puzzle/{FORK.id}/targets", json={"square": "d4"}).json()
+    assert targets["targets"] == ["b3", "b5", "c2", "c6", "e2", "f3", "f5"]
+    # A wrong move shows, then is taken back.
+    assert client.post(f"/api/puzzle/{FORK.id}/move", json={"uci": "d4c2"}).json()["ok"]
+    _wait(client, FORK.id, lambda s: s["wrong"] == "d4c2")
+    client.post(f"/api/puzzle/{FORK.id}/retract")
+    _wait(client, FORK.id, lambda s: s["wrong"] is None and s["your_move"])
+    # The line: the reply comes with the right move.
+    client.post(f"/api/puzzle/{FORK.id}/move", json={"uci": "d4e2"})
+    res = _wait(client, FORK.id, lambda s: s["moves"] == ["Ne2+", "Kf1"])
+    assert res["state"]["your_move"]
+    client.post(f"/api/puzzle/{FORK.id}/move", json={"uci": "e2c3"})
+    res = _wait(client, FORK.id, lambda s: s["status"] == "solved")
+    assert res["state"]["message"] == "Solved, after a miss."
+    lines = [ln["text"] for ln in res["lines"]]
+    assert any(ln.startswith(f"puzzle {FORK.id} failed (fork)") for ln in lines), lines
+    store = Store(tmp_path / "profile.sqlite")
+    assert [a[0] for a in store.attempts()] == [FORK.id] and not store.attempts()[0][2]
+    assert store.setting("puzzle_level") == "1075"
+    # The user's question reaches the room's coach (off here: nothing answers, no error).
+    assert client.post(f"/api/puzzle/{FORK.id}/ask", json={"text": "hint"}).json()["ok"]
+    assert client.post(f"/api/puzzle/{FORK.id}/voice", json={"on": False}).json()["ok"]
+    # Closing ends the room; the outcome is not recorded twice.
+    assert client.post(f"/api/puzzle/{FORK.id}/close").json()["ok"]
+    import time
+
+    for _ in range(50):
+        if client.get(f"/api/puzzle/{FORK.id}/poll").json().get("closed"):
+            break
+        time.sleep(0.05)
+    assert client.get(f"/api/puzzle/{FORK.id}/poll").json()["closed"]
+    assert len(store.attempts()) == 1
+    store.close()
+    # Giving up on the next one: a fail, the solution played out, recorded once.
+    assert client.post(f"/api/puzzle/{MATE.id}/open").json()["ok"]
+    client.post(f"/api/puzzle/{MATE.id}/giveup")
+    res = _wait(client, MATE.id, lambda s: s["status"] == "given_up")
+    assert res["state"]["moves"] == ["Ra8#"]
+    store = Store(tmp_path / "profile.sqlite")
+    assert [a[0] for a in store.attempts()] == [MATE.id, FORK.id]
+    assert store.setting("puzzle_level") == "1050"
+    store.close()
+    client.post(f"/api/puzzle/{MATE.id}/close")
