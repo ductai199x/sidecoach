@@ -17,7 +17,9 @@ from sidecoach.events import (
     Event,
     GameEnded,
     GameStarted,
+    PositionChanged,
     Region,
+    Resync,
     ScreenState,
     ScreenStateChanged,
     Side,
@@ -103,6 +105,9 @@ def clock_observation(reading: ClockReading | None, bottom: Side) -> ClockObserv
 class GamePipeline:
     start_frames_needed: int = 2
     tracker: BoardTracker = field(default_factory=BoardTracker)
+    # The side at the bottom for a board read cold, when set (the panel's Flip, for a board
+    # whose coordinate labels cannot be read or read wrong); the labels otherwise.
+    forced_bottom: Side | None = None
     model: ThemeModel | None = None
     reconciler: Reconciler | None = None
     bottom: Side | None = None
@@ -199,7 +204,9 @@ class GamePipeline:
         was_started = self.reconciler.started
         if changed:
             self._badge_frame = self._badged_kings(frame, geometry)
-        events += self.reconciler.update(self._readings, ts)
+        events += self._resync_reoriented(
+            self.reconciler.update(self._readings, ts), frame, geometry, ts
+        )
         events += self._turn_from_clock(ts)
         if changed:
             events += self._end_on_badges()
@@ -451,6 +458,65 @@ class GamePipeline:
         self._last_clock = key
         return [observation]
 
+    def _resync_reoriented(
+        self, events: list[Event], frame: np.ndarray, geometry: BoardGeometry, ts: float
+    ) -> list[Event]:
+        """A position resync checked against the coordinate labels.
+
+        A resync keeps the orientation the game had; a puzzle page shows each puzzle from
+        the solver's side, so the next puzzle can come up the other way round and read as
+        a position turned on its head (a white king on a7, 2026-09-20). When the labels
+        say the other side is at the bottom, the board is read again that way and a new
+        game begun from it, in place of the resync's events."""
+        if self.model is None or not any(isinstance(e, Resync) for e in events):
+            return events
+        labelled = read_bottom_side(frame, geometry, self.model.rank_labels)
+        if labelled is None or labelled == self.bottom:
+            return events
+        # A resync after a finished game began a new one on its head: that start goes
+        # unsaid, and the game to end is the finished one, already ended.
+        began = any(isinstance(e, GameStarted) for e in events)
+        reoriented = self.reorient(frame, geometry, labelled, ts, end_previous=not began)
+        if not reoriented:
+            return events
+        kept = [e for e in events if not isinstance(e, Resync | PositionChanged | GameStarted)]
+        return kept + reoriented
+
+    def reorient(
+        self,
+        frame: np.ndarray,
+        geometry: BoardGeometry,
+        bottom: Side,
+        ts: float,
+        *,
+        end_previous: bool = True,
+    ) -> list[Event]:
+        """Read the board again with `bottom` at the bottom and begin again from what it
+        shows: the panel's Flip on a game joined from the middle, or a resync whose labels
+        say the other side (see `_resync_reoriented`). A game under way ends first. Nothing
+        happens when the board cannot be read cleanly now (a piece in flight): the caller
+        may set `forced_bottom` and forget the game, and the automatic cold start reads it
+        that way on the next quiet frame."""
+        read = self._cold_read(frame, geometry, bottom)
+        if read is None:
+            return []
+        events = self._end_in_progress("board reoriented") if end_previous else []
+        return events + self._adopt_cold(*read, ts=ts)
+
+    def _end_in_progress(self, reason: str) -> list[Event]:
+        previous = self.reconciler
+        if previous is None or not previous.in_progress or previous.finished:
+            return []
+        return [
+            GameEnded(
+                game_id=previous.game_id,
+                result="*",
+                reason=reason,
+                pgn=previous.pgn(),
+                final_fen=previous.board.fen(),
+            )
+        ]
+
     def _turn_from_clock(self, ts: float) -> list[Event]:
         """A side to move left open by a resync or a cold start, settled by the clock
         that is running -- read on this tick or a moment ago."""
@@ -595,7 +661,7 @@ class GamePipeline:
         if self._cold_tried is not None and ts - self._cold_tried < COLD_START_EVERY_S:
             return []
         self._cold_tried = ts
-        read = self._cold_read(frame, geometry, None)
+        read = self._cold_read(frame, geometry, self.forced_bottom)
         if read is None:
             return []  # nothing read cleanly this time; the candidate stands until it expires
         fen = read[3].board_fen()

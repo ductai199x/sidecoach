@@ -174,6 +174,8 @@ class Reconciler:
     resync_max_soft: int = 2
     _base_fen: str = chess.STARTING_FEN
     _turn_unknown: bool = False
+    # What this game is (GameStarted.kind): a game from the start, or a position adopted.
+    kind: str = "game"
     _resync_candidate: tuple[str, int] | None = None
     # Last stable reading of every cell and the frame it was seen in, plus the key of the
     # previous frame's reading, which a reading must repeat to count as stable.
@@ -308,6 +310,7 @@ class Reconciler:
         self._previous = {}
         self._pending_age = 0
         self._last_commit_ts = self._ts
+        self.kind = "game"
         return [
             GameStarted(game_id=self.game_id, user_side=self.user_side, start_fen=self.board.fen()),
             PositionChanged(game_id=self.game_id, fen=self.board.fen(), ply=0),
@@ -331,7 +334,12 @@ class Reconciler:
         if not self._started:
             return []
         return [
-            GameStarted(game_id=self.game_id, user_side=self.user_side, start_fen=self.board.fen())
+            GameStarted(
+                game_id=self.game_id,
+                user_side=self.user_side,
+                start_fen=self.board.fen(),
+                kind=self.kind,
+            )
         ]
 
     # Explanations
@@ -1003,7 +1011,7 @@ class Reconciler:
         if self._resync_candidate[1] < self.resync_hold_frames:
             return []
 
-        adopted = self._adopt_placement(self._placement(obs))
+        adopted = self._adopt_placement(self._placement(obs), prefer=self._bottom_colour())
         if adopted is None:
             self._resync_candidate = None
             return []
@@ -1011,10 +1019,16 @@ class Reconciler:
         events: list[Event] = []
         if self._finished:
             # The finished game is over for good; a position that appears after it is
-            # another game, seen from the middle.
+            # another game, seen from the middle -- or a puzzle, or an analysis board.
             self.game_id = uuid.uuid4().hex[:8]
+            self.kind = "position"
             events.append(
-                GameStarted(game_id=self.game_id, user_side=self.user_side, start_fen=board.fen())
+                GameStarted(
+                    game_id=self.game_id,
+                    user_side=self.user_side,
+                    start_fen=board.fen(),
+                    kind=self.kind,
+                )
             )
         self.board = board
         self._base_fen = board.fen()
@@ -1038,12 +1052,21 @@ class Reconciler:
             events.append(self._ended(board.result(), "game over on board"))
         return events
 
+    def _bottom_colour(self) -> chess.Color:
+        return chess.WHITE if self.bottom is Side.WHITE else chess.BLACK
+
     @staticmethod
-    def _adopt_placement(placement: chess.Board) -> tuple[chess.Board, bool] | None:
+    def _adopt_placement(
+        placement: chess.Board, prefer: chess.Color = chess.WHITE
+    ) -> tuple[chess.Board, bool] | None:
         """A bare placement made into a position: castling rights assumed conservatively from
         the king and rook home squares, and the turn from legality. Returns the board and
         whether the turn is still unknown (both colours legal to move), or None if neither is.
-        Shared by the position resync and the cold start from the theme cache.
+        Shared by the position resync and the cold start from the theme cache. When both
+        could move, `prefer` is the turn the board shows meanwhile: the side at the bottom,
+        which on a puzzle is the solver and to move (the coach then looks at the right side
+        while the clock, or the first move seen, settles it); white was the old default,
+        and a puzzle for Black was coached for White.
         """
         board = placement.copy(stack=False)
         board.castling_rights = chess.BB_EMPTY
@@ -1058,7 +1081,7 @@ class Reconciler:
         valid_turns = [turn for turn in (chess.WHITE, chess.BLACK) if _turn_valid(board, turn)]
         if not valid_turns:
             return None
-        board.turn = valid_turns[0]
+        board.turn = prefer if prefer in valid_turns else valid_turns[0]
         return board, len(valid_turns) > 1
 
     def turn_from_clock(self, colour: chess.Color) -> list[Event]:
@@ -1106,7 +1129,7 @@ class Reconciler:
         same way a position resync assumes them; the game continues normally from here. `ts`
         is when the position was read, so the first move's think time counts from it (it
         counted from zero: a first move that "took 412630 seconds")."""
-        adopted = self._adopt_placement(placement)
+        adopted = self._adopt_placement(placement, prefer=self._bottom_colour())
         if adopted is None:
             return []
         if ts is not None:
@@ -1119,7 +1142,15 @@ class Reconciler:
         self._result = None
         self._last_commit_ts = self._ts
         self.game_id = uuid.uuid4().hex[:8]
-        return [GameStarted(game_id=self.game_id, user_side=self.user_side, start_fen=board.fen())]
+        self.kind = "position"
+        return [
+            GameStarted(
+                game_id=self.game_id,
+                user_side=self.user_side,
+                start_fen=board.fen(),
+                kind=self.kind,
+            )
+        ]
 
     def _placement(self, obs: Observation) -> chess.Board:
         board = chess.Board(None)

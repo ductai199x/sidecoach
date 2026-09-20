@@ -895,14 +895,17 @@ class PanelEngine:
         if isinstance(event, GameStarted):
             self._fen_before.clear()
             self._labels.clear()
+            what = "new game" if event.kind == "game" else "position joined (puzzle or analysis)"
             self._emit(
                 "game",
                 "info",
-                f"new game {event.game_id}, you play {event.user_side.value}",
+                f"{what} {event.game_id}, you play {event.user_side.value}",
                 game_id=event.game_id,
                 start_fen=event.start_fen,
+                kind=event.kind,
             )
-            self._set(game_id=event.game_id, user_side=event.user_side.value)
+            self._set(game_id=event.game_id, user_side=event.user_side.value, kind=event.kind)
+            assessing.submit(event)
         elif isinstance(event, MovePlayed):
             before = chess.Board(event.fen_before)
             number = before.fullmove_number
@@ -925,7 +928,7 @@ class PanelEngine:
             self._emit("game", "warn", f"takeback {event.plies} ply", fen=event.fen)
         elif isinstance(event, Resync):
             self._emit("game", "warn", f"resync: {event.reason}", fen=event.fen)
-            assessing.reset()
+            assessing.submit(event)
         elif isinstance(event, GameEnded):
             text = f"game over {event.result} ({event.reason})"
             if event.result == "*":
@@ -1281,7 +1284,7 @@ class PanelEngine:
             elif name == "end":
                 events += self._end(pipe, str(payload), ts)
             elif name == "flip":
-                events += self._flip(pipe)
+                events += self._flip(pipe, frame, geom, ts)
             elif name == "analyze":
                 events += self._analyze(pipe, frame, geom, ts)
         return events
@@ -1304,18 +1307,23 @@ class PanelEngine:
             self._emit("game", "info", "forgot the game; waiting for a start position")
         return events
 
-    def _flip(self, pipe: Any) -> list[Any]:
-        """Flip means two things, and never disturbs a game that is being followed.
+    def _flip(self, pipe: Any, frame: Any, geom: Any, ts: float) -> list[Any]:
+        """Flip means three things.
 
-        While a game is running, the pipeline's orientation is a fact it read from the
-        screen, so flipping only turns the panel's board around (a view preference).
-        Reorienting the reconciler here would re-read an unchanged screen the wrong way up
-        and resync to a rotated, bogus position. With no game running, flipping chooses
-        the side the next analyse / cold start assumes at the bottom -- the way out when
-        the coordinates are off and the labels cannot be read.
+        A game seen from its start position has its orientation from the pieces
+        themselves, so flipping only turns the panel's board around (a view preference);
+        re-reading an unchanged screen the wrong way up would resync to a rotated, bogus
+        position. A game joined from the middle -- a puzzle, an analysis board, a resync
+        -- had its orientation from the labels or from the game before, which can be
+        wrong (a puzzle for Black read as White's, 2026-09-20): flipping re-reads the
+        screen with the other side at the bottom and begins again from that. With no game
+        running, flipping chooses the side the next cold read assumes at the bottom.
         """
+        import chess
+
         Side = self._side
-        if pipe.reconciler is not None and pipe.reconciler.started:
+        rec = pipe.reconciler
+        if rec is not None and rec.started and rec.base_fen == chess.STARTING_FEN:
             self._view_flip = not self._view_flip
             self._set(view_flip=self._view_flip)
             self._emit(
@@ -1325,7 +1333,18 @@ class PanelEngine:
         current = self._forced_bottom or pipe.bottom or Side.WHITE
         target = Side.BLACK if current == Side.WHITE else Side.WHITE
         self._forced_bottom = target
+        pipe.forced_bottom = target
         self._set(bottom=target.value)
+        if rec is not None and rec.started:
+            events = pipe.reorient(frame, geom, target, ts) if frame is not None else []
+            if events:
+                self._emit("user", "info", f"board re-read with {target.value} at the bottom")
+                return events
+            # Mid-move, or unreadable now: forget the game; the next quiet frame is read
+            # cold with this side at the bottom.
+            events = self._end(pipe, "forget", ts)
+            self._emit("user", "info", f"re-reading the board with {target.value} at the bottom")
+            return events
         self._emit("user", "info", f"analysis orientation: {target.value} at the bottom")
         return []
 
@@ -1363,7 +1382,13 @@ class PanelEngine:
             ply=len(moves),
             following=pipe.model is not None,
             bottom=pipe.bottom.value if pipe.bottom else None,
-            status="following a game" if pipe.model is not None else "waiting for a start",
+            status=(
+                "waiting for a start"
+                if pipe.model is None
+                else "following a position"
+                if rec is not None and rec.kind != "game"
+                else "following a game"
+            ),
         )
 
     @staticmethod

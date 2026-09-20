@@ -188,7 +188,14 @@ class Conversation:
         text = f"You coach {side}."
         if control:
             text += f" Time control: {control}."
-        if event.start_fen != chess.STARTING_FEN:
+        if event.kind != "game":
+            text += (
+                "\nThis is a position, not a game from the start: a puzzle, an analysis "
+                "board, or a game joined from the middle. There is no earlier history to "
+                "speak of. The player is the side at the bottom and, on a puzzle, to move; "
+                "coach the position as it stands:\n" + position_text(chess.Board(event.start_fen))
+            )
+        elif event.start_fen != chess.STARTING_FEN:
             text += "\nThe game is joined in progress; the position is:\n" + position_text(
                 chess.Board(event.start_fen)
             )

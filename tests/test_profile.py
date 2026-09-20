@@ -946,3 +946,46 @@ def test_words_that_say_nothing_change_nothing() -> None:
     assert causes.from_words("what should I play now?") is None
     assert causes.from_words("I completely missed it") == causes.MISSED_THREAT
     assert causes.from_words("no time, I premoved") == causes.TIME_PRESSURE
+
+
+def test_a_position_is_coached_but_never_recorded() -> None:
+    """A puzzle, an analysis board or a game joined from the middle begins as a
+    GameStarted of kind "position": the profile keeps no game, no evidence, no review
+    and no session count for it (a solved puzzle stood in the record as a game won by
+    checkmate in three moves at 100% accuracy, 2026-09-20)."""
+    f = Feed()
+    f.play("e4")
+    puzzle = chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R b KQkq - 0 1")
+    f.send(GameStarted(game_id="p", user_side=Side.BLACK, start_fen=puzzle.fen(), kind="position"))
+    assert f.store.game("p") is None
+    move = puzzle.parse_san("d4")
+    fen_before = puzzle.fen()
+    puzzle.push(move)
+    f.send(
+        MovePlayed(
+            game_id="p",
+            ply=1,
+            san="d4",
+            uci=move.uci(),
+            fen_before=fen_before,
+            fen_after=puzzle.fen(),
+            by_user=True,
+            think_ms=2000,
+        )
+    )
+    f.send(
+        MoveAssessment(
+            game_id="p",
+            ply=1,
+            uci=move.uci(),
+            expected_loss=0.3,
+            severity=Severity.BLUNDER,
+            best=["e5e4"],
+            label=Label.BLUNDER,
+        )
+    )
+    ended = f.send(GameEnded(game_id="p", result="0-1", reason="game over on board", pgn="1... d4"))
+    assert ended == [], "no review of a position"
+    assert f.store.game("p") is None and f.store.moves("p") == [] and f.store.evidence("p") == []
+    assert f.store.games_count() == 0
+    assert f.profiler.end_session(f.ts + 1) is None, "nothing to sum up: no game was played"

@@ -95,6 +95,10 @@ class GameStarted(Event):
     game_id: str
     user_side: Side
     start_fen: str
+    # "game": begun from the start position, seen. "position": begun from a board read
+    # cold -- a puzzle, an analysis board, a game joined from the middle -- which the
+    # coach coaches like a game but the profile does not record and nobody reviews.
+    kind: str = "game"
 
 
 class PositionChanged(Event):

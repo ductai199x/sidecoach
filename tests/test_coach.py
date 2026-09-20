@@ -12,6 +12,7 @@ from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
 from sidecoach.events import (
     Analysis,
     DisclosureLevel,
+    GameEnded,
     GameStarted,
     Label,
     Line,
@@ -1256,3 +1257,99 @@ def test_every_third_mistake_ends_by_asking_what_the_player_saw() -> None:
     _start(coach)
     coach._mistakes = ELICIT_EVERY
     assert coach._elicit_due(4001.0), "a new game starts afresh"
+
+
+def test_the_coach_is_told_a_position_is_not_a_game() -> None:
+    """A puzzle or an analysis board: the coach hears it is a position with no history,
+    the player the side at the bottom and, on a puzzle, to move."""
+    coach, _ = _coach([])
+    puzzle = "r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R b KQkq - 0 1"
+    coach.on_event(
+        GameStarted(game_id="p", user_side=Side.BLACK, start_fen=puzzle, kind="position"), 0.0
+    )
+    record = coach.conversation.render()
+    assert "You coach Black." in record
+    assert "This is a position, not a game from the start" in record
+    assert "joined in progress" not in record
+
+
+def test_a_puzzle_solved_by_mate_gets_no_word_and_no_summary() -> None:
+    """The mating move on a position -- a puzzle -- gets nothing from the coach, and the
+    end no summary: the site says the puzzle is solved and moves on (Tai). Other moves
+    on a puzzle get their word as in a game."""
+    coach, provider = _coach([])
+    puzzle = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
+    for n in range(2):
+        coach.on_event(
+            GameStarted(game_id=f"p{n}", user_side=Side.WHITE, start_fen=puzzle, kind="position"),
+            10.0 * n,
+        )
+        coach.on_event(_mate_analysis(0), 10.0 * n + 0.5)
+        _messages(coach)  # the decisive-moment nudge on the position itself
+        provider.prompts.clear()
+        board = chess.Board(puzzle)
+        move = board.push_san("Qxf7#")
+        coach.on_event(
+            MovePlayed(
+                game_id=f"p{n}",
+                ply=1,
+                san="Qxf7#",
+                uci=move.uci(),
+                fen_before=puzzle,
+                fen_after=board.fen(),
+                by_user=True,
+            ),
+            10.0 * n + 1.0,
+        )
+        coach.on_event(
+            MoveAssessment(
+                game_id=f"p{n}",
+                ply=1,
+                uci=move.uci(),
+                expected_loss=0.0,
+                severity=Severity.NONE,
+                best=[move.uci()],
+                label=Label.BEST,
+            ),
+            10.0 * n + 1.5,
+        )
+        assert _messages(coach) == [], "the mating move is not commented on"
+        coach.on_event(
+            GameEnded(game_id=f"p{n}", result="1-0", reason="game over on board", pgn="1. Qxf7#"),
+            10.0 * n + 2.0,
+        )
+        assert _messages(coach) == [], "no summary of a puzzle"
+    assert provider.prompts == [], "no model call at all"
+    # A move on a puzzle that does not end it gets its word, as in a game.
+    coach.on_event(
+        GameStarted(game_id="q", user_side=Side.WHITE, start_fen=puzzle, kind="position"), 50.0
+    )
+    coach.on_event(_mate_analysis(0), 50.5)
+    _messages(coach)
+    board = chess.Board(puzzle)
+    move = board.push_san("Nf3")
+    coach.on_event(
+        MovePlayed(
+            game_id="q",
+            ply=1,
+            san="Nf3",
+            uci=move.uci(),
+            fen_before=puzzle,
+            fen_after=board.fen(),
+            by_user=True,
+        ),
+        51.0,
+    )
+    coach.on_event(
+        MoveAssessment(
+            game_id="q",
+            ply=1,
+            uci=move.uci(),
+            expected_loss=0.5,
+            severity=Severity.BLUNDER,
+            best=["h5f7"],
+            label=Label.BLUNDER,
+        ),
+        51.5,
+    )
+    assert [m.trigger for m in _messages(coach)] == [Trigger.POST_MISTAKE]

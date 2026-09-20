@@ -1118,6 +1118,11 @@ class Coach:
         # The conversation is read from the caller's thread and from a claims check.
         self._lock = threading.RLock()
         self._last_verdict: str | None = None
+        # What the game is (GameStarted.kind): a game from the start, or a position -- a
+        # puzzle, an analysis board -- where the mating move gets no word and the end no
+        # summary (Tai, 2026-09-20: a solved puzzle is left, not summed up); every other
+        # move gets its word or its lesson as in a game.
+        self.kind = "game"
         # The player model as the profile stage last reported it, and the review of the
         # game just ended, for the coach's summary.
         self.profile: ProfileSnapshot | None = None
@@ -1368,6 +1373,7 @@ class Coach:
     def _new_game(self, event: GameStarted, ts: float) -> None:
         self.game_id = event.game_id
         self.user_side = event.user_side
+        self.kind = event.kind
         self.board = chess.Board(event.start_fen)
         self.positions = {0: _Position(ply=0, board=self.board.copy())}
         self.moves = {}
@@ -1513,6 +1519,9 @@ class Coach:
             self._mistakes += 1
             elicit = self._elicit_due(ts)
         before.disclosure.apply(Unlock.MOVE_PLAYED)
+        after = self.positions.get(event.ply)
+        if self.kind != "game" and after is not None and after.board.is_checkmate():
+            return  # the puzzle is solved with a mate: the site says so, and moves on
         # Every move of the player's gets a word from the coach. A lecture is only for a
         # move that cost something; a fine move gets one sentence, and that sentence comes
         # from the model too, so it can speak to the move and the game rather than repeat a

@@ -828,15 +828,28 @@ class _Assessing:
         return self.analyser is not None
 
     def submit(self, event: object) -> None:
+        """A move to assess; or a position to measure, when a game begins from the middle
+        (a puzzle, an analysis board, a game joined late) or jumps there (a resync): the
+        coach's hint and best move need the position's analysis before any move is
+        played, and without it the coach had "not seen enough of this game yet"."""
         import chess
 
-        from sidecoach.events import MovePlayed
+        from sidecoach.events import GameStarted, MovePlayed, Resync
 
-        if self.analyser is None or not isinstance(event, MovePlayed):
+        if self.analyser is None:
             return
-        before = chess.Board(event.fen_before)
-        self.analyser.submit_move(event.game_id, before, chess.Move.from_uci(event.uci), event.ply)
-        self._from[event.ply] = event.fen_before
+        if isinstance(event, MovePlayed):
+            before = chess.Board(event.fen_before)
+            self.analyser.submit_move(
+                event.game_id, before, chess.Move.from_uci(event.uci), event.ply
+            )
+            self._from[event.ply] = event.fen_before
+        elif isinstance(event, GameStarted) and event.start_fen != chess.STARTING_FEN:
+            self.analyser.submit_position(event.game_id, chess.Board(event.start_fen), 0)
+        elif isinstance(event, Resync):
+            self.analyser.reset()
+            self._from.clear()
+            self.analyser.submit_position(event.game_id, chess.Board(event.fen), 0)
 
     def reset(self) -> None:
         if self.analyser is not None:
@@ -1711,6 +1724,7 @@ def watch(
                             f"[bold]new game[/bold] {event.game_id}, "
                             f"you play {event.user_side.value}"
                         )
+                        assessing.submit(event)
                         last_move_ts = ts
                     elif isinstance(event, MovePlayed):
                         after = chess.Board(event.fen_after)
@@ -1729,7 +1743,7 @@ def watch(
                         console.print(f"[yellow]takeback[/yellow] {event.plies} ply")
                     elif isinstance(event, Resync):
                         console.print(f"[yellow]resync[/yellow]: {event.reason}")
-                        assessing.reset()
+                        assessing.submit(event)
                     elif isinstance(event, GameEnded):
                         console.print(f"[bold]game over[/bold] {event.result} ({event.reason})")
                         if event.pgn:

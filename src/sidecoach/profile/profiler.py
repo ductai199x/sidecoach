@@ -192,6 +192,12 @@ class Profiler:
         return []
 
     def _start(self, event: GameStarted, ts: float) -> list[Event]:
+        if event.kind != "game":
+            # A puzzle, an analysis board, a game joined from the middle: coached, not
+            # recorded -- a solved puzzle was "a game won by checkmate in 3 moves,
+            # accuracy 100" in the record (2026-09-20).
+            self._game = None
+            return []
         self._game = _Game(
             game_id=event.game_id,
             user_side=event.user_side,
