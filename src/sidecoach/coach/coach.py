@@ -81,13 +81,21 @@ ELICIT_EVERY = 3
 # The player's words within this long of the question count as its answer (the
 # profiler's SELF_REPORT_S, which keeps those words beside the mistake).
 ELICIT_ANSWER_S = 60.0
-# The labels of the engine's own move (or theory): the word on it needs no model. An
-# excellent or good move was not the strongest, and the model says what was.
-ENGINES_OWN = frozenset({"book", "best", "great", "brilliant"})
+# The word on a move by its label (Tai, 2026-09-20). LOCAL: written from the board, no
+# model -- theory, the engine's own move, and an excellent one (as strong as the best).
+# EXCITING: great and brilliant, the model at its full effort with some delight, since
+# they are rare and worth a real sentence. A good move was a little behind the best, and
+# the model names the better one.
+LOCAL = frozenset({"book", "best", "excellent"})
+EXCITING = frozenset({"great", "brilliant"})
 
 
-def _engines_own(label: Label | None) -> bool:
-    return label is not None and label.value in ENGINES_OWN
+def _local(label: Label | None) -> bool:
+    return label is not None and label.value in LOCAL
+
+
+def _exciting(label: Label | None) -> bool:
+    return label is not None and label.value in EXCITING
 
 
 # The confirmations, by the move's label, in the vocabulary chess.com uses; "{san}" is the
@@ -1577,17 +1585,18 @@ class Coach:
         if self.kind != "game" and after is not None and after.board.is_checkmate():
             return  # the puzzle is solved with a mate: the site says so, and moves on
         # Every move of the player's gets a word from the coach. A lecture is only for a
-        # move that cost something. The engine's own move -- best, great, brilliant, or
-        # book -- gets a sentence written from the board (coach/verdicts.py: the verdict,
-        # and what the move does), no model call; in blitz too. An excellent or good move
-        # means something was better (Tai, 2026-09-20), so the model names it, the
-        # two-word template standing in if the reply fails.
+        # move that cost something. Theory, the engine's own move and an excellent one get
+        # a sentence written from the board (coach/verdicts.py: the verdict, and what the
+        # move does), no model call; in blitz too. A great or brilliant move gets the
+        # model's delight at its full effort; a good move the model's word on the better
+        # one; the board's sentence stands in if the reply fails.
         if trigger is Trigger.POST_MOVE and event.severity is Severity.NONE:
             assert before.facts is not None
             best = before.facts.candidates[0] if before.facts.candidates else None
-            routine = best is None or best == move.san or _engines_own(event.label)
+            routine = best is None or best == move.san or _local(event.label)
             blitz = self.policy.time_control is TimeControl.BLITZ
-            if not routine or not (self.local_verdicts or blitz):
+            local = routine and not _exciting(event.label) and (self.local_verdicts or blitz)
+            if not local:
                 self._speak(
                     trigger,
                     before,
@@ -1596,7 +1605,7 @@ class Coach:
                     assessment=event,
                     played=move,
                     candidates=VS_ROUTINE_CANDIDATES if routine else VS_CANDIDATES,
-                    routine=routine,
+                    routine=routine and not _exciting(event.label),
                 )
                 return
             label = event.label.value if event.label else None
@@ -1966,7 +1975,7 @@ class Coach:
             label = assessment.label.value if assessment.label else assessment.severity.value
             words = _in_words(position.board, played.san)
             better_words = _in_words(position.board, best) if facts.candidates else best
-            routine = not facts.candidates or best == played.san or _engines_own(assessment.label)
+            routine = not facts.candidates or best == played.san or _local(assessment.label)
             if trigger is Trigger.POST_MISTAKE:
                 fallback = f"{played.san} cost you. {best} was better; the idea was {theme}."
                 instruction = (
@@ -1991,6 +2000,24 @@ class Coach:
                         f"in one short question of your own, what they expected to happen "
                         f"after {played.san}. {NO_NUMBERS}"
                     )
+            elif _exciting(assessment.label):
+                # Rare and worth it: the board's own sentence stands in, the model says
+                # what makes it the move, with some delight.
+                fallback = local_verdict(
+                    position.board, chess.Move.from_uci(played.uci), label, assessment.tags
+                )
+                meaning = {
+                    "brilliant": "a sound sacrifice",
+                    "great": "the one move that keeps the advantage, or the chance taken",
+                }[label]
+                instruction = (
+                    f"The player just played {played.san} ({words}): {label} -- {meaning}. "
+                    "Show some delight, in your own voice, in one or two sentences: name "
+                    "what makes it the move -- the chance taken, the only move, the "
+                    "sacrifice that works -- from the messages above, nothing invented. "
+                    "No question, no advice, and not the same words as your last such "
+                    f"sentence. {NO_NUMBERS}"
+                )
             elif routine:
                 fallback = self._verdict(played.san, label)
                 meaning = {

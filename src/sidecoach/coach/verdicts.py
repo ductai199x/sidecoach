@@ -28,8 +28,8 @@ from sidecoach.events import MotifTag
 # gives something, is joined with " -- " or ", ".
 OPENERS: dict[str, list[str]] = {
     "book": ["{san}: book", "{san}, still theory", "{san}: known territory"],
-    "brilliant": ["{san}: brilliant", "{san} -- that is a find"],
-    "great": ["{san}: great move", "{san} -- the one move that works"],
+    "brilliant": ["{san}!! -- brilliant", "{san} -- what a find", "{san}: yes, that's the shot"],
+    "great": ["{san}: great move", "{san} -- yes, the one move that works", "{san}! -- that's it"],
     "best": [
         "{san}: best",
         "{san} -- that's the move",

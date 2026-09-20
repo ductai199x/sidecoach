@@ -101,26 +101,21 @@ def test_the_coach_writes_a_sound_moves_word_itself_and_calls_no_model() -> None
     assert len(provider.prompts) == 1
 
 
-def test_an_excellent_or_good_move_goes_to_the_model_which_names_the_better_one() -> None:
-    """Something was better (Tai): the model says what, at its full effort; the engine's
-    own move never needs it."""
-    from sidecoach.coach.coach import _engines_own
-    from sidecoach.events import Label, MoveAssessment, MovePlayed, Severity
+def _played(coach, provider, san: str, label, loss: float = 0.01):  # noqa: ANN001
+    """A sound move of the user's from the scholar's-mate position, labelled `label`."""
+    from sidecoach.events import MoveAssessment, MovePlayed, Severity
     from tests.test_coach import SCHOLAR as SCHOLAR_FEN
-    from tests.test_coach import _coach, _mate_analysis, _messages, _play_to_scholar
+    from tests.test_coach import _mate_analysis, _messages, _play_to_scholar
 
-    assert all(_engines_own(Label(x)) for x in ("book", "best", "great", "brilliant"))
-    assert not any(_engines_own(Label(x)) for x in ("excellent", "good", "inaccuracy"))
-    coach, provider = _coach(["[p=1.0] Nc3 was fine; Qxf7# was the mate."])
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)
     board = chess.Board(SCHOLAR_FEN)
-    move = board.push_san("Nc3")
+    move = board.push_san(san)
     coach.on_event(
         MovePlayed(
             game_id="g",
             ply=7,
-            san="Nc3",
+            san=san,
             uci=move.uci(),
             fen_before=SCHOLAR_FEN,
             fen_after=board.fen(),
@@ -133,15 +128,53 @@ def test_an_excellent_or_good_move_goes_to_the_model_which_names_the_better_one(
             game_id="g",
             ply=7,
             uci=move.uci(),
-            expected_loss=0.01,
+            expected_loss=loss,
             severity=Severity.NONE,
             best=["h5f7"],
-            label=Label.EXCELLENT,
+            label=label,
         ),
         8.5,
     )
-    out = _messages(coach)
-    assert [m.text for m in out] == ["Nc3 was fine; Qxf7# was the mate."]
+    return [m.text for m in _messages(coach)]
+
+
+def test_a_good_move_goes_to_the_model_which_names_the_better_one() -> None:
+    """A little behind the best (Tai: something was better): the model says what, at
+    its full effort. An excellent move is as strong as the best and needs no model."""
+    from sidecoach.coach.coach import _exciting, _local
+    from sidecoach.events import Label
+    from tests.test_coach import _coach
+
+    assert all(_local(Label(x)) for x in ("book", "best", "excellent"))
+    assert not any(_local(Label(x)) for x in ("good", "great", "brilliant", "inaccuracy"))
+    assert all(_exciting(Label(x)) for x in ("great", "brilliant"))
+    coach, provider = _coach(["[p=1.0] Nc3 was fine; Qxf7# was the mate."])
+    texts = _played(coach, provider, "Nc3", Label.GOOD, loss=0.03)
+    assert texts == ["Nc3 was fine; Qxf7# was the mate."]
     assert len(provider.prompts) == 1, "the model, for the better move"
     directive = provider.prompts[0][1][-1]["content"]
     assert "fine but not the strongest" in directive and "Qxf7#" in directive
+    coach, provider = _coach(["never used"])
+    texts = _played(coach, provider, "Nc3", Label.EXCELLENT)
+    assert texts and texts[0].startswith("Nc3") and provider.prompts == [], "the board's word"
+
+
+def test_a_great_or_brilliant_move_gets_the_models_delight() -> None:
+    """Rare and worth a real sentence: the model at its full effort, told to show some
+    delight; the board's exuberant line stands in if the reply fails."""
+    from sidecoach.coach.verdicts import OPENERS
+    from sidecoach.events import Label
+    from tests.test_coach import _coach
+
+    coach, provider = _coach(["[p=1.0] Yes -- Qxf7#, the one move, and it ends the game."])
+    texts = _played(coach, provider, "Qxf7#", Label.GREAT, loss=0.0)
+    assert texts == ["Yes -- Qxf7#, the one move, and it ends the game."]
+    assert len(provider.prompts) == 1
+    directive = provider.prompts[0][1][-1]["content"]
+    assert "Show some delight" in directive and "great" in directive
+    assert coach.speaker.provider is provider, "the main model, not the routine copy"
+    # The reply failing, the board's own line stands in -- an exuberant one.
+    coach, provider = _coach(["", ""])
+    texts = _played(coach, provider, "Qxf7#", Label.BRILLIANT, loss=0.0)
+    assert len(texts) == 1 and texts[0].endswith(" -- checkmate.")
+    assert any(texts[0].startswith(o.format(san="Qxf7#")) for o in OPENERS["brilliant"])

@@ -95,10 +95,10 @@ class CoachSettings(BaseModel):
     # reply. Streamed, the first reply is spoken as it is written and the rest never
     # written, so on costs no time beyond the "[p=0.3]" marker before the first word.
     verbalized_sampling: bool = False
-    # The word on the engine's own move (best, great, brilliant, book) written from the
-    # board -- the verdict and what the move does -- instead of asked of the model: free
-    # and immediate. An excellent or good move keeps the model, which names what was
-    # better. Off, the model writes every word (a call per move).
+    # The word on a best, excellent or book move written from the board -- the verdict
+    # and what the move does -- instead of asked of the model: free and immediate. A good
+    # move keeps the model, which names what was better; a great or brilliant one the
+    # model's delight. Off, the model writes every word (a call per move).
     local_verdicts: bool = True
     # Fitted to chess.com's review tallies over six games; see analysis.score.Thresholds.
     inaccuracy: float = 0.04
