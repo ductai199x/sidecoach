@@ -54,6 +54,7 @@ from sidecoach.events import (
     GameEnded,
     GameReview,
     GameStarted,
+    Label,
     MoveAssessment,
     MovePlayed,
     ProfileSnapshot,
@@ -80,8 +81,15 @@ ELICIT_EVERY = 3
 # The player's words within this long of the question count as its answer (the
 # profiler's SELF_REPORT_S, which keeps those words beside the mistake).
 ELICIT_ANSWER_S = 60.0
-# A move that lost less than this gets a two-word confirmation, without the model.
-TRIVIAL_LOSS = 0.02
+# The labels of the engine's own move (or theory): the word on it needs no model. An
+# excellent or good move was not the strongest, and the model says what was.
+ENGINES_OWN = frozenset({"book", "best", "great", "brilliant"})
+
+
+def _engines_own(label: Label | None) -> bool:
+    return label is not None and label.value in ENGINES_OWN
+
+
 # The confirmations, by the move's label, in the vocabulary chess.com uses; "{san}" is the
 # move (coach/verdicts.py has them, with the clause on what the move does).
 VERDICTS: dict[str, list[str]] = {
@@ -1569,15 +1577,15 @@ class Coach:
         if self.kind != "game" and after is not None and after.board.is_checkmate():
             return  # the puzzle is solved with a mate: the site says so, and moves on
         # Every move of the player's gets a word from the coach. A lecture is only for a
-        # move that cost something. A sound move -- the engine's own, or one that cost
-        # nothing -- gets a sentence written from the board (coach/verdicts.py: the
-        # verdict, and what the move does), no model call; in blitz too. A fine move that
-        # was not the strongest gets the model's word on the better one, the two-word
-        # template standing in if the reply fails.
+        # move that cost something. The engine's own move -- best, great, brilliant, or
+        # book -- gets a sentence written from the board (coach/verdicts.py: the verdict,
+        # and what the move does), no model call; in blitz too. An excellent or good move
+        # means something was better (Tai, 2026-09-20), so the model names it, the
+        # two-word template standing in if the reply fails.
         if trigger is Trigger.POST_MOVE and event.severity is Severity.NONE:
             assert before.facts is not None
             best = before.facts.candidates[0] if before.facts.candidates else None
-            routine = event.expected_loss < TRIVIAL_LOSS or best is None or best == move.san
+            routine = best is None or best == move.san or _engines_own(event.label)
             blitz = self.policy.time_control is TimeControl.BLITZ
             if not routine or not (self.local_verdicts or blitz):
                 self._speak(
@@ -1958,7 +1966,7 @@ class Coach:
             label = assessment.label.value if assessment.label else assessment.severity.value
             words = _in_words(position.board, played.san)
             better_words = _in_words(position.board, best) if facts.candidates else best
-            routine = loss < TRIVIAL_LOSS or not facts.candidates or best == played.san
+            routine = not facts.candidates or best == played.san or _engines_own(assessment.label)
             if trigger is Trigger.POST_MISTAKE:
                 fallback = f"{played.san} cost you. {best} was better; the idea was {theme}."
                 instruction = (

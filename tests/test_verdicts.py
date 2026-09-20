@@ -99,3 +99,49 @@ def test_the_coach_writes_a_sound_moves_word_itself_and_calls_no_model() -> None
     out = _messages(coach)
     assert len(out) == 1 and out[0].text == "Qxf7# was best, mate on the board."
     assert len(provider.prompts) == 1
+
+
+def test_an_excellent_or_good_move_goes_to_the_model_which_names_the_better_one() -> None:
+    """Something was better (Tai): the model says what, at its full effort; the engine's
+    own move never needs it."""
+    from sidecoach.coach.coach import _engines_own
+    from sidecoach.events import Label, MoveAssessment, MovePlayed, Severity
+    from tests.test_coach import SCHOLAR as SCHOLAR_FEN
+    from tests.test_coach import _coach, _mate_analysis, _messages, _play_to_scholar
+
+    assert all(_engines_own(Label(x)) for x in ("book", "best", "great", "brilliant"))
+    assert not any(_engines_own(Label(x)) for x in ("excellent", "good", "inaccuracy"))
+    coach, provider = _coach(["[p=1.0] Nc3 was fine; Qxf7# was the mate."])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    board = chess.Board(SCHOLAR_FEN)
+    move = board.push_san("Nc3")
+    coach.on_event(
+        MovePlayed(
+            game_id="g",
+            ply=7,
+            san="Nc3",
+            uci=move.uci(),
+            fen_before=SCHOLAR_FEN,
+            fen_after=board.fen(),
+            by_user=True,
+        ),
+        8.0,
+    )
+    coach.on_event(
+        MoveAssessment(
+            game_id="g",
+            ply=7,
+            uci=move.uci(),
+            expected_loss=0.01,
+            severity=Severity.NONE,
+            best=["h5f7"],
+            label=Label.EXCELLENT,
+        ),
+        8.5,
+    )
+    out = _messages(coach)
+    assert [m.text for m in out] == ["Nc3 was fine; Qxf7# was the mate."]
+    assert len(provider.prompts) == 1, "the model, for the better move"
+    directive = provider.prompts[0][1][-1]["content"]
+    assert "fine but not the strongest" in directive and "Qxf7#" in directive
