@@ -105,8 +105,30 @@ CREATE TABLE IF NOT EXISTS sessions (
     games INTEGER NOT NULL DEFAULT 0,
     summary TEXT
 );
+CREATE TABLE IF NOT EXISTS recommendations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id TEXT NOT NULL,
+    ts REAL NOT NULL,
+    motif TEXT NOT NULL,
+    reason TEXT,
+    level INTEGER NOT NULL,
+    puzzle_ids TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS puzzle_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    puzzle_id TEXT NOT NULL,
+    ts REAL NOT NULL,
+    motif TEXT,
+    solved INTEGER NOT NULL,
+    moves TEXT
+);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 CREATE INDEX IF NOT EXISTS moves_game ON moves (game_id, withdrawn);
 CREATE INDEX IF NOT EXISTS evidence_game ON evidence (game_id);
+CREATE INDEX IF NOT EXISTS attempts_puzzle ON puzzle_attempts (puzzle_id, ts);
 """
 
 # Read-only SQL from the coach: what it may do, checked by SQLite's authorizer. Reading
@@ -631,6 +653,64 @@ class Store:
                 (session_id, started_at),
             )
             self._db.commit()
+
+    # ---- puzzles ------------------------------------------------------------------------
+
+    def setting(self, key: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return None if row is None else row["value"]
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+            self._db.commit()
+
+    def add_recommendation(
+        self, game_id: str, ts: float, motif: str, reason: str, level: int, puzzle_ids: list[str]
+    ) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO recommendations (game_id, ts, motif, reason, level, puzzle_ids)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (game_id, ts, motif, reason, level, " ".join(puzzle_ids)),
+            )
+            self._db.commit()
+
+    def recommended_ids(self, limit: int = 20) -> list[str]:
+        """The puzzles recommended lately, latest first."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT puzzle_ids FROM recommendations ORDER BY ts DESC LIMIT ?", (limit,)
+            ).fetchall()
+        out: list[str] = []
+        for row in rows:
+            out += row["puzzle_ids"].split()
+        return out
+
+    def add_attempt(
+        self, puzzle_id: str, ts: float, motif: str | None, solved: bool, moves: list[str]
+    ) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO puzzle_attempts (puzzle_id, ts, motif, solved, moves)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (puzzle_id, ts, motif, int(solved), " ".join(moves)),
+            )
+            self._db.commit()
+
+    def attempts(self, limit: int = 100) -> list[tuple[str, float, bool]]:
+        """(puzzle_id, ts, solved) of the latest attempts, latest first."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT puzzle_id, ts, solved FROM puzzle_attempts ORDER BY ts DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [(r["puzzle_id"], float(r["ts"]), bool(r["solved"])) for r in rows]
 
     def end_session(self, session_id: str, ended_at: float, summary: str | None) -> None:
         with self._lock:

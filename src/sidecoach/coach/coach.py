@@ -55,6 +55,8 @@ from sidecoach.events import (
     MoveAssessment,
     MovePlayed,
     ProfileSnapshot,
+    PuzzleOutcome,
+    Recommendation,
     Resync,
     ScreenState,
     ScreenStateChanged,
@@ -64,6 +66,7 @@ from sidecoach.events import (
     Trigger,
 )
 from sidecoach.llm.base import ChatMessage, LLMProvider
+from sidecoach.profile.insights import motif_words
 
 MAX_TOKENS = 220
 # After every this-many mistakes the lesson ends by asking what the player saw: a
@@ -1173,6 +1176,10 @@ class Coach:
             self._current = None
             self.finished = True
             self.conversation.ended(event)
+        elif isinstance(event, Recommendation):
+            self._on_recommendation(event, ts)
+        elif isinstance(event, PuzzleOutcome):
+            self._on_puzzle_outcome(event, ts)
         elif isinstance(event, GameReview):
             self._on_review(event, ts)
         elif isinstance(event, ProfileSnapshot):
@@ -1411,6 +1418,38 @@ class Coach:
             return
         self._review_lines = list(event.lines)
         self._speak(Trigger.REVIEW, position, DisclosureLevel.LINE, ts)
+
+    def _on_recommendation(self, event: Recommendation, ts: float) -> None:
+        """The practice the profile picked after the review: a line naming the motif and
+        the puzzles, on the card; no model call, the card carries the links."""
+        if event.game_id != self.game_id or not event.puzzles:
+            return
+        n = len(event.puzzles)
+        text = (
+            f"For practice: {n} {event.motif_words} puzzle{'s' if n != 1 else ''} around "
+            f"{event.level} are on the review card -- {event.reason}."
+        )
+        with self._lock:
+            self.conversation.note(f"Practice recommended: {text}")
+        self._queue_plain(Trigger.REVIEW, text, ts, record_now=True)
+
+    def _on_puzzle_outcome(self, event: PuzzleOutcome, ts: float) -> None:
+        """A puzzle from the store worked through on the screen: a word on a fail (the
+        site says nothing useful), nothing on a solve (the site does)."""
+        with self._lock:
+            self.conversation.note(
+                f"Puzzle {event.puzzle_id} {'solved' if event.solved else 'failed'}; "
+                f"puzzle level now {event.level}."
+            )
+        if event.solved:
+            return
+        motif = f" That one was a {motif_words(event.motif)} puzzle." if event.motif else ""
+        self._queue_plain(
+            Trigger.POST_MISTAKE,
+            f"Not that one -- have another look before the site shows you.{motif}",
+            ts,
+            record_now=True,
+        )
 
     def _on_clock(self, event: ClockObservation, ts: float) -> None:
         """The screen's clock, when one is drawn. It scales the interjection cadence: the

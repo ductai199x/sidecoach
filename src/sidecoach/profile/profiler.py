@@ -37,13 +37,24 @@ from sidecoach.events import (
     MovePlayed,
     ProfileEvidence,
     ProfileSnapshot,
+    PuzzleOutcome,
+    Recommendation,
     Resync,
     Side,
     Takeback,
     UserUtterance,
 )
 from sidecoach.profile import causes
-from sidecoach.profile.insights import as_cells, insights
+from sidecoach.profile.insights import MIN_CHANCES, as_cells, insights, motif_words
+from sidecoach.profile.puzzles import (
+    LEVEL_START,
+    LEVEL_STEP,
+    RATING_MAX,
+    RATING_MIN,
+    Attempt,
+    PuzzleStore,
+    position_key,
+)
 from sidecoach.profile.review import ERRORS, UserMove, build_review
 from sidecoach.profile.store import Store
 
@@ -53,6 +64,10 @@ REVIEW_GRACE_S = 90.0
 # The player's first words within this long after the coach's lesson on a mistake are
 # about that mistake: kept beside it as their self-report.
 SELF_REPORT_S = 60.0
+# A puzzle solved this recently is not recommended again; one failed this long ago comes
+# back first (spaced repetition of the plainest kind).
+RETRY_S = 14 * 24 * 3600.0
+RETRY_FAIL_S = 3600.0
 
 
 _VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
@@ -129,13 +144,27 @@ def _reason_words(event: GameEnded) -> str | None:
 
 
 class Profiler:
-    def __init__(self, store: Store, *, session_id: str | None = None, ts: float = 0.0) -> None:
+    def __init__(
+        self,
+        store: Store,
+        *,
+        session_id: str | None = None,
+        ts: float = 0.0,
+        puzzles: PuzzleStore | None = None,
+    ) -> None:
         self.store = store
         self.session_id = session_id or uuid.uuid4().hex[:8]
         self.store.start_session(self.session_id, ts)
         self._game: _Game | None = None
         self._clock: tuple[int | None, int | None] = (None, None)
         self._reviews: list[GameReview] = []
+        # The puzzles to practise from (profile/puzzles.py), when there are any; the
+        # puzzle under way on the screen, if a joined position is one; and the motif each
+        # recommended puzzle was for, so its outcome lands in the right cell.
+        self.puzzles = puzzles
+        self._attempt: Attempt | None = None
+        self._attempt_game: str | None = None
+        self._recommended_for: dict[str, str] = {}
 
     # ---- events ------------------------------------------------------------------------
 
@@ -153,6 +182,8 @@ class Profiler:
             return []
         game = self._game
         if game is None:
+            if isinstance(event, MovePlayed) and event.game_id == self._attempt_game:
+                return self._puzzle_move(event, ts)
             return []
         if game.ended and isinstance(event, MovePlayed | Takeback | Resync | GameEnded):
             return []
@@ -195,8 +226,14 @@ class Profiler:
         if event.kind != "game":
             # A puzzle, an analysis board, a game joined from the middle: coached, not
             # recorded -- a solved puzzle was "a game won by checkmate in 3 moves,
-            # accuracy 100" in the record (2026-09-20).
+            # accuracy 100" in the record (2026-09-20). A position that is a puzzle of
+            # the store is followed for its outcome, though.
             self._game = None
+            self._attempt = None
+            self._attempt_game = None
+            if self.puzzles is not None:
+                self._attempt = self._puzzle_at(event.start_fen)
+                self._attempt_game = event.game_id if self._attempt is not None else None
             return []
         self._game = _Game(
             game_id=event.game_id,
@@ -423,7 +460,97 @@ class Profiler:
             opening=game.opening,
         )
         self._reviews.append(review)
-        return [review, self.snapshot()]
+        return [review, *self._recommend(game, review, ts), self.snapshot()]
+
+    # ---- puzzles (DESIGN section 5.7) ------------------------------------------------------
+
+    def puzzle_level(self) -> int:
+        value = self.store.setting("puzzle_level")
+        return int(value) if value else LEVEL_START
+
+    def _recommend(self, game: _Game, review: GameReview, ts: float) -> list[Event]:
+        """A few puzzles for the motif that costs the player most: the profile's worst
+        motif cell once it has evidence enough, else this game's worst mistake's motif."""
+        if self.puzzles is None or self.puzzles.count() == 0:
+            return []
+        motif, reason = self._weak_motif(review)
+        if motif is None:
+            return []
+        level = self.puzzle_level()
+        recent = self.store.attempts(limit=200)
+        solved_lately = {pid for pid, when, solved in recent if solved and ts - when < RETRY_S}
+        failed = [pid for pid, when, solved in recent if not solved and ts - when >= RETRY_FAIL_S]
+        chosen = self.puzzles.pick(motif, level, exclude=solved_lately, first=failed)
+        if not chosen:
+            return []
+        for puzzle in chosen:
+            self._recommended_for[puzzle.id] = motif
+        ids = [p.id for p in chosen]
+        self.store.add_recommendation(game.game_id, ts, motif, reason, level, ids)
+        return [
+            Recommendation(
+                game_id=game.game_id,
+                motif=motif,
+                motif_words=motif_words(motif),
+                reason=reason,
+                level=level,
+                puzzles=[p.ref() for p in chosen],
+            )
+        ]
+
+    def _weak_motif(self, review: GameReview) -> tuple[str | None, str]:
+        rows = [
+            r
+            for r in self.store.cells()
+            if r.cause is None and r.motif is not None and r.chances >= MIN_CHANCES and r.errors
+        ]
+        if rows:
+            worst = max(rows, key=lambda r: ((r.errors + 1) / (r.chances + 2), r.expected_loss))
+            return worst.motif, (
+                f"{motif_words(worst.motif)}: {worst.errors} of {worst.chances} chances missed"
+                " over your games"
+            )
+        for point in review.turning_points:
+            if point.motif:
+                return point.motif, f"{motif_words(point.motif)}: the turning point of this game"
+        return None, ""
+
+    def _puzzle_at(self, fen: str) -> Attempt | None:
+        """The puzzle whose solver's position this is, a recommended one first."""
+        assert self.puzzles is not None
+        try:
+            key = position_key(fen)
+        except ValueError:
+            return None
+        found = self.puzzles.at_position(key)
+        if not found:
+            return None
+        found.sort(key=lambda p: p.id not in self._recommended_for)
+        puzzle = found[0]
+        return Attempt(puzzle, self._recommended_for.get(puzzle.id))
+
+    def _puzzle_move(self, event: MovePlayed, ts: float) -> list[Event]:
+        attempt = self._attempt
+        if attempt is None:
+            return []
+        outcome = attempt.move(event.uci, by_user=event.by_user)
+        if outcome is None:
+            return []
+        solved = outcome == "solved"
+        step = LEVEL_STEP if solved else -LEVEL_STEP
+        level = max(RATING_MIN, min(RATING_MAX, self.puzzle_level() + step))
+        self.store.set_setting("puzzle_level", str(level))
+        self.store.add_attempt(attempt.puzzle.id, ts, attempt.motif, solved, attempt.played)
+        self._attempt = None
+        return [
+            PuzzleOutcome(
+                game_id=event.game_id,
+                puzzle_id=attempt.puzzle.id,
+                motif=attempt.motif,
+                solved=solved,
+                level=level,
+            )
+        ]
 
     def tick(self, ts: float) -> list[Event]:
         """Time passing: a finished game whose verdicts never came is reviewed as it is."""

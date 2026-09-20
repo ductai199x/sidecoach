@@ -347,6 +347,38 @@ class ProfileCell(BaseModel):
         return (self.errors + 1) / (self.chances + 2)
 
 
+class PuzzleRef(BaseModel):
+    """A Lichess puzzle recommended: where to open it, how hard, what it trains."""
+
+    id: str
+    url: str
+    rating: int
+    themes: list[str] = Field(default_factory=list)
+
+
+class Recommendation(Event):
+    """Practice for the player's weak spot after a game (DESIGN section 5.7): the motif
+    the profile says costs them most, and a few puzzles of it near their level."""
+
+    game_id: str
+    motif: str
+    motif_words: str
+    reason: str
+    level: int
+    puzzles: list[PuzzleRef] = Field(default_factory=list)
+
+
+class PuzzleOutcome(Event):
+    """A recommended (or any known) puzzle worked through on the screen: solved when
+    every move of the solution came, failed at the first wrong one."""
+
+    game_id: str
+    puzzle_id: str
+    motif: str | None = None
+    solved: bool
+    level: int  # the player's puzzle level after this outcome
+
+
 class ProfileSnapshot(Event):
     """The player model as it stands: the cells with evidence, what they add up to in
     words, and the last session's summary, for the coach's continuity."""

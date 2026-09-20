@@ -315,6 +315,12 @@ body.dragging-y { cursor: row-resize; user-select: none; }
 .rv-label.mistake { color: #ffa459; }
 .rv-better { font-size: 12px; color: #b5d68f; }
 .rv-cause { margin-left: auto; font-size: 11px; padding: 1px 6px; max-width: 100%; }
+.rv-puzzles { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.rv-puzzle {
+  color: var(--ink); text-decoration: none; background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600;
+}
+.rv-puzzle:hover { background: var(--panel3); border-color: var(--accent); }
 .rv-notes, .rv-insights { font-size: 12px; color: var(--muted); margin-top: 6px; }
 .rv-insights { color: #d9c8f2; }
 

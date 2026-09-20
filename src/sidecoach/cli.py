@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
+import importlib.util
 import platform
 import sys
 import time
@@ -1018,7 +1020,13 @@ class _Profiling:
         if path is None and live:
             path = settings.data_dir / "profile.sqlite"
         self.store = Store(path)
-        self.profiler = Profiler(self.store, ts=time.time())
+        puzzles = None
+        if live:
+            from sidecoach.profile.puzzles import open_store
+
+            with contextlib.suppress(Exception):
+                puzzles = open_store(settings.data_dir)
+        self.profiler = Profiler(self.store, ts=time.time(), puzzles=puzzles)
 
     def events(
         self, events: Sequence[Event], indent: str = "", *, flush: bool = False
@@ -1510,6 +1518,45 @@ def review(
             encoding="utf-8",
         )
         console.print(f"assessments -> {out}")
+
+
+@app.command()
+def puzzles(
+    action: Annotated[
+        str,
+        typer.Argument(help="fetch: download a sample of the Lichess database; import: load a CSV"),
+    ] = "fetch",
+    path: Annotated[Path | None, typer.Argument(help="For import: a Lichess puzzle CSV")] = None,
+    per_theme: Annotated[int, typer.Option(help="For fetch: puzzles kept per theme")] = 200,
+    config: ConfigOpt = None,
+) -> None:
+    """The puzzles the coach recommends after a game (DESIGN 5.7), under data/puzzles.sqlite.
+
+    `fetch` streams the Lichess puzzle database (CC0, ~300 MB compressed) and keeps a
+    sample balanced across the tactical themes (tools/puzzles/fetch.py); `import` loads
+    any CSV in its format, the whole database included. The panel opens the store on its
+    own and fills it from data/puzzles/*.csv the first time.
+    """
+    from sidecoach.profile.puzzles import PuzzleStore
+
+    settings = load_settings(config)
+    store = PuzzleStore(settings.data_dir / "puzzles.sqlite")
+    if action == "fetch":
+        import runpy
+
+        if importlib.util.find_spec("zstandard") is None:
+            raise typer.BadParameter(
+                "the fetch needs zstandard: uv run --with zstandard sidecoach puzzles fetch"
+            )
+        sys.argv = ["fetch.py", str(per_theme)]
+        fetcher = Path(__file__).resolve().parents[2] / "tools" / "puzzles" / "fetch.py"
+        runpy.run_path(str(fetcher), run_name="__main__")  # writes data/puzzles/sample.csv
+        path = Path("data/puzzles/sample.csv")
+    elif action != "import" or path is None:
+        raise typer.BadParameter("puzzles fetch | puzzles import <csv>")
+    added = store.import_csv(path)
+    console.print(f"{added} puzzles added from {path}; {store.count()} in {store.path}")
+    store.close()
 
 
 @app.command("import-reviews")

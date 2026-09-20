@@ -686,9 +686,28 @@ class PanelEngine:
         from sidecoach.profile.store import Store
 
         store = Store(self.settings.data_dir / "profile.sqlite" if live else None)
-        profiler = Profiler(store, ts=time.time())
+        puzzles = None
+        try:
+            from sidecoach.profile.puzzles import open_store
+
+            puzzles = open_store(self.settings.data_dir)
+        except Exception as exc:  # noqa: BLE001 - practice is a nicety; the panel runs without
+            self._emit("sys", "warn", f"puzzles unavailable: {exc}")
+        profiler = Profiler(store, ts=time.time(), puzzles=puzzles)
         self._profiler = profiler
         self._emit("sys", "info", f"profile: {store.path or 'in memory (replay)'}")
+        if puzzles is not None:
+            self._emit(
+                "sys",
+                "info",
+                f"puzzles: {puzzles.count()} from {puzzles.path}, level {profiler.puzzle_level()}",
+            )
+        else:
+            self._emit(
+                "sys",
+                "warn",
+                "puzzles: none (run `uv run sidecoach puzzles fetch` for practice after a game)",
+            )
         first_snapshot = profiler.snapshot()
         self._set(profile=self._profile_state(first_snapshot))
         coaching.events([first_snapshot], time.monotonic())
@@ -704,6 +723,7 @@ class PanelEngine:
 
         latest: Any = None
         latest_geom: Any = None
+        ts = time.monotonic()  # the last frame's time; the first, before any frame
         locked = False
         verified = False
         bootstraps = 0
@@ -845,6 +865,9 @@ class PanelEngine:
             assessing.close()
             coaching.wait()
             self._coach_meta(coaching, spoken_seen, failures_seen)
+            # The strip once more, with the replies that came after the last tick.
+            with contextlib.suppress(Exception):
+                self._health(pipe, coaching, recorder, ticks, pipeline_ms, 1.0, ts, live)
             coaching.close()
             try:
                 summary = profiler.end_session(time.time())
@@ -873,7 +896,13 @@ class PanelEngine:
         the snapshot to the page (the review as a card in the coach's stream, with the
         insights of the moment). `tick` lets a finished game's review time out waiting for
         the engine; `flush` reviews it now."""
-        from sidecoach.events import GameReview, ProfileEvidence, ProfileSnapshot
+        from sidecoach.events import (
+            GameReview,
+            ProfileEvidence,
+            ProfileSnapshot,
+            PuzzleOutcome,
+            Recommendation,
+        )
 
         out: list[Any] = []
         now = time.time()
@@ -898,6 +927,28 @@ class PanelEngine:
                     "review: " + elide(" ".join(event.lines), 80),
                     review=review,
                     insights=insights,
+                )
+            elif isinstance(event, Recommendation):
+                practice = event.model_dump(exclude={"ts", "source_frame_id"})
+                self._set(practice=practice)
+                self._emit(
+                    "coach",
+                    "info",
+                    f"practice: {event.motif_words} -- "
+                    + ", ".join(p.id for p in event.puzzles)
+                    + f" (level {event.level}); {event.reason}",
+                    practice=practice,
+                )
+            elif isinstance(event, PuzzleOutcome):
+                self._emit(
+                    "game",
+                    "info",
+                    f"puzzle {event.puzzle_id} {'solved' if event.solved else 'failed'}"
+                    + (f" ({event.motif})" if event.motif else "")
+                    + f"; puzzle level {event.level}",
+                    puzzle_id=event.puzzle_id,
+                    solved=event.solved,
+                    puzzle_level=event.level,
                 )
             elif isinstance(event, ProfileSnapshot):
                 self._set(profile=self._profile_state(event))

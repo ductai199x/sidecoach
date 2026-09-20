@@ -230,6 +230,7 @@ function addLine(line) {
 
   if (line.chan === "coach" && line.data && line.data.full) addCoach(line);
   if (line.chan === "coach" && line.data && line.data.review) addReview(line);
+  if (line.chan === "coach" && line.data && line.data.practice) addPractice(line.data.practice);
   addConvo(line);
 }
 
@@ -424,6 +425,29 @@ const CAUSES = [
   "positional misjudgment", "opening knowledge gap", "endgame technique", "time pressure",
 ];
 const motifWords = (m) => (m || "").replace(/([a-z])([A-Z0-9])/g, "$1 $2").toLowerCase();
+
+// The practice the profile picked after the review: the motif, why, and the puzzles as
+// links (Lichess training). Opened on the same screen, a puzzle is followed like any
+// position and its outcome lands in the profile.
+function addPractice(p) {
+  const c = el("coach");
+  const msg = document.createElement("div"); msg.className = "msg review practice";
+  const meta = document.createElement("div"); meta.className = "meta";
+  meta.textContent = "practice · " + motifWords(p.motif) + " · around " + p.level;
+  const head = document.createElement("div"); head.className = "rv-head";
+  head.textContent = p.reason ? p.reason.charAt(0).toUpperCase() + p.reason.slice(1) + "." : "Puzzles to practise.";
+  const list = document.createElement("div"); list.className = "rv-puzzles";
+  for (const z of p.puzzles || []) {
+    const a = document.createElement("a");
+    a.href = z.url; a.target = "_blank"; a.rel = "noopener"; a.className = "rv-puzzle";
+    a.textContent = "puzzle " + z.id + " · " + z.rating;
+    a.title = (z.themes || []).map(motifWords).join(", ");
+    list.appendChild(a);
+  }
+  msg.append(meta, head, list);
+  c.appendChild(msg);
+  c.scrollTop = c.scrollHeight;
+}
 
 function addReview(line) {
   const c = el("coach");
