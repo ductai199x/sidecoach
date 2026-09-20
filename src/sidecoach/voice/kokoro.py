@@ -29,12 +29,79 @@ from sidecoach.voice.runtime import session as make_session
 log = logging.getLogger(__name__)
 
 ONNX_FILE = "kokoro-v1.0.onnx"
-# Silence appended to every line before it is played. `play` then `wait` returns, and
-# the stream is stopped, the moment the last sample has been handed to the device -- and
-# a Bluetooth headset is still a few hundred milliseconds behind, so the end of every
-# line was clipped (Tai, 2026-09-19). What the stop now cuts off is silence.
+# Silence appended to every line: a breath between one sentence and the next, and, on
+# the fallback path (`play` then `wait`, the stream stopped the moment the last sample
+# is handed over), what a Bluetooth headset a few hundred milliseconds behind clips
+# instead of the words (Tai, 2026-09-19).
 TAIL_SILENCE_S = 0.35
+# The output stream stays open between lines, silence flowing: opened per line, a
+# Bluetooth headset swallowed the first syllables while its link woke and the last while
+# the stream closed under it (Tai, 2026-09-20: "beginnings or ends of sentences cut off").
+# The stream is reopened when the system's default output changes, checked this often.
+DEVICE_CHECK_S = 2.0
 VOICES_FILE = "voices-v1.0.bin"
+
+
+class _Stream:
+    """One open output stream, kept running. Lines are queued as sample blocks and
+    played by the device's callback; between lines the callback writes silence, so the
+    device never sleeps and never closes on a tail."""
+
+    def __init__(self, sd: object, samplerate: int, device: int | str | None) -> None:
+        import numpy as np
+
+        self._np = np
+        self.samplerate = samplerate
+        self.device = device
+        self._chunks: list = []
+        self._lock = threading.Lock()
+        self._idle = threading.Event()
+        self._idle.set()
+        self._stream = sd.OutputStream(  # type: ignore[attr-defined]
+            samplerate=samplerate,
+            channels=1,
+            dtype="float32",
+            device=device,
+            callback=self._callback,
+        )
+        self._stream.start()
+
+    def _callback(self, outdata: object, frames: int, time_info: object, status: object) -> None:
+        out = outdata  # (frames, 1) float32
+        filled = 0
+        with self._lock:
+            while filled < frames and self._chunks:
+                chunk = self._chunks[0]
+                take = min(frames - filled, len(chunk))
+                out[filled : filled + take, 0] = chunk[:take]  # type: ignore[index]
+                if take == len(chunk):
+                    self._chunks.pop(0)
+                else:
+                    self._chunks[0] = chunk[take:]
+                filled += take
+            if not self._chunks:
+                self._idle.set()
+        if filled < frames:
+            out[filled:, 0] = 0  # type: ignore[index]
+
+    def play(self, samples: object, timeout: float) -> None:
+        """Queue `samples` and return once they have been handed to the device."""
+        block = self._np.asarray(samples, dtype=self._np.float32).reshape(-1)
+        with self._lock:
+            self._chunks.append(block)
+            self._idle.clear()
+        self._idle.wait(timeout)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._chunks.clear()
+            self._idle.set()
+
+    def close(self) -> None:
+        with contextlib.suppress(Exception):
+            self._stream.stop()
+        with contextlib.suppress(Exception):
+            self._stream.close()
 
 
 class KokoroTTS:
@@ -72,6 +139,12 @@ class KokoroTTS:
         self._generation = 0
         self._lock = threading.Lock()
         self._playing = False
+        # The open output stream (see _Stream), the device name it was opened on and when
+        # that was last checked against the system default; None when the stream could
+        # not be opened, and lines then play one by one.
+        self._stream: _Stream | None = None
+        self._stream_device_name: str | None = None
+        self._stream_checked = 0.0
 
     @property
     def onnx_path(self) -> Path:
@@ -180,10 +253,18 @@ class KokoroTTS:
                 self._queue.get_nowait()
             except queue.Empty:
                 break
+        if self._stream is not None:
+            self._stream.clear()
         if self._sd is not None:
             # Stopping audio must never raise out of stop().
             with contextlib.suppress(Exception):
                 self._sd.stop()  # type: ignore[attr-defined]
+
+    def close(self) -> None:
+        """Release the output stream."""
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            stream.close()
 
     def _ensure_worker(self) -> None:
         if self._worker is not None and self._worker.is_alive():
@@ -226,7 +307,48 @@ class KokoroTTS:
             samples = np.asarray(samples)
             pad = np.zeros((int(sample_rate * TAIL_SILENCE_S), *samples.shape[1:]), samples.dtype)
             samples = np.concatenate([samples, pad])
+            stream = self._open_stream(int(sample_rate))
+            if stream is not None:
+                stream.play(samples, timeout=len(samples) / sample_rate + 5.0)
+                return
             self._sd.play(samples, sample_rate, device=self.playback_device())  # type: ignore[attr-defined]
             self._sd.wait()  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - audio errors are not fatal
             log.warning("Kokoro playback failed: %s", exc)
+
+    def _open_stream(self, sample_rate: int) -> _Stream | None:
+        """The open output stream for this rate and the current output device, opened or
+        reopened as needed; None when the device will not take a stream, in which case
+        lines play one by one as before."""
+        if self._sd is None:
+            return None
+        now = time.monotonic()
+        stream = self._stream
+        if stream is not None and now - self._stream_checked >= DEVICE_CHECK_S:
+            self._stream_checked = now
+            if stream.samplerate != sample_rate or self._device_name() != self._stream_device_name:
+                stream.close()
+                stream = self._stream = None
+        if stream is not None:
+            return stream
+        try:
+            stream = _Stream(self._sd, sample_rate, self.playback_device())
+        except Exception as exc:  # noqa: BLE001 - no stream: the per-line path stands in
+            log.warning("Kokoro output stream unavailable, playing line by line: %s", exc)
+            return None
+        self._stream = stream
+        self._stream_device_name = self._device_name()
+        self._stream_checked = now
+        return stream
+
+    def _device_name(self) -> str | None:
+        """The name of the output the voice plays through now: the configured device,
+        or whatever the system default is at the moment."""
+        try:
+            device = self.playback_device()
+            if follows_system_default(device, "output"):
+                return str(self._sd.query_devices(self._sd.default.device[1]).get("name"))  # type: ignore[attr-defined]
+            index = device if device is not None else self._sd.default.device[1]  # type: ignore[attr-defined]
+            return str(self._sd.query_devices(index).get("name", index))  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            return None

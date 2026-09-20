@@ -567,11 +567,15 @@ function renderState(s) {
   el("status").textContent = s.status || "";
   el("side").textContent = s.user_side ? ("you play " + s.user_side) : "—";
   el("ply").textContent = "ply " + (s.ply || 0);
-  el("following").textContent = s.following ? "following a game" : "waiting for a start";
+  el("following").textContent = !s.following
+    ? "waiting for a start"
+    : s.kind === "position" ? "a position (puzzle or analysis)" : "a game";
   // The pipeline's orientation is what it read from the screen; a view flip only turns
   // the panel's board around.
   const base = s.bottom || "white";
   const shown = s.view_flip ? (base === "white" ? "black" : "white") : base;
+  renderOrientation(shown);
+  renderMute(!!s.muted);
   liveFen = s.fen; liveLastMove = s.last_move;
   moveFens = s.fens || []; moveUcis = s.ucis || [];
   if (!ghost) renderBoard(s.fen, shown, s.last_move);
@@ -584,6 +588,24 @@ function renderState(s) {
     currentBottom = shown; currentPly = ply;
     renderOverlay();
   }
+}
+
+// The orientation control: the pressed side is the one at the bottom of the board as
+// shown, which is the board as read unless the view was turned around.
+let orientationShown = null;
+function renderOrientation(shown) {
+  if (shown === orientationShown) return;
+  orientationShown = shown;
+  for (const b of document.querySelectorAll("#orient .segbtn")) {
+    b.setAttribute("aria-pressed", b.dataset.side === shown ? "true" : "false");
+  }
+}
+
+function renderMute(muted) {
+  const b = el("mute");
+  if ((b.getAttribute("aria-pressed") === "true") === muted) return;
+  b.setAttribute("aria-pressed", muted ? "true" : "false");
+  b.title = muted ? "Unmute the coach's voice" : "Mute the coach's voice";
 }
 
 function setRunning(on) {
@@ -651,10 +673,26 @@ function fillVoices(voices, current) {
 
 function wire() {
   el("startStop").onclick = () => (running ? api.stop() : api.start());
-  el("flip").onclick = () => api.flip();
+  // The other side of the orientation control asks for a flip; the pressed one is a no-op.
+  for (const b of document.querySelectorAll("#orient .segbtn")) {
+    b.onclick = () => { if (b.getAttribute("aria-pressed") !== "true") api.flip(); };
+  }
   el("analyze").onclick = () => api.analyze();
-  el("mute").onchange = (e) => api.set_muted(e.target.checked);
+  el("mute").onclick = () => {
+    const muted = el("mute").getAttribute("aria-pressed") !== "true";
+    renderMute(muted);  // optimistic; the next poll confirms
+    api.set_muted(muted);
+  };
   el("voice").onchange = (e) => api.set_voice(e.target.value);
+  // The game menu: opens on its button, closes on a choice, a click elsewhere or Escape.
+  const menuBtn = el("gameMenuBtn"), menuList = el("gameMenuList");
+  const openMenu = (open) => { menuList.hidden = !open; menuBtn.setAttribute("aria-expanded", open ? "true" : "false"); };
+  menuBtn.onclick = (e) => { e.stopPropagation(); openMenu(menuList.hidden); };
+  for (const item of menuList.querySelectorAll("[data-outcome]")) {
+    item.onclick = (e) => { e.stopPropagation(); openMenu(false); api.end(item.dataset.outcome); };
+  }
+  document.addEventListener("click", () => { if (!menuList.hidden) openMenu(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !menuList.hidden) openMenu(false); });
   const input = el("askInput");
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") sendAsk(); });
   input.addEventListener("input", renderSend);
@@ -692,7 +730,6 @@ function wire() {
     };
   }
   el("verbose").onchange = (e) => { filters.verbose = e.target.checked; applyFilters(); };
-  el("end").onchange = (e) => { if (e.target.value) { api.end(e.target.value); e.target.value = ""; } };
   const typing = () => ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement && document.activeElement.tagName);
   document.addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat && !typing()) { e.preventDefault(); setPtt(true); } });
   document.addEventListener("keyup", (e) => { if (e.code === "Space" && !typing()) { e.preventDefault(); setPtt(false); } });

@@ -69,8 +69,37 @@ body {
   border-bottom: 1px solid var(--line);
 }
 #bar .group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-width: 0; }
-#bar .controls { margin-left: auto; justify-content: flex-end; }
-#bar .game { flex-wrap: nowrap; }
+#bar .controls { margin-left: auto; justify-content: flex-end; gap: 8px 18px; }
+/* Each control group is labelled by what it is about -- the board, the game, the voice --
+   and holds its controls in one row; the label sits low and quiet. */
+.ctlgroup { display: inline-flex; align-items: center; gap: 6px; flex-wrap: nowrap; position: relative; }
+.ctllabel { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; margin-right: 2px; }
+/* The orientation: a two-way segmented control, the pressed side is the one at the
+   bottom of the board the coach reads (the panel's board shows it that way too). */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--panel2); }
+.segbtn { border: 0; border-radius: 0; padding: 5px 10px; font-weight: 500; color: var(--muted); background: transparent; }
+.segbtn + .segbtn { border-left: 1px solid var(--line); }
+.segbtn:hover { background: var(--panel3); color: var(--ink); }
+.segbtn[aria-pressed="true"] { background: var(--panel3); color: var(--ink); font-weight: 700; }
+.segbtn[aria-pressed="true"]::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 6px; vertical-align: 1px; }
+/* The game menu: a button that opens a list of what the board cannot tell. */
+.menubtn { font-weight: 600; }
+.menubtn[aria-expanded="true"] { background: var(--panel3); }
+.menulist {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; min-width: 240px;
+  display: flex; flex-direction: column; padding: 6px; gap: 2px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px #0008;
+}
+.menulist button { text-align: left; background: transparent; border: 0; border-radius: 5px; padding: 7px 10px; font-weight: 500; }
+.menulist button:hover, .menulist button:focus-visible { background: var(--panel3); }
+.menulist button[data-outcome="forget"] { color: var(--warn); }
+.menusep { height: 1px; background: var(--line); margin: 4px 2px; }
+/* The mute: a speaker that is crossed out when pressed. */
+#mute.iconbtn { width: 30px; height: 30px; }
+#mute .ic-on, #mute .ic-off { display: none; }
+#mute[aria-pressed="false"] .ic-on { display: block; }
+#mute[aria-pressed="true"] .ic-off { display: block; }
+#mute[aria-pressed="true"] { color: var(--warn); }
 .brand { font-weight: 800; letter-spacing: 0.2px; margin-right: 6px; font-size: 15px; }
 .spacer { flex: 1; }
 .status { color: var(--muted); font-size: 12px; }
@@ -395,7 +424,6 @@ footer.folded .term-head { display: none; }
 .chip.on[data-chan="voice"]  { border-color: #b08bd9; }
 .chip.on[data-chan="user"]   { border-color: #e6e5e3; }
 .search { flex: 0 1 160px; min-width: 90px; width: 160px; padding: 2px 8px; font-size: 11px; }
-select.end { font-weight: 600; }
 
 /* The terminal's height follows the screen (a fifth of it, within bounds) unless the
    divider above the footer was dragged; the board re-measures itself when it changes. */
@@ -440,9 +468,9 @@ select.end { font-weight: 600; }
    window); the desktop layout above is everything else, landscape phones included. ---- */
 html.stacked body { display: block; height: auto; min-height: 100vh; overflow: auto; }
 html.stacked #bar { padding: 8px 12px; gap: 8px 12px; }
-html.stacked #bar .controls { flex: 1 1 auto; }
-html.stacked #bar .controls .ctl, html.stacked #bar .controls .game { flex: 1 1 auto; }
-html.stacked #bar .controls select { flex: 1 1 110px; min-width: 0; max-width: 100%; }
+html.stacked #bar .controls { flex: 1 1 auto; gap: 8px 14px; }
+html.stacked #bar .controls select { min-width: 0; max-width: 140px; }
+html.stacked .menulist { right: auto; left: 0; }
 html.stacked main {
   display: flex; flex-direction: column; align-items: center;
   padding: 10px; gap: 10px; overflow: visible;
