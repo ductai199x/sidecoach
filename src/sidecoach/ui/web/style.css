@@ -385,12 +385,13 @@ footer.folded .term-head { display: none; }
   font: 11.5px/1.4 "Cascadia Code", "Consolas", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
 }
+/* The pairs wrap onto a second line rather than scroll off the right: every figure is
+   there to be seen (the tokens, the cost and the latencies came last and were hidden). */
 .health .stats {
-  flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 4px 6px;
-  white-space: nowrap; overflow-x: auto; scrollbar-width: none;
+  flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px;
 }
-.health .stats::-webkit-scrollbar { display: none; }
-.health .hk { color: var(--muted); text-transform: uppercase; letter-spacing: .4px; font-size: 10px; }
+.health .hitem { white-space: nowrap; }
+.health .hk { color: var(--muted); text-transform: uppercase; letter-spacing: .4px; font-size: 10px; margin-right: 5px; }
 .health .hv { color: var(--ink); margin-right: 10px; }
 .health .hv.bad { color: var(--error); }
 .health .hv.warn { color: var(--warn); }

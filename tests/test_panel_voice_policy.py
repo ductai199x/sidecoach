@@ -121,3 +121,47 @@ def test_replay_is_paced_to_its_timestamps(tmp_path: Path) -> None:
     next(src)
     elapsed = time.monotonic() - t0
     assert elapsed >= 0.2, f"replay ran unpaced: {elapsed:.2f}s for a second at 4x"
+
+
+def test_the_way_from_a_move_to_its_first_sound_is_timed(tmp_path: Path) -> None:
+    """The status strip's move->speech latency: the move is noted when committed, the
+    reply's first line remembered when queued, and the time taken the moment the voice
+    says the line's audio has started; amortised over the session."""
+    import time
+
+    from sidecoach.events import Trigger
+    from sidecoach.ui.panel import PanelEngine
+
+    engine = PanelEngine(
+        Settings(data_dir=tmp_path, voice=_SILENT),
+        analysis=False,
+        coach=False,
+        frame_source=iter(()),
+    )
+    engine._note_move(1)
+    assert engine._latency()["move_to_speech_s"] is None
+    sink = engine._stream_sink(Trigger.POST_MOVE, 0)
+    assert sink is not None
+    time.sleep(0.05)
+    assert sink("e4: best.")  # the first line of the word on ply 1, queued
+    assert "e4: best." in engine._awaiting_audio
+    time.sleep(0.05)
+    engine._on_audio_starts("e4: best.")  # the voice: playing now
+    lat = engine._latency()
+    assert lat["move_to_speech_n"] == 1 and lat["move_to_speech_s"] is not None
+    assert 0.08 <= lat["move_to_speech_s"] <= 2.0, lat
+    assert lat["move_to_speech_last_s"] == lat["move_to_speech_s"]
+    # A line nobody waited for, or a stuck hint, is not a move's latency.
+    engine._on_audio_starts("something else")
+    hint = engine._stream_sink(Trigger.STUCK, 1)
+    assert hint is not None and hint("Look at the centre.")
+    assert engine._latency()["move_to_speech_n"] == 1
+    # The model's first token, amortised the same way.
+    engine._note_first_token(1.0)
+    engine._note_first_token(2.0)
+    lat = engine._latency()
+    assert (
+        lat["first_token_s"] == 1.5
+        and lat["first_token_last_s"] == 2.0
+        and lat["first_token_n"] == 2
+    )

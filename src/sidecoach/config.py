@@ -61,6 +61,12 @@ class LLMSettings(BaseModel):
     # sound out in under a second; "low" reasons about as long as medium (measured
     # 2026-09-19: 2.7 s to the first token against 2.5 s). Unset keeps reasoning_effort.
     routine_effort: str | None = "none"
+    # The model's prices in USD per million tokens -- fresh prompt, cached prompt,
+    # completion (reasoning included) -- for the session's cost in the panel. Unset, the
+    # panel shows the tokens and no dollar figure; the preset's prices when it has them.
+    price_prompt_per_m: float | None = None
+    price_cached_per_m: float | None = None
+    price_completion_per_m: float | None = None
     thinking: bool = False
     # Total output budget. Reasoning tokens count against it when thinking is on.
     max_output_tokens: int = 1500

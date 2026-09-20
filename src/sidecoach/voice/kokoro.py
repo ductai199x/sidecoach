@@ -18,6 +18,7 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Callable
 from importlib.util import find_spec
 from pathlib import Path
 
@@ -128,7 +129,10 @@ class KokoroTTS:
         self._playback: int | None = None  # resolved once, when unconfigured
         self.device: Device | None = None  # where the graph actually loaded
         self.load_seconds: float | None = None
-        self._queue: queue.Queue[str | None] = queue.Queue()
+        self._queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
+        # Called with the line as given to `say` the moment its audio starts to play,
+        # for whoever measures the way from a move to the first sound (the panel).
+        self.on_play: Callable[[str], None] | None = None
         self._worker: threading.Thread | None = None
         self._kokoro: object | None = None
         self._sd: object | None = None
@@ -237,7 +241,7 @@ class KokoroTTS:
         if not spoken:
             return
         self._ensure_worker()
-        self._queue.put(spoken)
+        self._queue.put((spoken, text))
 
     @property
     def busy(self) -> bool:
@@ -274,18 +278,18 @@ class KokoroTTS:
 
     def _run(self) -> None:
         while True:
-            text = self._queue.get()
-            if text is None:
+            item = self._queue.get()
+            if item is None:
                 return
             # Busy from the moment a line is taken up, through synthesis, until it has
             # finished playing -- so a caller asking `busy` mid-synthesis gets the truth.
             self._playing = True
             try:
-                self._speak_one(text)
+                self._speak_one(*item)
             finally:
                 self._playing = False
 
-    def _speak_one(self, text: str) -> None:
+    def _speak_one(self, text: str, given: str = "") -> None:
         if not self.load():
             return  # degraded to silence
         with self._lock:
@@ -301,6 +305,9 @@ class KokoroTTS:
         with self._lock:
             if generation != self._generation:
                 return
+        if self.on_play is not None:
+            with contextlib.suppress(Exception):
+                self.on_play(given or text)
         try:
             import numpy as np
 

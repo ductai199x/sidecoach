@@ -512,9 +512,43 @@ function renderHealth(h, s) {
   const q = el("h-coach"); q.textContent = h.coach_pending != null ? String(h.coach_pending) : "–";
   q.className = "hv" + (h.coach_pending > 1 ? " warn" : "");
   el("h-rec").textContent = h.recording || "–";
+  renderUsage(h.llm);
+  renderLatency(h.latency);
   el("h-voice").textContent = h.tts_device || "–";
   el("h-ear").textContent = h.stt_device || "–";
   el("h-rss").textContent = h.rss_mb != null ? h.rss_mb + " MB" : "–";
+}
+
+// Latency in the status strip, amortised: "1.4 s (last 1.1, n=12)".
+function latencyText(mean, last, n) {
+  if (mean == null) return "–";
+  return mean.toFixed(1) + " s (last " + last.toFixed(1) + ", n=" + n + ")";
+}
+function renderLatency(l) {
+  if (!l) return;
+  const s = el("h-speech"); s.textContent = latencyText(l.move_to_speech_s, l.move_to_speech_last_s, l.move_to_speech_n);
+  s.className = "hv" + (l.move_to_speech_s > 4 ? " bad" : l.move_to_speech_s > 2.5 ? " warn" : "");
+  const t = el("h-token"); t.textContent = latencyText(l.first_token_s, l.first_token_last_s, l.first_token_n);
+  t.className = "hv" + (l.first_token_s > 3 ? " bad" : l.first_token_s > 1.5 ? " warn" : "");
+}
+
+// The session's model calls in the status strip: "184k in (92% cached) · 6.1k out · 41
+// calls", and the cost at the configured prices, or a hint where to set them.
+function kilo(n) { return n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k" : String(n); }
+function renderUsage(u) {
+  const t = el("h-tokens"), c = el("h-cost");
+  if (!u || !u.calls) { t.textContent = "–"; c.textContent = "–"; return; }
+  const cached = u.prompt ? Math.round(100 * u.cached / u.prompt) : 0;
+  const est = u.estimated ? ", " + u.estimated + " estimated" : "";
+  t.textContent = kilo(u.prompt) + " in (" + cached + "% cached) · " + kilo(u.completion) + " out · " + u.calls + " calls";
+  t.title = "prompt " + u.prompt + " (cached " + u.cached + "), completion " + u.completion + " (reasoning " + u.reasoning + "), " + u.calls + " calls" + est;
+  if (u.cost == null) {
+    c.textContent = "set prices";
+    c.title = "Set llm.price_prompt_per_m, price_cached_per_m and price_completion_per_m (USD per million tokens) in sidecoach.toml for a dollar figure";
+  } else {
+    c.textContent = "$" + (u.cost < 0.1 ? u.cost.toFixed(3) : u.cost.toFixed(2));
+    c.title = "At the prices in sidecoach.toml" + est;
+  }
 }
 
 // --- talking to the coach ----------------------------------------------------------------

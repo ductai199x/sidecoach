@@ -140,6 +140,14 @@ class PanelEngine:
     # the move list's badges.
     _labels: dict[int, str] = field(default_factory=dict, init=False)
     _bad_run: int = field(default=0, init=False)  # consecutive frames read as degraded
+    # Latency, amortised over the session (see _health): when each move was committed
+    # (ply -> monotonic), the reply's first sentence waiting for its audio (the line ->
+    # the move's time), and the running (count, total, last) of move-to-first-sound and
+    # of the model's first token.
+    _move_at: dict[int, float] = field(default_factory=dict, init=False)
+    _awaiting_audio: dict[str, float] = field(default_factory=dict, init=False)
+    _lat_speech: list[float] = field(default_factory=lambda: [0, 0.0, 0.0], init=False)
+    _lat_token: list[float] = field(default_factory=lambda: [0, 0.0, 0.0], init=False)
     # Screen rectangles (x, y, w, h in physical pixels) painted flat before the pipeline
     # sees a live frame -- the panel's own board, so the vision never locks onto it.
     _exclude: list[tuple[int, int, int, int]] = field(default_factory=list, init=False)
@@ -148,6 +156,7 @@ class PanelEngine:
         # Each voice model is built exactly once here and kept for the engine's life; the
         # graphs load on the device configured (see `_warm_voice`) and are never reloaded.
         self._tts = self._build_tts(self.voice)
+        self._hook_voice()
         self._stt = make_ear(self._voice_settings())
         self._mic = Microphone(self.settings.voice.mic_device)
         self._listener = Listener(
@@ -504,6 +513,7 @@ class PanelEngine:
                 if action not in ("speak", "supersede"):
                     return False
                 started.append(action)
+                self._await_audio(name, ply, sentence)
             self._tts.say(sentence)
             self._emit("voice", "debug", f"speaking ({self.voice}): {elide(sentence, 60)}")
             return True
@@ -520,9 +530,66 @@ class PanelEngine:
         if action == "supersede":
             self._tts.stop()
         if action in ("speak", "supersede"):
+            self._await_audio(trigger, ply, text)
             self._tts.say(text)
             self._emit("voice", "debug", f"speaking ({self.voice}): {elide(text, 60)}")
         return action
+
+    # ---- latency, amortised: the move to the first sound, the model's first token ----------
+
+    def _hook_voice(self) -> None:
+        if hasattr(self._tts, "on_play"):
+            self._tts.on_play = self._on_audio_starts  # type: ignore[attr-defined]
+
+    def _note_move(self, ply: int) -> None:
+        """A move was committed now (the panel's clock, not the frame's)."""
+        with self._lock:
+            self._move_at[ply] = time.monotonic()
+            # Only the last few matter; a move nobody spoke about is forgotten.
+            for old in [p for p in self._move_at if p < ply - 4]:
+                del self._move_at[old]
+
+    def _await_audio(self, trigger: str, ply: int | None, line: str) -> None:
+        """The first line of a word on a move is about to be queued: remember which move,
+        so its first sound can be timed. The message's ply is the position the move was
+        played from; the move itself is the next ply."""
+        if trigger not in ("post_move", "post_mistake") or ply is None:
+            return
+        with self._lock:
+            moved = self._move_at.pop(ply + 1, None)
+            if moved is not None:
+                self._awaiting_audio[line] = moved
+
+    def _on_audio_starts(self, line: str) -> None:
+        """The voice's thread: a line's audio is playing now."""
+        now = time.monotonic()
+        with self._lock:
+            moved = self._awaiting_audio.pop(line, None)
+            if moved is None:
+                return
+            seconds = now - moved
+            self._lat_speech[0] += 1
+            self._lat_speech[1] += seconds
+            self._lat_speech[2] = seconds
+
+    def _note_first_token(self, seconds: float) -> None:
+        with self._lock:
+            self._lat_token[0] += 1
+            self._lat_token[1] += seconds
+            self._lat_token[2] = seconds
+
+    def _latency(self) -> dict[str, Any]:
+        with self._lock:
+            speech_n, speech_total, speech_last = self._lat_speech
+            token_n, token_total, token_last = self._lat_token
+        return {
+            "move_to_speech_n": int(speech_n),
+            "move_to_speech_s": round(speech_total / speech_n, 2) if speech_n else None,
+            "move_to_speech_last_s": round(speech_last, 2) if speech_n else None,
+            "first_token_n": int(token_n),
+            "first_token_s": round(token_total / token_n, 2) if token_n else None,
+            "first_token_last_s": round(token_last, 2) if token_n else None,
+        }
 
     def _session_dir(self, live: bool) -> Path:
         stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -913,6 +980,7 @@ class PanelEngine:
             who = "you" if event.by_user else "opponent"
             think = f", {event.think_ms / 1000:.1f}s" if event.think_ms is not None else ""
             self._fen_before[event.ply] = event.fen_before
+            self._note_move(event.ply)
             assessing.submit(event)
             self._emit(
                 "game",
@@ -1156,6 +1224,8 @@ class PanelEngine:
                 tokens = call.stats.get("completion_tokens")
                 seconds = call.stats.get("elapsed_s")
                 first = call.stats.get("first_token_s")
+                if first is not None:
+                    self._note_first_token(float(first))
                 stream_problems = call.stats.get("stream_problems")
                 summary = (
                     f"model reply {index}: {call.candidates} candidates, {call.passed} passed"
@@ -1225,8 +1295,18 @@ class PanelEngine:
             rss_mb = None
         tts_dev = getattr(getattr(self._tts, "device", None), "name", None)
         stt_dev = getattr(getattr(self._stt, "device", None), "name", None)
+        # The session's model calls: tokens, and dollars when the prices are known.
+        llm = None
+        provider = getattr(getattr(coaching.coach, "speaker", None), "provider", None)
+        usage = getattr(provider, "usage", None)
+        if usage is not None:
+            from sidecoach.llm.usage import prices_for
+
+            llm = usage.summary(prices_for(self.settings, getattr(provider, "model", None)))
         self._set(
             health={
+                "llm": llm,
+                "latency": self._latency(),
                 "rss_mb": rss_mb,
                 "tts_device": tts_dev,
                 "stt_device": stt_dev,

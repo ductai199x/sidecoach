@@ -30,6 +30,7 @@ from typing import Any, Literal
 import httpx
 
 from sidecoach.llm.base import ChatMessage, Completion
+from sidecoach.llm.usage import Usage
 
 ThinkingControl = Literal["prefill", "param", "effort", "none"]
 THINKING_CONTROLS: tuple[str, ...] = ("prefill", "param", "effort", "none")
@@ -67,6 +68,7 @@ class OpenAICompatProvider:
         timeout_s: float = 60.0,
         extra_body: dict[str, Any] | None = None,
         transport: httpx.BaseTransport | None = None,
+        usage: Usage | None = None,
     ) -> None:
         self.name = name
         self.base_url = base_url.rstrip("/")
@@ -77,6 +79,9 @@ class OpenAICompatProvider:
         self.timeout_s = timeout_s
         self._api_key = api_key
         self._transport = transport
+        # The session's tokens over every call, shared with the provider's copies at
+        # other efforts (llm.usage): one figure for the panel.
+        self.usage = usage if usage is not None else Usage()
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = httpx.Client(timeout=timeout_s, headers=headers, transport=transport)
 
@@ -95,7 +100,13 @@ class OpenAICompatProvider:
             timeout_s=self.timeout_s,
             extra_body=self.extra_body,
             transport=self._transport,
+            usage=self.usage,
         )
+
+    @staticmethod
+    def _chars(body: dict[str, Any]) -> int:
+        """The prompt's size in characters, for the estimate when no usage comes back."""
+        return sum(len(str(m.get("content") or "")) for m in body.get("messages") or [])
 
     def healthcheck(self) -> tuple[bool, str]:
         try:
@@ -170,11 +181,12 @@ class OpenAICompatProvider:
             "reasoning_tokens": completion_details.get("reasoning_tokens"),
             "finish_reason": choice.get("finish_reason"),
         }
-        return Completion(
-            text=(message.get("content") or "").strip(),
-            reasoning=(message.get("reasoning_content") or "").strip(),
-            stats=stats,
+        text = (message.get("content") or "").strip()
+        reasoning = (message.get("reasoning_content") or "").strip()
+        self.usage.record(
+            stats, prompt_chars=self._chars(body), completion_chars=len(text) + len(reasoning)
         )
+        return Completion(text=text, reasoning=reasoning, stats=stats)
 
     def chat_stream(
         self,
@@ -249,9 +261,14 @@ class OpenAICompatProvider:
             "finish_reason": "stopped" if stopped else finish,
             "streamed": True,
         }
-        return Completion(
-            text="".join(parts).strip(), reasoning="".join(reasoning).strip(), stats=stats
+        text = "".join(parts).strip()
+        thought = "".join(reasoning).strip()
+        # A stream closed early has no usage chunk: the count is then an estimate, and
+        # the reasoning that was never streamed goes uncounted.
+        self.usage.record(
+            stats, prompt_chars=self._chars(body), completion_chars=len(text) + len(thought)
         )
+        return Completion(text=text, reasoning=thought, stats=stats)
 
     def complete(self, system: str, user: str, **kwargs: Any) -> Completion:
         """Single-turn convenience over `chat`."""
