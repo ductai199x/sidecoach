@@ -549,6 +549,15 @@ class PanelEngine:
         pipe = GamePipeline(
             clock=ClockReader(), cache=cache, tracker=BoardTracker(reject=is_own_board)
         )
+        # The embedding net's session is built now, not on the first start position,
+        # so the game's first frames pay no second of CUDA initialisation.
+        from sidecoach.vision.pieces import embedder
+
+        net = embedder()
+        if net is not None:
+            self._emit("sys", "info", f"pieces: embedding net on {net.device.detail}")
+        else:
+            self._emit("sys", "warn", "pieces: silhouette overlap (no embedding net)")
         assessing = _Assessing(self.settings, self.analysis)
         coaching = _Coaching(self.settings, self.coach and assessing.on)
         # Their console output is replaced by the log: assessments are formatted here from
