@@ -42,6 +42,8 @@ from sidecoach.coach.named import spoken as spoken_examination
 from sidecoach.coach.policy import InterjectionPolicy, TimeControl, time_control_of
 from sidecoach.coach.prompt import system_message
 from sidecoach.coach.summarise import summarise
+from sidecoach.coach.verdicts import OPENERS
+from sidecoach.coach.verdicts import verdict as local_verdict
 from sidecoach.events import (
     Analysis,
     Annotation,
@@ -81,20 +83,9 @@ ELICIT_ANSWER_S = 60.0
 # A move that lost less than this gets a two-word confirmation, without the model.
 TRIVIAL_LOSS = 0.02
 # The confirmations, by the move's label, in the vocabulary chess.com uses; "{san}" is the
-# move. A book move is theory, a best move is the engine's own, the rest are fine moves.
+# move (coach/verdicts.py has them, with the clause on what the move does).
 VERDICTS: dict[str, list[str]] = {
-    "book": ["{san}: book.", "{san}, still theory.", "{san}: known territory."],
-    "brilliant": ["{san}: brilliant.", "{san} -- that is a find."],
-    "great": ["{san}: great move.", "{san} -- the one move that works."],
-    "best": [
-        "{san}: best.",
-        "{san} -- that's the move.",
-        "{san}, spot on.",
-        "{san}: exactly.",
-        "{san}: the engine's choice too.",
-    ],
-    "excellent": ["{san}: excellent.", "{san}: strong.", "{san} -- very good.", "{san}: nice."],
-    "good": ["{san}: good.", "{san}: fine.", "{san}, solid.", "{san} works.", "{san}: sound."],
+    label: [opener + "." for opener in openers] for label, openers in OPENERS.items()
 }
 # Verbalized sampling: how many candidate replies to ask for, and the room and warmth to
 # give the distribution. Warmer than a single reply on purpose, since a check filters them.
@@ -1079,10 +1070,14 @@ class Coach:
         compact_record: bool = False,
         routine_provider: LLMProvider | None = None,
         verbalized_sampling: bool = True,
+        local_verdicts: bool = True,
     ) -> None:
         self.policy = policy or InterjectionPolicy()
         # One reply instead of a verbalized distribution (see config.CoachSettings).
         self.verbalized_sampling = verbalized_sampling
+        # The word on a sound move written from the board (coach/verdicts.py) instead of
+        # asked of the model: free, immediate, true by construction (Tai, 2026-09-20).
+        self.local_verdicts = local_verdicts
         self.speaker = Speaker(
             provider, draft_check=draft_check, verifier=verifier, routine_provider=routine_provider
         )
@@ -1574,15 +1569,17 @@ class Coach:
         if self.kind != "game" and after is not None and after.board.is_checkmate():
             return  # the puzzle is solved with a mate: the site says so, and moves on
         # Every move of the player's gets a word from the coach. A lecture is only for a
-        # move that cost something; a fine move gets one sentence, and that sentence comes
-        # from the model too, so it can speak to the move and the game rather than repeat a
-        # stock phrase -- with a warm prefix the call is a few seconds, and the two-word
-        # template stands in if the reply fails. Blitz keeps the template: speed wins there.
+        # move that cost something. A sound move -- the engine's own, or one that cost
+        # nothing -- gets a sentence written from the board (coach/verdicts.py: the
+        # verdict, and what the move does), no model call; in blitz too. A fine move that
+        # was not the strongest gets the model's word on the better one, the two-word
+        # template standing in if the reply fails.
         if trigger is Trigger.POST_MOVE and event.severity is Severity.NONE:
             assert before.facts is not None
             best = before.facts.candidates[0] if before.facts.candidates else None
             routine = event.expected_loss < TRIVIAL_LOSS or best is None or best == move.san
-            if not routine or self.policy.time_control is not TimeControl.BLITZ:
+            blitz = self.policy.time_control is TimeControl.BLITZ
+            if not routine or not (self.local_verdicts or blitz):
                 self._speak(
                     trigger,
                     before,
@@ -1594,7 +1591,18 @@ class Coach:
                     routine=routine,
                 )
                 return
-            text = self._verdict(move.san, event.label.value if event.label else None)
+            label = event.label.value if event.label else None
+            if self.local_verdicts:
+                text = local_verdict(
+                    before.board,
+                    chess.Move.from_uci(move.uci),
+                    label,
+                    event.tags,
+                    last=self._last_verdict,
+                )
+                self._last_verdict = text
+            else:
+                text = self._verdict(move.san, label)
             marks = annotations_for(
                 before.facts,
                 DisclosureLevel.LINE,

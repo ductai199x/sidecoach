@@ -347,9 +347,11 @@ def _mate_in_one_played(coach: Coach) -> None:
 
 
 def test_a_good_move_gets_one_sentence_from_the_model_with_the_template_to_fall_back_on() -> None:
+    """With local verdicts off (coach/verdicts.py writes them by default)."""
     # Every move of the player's is a turn for the coach: a fine move gets one short
     # sentence from the model, asked for as two candidates so the call stays short.
     coach, provider = _coach(["[p=0.6] Mate on the board, clean finish.\n[p=0.4] That ends it."])
+    coach.local_verdicts = False  # the model's word, not the board's
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)
     _mate_in_one_played(coach)
@@ -364,6 +366,7 @@ def test_a_good_move_gets_one_sentence_from_the_model_with_the_template_to_fall_
     from sidecoach.coach.coach import VERDICTS
 
     coach, provider = _coach(["", ""])
+    coach.local_verdicts = False  # the model's word, not the board's
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)
     _mate_in_one_played(coach)
@@ -377,6 +380,7 @@ def test_in_blitz_a_good_move_earns_two_words_without_the_model() -> None:
     from sidecoach.coach.policy import TimeControl
 
     coach, provider = _coach(["never used"])
+    coach.local_verdicts = False
     _play_to_scholar(coach)
     coach.policy.time_control = TimeControl.BLITZ
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)

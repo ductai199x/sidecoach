@@ -946,6 +946,7 @@ class _Coaching:
             compact_record=settings.coach.compact_record,
             routine_provider=_routine_provider(settings, provider),  # type: ignore[arg-type]
             verbalized_sampling=settings.coach.verbalized_sampling,
+            local_verdicts=settings.coach.local_verdicts,
         )
         self.coach.start()
         self.detail = f"{provider.name} ({detail})"

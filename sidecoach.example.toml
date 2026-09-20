@@ -48,6 +48,7 @@ stuck_seconds = 45
 quiet = false
 persona = "warm_direct"
 # verbalized_sampling = false      # true: several replies offered, one spoken (variety)
+# local_verdicts = true            # the word on a sound move from the board, no model call
 inaccuracy = 0.05
 mistake = 0.10
 blunder = 0.20
