@@ -18,6 +18,9 @@ from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.server import make_engine
 from tests.synth import game_frames
 
+# No voice models: the panel is silent and deaf (see PanelEngine._voice_settings).
+_SILENT = VoiceSettings(provider="null", stt_provider="null")
+
 LONG = "Your knight on f5 is loose; the queen check on g6 wins it. What defends it?"
 SHORT = "exf5: good."
 
@@ -66,7 +69,7 @@ def test_speak_records_the_action_and_stops_before_cutting_in(tmp_path: Path) ->
             self.calls.append("stop")
 
     engine = PanelEngine(
-        Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False)),
+        Settings(data_dir=tmp_path, voice=_SILENT),
         analysis=False,
         coach=False,
         frame_source=iter(()),
@@ -99,7 +102,7 @@ def test_replay_is_paced_to_its_timestamps(tmp_path: Path) -> None:
     for i, frame in enumerate(frames):
         recorder.write(frame, ts=float(i), store=True)
     recorder.close()
-    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
 
     fast = make_engine(settings, replay=rec, speed=0)
     assert fast.frame_source is not None

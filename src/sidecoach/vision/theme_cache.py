@@ -93,6 +93,11 @@ class ThemeCache:
 
     def __init__(self, directory: Path) -> None:
         self.directory = Path(directory)
+        # Each file's palette, read once per file version (path, size, mtime): a board
+        # waiting to be read cold asks twice a second, and a theme file is a few hundred
+        # KB. Only the matching file is unpickled, and afresh each time, so every caller
+        # gets a model of its own.
+        self._palettes: dict[tuple[Path, int, int], tuple[np.ndarray, np.ndarray] | None] = {}
 
     def _path(self, key: str) -> Path:
         return self.directory / f"theme-{key}.pkl"
@@ -132,20 +137,36 @@ class ThemeCache:
             return payload
         return None
 
+    def _palette(self, path: Path) -> tuple[np.ndarray, np.ndarray] | None:
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        key = (path, stat.st_size, stat.st_mtime_ns)
+        if key not in self._palettes:
+            payload = self._read(path)
+            self._palettes[key] = (
+                None if payload is None else (payload["light_bg"], payload["dark_bg"])
+            )
+        return self._palettes[key]
+
     def get(self, light_bg: np.ndarray, dark_bg: np.ndarray) -> ThemeModel | None:
         """The learned model whose palette is nearest this one within tolerance, or None.
 
         A nearest-palette match rather than an exact key so a shade of rendering noise between
         sessions never causes a miss; a user has only a handful of themes, so the scan is cheap.
         """
-        best: ThemeModel | None = None
+        best: Path | None = None
         best_distance = MATCH_TOLERANCE
         for path in sorted(self.directory.glob("theme-*.pkl")):
-            payload = self._read(path)
-            if payload is None:
+            palette = self._palette(path)
+            if palette is None:
                 continue
-            distance = _distance(light_bg, dark_bg, payload["light_bg"], payload["dark_bg"])
+            distance = _distance(light_bg, dark_bg, *palette)
             if distance <= best_distance:
                 best_distance = distance
-                best = payload["model"]
-        return best
+                best = path
+        if best is None:
+            return None
+        payload = self._read(best)
+        return None if payload is None else payload["model"]

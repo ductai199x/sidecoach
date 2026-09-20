@@ -16,9 +16,12 @@ from sidecoach.config import Settings, VoiceSettings
 from sidecoach.ui.panel import PanelApi, PanelEngine
 from tests.synth import game_frames
 
+# No voice models: the panel is silent and deaf (see PanelEngine._voice_settings).
+_SILENT = VoiceSettings(provider="null", stt_provider="null")
+
 
 def test_engine_follows_a_game_and_reports_it(tmp_path: Path) -> None:
-    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
     engine = PanelEngine(
         settings,
         analysis=False,  # no Stockfish needed in a unit test
@@ -59,7 +62,7 @@ def test_engine_follows_a_game_and_reports_it(tmp_path: Path) -> None:
 
 
 def test_api_poll_is_incremental_and_serialisable(tmp_path: Path) -> None:
-    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
     engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
     api = PanelApi(engine)
 
@@ -84,7 +87,7 @@ def test_api_poll_is_incremental_and_serialisable(tmp_path: Path) -> None:
 
 
 def test_flip_and_voice_controls_do_not_raise_without_a_game(tmp_path: Path) -> None:
-    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
     engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
     api = PanelApi(engine)
     assert api.set_voice("am_adam") is True
@@ -108,7 +111,7 @@ def test_ending_a_game_on_the_users_word_scores_it_from_their_side() -> None:
 
 
 def test_end_game_refuses_unknown_outcomes(tmp_path: Path) -> None:
-    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
     engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
     with pytest.raises(ValueError):
         engine.end_game("rage-quit")
@@ -128,7 +131,7 @@ def test_legal_move_dots_are_not_a_degraded_reading(tmp_path: Path) -> None:
     def cell(kind: str, fraction: float = 0.0, **kw: object) -> CellReading:
         return CellReading(kind, None, None, 0.0, fraction, 0.0, **kw)  # type: ignore[arg-type]
 
-    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
     engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
     dots = [[cell("empty") for _ in range(8)] for _ in range(8)]
     for c in range(8):  # a rook's whole rank of dots, plus its own hovered square
@@ -152,7 +155,7 @@ def test_the_profile_records_the_game_and_the_review_reaches_the_page(tmp_path: 
     """Without an engine there are no verdicts, but the game itself -- its moves and its
     end -- reaches the profile store, the review card and the session summary; a replay
     (an injected frame source) keeps the profile in memory and writes no file."""
-    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
     engine = PanelEngine(
         settings, analysis=False, coach=False, record=False, frame_source=game_frames()
     )
@@ -177,7 +180,7 @@ def test_a_correction_moves_through_the_api(tmp_path: Path) -> None:
     from sidecoach.profile.profiler import Profiler
     from sidecoach.profile.store import Store
 
-    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
     engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
     api = PanelApi(engine)
     assert api.correct("g", 0, 3, "time pressure") is False  # no session, no profile

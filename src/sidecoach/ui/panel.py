@@ -86,6 +86,10 @@ STALE_PLIES = 2  # the fallback for any other trigger
 # A "verdict" this short (post-move "exf5: good.") is skipped when the voice is busy.
 SHORT_VERDICT = 40
 HEALTH_EVERY_S = 1.0
+# A tick of the engine loop that takes longer than this is logged with where the time
+# went: the capture, the recorder, the vision, or the rest (engine, profile, coach). A
+# live game froze for 323 s once (2026-09-19) with nothing in the log to say which.
+STALL_WARN_S = 2.0
 
 
 class _VoiceLogHandler(logging.Handler):
@@ -351,9 +355,18 @@ class PanelEngine:
     # ---- internals ------------------------------------------------------------------------
 
     def _voice_settings(self, voice: str | None = None) -> Settings:
-        """The settings with voice on: the panel speaks and listens unless told otherwise."""
+        """The settings with voice on: the panel speaks and listens unless told otherwise.
+
+        Told otherwise means a "null" provider (voice.provider for the voice,
+        voice.stt_provider for the ear): then nothing is loaded. `enabled` alone is not
+        that -- it is off by default for the terminal watcher, and the panel is the voice.
+        The tests say null, so no suite loads Kokoro and Parakeet on the GPU in every
+        worker (2026-09-20: that, not the vision, was what lagged the machine).
+        """
         cfg = self.settings.model_copy(deep=True)
-        update: dict[str, Any] = {"enabled": True, "provider": "kokoro"}
+        update: dict[str, Any] = {"enabled": True}
+        if cfg.voice.provider != "null":
+            update["provider"] = "kokoro"
         if voice is not None:
             update["voice"] = voice
         cfg.voice = cfg.voice.model_copy(update=update)
@@ -636,9 +649,11 @@ class PanelEngine:
         pipeline_ms: list[float] = []
         last_health = time.monotonic()
         try:
+            tick_end = time.perf_counter()
             for frame_id, ts, frame in frames:
                 if self._stop.is_set():
                     break
+                t_grab = time.perf_counter()
                 latest = frame
                 changed = True
                 if live:
@@ -669,7 +684,8 @@ class PanelEngine:
                     events = pipe.process(frame, ts, changed=changed, frame_id=frame_id)
                 except Exception as exc:  # noqa: BLE001 - a pipeline bug must not end the panel
                     self._emit("sys", "error", f"pipeline error at frame {frame_id}: {exc!r}")
-                pipeline_ms.append((time.perf_counter() - begun) * 1000.0)
+                t_vision = time.perf_counter()
+                pipeline_ms.append((t_vision - begun) * 1000.0)
                 ticks += 1
                 if pipe.board is not None:
                     latest_geom = BoardGeometry(pipe.board.region, pipe.board.cell_px)
@@ -738,6 +754,16 @@ class PanelEngine:
                     ticks = 0
                     pipeline_ms = []
                     last_health = now
+                t_done = time.perf_counter()
+                if t_done - tick_end > STALL_WARN_S:
+                    self._emit(
+                        "sys",
+                        "warn",
+                        f"tick {frame_id} took {t_done - tick_end:.1f}s: capture "
+                        f"{t_grab - tick_end:.1f}s, recorder {begun - t_grab:.1f}s, vision "
+                        f"{t_vision - begun:.1f}s, engine/coach {t_done - t_vision:.1f}s",
+                    )
+                tick_end = t_done
         except Exception as exc:  # noqa: BLE001 - report and shut down cleanly
             self._emit("sys", "error", f"engine stopped: {exc!r}")
         finally:
@@ -1257,7 +1283,7 @@ class PanelEngine:
             elif name == "flip":
                 events += self._flip(pipe)
             elif name == "analyze":
-                events += self._analyze(pipe, frame, geom)
+                events += self._analyze(pipe, frame, geom, ts)
         return events
 
     def _end(self, pipe: Any, outcome: str, ts: float) -> list[Any]:
@@ -1303,12 +1329,12 @@ class PanelEngine:
         self._emit("user", "info", f"analysis orientation: {target.value} at the bottom")
         return []
 
-    def _analyze(self, pipe: Any, frame: Any, geom: Any) -> list[Any]:
+    def _analyze(self, pipe: Any, frame: Any, geom: Any, ts: float) -> list[Any]:
         if frame is None or geom is None:
             self._emit("vision", "warn", "no board on screen to analyse yet")
             return []
         try:
-            events = pipe.cold_start(frame, geom, bottom=self._forced_bottom)
+            events = pipe.cold_start(frame, geom, bottom=self._forced_bottom, ts=ts)
         except Exception as exc:  # noqa: BLE001
             self._emit("vision", "error", f"analyse failed: {exc!r}")
             return []

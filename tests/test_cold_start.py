@@ -145,3 +145,106 @@ def test_cold_start_reads_the_real_frames_the_same(tmp_path: Path) -> None:
 
     refused = GamePipeline(cache=cache)
     assert refused.cold_start(_real("g01_in_flight.png"), geometry) == []
+
+
+def _tick(pipe: GamePipeline, frame: np.ndarray, ts: float) -> list:
+    return pipe.process(frame, ts, changed=True)
+
+
+def _join(pipe: GamePipeline, frame: np.ndarray, ticks: int = 10) -> float:
+    """Feed `frame` every 0.6 s until the pipeline adopts a game from it; the time it did."""
+    for i in range(ticks):
+        if any(isinstance(e, GameStarted) for e in _tick(pipe, frame, 0.6 * i)):
+            return 0.6 * i
+    raise AssertionError("the mid-game board was never adopted")
+
+
+def test_a_game_joined_from_the_middle_is_adopted_without_being_asked(tmp_path: Path) -> None:
+    """Start pressed with a game already on the board: the position is read cold from
+    the cached theme and adopted once it has held still for a few reads, no Analyze
+    click needed (Tai, 2026-09-19); then the game is followed from there."""
+    from sidecoach.events import MovePlayed
+
+    cache = ThemeCache(tmp_path)
+    _warm(cache, "green", Side.WHITE)
+    truth = chess.Board(MIDGAME)
+    frame = synthetic_board(board=truth, coordinates=True)
+    live = GamePipeline(cache=cache)
+    assert _join(live, frame) >= 1.2, "adopted before the position had held still for three reads"
+    assert live.reconciler is not None and not _squares_off(live.reconciler.board, truth)
+    assert live.reconciler.turn_unknown, "both sides could move; the clock or a move decides"
+    move = truth.push_san("d4")
+    after = synthetic_board(board=truth, coordinates=True, highlight=move)
+    played: list[MovePlayed] = []
+    for j in range(3):
+        played += [e for e in _tick(live, after, 10.0 + 0.1 * j) if isinstance(e, MovePlayed)]
+    assert [e.san for e in played] == ["d4"], "the game is followed from the adopted position"
+    assert not live.reconciler.turn_unknown and live.reconciler.board.turn == chess.BLACK
+    # The first move's think time counts from the read, not from the dawn of time.
+    assert played[0].think_ms is not None and played[0].think_ms < 12_000
+
+
+def test_the_side_to_move_of_an_adopted_position_comes_from_the_running_clock(
+    tmp_path: Path,
+) -> None:
+    """The adopted position could be either side's move; the clock that is running says
+    whose, and the position is re-announced with the turn so the coach and the engine
+    look at the right side (the game where a takeback read as two moves and left the
+    coach naming the opponent's best move on the player's own clock)."""
+    from sidecoach.events import PositionChanged, Resync
+
+    cache = ThemeCache(tmp_path)
+    _warm(cache, "green", Side.WHITE)
+    truth = chess.Board(MIDGAME)
+    frame = synthetic_board(board=truth, coordinates=True)
+    live = GamePipeline(cache=cache)
+    joined = _join(live, frame)
+    rec = live.reconciler
+    assert rec is not None and rec.turn_unknown and rec.board.turn == chess.WHITE
+    # The clock reader saw black's clock running a moment ago.
+    live._last_clock = (300_000, 290_000, Side.BLACK)
+    live._last_clock_ts = joined
+    events = _tick(live, frame, joined + 0.1)
+    resyncs = [e for e in events if isinstance(e, Resync)]
+    assert resyncs and "clock: black" in resyncs[0].reason
+    assert [e.fen for e in events if isinstance(e, PositionChanged)] == [rec.board.fen()]
+    assert not rec.turn_unknown and rec.board.turn == chess.BLACK
+    assert rec.base_fen.split(" ")[1] == "b"
+    assert not any(isinstance(e, Resync) for e in _tick(live, frame, joined + 0.2)), "said once"
+
+
+def test_a_stale_clock_does_not_settle_the_side_to_move(tmp_path: Path) -> None:
+    from sidecoach.events import Resync
+
+    cache = ThemeCache(tmp_path)
+    _warm(cache, "green", Side.WHITE)
+    frame = synthetic_board(board=chess.Board(MIDGAME), coordinates=True)
+    live = GamePipeline(cache=cache)
+    joined = _join(live, frame)
+    assert live.reconciler is not None
+    live._last_clock = (300_000, 290_000, Side.BLACK)
+    live._last_clock_ts = joined - 10.0  # read long before the position was adopted
+    assert not any(isinstance(e, Resync) for e in _tick(live, frame, joined + 0.1))
+    assert live.reconciler.turn_unknown
+
+
+def test_a_board_mid_move_is_never_adopted_and_a_start_position_bootstraps(
+    tmp_path: Path,
+) -> None:
+    cache = ThemeCache(tmp_path)
+    _warm(cache, "green", Side.WHITE)
+    truth = chess.Board(MIDGAME)
+    dragged = synthetic_board(
+        board=truth, coordinates=True, dragging=(chess.C1, chess.F4, 0.1, 0.1)
+    )
+    live = GamePipeline(cache=cache)
+    for i in range(10):
+        assert not any(isinstance(e, GameStarted) for e in _tick(live, dragged, 0.6 * i))
+    assert live.model is None and live.reconciler is None
+    # The start position is the bootstrap's, which learns the theme from it: no cold read.
+    fresh = GamePipeline(cache=cache)
+    start = synthetic_board(coordinates=True)
+    for i in range(4):
+        _tick(fresh, start, 0.6 * i)
+    assert fresh.bootstraps == 1 and fresh.reconciler is not None
+    assert fresh.reconciler.base_fen == chess.STARTING_FEN

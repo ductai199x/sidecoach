@@ -55,6 +55,17 @@ BADGE_FRAMES = 2
 BADGE_PATIENCE = 12
 # A loser whose clock read this little at the end lost on time.
 FLAG_MS = 1000
+# A resync or a cold start that left the side to move open takes it from the clock
+# that is running, when the clock was read this recently (see Reconciler.turn_from_clock).
+CLOCK_TURN_FRESH_S = 3.0
+# A game joined from the middle -- Start pressed with a game already on the board -- is
+# read cold from the theme cache: tried this often, and adopted once the same quiet,
+# complete position has been read this many times, no two reads further apart than the
+# expiry (a frame with a cell unreadable in between -- a tooltip, a label -- is skipped,
+# not held against the position).
+COLD_START_EVERY_S = 0.5
+COLD_START_HOLD = 3
+COLD_START_EXPIRE_S = 3.0
 CLOCK_MAX_MS = 3 * 60 * 60 * 1000  # three hours; anything above is a misread, not a clock
 
 
@@ -106,8 +117,14 @@ class GamePipeline:
     # because the lock was in doubt: either means the next verified frame is read again.
     _readings_key: tuple[Region, float] | None = None
     _unread_change: bool = False
-    # The last clock observation emitted, so an unchanged reading is not repeated.
+    # The last clock observation emitted, so an unchanged reading is not repeated, and
+    # when it was read.
     _last_clock: tuple[int | None, int | None, Side | None] | None = None
+    _last_clock_ts: float | None = None
+    # The automatic cold start: when it was last tried, and the placement it read then
+    # with how many times it has read the same and when it last did.
+    _cold_tried: float | None = None
+    _cold_candidate: tuple[str, int, float] | None = None
     # The last screen state emitted, so a ScreenStateChanged fires only on a transition.
     _screen_state: ScreenState = ScreenState.UNKNOWN
     # When a dialog-sized cover first appeared over a live game's board, or None; and
@@ -174,6 +191,8 @@ class GamePipeline:
                 self._readings_key = key
                 # The new recogniser reads this frame as its own start position.
                 self._start_on_screen = False
+        if self.model is None and changed and not self._start_on_screen:
+            events += self._auto_cold_start(frame, geometry, ts)
         if self.model is None or self.reconciler is None or self._readings is None:
             events += self._emit_screen_state(board_present=True)
             return self._stamp(events, ts, frame_id)
@@ -181,6 +200,7 @@ class GamePipeline:
         if changed:
             self._badge_frame = self._badged_kings(frame, geometry)
         events += self.reconciler.update(self._readings, ts)
+        events += self._turn_from_clock(ts)
         if changed:
             events += self._end_on_badges()
         events += self._dialog_over_the_board(self._readings, ts)
@@ -398,6 +418,9 @@ class GamePipeline:
         self._start_on_screen = False
         self._screen_state = ScreenState.UNKNOWN
         self._last_clock = None
+        self._last_clock_ts = None
+        self._cold_tried = None
+        self._cold_candidate = None
         self._dialog_since = None
         self._covered = False
         self._badges = None
@@ -422,10 +445,24 @@ class GamePipeline:
         if observation is None:
             return []
         key = (observation.white_ms, observation.black_ms, observation.running)
+        self._last_clock_ts = ts
         if key == self._last_clock:
             return []
         self._last_clock = key
         return [observation]
+
+    def _turn_from_clock(self, ts: float) -> list[Event]:
+        """A side to move left open by a resync or a cold start, settled by the clock
+        that is running -- read on this tick or a moment ago."""
+        rec = self.reconciler
+        if rec is None or not rec.turn_unknown or self._last_clock is None:
+            return []
+        running = self._last_clock[2]
+        if running is None or self._last_clock_ts is None:
+            return []
+        if ts - self._last_clock_ts > CLOCK_TURN_FRESH_S:
+            return []
+        return rec.turn_from_clock(chess.WHITE if running is Side.WHITE else chess.BLACK)
 
     def _derive_screen_state(self, board_present: bool) -> ScreenState:
         """The screen state from what the pipeline already knows: whether a board is
@@ -515,32 +552,95 @@ class GamePipeline:
         self.bootstraps += 1
         return True
 
+    def _cold_read(
+        self, frame: np.ndarray, geometry: BoardGeometry, bottom: Side | None
+    ) -> tuple[ThemeModel, Side, Readings, chess.Board] | None:
+        """The board read cold from the theme cache: the cached recogniser for its
+        colours, the orientation (`bottom`, or the coordinate labels), the readings and
+        the placement they make -- or None when any of those is missing."""
+        if self.cache is None:
+            return None
+        sampled = sample_palette(frame, geometry)
+        if sampled is None:
+            return None
+        model = self.cache.get(*sampled)
+        if model is None:
+            return None
+        if bottom is None:
+            bottom = read_bottom_side(frame, geometry, model.rank_labels)
+        if bottom is None:
+            return None  # coordinates are off; the caller supplies the orientation and retries
+        readings = model.classify_frame(frame, geometry)
+        placement = self._placement_from_readings(readings, bottom)
+        if placement is None:
+            return None
+        return model, bottom, readings, placement
+
+    def _auto_cold_start(
+        self, frame: np.ndarray, geometry: BoardGeometry, ts: float
+    ) -> list[Event]:
+        """A game joined from the middle, without being asked.
+
+        Start pressed with a game already under way used to wait for a start position
+        that was not coming (Tai, 2026-09-19: "shouldn't it just continue from the
+        position on the board?"). With the theme in the cache the board reads cold; the
+        position is adopted once it has read the same, quiet and complete, on
+        COLD_START_HOLD tries COLD_START_EVERY_S apart, so a board mid-animation or a
+        page passing by is never taken for a game. A start position is left to the
+        bootstrap, which learns the theme from it. The side to move comes from the
+        running clock (`_turn_from_clock`) or from the first move seen.
+        """
+        if self.cache is None:
+            return []
+        if self._cold_tried is not None and ts - self._cold_tried < COLD_START_EVERY_S:
+            return []
+        self._cold_tried = ts
+        read = self._cold_read(frame, geometry, None)
+        if read is None:
+            return []  # nothing read cleanly this time; the candidate stands until it expires
+        fen = read[3].board_fen()
+        candidate = self._cold_candidate
+        if (
+            candidate is not None
+            and candidate[0] == fen
+            and ts - candidate[2] <= COLD_START_EXPIRE_S
+        ):
+            candidate = (fen, candidate[1] + 1, ts)
+        else:
+            candidate = (fen, 1, ts)
+        self._cold_candidate = candidate
+        if candidate[1] < COLD_START_HOLD:
+            return []
+        self._cold_candidate = None
+        return self._adopt_cold(*read, ts=ts)
+
     def cold_start(
-        self, frame: np.ndarray, geometry: BoardGeometry, bottom: Side | None = None
+        self,
+        frame: np.ndarray,
+        geometry: BoardGeometry,
+        bottom: Side | None = None,
+        ts: float | None = None,
     ) -> list[Event]:
         """Recognise the board cold from the theme cache and begin a game from the position on
         it -- a puzzle or a mid-game board, with no move-0 bootstrap. `bottom` may be supplied
         (the panel's flip control); otherwise it is read from the coordinate labels. Returns the
         GameStarted, or [] when no cached theme matches or the orientation cannot be determined.
         """
-        if self.cache is None:
+        read = self._cold_read(frame, geometry, bottom)
+        if read is None:
             return []
-        sampled = sample_palette(frame, geometry)
-        if sampled is None:
-            return []
-        model = self.cache.get(*sampled)
-        if model is None:
-            return []
-        if bottom is None:
-            bottom = read_bottom_side(frame, geometry, model.rank_labels)
-        if bottom is None:
-            return []  # coordinates are off; the caller supplies the orientation and retries
-        readings = model.classify_frame(frame, geometry)
-        placement = self._placement_from_readings(readings, bottom)
-        if placement is None:
-            return []
+        return self._adopt_cold(*read, ts=ts)
+
+    def _adopt_cold(
+        self,
+        model: ThemeModel,
+        bottom: Side,
+        readings: Readings,
+        placement: chess.Board,
+        ts: float | None = None,
+    ) -> list[Event]:
         reconciler = Reconciler(bottom=bottom, user_side=bottom)
-        events = reconciler.start_from(placement)
+        events = reconciler.start_from(placement, ts)
         if not events:
             return []  # the placement is not a legal position; adopt nothing
         # Only now, with a legal position begun, is the pipeline switched onto this theme.

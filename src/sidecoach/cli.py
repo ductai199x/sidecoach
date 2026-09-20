@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from sidecoach.coach.coach import Coach
     from sidecoach.events import Event, MoveAssessment
     from sidecoach.replay.recording import Recording
+    from sidecoach.vision.theme_cache import ThemeCache
 
 app = typer.Typer(
     help="Sidecoach: vision-first chess coaching companion.",
@@ -308,6 +309,13 @@ def replay(
             " from recordings), instead of the memory-only profile a replay keeps"
         ),
     ] = None,
+    themes: Annotated[
+        bool,
+        typer.Option(
+            help="Read a board caught mid-game cold from the theme cache (data/themes), as "
+            "the panel does; off, only a start position begins a game"
+        ),
+    ] = False,
     config: ConfigOpt = None,
 ) -> None:
     """Summarise a recording, track the board through it, or reconstruct the game.
@@ -315,6 +323,8 @@ def replay(
     `--scale` replays the same frames smaller or larger, which is how size invariance is
     tested without storing another copy of the recording. `--assess` runs the engine
     alongside, which is how the live watcher's wiring is exercised without a game on screen.
+    `--themes` joins a game from the middle through the theme cache, as the panel does;
+    off by default so a reconstruction depends on the recording alone.
     """
     from sidecoach.replay.recording import Recording
 
@@ -331,9 +341,22 @@ def replay(
             settings, assess or coach, depth=depth, keep_every_position=profile is not None
         )
         coaching = _Coaching(settings, coach and assessing.on)
+        cache = None
+        if themes:
+            from sidecoach.vision.theme_cache import ThemeCache
+
+            cache = ThemeCache(settings.data_dir / "themes")
+            console.print(f"theme cache: {cache.directory}")
         try:
             _replay_moves(
-                rec, truth if truth.exists() else None, game, scale, assessing, coaching, profile
+                rec,
+                truth if truth.exists() else None,
+                game,
+                scale,
+                assessing,
+                coaching,
+                profile,
+                cache=cache,
             )
         finally:
             assessing.close()
@@ -387,6 +410,7 @@ def _replay_moves(
     assessing: _Assessing | None = None,
     coaching: _Coaching | None = None,
     profile_path: Path | None = None,
+    cache: ThemeCache | None = None,
 ) -> None:
     """Run the game pipeline over a recording and, if a truth PGN exists, score one game.
 
@@ -420,7 +444,7 @@ def _replay_moves(
         for san in truth:
             replay_board.push_san(san)
             truth_placements.append(replay_board.board_fen())
-    pipe = GamePipeline(clock=ClockReader())
+    pipe = GamePipeline(clock=ClockReader(), cache=cache)
     games: list[tuple[str, str]] = []  # (pgn, final fen) of finished games
     bootstraps = 0
     truth_index = 0  # truth plies consumed for the scored game

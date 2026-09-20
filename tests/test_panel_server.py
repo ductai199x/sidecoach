@@ -18,7 +18,7 @@ from tests.synth import game_frames
 
 
 def _settings(tmp_path: Path) -> Settings:
-    return Settings(data_dir=tmp_path, voice=VoiceSettings(enabled=False))
+    return Settings(data_dir=tmp_path, voice=VoiceSettings(provider="null", stt_provider="null"))
 
 
 def test_controls_and_static_page(tmp_path: Path) -> None:

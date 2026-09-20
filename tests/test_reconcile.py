@@ -1030,3 +1030,37 @@ def test_think_time_comes_from_the_frame_timestamps() -> None:
             ts += 0.1
             events += _feed(model, rec, board, Side.WHITE, ts, highlight=move)
     assert [e.think_ms for e in events if isinstance(e, MovePlayed)] == [200, 200]
+
+
+def test_the_clock_settles_the_side_to_move_before_a_takeback_can_mislead() -> None:
+    """The live game of 2026-09-19: a position adopted with the side to move open, then a
+    takeback of a move pair. Two pieces going back to where they stood read as two
+    moves, in whichever order, and black-first fixed the turn on the wrong side -- the
+    coach named the opponent's best move for three minutes of the player's own clock.
+    The running clock settles the turn first; the same retreat then reads white-first
+    and leaves white to move, as the board has it."""
+    from sidecoach.events import PositionChanged
+
+    model, rec = _setup()
+    # After 22... Be7 in that game: white to move, though either side could legally.
+    pos = chess.Board("2kr4/pp1nb3/2npR3/2pp1r2/8/PB1P3P/1PP2P1P/R1B3K1 w - - 0 1")
+    rec.start_from(pos.copy())
+    assert rec.turn_unknown and rec.board.turn == chess.WHITE
+    assert rec.turn_from_clock(chess.WHITE) == [], "the clock agrees with the default: quiet"
+    assert not rec.turn_unknown
+    # The takeback: 22. Bb3 Be7 undone, the bishops back on a4 and f8.
+    undone = chess.Board("2kr1b2/pp1n4/2npR3/2pp1r2/B7/P2P3P/1PP2P1P/R1B3K1 w - - 0 1")
+    events = []
+    for i in range(3):
+        events += _feed(model, rec, undone, Side.WHITE, 0.1 + 0.1 * i)
+    assert _played(events) == ["Ba4", "Bf8"], "the retreat retold white-first"
+    assert rec.board.turn == chess.WHITE, "white to move, as on the board"
+
+    # The clock saying black re-announces the position with the turn.
+    model, rec = _setup()
+    rec.start_from(pos.copy())
+    events = rec.turn_from_clock(chess.BLACK)
+    assert [type(e).__name__ for e in events] == ["Resync", "PositionChanged"]
+    assert isinstance(events[1], PositionChanged) and events[1].fen.split(" ")[1] == "b"
+    assert rec.board.turn == chess.BLACK and not rec.turn_unknown
+    assert rec.turn_from_clock(chess.WHITE) == [], "settled once; a later clock is not asked"

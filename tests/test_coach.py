@@ -1191,7 +1191,7 @@ def test_a_question_about_the_player_over_their_games_goes_to_the_record() -> No
 
 
 def test_every_third_mistake_ends_by_asking_what_the_player_saw() -> None:
-    from sidecoach.coach.coach import ELICIT_EVERY
+    from sidecoach.coach.coach import ELICIT_ANSWER_S, ELICIT_EVERY
 
     coach, _ = _coach([])
     _play_to_scholar(coach)
@@ -1217,11 +1217,42 @@ def test_every_third_mistake_ends_by_asking_what_the_player_saw() -> None:
         best=["h5f7"],
         label=Label.BLUNDER,
     )
-    asked = []
+    instruction, fallback = coach._instruction(
+        Trigger.POST_MISTAKE, position, DisclosureLevel.LINE, None, (), assessment, played
+    )
+    assert "expected" not in instruction and "expecting" not in fallback
+    instruction, fallback = coach._instruction(
+        Trigger.POST_MISTAKE,
+        position,
+        DisclosureLevel.LINE,
+        None,
+        (),
+        assessment,
+        played,
+        elicit=True,
+    )
+    # What they expected, in the coach's own words: the directive never spells out the
+    # "missed it or misjudged it" question the model would then repeat verbatim.
+    assert "what they expected to happen after a3" in instruction
+    assert "misjudge" not in instruction and "altogether" not in instruction
+    assert fallback.endswith("What were you expecting after a3?")
+
+    # Every third mistake -- while the player answers. The first answered within a
+    # minute keeps the cadence; one that goes unanswered is the last of the game.
+    due = []
     for n in range(1, 2 * ELICIT_EVERY + 1):
         coach._mistakes = n
-        instruction, fallback = coach._instruction(
-            Trigger.POST_MISTAKE, position, DisclosureLevel.LINE, None, (), assessment, played
-        )
-        asked.append("what they saw" in instruction and "What did you see there" in fallback)
-    assert asked == [n % ELICIT_EVERY == 0 for n in range(1, 2 * ELICIT_EVERY + 1)]
+        due.append(coach._elicit_due(10.0 * n))
+        if due[-1]:
+            coach.ask("I thought the queen would have to move", 10.0 * n + ELICIT_ANSWER_S / 2)
+    assert due == [n % ELICIT_EVERY == 0 for n in range(1, 2 * ELICIT_EVERY + 1)]
+    coach._mistakes = 3 * ELICIT_EVERY
+    assert coach._elicit_due(1000.0), "answered: asked again"
+    coach._mistakes = 4 * ELICIT_EVERY
+    assert not coach._elicit_due(2000.0), "unanswered: not again this game"
+    coach._mistakes = 5 * ELICIT_EVERY
+    coach.ask("hint", 2000.0 + ELICIT_ANSWER_S + 1)
+    assert not coach._elicit_due(3000.0), "a minute later is not an answer"
+    _start(coach)
+    coach._mistakes = ELICIT_EVERY
+    assert coach._elicit_due(4001.0), "a new game starts afresh"

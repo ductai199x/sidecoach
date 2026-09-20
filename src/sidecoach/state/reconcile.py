@@ -1061,13 +1061,56 @@ class Reconciler:
         board.turn = valid_turns[0]
         return board, len(valid_turns) > 1
 
-    def start_from(self, placement: chess.Board) -> list[Event]:
+    def turn_from_clock(self, colour: chess.Color) -> list[Event]:
+        """The side to move settled by the clock that is running.
+
+        A resync or a cold start leaves the turn open when both sides could legally
+        move, and the first story then decides it -- which a takeback answers wrongly:
+        two pieces going back to where they stood read as two moves in either order,
+        and the order chosen fixed the turn on the wrong side (2026-09-19: the coach
+        then named the opponent's best move for 173 seconds of the player's own clock).
+        The running clock is evidence of the turn that no story can contradict. A colour
+        that cannot be to move -- the other king is in check -- is ignored; a turn that
+        changes re-announces the position, so the coach and the engine look at the right
+        side."""
+        if not self._turn_unknown or not self._started or self._finished:
+            return []
+        trial = self.board.copy(stack=False)
+        if not _turn_valid(trial, colour):
+            return []
+        self._turn_unknown = False
+        if self.board.turn == colour:
+            return []
+        # The turn stays open only until the first commit, so nothing has been played
+        # from the position yet: the base is the position with the turn corrected.
+        assert not self.board.move_stack
+        self.board.turn = colour
+        self._base_fen = self.board.fen()
+        name = "white" if colour == chess.WHITE else "black"
+        events: list[Event] = [
+            Resync(
+                game_id=self.game_id,
+                fen=self.board.fen(),
+                reason=f"side to move settled by the clock: {name}",
+            ),
+            PositionChanged(game_id=self.game_id, fen=self.board.fen(), ply=0),
+        ]
+        if self.board.is_game_over():
+            self._finished = True
+            events.append(self._ended(self.board.result(), "game over on board"))
+        return events
+
+    def start_from(self, placement: chess.Board, ts: float | None = None) -> list[Event]:
         """Begin a game from an arbitrary observed position -- a puzzle or a mid-game board read
         cold from the theme cache -- rather than from the start. Rights and turn are assumed the
-        same way a position resync assumes them; the game continues normally from here."""
+        same way a position resync assumes them; the game continues normally from here. `ts`
+        is when the position was read, so the first move's think time counts from it (it
+        counted from zero: a first move that "took 412630 seconds")."""
         adopted = self._adopt_placement(placement)
         if adopted is None:
             return []
+        if ts is not None:
+            self._ts = ts
         board, self._turn_unknown = adopted
         self.board = board
         self._base_fen = board.fen()

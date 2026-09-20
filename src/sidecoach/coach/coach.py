@@ -67,8 +67,14 @@ from sidecoach.llm.base import ChatMessage, LLMProvider
 
 MAX_TOKENS = 220
 # After every this-many mistakes the lesson ends by asking what the player saw: a
-# self-report the profile keeps beside the mistake (DESIGN 5.6, "sparingly").
+# self-report the profile keeps beside the mistake (DESIGN 5.6, "sparingly"). One that
+# goes unanswered is the last of the game: a player with the mic off heard "did you miss
+# your opponent's idea altogether, or see it and misjudge the line?" seven times in one
+# game (2026-09-19), the model echoing the directive's words each time.
 ELICIT_EVERY = 3
+# The player's words within this long of the question count as its answer (the
+# profiler's SELF_REPORT_S, which keeps those words beside the mistake).
+ELICIT_ANSWER_S = 60.0
 # A move that lost less than this gets a two-word confirmation, without the model.
 TRIVIAL_LOSS = 0.02
 # The confirmations, by the move's label, in the vocabulary chess.com uses; "{san}" is the
@@ -1121,6 +1127,9 @@ class Coach:
         self.profile_ask: Callable[[str], Any] | None = None
         self.profile_answers: list[tuple[str, Any]] = []
         self._mistakes = 0  # the player's mistakes this game, for ELICIT_EVERY
+        # When the coach last asked what the player saw, and whether they answered.
+        self._elicit_asked: float | None = None
+        self._elicit_answered = False
 
     # Lifecycle
 
@@ -1191,6 +1200,8 @@ class Coach:
         if self.profile_ask is not None and _ASK_PROFILE.search(text):
             self._ask_profile(text, ts)
             return
+        if self._elicit_asked is not None and ts - self._elicit_asked <= ELICIT_ANSWER_S:
+            self._elicit_answered = True
         position = self._current
         if position is None or position.facts is None:
             position = self._latest_with_facts()
@@ -1362,6 +1373,7 @@ class Coach:
         self.moves = {}
         self.conversation.new_game(event, profile=self._profile_lines())
         self._mistakes = 0
+        self._elicit_asked, self._elicit_answered = None, False
         self.finished = False
         self._current = self.positions[0]
         self.policy.new_position(0, ts, user_to_move=self.user_to_move)
@@ -1496,8 +1508,10 @@ class Coach:
         trigger = self.policy.on_user_move_assessed(event)
         if trigger is None:
             return
+        elicit = False
         if trigger is Trigger.POST_MISTAKE:
             self._mistakes += 1
+            elicit = self._elicit_due(ts)
         before.disclosure.apply(Unlock.MOVE_PLAYED)
         # Every move of the player's gets a word from the coach. A lecture is only for a
         # move that cost something; a fine move gets one sentence, and that sentence comes
@@ -1539,7 +1553,26 @@ class Coach:
                 fen=before.board.fen(),
             )
             return
-        self._speak(trigger, before, DisclosureLevel.LINE, ts, assessment=event, played=move)
+        self._speak(
+            trigger,
+            before,
+            DisclosureLevel.LINE,
+            ts,
+            assessment=event,
+            played=move,
+            elicit=elicit,
+        )
+
+    def _elicit_due(self, ts: float) -> bool:
+        """Whether this mistake's lesson ends by asking what the player saw: every
+        ELICIT_EVERY-th mistake, and never again in a game once one such question went
+        unanswered -- the player is not talking back, and the question is noise."""
+        if self._mistakes % ELICIT_EVERY:
+            return False
+        if self._elicit_asked is not None and not self._elicit_answered:
+            return False
+        self._elicit_asked, self._elicit_answered = ts, False
+        return True
 
     def _verdict(self, san: str, label: str | None) -> str:
         """The two-word confirmation of a fine move, worded by its label and never the same
@@ -1666,10 +1699,19 @@ class Coach:
         quick: bool = False,
         candidates: int | None = None,
         routine: bool = False,
+        elicit: bool = False,
     ) -> None:
         assert position.facts is not None
         instruction, fallback = self._instruction(
-            trigger, position, level, user_text, verdicts, assessment, played, quick=quick
+            trigger,
+            position,
+            level,
+            user_text,
+            verdicts,
+            assessment,
+            played,
+            quick=quick,
+            elicit=elicit,
         )
         if quick:
             # The template is already out as the quick answer; a model reply that fails the
@@ -1788,11 +1830,13 @@ class Coach:
         played: MovePlayed | None,
         *,
         quick: bool = False,
+        elicit: bool = False,
     ) -> tuple[str, str]:
         """The turn's instruction to the model, and the template used if it fails.
 
         `quick` means the template has already been shown as an immediate answer, so the
-        model is asked to build on it rather than repeat it.
+        model is asked to build on it rather than repeat it. `elicit` ends a mistake's
+        lesson by asking what the player saw (see `_elicit_due`).
         """
         facts = position.facts
         assert facts is not None
@@ -1855,16 +1899,21 @@ class Coach:
                     f"Explain the difference as a pattern to remember, in three sentences at "
                     f"most, then ask one question that checks they see it. {NO_NUMBERS}"
                 )
-                if self._mistakes % ELICIT_EVERY == 0:
-                    # Sparingly: what they saw at that moment, for the profile's record.
-                    fallback += " What did you see there -- did you miss the idea, or misjudge it?"
+                if elicit:
+                    # Sparingly: what they saw at that moment, for the profile's record
+                    # (causes.from_words reads "I thought it would..." as a line
+                    # misjudged, "I didn't see..." as a threat missed). Asked as what
+                    # they expected, in the coach's words: told to ask whether they
+                    # "missed the idea altogether or misjudged the line", the model
+                    # said exactly that, every time.
+                    fallback += f" What were you expecting after {played.san}?"
                     instruction = (
                         f"The player just played {played.san} ({words}), which was a {label}: "
                         f"it cost {loss:.0%} of the game. The better move was {best} "
                         f"({better_words}). Explain the difference as a pattern to remember, in "
-                        "three sentences at most, then ask what they saw at that moment: "
-                        "whether they missed the opponent's idea altogether, or saw it and "
-                        f"misjudged the line. {NO_NUMBERS}"
+                        "three sentences at most, then -- instead of a check question -- ask, "
+                        f"in one short question of your own, what they expected to happen "
+                        f"after {played.san}. {NO_NUMBERS}"
                     )
             elif routine:
                 fallback = self._verdict(played.san, label)

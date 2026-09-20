@@ -97,13 +97,15 @@ line-ending = "native"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The default run needs no local data: unit tests, the synthetic vision-pipeline suite (on
-# rendered boards and a few committed board crops), the panel and the server, in parallel
-# (about ten seconds). `-m slow` adds what needs the optional voice models; `-m ""` is
-# everything.
-addopts = "-m 'not slow' -n auto -p no:cacheprovider"
+# rendered boards and a few committed board crops), the panel and the server, a worker per
+# core at below-normal priority; the tests that load the embedding net are grouped onto a
+# few of the workers (tests/conftest.py), the rest go everywhere. `-m slow` adds what needs
+# the optional voice models; `-m ""` is everything.
+addopts = "-m 'not slow' -n auto --dist loadgroup -p no:cacheprovider"
 markers = [
     "slow: needs the optional voice models; run deliberately",
     "vision: the synthetic vision-pipeline behaviour suite (in the default run)",
+    "xdist_group: pytest-xdist's; tests of one group share a worker (see tests/conftest.py)",
 ]
 
 [tool.pyright]
