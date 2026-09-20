@@ -1792,7 +1792,7 @@ def panel(
         Path | None,
         typer.Option(help="Feed the panel from a recording instead of the live screen (dev)"),
     ] = None,
-    browser: Annotated[bool, typer.Option(help="Open the panel in the browser")] = True,
+    browser: Annotated[bool, typer.Option(help="Also open the panel in the browser")] = False,
     record: Annotated[
         bool, typer.Option(help="Record a live session (frames, events and the debug log)")
     ] = True,
@@ -1816,7 +1816,7 @@ def panel(
     orientation flip and an analyse-this-position button, and a debug terminal at the bottom.
 
     Needs the panel extras: uv sync --group panel (and --group voice to hear the coach). It
-    serves a local FastAPI backend and opens the browser at it -- the same live engine as
+    serves a local FastAPI backend (--browser opens it in your browser) -- the same live engine as
     `watch`. Start it, then begin a game on the board, or use --replay <recording> to drive
     the panel from a saved game while developing, no live screen needed. A live session is
     recorded under data/recordings/ with its events and debug log, like `watch`.
