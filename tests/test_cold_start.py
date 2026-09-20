@@ -54,7 +54,8 @@ def test_a_cached_theme_carries_no_frame(tmp_path: Path) -> None:
         warm.process(synthetic_board(theme="green", coordinates=True), 0.1 * i)
     assert warm.model is not None and warm.model._cells, "the live model caches its cells"
     files = list(tmp_path.glob("theme-*.pkl"))
-    assert len(files) == 1 and files[0].stat().st_size < 200_000, files[0].stat().st_size
+    # The embedding matcher's 64 exemplar vectors (float16) are 164 KB of the file.
+    assert len(files) == 1 and files[0].stat().st_size < 400_000, files[0].stat().st_size
     light, dark = warm.model.light_bg, warm.model.dark_bg
     assert light is not None and dark is not None
     again = cache.get(light, dark)

@@ -239,12 +239,28 @@ class Reconciler:
         self._frame_index += 1
         out: Observation = {}
         self._drawn = set()
+        kings = [k for k in (self.board.king(chess.WHITE), self.board.king(chess.BLACK)) if k]
         for r in range(8):
             for c in range(8):
                 reading = readings[r][c]
                 sq = square_at(r, c, self.bottom)
                 if reading.drawn:
                     self._drawn.add(sq)
+                if (
+                    reading.kind == "unknown"
+                    and reading.drawn
+                    and not reading.covered
+                    and any(chess.square_distance(sq, k) <= 1 for k in kings)
+                ):
+                    # The check glow is saturated colour the set never draws with, so
+                    # on some themes it reads as a drawing over the king's square, or
+                    # the square the king just left for. A drawing on or beside a king
+                    # is the king under its glow (or an arrow from it, which is as
+                    # occupied): a piece of no known kind, which the decorated-king
+                    # rules take as the king, and which blocks nothing.
+                    reading = replace(
+                        reading, kind="piece", symbol=None, colour=None, settled=False
+                    )
                 if reading.kind == "unknown":
                     self._previous.pop(sq, None)
                     if reading.covered:
@@ -1426,7 +1442,11 @@ class Reconciler:
         reply = replies[0][0]
         after = self.board.copy(stack=False)
         after.push(reply)
-        if path[0] not in after.legal_moves:
+        # The queue's way is the way on the board the reply leaves: a knight that just
+        # left the queen's diagonal made her one step of two (a premoved mate once
+        # committed as the queen's stop on the way, Qf4 for Qf8#).
+        path = self._queue_path(origin, target, symbol, tinted, after)
+        if path is None or path[0] not in after.legal_moves:
             return None
         story = (reply, path[0])
         if not self._highlight_ok(obs, story):
@@ -1439,8 +1459,10 @@ class Reconciler:
         target: chess.Square,
         symbol: str,
         tinted: frozenset[chess.Square] = frozenset(),
+        board: chess.Board | None = None,
     ) -> tuple[chess.Move, ...] | None:
-        """The sequence of moves taking the user's piece from origin to target.
+        """The sequence of moves taking the user's piece from origin to target, on
+        `board` (the latest position by default).
 
         When the site tints the queued squares (`tinted` holds them, the target included;
         the origin only until its first step has executed), the route through exactly
@@ -1451,7 +1473,9 @@ class Reconciler:
         nothing is known. Several equally short ways, as a king has across an open board,
         are an ambiguity and nothing is assumed.
         """
-        piece = self.board.piece_at(origin)
+        if board is None:
+            board = self.board
+        piece = board.piece_at(origin)
         if piece is None or chess.Piece.from_symbol(symbol).color != piece.color:
             return None
         promotion: int | None = None
@@ -1463,7 +1487,7 @@ class Reconciler:
             promotion = chess.Piece.from_symbol(symbol).piece_type
         elif piece.piece_type == chess.PAWN and chess.square_rank(target) in (0, 7):
             return None
-        scratch = self.board.copy(stack=False)
+        scratch = board.copy(stack=False)
         scratch.turn = piece.color
         scratch.ep_square = None  # a queue never passes through the en-passant square
         scratch.remove_piece_at(origin)

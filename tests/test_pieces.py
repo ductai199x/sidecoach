@@ -184,6 +184,15 @@ def _with_strip(frame: np.ndarray, square: chess.Square, height: float) -> np.nd
     return out
 
 
+@pytest.fixture
+def overlap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The silhouette overlap as the matcher: the tests of its exemplar hygiene."""
+    from sidecoach.vision import pieces
+
+    monkeypatch.setattr(pieces, "MATCHER", "iou")
+
+
+@pytest.mark.usefixtures("overlap")
 @pytest.mark.parametrize("height", [0.18, 0.24])
 def test_bootstrap_does_not_fuse_a_spoiled_knight_with_its_pair(height: float) -> None:
     """A tooltip strip over b1 at bootstrap: refuse the frame, or keep g1's knight alone."""
@@ -201,6 +210,7 @@ def test_bootstrap_does_not_fuse_a_spoiled_knight_with_its_pair(height: float) -
         assert clean[r][c].symbol == "N" and clean[r][c].settled, clean[r][c]
 
 
+@pytest.mark.usefixtures("overlap")
 def test_bootstrap_refuses_a_frame_where_both_colours_pairs_are_spoiled() -> None:
     frame = synthetic_board()
     spoiled = _with_strip(_with_strip(frame, chess.B1, 0.24), chess.G8, 0.24)
@@ -223,6 +233,7 @@ def test_start_shaped_from_readings_matches_the_frame_rule() -> None:
     assert not start_shaped(model.classify_frame(synthetic_board(board=one_move), GEOM))
 
 
+@pytest.mark.usefixtures("overlap")
 def test_degenerate_inputs() -> None:
     assert iou(np.zeros((CELL, CELL), dtype=bool), np.zeros((CELL, CELL), dtype=bool)) == 0.0
 

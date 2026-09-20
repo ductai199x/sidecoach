@@ -1,8 +1,8 @@
 """The cookie-cutter matcher: an exemplar laid over the cell like a cutter.
 
 An experiment beside the silhouette overlap in `pieces.ThemeModel._classify` (Tai,
-2026-09-19), switched by `MATCHER` so the two can be run against each other on the
-stress sweep and the recordings. The idea: the start position hands us every piece's
+2026-09-19), switched by `pieces.MATCHER` so the two can be run against each other on
+the stress sweep and the recordings. The idea: the start position hands us every piece's
 shape and, on the pixel variant, its very pixels; a cell is then read by laying each
 exemplar over it like a cookie cutter and asking whether what lies under the cutter is
 that piece and what lies just outside it is the square. The cutter is the exemplar's
@@ -61,8 +61,8 @@ overlap against the two variants with the rest of the pipeline the same:
   that agrees, which every piece of the right colour nearly does; the overlap's
   intersection over union is the sharper measure of the same masks.
 
-So the overlap stays the matcher (MATCHER "iou"); the variants stay behind the
-switch, and the exemplars keep their references, for the next look at this. What
+So the overlap stays the matcher (pieces.MATCHER "iou"); the variants stay behind
+the switch, and the exemplars keep their references, for the next look at this. What
 the experiment settled: matching pixels needs the pieces on the same pixel grid,
 which a whole-pixel crop of a board of fractional cells does not give, and a
 classifier that is to beat the overlap will have to be trained on the crops (DESIGN
@@ -77,8 +77,6 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-# "iou": the silhouette overlap; "pixels" and "binary": the cutter's two variants.
-MATCHER = os.environ.get("SIDECOACH_MATCHER", "iou")
 # The search window for the cutter, in pixels of the working cell (48): a lock is good
 # to a pixel or two, and four pixels is a twelfth of a cell, past the landing tolerance.
 SHIFT_MAX = 4

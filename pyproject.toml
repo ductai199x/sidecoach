@@ -15,6 +15,9 @@ dependencies = [
     "httpx>=0.27",
     "typer>=0.12",
     "rich>=13.7",
+    # The square classifier (vision/classifier.py) runs through onnxruntime on the CPU; the
+    # GPU build is the one package that serves both devices (see the voice group below).
+    "onnxruntime-gpu>=1.27",
 ]
 
 [project.scripts]
@@ -59,6 +62,14 @@ panel = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "psutil>=6.0",
+]
+# Exporting the embedding net (tools/classifier/export.py): Ultralytics for the pretrained
+# YOLO26n-cls weights (CPU torch comes with it), onnx for the export; `uv sync --group
+# classifier`. Nothing is trained; the runtime needs only the ONNX file under
+# src/sidecoach/vision/models/.
+classifier = [
+    "onnx>=1.16",
+    "ultralytics>=8.3",
 ]
 
 [tool.uv]

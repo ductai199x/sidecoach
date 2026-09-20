@@ -221,13 +221,16 @@ def test_moves_elsewhere_commit_under_a_standing_arrow() -> None:
             played += [e.san for e in pipe.process(frame, ts) if isinstance(e, MovePlayed)]
             ts += 0.1
     assert played == ["a3", "h6", "b3", "h5", "Nc3", "Nf6"], played
-    # A move that lands on the arrow's squares waits until the arrow is gone.
+    # A move that lands on the arrow's squares waits until the arrow is gone, unless
+    # the piece is read through the arrow (the embedding matcher reads a pawn under an
+    # arrowhead; the overlap could not, and had to wait): either way nothing wrong
+    # commits, and once the arrow is gone the move is there.
     move = board.push_san("d4")
     for _ in range(3):
         frame = synthetic_board(board=board, theme="brown", highlight=move, arrows=(arrow,))
         played += [e.san for e in pipe.process(frame, ts) if isinstance(e, MovePlayed)]
         ts += 0.1
-    assert played[-1] == "Nf6", "d4 committed through the arrow"
+    assert played[-1] in ("Nf6", "d4"), played
     for _ in range(3):
         frame = synthetic_board(board=board, theme="brown", highlight=move)
         played += [e.san for e in pipe.process(frame, ts) if isinstance(e, MovePlayed)]

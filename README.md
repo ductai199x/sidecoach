@@ -13,7 +13,7 @@ uv run python scripts/fetch_openings.py
 uv run sidecoach doctor
 ```
 
-`doctor` checks Python, the vision libraries, the video codec, Stockfish, the LLM endpoint, and screen capture. The LLM is any OpenAI-compatible endpoint: a preset (`local` for LM Studio on port 1234, `dashscope`, `openai`) or a custom `base_url` + `model`, set under `[llm]` in `sidecoach.toml` (copy `sidecoach.example.toml`); API keys live in `.env`.
+`doctor` checks Python, the vision libraries, the video codec, Stockfish, the LLM endpoint, and screen capture. Pieces are named by a frozen pretrained net (YOLO26n-cls, ImageNet weights, nothing trained) shipped as `src/sidecoach/vision/models/yolo26n-embed.onnx`; it runs on the GPU when onnxruntime's CUDA provider initialises (`SIDECOACH_EMBED_DEVICE=cpu` to keep it off). To regenerate the file, `uv sync --group classifier && uv run python tools/classifier/export.py`. The LLM is any OpenAI-compatible endpoint: a preset (`local` for LM Studio on port 1234, `dashscope`, `openai`) or a custom `base_url` + `model`, set under `[llm]` in `sidecoach.toml` (copy `sidecoach.example.toml`); API keys live in `.env`.
 
 ## Play
 
