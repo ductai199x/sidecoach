@@ -160,6 +160,7 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(tmp_path
     # The outcome's line follows the state by a moment; wait for it.
     import time as _time
 
+    lines: list[str] = []
     for _ in range(50):
         lines = [ln["text"] for ln in client.get(f"/api/puzzle/{FORK.id}/poll").json()["lines"]]
         if any(ln.startswith(f"puzzle {FORK.id} failed (fork)") for ln in lines):
