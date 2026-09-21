@@ -62,7 +62,7 @@ def _below_normal_priority() -> None:
 
 def pytest_configure(config: pytest.Config) -> None:
     _below_normal_priority()  # the controller and, since this runs in each, every worker
-    # No panel built by a test loads Kokoro or Parakeet; the one that wants the real ear
+    # No panel built by a test loads Kokoro or Parakeet; the one that wants the real recogniser
     # says so (PanelEngine(voice_models=True)).
     os.environ.setdefault("SIDECOACH_VOICE_MODELS", "0")
     if os.environ.get("SIDECOACH_TEST_ALONGSIDE") == "1":

@@ -43,7 +43,7 @@ from typing import IO, Any
 
 from sidecoach.config import Settings
 from sidecoach.ui.log import DebugLog, elide
-from sidecoach.voice import STTProvider, TTSProvider, make_ear, make_tts
+from sidecoach.voice import STTProvider, TTSProvider, make_recogniser, make_tts
 from sidecoach.voice.correct import correct
 from sidecoach.voice.hotkey import GlobalPushToTalk
 from sidecoach.voice.mic import MODES, Listener, Microphone
@@ -63,16 +63,16 @@ THRESHOLD_FIELDS = frozenset(
         "decided",
     )
 )
-# The voice settings that rebuild the voice or the ear when saved (a model reloads).
+# The voice settings that rebuild the voice or speech recognition when saved (a model reloads).
 VOICE_RELOAD = frozenset(f"voice.{name}" for name in ("lang", "model_dir", "tts_device"))
-EAR_RELOAD = frozenset(f"voice.{name}" for name in ("stt_device", "mic_device"))
+STT_RELOAD = frozenset(f"voice.{name}" for name in ("stt_device", "mic_device"))
 # The warm-up's stages, in the order they finish, as the splash screen shows them: one
 # square of a rank each, the pieces landing left to right. A stage is pending, loading,
 # done, or off (missing or failed, with the reason).
 WARM_STAGES: tuple[tuple[str, str], ...] = (
     ("pieces", "Piece recognition"),
     ("voice", "Voice"),
-    ("ear", "Speech recognition"),
+    ("stt", "Speech recognition"),
     ("mic", "Microphone"),
     ("vision", "Board reading"),
     ("engine", "Stockfish"),
@@ -80,7 +80,7 @@ WARM_STAGES: tuple[tuple[str, str], ...] = (
     ("ready", "Ready"),
 )
 # The warm-up stage each voice model reports as (the log calls them by these names).
-STAGE_OF = {"voice": "voice", "speech recognition": "ear"}
+STAGE_OF = {"voice": "voice", "speech recognition": "stt"}
 # The settings page's microphone test turns itself off this long after the page's
 # last look at it.
 HEAR_TEST_TIMEOUT_S = 20.0
@@ -175,10 +175,10 @@ class PanelEngine:
     # recording -- only the profile, which is the player's own model. The recent frames
     # live in `frames`, a ring in memory, and `dump()` writes them out when asked.
     persist: bool = True
-    # Whether the voice models are built at all. Off, the panel has a silent voice and a
-    # deaf ear with a reason; SIDECOACH_VOICE_MODELS=0 is the tests' default (no worker
-    # loads Kokoro and Parakeet on the GPU; 2026-09-20 that, not the vision, was what
-    # lagged the machine) and a headless run's.
+    # Whether the voice models are built at all. Off, the panel has a silent voice and
+    # speech recognition off, with a reason; SIDECOACH_VOICE_MODELS=0 is the tests' default
+    # (no worker loads Kokoro and Parakeet on the GPU; 2026-09-20 that, not the vision, was
+    # what lagged the machine) and a headless run's.
     voice_models: bool = field(
         default_factory=lambda: os.environ.get("SIDECOACH_VOICE_MODELS", "1") != "0"
     )
@@ -240,7 +240,7 @@ class PanelEngine:
     # A settings save that changed what the engine was built from (the Stockfish binary,
     # the tools folder): the next Start rebuilds it.
     _engine_stale: bool = field(default=False, init=False)
-    # The settings page's live test of the microphone and the ear: while on, the ear
+    # The settings page's live test of the microphone and speech recognition: while on, it
     # listens (voice activity) and what it hears goes to `_heard_test`, not to the coach;
     # the mode it interrupted is restored after. It switches itself off when the page
     # stops asking (HEAR_TEST_TIMEOUT_S).
@@ -261,7 +261,7 @@ class PanelEngine:
         # graphs load on the device configured (see `_warm_voice`) and are never reloaded.
         self._tts = self._build_tts(self.voice)
         self._hook_voice()
-        self._stt = make_ear(self.settings, off=not self.voice_models)
+        self._stt = make_recogniser(self.settings, off=not self.voice_models)
         self._mic = Microphone(self.settings.voice.mic_device)
         self._listener = Listener(
             self._mic,
@@ -328,7 +328,7 @@ class PanelEngine:
 
     def warm(self, background: bool = True) -> None:
         """Load everything a session needs before any Start: the embedding net, the voice
-        and the ear, Stockfish, the coach and its model. Off the caller's thread unless
+        and speech recognition, Stockfish, the coach and its model. Off the caller's thread unless
         told otherwise; a Start that comes first waits for it."""
         if background:
             threading.Thread(target=self._warm, name="warm", daemon=True).start()
@@ -539,7 +539,7 @@ class PanelEngine:
     def apply_settings(self, new: Settings, changed: Sequence[str]) -> list[str]:
         """The settings saved: what can change on the running session does, and is
         returned as the list of dotted names applied. Everything the models load at
-        start (a device, a provider of voice or ear, the data directory) waits for a
+        start (a device, a provider of voice or speech recognition, the data directory) waits for a
         restart; the screen's backend and the Stockfish binary for the next Start."""
         with self._lock:
             self.settings = new
@@ -574,9 +574,9 @@ class PanelEngine:
         if any(c in VOICE_RELOAD for c in changed):
             self._reload_voice()
             applied.extend(c for c in changed if c in VOICE_RELOAD)
-        if any(c in EAR_RELOAD for c in changed):
-            self._reload_ear()
-            applied.extend(c for c in changed if c in EAR_RELOAD)
+        if any(c in STT_RELOAD for c in changed):
+            self._reload_recogniser()
+            applied.extend(c for c in changed if c in STT_RELOAD)
         if "capture.fps" in changed:
             did("capture.fps")  # the capture loop reads the rate every frame
         if any(c in ("engine.stockfish_path", "tools_dir") for c in changed):
@@ -669,42 +669,42 @@ class PanelEngine:
         self._emit("voice", "info", f"voice reloading: {self._state['voice_detail']}")
         threading.Thread(target=self._warm_voice, name="voice-reload", daemon=True).start()
 
-    def _reload_ear(self) -> None:
-        """A new ear or microphone: listening pauses, both are rebuilt, listening resumes
+    def _reload_recogniser(self) -> None:
+        """A new recogniser or microphone: listening pauses, both are rebuilt, listening resumes
         in the mode it was in."""
         mode = self._listener.mode
         with contextlib.suppress(Exception):
             self._listener.set_mode("off")
-        self._stt = make_ear(self.settings, off=not self.voice_models)
+        self._stt = make_recogniser(self.settings, off=not self.voice_models)
         self._mic = Microphone(self.settings.voice.mic_device)
         self._listener.mic = self._mic
         with self._lock:
             self._state["stt_detail"] = self._stt.healthcheck()[1]
         self._emit("voice", "info", f"speech recognition reloading: {self._state['stt_detail']}")
-        threading.Thread(target=self._warm_voice, name="ear-reload", daemon=True).start()
+        threading.Thread(target=self._warm_voice, name="stt-reload", daemon=True).start()
         if mode != "off":
             with contextlib.suppress(Exception):
                 self.set_listen(mode)
 
     def set_hear_test(self, on: bool) -> dict[str, Any]:
-        """Start or stop the live test of the microphone and the ear."""
+        """Start or stop the live test of the microphone and speech recognition."""
         if on and not self._hear_test_on:
             ok, mic = self._mic.healthcheck()
-            ready, ear = self._stt.healthcheck()
+            ready, stt = self._stt.healthcheck()
             if not ok or not ready:
                 what = "microphone" if not ok else "speech recognition"
-                return {"ok": False, "error": f"{what}: {mic if not ok else ear}"}
+                return {"ok": False, "error": f"{what}: {mic if not ok else stt}"}
             self._hear_test_mode = self._listener.mode
             self._heard_test.clear()
             self._hear_test_on = True
             self._hear_test_seen = time.monotonic()
             with contextlib.suppress(Exception):
                 self._listener.set_mode("vad")
-            # The ear loads on its first utterance otherwise, and the first result would
+            # The recogniser loads on its first utterance otherwise, and the first result would
             # carry the load in its time.
             load = getattr(self._stt, "load", None)
             if load is not None and getattr(self._stt, "device", None) is None:
-                threading.Thread(target=load, name="ear-warm", daemon=True).start()
+                threading.Thread(target=load, name="stt-warm", daemon=True).start()
             self._emit("voice", "info", "microphone test on: say something")
         elif not on and self._hear_test_on:
             self._hear_test_on = False
@@ -747,7 +747,7 @@ class PanelEngine:
             "level": round(min(1.0, self._listener.level), 3),
             "heard": list(self._heard_test),
             "microphone": self._mic.healthcheck()[1],
-            "ear": self._stt.healthcheck()[1],
+            "speech_recognition": self._stt.healthcheck()[1],
         }
 
     def say_sample(self, voice: str | None = None, text: str = VOICE_SAMPLE) -> bool:
@@ -961,8 +961,8 @@ class PanelEngine:
         self._stage("mic", "loading")
         wanted = self.settings.voice.listen
         if wanted != "off":
-            # A deaf ear has no use for the microphone or the push-to-talk key: neither
-            # opens (the tests run with the ear off and must not take the real
+            # Speech recognition that is off has no use for the microphone or the push-to-talk
+            # key: neither opens (the tests run with it off and must not take the real
             # microphone or hook the keyboard).
             if self._stt.healthcheck()[0]:
                 self.set_listen(wanted)

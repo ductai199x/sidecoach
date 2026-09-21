@@ -2028,7 +2028,7 @@ def panel(
         console.print(f"[red]panel extras missing:[/red] {exc}; run `uv sync --group panel`")
         raise typer.Exit(1) from exc
     settings = load_settings(config)
-    # The app's downloads and the CUDA pack (setup/): the ear's cache under the data
+    # The app's downloads and the CUDA pack (setup/): the speech-recognition cache under the data
     # directory, and the pack ahead of the base environment before onnxruntime loads.
     from sidecoach.setup import apply_hf_home
     from sidecoach.setup.gpu import activate

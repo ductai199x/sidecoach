@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sidecoach.config import Settings, VoiceSettings
-from sidecoach.voice import make_ear, make_tts
+from sidecoach.voice import make_recogniser, make_tts
 from sidecoach.voice.base import NullTTS
 from sidecoach.voice.kokoro import KokoroTTS
 from sidecoach.voice.stt import NullSTT, ParakeetSTT
@@ -19,8 +19,8 @@ def test_voice_turned_off_is_silent_and_deaf_with_a_reason() -> None:
     # A silent provider must accept calls and do nothing, never raise.
     tts.say("Nf3 is a good move")
     tts.stop()
-    ear = make_ear(Settings(), off=True)
-    assert isinstance(ear, NullSTT) and ear.healthcheck()[0] is False
+    stt = make_recogniser(Settings(), off=True)
+    assert isinstance(stt, NullSTT) and stt.healthcheck()[0] is False
 
 
 def test_kokoro_is_built_with_the_configured_voice_and_model_dir(tmp_path: Path) -> None:
@@ -37,9 +37,9 @@ def test_kokoro_is_built_with_the_configured_voice_and_model_dir(tmp_path: Path)
     tts.stop()
 
 
-def test_the_ear_is_parakeet_on_the_configured_device() -> None:
-    ear = make_ear(Settings(voice=VoiceSettings(stt_device="cpu")))
-    assert isinstance(ear, ParakeetSTT) and ear.device_wanted == "cpu"
+def test_speech_recognition_is_parakeet_on_the_configured_device() -> None:
+    stt = make_recogniser(Settings(voice=VoiceSettings(stt_device="cpu")))
+    assert isinstance(stt, ParakeetSTT) and stt.device_wanted == "cpu"
 
 
 def test_explicit_model_dir_overrides_the_default() -> None:

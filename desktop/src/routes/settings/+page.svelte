@@ -60,7 +60,7 @@
   let hearTimer: ReturnType<typeof setInterval> | null = null;
   async function pollHearing() {
     try {
-      const res = await get<{ on: boolean; level: number; heard: Heard[]; microphone: string; ear: string }>("/api/hear_test");
+      const res = await get<{ on: boolean; level: number; heard: Heard[]; microphone: string; speech_recognition: string }>("/api/hear_test");
       hearLevel = res.level;
       hearList = res.heard;
       hearInfo = res.microphone;

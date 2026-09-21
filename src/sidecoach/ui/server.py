@@ -242,7 +242,7 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
 
     @app.post("/api/hear_test")
     def hear_test(body: _HearTest) -> dict[str, Any]:
-        """The settings page's live test of the microphone and the ear: on or off."""
+        """The settings page's live test of the microphone and speech recognition: on or off."""
         return engine.set_hear_test(body.on)
 
     @app.get("/api/hear_test")

@@ -33,8 +33,8 @@ def _device(spec: str | None) -> int | str | None:
     return int(spec) if spec.isdigit() else spec
 
 
-def make_ear(settings: Settings, *, off: bool = False) -> STTProvider:
-    """The speech recogniser, or a deaf one with a reason."""
+def make_recogniser(settings: Settings, *, off: bool = False) -> STTProvider:
+    """Speech recognition, or a provider that is off, with the reason."""
     if off:
         return make_stt(None, off=True)
     return make_stt(settings.voice.stt_device)

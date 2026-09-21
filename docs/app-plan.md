@@ -103,7 +103,7 @@ Process rules, decided:
 
 - **Everything loads when the app opens; Start and Stop only start and stop reading the
   screen** (Tai, 2026-09-21). The sidecar warms itself as soon as it serves: the piece
-  net, the voice and the ear (loaded and primed with one inference each, so the first real
+  net, the voice and speech recognition (loaded and primed with one inference each, so the first real
   one is 20 ms, not 750), Stockfish and the coach's second engine (one search of the start
   position each), the coach and its model (a server on this machine gets one short request,
   which is where LM Studio loads the model; a paid provider is never called), the

@@ -2,7 +2,7 @@
 
 The installer carries the code and nothing else (docs/app-plan.md, section 6, step 4).
 At first run the sidecar fetches, with one progress bar for the lot: the Kokoro voice
-(two files), the Parakeet ear and the Silero gate (through onnx-asr's own hub downloads,
+(two files), Parakeet and the Silero gate (through onnx-asr's own hub downloads,
 into a Hugging Face cache under the data directory), Stockfish (the latest release), the
 openings tables, and a sample of the Lichess puzzles. Each item knows whether it is
 present, how big it is, and how to fetch itself; `Setup` runs the missing ones on a
@@ -101,8 +101,8 @@ Progress = Callable[[int, int | None], None]  # (bytes done, bytes total or None
 
 
 def hf_home(settings: Settings) -> Path:
-    """The Hugging Face cache the ear's models go to: under the data directory in the app,
-    so the app owns what it downloaded; the user's own cache otherwise."""
+    """The Hugging Face cache the speech-recognition models go to: under the data directory
+    in the app, so the app owns what it downloaded; the user's own cache otherwise."""
     if os.environ.get("SIDECOACH_DATA_DIR"):
         return settings.data_dir / "models" / "hf"
     return Path(os.environ.get("HF_HOME") or Path.home() / ".cache" / "huggingface")
@@ -239,7 +239,7 @@ def items(settings: Settings) -> list[Item]:
 
     out.append(Item("openings", "The opening names", 500_000, openings_present, openings_fetch))
 
-    def ear_present() -> bool:
+    def stt_present() -> bool:
         home = hf_home(settings) / "hub"
         return any(
             home.glob(
@@ -247,7 +247,7 @@ def items(settings: Settings) -> list[Item]:
             )
         ) and any(home.glob("models--istupakov--silero-vad-onnx/snapshots/*/*.onnx"))
 
-    def ear_fetch(progress: Progress) -> None:
+    def stt_fetch(progress: Progress) -> None:
         # onnx-asr downloads through the hub itself; the progress is the cache growing.
         apply_hf_home(settings)
         home = hf_home(settings)
@@ -269,11 +269,11 @@ def items(settings: Settings) -> list[Item]:
 
     out.append(
         Item(
-            "ear",
+            "stt",
             "Speech recognition (Parakeet) and the voice gate (Silero)",
             2_450_000_000,
-            ear_present,
-            ear_fetch,
+            stt_present,
+            stt_fetch,
         )
     )
 

@@ -3,7 +3,7 @@
 Mirrors the TTS side: a small protocol, a null provider that is always safe to call, and
 real backends that load their model ONCE and keep it. The default, Parakeet-TDT-0.6B, runs on
 the shared ONNX runtime (`sidecoach.voice.runtime`) like Kokoro does -- one runtime, two
-graphs -- and needs no GPU to answer a 3 s ask in ~100 ms. It is the one ear: Whisper
+graphs -- and needs no GPU to answer a 3 s ask in ~100 ms. It is the one recogniser: Whisper
 through faster-whisper was tried (a second runtime, CTranslate2, and ~1.5 GB of VRAM for
 better raw accuracy the chess correction did not need) and is not shipped.
 
@@ -33,7 +33,7 @@ class STTProvider(Protocol):
     name: str
 
     def healthcheck(self) -> tuple[bool, str]:
-        """(ready, detail): whether the ear can hear, and why not when it cannot."""
+        """(ready, detail): whether speech recognition works, and why not when it does not."""
         ...
 
     def load(self) -> bool:
@@ -120,13 +120,13 @@ class ParakeetSTT:
                 return True
             except Exception as exc:  # noqa: BLE001 - degrade to deaf, never crash the session
                 self._failed = f"{type(exc).__name__}: {exc}"
-                log.warning("Parakeet unavailable, coach is deaf: %s", exc)
+                log.warning("Parakeet unavailable, speech recognition is off: %s", exc)
                 return False
 
     def prime(self) -> float | None:
         """Half a second of silence through the model, so the first real clip does not pay
         the runtime's warm-up (~0.7 s on CUDA). Returns the seconds it took, None if the
-        ear did not load."""
+        recogniser did not load."""
         if not self.load():
             return None
         begun = time.perf_counter()
@@ -138,14 +138,14 @@ class ParakeetSTT:
             return ""
         try:
             text = self._asr.recognize(np.asarray(audio, dtype=np.float32), sample_rate=sample_rate)
-        except Exception as exc:  # noqa: BLE001 - a bad clip must not kill the ear
+        except Exception as exc:  # noqa: BLE001 - a bad clip must not kill the recogniser
             log.warning("Parakeet failed on a clip: %s", exc)
             return ""
         return (text or "").strip()
 
 
 def make_stt(device: str | None, *, off: bool = False) -> STTProvider:
-    """The ear on `device` (cpu or cuda), or a deaf one when `off`. Never raises."""
+    """Speech recognition on `device` (cpu or cuda), or off when `off`. Never raises."""
     if off or not device:
         return NullSTT("speech recognition off")
     return ParakeetSTT(PARAKEET_MODEL, device=device)
