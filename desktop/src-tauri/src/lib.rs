@@ -151,7 +151,12 @@ fn embedded_python(app: &AppHandle) -> Option<PathBuf> {
 fn sidecar_command(app: &AppHandle, token: &str) -> Result<Command, String> {
     let mut cmd = if let Some(python) = embedded_python(app) {
         let mut c = Command::new(python);
-        c.args(["-m", "sidecoach", "panel"]);
+        // Isolated: the embedded interpreter ignores the environment's PYTHON* variables
+        // and the user's site-packages. An AppImage's launcher exports PYTHONHOME and
+        // PYTHONPATH for any Python inside it, which sent this one looking for its
+        // standard library in the wrong place (Phase 2, 2026-09-21).
+        c.args(["-I", "-m", "sidecoach", "panel"]);
+        c.env_remove("PYTHONHOME").env_remove("PYTHONPATH");
         c
     } else {
         let root = repo_root()
