@@ -39,6 +39,16 @@ def test_health_perf_and_the_token(tmp_path: Path) -> None:
     assert res.json() == {"ok": True}
     line = json.loads((tmp_path / "perf" / "tauriidle1.jsonl").read_text(encoding="utf-8"))
     assert line["fps"] == 143.9 and line["host"] == "tauri" and line["t"] > 0
+    # A page's own error lands in the terminal, on the sys channel, with the page named.
+    res = client.post(
+        "/api/client_log",
+        json={"text": "TypeError: x is undefined @ app.js:12", "page": "/settings"},
+        headers=auth,
+    )
+    assert res.json() == {"ok": True}
+    lines = client.get("/api/poll", headers=auth).json()["lines"]
+    said = [ln for ln in lines if ln["chan"] == "sys" and ln["text"].startswith("page [/settings]")]
+    assert said and said[-1]["level"] == "error" and "TypeError" in said[-1]["text"]
     # The static page is not behind the token; the shell's origins are allowed by CORS.
     assert client.get("/").status_code == 200
     pre = client.options(

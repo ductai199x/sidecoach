@@ -19,9 +19,11 @@ hash_mb = 256
 # A preset -- "local" (LM Studio on this machine), "dashscope" (Alibaba Cloud Model Studio,
 # US), "openai" (what the coach was evaluated on: gpt-5.6-luna at medium effort) -- or any
 # other name for a custom OpenAI-compatible endpoint, which then needs base_url and model.
-# Unset fields use the preset's defaults from sidecoach.llm.factory. Keys come from .env
-# (gitignored): OPENAI_API_KEY=..., DASHSCOPE_API_KEY=...
-provider = "openai"                # gpt-5.6-luna at medium effort; "local" for LM Studio
+# Or "none": no model at all -- the coach speaks from the board and its templates (the
+# verdicts, the lesson on a mistake, the questions and hints, the review), free and
+# offline. Unset fields use the preset's defaults from sidecoach.llm.factory. Keys come
+# from .env (gitignored) or the app's credential store: OPENAI_API_KEY=..., DASHSCOPE_API_KEY=...
+provider = "openai"                # gpt-5.6-luna at medium effort; "local" for LM Studio; "none"
 # model = "gpt-5.6-luna"          # openai; dashscope: qwen3.8-max (default) or qwen3.8-flash
 # reasoning_effort = "medium"     # openai (an "effort" provider): none, low, medium, high
 # routine_effort = "none"         # the effort for a word on a fine move: "none" speaks in

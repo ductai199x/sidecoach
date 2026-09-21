@@ -19,6 +19,11 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    # At the job level so a step's `if` can read them (a secret is empty on a fork's PR).
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -55,25 +60,32 @@ jobs:
       - name: Embedded interpreter
         run: uv run python scripts/build_sidecar.py
 
-      - name: Bundle
+      # The updater's signature needs the private key, which a pull request from a fork
+      # does not have: those builds stop at the exe (`--no-bundle`); pushes and tags bundle.
+      - name: Build the app
+        if: env.TAURI_SIGNING_PRIVATE_KEY == ''
         working-directory: desktop
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build -- --no-bundle
+      - name: Build the app and the installer
+        if: env.TAURI_SIGNING_PRIVATE_KEY != ''
+        working-directory: desktop
         run: npm run tauri build
 
       - name: Smoke test the built app
         shell: pwsh
         run: |
           $exe = Get-ChildItem desktop/src-tauri/target/release -Filter sidecoach-desktop.exe | Select-Object -First 1
+          # The interpreter the bundle would carry, named outright: without the bundle step
+          # it is not copied next to the exe.
+          $env:SIDECOACH_PYTHON = (Resolve-Path desktop/resources/python/python.exe).Path
+          $env:SIDECOACH_DATA_DIR = (Resolve-Path data -ErrorAction SilentlyContinue).Path
+          if (-not $env:SIDECOACH_DATA_DIR) { New-Item -ItemType Directory data | Out-Null; $env:SIDECOACH_DATA_DIR = (Resolve-Path data).Path }
           $env:SIDECOACH_SIDECAR_ARGS = "--config sidecoach.example.toml"
           pwsh scripts/shell_cycles.ps1 -Exe $exe.FullName -Cycles 3
 
       - name: Sign the installer (Azure Artifact Signing)
         if: startsWith(github.ref, 'refs/tags/v') && env.AZURE_TENANT_ID != ''
         uses: azure/trusted-signing-action@v0
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -85,6 +97,7 @@ jobs:
           files-folder-filter: exe
 
       - uses: actions/upload-artifact@v4
+        if: env.TAURI_SIGNING_PRIVATE_KEY != ''
         with:
           name: sidecoach-windows
           path: |
