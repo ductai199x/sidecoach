@@ -22,7 +22,11 @@ export type ConvoTurn = {
   calls: { title: string; prompt?: string; raw?: string }[];
 };
 
-const MAX_ROWS = 4000;
+const MAX_ROWS = 1500;
+// The coach pane and the conversation tab are rendered whole, so they are bounded too:
+// three games' worth of coach items, and the conversation's turns likewise.
+const MAX_COACH = 200;
+const MAX_CONVO = 400;
 export const CHANNELS = ["sys", "vision", "game", "engine", "coach", "voice", "user", "puzzle"] as const;
 export const MODE_NEXT: Record<string, string> = { off: "ptt", ptt: "vad", vad: "off" };
 export const MODE_TITLES: Record<string, string> = {
@@ -162,8 +166,10 @@ export class PanelStore {
     } else {
       this.rows.push({ key, count: 1, line, open: false });
       // Bounded: the 1h42 soak of 2026-09-21 grew the old page from 480 to 700 MB on an
-      // unbounded terminal. The sidecar keeps its last 3,000 records; the page keeps a
-      // little more and drops the oldest.
+      // unbounded terminal, and the 40-minute soak with the meter's counters showed the
+      // renderer's memory tracking the terminal's DOM -- 4000 rows were 26k nodes and
+      // 650 MB steady; 1500 rows read as far back as anyone scrolls (the sidecar keeps
+      // 3,000 records, and a dump writes them all).
       if (this.rows.length > MAX_ROWS) this.rows.splice(0, this.rows.length - MAX_ROWS);
     }
     const d = line.data;
@@ -171,6 +177,8 @@ export class PanelStore {
     if (line.chan === "coach" && d && d.review) this.addReview(d);
     if (line.chan === "coach" && d && d.practice) this.coach.push({ kind: "practice", id: nextId++, practice: d.practice });
     this.addConvo(line);
+    if (this.coach.length > MAX_COACH) this.coach.splice(0, this.coach.length - MAX_COACH);
+    if (this.convo.length > MAX_CONVO) this.convo.splice(0, this.convo.length - MAX_CONVO);
   }
 
   clearTerminal(): void {

@@ -291,8 +291,28 @@ the same sidecar -- the single-instance plugin.
 
 Soak (the shell.js page, before the port): a looped replay at 3x, stopped at 1 h 42 min.
 The page held 144 fps throughout; the UI's RSS grew 43%, all of it the terminal's DOM,
-which had no cap. The Svelte terminal keeps at most 4000 rows. The 2-hour soak of the
-Svelte page runs at the end of Phase 1, after the installer is tested.
+which had no cap. The Svelte terminal keeps at most 4000 rows.
+
+Soak of the Svelte page (2026-09-21, the release exe with the embedded interpreter, the
+bundled page with its meter on, g04 looped at 3x with Stockfish and the offline coach, two
+hours, `data/perf/svelte-soak.*`): fps mean 139.8, min 118.7, 289 long frames of 1.05 M
+(0.03%); poll p50 5 ms, p95 17 ms; the sidecar flat at 2.13 GB (p50; Stockfish and the
+embedding net on CUDA included) at 480% of a core; the UI tree 519 MB once loaded, 766 MB
+in the last minute (+48%), 781 MB at most -- the WebView2 renderer, 121 MB at the spike's
+idle, at 326 MB after 76 minutes, the other processes unchanged. The page's own lists were
+not all bounded (the coach pane and the conversation tab rendered every item since
+launch); both are capped now (200 items, 400 turns) and the meter reports the JS heap,
+the DOM's size and the lists, so the next soak says whether the growth is the page's or
+Chromium's own.
+
+That soak (40 minutes, same setup, `data/perf/svelte-soak2.*`): the renderer's memory
+tracks the DOM, and the DOM tracks the terminal's rows -- 4000 rows are 25.8 k nodes; the
+RSS climbs with them (522 MB at 5 min, 646 at 25) and levels once the cap is reached at
+23 minutes (624, 644, 656 MB over the last fifteen), the JS heap between 40 and 60 MB the
+whole way, fps mean 142.1, min 127.3, 6 long frames of 349 k, poll p50 4 ms. So the
+two-hour climb was the two unbounded lists and the 4000-row terminal, not a leak. The
+terminal now keeps 1500 rows (about 10 k nodes; the sidecar's ring and a dump keep the
+3,000), for a steady state near 550 MB with everything drawn.
 
 **Decision (2026-09-21, Tai): go.** Tauri renders the page as Chrome does, lighter and
 flatter in memory, with the sidecar lifecycle proven. Phase 1 proceeds.

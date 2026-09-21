@@ -36,7 +36,14 @@ class Perf {
         this.frames = 0; this.second = now;
         const p50 = pct(store.polls, 0.5), p95 = pct(store.polls, 0.95);
         this.text = fps.toFixed(0) + " fps (min " + this.fpsMin.toFixed(0) + "), long " + this.longTotal + ", poll " + (p50 == null ? "–" : p50.toFixed(0) + "/" + p95!.toFixed(0) + " ms");
-        (window as any).__perf = { fps, fps_min: this.fpsMin, fps_mean: this.fpsSum / this.fpsN, long_frames: this.longTotal, frames: this.framesTotal, poll_p50: p50, poll_p95: p95 };
+        // What the page holds, for a soak: the JS heap (Chromium's non-standard
+        // performance.memory), the DOM's size, and the store's lists.
+        const mem = (performance as any).memory;
+        (window as any).__perf = {
+          fps, fps_min: this.fpsMin, fps_mean: this.fpsSum / this.fpsN, long_frames: this.longTotal, frames: this.framesTotal, poll_p50: p50, poll_p95: p95,
+          heap_mb: mem ? Math.round(mem.usedJSHeapSize / 1048576) : null, dom: document.getElementsByTagName("*").length,
+          rows: store.rows.length, coach: store.coach.length, convo: store.convo.length,
+        };
       }
       requestAnimationFrame(frame);
     };

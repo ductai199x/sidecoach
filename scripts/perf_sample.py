@@ -205,6 +205,16 @@ def summary(csv_path: Path, page: Path | None) -> None:
                 f"  poll p50 {statistics.median(p50) if p50 else float('nan'):.0f} ms"
                 f"  p95 {max(p95) if p95 else float('nan'):.0f} ms"
             )
+            # What the page held, first and last, when the meter reports it: the JS heap,
+            # the DOM's size and the store's lists -- where growth in the renderer comes from.
+            held = [s for s in samples if s.get("dom") is not None]
+            if held:
+                a, b = held[0], held[-1]
+                parts = [
+                    f"{key} {a.get(key)} -> {b.get(key)}"
+                    for key in ("heap_mb", "dom", "rows", "coach", "convo")
+                ]
+                print("  page held  " + ", ".join(parts))
 
 
 def main() -> None:
