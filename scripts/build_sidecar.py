@@ -51,6 +51,8 @@ def managed_python() -> Path:
     """uv's managed CPython 3.12 (a python-build-standalone install_only build), asked
     from outside the project so the answer is the distribution, not this venv."""
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    # A machine without one (the CI runner) gets it here; a machine with one is untouched.
+    run("uv", "python", "install", "3.12", cwd=tempfile.gettempdir(), env=env)
     out = run(
         "uv",
         "python",
