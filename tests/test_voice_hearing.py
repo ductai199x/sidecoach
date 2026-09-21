@@ -141,6 +141,10 @@ def test_parakeet_states_its_device_before_loading() -> None:
     ear = make_stt("parakeet", None, "cuda")
     assert isinstance(ear, ParakeetSTT)
     ready, detail = ear.healthcheck()
+    if find_spec("onnx_asr") is None:
+        # Without the voice group (CI installs dev and panel only) the ear says so.
+        assert not ready and "onnx-asr" in detail
+        return
     assert "parakeet" in detail
     if ready:
         assert "cuda" in detail and "not loaded yet" in detail
