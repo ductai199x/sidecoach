@@ -960,6 +960,8 @@ class _Coaching:
             routine_provider=_routine_provider(settings, provider),  # type: ignore[arg-type]
             verbalized_sampling=settings.coach.verbalized_sampling,
             local_verdicts=settings.coach.local_verdicts,
+            persona=settings.coach.persona,
+            rating=(settings.profile.rating_low, settings.profile.rating_high),
         )
         self.coach.start()
         self.detail = f"{provider.name} ({detail})"
@@ -968,6 +970,38 @@ class _Coaching:
     @property
     def on(self) -> bool:
         return self.coach is not None
+
+    def reprovision(self, settings: Settings) -> None:
+        """The model changed in the settings: the providers are rebuilt and handed to the
+        running coach, with the same fallback to offline as at start."""
+        if self.coach is None:
+            return
+        from sidecoach.llm.factory import make_provider
+        from sidecoach.llm.offline import OfflineProvider
+
+        why = ""
+        provider: Any = None
+        detail = ""
+        try:
+            provider = make_provider(settings.llm)
+        except Exception as exc:  # noqa: BLE001
+            why = f"no model: {exc}"
+        else:
+            ok, detail = provider.healthcheck()
+            if not ok:
+                why = f"model not reachable: {detail}"
+        if why:
+            provider = OfflineProvider()
+            _, detail = provider.healthcheck()
+            detail = f"{detail}; {why}"
+        offline = bool(getattr(provider, "offline", False))
+        self.coach.set_providers(
+            provider,
+            routine_provider=_routine_provider(settings, provider),  # type: ignore[arg-type]
+            verifier=None if offline else _verifier(settings, provider),  # type: ignore[arg-type]
+            claims=None if offline else _claims_check(provider),
+        )
+        self.detail = f"{provider.name} ({detail})"
 
     def events(self, events: Sequence[Event], ts: float) -> None:
         if self.coach is None:
@@ -1926,7 +1960,9 @@ def panel(
     monitor: Annotated[
         int | None, typer.Option(help="Monitor index, see doctor; default the primary")
     ] = None,
-    fps: Annotated[int, typer.Option(help="Capture rate")] = 10,
+    fps: Annotated[
+        int | None, typer.Option(help="Capture rate; the settings' capture.fps by default")
+    ] = None,
     port: Annotated[
         int, typer.Option(help="Port for the local panel server; 0 picks a free one")
     ] = 8765,
@@ -1997,13 +2033,15 @@ def panel(
 
     apply_hf_home(settings)
     activate(settings)
+    if fps is not None:
+        settings.capture.fps = fps
     if not announce:
         where = f"http://127.0.0.1:{port}/" if port else "a free port"
         console.print(f"panel serving at {where}  (Ctrl-C to stop)")
     run_server(
         settings,
         monitor=monitor,
-        fps=fps,
+        fps=settings.capture.fps,
         port=port,
         replay=replay,
         record=record,

@@ -21,11 +21,12 @@ class TTSProvider(Protocol):
         """(ready, detail): whether the voice can speak, and why not when it cannot."""
         ...
 
-    def say(self, text: str) -> None:
+    def say(self, text: str, *, voice: str | None = None) -> None:
         """Speak a line. Chess notation in it is read aloud in words (see `speak_notation`).
 
         Returns once the line is queued, not once it finishes: speaking is asynchronous so
-        the coach is never blocked waiting on audio.
+        the coach is never blocked waiting on audio. `voice` speaks this one line in
+        another voice (the settings page's preview) and leaves the coach's voice as it is.
         """
         ...
 
@@ -51,7 +52,7 @@ class NullTTS:
     def healthcheck(self) -> tuple[bool, str]:
         return False, self._reason
 
-    def say(self, text: str) -> None:
+    def say(self, text: str, *, voice: str | None = None) -> None:
         return None
 
     def stop(self) -> None:

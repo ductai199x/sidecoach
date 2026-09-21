@@ -4,10 +4,11 @@
   // the API keys into the OS credential store, the audio devices by name, and the
   // shell's own two switches (what closing the window does, start with the system).
   import { onMount } from "svelte";
-  import { connect, get, put } from "$lib/api";
+  import { connect, get, post, put } from "$lib/api";
   import { inShell, setShellSettings, shellSettings, type ShellSettings } from "$lib/shell.svelte";
+  import { voiceLabel } from "$lib/voices";
 
-  type Prop = { type?: string; anyOf?: { type: string }[]; description?: string; default?: unknown; choices?: string[]; applies?: string; kind?: string; advanced?: boolean; dev?: boolean; minimum?: number; maximum?: number; title?: string };
+  type Prop = { type?: string; anyOf?: { type: string }[]; description?: string; default?: unknown; choices?: string[]; applies?: string; kind?: string; group?: string; advanced?: boolean; dev?: boolean; minimum?: number; maximum?: number; title?: string };
   type Described = {
     settings: Record<string, any>;
     schema: { properties: Record<string, any>; $defs: Record<string, { properties: Record<string, Prop>; description?: string }> };
@@ -16,6 +17,8 @@
     keyring: boolean;
     key_envs: Record<string, string>;
     devices: { inputs: { index: number; name: string }[]; outputs: { index: number; name: string }[] };
+    voices: string[];
+    personas: Record<string, string>;
   };
 
   let data = $state<Described | null>(null);
@@ -29,16 +32,37 @@
   let section = $state("llm");
 
   const SECTIONS: [string, string][] = [
-    ["llm", "Model"], ["coach", "Coach"], ["voice", "Voice"], ["engine", "Engine"],
+    ["llm", "AI Coach"], ["coach", "Coach"], ["voice", "Voice"], ["engine", "Engine"],
     ["capture", "Screen"], ["profile", "You"], ["gpu", "GPU"], ["app", "App"],
   ];
+  // The AI Coach page in sections: which model, then what applies to a model served on
+  // this machine, to a service, and to both. A field's group comes from the schema.
+  const LLM_GROUPS: [string, string, string][] = [
+    ["provider", "Provider", "Which model coaches: a service, a model hosted on this machine, or none at all."],
+    ["local", "Local hosting", "A model served on this machine or the network (LM Studio, Ollama, vLLM): the local preset, or a custom one."],
+    ["service", "Service providers", "OpenAI, DashScope, or another OpenAI-compatible service: the key, the effort, the prices for the session's cost."],
+    ["general", "General", "What applies whichever model it is."],
+  ];
+  let listening = $state("");
 
-  function fields(name: string): [string, Prop][] {
+  function fields(name: string, group?: string): [string, Prop][] {
     if (!data) return [];
     const ref = data.schema.properties[name]?.$ref;
     if (!ref) return [];
     const model = data.schema.$defs[ref.split("/").pop()!];
-    return Object.entries(model?.properties ?? {}).filter(([, p]) => (advanced || !p.advanced) && !(inShell() && p.dev));
+    return Object.entries(model?.properties ?? {}).filter(([, p]) => (advanced || !p.advanced) && !(inShell() && p.dev) && (!group || (p.group ?? "general") === group));
+  }
+  /** The Listen button: one line in the voice being tried; the coach's own voice stays. */
+  async function listen(voice: string) {
+    listening = voice;
+    try {
+      const res = await post<{ ok: boolean }>("/api/say", { voice });
+      if (!res.ok) window.alert("The voice cannot speak yet: run Set up (Help menu) to fetch it, or check the Voice settings.");
+    } catch (e) {
+      window.alert("Could not play the voice: " + String(e));
+    } finally {
+      setTimeout(() => (listening = ""), 1500);
+    }
   }
   function typeOf(p: Prop): string {
     if (p.type) return p.type;
@@ -56,6 +80,21 @@
     return names;
   });
   const appliesWord: Record<string, string> = { now: "applies at once", next: "applies at the next Start", restart: "needs a restart" };
+  /** "voice.voice" -> "Voice"; "voice.tts_device" -> "TTS device"; "llm.provider" -> "Provider". */
+  function fieldName(path: string): string {
+    const key = path.split(".").pop() ?? path;
+    const words = key.split("_").map((w) => (["tts", "stt", "llm", "gpu", "url", "api", "ptt"].includes(w) ? w.toUpperCase() : w));
+    const text = words.join(" ");
+    return text[0].toUpperCase() + text.slice(1);
+  }
+  /** The line under Save, as a sentence: what applied now, what waits for a Start or a restart. */
+  function savedLine(r: NonNullable<typeof result>): string {
+    const parts: string[] = [];
+    if (r.now?.length) parts.push(`Applied now: ${r.now.map(fieldName).join(", ")}.`);
+    if (r.next?.length) parts.push(`At the next Start: ${r.next.map(fieldName).join(", ")}.`);
+    if (r.restart?.length) parts.push(`After a restart: ${r.restart.map(fieldName).join(", ")}.`);
+    return parts.length ? "Saved. " + parts.join(" ") : "Saved. Nothing changed.";
+  }
 
   onMount(async () => {
     await connect();
@@ -103,6 +142,54 @@
 
 <svelte:head><title>Sidecoach · Settings</title></svelte:head>
 
+{#snippet field(section: string, key: string, p: Prop)}
+  {@const t = typeOf(p)}
+  {@const v = values[section]?.[key]}
+  {@const err = errorFor(section, key)}
+  <div class="field" class:error={!!err}>
+    {#if t === "boolean"}
+      <div class="row">
+        <input id="{section}-{key}" type="checkbox" checked={!!v} onchange={(e) => setValue(section, key, p, e.currentTarget.checked)} />
+        <label for="{section}-{key}">{key.replaceAll("_", " ")}</label>
+      </div>
+    {:else}
+      <label for="{section}-{key}">{key.replaceAll("_", " ")}</label>
+      {#if p.kind === "input_device" || p.kind === "output_device"}
+        <select id="{section}-{key}" onchange={(e) => setValue(section, key, p, e.currentTarget.value)}>
+          <option value="" selected={v == null || v === ""}>system default</option>
+          {#each (p.kind === "input_device" ? data!.devices.inputs : data!.devices.outputs) as d (d.index)}
+            <option value={d.name} selected={String(v) === d.name || String(v) === String(d.index)}>{d.name}</option>
+          {/each}
+        </select>
+      {:else if p.kind === "voice"}
+        <div class="row">
+          <select id="{section}-{key}" onchange={(e) => setValue(section, key, p, e.currentTarget.value)}>
+            {#each data!.voices as name (name)}<option value={name} selected={String(v) === name}>{voiceLabel(name)}</option>{/each}
+            {#if v && !data!.voices.includes(String(v))}<option value={String(v)} selected>{voiceLabel(String(v))}</option>{/if}
+          </select>
+          <button type="button" class="listen" onclick={() => listen(String(v ?? ""))} disabled={!!listening} title="Hear a short line in this voice">{listening ? "Playing…" : "Listen"}</button>
+        </div>
+      {:else if p.kind === "persona"}
+        <select id="{section}-{key}" onchange={(e) => setValue(section, key, p, e.currentTarget.value)}>
+          {#each p.choices ?? [] as c (c)}<option value={c} selected={String(v) === c}>{data!.personas[c] ?? c}</option>{/each}
+        </select>
+      {:else if p.choices}
+        <select id="{section}-{key}" onchange={(e) => setValue(section, key, p, e.currentTarget.value)}>
+          {#each p.choices as c (c)}<option value={c} selected={(v == null ? "" : String(v)) === c}>{c === "" ? "(preset default)" : c}</option>{/each}
+        </select>
+      {:else if t === "integer" || t === "number"}
+        <input id="{section}-{key}" type="number" value={v ?? ""} min={p.minimum} max={p.maximum} step={t === "integer" ? 1 : "any"} oninput={(e) => setValue(section, key, p, e.currentTarget.value)} />
+      {:else if t === "object"}
+        <input id="{section}-{key}" type="text" value={JSON.stringify(v ?? {})} onchange={(e) => { try { values[section][key] = JSON.parse(e.currentTarget.value || "{}"); } catch { /* keep typing */ } }} />
+      {:else}
+        <input id="{section}-{key}" type="text" value={v ?? ""} placeholder={isNullable(p) ? "(unset)" : ""} oninput={(e) => setValue(section, key, p, e.currentTarget.value)} />
+      {/if}
+    {/if}
+    <p class="desc">{p.description}{#if p.applies} <span class="applies {p.applies}">· {appliesWord[p.applies] ?? p.applies}</span>{/if}</p>
+    {#if err}<p class="err">{err}</p>{/if}
+  </div>
+{/snippet}
+
 <div class="settings">
   <nav class="secnav">
     {#each SECTIONS as [id, label] (id)}
@@ -145,60 +232,37 @@
     {:else}
       <h2>{SECTIONS.find(([id]) => id === section)?.[1]}</h2>
       {#if section === "llm"}
-        <div class="field">
-          <span class="lbl">API keys</span>
-          <p class="desc">{data.keyring ? "Kept in the operating system's credential store, never in the settings file." : "No credential store is available in this environment; keys come from the environment or .env."}</p>
-          {#each secretNames as name (name)}
-            <div class="secret">
-              <code>{name}</code>
-              <span class="state">{data.secrets[name] ? "set" : "not set"}</span>
-              <input type="password" placeholder={data.secrets[name] ? "replace…" : "paste the key…"} value={secrets[name] ?? ""} oninput={(e) => (secrets[name] = e.currentTarget.value)} disabled={!data.keyring} />
-              {#if data.secrets[name]}<label class="ctl"><input type="checkbox" bind:checked={clearSecrets[name]} /> forget</label>{/if}
-            </div>
-          {/each}
-        </div>
-      {/if}
-      {#each fields(section) as [key, p] (key)}
-        {@const t = typeOf(p)}
-        {@const v = values[section]?.[key]}
-        {@const err = errorFor(section, key)}
-        <div class="field" class:error={!!err}>
-          {#if t === "boolean"}
-            <div class="row">
-              <input id="{section}-{key}" type="checkbox" checked={!!v} onchange={(e) => setValue(section, key, p, e.currentTarget.checked)} />
-              <label for="{section}-{key}">{key.replaceAll("_", " ")}</label>
-            </div>
-          {:else}
-            <label for="{section}-{key}">{key.replaceAll("_", " ")}</label>
-            {#if p.kind === "input_device" || p.kind === "output_device"}
-              <select id="{section}-{key}" onchange={(e) => setValue(section, key, p, e.currentTarget.value)}>
-                <option value="" selected={v == null || v === ""}>system default</option>
-                {#each (p.kind === "input_device" ? data.devices.inputs : data.devices.outputs) as d (d.index)}
-                  <option value={d.name} selected={String(v) === d.name || String(v) === String(d.index)}>{d.name}</option>
+        {#each LLM_GROUPS as [group, title, blurb] (group)}
+          {@const list = fields(section, group)}
+          {#if list.length || group === "service"}
+            <h3>{title}</h3>
+            <p class="desc lead">{blurb}</p>
+            {#if group === "service"}
+              <div class="field">
+                <span class="lbl">API keys</span>
+                <p class="desc">{data.keyring ? "Kept in the operating system's credential store, never in the settings file." : "No credential store is available in this environment; keys come from the environment or .env."}</p>
+                {#each secretNames as name (name)}
+                  <div class="secret">
+                    <code>{name}</code>
+                    <span class="state">{data.secrets[name] ? "set" : "not set"}</span>
+                    <input type="password" placeholder={data.secrets[name] ? "replace…" : "paste the key…"} value={secrets[name] ?? ""} oninput={(e) => (secrets[name] = e.currentTarget.value)} disabled={!data.keyring} />
+                    {#if data.secrets[name]}<label class="ctl"><input type="checkbox" bind:checked={clearSecrets[name]} /> forget</label>{/if}
+                  </div>
                 {/each}
-              </select>
-            {:else if p.choices}
-              <select id="{section}-{key}" onchange={(e) => setValue(section, key, p, e.currentTarget.value)}>
-                {#each p.choices as c (c)}<option value={c} selected={(v == null ? "" : String(v)) === c}>{c === "" ? "(preset default)" : c}</option>{/each}
-              </select>
-            {:else if t === "integer" || t === "number"}
-              <input id="{section}-{key}" type="number" value={v ?? ""} min={p.minimum} max={p.maximum} step={t === "integer" ? 1 : "any"} oninput={(e) => setValue(section, key, p, e.currentTarget.value)} />
-            {:else if t === "object"}
-              <input id="{section}-{key}" type="text" value={JSON.stringify(v ?? {})} onchange={(e) => { try { values[section][key] = JSON.parse(e.currentTarget.value || "{}"); } catch { /* keep typing */ } }} />
-            {:else}
-              <input id="{section}-{key}" type="text" value={v ?? ""} placeholder={isNullable(p) ? "(unset)" : ""} oninput={(e) => setValue(section, key, p, e.currentTarget.value)} />
+              </div>
             {/if}
+            {#each list as [key, p] (key)}{@render field(section, key, p)}{/each}
           {/if}
-          <p class="desc">{p.description}{#if p.applies} <span class="applies {p.applies}">· {appliesWord[p.applies] ?? p.applies}</span>{/if}</p>
-          {#if err}<p class="err">{err}</p>{/if}
-        </div>
-      {/each}
+        {/each}
+      {:else}
+        {#each fields(section) as [key, p] (key)}{@render field(section, key, p)}{/each}
+      {/if}
     {/if}
   </div>
 
   <footer class="secfoot">
     {#if result?.ok}
-      <span class="saved">Saved.{#if result.now?.length} Applied: {result.now.join(", ")}.{/if}{#if result.next?.length} At the next Start: {result.next.join(", ")}.{/if}{#if result.restart?.length} After a restart: {result.restart.join(", ")}.{/if}</span>
+      <span class="saved">{savedLine(result)}</span>
     {:else if result && !result.ok}
       <span class="err">Not saved: {result.errors?.length} field{result.errors?.length === 1 ? "" : "s"} need attention.</span>
     {/if}
@@ -215,6 +279,10 @@
   .adv { margin-left: auto; color: var(--muted); font-size: 12px; }
   .secbody { overflow: auto; padding: 14px 18px; }
   h2 { margin: 0 0 12px; font-size: 15px; }
+  h3 { margin: 18px 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  .lead { margin: 0 0 10px; }
+  .listen { flex: 0 0 auto; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; font-weight: 600; cursor: pointer; }
+  .listen:disabled { opacity: 0.6; cursor: default; }
   .field { margin: 0 0 14px; max-width: 720px; }
   .field label, .field .lbl { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px; text-transform: capitalize; }
   .field .row { display: flex; align-items: center; gap: 8px; }

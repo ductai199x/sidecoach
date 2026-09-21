@@ -6,6 +6,7 @@
   import { connect, get, panel } from "./api";
   import { store } from "./panel.svelte";
   import { inShell, openWindow } from "./shell.svelte";
+  import { voiceLabel } from "./voices";
 
   // What the app still needs (models, Stockfish): a banner until the setup is done.
   let missing = $state<string[]>([]);
@@ -90,7 +91,7 @@
         <svg class="ic-off" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.5 2.5V12zM19 12a7 7 0 0 1-1.6 4.4l1.5 1.5A9 9 0 0 0 21 12a9 9 0 0 0-7-8.8v2.1A7 7 0 0 1 19 12zM4.3 3L3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.3a7 7 0 0 1-2.3 1.2v2.1a9 9 0 0 0 3.7-1.8l2 2L21 19.7 4.3 3zM12 4L9.9 6.1 12 8.2V4z"/></svg>
       </button>
       <select title="The coach's voice" value={store.state.voice} onchange={(e) => panel.setVoice((e.currentTarget as HTMLSelectElement).value)}>
-        {#each voices as v (v)}<option value={v}>{v}</option>{/each}
+        {#each voices as v (v)}<option value={v}>{voiceLabel(v)}</option>{/each}
       </select>
     </div>
   </div>

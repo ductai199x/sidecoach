@@ -35,7 +35,7 @@ import queue
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
@@ -47,26 +47,30 @@ from sidecoach.voice.correct import correct
 from sidecoach.voice.hotkey import GlobalPushToTalk
 from sidecoach.voice.mic import MODES, Listener, Microphone
 from sidecoach.voice.vad import SileroGate
+from sidecoach.voice.voices import english_voices, voice_label
 
-# The English Kokoro voices offered in the picker (American / British, female / male).
-PICKER_VOICES: list[str] = [
-    "af_heart",
-    "af_sarah",
-    "af_bella",
-    "af_nicole",
-    "af_nova",
-    "af_sky",
-    "am_adam",
-    "am_michael",
-    "am_echo",
-    "am_liam",
-    "bf_emma",
-    "bf_isabella",
-    "bf_alice",
-    "bm_george",
-    "bm_lewis",
-    "bm_daniel",
-]
+# The coach settings the annotator's thresholds are built from (analysis.score.Thresholds).
+THRESHOLD_FIELDS = frozenset(
+    f"coach.{name}"
+    for name in (
+        "inaccuracy",
+        "mistake",
+        "blunder",
+        "decisive_gap",
+        "only_move_gap",
+        "excellent",
+        "decided",
+    )
+)
+# The voice settings that rebuild the voice or the ear when saved (a model reloads).
+VOICE_RELOAD = frozenset(
+    f"voice.{name}" for name in ("provider", "lang", "model_dir", "tts_device")
+)
+EAR_RELOAD = frozenset(
+    f"voice.{name}" for name in ("stt_provider", "stt_model", "stt_device", "mic_device")
+)
+# What the settings page's Listen button says, in the voice being tried.
+VOICE_SAMPLE = "Nf3: that's the move. Now, what is your opponent's most dangerous idea?"
 
 Frame = tuple[int, float, Any]  # (frame_id, ts, frame)
 FrameSource = Iterable[Frame]
@@ -200,6 +204,10 @@ class PanelEngine:
     # Screen rectangles (x, y, w, h in physical pixels) painted flat before the pipeline
     # sees a live frame -- the panel's own board, so the vision never locks onto it.
     _exclude: list[tuple[int, int, int, int]] = field(default_factory=list, init=False)
+    # The running session's engine and coach glue (cli._Assessing, cli._Coaching), for a
+    # settings save to reach; None until Start.
+    _assessing: Any = field(default=None, init=False)
+    _coaching: Any = field(default=None, init=False)
     frames: FrameRing = field(default_factory=lambda: FrameRing(), init=False)
     # Other model-call ledgers to count in the strip (the puzzle rooms'): callables
     # returning llm.usage.Usage objects.
@@ -243,7 +251,7 @@ class PanelEngine:
             "ply": 0,
             "status": "idle",
             "voice": self.voice,
-            "voices": PICKER_VOICES,
+            "voices": english_voices(self.settings.voice_model_dir() / "voices-v1.0.bin"),
             "muted": self.muted,
             "coach_on": self.coach,
             "analysis_on": self.analysis,
@@ -289,6 +297,166 @@ class PanelEngine:
             self._state["voice"] = voice
             self._state["voice_detail"] = self._tts.healthcheck()[1]
         self._emit("voice", "info", f"voice set to {voice}", detail=self._state["voice_detail"])
+
+    def apply_settings(self, new: Settings, changed: Sequence[str]) -> list[str]:
+        """The settings saved: what can change on the running session does, and is
+        returned as the list of dotted names applied. Everything the models load at
+        start (a device, a provider of voice or ear, the data directory) waits for a
+        restart; the screen's backend and the Stockfish binary for the next Start."""
+        with self._lock:
+            self.settings = new
+        applied: list[str] = []
+
+        def did(name: str) -> None:
+            applied.append(name)
+
+        with contextlib.suppress(Exception):
+            if "voice.voice" in changed:
+                self.set_voice(new.voice.voice)
+                did("voice.voice")
+            if "voice.listen" in changed:
+                self.set_listen(new.voice.listen)
+                did("voice.listen")
+            if "voice.speed" in changed and hasattr(self._tts, "speed"):
+                self._tts.speed = new.voice.speed  # type: ignore[attr-defined]
+                did("voice.speed")
+            if "voice.output_device" in changed and hasattr(self._tts, "set_output_device"):
+                self._tts.set_output_device(new.voice.output_device)  # type: ignore[attr-defined]
+                did("voice.output_device")
+            if "voice.ptt_key" in changed:
+                self._hotkey.stop()
+                self._hotkey = GlobalPushToTalk(
+                    new.voice.ptt_key,
+                    on_press=lambda: self.ptt(True),
+                    on_release=lambda: self.ptt(False),
+                )
+                if self._listener.mode == "ptt":
+                    self.set_listen("ptt")
+                did("voice.ptt_key")
+        if any(c in VOICE_RELOAD for c in changed):
+            self._reload_voice()
+            applied.extend(c for c in changed if c in VOICE_RELOAD)
+        if any(c in EAR_RELOAD for c in changed):
+            self._reload_ear()
+            applied.extend(c for c in changed if c in EAR_RELOAD)
+        if "capture.fps" in changed:
+            did("capture.fps")  # the capture loop reads the rate every frame
+        for name in changed:
+            if name.startswith("llm.price_"):
+                did(name)  # the session's cost is priced at each poll
+        coach = self._coaching.coach if self._coaching is not None else None
+        if coach is not None:
+            from sidecoach.analysis.score import Thresholds
+            from sidecoach.coach.prompt import system_message
+
+            with contextlib.suppress(Exception):
+                if "coach.stuck_seconds" in changed:
+                    coach.policy.settings.stuck_seconds = new.coach.stuck_seconds
+                    did("coach.stuck_seconds")
+                if "coach.quiet" in changed:
+                    coach.policy.settings.quiet = new.coach.quiet
+                    did("coach.quiet")
+                if any(
+                    c in ("coach.persona", "profile.rating_low", "profile.rating_high")
+                    for c in changed
+                ):
+                    coach.system = system_message(
+                        persona=new.coach.persona,
+                        rating=(new.profile.rating_low, new.profile.rating_high),
+                    )
+                    applied.extend(
+                        c
+                        for c in changed
+                        if c in ("coach.persona", "profile.rating_low", "profile.rating_high")
+                    )
+                for name in ("local_verdicts", "verbalized_sampling", "summarise_every"):
+                    if f"coach.{name}" in changed:
+                        setattr(coach, name, getattr(new.coach, name))
+                        did(f"coach.{name}")
+                if "coach.compact_record" in changed:
+                    coach.conversation.compact_record = new.coach.compact_record
+                    did("coach.compact_record")
+                if any(
+                    c.startswith("llm.") and not c.startswith("llm.price_") for c in changed
+                ) or any(c in ("coach.verify", "coach.verify_model") for c in changed):
+                    assert self._coaching is not None
+                    self._coaching.reprovision(new)
+                    self._emit("sys", "info", f"coach: {self._coaching.detail}")
+                    applied.extend(
+                        c
+                        for c in changed
+                        if c.startswith("llm.") and not c.startswith("llm.price_")
+                    )
+                    applied.extend(
+                        c for c in changed if c in ("coach.verify", "coach.verify_model")
+                    )
+            analyser = self._assessing.analyser if self._assessing is not None else None
+            if analyser is not None:
+                with contextlib.suppress(Exception):
+                    if any(c.startswith("coach.") and c in THRESHOLD_FIELDS for c in changed):
+                        analyser.annotator.thresholds = Thresholds.from_settings(new.coach)
+                        applied.extend(c for c in changed if c in THRESHOLD_FIELDS)
+                    engine = analyser.annotator.engine
+                    if "engine.depth" in changed:
+                        analyser.annotator.depth = new.engine.depth
+                        did("engine.depth")
+                    if "engine.multipv" in changed:
+                        analyser.annotator.multipv = new.engine.multipv
+                        engine.multipv = new.engine.multipv
+                        did("engine.multipv")
+                    for name in ("pv_plies", "score_model", "max_seconds"):
+                        if f"engine.{name}" in changed:
+                            setattr(engine, name, getattr(new.engine, name))
+                            did(f"engine.{name}")
+                    if "engine.threads" in changed or "engine.hash_mb" in changed:
+                        engine.reconfigure(threads=new.engine.threads, hash_mb=new.engine.hash_mb)
+                        applied.extend(
+                            c for c in changed if c in ("engine.threads", "engine.hash_mb")
+                        )
+        return sorted(set(applied))
+
+    def _reload_voice(self) -> None:
+        """A new voice model, provider, language, folder or device: the old voice is cut
+        off, the new one built and loaded off the caller's thread."""
+        with contextlib.suppress(Exception):
+            self._tts.stop()
+        self._tts = self._build_tts(self.settings.voice.voice)
+        self._hook_voice()
+        with self._lock:
+            self.voice = self.settings.voice.voice
+            self._state["voice"] = self.voice
+            self._state["voice_detail"] = self._tts.healthcheck()[1]
+        self._emit("voice", "info", f"voice reloading: {self._state['voice_detail']}")
+        threading.Thread(target=self._warm_voice, name="voice-reload", daemon=True).start()
+
+    def _reload_ear(self) -> None:
+        """A new ear or microphone: listening pauses, both are rebuilt, listening resumes
+        in the mode it was in."""
+        mode = self._listener.mode
+        with contextlib.suppress(Exception):
+            self._listener.set_mode("off")
+        self._stt = make_ear(self._voice_settings())
+        self._mic = Microphone(self.settings.voice.mic_device)
+        self._listener.mic = self._mic
+        with self._lock:
+            self._state["stt_detail"] = self._stt.healthcheck()[1]
+        self._emit("voice", "info", f"ear reloading: {self._state['stt_detail']}")
+        threading.Thread(target=self._warm_voice, name="ear-reload", daemon=True).start()
+        if mode != "off":
+            with contextlib.suppress(Exception):
+                self.set_listen(mode)
+
+    def say_sample(self, voice: str | None = None, text: str = VOICE_SAMPLE) -> bool:
+        """Speak one line in `voice` (the coach's own when None), for the settings page's
+        Listen button; the coach's voice is unchanged. False when the voice cannot speak."""
+        ready, detail = self._tts.healthcheck()
+        if not ready:
+            self._emit("voice", "warn", f"preview: the voice cannot speak: {detail}")
+            return False
+        self._tts.stop()
+        self._tts.say(text, voice=voice or None)
+        self._emit("voice", "info", f"preview in {voice_label(voice or self.voice)}: {text}")
+        return True
 
     def set_listen(self, mode: str) -> str:
         """How the coach listens: off, push-to-talk, or voice activity."""
@@ -767,7 +935,10 @@ class PanelEngine:
                 self._emit("sys", "info", f"recording to {session}")
             else:
                 self._emit("sys", "info", "not recording")
-            frames: Iterable[Frame] = capture_loop(cap, region, self.fps)
+            # The rate is read every frame, so a saved capture.fps applies at once.
+            frames: Iterable[Frame] = capture_loop(
+                cap, region, lambda: float(self.settings.capture.fps)
+            )
         else:
             frames = self.frame_source or ()
             self._emit("sys", "info", "replaying a recording (not recorded again)")
@@ -798,6 +969,9 @@ class PanelEngine:
             self._emit("sys", "warn", "pieces: silhouette overlap (no embedding net)")
         assessing = _Assessing(self.settings, self.analysis)
         coaching = _Coaching(self.settings, self.coach and assessing.on)
+        # Kept for the settings window: a save reaches into them (apply_settings).
+        self._assessing, self._coaching = assessing, coaching
+        self.fps = self.settings.capture.fps
         # Their console output is replaced by the log: assessments are formatted here from
         # the events, and coach messages are logged with their metadata below.
         assessing.sink = lambda _line: None

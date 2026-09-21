@@ -39,7 +39,7 @@ from pydantic import BaseModel
 
 from sidecoach.config import Settings
 from sidecoach.ui import settings_api
-from sidecoach.ui.panel import PanelApi, PanelEngine
+from sidecoach.ui.panel import VOICE_SAMPLE, PanelApi, PanelEngine
 from sidecoach.ui.settings_api import SettingsUpdate  # resolved from the module globals
 
 if TYPE_CHECKING:
@@ -59,6 +59,11 @@ PARENT_CHECK_S = 2.0
 
 class _Ask(BaseModel):
     text: str
+
+
+class _Say(BaseModel):
+    voice: str | None = None
+    text: str | None = None
 
 
 class _ClientLog(BaseModel):
@@ -224,6 +229,11 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
     @app.post("/api/ask")
     def ask(body: _Ask) -> dict[str, bool]:
         return {"ok": api.ask(body.text)}
+
+    @app.post("/api/say")
+    def say(body: _Say) -> dict[str, bool]:
+        """One line in a voice, for the settings page's Listen button."""
+        return {"ok": engine.say_sample(body.voice, body.text or VOICE_SAMPLE)}
 
     @app.post("/api/voice")
     def voice(body: _Voice) -> dict[str, bool]:

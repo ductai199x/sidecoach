@@ -1152,6 +1152,8 @@ class Coach:
         routine_provider: LLMProvider | None = None,
         verbalized_sampling: bool = True,
         local_verdicts: bool = True,
+        persona: str | None = None,
+        rating: tuple[int, int] | None = None,
     ) -> None:
         self.policy = policy or InterjectionPolicy()
         # One reply instead of a verbalized distribution (see config.CoachSettings).
@@ -1176,7 +1178,7 @@ class Coach:
         # The engine that analyses a move or line the player names, on demand; without
         # one, a named move is only checked against the candidates the facts hold.
         self.engine = engine
-        self.system = system_message()
+        self.system = system_message(persona=persona, rating=rating)
         # Run the claims check on the caller's thread (replay and evaluation) instead of a
         # worker: live it is threaded so a button press never stalls the pipeline.
         self.sync_claims = False
@@ -1756,6 +1758,24 @@ class Coach:
         chosen = random.choice(choices)
         self._last_verdict = chosen
         return chosen.format(san=san)
+
+    def set_providers(
+        self,
+        provider: LLMProvider,
+        *,
+        routine_provider: LLMProvider | None = None,
+        verifier: LLMProvider | None = None,
+        summariser: LLMProvider | None = None,
+        claims: Callable[[str, chess.Board, PositionFacts | None], list[str]] | None = None,
+    ) -> None:
+        """A new model mid-game (the settings saved): the next call goes to it; a call in
+        flight finishes on the old one. The conversation is untouched."""
+        with self._lock:
+            self.speaker.provider = provider
+            self.speaker.routine_provider = routine_provider or provider
+            self.speaker.verifier = verifier
+            self.summariser = summariser or provider
+            self.claims = claims
 
     def _rotate(self, key: str, phrases: Sequence[str]) -> str:
         """One of `phrases`, never the one said last under `key`."""

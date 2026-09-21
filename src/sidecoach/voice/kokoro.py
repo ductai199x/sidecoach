@@ -129,7 +129,7 @@ class KokoroTTS:
         self._playback: int | None = None  # resolved once, when unconfigured
         self.device: Device | None = None  # where the graph actually loaded
         self.load_seconds: float | None = None
-        self._queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
+        self._queue: queue.Queue[tuple[str, str, str | None] | None] = queue.Queue()
         # Called with the line as given to `say` the moment its audio starts to play,
         # for whoever measures the way from a move to the first sound (the panel).
         self.on_play: Callable[[str], None] | None = None
@@ -205,6 +205,17 @@ class KokoroTTS:
         """Change the voice. A style vector, not a model: nothing is reloaded."""
         self.voice = voice
 
+    def set_output_device(self, device: int | str | None) -> None:
+        """Play through another device from the next line: the open stream is dropped and
+        reopened on it."""
+        self.output_device = device
+        self._playback = None
+        stream, self._stream = self._stream, None
+        self._stream_device_name = None
+        if stream is not None:
+            with contextlib.suppress(Exception):
+                stream.close()
+
     def load(self) -> bool:
         """Load the graph and the audio module once. Returns whether the voice is usable.
 
@@ -233,15 +244,16 @@ class KokoroTTS:
                 self._failed = True
                 return False
 
-    def say(self, text: str) -> None:
-        """Queue a line to be spoken. Notation in it is read aloud in words."""
+    def say(self, text: str, *, voice: str | None = None) -> None:
+        """Queue a line to be spoken. Notation in it is read aloud in words. `voice` speaks
+        this line in another voice (a preview) without changing the coach's."""
         if self._failed:
             return
         spoken = speak_notation(text).strip()
         if not spoken:
             return
         self._ensure_worker()
-        self._queue.put((spoken, text))
+        self._queue.put((spoken, text, voice))
 
     @property
     def busy(self) -> bool:
@@ -289,14 +301,14 @@ class KokoroTTS:
             finally:
                 self._playing = False
 
-    def _speak_one(self, text: str, given: str = "") -> None:
+    def _speak_one(self, text: str, given: str = "", voice: str | None = None) -> None:
         if not self.load():
             return  # degraded to silence
         with self._lock:
             generation = self._generation
         try:
             samples, sample_rate = self._kokoro.create(  # type: ignore[attr-defined]
-                text, voice=self.voice, speed=self.speed, lang=self.lang
+                text, voice=voice or self.voice, speed=self.speed, lang=self.lang
             )
         except Exception as exc:  # noqa: BLE001 - a bad line must not kill the voice
             log.warning("Kokoro synthesis failed for %r: %s", text, exc)

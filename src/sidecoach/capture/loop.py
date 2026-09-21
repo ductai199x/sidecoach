@@ -19,7 +19,7 @@ class CaptureFailed(RuntimeError):
 def capture_loop(
     backend: CaptureBackend,
     region: Region,
-    fps: int,
+    fps: int | float | Callable[[], float],
     *,
     max_seconds: float | None = None,
     stop: Callable[[], bool] | None = None,
@@ -33,9 +33,10 @@ def capture_loop(
     `grab_retries` times in a row before the error is raised; a session survives a screen
     lock of a quarter minute and simply misses the frames.
     """
-    if fps <= 0:
-        raise ValueError(f"fps must be positive, got {fps}")
-    interval = 1.0 / fps
+    rate: Callable[[], float] = fps if callable(fps) else (lambda: float(fps))  # type: ignore[assignment]
+    if rate() <= 0:
+        raise ValueError(f"fps must be positive, got {rate()}")
+    interval = 1.0 / rate()
     started = time.monotonic()
     next_due = started
     frame_id = 0

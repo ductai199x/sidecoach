@@ -5,8 +5,6 @@ tools_dir = "tools"
 
 [capture]
 fps = 10
-record_frames = true
-record_crops = true
 
 [engine]
 # stockfish_path = "tools/stockfish/stockfish-windows-x86-64-universal.exe"

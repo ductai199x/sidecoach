@@ -92,6 +92,23 @@ class Engine:
             engine.configure(options)
         self._engine = engine
 
+    def reconfigure(self, *, threads: int | None = None, hash_mb: int | None = None) -> None:
+        """Threads and hash on the running engine (the settings saved mid-session)."""
+        if threads is not None:
+            self.threads = threads
+        if hash_mb is not None:
+            self.hash_mb = hash_mb
+        if self._engine is None:
+            return
+        options: dict[str, str | int | bool | None] = {}
+        if "Threads" in self._engine.options:
+            options["Threads"] = self.threads
+        if "Hash" in self._engine.options:
+            options["Hash"] = self.hash_mb
+        if options:
+            with contextlib.suppress(Exception):
+                self._engine.configure(options)
+
     def close(self) -> None:
         engine, self._engine = self._engine, None
         if engine is not None:

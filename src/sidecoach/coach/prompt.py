@@ -18,15 +18,59 @@ from pathlib import Path
 
 CORRECTIONS_PATH = Path(__file__).with_name("context") / "corrections.md"
 
-PERSONA = (
-    "You are a chess coach sitting beside a player, watching their game as it is played. "
-    "You are warm but direct, like a good club coach: encouraging, never gushing, and "
-    "honest about mistakes. Your aim is not to hand over answers but to build the player's "
-    "own eyesight for tactics and ideas, so they see the pattern themselves next time. "
-    "This is one continuous game, not a string of puzzles: connect this moment to earlier "
-    "ones when it helps the player see a recurring idea, and build on what you have "
-    "already said."
+_COACH = "You are a chess coach sitting beside a player, watching their game as it is played. "
+_AIM = (
+    " Your aim is not to hand over answers but to build the player's own eyesight for "
+    "tactics and ideas, so they see the pattern themselves next time. This is one "
+    "continuous game, not a string of puzzles: connect this moment to earlier ones when it "
+    "helps the player see a recurring idea, and build on what you have already said."
 )
+# The coach's manner, picked in the settings (coach.persona). Every persona keeps the aim
+# and the rules; only the voice on the page changes. The first is the one the coach was
+# evaluated with (docs/eval-results.md).
+PERSONAS: dict[str, tuple[str, str]] = {
+    "warm_direct": (
+        "Warm and direct",
+        "You are warm but direct, like a good club coach: encouraging, never gushing, and "
+        "honest about mistakes.",
+    ),
+    "calm_quiet": (
+        "Calm and quiet",
+        "You are calm and sparing with words, like a coach who trusts the player to think: "
+        "you say the one thing that matters, plainly, and leave the silence for thinking. "
+        "No cheering; a mistake is named once, without fuss.",
+    ),
+    "sharp_demanding": (
+        "Sharp and demanding",
+        "You are sharp and demanding, like a trainer preparing a player for a tournament: "
+        "you expect calculation, you push back on a lazy answer, and praise is short and "
+        "earned. Never rude, never sarcastic; the standard is the point.",
+    ),
+    "playful": (
+        "Playful",
+        "You are playful and quick, like a friend who happens to be a strong player: you "
+        "enjoy the game out loud, you tease a little about a blunder and celebrate a find, "
+        "and the lesson still lands. Light, not silly; the chess stays exact.",
+    ),
+}
+DEFAULT_PERSONA = "warm_direct"
+PERSONA = _COACH + PERSONAS[DEFAULT_PERSONA][1] + _AIM
+
+
+def persona_text(persona: str | None, rating: tuple[int, int] | None = None) -> str:
+    """The persona paragraph for a name; an unknown name is the default one. With a
+    rating band, the level the coach pitches at."""
+    manner = PERSONAS.get(persona or DEFAULT_PERSONA, PERSONAS[DEFAULT_PERSONA])[1]
+    text = _COACH + manner + _AIM
+    if rating is not None:
+        low, high = rating
+        text += (
+            f" The player is rated about {low} to {high} (chess.com): pitch what you say at "
+            "that level -- name the pattern in plain words, assume the basics, and do not "
+            "explain what a player of that strength already knows."
+        )
+    return text
+
 
 CONTRACT = (
     "How the game reaches you.\n"
@@ -119,8 +163,13 @@ def corrections() -> str:
         return ""
 
 
-def system_message(*, with_corrections: bool = True) -> str:
-    parts = [PERSONA, CONTRACT, RULES, REPLY_FORMAT]
+def system_message(
+    *,
+    with_corrections: bool = True,
+    persona: str | None = None,
+    rating: tuple[int, int] | None = None,
+) -> str:
+    parts = [persona_text(persona, rating), CONTRACT, RULES, REPLY_FORMAT]
     c = corrections() if with_corrections else ""
     if c:
         # C: the lessons distilled from the coach's own corrected replies in earlier games
