@@ -17,6 +17,7 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Collection
 from pathlib import Path
 
 import chess
@@ -74,31 +75,72 @@ def main() -> None:
         "--summariser", default="openai:gpt-5.6-luna@none", help="the model that folds the dialogue"
     )
     args = ap.parse_args()
+    t_start = time.time()
+    transcript, dumps, coach = play(
+        args.game,
+        args.side,
+        args.coach,
+        stuck_every=args.stuck_every,
+        dump={int(x) for x in args.dump.split(",") if x.strip()},
+        no_corrections=args.no_corrections,
+        summarise_every=args.summarise_every,
+        summariser=args.summariser,
+    )
+    print(f"# Play-through: {args.game}, coaching {args.side}, coach {args.coach}\n")
+    print("# Transcript\n\n```")
+    print("\n".join(transcript))
+    print("```\n")
+    for title, text in dumps:
+        print(f"# Harness {title}\n\n```\n{text}\n```\n")
+    print(f"# Final harness\n\n```\n{coach.conversation.render()}\n```\n")
+    print(
+        f"{time.time() - t_start:.0f}s; coach calls {len(transcript)}; failures"
+        f" {coach.speaker.failures} (last: {coach.speaker.last_error}); fallbacks"
+        f" {coach.speaker.fallbacks}",
+        file=sys.stderr,
+    )
 
-    # A master game by default; a recorded game's facts (data/eval/facts/recordings) when
-    # the stem is found there instead.
-    path = FACTS / f"{args.game}.json"
+
+def load_facts(game: str) -> dict:
+    """A master game by default; a recorded game's facts (data/eval/facts/recordings) when
+    the stem is found there instead."""
+    path = FACTS / f"{game}.json"
     if not path.exists():
-        path = FACTS.parent / "recordings" / f"{args.game}.json"
-    facts = json.loads(path.read_text(encoding="utf-8"))
-    moves = [s for s in facts["script"] if s["kind"] == "move"]
-    side = Side.WHITE if args.side == "white" else Side.BLACK
-    user_colour = chess.WHITE if side == Side.WHITE else chess.BLACK
-    dump_at = {int(x) for x in args.dump.split(",") if x.strip()}
+        path = FACTS.parent / "recordings" / f"{game}.json"
+    return json.loads(path.read_text(encoding="utf-8"))
 
-    provider = coach_provider(args.coach)
+
+def play(
+    game: str,
+    side_name: str,
+    coach_kind: str,
+    *,
+    stuck_every: int = 5,
+    dump: Collection[int] = (),
+    no_corrections: bool = False,
+    summarise_every: int = 0,
+    summariser: str = "openai:gpt-5.6-luna@none",
+) -> tuple[list[str], list[tuple[str, str]], Coach]:
+    """The game through the coach: the transcript's lines, the harness at the dumped
+    plies, and the coach itself (for its conversation and its speaker's counts)."""
+    facts = load_facts(game)
+    moves = [s for s in facts["script"] if s["kind"] == "move"]
+    side = Side.WHITE if side_name == "white" else Side.BLACK
+    user_colour = chess.WHITE if side == Side.WHITE else chess.BLACK
+    dump_at = set(dump)
+
+    provider = coach_provider(coach_kind)
     coach = Coach(
         provider,
         policy=InterjectionPolicy(PolicySettings(stuck_seconds=STUCK_SECONDS)),
         draft_check=_draft_check(),
-        summarise_every=args.summarise_every,
-        summariser=coach_provider(args.summariser) if args.summarise_every else None,
+        summarise_every=summarise_every,
+        summariser=coach_provider(summariser) if summarise_every else None,
     )
     coach.sync_summaries = True
-    coach.system = prompt.system_message(with_corrections=not args.no_corrections)
-    gid = args.game
+    coach.system = prompt.system_message(with_corrections=not no_corrections)
+    gid = game
     ts = 0.0
-    t_start = time.time()
     transcript: list[str] = []
     dumps: list[tuple[str, str]] = []
 
@@ -139,11 +181,11 @@ def main() -> None:
         said("after the move")
         if not by_user and step is not moves[-1]:
             own_turns += 1
-            if own_turns % args.stuck_every == 0:
+            if own_turns % stuck_every == 0:
                 ts += STUCK_SECONDS + 15
                 coach.tick(ts)
                 said("the player is stuck")
-            if own_turns % (args.stuck_every * 2) == 3:
+            if own_turns % (stuck_every * 2) == 3:
                 ts += 4
                 transcript.append('        PLAYER: "what should I be aiming for here?"')
                 coach.ask("what should I be aiming for here?", ts)
@@ -180,20 +222,7 @@ def main() -> None:
         transcript.append('        PLAYER: "how did I do overall?"')
         coach.ask("how did I do overall?", ts)
         said("answer")
-
-    print(f"# Play-through: {args.game}, coaching {args.side}, coach {args.coach}\n")
-    print("# Transcript\n\n```")
-    print("\n".join(transcript))
-    print("```\n")
-    for title, text in dumps:
-        print(f"# Harness {title}\n\n```\n{text}\n```\n")
-    print(f"# Final harness\n\n```\n{coach.conversation.render()}\n```\n")
-    print(
-        f"{time.time() - t_start:.0f}s; coach calls {len(transcript)}; failures"
-        f" {coach.speaker.failures} (last: {coach.speaker.last_error}); fallbacks"
-        f" {coach.speaker.fallbacks}",
-        file=sys.stderr,
-    )
+    return transcript, dumps, coach
 
 
 if __name__ == "__main__":
