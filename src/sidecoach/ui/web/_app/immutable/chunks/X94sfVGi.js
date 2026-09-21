@@ -1,0 +1,1 @@
+import{f as e}from"./B8r_wlIR.js";async function t(){await e(`plugin:process|restart`)}export{t as relaunch};

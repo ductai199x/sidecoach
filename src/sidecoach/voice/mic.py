@@ -155,6 +155,8 @@ class Listener:
         self._on_event = on_event or (lambda level, text: None)
         self.mode = "off"
         self._ptt = False
+        # The microphone's level, for a meter: the latest frame's peak, decaying.
+        self.level = 0.0
         self._buffer: list[np.ndarray] = []
         self._pre: deque[np.ndarray] = deque(maxlen=PRE_ROLL_FRAMES)
         self._started_at: float | None = None
@@ -218,7 +220,9 @@ class Listener:
             try:
                 frame = self.mic.frames.get(timeout=0.2)
             except queue.Empty:
+                self.level *= 0.5
                 continue
+            self.level = max(float(np.abs(frame).max()), self.level * 0.8)
             with self._lock:
                 mode = self.mode
                 if mode == "ptt":

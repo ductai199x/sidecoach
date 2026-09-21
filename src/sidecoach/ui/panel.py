@@ -66,6 +66,9 @@ THRESHOLD_FIELDS = frozenset(
 # The voice settings that rebuild the voice or the ear when saved (a model reloads).
 VOICE_RELOAD = frozenset(f"voice.{name}" for name in ("lang", "model_dir", "tts_device"))
 EAR_RELOAD = frozenset(f"voice.{name}" for name in ("stt_device", "mic_device"))
+# The settings page's microphone test turns itself off this long after the page's
+# last look at it.
+HEAR_TEST_TIMEOUT_S = 20.0
 # What the settings page's Listen button says, in the voice being tried.
 VOICE_SAMPLE = "Nf3: that's the move. Now, what is your opponent's most dangerous idea?"
 
@@ -212,6 +215,14 @@ class PanelEngine:
     # settings save to reach; None until Start.
     _assessing: Any = field(default=None, init=False)
     _coaching: Any = field(default=None, init=False)
+    # The settings page's live test of the microphone and the ear: while on, the ear
+    # listens (voice activity) and what it hears goes to `_heard_test`, not to the coach;
+    # the mode it interrupted is restored after. It switches itself off when the page
+    # stops asking (HEAR_TEST_TIMEOUT_S).
+    _hear_test_on: bool = field(default=False, init=False)
+    _hear_test_mode: str = field(default="off", init=False)
+    _hear_test_seen: float = field(default=0.0, init=False)
+    _heard_test: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=6), init=False)
     frames: FrameRing = field(default_factory=lambda: FrameRing(), init=False)
     # Other model-call ledgers to count in the strip (the puzzle rooms'): callables
     # returning llm.usage.Usage objects.
@@ -450,6 +461,72 @@ class PanelEngine:
             with contextlib.suppress(Exception):
                 self.set_listen(mode)
 
+    def set_hear_test(self, on: bool) -> dict[str, Any]:
+        """Start or stop the live test of the microphone and the ear."""
+        if on and not self._hear_test_on:
+            ok, mic = self._mic.healthcheck()
+            ready, ear = self._stt.healthcheck()
+            if not ok or not ready:
+                return {
+                    "ok": False,
+                    "error": f"{'microphone' if not ok else 'ear'}: {mic if not ok else ear}",
+                }
+            self._hear_test_mode = self._listener.mode
+            self._heard_test.clear()
+            self._hear_test_on = True
+            self._hear_test_seen = time.monotonic()
+            with contextlib.suppress(Exception):
+                self._listener.set_mode("vad")
+            # The ear loads on its first utterance otherwise, and the first result would
+            # carry the load in its time.
+            load = getattr(self._stt, "load", None)
+            if load is not None and getattr(self._stt, "device", None) is None:
+                threading.Thread(target=load, name="ear-warm", daemon=True).start()
+            self._emit("voice", "info", "microphone test on: say something")
+        elif not on and self._hear_test_on:
+            self._hear_test_on = False
+            with contextlib.suppress(Exception):
+                self.set_listen(self._hear_test_mode)
+            self._emit("voice", "info", "microphone test off")
+        return self.hear_status()
+
+    def _note_heard_test(self, raw: str, seconds: float, ms: float) -> None:
+        import chess
+
+        board = None
+        with self._lock:
+            fen = self._state.get("fen")
+        if fen:
+            with contextlib.suppress(ValueError):
+                board = chess.Board(fen)
+        heard = correct(raw, board).text if raw else ""
+        self._heard_test.appendleft(
+            {
+                "raw": raw,
+                "heard": heard,
+                "seconds": round(seconds, 1),
+                "stt_ms": round(ms),
+                "t": time.time(),
+            }
+        )
+        self._emit(
+            "voice",
+            "info",
+            f"microphone test heard: {raw!r}" + (f" -> {heard!r}" if heard != raw else ""),
+        )
+
+    def hear_status(self) -> dict[str, Any]:
+        """What the page shows while the test is on: the level and what was heard."""
+        self._hear_test_seen = time.monotonic()
+        return {
+            "ok": True,
+            "on": self._hear_test_on,
+            "level": round(min(1.0, self._listener.level), 3),
+            "heard": list(self._heard_test),
+            "microphone": self._mic.healthcheck()[1],
+            "ear": self._stt.healthcheck()[1],
+        }
+
     def say_sample(self, voice: str | None = None, text: str = VOICE_SAMPLE) -> bool:
         """Speak one line in `voice` (the coach's own when None), for the settings page's
         Listen button; the coach's voice is unchanged. False when the voice cannot speak."""
@@ -670,6 +747,11 @@ class PanelEngine:
         begun = time.perf_counter()
         raw = self._stt.transcribe(audio)
         ms = (time.perf_counter() - begun) * 1000
+        if self._hear_test_on and time.monotonic() - self._hear_test_seen > HEAR_TEST_TIMEOUT_S:
+            self.set_hear_test(False)  # the page went away without saying so
+        if self._hear_test_on:
+            self._note_heard_test(raw, seconds, ms)
+            return
         if not raw:
             self._emit(
                 "voice", "debug", f"heard nothing in {seconds:.1f}s of audio", stt_ms=round(ms)

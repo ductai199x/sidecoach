@@ -61,6 +61,10 @@ class _Ask(BaseModel):
     text: str
 
 
+class _HearTest(BaseModel):
+    on: bool = True
+
+
 class _Say(BaseModel):
     voice: str | None = None
     text: str | None = None
@@ -229,6 +233,15 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
     @app.post("/api/ask")
     def ask(body: _Ask) -> dict[str, bool]:
         return {"ok": api.ask(body.text)}
+
+    @app.post("/api/hear_test")
+    def hear_test(body: _HearTest) -> dict[str, Any]:
+        """The settings page's live test of the microphone and the ear: on or off."""
+        return engine.set_hear_test(body.on)
+
+    @app.get("/api/hear_test")
+    def hear_test_status() -> dict[str, Any]:
+        return engine.hear_status()
 
     @app.post("/api/say")
     def say(body: _Say) -> dict[str, bool]:

@@ -3,7 +3,7 @@
   // schema the sidecar serves (descriptions, choices, ranges, and when a change applies),
   // the API keys into the OS credential store, the audio devices by name, and the
   // shell's own two switches (what closing the window does, start with the system).
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { connect, get, post, put } from "$lib/api";
   import { inShell, setShellSettings, shellSettings, type ShellSettings } from "$lib/shell.svelte";
   import { voiceLabel } from "$lib/voices";
@@ -46,6 +46,44 @@
     return data.key_envs[providerNow] ?? null;
   });
   let listening = $state("");
+  // The live test of the microphone and the ear under "Hearing you": while it is on the
+  // page polls the level and what was heard; the coach is not asked.
+  type Heard = { raw: string; heard: string; seconds: number; stt_ms: number; t: number };
+  let hearOn = $state(false);
+  let hearLevel = $state(0);
+  let hearList = $state<Heard[]>([]);
+  let hearError = $state("");
+  let hearInfo = $state("");
+  let hearTimer: ReturnType<typeof setInterval> | null = null;
+  async function pollHearing() {
+    try {
+      const res = await get<{ on: boolean; level: number; heard: Heard[]; microphone: string; ear: string }>("/api/hear_test");
+      hearLevel = res.level;
+      hearList = res.heard;
+      hearInfo = res.microphone;
+      if (!res.on) stopHearing(false);
+    } catch { /* the next poll will tell */ }
+  }
+  async function startHearing() {
+    hearError = "";
+    try {
+      const res = await post<{ ok: boolean; error?: string }>("/api/hear_test", { on: true });
+      if (!res.ok) { hearError = res.error ?? "could not start"; return; }
+      hearOn = true;
+      hearList = [];
+      hearTimer = setInterval(pollHearing, 150);
+    } catch (e) {
+      hearError = String(e);
+    }
+  }
+  async function stopHearing(tell = true) {
+    if (hearTimer) clearInterval(hearTimer);
+    hearTimer = null;
+    hearOn = false;
+    hearLevel = 0;
+    if (tell) await post("/api/hear_test", { on: false }).catch(() => {});
+  }
+  onDestroy(() => { if (hearOn) void stopHearing(); });
 
   function fields(name: string): [string, Prop][] {
     if (!data) return [];
@@ -292,6 +330,22 @@
         {#each groups as [title, list] (title)}
           {#if title && groups.length > 1}<h3>{title}</h3>{/if}
           {#each list as [key, p] (key)}{@render field(section, key, p)}{/each}
+          {#if section === "voice" && title === "Hearing you"}
+            <div class="field test">
+              <span class="lbl">Test the microphone and the ear</span>
+              <div class="row">
+                <button type="button" class="listen" onclick={() => (hearOn ? stopHearing() : startHearing())}>{hearOn ? "Stop" : "Start"}</button>
+                <div class="meter" title="microphone level"><div class="bar" style:width={`${Math.round(Math.min(1, hearLevel * 2.5) * 100)}%`}></div></div>
+                {#if hearOn}<span class="muted">Say a move, like "knight to f3".</span>{/if}
+              </div>
+              {#if hearError}<p class="err">{hearError}</p>{/if}
+              {#if hearOn && hearInfo}<p class="desc">Listening on {hearInfo}.</p>{/if}
+              {#each hearList as h (h.t)}
+                <p class="desc heard"><b>Heard:</b> {h.heard || h.raw || "(no words)"}{#if h.raw && h.heard && h.raw !== h.heard}&nbsp;<span class="muted">(the ear said "{h.raw}"; corrected against the board)</span>{/if}&nbsp;<span class="muted">· {h.seconds} s, recognised in {h.stt_ms} ms</span></p>
+              {/each}
+              {#if !hearOn && !hearList.length && !hearError}<p class="desc">Start, speak, and see what the ear makes of it as you go. The coach is not asked.</p>{/if}
+            </div>
+          {/if}
         {/each}
       {/if}
     {/if}
@@ -321,7 +375,11 @@
   .listen { flex: 0 0 auto; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; font-weight: 600; cursor: pointer; }
   .listen:disabled { opacity: 0.6; cursor: default; }
   .field { margin: 0 0 14px; max-width: 720px; }
-  .field label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .field label, .field .lbl { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .field.test { margin-top: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+  .meter { flex: 0 0 160px; height: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+  .meter .bar { height: 100%; background: var(--accent); transition: width 80ms linear; }
+  .heard { margin-top: 6px; }
   .field .row { display: flex; align-items: center; gap: 8px; }
   .field .row label { margin: 0; }
   .field input[type="text"], .field input[type="number"], .field input[type="password"], .field select {
