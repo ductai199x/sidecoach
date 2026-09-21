@@ -212,3 +212,56 @@ def test_a_correction_moves_through_the_api(tmp_path: Path) -> None:
     assert engine.poll(0)["state"]["review"]["turning_points"][0]["cause"] == "time pressure"
     with pytest.raises(ValueError):
         api.correct("g", 0, 3, "bad luck")
+
+
+def test_the_engine_and_coach_outlive_a_session(tmp_path: Path) -> None:
+    """Everything a session needs is built when the panel opens (`warm`), before any
+    Start; Start and Stop only start and stop reading the screen (Tai, 2026-09-21), so the
+    same engine and coach glue serve one session after another; `close` ends them."""
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
+    engine = PanelEngine(
+        settings, analysis=False, coach=False, record=False, frame_source=game_frames()
+    )
+    assert engine._assessing is None and engine._coaching is None
+    engine.warm(background=False)
+    assessing, coaching = engine._assessing, engine._coaching
+    assert assessing is not None and coaching is not None, "warm built nothing"
+    assert engine._warm_done.is_set()
+    texts = [ln["text"] for ln in engine.poll(0)["lines"]]
+    assert sum(t.startswith("engine:") for t in texts) == 1
+    assert sum(t.startswith("coach:") for t in texts) == 1
+
+    engine.start()
+    assert engine._thread is not None
+    engine._thread.join(timeout=90)
+    assert not engine._thread.is_alive()
+    assert engine._assessing is assessing and engine._coaching is coaching, (
+        "a session must use what the warm-up built, and Stop must keep it"
+    )
+    engine.start()  # the second session: the same stages, nothing rebuilt or re-announced
+    assert engine._thread is not None
+    engine._thread.join(timeout=30)
+    assert engine._assessing is assessing and engine._coaching is coaching
+    texts = [ln["text"] for ln in engine.poll(0)["lines"]]
+    assert sum(t.startswith("engine:") for t in texts) == 1, texts
+    assert sum(t.startswith("coach:") for t in texts) == 1, texts
+
+    engine.close()
+    assert engine._assessing is None and engine._coaching is None
+
+
+def test_a_start_without_a_warm_up_builds_the_stages_once(tmp_path: Path) -> None:
+    """The CLI's replay and the tests start without a warm-up: the session builds the
+    stages itself, and keeps them for the next one."""
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
+    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
+    engine.start()
+    assert engine._thread is not None
+    engine._thread.join(timeout=30)
+    assessing = engine._assessing
+    assert assessing is not None
+    engine.start()
+    assert engine._thread is not None
+    engine._thread.join(timeout=30)
+    assert engine._assessing is assessing
+    engine.close()

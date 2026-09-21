@@ -630,8 +630,10 @@ def run_server(
     with contextlib.suppress(OSError):
         lock.parent.mkdir(parents=True, exist_ok=True)
         lock.write_text(json.dumps({"port": port, "pid": os.getpid()}), encoding="utf-8")
+    # Everything a session needs loads now, so Start only starts the screen.
+    engine.warm()
     if parent_pid is not None:
-        _watch_parent(parent_pid, engine.stop, lock)
+        _watch_parent(parent_pid, engine.close, lock)
     if replay is not None:
         engine.start()  # a recording plays on its own; live capture waits for the Start button
     url = f"http://{host}:{port}/"
@@ -645,6 +647,8 @@ def run_server(
         config = uvicorn.Config(app, host=host, port=port, log_level="warning")
         uvicorn.Server(config).run(sockets=[sock])
     finally:
+        with contextlib.suppress(Exception):
+            engine.close()  # the session, then Stockfish and the coach
         with contextlib.suppress(OSError):
             if (
                 lock.exists()

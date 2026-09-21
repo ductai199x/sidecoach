@@ -101,6 +101,19 @@ Process rules, decided:
   ring of JPEGs at half scale, under 40 MB) and are written only by File > Dump, on the
   user's own action. Recording stays a development tool of the CLI.
 
+- **Everything loads when the app opens; Start and Stop only start and stop reading the
+  screen** (Tai, 2026-09-21). The sidecar warms itself as soon as it serves: the piece
+  net, the voice and the ear (loaded and primed with one inference each, so the first real
+  one is 20 ms, not 750), Stockfish and the coach's second engine (one search of the start
+  position each), the coach and its model (a server on this machine gets one short request,
+  which is where LM Studio loads the model; a paid provider is never called), the
+  session's modules and the vision's first pass. Measured 2026-09-21 on the 3090 Ti: 8.4 s
+  from launch to everything primed, in the background, the window usable throughout. A
+  Start that comes sooner waits for it. Stop keeps Stockfish and the coach for the next
+  Start; only exit closes them, and the shell's hard kill leaves nothing behind (Stockfish
+  exits on its closed stdin). The microphone test in the settings therefore needs no
+  loading, and neither does the first move of a game.
+
 - The frontend is served from the shell's own origin (`http://tauri.localhost` on Windows,
   `tauri://localhost` on Linux) and calls the sidecar cross-origin; FastAPI allows exactly
   those origins. The webview is never pointed at the sidecar's URL in the product, because

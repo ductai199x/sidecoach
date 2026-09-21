@@ -123,6 +123,16 @@ class ParakeetSTT:
                 log.warning("Parakeet unavailable, coach is deaf: %s", exc)
                 return False
 
+    def prime(self) -> float | None:
+        """Half a second of silence through the model, so the first real clip does not pay
+        the runtime's warm-up (~0.7 s on CUDA). Returns the seconds it took, None if the
+        ear did not load."""
+        if not self.load():
+            return None
+        begun = time.perf_counter()
+        self.transcribe(np.zeros(SAMPLE_RATE // 2, dtype=np.float32))
+        return time.perf_counter() - begun
+
     def transcribe(self, audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> str:
         if not self.load():
             return ""

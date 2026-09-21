@@ -27,6 +27,7 @@ the model file, and the overlap reads on.
 from __future__ import annotations
 
 import os
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -80,6 +81,13 @@ class CellEmbedder:
             (EMBED_INPUT, EMBED_INPUT),
             interpolation=cv2.INTER_CUBIC if growing else cv2.INTER_AREA,
         )
+
+    def prime(self) -> float:
+        """One start-position-sized batch through the net, so the first real one does not
+        pay the runtime's warm-up (a second on CUDA). Returns the seconds it took."""
+        begun = time.perf_counter()
+        self.embed([np.zeros((EMBED_INPUT, EMBED_INPUT, 3), dtype=np.uint8)] * 64)
+        return time.perf_counter() - begun
 
     def embed(self, crops: list[np.ndarray]) -> np.ndarray:
         """Unit embeddings (n, EMBED_DIM), float32, one per crop."""

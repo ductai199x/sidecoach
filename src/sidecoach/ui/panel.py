@@ -211,10 +211,17 @@ class PanelEngine:
     # Screen rectangles (x, y, w, h in physical pixels) painted flat before the pipeline
     # sees a live frame -- the panel's own board, so the vision never locks onto it.
     _exclude: list[tuple[int, int, int, int]] = field(default_factory=list, init=False)
-    # The running session's engine and coach glue (cli._Assessing, cli._Coaching), for a
-    # settings save to reach; None until Start.
+    # The engine and the coach glue (cli._Assessing, cli._Coaching). They belong to the
+    # panel's lifetime, not a session's: `warm()` builds them when the app opens, Start
+    # and Stop only start and stop reading the screen (Tai, 2026-09-21), and `close()`
+    # ends them at exit. A settings save reaches into them whenever they exist.
     _assessing: Any = field(default=None, init=False)
     _coaching: Any = field(default=None, init=False)
+    _warm_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _warm_done: threading.Event = field(default_factory=threading.Event, init=False)
+    # A settings save that changed what the engine was built from (the Stockfish binary,
+    # the tools folder): the next Start rebuilds it.
+    _engine_stale: bool = field(default=False, init=False)
     # The settings page's live test of the microphone and the ear: while on, the ear
     # listens (voice activity) and what it hears goes to `_heard_test`, not to the coach;
     # the mode it interrupted is restored after. It switches itself off when the page
@@ -298,6 +305,157 @@ class PanelEngine:
     def stop(self) -> None:
         self._stop.set()
 
+    def warm(self, background: bool = True) -> None:
+        """Load everything a session needs before any Start: the embedding net, the voice
+        and the ear, Stockfish, the coach and its model. Off the caller's thread unless
+        told otherwise; a Start that comes first waits for it."""
+        if background:
+            threading.Thread(target=self._warm, name="warm", daemon=True).start()
+        else:
+            self._warm()
+
+    def _warm(self) -> None:
+        with self._warm_lock:
+            self._warm_done.clear()
+            try:
+                from sidecoach.vision.pieces import embedder
+
+                net = embedder()
+                if net is not None:
+                    primed = net.prime()
+                    self._emit(
+                        "sys",
+                        "info",
+                        f"pieces: embedding net on {net.device.detail}, primed in {primed:.1f}s",
+                    )
+                else:
+                    self._emit("sys", "warn", "pieces: silhouette overlap (no embedding net)")
+                self._warm_voice()
+                self._prepare_stages()
+                self._warm_pipeline()
+                self._warm_engines()
+                self._warm_model()
+            except Exception as exc:  # noqa: BLE001 - the session builds what is missing
+                self._emit("sys", "warn", f"warm-up: {exc!r}")
+            finally:
+                self._warm_done.set()
+
+    def _warm_pipeline(self) -> None:
+        """The session's modules imported (~0.2 s) and the vision's first pass paid (cv2
+        and numpy set themselves up on the first board search, ~0.2 s), so the first
+        frame is read at speed. Nothing here touches the screen."""
+        import numpy as np
+        import psutil  # noqa: F401
+
+        from sidecoach.capture import loop, wgc_backend  # noqa: F401
+        from sidecoach.profile import ask, profiler, puzzles, store  # noqa: F401
+        from sidecoach.replay import recording  # noqa: F401
+        from sidecoach.state import pipeline  # noqa: F401
+        from sidecoach.vision import clock, squares, theme_cache  # noqa: F401
+        from sidecoach.vision.ownboard import is_own_board
+        from sidecoach.vision.tracker import BoardTracker
+
+        begun = time.perf_counter()
+        BoardTracker(reject=is_own_board).update(np.zeros((1080, 1920, 3), dtype=np.uint8))
+        self._emit(
+            "sys", "info", f"vision: first pass primed in {time.perf_counter() - begun:.1f}s"
+        )
+
+    def _warm_engines(self) -> None:
+        """One search of the start position on each Stockfish (the analyser's, the coach's
+        for named moves), so the first real one does not pay the hash allocation and the
+        thread start (~0.3 s)."""
+        import chess
+
+        analyser = getattr(self._assessing, "analyser", None)
+        named = getattr(getattr(self._coaching, "coach", None), "engine", None)
+        if analyser is None and named is None:
+            return
+        begun = time.perf_counter()
+        if analyser is not None:
+            with contextlib.suppress(Exception):
+                analyser.annotator.engine.analyse(chess.Board(), depth=analyser.annotator.depth)
+        if named is not None:
+            with contextlib.suppress(Exception):
+                named.analyse(chess.Board(), depth=12)
+        self._emit("sys", "info", f"engine: primed in {time.perf_counter() - begun:.1f}s")
+
+    def _warm_model(self) -> None:
+        """A model server on this machine loads its model on the first request (LM Studio:
+        seconds to a minute); one short request now, so the coach's first line is not
+        the one that waits. A paid provider is never called for this."""
+        from urllib.parse import urlparse
+
+        coach = getattr(self._coaching, "coach", None)
+        provider = getattr(getattr(coach, "speaker", None), "provider", None)
+        if provider is None or getattr(provider, "offline", False):
+            return
+        host = urlparse(str(getattr(provider, "base_url", "") or "")).hostname or ""
+        if host not in ("localhost", "127.0.0.1", "::1"):
+            return
+        begun = time.perf_counter()
+        try:
+            provider.chat(
+                "Reply with the one word: ready.",
+                [{"role": "user", "content": "Ready?"}],
+                max_tokens=8,
+                temperature=0.0,
+            )
+        except Exception as exc:  # noqa: BLE001 - the coach reports the model when asked
+            self._emit("sys", "warn", f"coach: the local model did not answer a warm-up: {exc}")
+            return
+        self._emit(
+            "sys", "info", f"coach: local model answered in {time.perf_counter() - begun:.1f}s"
+        )
+
+    def _prepare_stages(self) -> tuple[Any, Any]:
+        """Stockfish and the coach, built once and kept; rebuilt only when a save changed
+        what they were built from. Returns them."""
+        from sidecoach.cli import _Assessing, _Coaching
+
+        if self._engine_stale:
+            # The coach too: its second engine runs the same binary, and it was built
+            # knowing whether there was an engine at all.
+            for stage in (self._assessing, self._coaching):
+                if stage is not None:
+                    with contextlib.suppress(Exception):
+                        stage.close()
+            self._assessing = self._coaching = None
+            self._engine_stale = False
+        if self._assessing is None:
+            assessing = _Assessing(self.settings, self.analysis)
+            assessing.sink = lambda _line: None
+            self._assessing = assessing
+            self._emit("sys", "info" if assessing.on else "warn", f"engine: {assessing.detail}")
+        if self._coaching is None:
+            coaching = _Coaching(self.settings, self.coach and self._assessing.on)
+            coaching.sink = lambda _message: None
+            if coaching.coach is not None:
+                coaching.coach.stream_sink = self._stream_sink
+            self._coaching = coaching
+            self._emit("sys", "info" if coaching.on else "warn", f"coach: {coaching.detail}")
+        return self._assessing, self._coaching
+
+    def close(self) -> None:
+        """The panel is going away: stop the session, close Stockfish and the coach, let go
+        of the microphone, the push-to-talk key and the voice."""
+        self.stop()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=10.0)
+        for stage in (self._assessing, self._coaching):
+            if stage is not None:
+                with contextlib.suppress(Exception):
+                    stage.close()
+        self._assessing = self._coaching = None
+        with contextlib.suppress(Exception):
+            self._hotkey.stop()
+        with contextlib.suppress(Exception):
+            self._listener.set_mode("off")
+        close_voice = getattr(self._tts, "close", None)
+        if close_voice is not None:
+            with contextlib.suppress(Exception):
+                close_voice()
+
     def command(self, name: str, payload: Any = None) -> None:
         """Queue a control action for the loop thread (ask, flip, analyse)."""
         self._commands.put((name, payload))
@@ -356,6 +514,8 @@ class PanelEngine:
             applied.extend(c for c in changed if c in EAR_RELOAD)
         if "capture.fps" in changed:
             did("capture.fps")  # the capture loop reads the rate every frame
+        if any(c in ("engine.stockfish_path", "tools_dir") for c in changed):
+            self._engine_stale = True
         for name in changed:
             if name.startswith("llm.price_"):
                 did(name)  # the session's cost is priced at each poll
@@ -712,12 +872,16 @@ class PanelEngine:
             seconds = getattr(provider, "load_seconds", None)
             detail = provider.healthcheck()[1]
             if ok and device is not None:
+                # One inference now, so the first real one is not the slow one.
+                prime = getattr(provider, "prime", None)
+                primed = prime() if prime is not None else None
                 wanted = getattr(provider, "device_wanted", "cuda")
                 fell_back = wanted != "cpu" and device.name == "cpu"
                 self._emit(
                     "sys",
                     "warn" if fell_back else "info",
-                    f"{label}: {detail}; loaded once in {seconds or 0:.1f}s",
+                    f"{label}: {detail}; loaded once in {seconds or 0:.1f}s"
+                    + (f", primed in {primed:.1f}s" if primed is not None else ""),
                     device=device.name,
                 )
             else:
@@ -729,7 +893,13 @@ class PanelEngine:
         self._emit("sys", "info" if ok else "warn", f"mic: {detail}")
         wanted = self.settings.voice.listen
         if wanted != "off":
-            self.set_listen(wanted)
+            # A deaf ear has no use for the microphone or the push-to-talk key: neither
+            # opens (the tests run with the ear off and must not take the real
+            # microphone or hook the keyboard).
+            if self._stt.healthcheck()[0]:
+                self.set_listen(wanted)
+            else:
+                self._emit("voice", "warn", "listening: off (no ear to hear with)")
 
     def _on_speech_start(self) -> None:
         """The user started talking: the coach stops mid-sentence (barge-in)."""
@@ -960,7 +1130,6 @@ class PanelEngine:
     def _run(self) -> None:
         import chess
 
-        from sidecoach.cli import _Assessing, _Coaching
         from sidecoach.events import Event, Side
         from sidecoach.state.pipeline import GamePipeline
         from sidecoach.vision.clock import ClockReader
@@ -1028,28 +1197,21 @@ class PanelEngine:
         pipe = GamePipeline(
             clock=ClockReader(), cache=cache, tracker=BoardTracker(reject=is_own_board)
         )
-        # The embedding net's session is built now, not on the first start position,
-        # so the game's first frames pay no second of CUDA initialisation.
-        from sidecoach.vision.pieces import embedder
+        # The engine, the coach and the models were built when the app opened (`warm`);
+        # a Start that comes before that is done waits for it. Without a warm-up (the
+        # CLI's replay, the tests) they are built here, once, and kept.
+        if not self._warm_done.is_set() and self._warm_lock.locked():
+            self._set(status="loading the models")
+            self._warm_done.wait(timeout=120.0)
+        with self._warm_lock:
+            if self._assessing is None or self._coaching is None or self._engine_stale:
+                from sidecoach.vision.pieces import embedder
 
-        net = embedder()
-        if net is not None:
-            self._emit("sys", "info", f"pieces: embedding net on {net.device.detail}")
-        else:
-            self._emit("sys", "warn", "pieces: silhouette overlap (no embedding net)")
-        assessing = _Assessing(self.settings, self.analysis)
-        coaching = _Coaching(self.settings, self.coach and assessing.on)
-        # Kept for the settings window: a save reaches into them (apply_settings).
-        self._assessing, self._coaching = assessing, coaching
+                net = embedder()
+                if net is not None and self._assessing is None:
+                    self._emit("sys", "info", f"pieces: embedding net on {net.device.detail}")
+            assessing, coaching = self._prepare_stages()
         self.fps = self.settings.capture.fps
-        # Their console output is replaced by the log: assessments are formatted here from
-        # the events, and coach messages are logged with their metadata below.
-        assessing.sink = lambda _line: None
-        coaching.sink = lambda _message: None
-        if coaching.coach is not None:
-            coaching.coach.stream_sink = self._stream_sink
-        self._emit("sys", "info" if assessing.on else "warn", f"engine: {assessing.detail}")
-        self._emit("sys", "info" if coaching.on else "warn", f"coach: {coaching.detail}")
         # The player model: a live session teaches the profile on disk, a replay a copy
         # in memory that is forgotten with it.
         from sidecoach.profile.profiler import Profiler
@@ -1088,7 +1250,8 @@ class PanelEngine:
 
             provider = coaching.coach.speaker.provider
             coaching.coach.profile_ask = lambda q: profile_ask.answer(q, store, provider)
-        threading.Thread(target=self._warm_voice, name="voice-load", daemon=True).start()
+        if not self._warm_done.is_set():  # no warm-up loaded the voice (replay, tests)
+            threading.Thread(target=self._warm_voice, name="voice-load", daemon=True).start()
         self._set(status="waiting for a board", coach_on=coaching.on, analysis_on=assessing.on)
 
         latest: Any = None
@@ -1234,13 +1397,14 @@ class PanelEngine:
             late = assessing.wait(timeout=patience)
             coaching.events(late, time.monotonic())
             coaching.events(self._profile(profiler, late, flush=True), time.monotonic())
-            assessing.close()
             coaching.wait()
             self._coach_meta(coaching, spoken_seen, failures_seen)
             # The strip once more, with the replies that came after the last tick.
             with contextlib.suppress(Exception):
                 self._health(pipe, coaching, recorder, ticks, pipeline_ms, 1.0, ts, live)
-            coaching.close()
+            # Stockfish and the coach stay for the next Start (only the screen stops);
+            # the coach begins afresh with the next game's GameStarted.
+            assessing.reset()
             try:
                 summary = profiler.end_session(time.time())
                 if summary:

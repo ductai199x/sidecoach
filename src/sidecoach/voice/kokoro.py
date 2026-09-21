@@ -244,6 +244,17 @@ class KokoroTTS:
                 self._failed = True
                 return False
 
+    def prime(self) -> float | None:
+        """One short line synthesised and thrown away, so the first spoken one does not
+        pay the runtime's warm-up. Returns the seconds it took, None if the voice did not
+        load."""
+        if not self.load():
+            return None
+        begun = time.perf_counter()
+        with contextlib.suppress(Exception):
+            self._kokoro.create("Ready.", voice=self.voice, speed=self.speed, lang=self.lang)  # type: ignore[attr-defined]
+        return time.perf_counter() - begun
+
     def say(self, text: str, *, voice: str | None = None) -> None:
         """Queue a line to be spoken. Notation in it is read aloud in words. `voice` speaks
         this line in another voice (a preview) without changing the coach's."""
