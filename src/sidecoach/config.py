@@ -864,7 +864,18 @@ def find_stockfish(settings: Settings) -> Path | None:
         explicit = Path(settings.engine.stockfish_path)
         return explicit if explicit.exists() else None
     if settings.tools_dir.exists():
-        found = sorted(settings.tools_dir.rglob("stockfish*.exe"))
+        # Windows: the .exe from the zip. Elsewhere: the executable from the tarball
+        # (stockfish-ubuntu-x86-64-avx2 and the like), never the archive or its notes.
+        if os.name == "nt":
+            found = sorted(settings.tools_dir.rglob("stockfish*.exe"))
+        else:
+            found = sorted(
+                f
+                for f in settings.tools_dir.rglob("stockfish-*")
+                if f.is_file()
+                and f.suffix not in (".tar", ".zip", ".exe")
+                and os.access(f, os.X_OK)
+            )
         if found:
             return found[0]
     on_path = shutil.which("stockfish")
