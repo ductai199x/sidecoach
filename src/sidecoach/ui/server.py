@@ -627,9 +627,15 @@ def run_server(
     )
     app = build_app(engine, token=token)
     lock = settings.data_dir / LOCK_FILE
-    with contextlib.suppress(OSError):
-        lock.parent.mkdir(parents=True, exist_ok=True)
-        lock.write_text(json.dumps({"port": port, "pid": os.getpid()}), encoding="utf-8")
+    other = _attached_port(settings, host)
+    if other is None:
+        with contextlib.suppress(OSError):
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_text(json.dumps({"port": port, "pid": os.getpid()}), encoding="utf-8")
+    else:
+        # A development panel beside the app, on the same data directory: the app's
+        # lock names the app's sidecar and stays so, or the shell attaches to nothing.
+        print(f"another panel serves this data directory on port {other}; its lock file stays")
     # Everything a session needs loads now, so Start only starts the screen.
     engine.warm()
     if parent_pid is not None:
