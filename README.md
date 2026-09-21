@@ -45,14 +45,14 @@ screen, so it works on chess.com, Lichess, or anything else that draws a chessbo
 
 | What | Measure | Result |
 |---|---|---|
-| Coach replies, held out (320 moments, 20 games) | judged pass / fabrication / disclosure leak | **.994 / .00 / .00** (from .89 / .06 / .00 before the harness fixes and the distilled lessons) |
+| Coach replies, gpt-5.6-luna, held out (320 moments, 20 games) | judged pass / fabrication / disclosure leak | **.994 / .00 / .00** (from .89 / .06 / .00 before the harness fixes and the distilled lessons) |
 | Board reading, synthetic sweep (38 piece sets, 8 themes, 44–144 px, every decoration a site draws) | games read ply for ply | **901 of 901** |
 | Board reading, recorded live games | games read ply for ply and ended | **6 of 6** |
 | Tactic tagging vs Lichess puzzle themes (4,570 puzzles) | recall: pin / discovered attack / skewer / fork / x-ray | **100% / 99% / 97% / 93% / 97%** |
 | Tactic description | true sentence on every agreed tactic | **100%** (the coach never fabricates a tactic) |
 | Speech recognition (Parakeet-TDT-0.6B, CPU) | word error rate, raw / after chess correction; latency | **4.5% / 0.0%; ~100 ms** |
 | Offline coach, 199 master games from both sides | sentences checked against the board | **20,997 sentences, 0 wrong** |
-| ChessQA (board-reading benchmark) | accuracy, the paper's prompt → the structured prompt | **.58 → .86** (qwen3.8-flash), **.92** (qwen3.8-max, thinking) |
+| ChessQA (board-reading benchmark, 250 items), gpt-5.6-luna with the structured prompt | accuracy | **.89** at medium effort, **.90** at extra-high |
 | Desktop app, 2-hour soak | page frame rate / long frames / memory | **140 fps / 0.03% / flat once every list was bounded** |
 
 Method and details: [docs/eval-results.md](docs/eval-results.md) (the coach, the judge,
