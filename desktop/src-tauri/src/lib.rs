@@ -517,6 +517,16 @@ pub fn run() {
                                 }
                             }
                         }
+                        // Development: the bundled page with its meter on (`?perf=<label>`,
+                        // samples to <data>/perf/<label>.jsonl), for a soak of the product path.
+                        if let Ok(label) = std::env::var("SIDECOACH_PAGE_PERF") {
+                            if let Some(window) = handle.get_webview_window("main") {
+                                if let Ok(mut url) = window.url() {
+                                    url.set_query(Some(&format!("perf={label}")));
+                                    let _ = window.navigate(url);
+                                }
+                            }
+                        }
                         // Development: a second window (`settings`, `setup`, `puzzle/<id>`)
                         // opened at start, to test one without the menu.
                         if let Ok(route) = std::env::var("SIDECOACH_OPEN_WINDOW") {
