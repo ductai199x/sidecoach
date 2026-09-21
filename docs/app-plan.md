@@ -327,8 +327,8 @@ Status (2026-09-21, commits f4b2009, 3a6d422, b4db009): steps 1 to 8 and 10 are 
 4 GB in about a minute, the pack activated: the embedding net, Kokoro and Parakeet on
 CUDA from the CPU-only interpreter). Step 7's installer is built (87 MB) and being
 install-tested; step 8's updater is wired and unexercised until a release exists; step 9
-waits on the Azure account; step 10's workflow runs on the next push. Two decisions
-taken along the way:
+is dropped (below); step 10's workflow runs on the next push. Three decisions taken
+along the way:
 
 - **No model is a supported mode.** `llm.provider = "none"` gives an offline provider;
   the coach speaks from the board and its templates (verdicts, the mistake lesson, the
@@ -337,6 +337,12 @@ taken along the way:
   eight play-throughs (real games and masters', both colours) and fixed where they read
   wrong; the coach also falls back to this mode when the configured provider cannot be
   reached.
+- **No Authenticode signing.** Tai has no Azure account and does not intend to get one
+  (2026-09-21); no other signing service is on the table either. The installer ships
+  unsigned: a downloaded setup shows SmartScreen's "Windows protected your PC -- More
+  info -- Run anyway" on first run, and that is documented in the README. The updater's
+  own signature (minisign, `~/.tauri/sidecoach.key`) is what verifies an update, and that
+  stays. Revisit only if distribution widens beyond people who know the project.
 - **The app records nothing.** The shell always passes `--no-persist --no-record`; the
   only frames kept are the in-memory ring (`FrameRing`, 150 half-scale JPEGs) that
   `File > Dump` writes on request. Recording stays a CLI affair for development.
@@ -376,8 +382,8 @@ taken along the way:
 8. **Updater.** `tauri-plugin-updater` against a `latest.json` on the GitHub release,
    signed with the updater key; the Python resource rides along in the full installer.
    Check for updates in Help and once a day.
-9. **Signing.** Azure Artifact Signing (individual, $9.99/month); sign the installer and
-   the shell in CI. SmartScreen reputation accrues from release one.
+9. **Signing.** Dropped: no signing account (see the decision above). The setup file is
+   unsigned; the README says what SmartScreen shows.
 10. **CI.** GitHub Actions on `windows-latest`: `uv run pytest`, `pyright`, `ruff`, the
     Svelte build, `build_sidecar.py`, `tauri build`, the WebDriver smoke test
     (`tauri-driver`: launch, replay, a board appears, quit, no orphan), the installer as
@@ -576,8 +582,9 @@ terminal (`sys`) through `POST /api/client_log`, always.
   engineering (https://onnxruntime.ai/docs/get-started/with-windows.html).
 - Frontend: State of JS 2025, Svelte 86% satisfaction (https://2025.stateofjs.com/en-US/libraries/front-end-frameworks/);
   Svelte 5.57 / SvelteKit 2.61 current, no Svelte 6 (https://svelte.dev/blog/whats-new-in-svelte-june-2026).
-- Signing: Azure Artifact Signing, $9.99/month, individuals in the US and Canada
-  (https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options).
+- Signing: Azure Artifact Signing would be $9.99/month for individuals in the US and Canada
+  (https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options);
+  not taken up.
 - Linux capture: pipewire-capture 0.3.0 (https://pypi.org/project/pipewire-capture/0.3.0/);
   click-through broken on Wayland in both shells (https://github.com/electron/electron/issues/53794,
   https://github.com/tauri-apps/tauri/issues/3117).

@@ -4,8 +4,9 @@
 #
 # Secrets the release job needs (Settings > Secrets):
 #   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD  -- the updater's key
-#   AZURE_* (tenant, client id, client secret, endpoint, account, profile) -- Azure Artifact
-#   Signing, once the account exists; the step is skipped without them.
+# The installer is not Authenticode-signed (no signing account, by decision, 2026-09-21):
+# a downloaded setup shows SmartScreen's "More info > Run anyway" on first run. The
+# updater's own signature (minisign, the key above) is what verifies an update.
 name: desktop
 
 on:
@@ -23,7 +24,6 @@ jobs:
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -82,19 +82,6 @@ jobs:
           if (-not $env:SIDECOACH_DATA_DIR) { New-Item -ItemType Directory data | Out-Null; $env:SIDECOACH_DATA_DIR = (Resolve-Path data).Path }
           $env:SIDECOACH_SIDECAR_ARGS = "--config sidecoach.example.toml"
           pwsh scripts/shell_cycles.ps1 -Exe $exe.FullName -Cycles 3
-
-      - name: Sign the installer (Azure Artifact Signing)
-        if: startsWith(github.ref, 'refs/tags/v') && env.AZURE_TENANT_ID != ''
-        uses: azure/trusted-signing-action@v0
-        with:
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          endpoint: ${{ secrets.AZURE_ENDPOINT }}
-          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
-          files-folder: desktop/src-tauri/target/release/bundle/nsis
-          files-folder-filter: exe
 
       - uses: actions/upload-artifact@v4
         if: env.TAURI_SIGNING_PRIVATE_KEY != ''
