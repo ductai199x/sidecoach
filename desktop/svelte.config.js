@@ -12,6 +12,9 @@ const config = {
     adapter: adapter({
       fallback: "index.html",
     }),
+    // The default stamps _app/version.json with the build's time, and the built page is
+    // committed and diffed in CI: the package version is the same from every machine.
+    version: { name: process.env.npm_package_version ?? "0" },
   },
 };
 
