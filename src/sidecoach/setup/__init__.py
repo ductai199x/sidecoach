@@ -270,7 +270,7 @@ def items(settings: Settings) -> list[Item]:
     out.append(
         Item(
             "ear",
-            "The ear (Parakeet) and the voice gate (Silero)",
+            "Speech recognition (Parakeet) and the voice gate (Silero)",
             2_450_000_000,
             ear_present,
             ear_fetch,

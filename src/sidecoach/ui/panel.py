@@ -967,7 +967,7 @@ class PanelEngine:
             if self._stt.healthcheck()[0]:
                 self.set_listen(wanted)
             else:
-                self._emit("voice", "warn", "listening: off (no ear to hear with)")
+                self._emit("voice", "warn", "listening: off (speech recognition is not available)")
         self._stage("mic", "done" if ok else "off", detail)
 
     def _on_speech_start(self) -> None:
