@@ -26,9 +26,12 @@
   let secrets = $state<Record<string, string>>({});
   let clearSecrets = $state<Record<string, boolean>>({});
   let shell = $state<ShellSettings>({ close: "quit", autostart: false });
+  // What the shell held before this save, so the line under Save can count the shell's own
+  // settings (closing the window, start with the system) among what changed.
+  let shellSaved = $state<ShellSettings>({ close: "quit", autostart: false });
   let advanced = $state(false);
   let saving = $state(false);
-  let result = $state<{ ok: boolean; changed?: string[]; now?: string[]; next?: string[]; restart?: string[]; errors?: { loc: (string | number)[]; msg: string }[] } | null>(null);
+  let result = $state<{ ok: boolean; changed?: string[]; shellChanged?: boolean; now?: string[]; next?: string[]; restart?: string[]; errors?: { loc: (string | number)[]; msg: string }[] } | null>(null);
   let section = $state("llm");
 
   const SECTIONS: [string, string][] = [
@@ -165,7 +168,7 @@
     const parts: string[] = [];
     if (r.next?.length) parts.push(`${r.next.map(fieldName).join(", ")}: at the next Start.`);
     if (r.restart?.length) parts.push(`${r.restart.map(fieldName).join(", ")}: after a restart.`);
-    if (!r.changed?.length) return "Saved. Nothing changed.";
+    if (!r.changed?.length && !r.shellChanged) return "Saved. Nothing changed.";
     return parts.length ? "Saved. " + parts.join(" ") : "Saved.";
   }
 
@@ -174,6 +177,7 @@
     data = await get<Described>("/api/settings");
     values = structuredClone($state.snapshot(data).settings);
     shell = await shellSettings();
+    shellSaved = structuredClone($state.snapshot(shell));
   });
 
   function setValue(sec: string, key: string, p: Prop, raw: string | boolean) {
@@ -200,7 +204,10 @@
     try {
       result = await put("/api/settings", { settings: values, secrets: sec });
       if (result?.ok) {
+        const shellChanged = shell.close !== shellSaved.close || shell.autostart !== shellSaved.autostart;
         await setShellSettings(shell);
+        shellSaved = structuredClone($state.snapshot(shell));
+        result = { ...result, shellChanged };
         data = await get<Described>("/api/settings");
         secrets = {};
         clearSecrets = {};
