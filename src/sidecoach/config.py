@@ -23,199 +23,330 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 
 def _extra(**kw: Any) -> dict[str, Any]:
-    """The schema extras the settings page reads: applies (now | next | restart), choices,
-    kind (path, input_device, output_device, voice, persona), group (the AI Coach page's
-    sections: provider, local, service, general), advanced, dev."""
+    """The schema extras the settings page reads: applies (now | next | restart), choices
+    and choice_labels, kind (path, input_device, output_device, voice, persona), label (as
+    a person reads it), section (the heading a field sits under on its tab), only_for
+    (the AI Coach page: the providers a field is shown for), advanced (shown when asked),
+    dev (never shown in the app)."""
     return dict(kw)
 
 
 class CaptureSettings(BaseModel):
     backend: str = Field(
         default="auto",
-        description="How the screen is read: auto (Windows Graphics Capture when available, "
-        "else mss), wgc, or mss. GDI capture (mss) can show a hardware-accelerated browser "
-        "window frozen on Windows until it is moved; WGC returns the composed screen.",
-        json_schema_extra=_extra(choices=["auto", "wgc", "mss"], applies="next"),
+        description="Automatic picks Windows Graphics Capture when it is available, else GDI. "
+        "GDI can show a hardware-accelerated browser window frozen until it is "
+        "moved.",
+        json_schema_extra=_extra(
+            choices=["auto", "wgc", "mss"],
+            applies="next",
+            label="How the screen is read",
+            choice_labels={
+                "auto": "Automatic",
+                "wgc": "Windows Graphics Capture",
+                "mss": "GDI (mss)",
+            },
+            advanced=True,
+            section="Reading the screen",
+        ),
     )
     fps: int = Field(
         default=10,
         ge=1,
         le=30,
-        description="Frames read per second.",
-        json_schema_extra=_extra(applies="now"),
+        description="How often the screen is read. Ten is plenty for a game; more costs CPU.",
+        json_schema_extra=_extra(
+            applies="now", label="Frames per second", section="Reading the screen"
+        ),
     )
 
 
 class EngineSettings(BaseModel):
     stockfish_path: str | None = Field(
         default=None,
-        description="The Stockfish binary. Unset: the one under tools/, else PATH.",
-        json_schema_extra=_extra(applies="next", kind="path"),
+        description="The Stockfish executable. Leave empty: the one the app fetched (under the "
+        "tools folder), else the one on PATH.",
+        json_schema_extra=_extra(
+            applies="next",
+            kind="path",
+            label="Stockfish program",
+            advanced=True,
+            section="The program",
+        ),
     )
     multipv: int = Field(
         default=6,
         ge=1,
         le=10,
-        description="Candidate lines the engine keeps.",
-        json_schema_extra=_extra(applies="now"),
+        description="How many of the best moves Stockfish reports for each position, and so how "
+        "many the coach can compare. More costs time.",
+        json_schema_extra=_extra(
+            applies="now", label="Candidate lines", advanced=True, section="What it looks at"
+        ),
     )
     movetime_ms: int = Field(
         default=300,
         ge=50,
         le=5000,
-        description="Milliseconds per live search.",
-        json_schema_extra=_extra(applies="now"),
+        description="Time for the quick check of a position during play, in milliseconds, "
+        "before the full analysis follows.",
+        json_schema_extra=_extra(
+            applies="now", label="Live search time (ms)", advanced=True, section="What it looks at"
+        ),
     )
     threads: int = Field(
         default=4,
         ge=1,
         le=64,
-        description="Engine threads.",
-        json_schema_extra=_extra(applies="now"),
+        description="Processor threads Stockfish may use. More is faster to a point; leave a "
+        "few for the game and the browser.",
+        json_schema_extra=_extra(
+            applies="now", label="CPU threads", section="How hard Stockfish works"
+        ),
     )
     hash_mb: int = Field(
         default=256,
         ge=16,
         le=8192,
-        description="Engine hash table, in MB.",
-        json_schema_extra=_extra(applies="now"),
+        description="Memory Stockfish keeps for positions it has already seen, in MB. More "
+        "helps a deep search; 256 is plenty.",
+        json_schema_extra=_extra(
+            applies="now", label="Memory (MB)", section="How hard Stockfish works"
+        ),
     )
     depth: int = Field(
         default=18,
         ge=6,
         le=40,
-        description="Assessment runs to a fixed depth so the position before a move and the "
-        "position after it are measured the same way.",
-        json_schema_extra=_extra(applies="now"),
+        description="How deep Stockfish looks at every position. Deeper is more accurate and "
+        "slower; 18 is a good balance on a modern machine.",
+        json_schema_extra=_extra(applies="now", label="Depth", section="How hard Stockfish works"),
     )
     pv_plies: int = Field(
         default=12,
         ge=2,
         le=40,
-        description="Plies of the principal variation kept.",
-        json_schema_extra=_extra(applies="now"),
+        description="How far ahead each line is shown, in half-moves, when the coach gives a line.",
+        json_schema_extra=_extra(
+            applies="now", label="Line length (plies)", advanced=True, section="What it looks at"
+        ),
     )
     score_model: str = Field(
         default="human",
-        description="human: centipawns into expected score on a curve fitted to games between "
-        "people; engine: Stockfish's own win-draw-loss, which is 1.0 from a knight up.",
-        json_schema_extra=_extra(choices=["human", "engine"], applies="now"),
+        description="How Stockfish's evaluation becomes your winning chance. 'As people play' "
+        "is fitted to games between people, so a pawn up means what it means for "
+        "you; Stockfish's own numbers assume perfect play, where a knight up is "
+        "already won.",
+        json_schema_extra=_extra(
+            choices=["human", "engine"],
+            applies="now",
+            label="Scoring",
+            choice_labels={
+                "human": "As people play (recommended)",
+                "engine": "Stockfish's own win-draw-loss",
+            },
+            advanced=True,
+            section="What it looks at",
+        ),
     )
     max_seconds: float = Field(
         default=5.0,
         ge=0.5,
         le=60.0,
-        description="A single position never takes longer than this.",
-        json_schema_extra=_extra(applies="now"),
+        description="The most time one position may take. A think that runs long is cut off "
+        "here so the coach keeps up with the game.",
+        json_schema_extra=_extra(
+            applies="now",
+            label="Time limit per position (s)",
+            advanced=True,
+            section="How hard Stockfish works",
+        ),
     )
 
 
 class LLMSettings(BaseModel):
     provider: str = Field(
         default="openai",
-        description="A preset -- openai (gpt-5.6-luna at medium effort, what the coach was "
-        "evaluated on), local (LM Studio on this machine), dashscope -- or any other name for "
-        "a custom OpenAI-compatible endpoint, which then needs base_url and model; or none: "
-        "no model, the coach speaks from the board and its templates, free and offline.",
+        description="Who the coach thinks with. OpenAI is what the coach was evaluated on; a "
+        "model on this computer costs nothing per game; with no model the coach "
+        "still speaks, from the board and its templates.",
         json_schema_extra=_extra(
             group="provider",
             choices=["openai", "local", "dashscope", "custom", "none"],
             applies="now",
+            label="Provider",
+            choice_labels={
+                "openai": "OpenAI (gpt-5.6-luna) -- recommended",
+                "dashscope": "DashScope (Alibaba Cloud Model Studio)",
+                "local": "A model on this computer (LM Studio, Ollama, vLLM)",
+                "custom": "Another OpenAI-compatible service",
+                "none": "No model -- free and offline",
+            },
+            section="Which model",
         ),
     )
     model: str | None = Field(
         default=None,
-        description="The model name; the preset's default when unset.",
-        json_schema_extra=_extra(group="general", applies="now"),
+        description="The model's name. Empty uses the provider's default (gpt-5.6-luna; "
+        "qwen3.8-max; for a local server, whichever model it has loaded).",
+        json_schema_extra=_extra(
+            group="general",
+            applies="now",
+            label="Model",
+            only_for=["openai", "dashscope", "local", "custom"],
+            section="Which model",
+        ),
     )
     base_url: str | None = Field(
         default=None,
-        description="The endpoint of a model served on this machine or the network, for the "
-        "local preset (LM Studio's is http://localhost:1234/v1, the default) or a custom "
-        "provider.",
-        json_schema_extra=_extra(group="local", applies="now"),
+        description="Where the model is served. LM Studio's is http://localhost:1234/v1, the "
+        "default for a model on this computer.",
+        json_schema_extra=_extra(
+            group="local",
+            applies="now",
+            label="Server address",
+            only_for=["local", "custom"],
+            section="Which model",
+        ),
     )
     api_key_env: str | None = Field(
         default=None,
-        description="The environment variable holding a custom provider's key. The presets "
-        "have theirs (OPENAI_API_KEY, DASHSCOPE_API_KEY); keys are kept in the credential "
-        "store, never in this file.",
-        json_schema_extra=_extra(group="service", applies="now"),
+        description="Development: the environment variable a custom endpoint's key is read "
+        "from. The app stores the key itself (CUSTOM_API_KEY).",
+        json_schema_extra=_extra(
+            group="service",
+            applies="now",
+            label="API key variable",
+            dev=True,
+            section="Development",
+        ),
     )
     thinking_control: str | None = Field(
         default=None,
-        description="How reasoning is controlled: prefill (an empty think block, LM Studio), "
-        "param (enable_thinking, DashScope), effort (reasoning_effort, OpenAI's reasoning "
-        "models) or none. The preset's default when unset.",
+        description="Development: how a preset switches reasoning on the wire -- prefill, a "
+        "parameter, or an effort. Each preset knows its own.",
         json_schema_extra=_extra(
-            group="general", choices=["", "prefill", "param", "effort", "none"], applies="now"
+            group="general",
+            choices=["", "prefill", "param", "effort", "none"],
+            applies="now",
+            label="Reasoning switch",
+            dev=True,
+            section="Development",
         ),
     )
     reasoning_effort: str | None = Field(
         default=None,
-        description="For effort providers: none, low, medium, high; the preset's when unset.",
+        description="How long the model may think before it answers. More is slower and costs "
+        "more; medium is what the coach was evaluated at.",
         json_schema_extra=_extra(
-            group="service", choices=["", "none", "low", "medium", "high"], applies="now"
+            group="service",
+            choices=["", "none", "low", "medium", "high"],
+            applies="now",
+            label="Thinking effort",
+            only_for=["openai"],
+            choice_labels={
+                "": "Default (medium)",
+                "none": "None -- fastest",
+                "low": "Low",
+                "medium": "Medium",
+                "high": "High -- slowest",
+            },
+            section="Which model",
         ),
     )
     routine_effort: str | None = Field(
         default="none",
-        description="The effort for a mundane coach reply (a word on a fine move): none gets "
-        "the first sound out in under a second; low reasons about as long as medium. Unset "
-        "keeps reasoning_effort.",
+        description="A word on a fine move needs no deep thought: with none it is spoken in "
+        "under a second, at the least cost. Lessons and answers keep the effort "
+        "above.",
         json_schema_extra=_extra(
-            group="service", choices=["", "none", "low", "medium", "high"], applies="now"
+            group="service",
+            choices=["", "none", "low", "medium", "high"],
+            applies="now",
+            label="Thinking effort for quick remarks",
+            only_for=["openai"],
+            choice_labels={
+                "": "Same as above",
+                "none": "None -- fastest",
+                "low": "Low",
+                "medium": "Medium",
+                "high": "High",
+            },
+            advanced=True,
+            section="Speed and cost",
         ),
     )
     price_prompt_per_m: float | None = Field(
         default=None,
         ge=0,
-        description="USD per million fresh prompt tokens, for the session's cost.",
-        json_schema_extra=_extra(group="service", applies="now"),
+        description="What the provider charges per million tokens sent to it, from its price "
+        "list. Only used for the running cost shown in the status strip; the app "
+        "charges nothing.",
+        json_schema_extra=_extra(
+            group="service",
+            applies="now",
+            label="Price per million prompt tokens (USD)",
+            only_for=["openai", "dashscope", "custom"],
+            advanced=True,
+            section="Speed and cost",
+        ),
     )
     price_cached_per_m: float | None = Field(
         default=None,
         ge=0,
-        description="USD per million cached prompt tokens.",
-        json_schema_extra=_extra(group="service", applies="now"),
+        description="The provider's price per million tokens it had already seen (cached), "
+        "usually much lower. For the cost shown in the status strip.",
+        json_schema_extra=_extra(
+            group="service",
+            applies="now",
+            label="Price per million cached prompt tokens (USD)",
+            only_for=["openai", "dashscope", "custom"],
+            advanced=True,
+            section="Speed and cost",
+        ),
     )
     price_completion_per_m: float | None = Field(
         default=None,
         ge=0,
-        description="USD per million completion tokens, reasoning included.",
-        json_schema_extra=_extra(group="service", applies="now"),
-    )
-    thinking: bool = Field(
-        default=False,
-        description="Let the model reason before answering (reasoning tokens count against "
-        "the output budget).",
-        json_schema_extra=_extra(group="general", applies="now"),
-    )
-    max_output_tokens: int = Field(
-        default=1500,
-        ge=64,
-        le=32000,
-        description="Total output budget per call.",
-        json_schema_extra=_extra(group="general", applies="now"),
-    )
-    temperature: float = Field(
-        default=0.7,
-        ge=0.0,
-        le=2.0,
-        description="Sampling temperature.",
-        json_schema_extra=_extra(group="general", applies="now"),
+        description="The provider's price per million tokens it writes back, thinking included. "
+        "For the cost shown in the status strip.",
+        json_schema_extra=_extra(
+            group="service",
+            applies="now",
+            label="Price per million answer tokens (USD)",
+            only_for=["openai", "dashscope", "custom"],
+            advanced=True,
+            section="Speed and cost",
+        ),
     )
     timeout_s: float = Field(
         default=60.0,
         ge=5.0,
         le=600.0,
-        description="Seconds before a call is given up.",
-        json_schema_extra=_extra(group="general", applies="now"),
+        description="How long the coach waits for the model. Past this it gives up on that "
+        "reply and speaks from the board instead, so a slow service never stalls "
+        "the game.",
+        json_schema_extra=_extra(
+            group="general",
+            applies="now",
+            label="Timeout (seconds)",
+            only_for=["openai", "dashscope", "local", "custom"],
+            advanced=True,
+            section="Speed and cost",
+        ),
     )
     extra_body: dict[str, object] = Field(
         default_factory=dict,
-        description="Extra fields sent with every request (advanced).",
-        json_schema_extra=_extra(group="general", applies="now", advanced=True),
+        description="Extra fields sent with every request to the model, as JSON. For a service "
+        "that needs something unusual; empty otherwise.",
+        json_schema_extra=_extra(
+            group="general",
+            applies="now",
+            advanced=True,
+            label="Extra request fields",
+            dev=True,
+            section="Development",
+        ),
     )
 
 
@@ -224,13 +355,18 @@ class CoachSettings(BaseModel):
         default=45,
         ge=5,
         le=600,
-        description="Seconds without a move before the coach offers a nudge.",
-        json_schema_extra=_extra(applies="now"),
+        description="How long you may think on a move before the coach offers a nudge. With a "
+        "clock it comes sooner when you are short of time.",
+        json_schema_extra=_extra(
+            applies="now", label="Nudge after (seconds)", section="When the coach speaks"
+        ),
     )
     quiet: bool = Field(
         default=False,
-        description="The coach speaks only when asked.",
-        json_schema_extra=_extra(applies="now"),
+        description="No verdicts, questions or nudges on its own; the coach answers when you ask.",
+        json_schema_extra=_extra(
+            applies="now", label="Only speak when asked", section="When the coach speaks"
+        ),
     )
     persona: str = Field(
         default="warm_direct",
@@ -239,95 +375,157 @@ class CoachSettings(BaseModel):
         json_schema_extra=_extra(
             applies="now",
             kind="persona",
-            # sidecoach.coach.prompt.PERSONAS, listed here so the settings need no import
-            # of the coach; a test keeps the two together.
             choices=["warm_direct", "calm_quiet", "sharp_demanding", "playful"],
+            label="Manner",
+            section="How the coach speaks",
         ),
     )
     verify: str = Field(
         default="",
-        description="Test-time verification: a second model reads every candidate reply and the "
-        "clean ones are spoken. Empty is off; same uses the coach's own model; else a provider "
-        "name (dashscope with verify_model qwen3.8-flash is what the evaluation measured).",
-        json_schema_extra=_extra(applies="now", advanced=True),
+        description="A second model reads every reply the coach drafts and only the ones that "
+        "stick to the facts are spoken. Empty is off; 'same' uses the coach's own "
+        "model; a provider name uses that one (slower, safer).",
+        json_schema_extra=_extra(
+            applies="now", label="Verifier", advanced=True, section="A second opinion"
+        ),
     )
     verify_model: str | None = Field(
         default=None,
-        description="The verifier's model.",
-        json_schema_extra=_extra(applies="now", advanced=True),
+        description="The model the second opinion uses, when a provider is named above.",
+        json_schema_extra=_extra(
+            applies="now", label="Verifier's model", advanced=True, section="A second opinion"
+        ),
     )
     summarise_every: int = Field(
         default=0,
         ge=0,
         le=200,
-        description="Every this many plies, what was said earlier is folded into a summary. "
-        "0 is off.",
-        json_schema_extra=_extra(applies="now", advanced=True),
+        description="Every this many half-moves, what was said earlier is folded into a short "
+        "summary, so the model reads less as the game goes on. 0 keeps everything.",
+        json_schema_extra=_extra(
+            applies="now",
+            label="Summarise every (plies)",
+            advanced=True,
+            section="How the coach speaks",
+        ),
     )
     compact_record: bool = Field(
         default=False,
-        description="Run sound moves nobody spoke after together as a move list.",
-        json_schema_extra=_extra(applies="now", advanced=True),
+        description="Sound moves nobody spoke about are shown to the model as a plain list "
+        "instead of one line each, to keep what it reads short.",
+        json_schema_extra=_extra(
+            applies="now",
+            label="Compact move record",
+            advanced=True,
+            section="How the coach speaks",
+        ),
     )
     verbalized_sampling: bool = Field(
         default=False,
-        description="The model offers several replies and one is spoken, for variety of phrasing.",
-        json_schema_extra=_extra(applies="now", advanced=True),
+        description="The model drafts a few phrasings and one is spoken, so the coach does not "
+        "say the same thing the same way twice. Off is a little quicker.",
+        json_schema_extra=_extra(
+            applies="now", label="Varied phrasing", advanced=True, section="How the coach speaks"
+        ),
     )
     local_verdicts: bool = Field(
         default=True,
-        description="The word on a best, excellent or book move is written from the board, free "
-        "and immediate, instead of asked of the model; good, great and brilliant keep the model.",
-        json_schema_extra=_extra(applies="now"),
+        description="A best, excellent or book move gets its short word written from the board "
+        "itself: instant and free. Only good, great and brilliant moves go to the "
+        "model. Off sends every move to the model, which is slower and costs more.",
+        json_schema_extra=_extra(
+            applies="now",
+            label="Quick verdicts from the board",
+            advanced=True,
+            section="How the coach speaks",
+        ),
     )
     inaccuracy: float = Field(
         default=0.04,
         ge=0.0,
         le=1.0,
-        description="Expected-score loss that counts as an inaccuracy.",
-        json_schema_extra=_extra(applies="now", advanced=True),
+        description="A move that costs at least this much of your winning chances is called an "
+        "inaccuracy (0.04 is 4%).",
+        json_schema_extra=_extra(
+            applies="now",
+            advanced=True,
+            label="Inaccuracy threshold",
+            section="What counts as a mistake",
+        ),
     )
     mistake: float = Field(
         default=0.10,
         ge=0.0,
         le=1.0,
-        description="Expected-score loss that counts as a mistake.",
-        json_schema_extra=_extra(applies="now", advanced=True),
+        description="A move that costs at least this much of your winning chances is called a "
+        "mistake, and the coach explains it.",
+        json_schema_extra=_extra(
+            applies="now",
+            advanced=True,
+            label="Mistake threshold",
+            section="What counts as a mistake",
+        ),
     )
     blunder: float = Field(
         default=0.28,
         ge=0.0,
         le=1.0,
-        description="Expected-score loss that counts as a blunder.",
-        json_schema_extra=_extra(applies="now", advanced=True),
+        description="A move that costs at least this much of your winning chances is called a "
+        "blunder.",
+        json_schema_extra=_extra(
+            applies="now",
+            advanced=True,
+            label="Blunder threshold",
+            section="What counts as a mistake",
+        ),
     )
     decisive_gap: float = Field(
         default=0.10,
         ge=0.0,
         le=1.0,
-        description="The gap between the best move and the rest that makes a moment decisive.",
-        json_schema_extra=_extra(applies="now", advanced=True),
+        description="When the best move is better than the next by this much, the moment is "
+        "decisive and the coach asks you to slow down before you move.",
+        json_schema_extra=_extra(
+            applies="now",
+            advanced=True,
+            label="Decisive-moment gap",
+            section="What counts as a mistake",
+        ),
     )
     only_move_gap: float = Field(
         default=0.30,
         ge=0.0,
         le=1.0,
-        description="The gap that makes the best move the only move.",
-        json_schema_extra=_extra(applies="now", advanced=True),
+        description="When every other move loses at least this much, the best move is the only "
+        "move.",
+        json_schema_extra=_extra(
+            applies="now", advanced=True, label="Only-move gap", section="What counts as a mistake"
+        ),
     )
     excellent: float = Field(
         default=0.02,
         ge=0.0,
         le=1.0,
-        description="Loss under which a move is excellent.",
-        json_schema_extra=_extra(applies="now", advanced=True),
+        description="A move that costs less than this is called excellent, as good as the best.",
+        json_schema_extra=_extra(
+            applies="now",
+            advanced=True,
+            label="Excellent threshold",
+            section="What counts as a mistake",
+        ),
     )
     decided: float = Field(
         default=0.90,
         ge=0.5,
         le=1.0,
-        description="Expected score beyond which the game is decided.",
-        json_schema_extra=_extra(applies="now", advanced=True),
+        description="Beyond this winning chance (0.9 is 90%) the game is decided, and small "
+        "losses no longer earn a lesson.",
+        json_schema_extra=_extra(
+            applies="now",
+            advanced=True,
+            label="Game decided beyond",
+            section="What counts as a mistake",
+        ),
     )
 
 
@@ -336,15 +534,16 @@ class ProfileSettings(BaseModel):
         default=1000,
         ge=100,
         le=3000,
-        description="The bottom of your rating band.",
-        json_schema_extra=_extra(applies="now"),
+        description="The bottom of your rating where you play (chess.com, Lichess, over the "
+        "board); a rough band is fine. The coach pitches what it says at it.",
+        json_schema_extra=_extra(applies="now", label="Your rating, from", section="Your rating"),
     )
     rating_high: int = Field(
         default=1400,
         ge=100,
         le=3200,
-        description="The top of your rating band.",
-        json_schema_extra=_extra(applies="now"),
+        description="The top of that band.",
+        json_schema_extra=_extra(applies="now", label="Your rating, to", section="Your rating"),
     )
 
 
@@ -353,67 +552,118 @@ class VoiceSettings(BaseModel):
         default="af_sarah",
         description="The coach's voice: Kokoro's English ones, American or British, female "
         "or male.",
-        json_schema_extra=_extra(applies="now", kind="voice"),
+        json_schema_extra=_extra(
+            applies="now", kind="voice", label="Voice", section="The coach's voice"
+        ),
     )
     speed: float = Field(
         default=1.0,
         ge=0.5,
         le=2.0,
-        description="Speaking speed.",
-        json_schema_extra=_extra(applies="now"),
+        description="Speaking speed; 1 is normal.",
+        json_schema_extra=_extra(applies="now", label="Speed", section="The coach's voice"),
     )
     lang: str = Field(
         default="en-us",
-        description="The voice's language code.",
-        json_schema_extra=_extra(applies="now"),
+        description="The voice's accent code: en-us for the American voices, en-gb for the "
+        "British.",
+        json_schema_extra=_extra(
+            applies="now", label="Language code", advanced=True, section="Under the hood"
+        ),
     )
     model_dir: str | None = Field(
         default=None,
-        description="Where the Kokoro model files live; <data>/models/kokoro when unset.",
-        json_schema_extra=_extra(applies="now", kind="path"),
+        description="Where the voice model files are. Empty means the app's own folder, where "
+        "Set up put them.",
+        json_schema_extra=_extra(
+            applies="now",
+            kind="path",
+            label="Voice model folder",
+            advanced=True,
+            section="Under the hood",
+        ),
     )
     tts_device: str = Field(
         default="cuda",
-        description="Where the voice runs: cuda (the GPU when it initialises, else the CPU) "
-        "or cpu.",
-        json_schema_extra=_extra(choices=["cuda", "cpu"], applies="now"),
+        description="Whether the voice model runs on the graphics card or the processor. The "
+        "card is faster; if it cannot be used, the processor takes over on its own.",
+        json_schema_extra=_extra(
+            choices=["cuda", "cpu"],
+            applies="now",
+            label="Run the voice on",
+            choice_labels={"cuda": "GPU (the CPU if it fails)", "cpu": "CPU"},
+            advanced=True,
+            section="Under the hood",
+        ),
     )
     stt_device: str = Field(
         default="cuda",
-        description="Where the ear runs: cuda or cpu.",
-        json_schema_extra=_extra(choices=["cuda", "cpu"], applies="now"),
+        description="Whether the ear (speech recognition) runs on the graphics card or the "
+        "processor. On the processor it still answers in a fraction of a second.",
+        json_schema_extra=_extra(
+            choices=["cuda", "cpu"],
+            applies="now",
+            label="Run the ear on",
+            choice_labels={"cuda": "GPU (the CPU if it fails)", "cpu": "CPU"},
+            advanced=True,
+            section="Under the hood",
+        ),
     )
     listen: str = Field(
         default="ptt",
-        description="How the coach listens when the panel starts: off, ptt (hold to talk), "
-        "or vad (voice activity).",
-        json_schema_extra=_extra(choices=["off", "ptt", "vad"], applies="now"),
+        description="How the coach hears you. The push-to-talk key works from any window.",
+        json_schema_extra=_extra(
+            choices=["off", "ptt", "vad"],
+            applies="now",
+            label="Listening",
+            choice_labels={
+                "off": "Off",
+                "ptt": "While I hold the push-to-talk key",
+                "vad": "Whenever I speak",
+            },
+            section="Hearing you",
+        ),
     )
     mic_device: str | None = Field(
         default=None,
-        description="An input device index or name; the default input when unset.",
-        json_schema_extra=_extra(applies="now", kind="input_device"),
+        description="The microphone the coach listens to. Empty follows the system's default "
+        "input.",
+        json_schema_extra=_extra(
+            applies="now", kind="input_device", label="Microphone", section="Hearing you"
+        ),
     )
     output_device: str | None = Field(
         default=None,
-        description="An output device index or name for the coach's voice; the default "
-        "output when unset.",
-        json_schema_extra=_extra(applies="now", kind="output_device"),
+        description="Where the voice plays. Empty follows the system's default output.",
+        json_schema_extra=_extra(
+            applies="now", kind="output_device", label="Speaker", section="The coach's voice"
+        ),
     )
     ptt_key: str = Field(
         default="ctrl_r",
-        description="The global push-to-talk key, held from any window: a pynput key name "
-        "(ctrl_r, alt_r, f9), a character, or mouse_x1 / mouse_x2. Empty disables it.",
-        json_schema_extra=_extra(applies="now"),
+        description="Held from any window: ctrl_r (the right Ctrl), alt_r, f9, a letter, or "
+        "mouse_x1 / mouse_x2 (the side buttons). Empty disables it.",
+        json_schema_extra=_extra(applies="now", label="Push-to-talk key", section="Hearing you"),
     )
 
 
 class GpuSettings(BaseModel):
     mode: str = Field(
         default="auto",
-        description="auto: the CUDA pack is fetched when an eligible NVIDIA GPU is found and "
-        "used when it initialises; cpu: never; cuda: always, and a failure is an error.",
-        json_schema_extra=_extra(choices=["auto", "cpu", "cuda"], applies="restart"),
+        description="Whether the voice, the ear and the board reader run on an NVIDIA card. "
+        "Automatic fetches what that needs once and falls back to the CPU on any "
+        "trouble.",
+        json_schema_extra=_extra(
+            choices=["auto", "cpu", "cuda"],
+            applies="restart",
+            label="Graphics card",
+            choice_labels={
+                "auto": "Automatic -- use it when it works (recommended)",
+                "cpu": "Never -- CPU only",
+                "cuda": "Always",
+            },
+            section="Graphics card",
+        ),
     )
 
 
@@ -430,12 +680,12 @@ class Settings(BaseModel):
     data_dir: Path = Field(
         default=Path("data"),
         description="Where the app keeps its data: the profile, the caches, the models.",
-        json_schema_extra=_extra(applies="restart", kind="path"),
+        json_schema_extra=_extra(applies="restart", kind="path", label="Data folder"),
     )
     tools_dir: Path = Field(
         default=Path("tools"),
         description="Where Stockfish is looked for when no path is set.",
-        json_schema_extra=_extra(applies="next", kind="path"),
+        json_schema_extra=_extra(applies="next", kind="path", label="Tools folder", advanced=True),
     )
     capture: CaptureSettings = Field(default_factory=CaptureSettings, description="The screen")
     engine: EngineSettings = Field(default_factory=EngineSettings, description="Stockfish")
@@ -453,7 +703,11 @@ class Settings(BaseModel):
 
 
 # The environment variables the presets read their keys from (sidecoach.llm.factory).
-KEY_ENVS = {"openai": "OPENAI_API_KEY", "dashscope": "DASHSCOPE_API_KEY"}
+KEY_ENVS = {
+    "openai": "OPENAI_API_KEY",
+    "dashscope": "DASHSCOPE_API_KEY",
+    "custom": "CUSTOM_API_KEY",
+}
 KEYRING_SERVICE = "sidecoach"
 
 

@@ -588,7 +588,14 @@ def run_server(
             return
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((host, port))
+    try:
+        sock.bind((host, port))
+    except OSError as exc:
+        # The app asks for port 0 and gets a free one; only the CLI names a port.
+        raise SystemExit(
+            f"port {port} is in use ({exc.strerror}): another panel? Stop it, pick another "
+            "with --port, or --port 0 for a free one."
+        ) from exc
     sock.listen(128)
     port = sock.getsockname()[1]
 

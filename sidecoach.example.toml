@@ -36,11 +36,8 @@ provider = "openai"                # gpt-5.6-luna at medium effort; "local" for 
 # base_url = "http://localhost:1234/v1"
 # api_key_env = "MY_KEY"          # a custom endpoint's key variable
 # thinking_control = "prefill"    # prefill (LM Studio), param (DashScope), effort (OpenAI), none
-# false suppresses reasoning; true lets the model reason before answering.
-thinking = false
-# Total output budget. Reasoning tokens count against it when thinking is on.
-max_output_tokens = 1500
-temperature = 0.7
+# The coach sets its own sampling and budgets per call (tuned in the evaluation); the
+# reasoning knobs are thinking_control and the efforts above.
 timeout_s = 60.0
 
 [coach]

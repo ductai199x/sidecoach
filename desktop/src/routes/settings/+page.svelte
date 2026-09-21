@@ -8,7 +8,7 @@
   import { inShell, setShellSettings, shellSettings, type ShellSettings } from "$lib/shell.svelte";
   import { voiceLabel } from "$lib/voices";
 
-  type Prop = { type?: string; anyOf?: { type: string }[]; description?: string; default?: unknown; choices?: string[]; applies?: string; kind?: string; group?: string; advanced?: boolean; dev?: boolean; minimum?: number; maximum?: number; title?: string };
+  type Prop = { type?: string; anyOf?: { type: string }[]; description?: string; default?: unknown; choices?: string[]; choice_labels?: Record<string, string>; applies?: string; kind?: string; label?: string; section?: string; only_for?: string[]; advanced?: boolean; dev?: boolean; minimum?: number; maximum?: number; title?: string };
   type Described = {
     settings: Record<string, any>;
     schema: { properties: Record<string, any>; $defs: Record<string, { properties: Record<string, Prop>; description?: string }> };
@@ -28,29 +28,57 @@
   let shell = $state<ShellSettings>({ close: "tray", autostart: false });
   let advanced = $state(false);
   let saving = $state(false);
-  let result = $state<{ ok: boolean; now?: string[]; next?: string[]; restart?: string[]; errors?: { loc: (string | number)[]; msg: string }[] } | null>(null);
+  let result = $state<{ ok: boolean; changed?: string[]; now?: string[]; next?: string[]; restart?: string[]; errors?: { loc: (string | number)[]; msg: string }[] } | null>(null);
   let section = $state("llm");
 
   const SECTIONS: [string, string][] = [
-    ["llm", "AI Coach"], ["coach", "Coach"], ["voice", "Voice"], ["engine", "Engine"],
+    ["llm", "AI Coach"], ["coach", "Coach"], ["voice", "Voice"], ["engine", "Analysis"],
     ["capture", "Screen"], ["profile", "You"], ["gpu", "GPU"], ["app", "App"],
   ];
-  // The AI Coach page in sections: which model, then what applies to a model served on
-  // this machine, to a service, and to both. A field's group comes from the schema.
-  const LLM_GROUPS: [string, string, string][] = [
-    ["provider", "Provider", "Which model coaches: a service, a model hosted on this machine, or none at all."],
-    ["local", "Local hosting", "A model served on this machine or the network (LM Studio, Ollama, vLLM): the local preset, or a custom one."],
-    ["service", "Service providers", "OpenAI, DashScope, or another OpenAI-compatible service: the key, the effort, the prices for the session's cost."],
-    ["general", "General", "What applies whichever model it is."],
-  ];
+  // The AI Coach page shows the provider, then only what that provider needs: a field's
+  // only_for (from the schema) names the providers it is shown for. The key for a custom
+  // service is stored under one fixed name.
+  const CUSTOM_KEY = "CUSTOM_API_KEY";
+  const providerNow = $derived(String(values.llm?.provider ?? "openai"));
+  const keyName = $derived.by(() => {
+    if (!data) return null;
+    if (providerNow === "custom") return String(values.llm?.api_key_env || CUSTOM_KEY);
+    return data.key_envs[providerNow] ?? null;
+  });
   let listening = $state("");
 
-  function fields(name: string, group?: string): [string, Prop][] {
+  function fields(name: string): [string, Prop][] {
     if (!data) return [];
     const ref = data.schema.properties[name]?.$ref;
     if (!ref) return [];
     const model = data.schema.$defs[ref.split("/").pop()!];
-    return Object.entries(model?.properties ?? {}).filter(([, p]) => (advanced || !p.advanced) && !(inShell() && p.dev) && (!group || (p.group ?? "general") === group));
+    // A development field never shows in the app, and in the browser only under advanced.
+    return Object.entries(model?.properties ?? {}).filter(([, p]) =>
+      (advanced || !p.advanced) && !(p.dev && (inShell() || !advanced)) && (!p.only_for || p.only_for.includes(providerNow)));
+  }
+  // The headings on each tab, in the order they read; a field's section comes from the
+  // schema. A heading with nothing under it (advanced off) is not shown.
+  const SECTION_ORDER: Record<string, string[]> = {
+    llm: ["Which model", "Speed and cost", "Development"],
+    coach: ["When the coach speaks", "How the coach speaks", "What counts as a mistake", "A second opinion"],
+    voice: ["The coach's voice", "Hearing you", "Under the hood"],
+    engine: ["How hard Stockfish works", "What it looks at", "The program"],
+    capture: ["Reading the screen"],
+    profile: ["Your rating"],
+    gpu: ["Graphics card"],
+  };
+  function sections(name: string, list: [string, Prop][]): [string, [string, Prop][]][] {
+    const order = SECTION_ORDER[name] ?? [];
+    const seen = [...new Set(list.map(([, p]) => p.section ?? ""))];
+    const titles = [...order.filter((t) => seen.includes(t)), ...seen.filter((t) => !order.includes(t))];
+    return titles.map((t) => [t, list.filter(([, p]) => (p.section ?? "") === t)]);
+  }
+  /** A field's name as a person reads it. */
+  function labelOf(key: string, p: Prop): string {
+    return p.label ?? key.replaceAll("_", " ");
+  }
+  function choiceLabel(p: Prop, c: string): string {
+    return p.choice_labels?.[c] ?? (c === "" ? "(default)" : c);
   }
   /** The Listen button: one line in the voice being tried; the coach's own voice stays. */
   async function listen(voice: string) {
@@ -72,14 +100,20 @@
   function isNullable(p: Prop): boolean {
     return !!(p.anyOf || []).some((a) => a.type === "null");
   }
-  const secretNames = $derived.by(() => {
-    if (!data) return [] as string[];
-    const names = ["OPENAI_API_KEY", "DASHSCOPE_API_KEY"];
-    const custom = values.llm?.api_key_env;
-    if (custom && !names.includes(custom)) names.push(custom);
-    return names;
-  });
-  const appliesWord: Record<string, string> = { now: "applies at once", next: "applies at the next Start", restart: "needs a restart" };
+  const secretNames = $derived.by(() => (keyName ? [keyName] : []) as string[]);
+  /** Save, then restart the app (the shell) -- for the few settings that need it. */
+  async function saveAndRestart() {
+    if (!window.confirm("Save the settings and restart Sidecoach now?")) return;
+    await save();
+    if (!result?.ok) return;
+    if (!inShell()) { window.alert("Saved. Restart the panel (sidecoach panel) for it to take effect."); return; }
+    try {
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+    } catch (e) {
+      window.alert("Could not restart: " + String(e));
+    }
+  }
   /** "voice.voice" -> "Voice"; "voice.tts_device" -> "TTS device"; "llm.provider" -> "Provider". */
   function fieldName(path: string): string {
     const key = path.split(".").pop() ?? path;
@@ -87,13 +121,14 @@
     const text = words.join(" ");
     return text[0].toUpperCase() + text.slice(1);
   }
-  /** The line under Save, as a sentence: what applied now, what waits for a Start or a restart. */
+  /** The line under Save: applied is the default and goes unsaid; what waits for a Start
+   * or a restart is named. */
   function savedLine(r: NonNullable<typeof result>): string {
     const parts: string[] = [];
-    if (r.now?.length) parts.push(`Applied now: ${r.now.map(fieldName).join(", ")}.`);
-    if (r.next?.length) parts.push(`At the next Start: ${r.next.map(fieldName).join(", ")}.`);
-    if (r.restart?.length) parts.push(`After a restart: ${r.restart.map(fieldName).join(", ")}.`);
-    return parts.length ? "Saved. " + parts.join(" ") : "Saved. Nothing changed.";
+    if (r.next?.length) parts.push(`${r.next.map(fieldName).join(", ")}: at the next Start.`);
+    if (r.restart?.length) parts.push(`${r.restart.map(fieldName).join(", ")}: after a restart.`);
+    if (!r.changed?.length) return "Saved. Nothing changed.";
+    return parts.length ? "Saved. " + parts.join(" ") : "Saved.";
   }
 
   onMount(async () => {
@@ -118,10 +153,12 @@
     saving = true;
     result = null;
     const sec: Record<string, string | null> = {};
-    for (const name of secretNames) {
+    for (const name of Object.keys({ ...secrets, ...clearSecrets })) {
       if (clearSecrets[name]) sec[name] = null;
       else if (secrets[name]) sec[name] = secrets[name];
     }
+    // A custom service's key lives under one name; the settings say which.
+    if (values.llm && values.llm.provider === "custom" && !values.llm.api_key_env) values.llm.api_key_env = CUSTOM_KEY;
     try {
       result = await put("/api/settings", { settings: values, secrets: sec });
       if (result?.ok) {
@@ -150,10 +187,10 @@
     {#if t === "boolean"}
       <div class="row">
         <input id="{section}-{key}" type="checkbox" checked={!!v} onchange={(e) => setValue(section, key, p, e.currentTarget.checked)} />
-        <label for="{section}-{key}">{key.replaceAll("_", " ")}</label>
+        <label for="{section}-{key}">{labelOf(key, p)}</label>
       </div>
     {:else}
-      <label for="{section}-{key}">{key.replaceAll("_", " ")}</label>
+      <label for="{section}-{key}">{labelOf(key, p)}</label>
       {#if p.kind === "input_device" || p.kind === "output_device"}
         <select id="{section}-{key}" onchange={(e) => setValue(section, key, p, e.currentTarget.value)}>
           <option value="" selected={v == null || v === ""}>system default</option>
@@ -175,7 +212,7 @@
         </select>
       {:else if p.choices}
         <select id="{section}-{key}" onchange={(e) => setValue(section, key, p, e.currentTarget.value)}>
-          {#each p.choices as c (c)}<option value={c} selected={(v == null ? "" : String(v)) === c}>{c === "" ? "(preset default)" : c}</option>{/each}
+          {#each p.choices as c (c)}<option value={c} selected={(v == null ? "" : String(v)) === c}>{choiceLabel(p, c)}</option>{/each}
         </select>
       {:else if t === "integer" || t === "number"}
         <input id="{section}-{key}" type="number" value={v ?? ""} min={p.minimum} max={p.maximum} step={t === "integer" ? 1 : "any"} oninput={(e) => setValue(section, key, p, e.currentTarget.value)} />
@@ -185,7 +222,7 @@
         <input id="{section}-{key}" type="text" value={v ?? ""} placeholder={isNullable(p) ? "(unset)" : ""} oninput={(e) => setValue(section, key, p, e.currentTarget.value)} />
       {/if}
     {/if}
-    <p class="desc">{p.description}{#if p.applies} <span class="applies {p.applies}">· {appliesWord[p.applies] ?? p.applies}</span>{/if}</p>
+    <p class="desc">{p.description}{#if p.applies === "next"} <span class="applies next">· takes effect at the next Start</span>{:else if p.applies === "restart"} <span class="applies restart">· needs a <button type="button" class="link" onclick={saveAndRestart} title="Save the settings and restart Sidecoach">restart</button></span>{/if}</p>
     {#if err}<p class="err">{err}</p>{/if}
   </div>
 {/snippet}
@@ -211,10 +248,6 @@
             <option value="quit">Quit everything</option>
           </select>
         </div>
-        <div class="field row">
-          <input id="autostart" type="checkbox" bind:checked={shell.autostart} />
-          <label for="autostart">Start with the system <span class="muted">(not wired yet)</span></label>
-        </div>
       {:else}
         <p class="muted">The shell's own settings show in the desktop app.</p>
       {/if}
@@ -223,46 +256,50 @@
         <input id="data_dir" type="text" value={values.data_dir} disabled={inShell()} oninput={(e) => (values.data_dir = e.currentTarget.value)} />
         <p class="desc">{data.schema.properties.data_dir?.description}{inShell() ? " The app decides where." : ""}</p>
       </div>
-      <div class="field">
-        <label for="tools_dir">Tools folder</label>
-        <input id="tools_dir" type="text" value={values.tools_dir} oninput={(e) => (values.tools_dir = e.currentTarget.value)} />
-        <p class="desc">{data.schema.properties.tools_dir?.description}</p>
-      </div>
+      {#if advanced}
+        <div class="field">
+          <label for="tools_dir">Tools folder</label>
+          <input id="tools_dir" type="text" value={values.tools_dir} oninput={(e) => (values.tools_dir = e.currentTarget.value)} />
+          <p class="desc">{data.schema.properties.tools_dir?.description}</p>
+        </div>
+      {/if}
       <p class="muted">Settings file: <code>{data.path}</code></p>
     {:else}
       <h2>{SECTIONS.find(([id]) => id === section)?.[1]}</h2>
       {#if section === "llm"}
-        {#each LLM_GROUPS as [group, title, blurb] (group)}
-          {@const list = fields(section, group)}
-          {#if list.length || group === "service"}
-            <h3>{title}</h3>
-            <p class="desc lead">{blurb}</p>
-            {#if group === "service"}
-              <div class="field">
-                <span class="lbl">API keys</span>
-                <p class="desc">{data.keyring ? "Kept in the operating system's credential store, never in the settings file." : "No credential store is available in this environment; keys come from the environment or .env."}</p>
-                {#each secretNames as name (name)}
-                  <div class="secret">
-                    <code>{name}</code>
-                    <span class="state">{data.secrets[name] ? "set" : "not set"}</span>
-                    <input type="password" placeholder={data.secrets[name] ? "replace…" : "paste the key…"} value={secrets[name] ?? ""} oninput={(e) => (secrets[name] = e.currentTarget.value)} disabled={!data.keyring} />
-                    {#if data.secrets[name]}<label class="ctl"><input type="checkbox" bind:checked={clearSecrets[name]} /> forget</label>{/if}
-                  </div>
-                {/each}
+        {#each fields(section).filter(([k]) => k === "provider") as [key, p] (key)}{@render field(section, key, p)}{/each}
+        {#if providerNow === "none"}
+          <p class="desc lead">The coach speaks from the board and its templates: the word on every move, the lesson on a mistake, the questions and hints, the review. Free and offline.</p>
+        {:else}
+          {#if keyName}
+            <div class="field">
+              <label for="api-key">API key</label>
+              <div class="secret">
+                <span class="state">{data.secrets[keyName] ? "set" : "not set"}</span>
+                <input id="api-key" type="password" placeholder={data.secrets[keyName] ? "replace…" : "paste the key…"} value={secrets[keyName] ?? ""} oninput={(e) => (secrets[keyName!] = e.currentTarget.value)} disabled={!data.keyring} />
+                {#if data.secrets[keyName]}<label class="ctl"><input type="checkbox" bind:checked={clearSecrets[keyName]} /> forget</label>{/if}
               </div>
-            {/if}
-            {#each list as [key, p] (key)}{@render field(section, key, p)}{/each}
+              <p class="desc">{data.keyring ? "Kept in the operating system's credential store, never in the settings file." : "No credential store is available here; the key comes from the environment or .env."}</p>
+            </div>
           {/if}
-        {/each}
+          {#each sections(section, fields(section).filter(([k]) => k !== "provider")) as [title, list] (title)}
+            {#if title && title !== "Which model"}<h3>{title}</h3>{/if}
+            {#each list as [key, p] (key)}{@render field(section, key, p)}{/each}
+          {/each}
+        {/if}
       {:else}
-        {#each fields(section) as [key, p] (key)}{@render field(section, key, p)}{/each}
+        {@const groups = sections(section, fields(section))}
+        {#each groups as [title, list] (title)}
+          {#if title && groups.length > 1}<h3>{title}</h3>{/if}
+          {#each list as [key, p] (key)}{@render field(section, key, p)}{/each}
+        {/each}
       {/if}
     {/if}
   </div>
 
   <footer class="secfoot">
     {#if result?.ok}
-      <span class="saved">{savedLine(result)}</span>
+      <span class="saved">{savedLine(result)}{#if result.restart?.length} <button type="button" class="link" onclick={saveAndRestart}>Restart now</button>{/if}</span>
     {:else if result && !result.ok}
       <span class="err">Not saved: {result.errors?.length} field{result.errors?.length === 1 ? "" : "s"} need attention.</span>
     {/if}
@@ -279,12 +316,12 @@
   .adv { margin-left: auto; color: var(--muted); font-size: 12px; }
   .secbody { overflow: auto; padding: 14px 18px; }
   h2 { margin: 0 0 12px; font-size: 15px; }
-  h3 { margin: 18px 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
   .lead { margin: 0 0 10px; }
+  h3 { margin: 22px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
   .listen { flex: 0 0 auto; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; font-weight: 600; cursor: pointer; }
   .listen:disabled { opacity: 0.6; cursor: default; }
   .field { margin: 0 0 14px; max-width: 720px; }
-  .field label, .field .lbl { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px; text-transform: capitalize; }
+  .field label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
   .field .row { display: flex; align-items: center; gap: 8px; }
   .field .row label { margin: 0; }
   .field input[type="text"], .field input[type="number"], .field input[type="password"], .field select {
@@ -293,12 +330,13 @@
   .field input[type="number"] { max-width: 180px; }
   .field.error input, .field.error select { border-color: var(--error); }
   .desc { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
-  .applies.now { color: var(--accent); }
+  .applies { color: var(--muted); }
   .applies.restart { color: var(--warn); }
+  .link { background: none; border: none; padding: 0; margin: 0; font: inherit; color: var(--accent); text-decoration: underline; cursor: pointer; }
+  .link:hover { color: var(--ink); }
   .err { color: var(--error); font-size: 12px; margin: 4px 0 0; }
   .muted { color: var(--muted); font-size: 12px; }
   .secret { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
-  .secret code { min-width: 150px; }
   .secret .state { color: var(--muted); font-size: 12px; min-width: 50px; }
   .secret input { flex: 1; }
   .secfoot { display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-top: 1px solid var(--line); }

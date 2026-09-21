@@ -84,14 +84,18 @@ def make_provider(settings: LLMSettings, *, timeout_s: float | None = None) -> A
         defaults = ProviderDefaults(
             base_url=settings.base_url,
             model=settings.model,
-            api_key_env=settings.api_key_env,
+            # The app stores a custom service's key under CUSTOM_API_KEY; a service that
+            # takes no key at all is the empty string.
+            api_key_env=settings.api_key_env
+            if settings.api_key_env is not None
+            else "CUSTOM_API_KEY",
             thinking_control="none",
         )
 
     key_env = settings.api_key_env or defaults.api_key_env
     api_key = os.environ.get(key_env) if key_env else None
     if key_env and not api_key:
-        raise RuntimeError(f"{key_env} is not set; put it in .env or the environment")
+        raise RuntimeError(f"{key_env} is not set: paste the key in Settings, or .env")
 
     control = settings.thinking_control or defaults.thinking_control
     if control not in THINKING_CONTROLS:

@@ -36,7 +36,10 @@ def test_the_schema_carries_the_marks_the_page_reads(
     assert set(got) >= {"settings", "schema", "path", "secrets", "keyring", "devices"}
     listen = got["schema"]["$defs"]["VoiceSettings"]["properties"]["listen"]
     assert listen["choices"] == ["off", "ptt", "vad"] and listen["applies"] == "now"
-    assert listen["description"].startswith("How the coach listens")
+    assert listen["description"].startswith("How the coach hears you")
+    # As a person reads it: a label, human choice labels, the heading it sits under.
+    assert listen["label"] == "Listening" and listen["section"] == "Hearing you"
+    assert listen["choice_labels"]["ptt"].startswith("While I hold")
     assert got["settings"]["coach"]["stuck_seconds"] == 45
     assert "OPENAI_API_KEY" in got["secrets"]
 
@@ -50,11 +53,12 @@ def test_a_save_writes_the_file_and_says_what_applies_when(
     values["voice"]["voice"] = "am_adam"
     values["capture"]["backend"] = "mss"
     res = client.put("/api/settings", json={"settings": values}).json()
-    # The voice applies at once; the coach's stuck time would too, but no coach runs
-    # before Start, so it is honestly "at the next Start"; the screen's backend is built
-    # at Start. Nothing here needs a restart.
-    assert res["ok"] and res["now"] == ["voice.voice"]
-    assert res["next"] == ["capture.backend", "coach.stuck_seconds"] and res["restart"] == []
+    # The voice applies at once, and so does the coach's stuck time: no coach runs before
+    # Start, and the one that starts is built from these settings ("at the next Start"
+    # for that read as a restart, Tai 2026-09-21). The screen's backend is built at
+    # Start and says so. Nothing here needs a restart.
+    assert res["ok"] and res["now"] == ["coach.stuck_seconds", "voice.voice"]
+    assert res["next"] == ["capture.backend"] and res["restart"] == []
     written = tomllib.loads((tmp_path / "sidecoach.toml").read_text(encoding="utf-8"))
     assert written["coach"]["stuck_seconds"] == 60 and written["capture"]["backend"] == "mss"
     assert engine.settings.coach.stuck_seconds == 60 and engine.voice == "am_adam"

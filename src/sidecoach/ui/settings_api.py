@@ -149,15 +149,14 @@ def update(engine: Any, body: SettingsUpdate) -> dict[str, Any]:
         else:
             os.environ.pop(name, None)
 
-    # What the engine can change on the running session, it does now; a "now" field it
-    # could not reach (no coach running yet) still takes effect at the next Start.
-    applied = (
-        set(engine.apply_settings(new, changed)) if hasattr(engine, "apply_settings") else set()
-    )
-    if not hasattr(engine, "apply_settings"):
+    # What the engine can change on the running session, it does now. A "now" field with
+    # nothing running to change is applied all the same: the settings are what the next
+    # Start builds from ("At the next Start: Model" was said of a model saved before a
+    # game, and read as a restart -- Tai, 2026-09-21). Only a marked "next" field waits.
+    if hasattr(engine, "apply_settings"):
+        engine.apply_settings(new, changed)
+    else:
         engine.settings = new
-    later = sorted(set(later) | {c for c in now if c not in applied})
-    now = [c for c in now if c in applied]
 
     def words(names: list[str]) -> str:
         return ", ".join(n.split(".")[-1].replace("_", " ") for n in names)

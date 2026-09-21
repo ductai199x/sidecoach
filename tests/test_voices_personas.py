@@ -76,7 +76,7 @@ def test_the_settings_describe_the_pickers_and_the_ai_coach_sections(tmp_path: P
     groups = {name: prop.get("group") for name, prop in llm.items()}
     assert groups["provider"] == "provider" and groups["base_url"] == "local"
     assert groups["api_key_env"] == "service" and groups["price_prompt_per_m"] == "service"
-    assert groups["model"] == "general" and groups["temperature"] == "general"
+    assert groups["model"] == "general" and groups["timeout_s"] == "general"
     assert set(groups.values()) == {"provider", "local", "service", "general"}
     assert set(LLMSettings.model_fields) == set(groups), "every field is in a section"
 

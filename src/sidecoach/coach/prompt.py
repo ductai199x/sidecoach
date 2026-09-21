@@ -65,7 +65,7 @@ def persona_text(persona: str | None, rating: tuple[int, int] | None = None) -> 
     if rating is not None:
         low, high = rating
         text += (
-            f" The player is rated about {low} to {high} (chess.com): pitch what you say at "
+            f" The player is rated about {low} to {high}: pitch what you say at "
             "that level -- name the pattern in plain words, assume the basics, and do not "
             "explain what a player of that strength already knows."
         )
