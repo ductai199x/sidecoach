@@ -113,6 +113,18 @@ Process rules, decided:
   guarded by a lock file with the port inside, so a second launch focuses the first.
 - Ports are ephemeral. The browser flow keeps `--port 8765` as its default; the app never
   uses a fixed port.
+- **Closing the window** (Tai, 2026-09-21) is a setting with two values: *keep running in
+  the tray* (the default: the close request hides the window, the sidecar keeps watching
+  and the coach keeps talking, the tray icon by the clock brings the window back, the
+  tray's Quit ends everything) and *quit everything*. The shell owns this; the sidecar
+  never learns the window went away. The setting lives in the shell's own small config
+  (`shell.json` in the app config dir) so the shell can honour it before the sidecar is up.
+- **Delivery** (Tai, 2026-09-21) is one `Sidecoach-setup.exe`: Tauri's NSIS bundle, per
+  user, no administrator prompt, launched when the install ends; its pre-install hook
+  finds the same version already installed and launches that instead of installing
+  again, so the same file serves as "install, or just run". A single-file portable that
+  unpacks 250 MB of Python on every start is not worth its convenience; the installer is
+  the portable thing.
 - The API gets a per-launch bearer token, passed to the frontend by the shell, checked by
   FastAPI on every `/api` route; `--token ""` (the browser flow's default) turns it off.
   Cheap, and closes the "any local page can drive my coach" hole.
@@ -148,10 +160,11 @@ Menus (decided; every item also reachable in the browser host):
 | View | check items: Board, Move list, Coach, Profile card, Practice card, Status strip, Terminal; Always on top; Reset layout |
 | Voice | Mute; Listen: off / push-to-talk / voice activity; the voice picker |
 | Data | Clear caches; Reset profile… (confirmed) |
-| Debug | Terminal: verbose; Vision preview (the board as the pipeline sees it, with cells); Fact bundle (the last bundle the coach saw); Timing (the tick log, stalls); Open data folder; Open log |
+| Debug | Terminal: verbose; Vision preview (the board as the pipeline sees it, with cells); Fact bundle (the last bundle the coach saw); Timing (the tick log, stalls); Dump the last frames; Open data folder; Open log |
 | Help | Run doctor; Check for updates; About |
 
-Settings: a second window (`/settings`) generated from the pydantic schema. `config.py`'s
+Settings: a second window (`/settings`) generated from the pydantic schema, plus the
+shell's own two: what closing the window does (tray or quit), and start with Windows. `config.py`'s
 field comments move into `Field(description=...)` so the form, the CLI help and the docs
 share one source. `GET /api/settings` returns the settings and the schema; `PUT
 /api/settings` validates, writes the TOML, applies what can be applied live, and returns

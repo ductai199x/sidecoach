@@ -1,173 +1,464 @@
 """Settings with defaults, optionally overridden by a TOML file.
 
 Lookup order for the file: the explicit path, then `SIDECOACH_CONFIG`, then `sidecoach.toml`
-in the working directory. A missing file means defaults.
+in the working directory. A missing file means defaults. `SIDECOACH_DATA_DIR` overrides
+`data_dir` (the desktop shell sets it to the per-user data folder). Every field carries a
+description: the settings page of the app is generated from this schema
+(`Settings.model_json_schema()`), so what is written here is what the user reads.
+
+Secrets (API keys) never live in the file: they come from the environment, `.env`, or the
+OS credential store (`secrets_get`, `secrets_set`, through `keyring` when it is installed).
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import tomllib
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 
+def _extra(**kw: Any) -> dict[str, Any]:
+    """The schema extras the settings page reads: applies (now | next | restart), choices,
+    kind (path, input_device, output_device), advanced, dev."""
+    return dict(kw)
+
+
 class CaptureSettings(BaseModel):
-    # "auto" (Windows Graphics Capture when available, else mss), "wgc", or "mss". GDI
-    # capture (mss) can show a hardware-accelerated browser window frozen on Windows until
-    # it is moved; WGC returns the composed screen and does not have that problem.
-    backend: str = "auto"
-    fps: int = 10
-    record_frames: bool = True
-    record_crops: bool = True
+    backend: str = Field(
+        default="auto",
+        description="How the screen is read: auto (Windows Graphics Capture when available, "
+        "else mss), wgc, or mss. GDI capture (mss) can show a hardware-accelerated browser "
+        "window frozen on Windows until it is moved; WGC returns the composed screen.",
+        json_schema_extra=_extra(choices=["auto", "wgc", "mss"], applies="restart"),
+    )
+    fps: int = Field(
+        default=10,
+        ge=1,
+        le=30,
+        description="Frames read per second.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    record_frames: bool = Field(
+        default=True,
+        description="Development only: record the frames of a live session (the app never does).",
+        json_schema_extra=_extra(applies="next", dev=True),
+    )
+    record_crops: bool = Field(
+        default=True,
+        description="Development only: record the board crops beside the frames.",
+        json_schema_extra=_extra(applies="next", dev=True),
+    )
 
 
 class EngineSettings(BaseModel):
-    stockfish_path: str | None = None
-    multipv: int = 6
-    movetime_ms: int = 300
-    threads: int = 4
-    hash_mb: int = 256
-    # Assessment runs to a fixed depth so that the position before a move and the position
-    # after it are measured the same way; a time limit would compare unequal searches.
-    depth: int = 18
-    pv_plies: int = 12
-    # "human" turns centipawns into expected score on a curve fitted to games between
-    # people; "engine" uses Stockfish's own win-draw-loss, which is 1.0 from a knight up.
-    score_model: str = "human"
-    # A single position never takes longer than this, whatever depth was asked for.
-    max_seconds: float = 5.0
+    stockfish_path: str | None = Field(
+        default=None,
+        description="The Stockfish binary. Unset: the one under tools/, else PATH.",
+        json_schema_extra=_extra(applies="next", kind="path"),
+    )
+    multipv: int = Field(
+        default=6,
+        ge=1,
+        le=10,
+        description="Candidate lines the engine keeps.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    movetime_ms: int = Field(
+        default=300,
+        ge=50,
+        le=5000,
+        description="Milliseconds per live search.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    threads: int = Field(
+        default=4,
+        ge=1,
+        le=64,
+        description="Engine threads.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    hash_mb: int = Field(
+        default=256,
+        ge=16,
+        le=8192,
+        description="Engine hash table, in MB.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    depth: int = Field(
+        default=18,
+        ge=6,
+        le=40,
+        description="Assessment runs to a fixed depth so the position before a move and the "
+        "position after it are measured the same way.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    pv_plies: int = Field(
+        default=12,
+        ge=2,
+        le=40,
+        description="Plies of the principal variation kept.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    score_model: str = Field(
+        default="human",
+        description="human: centipawns into expected score on a curve fitted to games between "
+        "people; engine: Stockfish's own win-draw-loss, which is 1.0 from a knight up.",
+        json_schema_extra=_extra(choices=["human", "engine"], applies="next"),
+    )
+    max_seconds: float = Field(
+        default=5.0,
+        ge=0.5,
+        le=60.0,
+        description="A single position never takes longer than this.",
+        json_schema_extra=_extra(applies="next"),
+    )
 
 
 class LLMSettings(BaseModel):
-    # A preset -- "openai" (gpt-5.6-luna at medium effort, what the coach was evaluated on
-    # and runs on since 2026-09-19), "local" (LM Studio), "dashscope" -- or any other name
-    # for a custom OpenAI-compatible endpoint, which then needs base_url and model. Unset
-    # fields fall back to the preset's defaults in sidecoach.llm.factory. API keys come
-    # from the environment (api_key_env names the variable), never from this file.
-    provider: str = "openai"
-    model: str | None = None
-    base_url: str | None = None
-    api_key_env: str | None = None
-    # How reasoning is controlled: "prefill" (an empty think block, LM Studio), "param"
-    # (enable_thinking, DashScope), "effort" (reasoning_effort, OpenAI's reasoning models)
-    # or "none". Preset default if unset.
-    thinking_control: str | None = None
-    # For "effort" providers: none | low | medium | high | ... ; the preset's if unset.
-    reasoning_effort: str | None = None
-    # The effort for a mundane coach reply (a word on a fine move): "none" gets the first
-    # sound out in under a second; "low" reasons about as long as medium (measured
-    # 2026-09-19: 2.7 s to the first token against 2.5 s). Unset keeps reasoning_effort.
-    routine_effort: str | None = "none"
-    # The model's prices in USD per million tokens -- fresh prompt, cached prompt,
-    # completion (reasoning included) -- for the session's cost in the panel. Unset, the
-    # panel shows the tokens and no dollar figure; the preset's prices when it has them.
-    price_prompt_per_m: float | None = None
-    price_cached_per_m: float | None = None
-    price_completion_per_m: float | None = None
-    thinking: bool = False
-    # Total output budget. Reasoning tokens count against it when thinking is on.
-    max_output_tokens: int = 1500
-    temperature: float = 0.7
-    timeout_s: float = 60.0
-    extra_body: dict[str, object] = Field(default_factory=dict)
+    provider: str = Field(
+        default="openai",
+        description="A preset -- openai (gpt-5.6-luna at medium effort, what the coach was "
+        "evaluated on), local (LM Studio on this machine), dashscope -- or any other name for "
+        "a custom OpenAI-compatible endpoint, which then needs base_url and model.",
+        json_schema_extra=_extra(
+            choices=["openai", "local", "dashscope", "custom"], applies="next"
+        ),
+    )
+    model: str | None = Field(
+        default=None,
+        description="The model name; the preset's default when unset.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    base_url: str | None = Field(
+        default=None,
+        description="The endpoint, for a custom provider (for example http://localhost:1234/v1).",
+        json_schema_extra=_extra(applies="next"),
+    )
+    api_key_env: str | None = Field(
+        default=None,
+        description="The environment variable holding a custom provider's key. The presets "
+        "have theirs (OPENAI_API_KEY, DASHSCOPE_API_KEY); keys are kept in the credential "
+        "store, never in this file.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    thinking_control: str | None = Field(
+        default=None,
+        description="How reasoning is controlled: prefill (an empty think block, LM Studio), "
+        "param (enable_thinking, DashScope), effort (reasoning_effort, OpenAI's reasoning "
+        "models) or none. The preset's default when unset.",
+        json_schema_extra=_extra(
+            choices=["", "prefill", "param", "effort", "none"], applies="next"
+        ),
+    )
+    reasoning_effort: str | None = Field(
+        default=None,
+        description="For effort providers: none, low, medium, high; the preset's when unset.",
+        json_schema_extra=_extra(choices=["", "none", "low", "medium", "high"], applies="next"),
+    )
+    routine_effort: str | None = Field(
+        default="none",
+        description="The effort for a mundane coach reply (a word on a fine move): none gets "
+        "the first sound out in under a second; low reasons about as long as medium. Unset "
+        "keeps reasoning_effort.",
+        json_schema_extra=_extra(choices=["", "none", "low", "medium", "high"], applies="next"),
+    )
+    price_prompt_per_m: float | None = Field(
+        default=None,
+        ge=0,
+        description="USD per million fresh prompt tokens, for the session's cost.",
+        json_schema_extra=_extra(applies="now"),
+    )
+    price_cached_per_m: float | None = Field(
+        default=None,
+        ge=0,
+        description="USD per million cached prompt tokens.",
+        json_schema_extra=_extra(applies="now"),
+    )
+    price_completion_per_m: float | None = Field(
+        default=None,
+        ge=0,
+        description="USD per million completion tokens, reasoning included.",
+        json_schema_extra=_extra(applies="now"),
+    )
+    thinking: bool = Field(
+        default=False,
+        description="Let the model reason before answering (reasoning tokens count against "
+        "the output budget).",
+        json_schema_extra=_extra(applies="next"),
+    )
+    max_output_tokens: int = Field(
+        default=1500,
+        ge=64,
+        le=32000,
+        description="Total output budget per call.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    temperature: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=2.0,
+        description="Sampling temperature.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    timeout_s: float = Field(
+        default=60.0,
+        ge=5.0,
+        le=600.0,
+        description="Seconds before a call is given up.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    extra_body: dict[str, object] = Field(
+        default_factory=dict,
+        description="Extra fields sent with every request (advanced).",
+        json_schema_extra=_extra(applies="next", advanced=True),
+    )
 
 
 class CoachSettings(BaseModel):
-    stuck_seconds: int = 45
-    quiet: bool = False
-    persona: str = "warm_direct"
-    # Test-time verification: a second model reads every candidate reply against the
-    # messages and the clean ones are spoken (see coach.Speaker). "" is off; "same" uses
-    # the coach's own model; else a provider name from the LLM defaults ("dashscope" with
-    # verify_model "qwen3.8-flash" is what the evaluation measured: fabrication 0.33 -> 0.15).
-    verify: str = ""
-    verify_model: str | None = None
-    # Dialogue compaction: every this many plies, what was said earlier than the last this
-    # many plies is folded into a summary at the top of the record. 0 is off.
-    summarise_every: int = 0
-    # The record compacted: sound moves nobody spoke after run together as a move list.
-    compact_record: bool = False
-    # Verbalized sampling (arxiv 2510.01171): the model offers several replies and one is
-    # spoken, for variety of phrasing. Off (the default, Tai 2026-09-19), it writes one
-    # reply. Streamed, the first reply is spoken as it is written and the rest never
-    # written, so on costs no time beyond the "[p=0.3]" marker before the first word.
-    verbalized_sampling: bool = False
-    # The word on a best, excellent or book move written from the board -- the verdict
-    # and what the move does -- instead of asked of the model: free and immediate. A good
-    # move keeps the model, which names what was better; a great or brilliant one the
-    # model's delight. Off, the model writes every word (a call per move).
-    local_verdicts: bool = True
-    # Fitted to chess.com's review tallies over six games; see analysis.score.Thresholds.
-    inaccuracy: float = 0.04
-    mistake: float = 0.10
-    blunder: float = 0.28
-    decisive_gap: float = 0.10
-    only_move_gap: float = 0.30
-    excellent: float = 0.02
-    decided: float = 0.90
+    stuck_seconds: int = Field(
+        default=45,
+        ge=5,
+        le=600,
+        description="Seconds without a move before the coach offers a nudge.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    quiet: bool = Field(
+        default=False,
+        description="The coach speaks only when asked.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    persona: str = Field(
+        default="warm_direct",
+        description="The coach's voice on the page: how it phrases things.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    verify: str = Field(
+        default="",
+        description="Test-time verification: a second model reads every candidate reply and the "
+        "clean ones are spoken. Empty is off; same uses the coach's own model; else a provider "
+        "name (dashscope with verify_model qwen3.8-flash is what the evaluation measured).",
+        json_schema_extra=_extra(applies="next", advanced=True),
+    )
+    verify_model: str | None = Field(
+        default=None,
+        description="The verifier's model.",
+        json_schema_extra=_extra(applies="next", advanced=True),
+    )
+    summarise_every: int = Field(
+        default=0,
+        ge=0,
+        le=200,
+        description="Every this many plies, what was said earlier is folded into a summary. "
+        "0 is off.",
+        json_schema_extra=_extra(applies="next", advanced=True),
+    )
+    compact_record: bool = Field(
+        default=False,
+        description="Run sound moves nobody spoke after together as a move list.",
+        json_schema_extra=_extra(applies="next", advanced=True),
+    )
+    verbalized_sampling: bool = Field(
+        default=False,
+        description="The model offers several replies and one is spoken, for variety of phrasing.",
+        json_schema_extra=_extra(applies="next", advanced=True),
+    )
+    local_verdicts: bool = Field(
+        default=True,
+        description="The word on a best, excellent or book move is written from the board, free "
+        "and immediate, instead of asked of the model; good, great and brilliant keep the model.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    inaccuracy: float = Field(
+        default=0.04,
+        ge=0.0,
+        le=1.0,
+        description="Expected-score loss that counts as an inaccuracy.",
+        json_schema_extra=_extra(applies="next", advanced=True),
+    )
+    mistake: float = Field(
+        default=0.10,
+        ge=0.0,
+        le=1.0,
+        description="Expected-score loss that counts as a mistake.",
+        json_schema_extra=_extra(applies="next", advanced=True),
+    )
+    blunder: float = Field(
+        default=0.28,
+        ge=0.0,
+        le=1.0,
+        description="Expected-score loss that counts as a blunder.",
+        json_schema_extra=_extra(applies="next", advanced=True),
+    )
+    decisive_gap: float = Field(
+        default=0.10,
+        ge=0.0,
+        le=1.0,
+        description="The gap between the best move and the rest that makes a moment decisive.",
+        json_schema_extra=_extra(applies="next", advanced=True),
+    )
+    only_move_gap: float = Field(
+        default=0.30,
+        ge=0.0,
+        le=1.0,
+        description="The gap that makes the best move the only move.",
+        json_schema_extra=_extra(applies="next", advanced=True),
+    )
+    excellent: float = Field(
+        default=0.02,
+        ge=0.0,
+        le=1.0,
+        description="Loss under which a move is excellent.",
+        json_schema_extra=_extra(applies="next", advanced=True),
+    )
+    decided: float = Field(
+        default=0.90,
+        ge=0.5,
+        le=1.0,
+        description="Expected score beyond which the game is decided.",
+        json_schema_extra=_extra(applies="next", advanced=True),
+    )
 
 
 class ProfileSettings(BaseModel):
-    rating_low: int = 1000
-    rating_high: int = 1400
+    rating_low: int = Field(
+        default=1000,
+        ge=100,
+        le=3000,
+        description="The bottom of your rating band.",
+        json_schema_extra=_extra(applies="next"),
+    )
+    rating_high: int = Field(
+        default=1400,
+        ge=100,
+        le=3200,
+        description="The top of your rating band.",
+        json_schema_extra=_extra(applies="next"),
+    )
 
 
 class VoiceSettings(BaseModel):
-    # Off by default: the coach is silent until voice is turned on (a CLI flag, the panel).
-    enabled: bool = False
-    # "kokoro" (Kokoro-82M via kokoro-onnx, on the CPU) or "null" (silent). Unknown names
-    # degrade to silent rather than failing -- voice never takes the session down.
-    provider: str = "kokoro"
-    # Any Kokoro voice id (am_*/af_*/bm_*/bf_*); af_sarah is an American female voice.
-    voice: str = "af_sarah"
-    speed: float = 1.0
-    lang: str = "en-us"
-    # Where the Kokoro model files live; defaults to <data_dir>/models/kokoro when unset.
-    model_dir: str | None = None
-    # Where each voice model runs: "cuda" (the default: the GPU when onnxruntime's CUDA
-    # provider initialises, otherwise the CPU, with a warning in the log) or "cpu" (never the
-    # GPU). "auto" is accepted as a synonym for "cuda". A model is loaded once, on the device
-    # chosen at start, and kept for the session; changing the device means restarting.
-    tts_device: str = "cuda"
-    stt_device: str = "cuda"
-    # Hearing: "parakeet" (NVIDIA Parakeet-TDT-0.6B via onnx-asr, the default; ~100 ms on the
-    # CPU), "whisper" (faster-whisper, best raw accuracy, wants the GPU), or "null".
-    stt_provider: str = "parakeet"
-    # The model name for the provider (onnx-asr's for parakeet, faster-whisper's for whisper);
-    # the provider's default when unset.
-    stt_model: str | None = None
-    # How the coach listens when the panel starts: "off", "ptt" (hold to talk), or "vad"
-    # (voice activity: speak, and the coach is cut off when you start).
-    listen: str = "ptt"
-    # An input device index or name for sounddevice; the default input when unset.
-    mic_device: str | None = None
-    # An output device index or name for the coach's voice; the default output when unset.
-    # (`sidecoach doctor` lists the devices.) The default is often a monitor's HDMI audio.
-    output_device: str | None = None
-    # The global push-to-talk key, held from any window (the game has the focus, not the
-    # panel): a pynput key name such as "ctrl_r", "alt_r", "f9", a single character, or a
-    # mouse side button "mouse_x1" / "mouse_x2". Empty disables the global key.
-    ptt_key: str = "ctrl_r"
+    enabled: bool = Field(
+        default=False,
+        description="The terminal watcher's voice; the panel is always the voice.",
+        json_schema_extra=_extra(applies="next", dev=True),
+    )
+    provider: str = Field(
+        default="kokoro",
+        description="kokoro (Kokoro-82M) or null (silent). Unknown names degrade to silent.",
+        json_schema_extra=_extra(choices=["kokoro", "null"], applies="restart"),
+    )
+    voice: str = Field(
+        default="af_sarah",
+        description="The Kokoro voice (am_*, af_*, bm_*, bf_*).",
+        json_schema_extra=_extra(applies="now"),
+    )
+    speed: float = Field(
+        default=1.0,
+        ge=0.5,
+        le=2.0,
+        description="Speaking speed.",
+        json_schema_extra=_extra(applies="now"),
+    )
+    lang: str = Field(
+        default="en-us",
+        description="The voice's language code.",
+        json_schema_extra=_extra(applies="restart"),
+    )
+    model_dir: str | None = Field(
+        default=None,
+        description="Where the Kokoro model files live; <data>/models/kokoro when unset.",
+        json_schema_extra=_extra(applies="restart", kind="path"),
+    )
+    tts_device: str = Field(
+        default="cuda",
+        description="Where the voice runs: cuda (the GPU when it initialises, else the CPU) "
+        "or cpu.",
+        json_schema_extra=_extra(choices=["cuda", "cpu"], applies="restart"),
+    )
+    stt_device: str = Field(
+        default="cuda",
+        description="Where the ear runs: cuda or cpu.",
+        json_schema_extra=_extra(choices=["cuda", "cpu"], applies="restart"),
+    )
+    stt_provider: str = Field(
+        default="parakeet",
+        description="parakeet (NVIDIA Parakeet-TDT-0.6B, ~100 ms on the CPU), whisper "
+        "(faster-whisper, wants the GPU), or null.",
+        json_schema_extra=_extra(choices=["parakeet", "whisper", "null"], applies="restart"),
+    )
+    stt_model: str | None = Field(
+        default=None,
+        description="The model name for the ear's provider; its default when unset.",
+        json_schema_extra=_extra(applies="restart", advanced=True),
+    )
+    listen: str = Field(
+        default="ptt",
+        description="How the coach listens when the panel starts: off, ptt (hold to talk), "
+        "or vad (voice activity).",
+        json_schema_extra=_extra(choices=["off", "ptt", "vad"], applies="now"),
+    )
+    mic_device: str | None = Field(
+        default=None,
+        description="An input device index or name; the default input when unset.",
+        json_schema_extra=_extra(applies="restart", kind="input_device"),
+    )
+    output_device: str | None = Field(
+        default=None,
+        description="An output device index or name for the coach's voice; the default "
+        "output when unset.",
+        json_schema_extra=_extra(applies="now", kind="output_device"),
+    )
+    ptt_key: str = Field(
+        default="ctrl_r",
+        description="The global push-to-talk key, held from any window: a pynput key name "
+        "(ctrl_r, alt_r, f9), a character, or mouse_x1 / mouse_x2. Empty disables it.",
+        json_schema_extra=_extra(applies="next"),
+    )
+
+
+class GpuSettings(BaseModel):
+    mode: str = Field(
+        default="auto",
+        description="auto: the CUDA pack is fetched when an eligible NVIDIA GPU is found and "
+        "used when it initialises; cpu: never; cuda: always, and a failure is an error.",
+        json_schema_extra=_extra(choices=["auto", "cpu", "cuda"], applies="restart"),
+    )
 
 
 class Settings(BaseModel):
-    data_dir: Path = Path("data")
-    tools_dir: Path = Path("tools")
-    capture: CaptureSettings = Field(default_factory=CaptureSettings)
-    engine: EngineSettings = Field(default_factory=EngineSettings)
-    llm: LLMSettings = Field(default_factory=LLMSettings)
-    coach: CoachSettings = Field(default_factory=CoachSettings)
-    profile: ProfileSettings = Field(default_factory=ProfileSettings)
-    voice: VoiceSettings = Field(default_factory=VoiceSettings)
+    data_dir: Path = Field(
+        default=Path("data"),
+        description="Where the app keeps its data: the profile, the caches, the models.",
+        json_schema_extra=_extra(applies="restart", kind="path"),
+    )
+    tools_dir: Path = Field(
+        default=Path("tools"),
+        description="Where Stockfish is looked for when no path is set.",
+        json_schema_extra=_extra(applies="next", kind="path"),
+    )
+    capture: CaptureSettings = Field(default_factory=CaptureSettings, description="The screen")
+    engine: EngineSettings = Field(default_factory=EngineSettings, description="Stockfish")
+    llm: LLMSettings = Field(default_factory=LLMSettings, description="The model")
+    coach: CoachSettings = Field(default_factory=CoachSettings, description="The coach")
+    profile: ProfileSettings = Field(default_factory=ProfileSettings, description="You")
+    voice: VoiceSettings = Field(default_factory=VoiceSettings, description="Voice and ear")
+    gpu: GpuSettings = Field(default_factory=GpuSettings, description="GPU acceleration")
 
     def voice_model_dir(self) -> Path:
         """Where the Kokoro model files live: the configured path, else under data_dir."""
         if self.voice.model_dir:
             return Path(self.voice.model_dir)
         return self.data_dir / "models" / "kokoro"
+
+
+# The environment variables the presets read their keys from (sidecoach.llm.factory).
+KEY_ENVS = {"openai": "OPENAI_API_KEY", "dashscope": "DASHSCOPE_API_KEY"}
+KEYRING_SERVICE = "sidecoach"
 
 
 def load_dotenv(path: str | os.PathLike[str] = ".env") -> dict[str, str]:
@@ -192,13 +483,110 @@ def load_dotenv(path: str | os.PathLike[str] = ".env") -> dict[str, str]:
     return loaded
 
 
+def secrets_get(name: str) -> str | None:
+    """A secret from the OS credential store, or None (also when keyring is missing)."""
+    try:
+        import keyring  # type: ignore[import-not-found]
+
+        return keyring.get_password(KEYRING_SERVICE, name)
+    except Exception:  # noqa: BLE001 - no store, no backend, no entry: all mean None
+        return None
+
+
+def secrets_set(name: str, value: str | None) -> bool:
+    """Store (or with None, delete) a secret; False when there is no credential store."""
+    try:
+        import keyring  # type: ignore[import-not-found]
+
+        if value:
+            keyring.set_password(KEYRING_SERVICE, name, value)
+        else:
+            with contextlib.suppress(Exception):  # nothing to delete
+                keyring.delete_password(KEYRING_SERVICE, name)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def load_secrets(settings: Settings) -> None:
+    """Put the keys the settings need into the environment from the credential store,
+    unless the environment (or .env) already has them."""
+    names = set(KEY_ENVS.values())
+    if settings.llm.api_key_env:
+        names.add(settings.llm.api_key_env)
+    for name in names:
+        if name not in os.environ:
+            value = secrets_get(name)
+            if value:
+                os.environ[name] = value
+
+
+def settings_path(path: str | os.PathLike[str] | None = None) -> Path:
+    """Where the settings file is (or would be): the explicit path, `SIDECOACH_CONFIG`,
+    else `sidecoach.toml` in the working directory."""
+    return Path(path or os.environ.get("SIDECOACH_CONFIG", "sidecoach.toml"))
+
+
 def load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
     load_dotenv()
-    candidate = Path(path or os.environ.get("SIDECOACH_CONFIG", "sidecoach.toml"))
+    candidate = settings_path(path)
     if candidate.exists():
         with candidate.open("rb") as fh:
-            return Settings.model_validate(tomllib.load(fh))
-    return Settings()
+            settings = Settings.model_validate(tomllib.load(fh))
+    else:
+        settings = Settings()
+    data_dir = os.environ.get("SIDECOACH_DATA_DIR")
+    if data_dir:
+        settings.data_dir = Path(data_dir)
+    load_secrets(settings)
+    return settings
+
+
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return repr(value)
+    if isinstance(value, Path):
+        value = str(value)
+    if isinstance(value, str):
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if isinstance(value, dict):
+        inner = ", ".join(f"{k} = {_toml_value(v)}" for k, v in value.items())
+        return "{ " + inner + " }"
+    if isinstance(value, list | tuple):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    raise TypeError(f"cannot write {type(value).__name__} to TOML")
+
+
+def to_toml(settings: Settings) -> str:
+    """The settings as TOML: the top-level scalars, then one table per section. Fields at
+    their defaults are written too, so the file is a complete, readable record; None is
+    left out (TOML has no null), which reads back as the default."""
+    lines: list[str] = ["# Sidecoach settings. Written by the app; edit by hand if you like.", ""]
+    data = settings.model_dump(mode="json")
+    for key in ("data_dir", "tools_dir"):
+        lines.append(f"{key} = {_toml_value(data[key])}")
+    for section, values in data.items():
+        if not isinstance(values, dict):
+            continue
+        lines.append("")
+        lines.append(f"[{section}]")
+        for key, value in values.items():
+            if value is None:
+                continue
+            if isinstance(value, dict) and not value:
+                continue
+            lines.append(f"{key} = {_toml_value(value)}")
+    return "\n".join(lines) + "\n"
+
+
+def save_settings(settings: Settings, path: str | os.PathLike[str] | None = None) -> Path:
+    """Write the settings file (see `settings_path`); returns where."""
+    target = settings_path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(to_toml(settings), encoding="utf-8")
+    return target
 
 
 def require_stockfish(settings: Settings) -> Path:

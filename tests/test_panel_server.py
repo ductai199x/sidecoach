@@ -39,8 +39,12 @@ def test_controls_and_static_page(tmp_path: Path) -> None:
 
     index = client.get("/")
     assert index.status_code == 200
-    assert "sidecoach" in index.text
-    assert client.get("/app.js").status_code == 200
+    assert "<title>Sidecoach</title>" in index.text
+    # The single-page frontend: its routes all serve the page, its assets come with it.
+    assert client.get("/puzzle/abc").status_code == 200
+    assert client.get("/settings").status_code == 200
+    assert "_app/" in index.text
+    assert client.get("/pieces/wK.svg").status_code == 200
 
 
 def test_poll_reports_a_game(tmp_path: Path) -> None:

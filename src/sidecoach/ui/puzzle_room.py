@@ -50,6 +50,7 @@ class PuzzleRoom:
         stop_speaking: Callable[[], None] | None = None,
         analysis: bool = True,
         coach: bool = True,
+        mirror: Callable[..., None] | None = None,
     ) -> None:
         from sidecoach.cli import _Assessing, _Coaching
         from sidecoach.profile.store import Store
@@ -58,6 +59,11 @@ class PuzzleRoom:
         self.session = PuzzleSession(puzzle, motif)
         self.store = Store(store_path)
         self._log = DebugLog()
+        # The parent panel's log, when there is one: every line of this room goes there
+        # too, under a "puzzle" channel, so the puzzle window itself shows no terminal
+        # (Tai, 2026-09-21: the debugging stays in the parent window).
+        self._mirror = mirror
+        self._id = puzzle.id
         self._lock = threading.Lock()
         self._commands: list[tuple[str, Any]] = []
         self._stop = threading.Event()
@@ -231,6 +237,14 @@ class PuzzleRoom:
 
     def _emit(self, chan: str, level: str, text: str, **data: Any) -> None:
         self._log.emit(chan, level, text, **data)
+        if self._mirror is not None:
+            with contextlib.suppress(Exception):
+                self._mirror("puzzle", level, f"{self._id} {chan}: {text}", **data)
+
+    def usage(self) -> Any | None:
+        """The room's model calls (llm.usage.Usage), for the parent panel's strip."""
+        provider = getattr(getattr(self._coaching.coach, "speaker", None), "provider", None)
+        return getattr(provider, "usage", None)
 
     def _finish(self) -> None:
         self.closed = True
@@ -260,6 +274,7 @@ class PuzzleRooms:
         stop_speaking: Callable[[], None] | None = None,
         analysis: bool = True,
         coach: bool = True,
+        mirror: Callable[..., None] | None = None,
     ) -> None:
         self.settings = settings
         self.store_path = store_path
@@ -268,6 +283,7 @@ class PuzzleRooms:
         self._stop_speaking = stop_speaking
         self.analysis = analysis
         self.coach = coach
+        self._mirror = mirror
         self._rooms: dict[str, PuzzleRoom] = {}
         self._lock = threading.Lock()
         # The motif each puzzle was recommended for, told by the engine's profiler.
@@ -292,9 +308,15 @@ class PuzzleRooms:
                 stop_speaking=self._stop_speaking,
                 analysis=self.analysis,
                 coach=self.coach,
+                mirror=self._mirror,
             )
             self._rooms[puzzle_id] = room
             return room
+
+    def usages(self) -> list[Any]:
+        """The model-call ledgers of the rooms, open or closed, for the panel's strip."""
+        with self._lock:
+            return [u for u in (room.usage() for room in self._rooms.values()) if u is not None]
 
     def get(self, puzzle_id: str) -> PuzzleRoom | None:
         with self._lock:

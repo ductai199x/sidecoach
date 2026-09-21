@@ -108,3 +108,24 @@ class Usage:
             }
         out["cost"] = self.cost(prices)
         return out
+
+
+def combine(summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Several ledgers' summaries as one (the game's coach and the puzzle rooms'): the
+    counts summed, the cost summed when every one is known, else None."""
+    out: dict[str, Any] = {
+        "calls": 0,
+        "estimated": 0,
+        "prompt": 0,
+        "cached": 0,
+        "completion": 0,
+        "reasoning": 0,
+    }
+    cost: float | None = 0.0
+    for summary in summaries:
+        for key in ("calls", "estimated", "prompt", "cached", "completion", "reasoning"):
+            out[key] += int(summary.get(key) or 0)
+        c = summary.get("cost")
+        cost = None if cost is None or c is None else cost + float(c)
+    out["cost"] = cost
+    return out

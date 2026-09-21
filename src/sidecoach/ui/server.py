@@ -38,7 +38,9 @@ from fastapi import Request
 from pydantic import BaseModel
 
 from sidecoach.config import Settings
+from sidecoach.ui import settings_api
 from sidecoach.ui.panel import PanelApi, PanelEngine
+from sidecoach.ui.settings_api import SettingsUpdate  # resolved from the module globals
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -224,9 +226,16 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
 
     rooms = _rooms_for(engine)
 
+    # The frontend is a single page (desktop/, SvelteKit with adapter-static): every
+    # route it owns is served index.html and routed on the client.
     @app.get("/puzzle/{puzzle_id}")
     def puzzle_page(puzzle_id: str) -> Any:
-        return FileResponse(WEB / "puzzle.html")
+        return FileResponse(WEB / "index.html")
+
+    @app.get("/settings")
+    @app.get("/setup")
+    def spa_page() -> Any:
+        return FileResponse(WEB / "index.html")
 
     @app.post("/api/puzzle/{puzzle_id}/open")
     def puzzle_open(puzzle_id: str) -> dict[str, Any]:
@@ -271,6 +280,15 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
     @app.post("/api/puzzle/{puzzle_id}/close")
     def puzzle_close(puzzle_id: str) -> dict[str, bool]:
         return {"ok": _room_command(rooms, puzzle_id, "close")}
+
+    # ---- the settings, for the app's settings window (ui/settings_api.py) ---------------
+    @app.get("/api/settings")
+    def get_settings() -> dict[str, Any]:
+        return settings_api.describe(engine.settings)
+
+    @app.put("/api/settings")
+    def put_settings(body: SettingsUpdate) -> dict[str, Any]:
+        return settings_api.update(engine, body)
 
     @app.post("/api/reset_profile")
     def reset_profile() -> dict[str, Any]:
@@ -348,8 +366,11 @@ def _rooms_for(engine: PanelEngine) -> Any:
         stop_speaking=stop,
         analysis=engine.analysis,
         coach=engine.coach,
+        mirror=engine._emit,
     )
     rooms.motifs = engine.puzzle_motifs
+    # The rooms' model calls count in the panel's strip with the game's.
+    engine.extra_usage.append(rooms.usages)
     return rooms
 
 

@@ -201,6 +201,9 @@ class PanelEngine:
     # sees a live frame -- the panel's own board, so the vision never locks onto it.
     _exclude: list[tuple[int, int, int, int]] = field(default_factory=list, init=False)
     frames: FrameRing = field(default_factory=lambda: FrameRing(), init=False)
+    # Other model-call ledgers to count in the strip (the puzzle rooms'): callables
+    # returning llm.usage.Usage objects.
+    extra_usage: list[Callable[[], list[Any]]] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         # Each voice model is built exactly once here and kept for the engine's life; the
@@ -1476,9 +1479,14 @@ class PanelEngine:
         provider = getattr(getattr(coaching.coach, "speaker", None), "provider", None)
         usage = getattr(provider, "usage", None)
         if usage is not None:
-            from sidecoach.llm.usage import prices_for
+            from sidecoach.llm.usage import combine, prices_for
 
-            llm = usage.summary(prices_for(self.settings, getattr(provider, "model", None)))
+            prices = prices_for(self.settings, getattr(provider, "model", None))
+            ledgers = [usage]
+            for source in self.extra_usage:
+                with contextlib.suppress(Exception):
+                    ledgers.extend(source())
+            llm = combine([ledger.summary(prices) for ledger in ledgers])
         self._set(
             health={
                 "llm": llm,

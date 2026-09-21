@@ -54,12 +54,12 @@
 }
 .piece.dragging { transition: none; z-index: 5; filter: drop-shadow(0 4px 6px #0006); }
 .piece.fading { opacity: 0; }
-.piece.wK { background-image: url(pieces/wK.svg); } .piece.wQ { background-image: url(pieces/wQ.svg); }
-.piece.wR { background-image: url(pieces/wR.svg); } .piece.wB { background-image: url(pieces/wB.svg); }
-.piece.wN { background-image: url(pieces/wN.svg); } .piece.wP { background-image: url(pieces/wP.svg); }
-.piece.bK { background-image: url(pieces/bK.svg); } .piece.bQ { background-image: url(pieces/bQ.svg); }
-.piece.bR { background-image: url(pieces/bR.svg); } .piece.bB { background-image: url(pieces/bB.svg); }
-.piece.bN { background-image: url(pieces/bN.svg); } .piece.bP { background-image: url(pieces/bP.svg); }
+.piece.wK { background-image: url(/pieces/wK.svg); } .piece.wQ { background-image: url(/pieces/wQ.svg); }
+.piece.wR { background-image: url(/pieces/wR.svg); } .piece.wB { background-image: url(/pieces/wB.svg); }
+.piece.wN { background-image: url(/pieces/wN.svg); } .piece.wP { background-image: url(/pieces/wP.svg); }
+.piece.bK { background-image: url(/pieces/bK.svg); } .piece.bQ { background-image: url(/pieces/bQ.svg); }
+.piece.bR { background-image: url(/pieces/bR.svg); } .piece.bB { background-image: url(/pieces/bB.svg); }
+.piece.bN { background-image: url(/pieces/bN.svg); } .piece.bP { background-image: url(/pieces/bP.svg); }
 body.grabbing, body.grabbing * { cursor: grabbing !important; }
 .board.cb .sq.grab { cursor: grab; }
 
@@ -80,10 +80,10 @@ body.grabbing, body.grabbing * { cursor: grabbing !important; }
 }
 .promo button:hover { background-color: #e8e8e8; }
 .promo button.x { aspect-ratio: auto; height: 28px; background: #ddd; color: #333; font-size: 14px; }
-.promo .wQ { background-image: url(pieces/wQ.svg); } .promo .wR { background-image: url(pieces/wR.svg); }
-.promo .wB { background-image: url(pieces/wB.svg); } .promo .wN { background-image: url(pieces/wN.svg); }
-.promo .bQ { background-image: url(pieces/bQ.svg); } .promo .bR { background-image: url(pieces/bR.svg); }
-.promo .bB { background-image: url(pieces/bB.svg); } .promo .bN { background-image: url(pieces/bN.svg); }
+.promo .wQ { background-image: url(/pieces/wQ.svg); } .promo .wR { background-image: url(/pieces/wR.svg); }
+.promo .wB { background-image: url(/pieces/wB.svg); } .promo .wN { background-image: url(/pieces/wN.svg); }
+.promo .bQ { background-image: url(/pieces/bQ.svg); } .promo .bR { background-image: url(/pieces/bR.svg); }
+.promo .bB { background-image: url(/pieces/bB.svg); } .promo .bN { background-image: url(/pieces/bN.svg); }
 
 /* ---- the coach, the strip ---- */
 .puzzle-page #right { display: flex; flex-direction: column; gap: 10px; }
