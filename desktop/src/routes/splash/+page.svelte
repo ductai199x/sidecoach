@@ -12,7 +12,7 @@
   type Status = { port: number | null; error: string | null };
 
   const PLACEHOLDER: Stage[] = [
-    "Piece recognition", "Voice", "Ear", "Microphone", "Stockfish", "Coach", "Board reading", "Ready",
+    "Piece recognition", "Voice", "Ear", "Microphone", "Board reading", "Stockfish", "Coach", "Ready",
   ].map((label) => ({ name: label, label, state: "pending" }));
 
   let port = $state<number | null>(null);

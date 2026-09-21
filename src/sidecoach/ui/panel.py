@@ -66,16 +66,17 @@ THRESHOLD_FIELDS = frozenset(
 # The voice settings that rebuild the voice or the ear when saved (a model reloads).
 VOICE_RELOAD = frozenset(f"voice.{name}" for name in ("lang", "model_dir", "tts_device"))
 EAR_RELOAD = frozenset(f"voice.{name}" for name in ("stt_device", "mic_device"))
-# The warm-up's stages, in order, as the splash screen shows them: one square of a rank
-# each. A stage is pending, loading, done, or off (missing or failed, with the reason).
+# The warm-up's stages, in the order they finish, as the splash screen shows them: one
+# square of a rank each, the pieces landing left to right. A stage is pending, loading,
+# done, or off (missing or failed, with the reason).
 WARM_STAGES: tuple[tuple[str, str], ...] = (
     ("pieces", "Piece recognition"),
     ("voice", "Voice"),
     ("ear", "Ear"),
     ("mic", "Microphone"),
+    ("vision", "Board reading"),
     ("engine", "Stockfish"),
     ("coach", "Coach"),
-    ("vision", "Board reading"),
     ("ready", "Ready"),
 )
 # The settings page's microphone test turns itself off this long after the page's
@@ -354,6 +355,9 @@ class PanelEngine:
                     self._emit("sys", "warn", "pieces: silhouette overlap (no embedding net)")
                     self._stage("pieces", "off", "no embedding net; silhouettes instead")
                 self._warm_voice()
+                self._stage("vision", "loading")
+                self._warm_pipeline()
+                self._stage("vision", "done")
                 self._stage("engine", "loading")
                 self._stage("coach", "loading")
                 assessing, coaching = self._prepare_stages()
@@ -361,9 +365,6 @@ class PanelEngine:
                     self._stage("engine", "off", assessing.detail)
                 if not coaching.on:
                     self._stage("coach", "off", coaching.detail)
-                self._stage("vision", "loading")
-                self._warm_pipeline()
-                self._stage("vision", "done")
                 self._warm_engines()
                 if assessing.on:
                     self._stage("engine", "done", assessing.detail)
