@@ -157,6 +157,12 @@ fn sidecar_command(app: &AppHandle, token: &str) -> Result<Command, String> {
         // standard library in the wrong place (Phase 2, 2026-09-21).
         c.args(["-I", "-m", "sidecoach", "panel"]);
         c.env_remove("PYTHONHOME").env_remove("PYTHONPATH");
+        // The bytecode cache goes under the data directory, not into the install folder:
+        // the uninstaller removes only what the installer wrote, and an AppImage is
+        // read-only anyway.
+        if let Some(dir) = data_dir(app) {
+            c.env("PYTHONPYCACHEPREFIX", dir.join("pycache"));
+        }
         c
     } else {
         let root = repo_root()
