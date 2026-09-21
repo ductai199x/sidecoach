@@ -72,13 +72,15 @@ EAR_RELOAD = frozenset(f"voice.{name}" for name in ("stt_device", "mic_device"))
 WARM_STAGES: tuple[tuple[str, str], ...] = (
     ("pieces", "Piece recognition"),
     ("voice", "Voice"),
-    ("ear", "Ear"),
+    ("ear", "Speech recognition"),
     ("mic", "Microphone"),
     ("vision", "Board reading"),
     ("engine", "Stockfish"),
     ("coach", "Coach"),
     ("ready", "Ready"),
 )
+# The warm-up stage each voice model reports as (the log calls them by these names).
+STAGE_OF = {"voice": "voice", "speech recognition": "ear"}
 # The settings page's microphone test turns itself off this long after the page's
 # last look at it.
 HEAR_TEST_TIMEOUT_S = 20.0
@@ -182,7 +184,8 @@ class PanelEngine:
     )
     analysis: bool = True
     coach: bool = True
-    voice: str = "af_sarah"
+    # The speaking voice: the settings' unless given (a test); "" means the settings'.
+    voice: str = ""
     muted: bool = False
     # A frame source for tests and replays; when None the engine opens the live screen capture.
     frame_source: FrameSource | None = None
@@ -251,6 +254,9 @@ class PanelEngine:
     extra_usage: list[Callable[[], list[Any]]] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
+        # The voice the settings name, unless the caller named one (Tai, 2026-09-21: the
+        # saved voice was ignored at start, the field's old default always won).
+        self.voice = self.voice or self.settings.voice.voice
         # Each voice model is built exactly once here and kept for the engine's life; the
         # graphs load on the device configured (see `_warm_voice`) and are never reloaded.
         self._tts = self._build_tts(self.voice)
@@ -674,7 +680,7 @@ class PanelEngine:
         self._listener.mic = self._mic
         with self._lock:
             self._state["stt_detail"] = self._stt.healthcheck()[1]
-        self._emit("voice", "info", f"ear reloading: {self._state['stt_detail']}")
+        self._emit("voice", "info", f"speech recognition reloading: {self._state['stt_detail']}")
         threading.Thread(target=self._warm_voice, name="ear-reload", daemon=True).start()
         if mode != "off":
             with contextlib.suppress(Exception):
@@ -686,10 +692,8 @@ class PanelEngine:
             ok, mic = self._mic.healthcheck()
             ready, ear = self._stt.healthcheck()
             if not ok or not ready:
-                return {
-                    "ok": False,
-                    "error": f"{'microphone' if not ok else 'ear'}: {mic if not ok else ear}",
-                }
+                what = "microphone" if not ok else "speech recognition"
+                return {"ok": False, "error": f"{what}: {mic if not ok else ear}"}
             self._hear_test_mode = self._listener.mode
             self._heard_test.clear()
             self._hear_test_on = True
@@ -922,12 +926,12 @@ class PanelEngine:
 
     def _warm_voice(self) -> None:
         """Load both voice models once, off the pipeline thread, and say where they landed."""
-        for label, provider in (("voice", self._tts), ("ear", self._stt)):
+        for label, provider in (("voice", self._tts), ("speech recognition", self._stt)):
             load = getattr(provider, "load", None)
             if load is None:
-                self._stage(label, "off", provider.healthcheck()[1])
+                self._stage(STAGE_OF[label], "off", provider.healthcheck()[1])
                 continue
-            self._stage(label, "loading")
+            self._stage(STAGE_OF[label], "loading")
             ok = load()
             device = getattr(provider, "device", None)
             seconds = getattr(provider, "load_seconds", None)
@@ -945,10 +949,10 @@ class PanelEngine:
                     + (f", primed in {primed:.1f}s" if primed is not None else ""),
                     device=device.name,
                 )
-                self._stage(label, "done", detail)
+                self._stage(STAGE_OF[label], "done", detail)
             else:
                 self._emit("sys", "warn", f"{label}: {detail}")
-                self._stage(label, "off", detail)
+                self._stage(STAGE_OF[label], "off", detail)
         with self._lock:
             self._state["voice_detail"] = self._tts.healthcheck()[1]
             self._state["stt_detail"] = self._stt.healthcheck()[1]

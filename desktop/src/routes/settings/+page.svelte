@@ -49,7 +49,7 @@
     return data.key_envs[providerNow] ?? null;
   });
   let listening = $state("");
-  // The live test of the microphone and the ear under "Hearing you": while it is on the
+  // The live test of the microphone and speech recognition under "Hearing you": while it is on the
   // page polls the level and what was heard; the coach is not asked.
   type Heard = { raw: string; heard: string; seconds: number; stt_ms: number; t: number };
   let hearOn = $state(false);
@@ -339,7 +339,7 @@
           {#each list as [key, p] (key)}{@render field(section, key, p)}{/each}
           {#if section === "voice" && title === "Hearing you"}
             <div class="field test">
-              <span class="lbl">Test the microphone and the ear</span>
+              <span class="lbl">Test the microphone and speech recognition</span>
               <div class="row">
                 <button type="button" class="listen" onclick={() => (hearOn ? stopHearing() : startHearing())}>{hearOn ? "Stop" : "Start"}</button>
                 <div class="meter" title="microphone level"><div class="bar" style:width={`${Math.round(Math.min(1, hearLevel * 2.5) * 100)}%`}></div></div>
@@ -348,9 +348,9 @@
               {#if hearError}<p class="err">{hearError}</p>{/if}
               {#if hearOn && hearInfo}<p class="desc">Listening on {hearInfo}.</p>{/if}
               {#each hearList as h (h.t)}
-                <p class="desc heard"><b>Heard:</b> {h.heard || h.raw || "(no words)"}{#if h.raw && h.heard && h.raw !== h.heard}&nbsp;<span class="muted">(the ear said "{h.raw}"; corrected against the board)</span>{/if}&nbsp;<span class="muted">· {h.seconds} s, recognised in {h.stt_ms} ms</span></p>
+                <p class="desc heard"><b>Heard:</b> {h.heard || h.raw || "(no words)"}{#if h.raw && h.heard && h.raw !== h.heard}&nbsp;<span class="muted">(heard as "{h.raw}"; corrected against the board)</span>{/if}&nbsp;<span class="muted">· {h.seconds} s, recognised in {h.stt_ms} ms</span></p>
               {/each}
-              {#if !hearOn && !hearList.length && !hearError}<p class="desc">Start, speak, and see what the ear makes of it as you go. The coach is not asked.</p>{/if}
+              {#if !hearOn && !hearList.length && !hearError}<p class="desc">Start, speak, and see what is recognised as you go. The coach is not asked.</p>{/if}
             </div>
           {/if}
         {/each}

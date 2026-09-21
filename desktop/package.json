@@ -11,7 +11,8 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri",
-    "build:web": "vite build && node sync-web.mjs"
+    "build:web": "vite build && node sync-web.mjs",
+    "build:app:fast": "tauri build --no-bundle -- --profile fast"
   },
   "license": "MIT",
   "dependencies": {

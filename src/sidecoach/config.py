@@ -598,12 +598,12 @@ class VoiceSettings(BaseModel):
     )
     stt_device: str = Field(
         default="cuda",
-        description="Whether the ear (speech recognition) runs on the graphics card or the "
+        description="Whether speech recognition runs on the graphics card or the "
         "processor. On the processor it still answers in a fraction of a second.",
         json_schema_extra=_extra(
             choices=["cuda", "cpu"],
             applies="now",
-            label="Run the ear on",
+            label="Run speech recognition on",
             choice_labels={"cuda": "GPU (the CPU if it fails)", "cpu": "CPU"},
             advanced=True,
             section="Under the hood",
@@ -650,9 +650,9 @@ class VoiceSettings(BaseModel):
 class GpuSettings(BaseModel):
     mode: str = Field(
         default="auto",
-        description="Whether the voice, the ear and the board reader run on an NVIDIA card. "
-        "Automatic fetches what that needs once and falls back to the CPU on any "
-        "trouble.",
+        description="Whether the voice, speech recognition and the board reader run on an "
+        "NVIDIA card. Automatic fetches what that needs once and falls back to the CPU on "
+        "any trouble.",
         json_schema_extra=_extra(
             choices=["auto", "cpu", "cuda"],
             applies="restart",
@@ -692,7 +692,9 @@ class Settings(BaseModel):
     llm: LLMSettings = Field(default_factory=LLMSettings, description="The model")
     coach: CoachSettings = Field(default_factory=CoachSettings, description="The coach")
     profile: ProfileSettings = Field(default_factory=ProfileSettings, description="You")
-    voice: VoiceSettings = Field(default_factory=VoiceSettings, description="Voice and ear")
+    voice: VoiceSettings = Field(
+        default_factory=VoiceSettings, description="Voice and speech recognition"
+    )
     gpu: GpuSettings = Field(default_factory=GpuSettings, description="GPU acceleration")
 
     def voice_model_dir(self) -> Path:

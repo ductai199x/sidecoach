@@ -272,3 +272,17 @@ def test_a_start_without_a_warm_up_builds_the_stages_once(tmp_path: Path) -> Non
     engine._thread.join(timeout=30)
     assert engine._assessing is assessing
     engine.close()
+
+
+def test_the_panel_starts_with_the_settings_voice(tmp_path: Path) -> None:
+    """The saved voice is the one the panel speaks with from the start (Tai, 2026-09-21:
+    the settings said bm_george, the panel came up with af_sarah -- the field's old
+    default always won). A caller may still name one, as a test does."""
+    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(voice="bm_george"))
+    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
+    assert engine.voice == "bm_george"
+    assert engine.poll(0)["state"]["voice"] == "bm_george"
+    named = PanelEngine(
+        settings, analysis=False, coach=False, record=False, frame_source=iter(()), voice="af_bella"
+    )
+    assert named.voice == "af_bella"

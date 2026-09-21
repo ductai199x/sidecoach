@@ -116,8 +116,8 @@ Process rules, decided:
   shell opens a frameless card (`splash` window, the `/splash` route) before the sidecar
   is spawned and keeps the main window hidden until the card says `splash_done`; the card
   polls `sidecar_status` for the port, then `/api/health`, whose `warm` field lists the
-  eight stages (piece recognition, voice, ear, microphone, Stockfish, coach, board reading,
-  ready) -- drawn as White's first rank: each stage that finishes puts its piece on its
+  eight stages (piece recognition, voice, speech recognition, microphone, board reading, Stockfish,
+  coach, ready) -- drawn as White's first rank: each stage that finishes puts its piece on its
   square, rook on a1 to rook on h1, a failed stage's piece greyed. Behind it, the pieces
   of light (Tai's brief, 2026-09-21: pleasing, cool, and chess): two thousand points on a
   lathe profile form a king, turn slowly, blow apart hard, each point on its own path, and

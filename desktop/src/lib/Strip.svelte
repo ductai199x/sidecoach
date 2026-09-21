@@ -44,7 +44,7 @@
     {/if}
     <span class="hitem"><span class="hk">recording</span><span class="hv">{h.recording || "–"}</span></span>
     <span class="hitem"><span class="hk">voice</span><span class="hv">{h.tts_device || "–"}</span></span>
-    <span class="hitem"><span class="hk">ear</span><span class="hv">{h.stt_device || "–"}</span></span>
+    <span class="hitem"><span class="hk">speech recognition</span><span class="hv">{h.stt_device || "–"}</span></span>
     {#if perf.on}
       <span class="hitem"><span class="hk">ui</span><span class="hv" title="The page: frames per second (the minimum this run), frames over 50 ms, the poll round trip p50/p95">{perf.text}</span></span>
     {/if}

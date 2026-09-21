@@ -26,7 +26,7 @@ screen, so it works on chess.com, Lichess, or anything else that draws a chessbo
   what was better and why. What the model may say is enforced by filtering the facts
   it sees, not by asking it to behave.
 - **Speaks and listens.** A local voice (Kokoro) reads the coach aloud, notation
-  included; a local ear (Parakeet) takes your questions, push-to-talk or hands-free,
+  included; local speech recognition (Parakeet) takes your questions, push-to-talk or hands-free,
   corrected against the legal moves on the board.
 - **Learns you.** Every game feeds a player model: where you lose ground and why. The
   coach carries that into the next session and recommends Lichess puzzles for the
@@ -69,7 +69,7 @@ installer is not code-signed, so the first run of a downloaded copy shows SmartS
 "Windows protected your PC" — *More info*, then *Run anyway*.
 
 On first run a setup window fetches what the coach needs into the app's own data
-folder (about 4 GB: the voice, Stockfish, the opening names, the ear, a puzzle sample),
+folder (about 4 GB: the voice, Stockfish, the opening names, speech recognition, a puzzle sample),
 and offers GPU acceleration when an NVIDIA card can take it. The CPU is the default;
 the GPU is one checkbox.
 
@@ -92,7 +92,7 @@ Requirements: Python 3.12 and [uv](https://docs.astral.sh/uv/). A CUDA-capable N
 GPU is optional; everything runs on the CPU.
 
 ```sh
-uv sync                                  # add --group voice for the voice and the ear
+uv sync                                  # add --group voice for the voice and speech recognition
 uv run python scripts/fetch_stockfish.py
 uv run python scripts/fetch_openings.py
 uv run sidecoach doctor                  # checks Python, the vision libraries, Stockfish,
@@ -127,7 +127,9 @@ uv run python scripts/build_sidecar.py        # the embedded interpreter (deskto
 cd desktop && npm ci && npm run tauri build   # the installer under desktop/src-tauri/target/release/bundle/nsis/
 ```
 
-`npm run tauri dev` runs the shell against the Vite dev server; `npm run build:web`
+`npm run build:app:fast` builds the same executable without the installer in about half
+a minute (no whole-program optimisation; `target/fast/`), for trying a change on the
+installed app. `npm run tauri dev` runs the shell against the Vite dev server; `npm run build:web`
 copies the built page into `src/sidecoach/ui/web/` for the browser flow. The updater's
 signature needs `TAURI_SIGNING_PRIVATE_KEY`; without it, `npm run tauri build --
 --no-bundle` builds the executable alone.

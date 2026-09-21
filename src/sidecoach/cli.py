@@ -1986,7 +1986,9 @@ def panel(
     ] = None,
     stt_device: Annotated[
         str | None,
-        typer.Option(help="Where the ear runs: cuda (default, falls back to cpu) or cpu"),
+        typer.Option(
+            help="Where speech recognition runs: cuda (default, falls back to cpu) or cpu"
+        ),
     ] = None,
     listen: Annotated[
         str | None, typer.Option(help="How the coach listens: off, ptt (hold to talk), or vad")
