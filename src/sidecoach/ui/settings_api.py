@@ -11,7 +11,6 @@ what took effect now, what waits for the next Start, and what needs a restart.
 from __future__ import annotations
 
 import os
-from importlib.util import find_spec
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -78,11 +77,6 @@ def describe(settings: Settings) -> dict[str, Any]:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         schema = Settings.model_json_schema()
-    # Whisper (faster-whisper) is a development extra, not in the app's interpreter: the
-    # choice appears only where the package is.
-    if find_spec("faster_whisper") is not None:
-        ear = schema["$defs"]["VoiceSettings"]["properties"]["stt_provider"]
-        ear["choices"] = ["parakeet", "whisper", "null"]
     return {
         "settings": settings.model_dump(mode="json"),
         "schema": schema,
@@ -164,6 +158,7 @@ def update(engine: Any, body: SettingsUpdate) -> dict[str, Any]:
         engine.settings = new
     later = sorted(set(later) | {c for c in now if c not in applied})
     now = [c for c in now if c in applied]
+
     def words(names: list[str]) -> str:
         return ", ".join(n.split(".")[-1].replace("_", " ") for n in names)
 

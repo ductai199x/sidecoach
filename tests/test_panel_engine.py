@@ -17,7 +17,7 @@ from sidecoach.ui.panel import PanelApi, PanelEngine
 from tests.synth import game_frames
 
 # No voice models: the panel is silent and deaf (see PanelEngine._voice_settings).
-_SILENT = VoiceSettings(provider="null", stt_provider="null")
+_SILENT = VoiceSettings()
 
 
 def test_engine_follows_a_game_and_reports_it(tmp_path: Path) -> None:

@@ -31,6 +31,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import queue
 import threading
 import time
@@ -63,12 +64,8 @@ THRESHOLD_FIELDS = frozenset(
     )
 )
 # The voice settings that rebuild the voice or the ear when saved (a model reloads).
-VOICE_RELOAD = frozenset(
-    f"voice.{name}" for name in ("provider", "lang", "model_dir", "tts_device")
-)
-EAR_RELOAD = frozenset(
-    f"voice.{name}" for name in ("stt_provider", "stt_model", "stt_device", "mic_device")
-)
+VOICE_RELOAD = frozenset(f"voice.{name}" for name in ("lang", "model_dir", "tts_device"))
+EAR_RELOAD = frozenset(f"voice.{name}" for name in ("stt_device", "mic_device"))
 # What the settings page's Listen button says, in the voice being tried.
 VOICE_SAMPLE = "Nf3: that's the move. Now, what is your opponent's most dangerous idea?"
 
@@ -160,6 +157,13 @@ class PanelEngine:
     # recording -- only the profile, which is the player's own model. The recent frames
     # live in `frames`, a ring in memory, and `dump()` writes them out when asked.
     persist: bool = True
+    # Whether the voice models are built at all. Off, the panel has a silent voice and a
+    # deaf ear with a reason; SIDECOACH_VOICE_MODELS=0 is the tests' default (no worker
+    # loads Kokoro and Parakeet on the GPU; 2026-09-20 that, not the vision, was what
+    # lagged the machine) and a headless run's.
+    voice_models: bool = field(
+        default_factory=lambda: os.environ.get("SIDECOACH_VOICE_MODELS", "1") != "0"
+    )
     analysis: bool = True
     coach: bool = True
     voice: str = "af_sarah"
@@ -218,7 +222,7 @@ class PanelEngine:
         # graphs load on the device configured (see `_warm_voice`) and are never reloaded.
         self._tts = self._build_tts(self.voice)
         self._hook_voice()
-        self._stt = make_ear(self._voice_settings())
+        self._stt = make_ear(self.settings, off=not self.voice_models)
         self._mic = Microphone(self.settings.voice.mic_device)
         self._listener = Listener(
             self._mic,
@@ -435,7 +439,7 @@ class PanelEngine:
         mode = self._listener.mode
         with contextlib.suppress(Exception):
             self._listener.set_mode("off")
-        self._stt = make_ear(self._voice_settings())
+        self._stt = make_ear(self.settings, off=not self.voice_models)
         self._mic = Microphone(self.settings.voice.mic_device)
         self._listener.mic = self._mic
         with self._lock:
@@ -615,26 +619,10 @@ class PanelEngine:
 
     # ---- internals ------------------------------------------------------------------------
 
-    def _voice_settings(self, voice: str | None = None) -> Settings:
-        """The settings with voice on: the panel speaks and listens unless told otherwise.
-
-        Told otherwise means a "null" provider (voice.provider for the voice,
-        voice.stt_provider for the ear): then nothing is loaded. `enabled` alone is not
-        that -- it is off by default for the terminal watcher, and the panel is the voice.
-        The tests say null, so no suite loads Kokoro and Parakeet on the GPU in every
-        worker (2026-09-20: that, not the vision, was what lagged the machine).
-        """
-        cfg = self.settings.model_copy(deep=True)
-        update: dict[str, Any] = {"enabled": True}
-        if cfg.voice.provider != "null":
-            update["provider"] = "kokoro"
-        if voice is not None:
-            update["voice"] = voice
-        cfg.voice = cfg.voice.model_copy(update=update)
-        return cfg
-
     def _build_tts(self, voice: str) -> TTSProvider:
-        return make_tts(self._voice_settings(voice))
+        cfg = self.settings.model_copy(deep=True)
+        cfg.voice = cfg.voice.model_copy(update={"voice": voice})
+        return make_tts(cfg, off=not self.voice_models)
 
     def _warm_voice(self) -> None:
         """Load both voice models once, off the pipeline thread, and say where they landed."""

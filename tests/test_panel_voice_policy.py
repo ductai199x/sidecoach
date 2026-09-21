@@ -19,7 +19,7 @@ from sidecoach.ui.server import make_engine
 from tests.synth import game_frames
 
 # No voice models: the panel is silent and deaf (see PanelEngine._voice_settings).
-_SILENT = VoiceSettings(provider="null", stt_provider="null")
+_SILENT = VoiceSettings()
 
 LONG = "Your knight on f5 is loose; the queen check on g6 wins it. What defends it?"
 SHORT = "exf5: good."

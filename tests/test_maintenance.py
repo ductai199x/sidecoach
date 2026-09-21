@@ -24,7 +24,7 @@ CSV = (
 
 
 def _settings(tmp_path: Path) -> Settings:
-    return Settings(data_dir=tmp_path, voice=VoiceSettings(provider="null", stt_provider="null"))
+    return Settings(data_dir=tmp_path, voice=VoiceSettings())
 
 
 def _filled(tmp_path: Path) -> None:

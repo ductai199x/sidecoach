@@ -349,16 +349,6 @@ class ProfileSettings(BaseModel):
 
 
 class VoiceSettings(BaseModel):
-    enabled: bool = Field(
-        default=False,
-        description="The terminal watcher's voice; the panel is always the voice.",
-        json_schema_extra=_extra(applies="now", dev=True),
-    )
-    provider: str = Field(
-        default="kokoro",
-        description="kokoro (Kokoro-82M) or null (silent). Unknown names degrade to silent.",
-        json_schema_extra=_extra(choices=["kokoro", "null"], applies="now"),
-    )
     voice: str = Field(
         default="af_sarah",
         description="The coach's voice: Kokoro's English ones, American or British, female "
@@ -392,18 +382,6 @@ class VoiceSettings(BaseModel):
         default="cuda",
         description="Where the ear runs: cuda or cpu.",
         json_schema_extra=_extra(choices=["cuda", "cpu"], applies="now"),
-    )
-    stt_provider: str = Field(
-        default="parakeet",
-        description="parakeet (NVIDIA Parakeet-TDT-0.6B, what the app ships), whisper "
-        "(faster-whisper on the GPU, only where `uv sync --group whisper` installed it), "
-        "or null (no ear).",
-        json_schema_extra=_extra(choices=["parakeet", "null"], applies="now"),
-    )
-    stt_model: str | None = Field(
-        default=None,
-        description="The model name for the ear's provider; its default when unset.",
-        json_schema_extra=_extra(applies="now", advanced=True),
     )
     listen: str = Field(
         default="ptt",

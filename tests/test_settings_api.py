@@ -20,7 +20,7 @@ def _client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient
     monkeypatch.setenv("SIDECOACH_CONFIG", str(tmp_path / "sidecoach.toml"))
     monkeypatch.delenv("SIDECOACH_DATA_DIR", raising=False)
     engine = PanelEngine(
-        Settings(data_dir=tmp_path, voice=VoiceSettings(provider="null", stt_provider="null")),
+        Settings(data_dir=tmp_path, voice=VoiceSettings()),
         analysis=False,
         coach=False,
         frame_source=iter(()),

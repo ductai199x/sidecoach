@@ -129,16 +129,15 @@ def test_a_blip_is_dropped_and_the_coach_talking_raises_the_bar() -> None:
 # ---- the ear providers -------------------------------------------------------------------------
 
 
-def test_null_and_unknown_ears_are_deaf_with_a_reason() -> None:
-    assert isinstance(make_stt("null", None, "cpu"), NullSTT)
-    ear = make_stt("bat-signal", None, "cpu")
+def test_an_ear_turned_off_is_deaf_with_a_reason() -> None:
+    ear = make_stt(None, off=True)
     assert isinstance(ear, NullSTT)
-    assert "bat-signal" in ear.healthcheck()[1]
+    assert "off" in ear.healthcheck()[1]
     assert ear.transcribe(np.zeros(1600, dtype=np.float32)) == ""
 
 
 def test_parakeet_states_its_device_before_loading() -> None:
-    ear = make_stt("parakeet", None, "cuda")
+    ear = make_stt("cuda")
     assert isinstance(ear, ParakeetSTT)
     ready, detail = ear.healthcheck()
     if find_spec("onnx_asr") is None:
@@ -161,11 +160,10 @@ def test_a_spoken_move_reaches_the_coach_as_san(tmp_path: Path) -> None:
     from sidecoach.ui.panel import PanelEngine
     from sidecoach.ui.server import build_app
 
-    settings = Settings(
-        data_dir=tmp_path,
-        voice=VoiceSettings(enabled=True, stt_provider="parakeet", stt_device="cpu", listen="off"),
+    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(stt_device="cpu", listen="off"))
+    engine = PanelEngine(
+        settings, analysis=False, coach=False, frame_source=iter(()), voice_models=True
     )
-    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
     # A position where Nf3 is legal: the start position, as the engine would report it.
     engine._state["fen"] = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
     client = TestClient(build_app(engine))

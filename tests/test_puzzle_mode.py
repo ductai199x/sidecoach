@@ -128,9 +128,7 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(tmp_path
     from sidecoach.ui.server import build_app
 
     _csv(tmp_path)
-    settings = Settings(
-        data_dir=tmp_path, voice=VoiceSettings(provider="null", stt_provider="null")
-    )
+    settings = Settings(data_dir=tmp_path, voice=VoiceSettings())
     engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
     engine.puzzle_motifs[FORK.id] = "fork"
     engine.practice_ids = [FORK.id, MATE.id]

@@ -225,7 +225,7 @@ Terminal first: the dialogue prints in a console and the user types replies. The
 
 ### 5.9 Voice
 
-Later. Local only: faster-whisper for STT with post-correction against the legal move list, Silero VAD for barge-in, Kokoro for TTS. SAN is converted to spoken form before synthesis.
+Later. Local only: Parakeet (onnx) for STT with post-correction against the legal move list, Silero VAD for barge-in, Kokoro for TTS. SAN is converted to spoken form before synthesis.
 
 ### 5.10 Replay and recording
 
@@ -263,7 +263,7 @@ Scoring is the paper's completeness and correctness (Nguyen & Stamm, arXiv 2606.
 | Vision | OpenCV, numpy; small CNN in PyTorch exported to ONNX Runtime; RapidOCR |
 | Chess | python-chess, Stockfish release binary, Lichess chess-openings data, Polyglot book |
 | LLM | OpenAI-compatible provider over httpx: LM Studio locally, DashScope qwen3.8-max or qwen3.8-flash hosted; keys in `.env` |
-| Voice, later | faster-whisper, Silero VAD, Kokoro |
+| Voice, later | Parakeet, Silero VAD, Kokoro |
 | Storage | SQLite, PGN files |
 | CLI and terminal UI | typer, rich |
 | Config and events | pydantic, TOML |

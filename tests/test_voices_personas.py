@@ -17,7 +17,7 @@ from sidecoach.voice.voices import ENGLISH_VOICES, english_voices, is_english, v
 
 
 def _silent() -> VoiceSettings:
-    return VoiceSettings(provider="null", stt_provider="null")
+    return VoiceSettings()
 
 
 # The persona the coach was evaluated with, as it read before the choice existed

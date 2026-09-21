@@ -50,12 +50,6 @@ voice = [
     "sounddevice>=0.5",
     "pynput>=1.7",
 ]
-# Whisper on the GPU as an alternative STT (faster-whisper / CTranslate2, CUDA 12 wheels).
-whisper = [
-    "faster-whisper>=1.2",
-    "nvidia-cublas-cu12",
-    "nvidia-cudnn-cu12>=9.0,<10",
-]
 # The panel backend: a local FastAPI server behind the web UI, `uv sync --group panel`.
 # The UI opens in the browser, so it is debuggable with real devtools and testable over HTTP.
 panel = [

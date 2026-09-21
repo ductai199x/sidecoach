@@ -20,7 +20,7 @@ from tests.synth import game_frames
 
 
 def _settings(tmp_path: Path) -> Settings:
-    return Settings(data_dir=tmp_path, voice=VoiceSettings(provider="null", stt_provider="null"))
+    return Settings(data_dir=tmp_path, voice=VoiceSettings())
 
 
 def test_health_perf_and_the_token(tmp_path: Path) -> None:
