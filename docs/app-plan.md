@@ -277,7 +277,10 @@ Game, View, Voice, Data, Debug, Help) is native, its check items toggle the pane
 survive a reload, the tray icon appears. Not yet exercised: sleep/resume, a DPI change,
 a monitor unplugged, the puzzle page's promotion picker in the shell.
 
-Soak: a 4 h looped replay at 3x started 02:40; its RSS growth goes here when it ends.
+Soak (the shell.js page, before the port): a looped replay at 3x, stopped at 1 h 42 min.
+The page held 144 fps throughout; the UI's RSS grew 43%, all of it the terminal's DOM,
+which had no cap. The Svelte terminal keeps at most 4000 rows. The 2-hour soak of the
+Svelte page runs at the end of Phase 1, after the installer is tested.
 
 **Decision (2026-09-21, Tai): go.** Tauri renders the page as Chrome does, lighter and
 flatter in memory, with the sidecar lifecycle proven. Phase 1 proceeds.
@@ -286,6 +289,25 @@ flatter in memory, with the sidecar lifecycle proven. Phase 1 proceeds.
 
 Goal: an installer a second Windows machine can run: download, first run, watch a game,
 update. Steps in order; each is a commit and, where it touches Python, tests.
+
+Status (2026-09-21, commits f4b2009, 3a6d422, b4db009): steps 1 to 8 and 10 are built;
+1 to 6 verified end to end on this machine (a clean data dir, the setup downloading
+4 GB in about a minute, the pack activated: the embedding net, Kokoro and Parakeet on
+CUDA from the CPU-only interpreter). Step 7's installer is built (87 MB) and being
+install-tested; step 8's updater is wired and unexercised until a release exists; step 9
+waits on the Azure account; step 10's workflow runs on the next push. Two decisions
+taken along the way:
+
+- **No model is a supported mode.** `llm.provider = "none"` gives an offline provider;
+  the coach speaks from the board and its templates (verdicts, the mistake lesson, the
+  decisive question, the stuck hints, the review), with claims and the verifier off. The
+  app is free and offline when the player wants that. The templates were read through
+  eight play-throughs (real games and masters', both colours) and fixed where they read
+  wrong; the coach also falls back to this mode when the configured provider cannot be
+  reached.
+- **The app records nothing.** The shell always passes `--no-persist --no-record`; the
+  only frames kept are the in-memory ring (`FrameRing`, 150 half-scale JPEGs) that
+  `File > Dump` writes on request. Recording stays a CLI affair for development.
 
 1. **Frontend port.** `desktop/ui` in Svelte 5: the panel (Board with the overlay,
    Moves, Coach with the pinned message and hover marks, ProfileCard, PracticeCard,
