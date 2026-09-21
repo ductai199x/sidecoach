@@ -500,6 +500,51 @@ machine, or a VM with a browser inside running chess.com.
 7. **Test matrix.** Ubuntu 24.04 (GNOME, Wayland) and one KDE Plasma image in a VM; the
    WebDriver smoke test on Linux in CI (`ubuntu-latest` has WebKitGTK).
 
+Log, 2026-09-21 (step 1, WSL2 Ubuntu 24.04 with WSLg, the 3090 Ti passed through):
+
+- The sidecar runs on Linux as it stands: `uv sync` (clang for `evdev`, pynput's Linux
+  dependency, since the managed CPython carries a clang flag gcc rejects), the doctor,
+  and the whole suite -- 1006 passed, 4 skipped, 106 s on the CPU. CUDA through
+  `onnxruntime-gpu` 1.30 (the nvidia wheels): the piece net, Kokoro (1.3 s) and Parakeet
+  (1.2 s; the test clip in 82 then 21 ms) on the GPU; the microphone through WSLg's
+  audio. The panel replay-fed follows a recorded game with everything warm.
+- Found and fixed: the Stockfish fetch script took the Windows zip on any platform, the
+  finder saw only `stockfish*.exe`, and Stockfish 19 had renamed its Linux assets
+  (`stockfish-linux-x86-64-universal.tar.gz`), so the app's first-run download would
+  have failed on Linux; one chooser serves the setup and the script (48e0415).
+  `build_sidecar.py` knew only Windows' layout; it now makes `bin/python3` +
+  `lib/python3.12/`, with `opencv-python-headless` (the Linux opencv wheel bundles Qt
+  and GTK, 116 MB) and libpython stripped (207 MB of debug info to 37): 474 MB.
+- Capture under WSLg fails as expected (the X root refuses `GetImage`); waits for a real
+  desktop. Bundle targets: AppImage first (Tai), the .deb alongside.
+- The AppImage (254 MB) builds and runs under WSLg: the splash renders on WebKitGTK (the
+  pieces of light, the rank filling), every warm-up stage completes on the CPU (Parakeet's
+  CPU load is the slow one, 48 s), the main window comes up with GTK's menu bar and the
+  panel as on Windows. Two things stood in the way. (1) Tauri fetches the `continuous`
+  build of `linuxdeploy-plugin-appimage`, whose 2026-09 AppImage runtime cannot start on
+  WSL2's 5.15 kernel ("execv error"), and linuxdeploy probes every `linuxdeploy-plugin-*`
+  file beside itself, so that one crash killed the packer with "subprocess failed (exit
+  code 127)"; the 1-alpha-20230713-1 release in `~/.cache/tauri/` in its place works
+  (and nothing else may sit in that directory under a plugin-like name). AppImageLauncher,
+  if installed, intercepts the packer too: `APPIMAGELAUNCHER_DISABLE=1`. (2) The
+  AppImage's launcher exports PYTHONHOME and PYTHONPATH for any Python inside; the
+  embedded interpreter died before its first import until the shell ran it isolated
+  (`python -I`, the two variables scrubbed) -- the right thing on every platform
+  (0993be5). WSLg's compositor frames the undecorated splash window; a desktop with
+  decoration support will not.
+- Step 2, rendering on WebKitGTK (the AppImage under WSLg, replay-fed at 1x, the page's
+  own meter, 3 min after the warm-up): 62 fps median (WSLg's compositor is vsync-capped
+  at 60; WebView2 ran uncapped at 140), one 5 s window at 43; long frames 0.32 % (bar:
+  under 1 %); poll p50 4 ms; poll p95 54 ms median, 101 max -- over the bar's 20 ms, but
+  the sidecar was CPU-bound (Stockfish, the vision and the coach on the CPU, no CUDA pack
+  yet), so that is the server's stall, not the page's; to re-measure with the GPU pack
+  and at 3x with the terminal open, as the bar says. The DOM stayed bounded (1,944 nodes,
+  219 rows). Menus native GTK, the panel as on Windows.
+- Step 3, the decision: WebKitGTK meets the bar on what it controls; ship on it. No CEF
+  spike. Open on a real desktop: the tray registered twice on D-Bus (a warning), WebKitGTK
+  wants a GStreamer `appsink` (media in the page, which we have none of), the frameless
+  splash under a compositor with decoration support.
+
 ## 9. Phase 3: Android, on the Pixel 10 Pro XL
 
 The product on the phone: open the app once, grant screen capture, switch to the chess
