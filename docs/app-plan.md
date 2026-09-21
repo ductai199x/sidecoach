@@ -277,6 +277,18 @@ Game, View, Voice, Data, Debug, Help) is native, its check items toggle the pane
 survive a reload, the tray icon appears. Not yet exercised: sleep/resume, a DPI change,
 a monitor unplugged, the puzzle page's promotion picker in the shell.
 
+The installed app (the NSIS build, per user, 2026-09-21): the sidecar answers 3.6 s after
+launch from the embedded interpreter; closing the window hides it to the tray and a second
+launch (the shortcut, or the setup file run again) shows it; close set to quit stops
+everything in 0.8 s; a killed shell takes the sidecar with it in 1.3 s; no lock file left
+on any path; the uninstaller keeps the data directory. Three things only the installed
+build showed, each fixed in 62d3e4e: a window built from a synchronous Tauri command comes
+up white on Windows (the webview's creation completes through the main thread's message
+loop, which the command holds) -- `open_window` is async; the NSIS hooks file is included
+before the template's defines, so its install-or-run check reads the versions from the
+files at run time and runs at MUI's GUI init; and a second launch made a second shell over
+the same sidecar -- the single-instance plugin.
+
 Soak (the shell.js page, before the port): a looped replay at 3x, stopped at 1 h 42 min.
 The page held 144 fps throughout; the UI's RSS grew 43%, all of it the terminal's DOM,
 which had no cap. The Svelte terminal keeps at most 4000 rows. The 2-hour soak of the
@@ -471,6 +483,20 @@ React Native with Headless JS remains the alternative if the port is to be TypeS
 rather than Kotlin; the native modules (MediaProjection, onnxruntime-react-native,
 react-native-sherpa-onnx, a Stockfish module) are needed just the same.
 
+### 6.1 Development hooks
+
+Environment variables the shell reads, none of them for the product: `SIDECOACH_PYTHON`
+(an interpreter to run instead of the bundled one; with it the data dir is the per-user
+one), `SIDECOACH_DATA_DIR` and `SIDECOACH_CONFIG` (the sidecar's, passed through),
+`SIDECOACH_SIDECAR_ARGS` (extra arguments: a replay, a config), `SIDECOACH_PAGE_PERF=<label>`
+(the bundled page with its meter on, samples to `<data>/perf/<label>.jsonl`),
+`SIDECOACH_PAGE_QUERY` (the main window pointed at the sidecar-served page instead),
+`SIDECOACH_OPEN_WINDOW=<route>` (a second window at start: `settings`, `setup`,
+`puzzle/<id>`), `SIDECOACH_PAGE_TRACE` (every asset a secondary window asks for, and the
+resolver's answer, in `<data>/shell-trace.log`), `SIDECOACH_PACK_URL` (the CUDA pack's
+manifest, `file://` for a local build). A page's own uncaught errors reach the panel's
+terminal (`sys`) through `POST /api/client_log`, always.
+
 ## 10. Risks and exits
 
 | Risk | Signal | Exit |
@@ -481,6 +507,7 @@ react-native-sherpa-onnx, a Stockfish module) are needed just the same.
 | `preload_dlls` does not see the pack directory | Phase 1 step 6 | `preload_dlls(directory=)`; the pack's own loader as the last resort |
 | WebView2 bootstrap fails on an old Windows 10 | Phase 1 step 7 | offline installer embedded |
 | Tauri 3 lands mid-way | release notes | the shell is small; migrate when 3.0 is stable |
+| A window that works under `tauri dev` and not installed | only the installed build shows it (the dev server served `/settings`; the bundle's asset protocol and a sync command did not) | every window route opened from the installed build before a release, `SIDECOACH_OPEN_WINDOW` and `SIDECOACH_PAGE_TRACE` |
 | Wayland: no capture, no hotkey, no click-through overlay | Phase 2 | portal capture; in-app PTT; the overlay milestone (M8) stays Windows-first |
 | Phone thermal load with everything on | Phase 3 spike B | lower fps, smaller Parakeet, Android's TTS as the fallback voice |
 | Verification and Play policy | 2027 global | verified account; the consent flow documented in the listing |
