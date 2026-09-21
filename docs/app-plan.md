@@ -540,6 +540,16 @@ Log, 2026-09-21 (step 1, WSL2 Ubuntu 24.04 with WSLg, the 3090 Ti passed through
   yet), so that is the server's stall, not the page's; to re-measure with the GPU pack
   and at 3x with the terminal open, as the bar says. The DOM stayed bounded (1,944 nodes,
   219 rows). Menus native GTK, the panel as on Windows.
+- Step 4, the CUDA pack for Linux (2026-09-21 evening): `build_pack.py` on the Linux box
+  makes `cuda-linux-x86_64-v1.zip` (1.69 GB, 537 files) and its manifest; served from a
+  folder (`SIDECOACH_PACK_URL=file://...`), the AppImage's setup detects the 3090 Ti
+  (driver 616.56, eligible), fetches and installs the pack, and after a restart every
+  model reports `cuda` -- net 1.5 s, Kokoro 3.3, Parakeet 9.4, all eight stages by 11.4 s,
+  the same shape as Windows. The poll p95 did not move with the GPU (53 ms); polled from
+  outside the webview the sidecar answers at p50 2 / p95 4 / max 18 ms, so the stall is
+  WebKitGTK's under WSLg, which paints in software here (`/dev/dri/renderD128` is
+  root:render and the user is in neither group). To re-measure with the groups set, and
+  on a real desktop.
 - Step 3, the decision: WebKitGTK meets the bar on what it controls; ship on it. No CEF
   spike. Open on a real desktop: the tray registered twice on D-Bus (a warning), WebKitGTK
   wants a GStreamer `appsink` (media in the page, which we have none of), the frameless
