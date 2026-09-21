@@ -59,7 +59,10 @@ jobs:
           npm run check
           npm run build:web
       - name: The built frontend is the committed one
-        run: git diff --exit-code --stat -- src/sidecoach/ui/web || (echo "run npm run build:web and commit" && exit 1)
+        shell: pwsh
+        run: |
+          git diff --exit-code --stat -- src/sidecoach/ui/web
+          if ($LASTEXITCODE -ne 0) { Write-Host 'the page changed: run npm run build:web in desktop/ and commit src/sidecoach/ui/web'; exit 1 }
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
