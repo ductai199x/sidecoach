@@ -5,7 +5,9 @@ manages, copied) with a real `site-packages` installed by `uv pip`, carrying the
 and its panel and voice extras on the CPU build of onnxruntime -- no CUDA wheels, no
 torch: the CUDA pack (scripts/build_pack.py) adds the GPU at first run when the machine
 can use it. Output: `desktop/resources/python/` (gitignored), which tauri.conf.json
-bundles as a resource; the shell runs `resources/python/python.exe -m sidecoach panel`.
+bundles as a resource; the shell runs `resources/python/python.exe -m sidecoach panel`
+(Windows) or `resources/python/bin/python3 -m sidecoach panel` (Linux, macOS): the
+distribution's own layout on each, `Lib/` beside the exe or `lib/python3.12/` under it.
 
     uv run --no-sync python scripts/build_sidecar.py            # build
     uv run --no-sync python scripts/build_sidecar.py --check    # run the result's doctor
@@ -35,7 +37,23 @@ OUT = ROOT / "desktop" / "resources" / "python"
 DROP_EXACT = {"onnxruntime-gpu", "torch", "torchvision", "ultralytics", "onnx"}
 DROP_PREFIX = ("nvidia-cu", "nvidia-cudnn", "nvidia-nv", "nvidia-cufft", "nvidia-curand")
 PRUNE_DIRS = ("__pycache__", "tests", "test", "testing")
-PRUNE_TOP = ("Lib/test", "Lib/idlelib", "Lib/tkinter", "Lib/turtledemo", "Lib/ensurepip")
+PRUNE_STDLIB = ("test", "idlelib", "tkinter", "turtledemo", "ensurepip")
+WINDOWS = os.name == "nt"
+
+
+def interpreter(root: Path) -> Path:
+    """The distribution's interpreter: python.exe beside Lib/ on Windows, bin/python3 else."""
+    return root / "python.exe" if WINDOWS else root / "bin" / "python3"
+
+
+def stdlib(root: Path) -> Path:
+    """Where the standard library sits: Lib/ on Windows, lib/python3.X/ elsewhere."""
+    if WINDOWS:
+        return root / "Lib"
+    found = sorted((root / "lib").glob("python3.*"))
+    if not found:
+        raise SystemExit(f"no lib/python3.* under {root}")
+    return found[0]
 
 
 def run(*args: str, **kw: object) -> str:
@@ -63,13 +81,15 @@ def managed_python() -> Path:
         cwd=tempfile.gettempdir(),
         env=env,
     ).strip()
-    exe = Path(out)
-    root = exe.parent
-    if (root.parent / "pyvenv.cfg").exists():  # a venv after all: the distribution behind it
-        for line in (root.parent / "pyvenv.cfg").read_text(encoding="utf-8").splitlines():
+    exe = Path(out).resolve()
+    root = exe.parent if WINDOWS else exe.parent.parent
+    cfg = (root.parent if WINDOWS else root) / "pyvenv.cfg"
+    if cfg.exists():  # a venv after all: the distribution behind it
+        for line in cfg.read_text(encoding="utf-8").splitlines():
             if line.startswith("home ="):
-                root = Path(line.split("=", 1)[1].strip())
-    if not (root / "python.exe").exists() or not (root / "Lib").exists():
+                home = Path(line.split("=", 1)[1].strip())
+                root = home if WINDOWS else home.parent
+    if not interpreter(root).exists() or not (root / ("Lib" if WINDOWS else "lib")).exists():
         raise SystemExit(f"cannot find a CPython distribution from {out}")
     return root
 
@@ -112,9 +132,10 @@ def requirements() -> list[str]:
 
 
 def prune(root: Path) -> None:
-    for rel in PRUNE_TOP:
-        shutil.rmtree(root / rel, ignore_errors=True)
-    site = root / "Lib" / "site-packages"
+    lib = stdlib(root)
+    for name in PRUNE_STDLIB:
+        shutil.rmtree(lib / name, ignore_errors=True)
+    site = lib / "site-packages"
     for name in ("pip", "setuptools", "wheel"):
         for p in site.glob(f"{name}*"):
             shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True)
@@ -138,11 +159,11 @@ def build(out: Path) -> None:
     if out.exists():
         shutil.rmtree(out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(dist, out, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(dist, out, symlinks=True, ignore=shutil.ignore_patterns("__pycache__"))
     # uv marks its own distributions as not to be modified; this copy is ours to fill.
     for marker in out.rglob("EXTERNALLY-MANAGED"):
         marker.unlink()
-    python = out / "python.exe"
+    python = interpreter(out)
     req = out.parent / "requirements-sidecar.txt"
     req.write_text("\n".join(requirements()) + "\n", encoding="utf-8")
     # From outside the project: its [tool.uv] override (onnxruntime never) must not apply.
@@ -159,7 +180,7 @@ def build(out: Path) -> None:
 
 
 def check(out: Path) -> None:
-    python = out / "python.exe"
+    python = interpreter(out)
     env = dict(os.environ)
     env.pop("VIRTUAL_ENV", None)
     print(
