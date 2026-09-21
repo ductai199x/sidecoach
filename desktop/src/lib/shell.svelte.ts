@@ -128,6 +128,9 @@ export async function buildShell(terminal: { shown: () => boolean; toggle: () =>
   const help = await Submenu.new({
     text: "Help",
     items: [
+      await item("Set up (models, Stockfish, GPU)…", () => openWindow("setup")),
+      await item("Check for updates…", () => checkForUpdates(true)),
+      await sep(),
       await item("Sidecoach on GitHub", async () => { if (opener) await opener.openUrl("https://github.com/ductai199x/sidecoach"); }),
       await PredefinedMenuItem.new({ item: { About: { name: "Sidecoach", comments: "Vision-first chess coaching companion" } }, text: "About Sidecoach" }),
     ],
@@ -188,4 +191,27 @@ export async function buildTray(): Promise<void> {
 export async function openWindow(route: string): Promise<void> {
   if (!isTauri()) { window.open("/" + route, "_blank"); return; }
   await invoke("open_window", { route }).catch((e) => console.warn("open window:", e));
+}
+
+
+/** The updater: a signed `latest.json` on the release page. Asked from Help, and once
+ * a day on its own; the download and the install happen only after a yes. */
+export async function checkForUpdates(interactive: boolean): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const { check } = await import("@tauri-apps/plugin-updater");
+    const { relaunch } = await import("@tauri-apps/plugin-process");
+    const update = await check();
+    if (!update) {
+      if (interactive) window.alert("Sidecoach is up to date.");
+      return;
+    }
+    const notes = update.body ? "\n\n" + update.body.slice(0, 600) : "";
+    if (!window.confirm(`Sidecoach ${update.version} is available (you have ${update.currentVersion}). Download and install it now?${notes}`)) return;
+    await update.downloadAndInstall();
+    if (window.confirm("Installed. Restart Sidecoach now?")) await relaunch();
+  } catch (e) {
+    if (interactive) window.alert("Could not check for updates: " + String(e));
+    else console.warn("updater:", e);
+  }
 }

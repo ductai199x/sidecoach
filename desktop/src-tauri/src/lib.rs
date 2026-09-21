@@ -106,7 +106,13 @@ fn data_dir(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
+/// The embedded interpreter: the bundle's `resources/python`, or `SIDECOACH_PYTHON` (a
+/// build of it, to run the app's mode out of a development checkout).
 fn embedded_python(app: &AppHandle) -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("SIDECOACH_PYTHON") {
+        let p = PathBuf::from(p);
+        return if p.exists() { Some(p) } else { None };
+    }
     app.path()
         .resource_dir()
         .ok()
@@ -143,6 +149,11 @@ fn sidecar_command(app: &AppHandle, token: &str) -> Result<Command, String> {
     if let Some(dir) = data_dir(app) {
         let _ = std::fs::create_dir_all(&dir);
         cmd.env("SIDECOACH_DATA_DIR", dir);
+        // The settings file beside the shell's own, in the config dir; keys never in it.
+        if let Ok(config) = app.path().app_config_dir() {
+            let _ = std::fs::create_dir_all(&config);
+            cmd.env("SIDECOACH_CONFIG", config.join("sidecoach.toml"));
+        }
     }
     if let Ok(extra) = std::env::var("SIDECOACH_SIDECAR_ARGS") {
         cmd.args(extra.split_whitespace());
@@ -326,6 +337,8 @@ pub fn run() {
     let sidecar = Sidecar { token: random_token(), ..Default::default() };
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(sidecar)
         .manage(Shell::default())
         .invoke_handler(tauri::generate_handler![

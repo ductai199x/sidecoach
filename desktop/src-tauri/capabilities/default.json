@@ -1,10 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window: the panel, with the menu bar, the tray and always-on-top built from the page. The remote URL is the Phase 0 spike (the panel served by the Python sidecar); the product bundles the frontend and drops it.",
-  "windows": ["main"],
+  "description": "Every window of the app: the panel, the puzzle and settings windows. The menu bar, the tray, always-on-top, the updater and the opener are built from the page.",
+  "windows": [
+    "main",
+    "w-*"
+  ],
   "remote": {
-    "urls": ["http://127.0.0.1:*/*", "http://localhost:*/*"]
+    "urls": [
+      "http://127.0.0.1:*/*",
+      "http://localhost:*/*"
+    ]
   },
   "permissions": [
     "core:default",
@@ -19,6 +25,10 @@
     "core:app:allow-default-window-icon",
     "core:app:allow-app-hide",
     "core:app:allow-app-show",
-    "opener:default"
+    "opener:default",
+    "updater:default",
+    "process:default",
+    "process:allow-restart",
+    "core:window:allow-unminimize"
   ]
 }

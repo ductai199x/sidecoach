@@ -66,7 +66,7 @@ def test_a_save_writes_the_file_and_says_what_applies_when(
 def test_the_toml_round_trips_every_field() -> None:
     settings = Settings()
     settings.llm.extra_body = {"top_k": 20, "flag": True}
-    settings.engine.stockfish_path = "C:\tools\stockfish.exe"
+    settings.engine.stockfish_path = r"C:\tools\stockfish.exe"
     back = Settings.model_validate(tomllib.loads(to_toml(settings)))
     assert back == settings
 

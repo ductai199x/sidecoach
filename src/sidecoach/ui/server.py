@@ -115,6 +115,10 @@ class _Rect(BaseModel):
     h: int
 
 
+class _Ids(BaseModel):
+    ids: list[str] | None = None
+
+
 def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
     """A FastAPI app serving the panel UI and the control API over `engine`. With `token`,
     every /api route but /api/health wants `Authorization: Bearer <token>`."""
@@ -289,6 +293,32 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
     @app.put("/api/settings")
     def put_settings(body: SettingsUpdate) -> dict[str, Any]:
         return settings_api.update(engine, body)
+
+    # ---- first-run setup: the models, Stockfish, the openings, the pack (setup/) ------
+    from sidecoach.setup import Setup, free_space
+    from sidecoach.setup import gpu as gpu_pack
+
+    setup = Setup(engine.settings)
+
+    @app.get("/api/setup/status")
+    def setup_status() -> dict[str, Any]:
+        out = setup.status()
+        out["gpu"] = gpu_pack.status(engine.settings)
+        out["free_bytes"] = free_space(engine.settings.data_dir)
+        return out
+
+    @app.post("/api/setup/start")
+    def setup_start(body: _Ids | None = None) -> dict[str, Any]:
+        return {"ok": setup.start(body.ids if body and body.ids is not None else None)}
+
+    @app.post("/api/setup/cancel")
+    def setup_cancel() -> dict[str, bool]:
+        setup.cancel()
+        return {"ok": True}
+
+    @app.post("/api/setup/remove_pack")
+    def setup_remove_pack() -> dict[str, bool]:
+        return {"ok": gpu_pack.remove(engine.settings)}
 
     @app.post("/api/reset_profile")
     def reset_profile() -> dict[str, Any]:

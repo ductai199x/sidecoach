@@ -27,13 +27,45 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "publisher": "Tai Duc Nguyen",
+    "shortDescription": "Sidecoach: a chess coaching companion that watches your screen",
+    "longDescription": "Vision-first chess coaching companion. Watches the board on your screen, follows the game, annotates with Stockfish and coaches Socratically -- with a model of your choice, or none at all.",
+    "category": "Education",
+    "resources": {
+      "../resources/python/": "python/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "./nsis/hooks.nsh",
+        "displayLanguageSelector": false
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI1OTE3MzVBQUNCQTdBN0IKUldSN2VycXNXbk9SdGRjcHVVZjFOc0dmbXMzWWVaZ3Y1NTlsYUZ1bk1vUnJTOWVOZXpSREZsa3QK",
+      "endpoints": [
+        "https://github.com/ductai199x/sidecoach/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

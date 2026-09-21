@@ -9,7 +9,7 @@ import platform
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, TextIO, cast
+from typing import TYPE_CHECKING, Annotated, Any, TextIO, cast
 
 import typer
 from rich.console import Console
@@ -921,26 +921,39 @@ class _Coaching:
         from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
         from sidecoach.llm.factory import make_provider
 
+        # A model that cannot be made (no key yet, a preset unknown) or reached (the local
+        # server down) leaves the coach on, offline: the board and the templates carry it
+        # until the settings say otherwise (Tai, 2026-09-21: the app works without a model).
+        from sidecoach.llm.offline import OfflineProvider
+
+        why = ""
+        provider: Any = None
+        detail = ""
         try:
             provider = make_provider(settings.llm)
         except Exception as exc:  # noqa: BLE001
-            self.detail = f"no LLM provider: {exc}"
-            console.print(f"[yellow]no coach: {exc}[/yellow]")
-            return
-        ok, detail = provider.healthcheck()
-        if not ok:
-            self.detail = f"LLM not reachable: {detail}"
-            console.print(f"[yellow]no coach: {detail}[/yellow]")
-            return
+            why = f"no model: {exc}"
+        else:
+            ok, detail = provider.healthcheck()
+            if not ok:
+                why = f"model not reachable: {detail}"
+        if why:
+            provider = OfflineProvider()
+            _, detail = provider.healthcheck()
+            detail = f"{detail}; {why}"
+            console.print(f"[yellow]coach offline: {why}[/yellow]")
         policy = InterjectionPolicy(
             PolicySettings(stuck_seconds=settings.coach.stuck_seconds, quiet=settings.coach.quiet)
         )
+        # No model (llm.provider none): nothing that would call one -- no claim extraction
+        # from the user's words, no verifier; the templates and the board carry the coach.
+        offline = bool(getattr(provider, "offline", False))
         self.coach = Coach(
             provider,
             policy=policy,
             draft_check=_draft_check(),
-            claims=_claims_check(provider),
-            verifier=_verifier(settings, provider),  # type: ignore[arg-type]
+            claims=None if offline else _claims_check(provider),
+            verifier=None if offline else _verifier(settings, provider),  # type: ignore[arg-type]
             engine=_named_engine(settings),  # type: ignore[arg-type]
             summarise_every=settings.coach.summarise_every,
             compact_record=settings.coach.compact_record,
@@ -1977,6 +1990,13 @@ def panel(
         console.print(f"[red]panel extras missing:[/red] {exc}; run `uv sync --group panel`")
         raise typer.Exit(1) from exc
     settings = load_settings(config)
+    # The app's downloads and the CUDA pack (setup/): the ear's cache under the data
+    # directory, and the pack ahead of the base environment before onnxruntime loads.
+    from sidecoach.setup import apply_hf_home
+    from sidecoach.setup.gpu import activate
+
+    apply_hf_home(settings)
+    activate(settings)
     if not announce:
         where = f"http://127.0.0.1:{port}/" if port else "a free port"
         console.print(f"panel serving at {where}  (Ctrl-C to stop)")

@@ -22,6 +22,7 @@ export type ConvoTurn = {
   calls: { title: string; prompt?: string; raw?: string }[];
 };
 
+const MAX_ROWS = 4000;
 export const CHANNELS = ["sys", "vision", "game", "engine", "coach", "voice", "user", "puzzle"] as const;
 export const MODE_NEXT: Record<string, string> = { off: "ptt", ptt: "vad", vad: "off" };
 export const MODE_TITLES: Record<string, string> = {
@@ -160,6 +161,10 @@ export class PanelStore {
       last.count++;
     } else {
       this.rows.push({ key, count: 1, line, open: false });
+      // Bounded: the 1h42 soak of 2026-09-21 grew the old page from 480 to 700 MB on an
+      // unbounded terminal. The sidecar keeps its last 3,000 records; the page keeps a
+      // little more and drops the oldest.
+      if (this.rows.length > MAX_ROWS) this.rows.splice(0, this.rows.length - MAX_ROWS);
     }
     const d = line.data;
     if (line.chan === "coach" && d && d.full) this.addCoach(d);

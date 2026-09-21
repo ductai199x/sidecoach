@@ -2,8 +2,33 @@
   // The header: start/stop and the status; the board's orientation as the coach reads it
   // and a re-read; the game menu (what the board cannot tell, and forgetting); the data
   // menu (the caches, the profile); the voice (mute, which one).
-  import { panel } from "./api";
+  import { onMount } from "svelte";
+  import { connect, get, panel } from "./api";
   import { store } from "./panel.svelte";
+  import { inShell, openWindow } from "./shell.svelte";
+
+  // What the app still needs (models, Stockfish): a banner until the setup is done.
+  let missing = $state<string[]>([]);
+  onMount(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const check = async () => {
+      let again = 60000;
+      try {
+        await connect();
+        const st = await get<{ items: { title: string; present: boolean; optional: boolean }[]; ready: boolean }>("/api/setup/status");
+        missing = st.items.filter((i) => !i.present && !i.optional).map((i) => i.title);
+        if (missing.length) again = 5000;
+      } catch {
+        again = 3000; // the sidecar is not up yet
+      }
+      timer = setTimeout(check, again);
+    };
+    check();
+    return () => { if (timer) clearTimeout(timer); };
+  });
+  function openSetup(e: MouseEvent) {
+    if (inShell()) { e.preventDefault(); openWindow("setup"); }
+  }
 
   let openMenu = $state<"game" | "data" | null>(null);
   const voices = $derived(store.state.voices || []);
@@ -25,6 +50,9 @@
     <span class="brand">sidecoach</span>
     <button class="primary" class:running={store.running} onclick={() => store.toggleRunning()}>{store.running ? "Stop" : "Start"}</button>
     <span class="status">{store.state.status || ""}</span>
+    {#if missing.length}
+      <a class="setup-banner" href="/setup" target="_blank" rel="noopener" title={missing.join(", ")} onclick={openSetup}>Set up: {missing.length} item{missing.length === 1 ? "" : "s"} missing →</a>
+    {/if}
   </div>
   <div class="group controls">
     <div class="ctlgroup" role="group" aria-label="Board">

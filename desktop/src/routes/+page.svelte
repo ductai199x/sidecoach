@@ -16,7 +16,7 @@
   import { fitBoard, layoutMode, splitter, stacked } from "$lib/layout";
   import { prefs, store } from "$lib/panel.svelte";
   import { perf } from "$lib/perf.svelte";
-  import { buildShell, buildTray, inShell, panes } from "$lib/shell.svelte";
+  import { buildShell, buildTray, checkForUpdates, inShell, panes } from "$lib/shell.svelte";
 
   let mainEl = $state<HTMLElement | null>(null);
   let footer = $state<HTMLElement | null>(null);
@@ -112,6 +112,12 @@
     if (inShell()) {
       buildShell({ shown: () => !folded, toggle: toggleFold });
       buildTray();
+      // Once a day, quietly; Help > Check for updates asks out loud.
+      const last = Number(prefs.getStr("updateCheck") || 0);
+      if (Date.now() - last > 24 * 3600 * 1000) {
+        prefs.setStr("updateCheck", String(Date.now()));
+        setTimeout(() => checkForUpdates(false), 20000);
+      }
     }
     return () => {
       window.removeEventListener("resize", onResize);

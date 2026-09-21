@@ -124,9 +124,10 @@ class LLMSettings(BaseModel):
         default="openai",
         description="A preset -- openai (gpt-5.6-luna at medium effort, what the coach was "
         "evaluated on), local (LM Studio on this machine), dashscope -- or any other name for "
-        "a custom OpenAI-compatible endpoint, which then needs base_url and model.",
+        "a custom OpenAI-compatible endpoint, which then needs base_url and model; or none: "
+        "no model, the coach speaks from the board and its templates, free and offline.",
         json_schema_extra=_extra(
-            choices=["openai", "local", "dashscope", "custom"], applies="next"
+            choices=["openai", "local", "dashscope", "custom", "none"], applies="next"
         ),
     )
     model: str | None = Field(
@@ -538,6 +539,10 @@ def load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
     data_dir = os.environ.get("SIDECOACH_DATA_DIR")
     if data_dir:
         settings.data_dir = Path(data_dir)
+        # In the app, Stockfish lives under the data directory too, unless the file says
+        # where else; the development default `tools/` is relative to a checkout.
+        if settings.tools_dir == Path("tools"):
+            settings.tools_dir = settings.data_dir / "tools"
     load_secrets(settings)
     return settings
 
