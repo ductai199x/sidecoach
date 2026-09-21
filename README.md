@@ -1,51 +1,195 @@
 # Sidecoach
 
-A vision-first chess coaching companion. It watches your screen, finds the chessboard on any site, reconciles a legal game, annotates every position with Stockfish and a motif tagger, and coaches you Socratically through an LLM. Before you move it asks and hints; it hands over the move only when you find it, play it, or ask for it.
+A chess coach that watches your screen while you play. It finds the board on any site
+from pixels alone, follows the game move by move, analyses every position with Stockfish,
+and coaches the way a good club coach does: it asks before it tells, and it hands over the
+move only when you find it, play it, or ask for it. It speaks, it listens, and it
+remembers how you play from one game to the next.
 
-Design and decisions: [DESIGN.md](DESIGN.md). The coach's evaluation, the ICR method and the numbers: [docs/eval-results.md](docs/eval-results.md).
+No browser extension, no account, no reading of the site: the board is read from the
+screen, so it works on chess.com, Lichess, or anything else that draws a chessboard.
 
-## Quickstart
+---
 
-```
-uv sync                                  # add --group voice for the TTS/STT models
+## What it does
+
+- **Reads the board from the screen.** A frozen pretrained net names the pieces from a
+  single look at the start position; every later move is recognised from the pixels,
+  through animations, drags, arrows, hints, highlights and premoves. Takebacks and
+  resyncs are handled; a position joined mid-game is read cold.
+- **Analyses with Stockfish and a motif tagger.** Every position gets engine lines, a
+  verdict on the move played (book, best, excellent, good, inaccuracy, mistake, miss,
+  blunder, brilliant), and the tactical and strategic ideas in it: forks, pins,
+  skewers, discovered attacks, loose pieces, passed pawns, files, outposts, plans.
+- **Coaches Socratically.** Before you move it asks and hints, from the theme down to the
+  piece, never the move; after you move it says what the move was, and on a mistake,
+  what was better and why. What the model may say is enforced by filtering the facts
+  it sees, not by asking it to behave.
+- **Speaks and listens.** A local voice (Kokoro) reads the coach aloud, notation
+  included; a local ear (Parakeet) takes your questions, push-to-talk or hands-free,
+  corrected against the legal moves on the board.
+- **Learns you.** Every game feeds a player model: where you lose ground and why. The
+  coach carries that into the next session and recommends Lichess puzzles for the
+  weak spot, playable inside the app.
+- **Works without a model.** With no LLM configured, the coach still speaks from the
+  board and its templates: the word on every move, the lesson on a mistake, the
+  questions and hints, the review. Free and offline. With a model (OpenAI, DashScope,
+  or one running on your own machine) it explains and answers in full.
+- **Records nothing.** The app keeps a few seconds of frames in memory and writes
+  nothing to disk unless you ask for a dump. API keys go to the operating system's
+  credential store.
+
+---
+
+## Results
+
+| What | Measure | Result |
+|---|---|---|
+| Coach replies, held out (320 moments, 20 games) | judged pass / fabrication / disclosure leak | **.994 / .00 / .00** (from .89 / .06 / .00 before the harness fixes and the distilled lessons) |
+| Board reading, synthetic sweep (38 piece sets, 8 themes, 44–144 px, every decoration a site draws) | games read ply for ply | **901 of 901** |
+| Board reading, recorded live games | games read ply for ply and ended | **6 of 6** |
+| Tactic tagging vs Lichess puzzle themes (4,570 puzzles) | recall: pin / discovered attack / skewer / fork / x-ray | **100% / 99% / 97% / 93% / 97%** |
+| Tactic description | true sentence on every agreed tactic | **100%** (the coach never fabricates a tactic) |
+| Speech recognition (Parakeet-TDT-0.6B, CPU) | word error rate, raw / after chess correction; latency | **4.5% / 0.0%; ~100 ms** |
+| Offline coach, 199 master games from both sides | sentences checked against the board | **20,997 sentences, 0 wrong** |
+| ChessQA (board-reading benchmark) | accuracy, the paper's prompt → the structured prompt | **.58 → .86** (qwen3.8-flash), **.92** (qwen3.8-max, thinking) |
+| Desktop app, 2-hour soak | page frame rate / long frames / memory | **140 fps / 0.03% / flat once every list was bounded** |
+
+Method and details: [docs/eval-results.md](docs/eval-results.md) (the coach, the judge,
+the ICR rounds, spend), [DESIGN.md](DESIGN.md) (every decision, with its numbers),
+[docs/app-plan.md](docs/app-plan.md) (the desktop app's measurements).
+
+---
+
+## Install (Windows)
+
+Download `Sidecoach_<version>_x64-setup.exe` from the releases page and run it. It
+installs per user and starts; run it again later and it simply opens the app. The
+installer is not code-signed, so the first run of a downloaded copy shows SmartScreen's
+"Windows protected your PC" — *More info*, then *Run anyway*.
+
+On first run a setup window fetches what the coach needs into the app's own data
+folder (about 4 GB: the voice, Stockfish, the opening names, the ear, a puzzle sample),
+and offers GPU acceleration when an NVIDIA card can take it. The CPU is the default;
+the GPU is one checkbox.
+
+Then, in the app:
+
+1. **Settings → AI Coach**: pick a provider and paste its API key, choose a model on
+   your own machine, or choose *No model* for the free, offline coach.
+2. Open the site you play on, press **Start**, and play.
+3. Close the window to keep the coach in the tray, or quit from the tray. Settings
+   apply the moment you save them; the two that need a restart say so.
+
+Linux and Android are planned; the plan and its measurements are in
+[docs/app-plan.md](docs/app-plan.md).
+
+---
+
+## Run from source
+
+Requirements: Python 3.12 and [uv](https://docs.astral.sh/uv/). A CUDA-capable NVIDIA
+GPU is optional; everything runs on the CPU.
+
+```sh
+uv sync                                  # add --group voice for the voice and the ear
 uv run python scripts/fetch_stockfish.py
 uv run python scripts/fetch_openings.py
-uv run sidecoach doctor
+uv run sidecoach doctor                  # checks Python, the vision libraries, Stockfish,
+                                         # the model endpoint and screen capture
 ```
 
-`doctor` checks Python, the vision libraries, the video codec, Stockfish, the LLM endpoint, and screen capture. Or skip all of it: the desktop app below carries its own Python and fetches what it needs on first run. Pieces are named by a frozen pretrained net (YOLO26n-cls, ImageNet weights, nothing trained) shipped as `src/sidecoach/vision/models/yolo26n-embed.onnx`; it runs on the GPU when onnxruntime's CUDA provider initialises (`SIDECOACH_EMBED_DEVICE=cpu` to keep it off). To regenerate the file, `uv sync --group classifier && uv run python tools/classifier/export.py`. The LLM is any OpenAI-compatible endpoint: a preset (`local` for LM Studio on port 1234, `dashscope`, `openai`) or a custom `base_url` + `model`, set under `[llm]` in `sidecoach.toml` (copy `sidecoach.example.toml`); API keys live in `.env`. With `provider = "none"` there is no model at all: the coach speaks from the board and its templates -- the word on every move, the lesson on a mistake, the questions and hints, the review -- free and offline.
+Copy `sidecoach.example.toml` to `sidecoach.toml` for the settings; API keys go in
+`.env` (`OPENAI_API_KEY=...`, `DASHSCOPE_API_KEY=...`) or the app's settings window.
 
-## The app
-
-The same panel as a Windows desktop app (Linux and Android follow; the plan and its measurements are in [docs/app-plan.md](docs/app-plan.md)): a Tauri 2 shell around the page, with the Python pipeline as a sidecar on an embedded interpreter, so nothing needs installing first. One setup file, `Sidecoach_<version>_x64-setup.exe`, installs per user and runs; run again, it just opens the app. It is not code-signed, so the first run of a downloaded copy shows SmartScreen's "Windows protected your PC": More info, then Run anyway. On first run a setup window fetches the voice, Stockfish, the openings, the ear and a puzzle sample into the app's own data folder (about 4 GB), and offers the CUDA pack when an NVIDIA card can take it (the CPU is the default; the GPU is one checkbox). The menu bar has every setting the TOML has, plus the API keys, which go to the OS credential store; closing the window keeps the coach in the tray by default, or quits everything, as the setting says. The app records nothing: no frames or session files reach the disk unless you ask for a dump. Updates come from the release page, checked from Help and once a day.
-
-Building it needs Rust (stable, MSVC), Node 24 and uv: `uv run python scripts/build_sidecar.py` makes the embedded interpreter (`desktop/resources/python/`, gitignored), then `cd desktop && npm ci && npm run tauri build` makes the installer under `desktop/src-tauri/target/release/bundle/nsis/` (the updater's signature needs `TAURI_SIGNING_PRIVATE_KEY`; without it, `-- --no-bundle` builds the exe alone). `npm run tauri dev` runs the shell against the Vite dev server, and `npm run build:web` copies the built page into `src/sidecoach/ui/web/` for the browser flow, which stays as it is.
-
-## Play
-
-```
-uv run sidecoach panel --monitor 1
+```sh
+uv run sidecoach panel --monitor 1       # the panel at http://127.0.0.1:8765/ (--browser opens it)
+uv run sidecoach watch --monitor 1       # the same pipeline in the terminal, without the coach
 ```
 
-serves the panel at http://127.0.0.1:8765/ (add `--browser` to have it opened for you): the board as the pipeline sees it, the coach's messages, a voice, and a debug terminal. The header's controls are grouped by what they are about: *board* -- which side is at the bottom of the board the coach reads (a puzzle or a position joined mid-way is re-read the other way up; a game seen from its start only turns the panel's board around) and a re-read of the screen; *game* -- a menu for what the board cannot tell (a resignation, a flag, a draw) and for forgetting a game; *voice* -- mute and which voice. A *data* menu clears the caches (the theme cache and the puzzle store, both rebuilt on their own) or resets the profile after a confirmation -- `uv run sidecoach cache clear` and `uv run sidecoach profile reset` do the same from the terminal. The status strip above the terminal keeps the session's figures: the tokens the model calls have used (and their cost, at the prices set under `[llm]` in sidecoach.toml), and, amortised over the session, the time from a move to the first sound of the coach's word on it and the model's time to its first token. A board joined in the middle (a puzzle, an analysis board, a game already under way) is read cold from the cached theme on its own, the side at the bottom taken as the player and, on a puzzle, as the one to move; it is coached like a game but recorded by nobody and summed up by no one. The page fits any window: board beside the coach on a desktop or a landscape phone (drag the dividers to resize, double-click one to reset), stacked on a phone or a tablet held upright. When a game ends the panel shows its review -- accuracy, the tally, where it turned and why -- and the coach sums it up; every game feeds the player model under `data/profile.sqlite`, whose insights the coach carries into the next session (a replay teaches it nothing). After the review the coach recommends a few Lichess puzzles for the weak spot the profile sees, on the card: click one and it opens in a tab of its own with a board that behaves like chess.com's (click or drag to move, right-click to mark, right-drag for an arrow) and a coach that stays quiet unless you press Hint, or open it on Lichess and the panel follows it like any position; either way it is scored (`uv run --with zstandard sidecoach puzzles fetch` fills the puzzle store once; `sidecoach puzzles import <csv>` loads the whole database). Start a game against a bot on that monitor; the pipeline locks onto the board, learns the piece set from the start position, and follows every move. `uv run sidecoach watch --monitor 1` is the same pipeline in the terminal, without the coach.
+The panel shows the board as the pipeline sees it, the coach's messages, the voice
+controls and a debug terminal. When a game ends it shows the review — accuracy, the
+tally, where the game turned and why — and the coach sums it up. A development session
+can be recorded (`--record`) and replayed stage by stage:
 
-Every session is recorded under `data/recordings/` (lossless, change-gated), so anything odd can be replayed stage by stage:
-
-```
+```sh
 uv run sidecoach replay data/recordings/<stamp> --moves --pgn game.pgn
-uv run sidecoach cells data/recordings/<stamp> --squares e2,e4 --start 100 --end 140
-uv run sidecoach review game.pgn        # what each move cost, where the game turned
+uv run sidecoach review game.pgn         # what each move cost, where the game turned
+uv run --with zstandard sidecoach puzzles fetch   # fill the puzzle store once
 ```
+
+### Building the desktop app
+
+Rust (stable, MSVC), Node 24 and uv.
+
+```sh
+uv run python scripts/build_sidecar.py        # the embedded interpreter (desktop/resources/python)
+cd desktop && npm ci && npm run tauri build   # the installer under desktop/src-tauri/target/release/bundle/nsis/
+```
+
+`npm run tauri dev` runs the shell against the Vite dev server; `npm run build:web`
+copies the built page into `src/sidecoach/ui/web/` for the browser flow. The updater's
+signature needs `TAURI_SIGNING_PRIVATE_KEY`; without it, `npm run tauri build --
+--no-bundle` builds the executable alone.
+
+---
+
+## How it works
+
+```
+screen  →  capture  →  vision  →  state  →  analysis  →  coach  →  panel / voice
+           frames      board,     legal     Stockfish,   facts,     Svelte page,
+           in memory   pieces,    game,     motifs,      policy,    Kokoro, Parakeet
+                       moves      clocks    verdicts     LLM
+```
+
+Each stage talks to the next only through typed events (`sidecoach/events.py`). The
+coach never sees the whole analysis: a disclosure machine filters the fact bundle by
+level — nature, theme, region, piece, candidate, line — and the level rises only as you
+ask, or find the move, or play it. Eval loss is measured in expected score (a move's
+cost in winning chances), never in centipawns.
+
+The model is any OpenAI-compatible endpoint: a preset (OpenAI, DashScope, a local server
+such as LM Studio) or a custom one. The coach was evaluated on `gpt-5.6-luna` at medium
+effort; its prompt carries twelve distilled lessons produced by iterative context
+refinement over its own judged replies, and every draft is checked against the board
+before it is spoken.
+
+---
 
 ## Development
 
-```
-uv run pytest                            # ~800 tests, parallel, about half a minute
-uv run pytest tests/test_stress.py --seeds 1000   # the sweep: random games through the
-                                         # pipeline over every theme, piece set, size and
-                                         # decoration a site draws (about seven minutes)
+```sh
+uv run pytest                            # ~1000 tests, parallel, about a minute and a half
+uv run pytest tests/test_stress.py --seeds 1000   # the vision sweep: random games over every
+                                         # piece set, theme, size and decoration (~7 min)
+uv run python tools/eval/offline_sweep.py   # the offline coach over 199 master games (~2 min)
 uv run ruff check . && uv run ruff format .
 uv run pyright
 ```
 
-No test reads anything under `data/`: boards are rendered (`tests/synth.py`), pieces come from the cburnett vectors (`tests/pieceset.py`) and 35 lichess sets as sprite sheets under `tests/fixtures/pieces/`, and seven real board crops sit beside them. `tools/eval/` holds the coach's evaluation and ICR tooling (committed); `data/`, `tools/stockfish/` and `refs/` are local and never committed.
+No test reads anything under `data/`: boards are rendered from open-licensed piece sets,
+and a few real board crops sit under `tests/fixtures/`. `tools/eval/` holds the coach's
+evaluation and the ICR tooling; `tools/puzzles/` validates the tactic tagger against
+Lichess puzzles. `data/`, `tools/stockfish/` and `refs/` are local and never committed.
+
+Layout: one package, `sidecoach`, one subpackage per stage — `capture`, `vision`,
+`state`, `analysis`, `coach`, `profile`, `voice`, `llm`, `ui`, `setup`, `replay` — and
+the desktop shell under `desktop/` (Tauri 2, SvelteKit).
+
+---
+
+## Documentation
+
+- [DESIGN.md](DESIGN.md) — scope, policy, architecture, every stage's design and the
+  decisions taken, with their numbers.
+- [docs/eval-results.md](docs/eval-results.md) — how the coach is evaluated and trained
+  in context, and what it scores.
+- [docs/app-plan.md](docs/app-plan.md) — the desktop and mobile apps: the plan, the
+  spike's measurements, the soaks.
+- [docs/coach-plan.md](docs/coach-plan.md) — the coach's roadmap.
+
+Piece sets used for the synthetic tests are Lichess's (open licences, credited under
+`tests/fixtures/pieces/`); chess.com's assets are only ever observed on the user's own
+screen. The piece-naming net is Ultralytics YOLO26n-cls (AGPL-3.0 weights), frozen and
+exported to ONNX.
