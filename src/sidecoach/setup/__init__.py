@@ -43,6 +43,47 @@ KOKORO_FILES = {
     ),
 }
 STOCKFISH_API = "https://api.github.com/repos/official-stockfish/Stockfish/releases/latest"
+
+
+def stockfish_assets(system: str | None = None, machine: str | None = None) -> tuple[str, ...]:
+    """The release assets to take for this platform, best first. Stockfish 19 ships one
+    `universal` build per platform that picks the CPU code path at run time
+    (stockfish-windows-x86-64-universal.zip, stockfish-linux-x86-64-universal.tar.gz,
+    ...-arm64-...); the older per-ISA names are kept as fallbacks for older releases."""
+    system = (system or platform.system()).lower()
+    machine = (machine or platform.machine()).lower()
+    arch = "arm64" if machine in ("arm64", "aarch64") else "x86-64"
+    if system == "windows":
+        return (f"stockfish-windows-{arch}-universal.zip", f"stockfish-windows-{arch}-avx2.zip")
+    if system == "darwin":
+        return ("stockfish-macos-universal.tar.gz", f"stockfish-macos-{arch}.tar")
+    return (
+        f"stockfish-linux-{arch}-universal.tar.gz",
+        f"stockfish-ubuntu-{arch}-avx2.tar",
+        f"stockfish-ubuntu-{arch}.tar",
+    )
+
+
+def unpack_stockfish(archive: Path, dest: Path) -> list[Path]:
+    """Extract a release archive into `dest` and return the executables, made executable."""
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as z:
+            z.extractall(dest)
+        return sorted(dest.rglob("stockfish*.exe"))
+    import tarfile
+
+    with tarfile.open(archive) as t:
+        t.extractall(dest, filter="data")
+    found = sorted(
+        f
+        for f in dest.rglob("stockfish-*")
+        if f.is_file() and f.suffix not in (".tar", ".gz", ".zip", ".exe")
+    )
+    for exe in found:
+        exe.chmod(0o755)
+    return found
+
+
 OPENINGS_BASE = "https://raw.githubusercontent.com/lichess-org/chess-openings/master"
 OPENINGS_VOLUMES = ("a", "b", "c", "d", "e")
 PUZZLES_URL = "https://database.lichess.org/lichess_db_puzzle.csv.zst"
@@ -170,27 +211,16 @@ def items(settings: Settings) -> list[Item]:
         )
         with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
             release = json.load(response)
-        system = platform.system().lower()
-        if system == "windows":
-            wanted = ("stockfish-windows-x86-64-universal.zip", "stockfish-windows-x86-64-avx2.zip")
-        else:
-            wanted = ("stockfish-ubuntu-x86-64-avx2.tar", "stockfish-ubuntu-x86-64.tar")
-        asset = next((a for a in release["assets"] if a["name"] in wanted), None)
+        wanted = stockfish_assets()
+        by_name = {a["name"]: a for a in release["assets"]}
+        asset = next((by_name[n] for n in wanted if n in by_name), None)
         if asset is None:
-            raise RuntimeError(f"no Stockfish build for {system} in {release['tag_name']}")
+            raise RuntimeError(
+                f"no Stockfish build for {platform.system()} in {release['tag_name']}"
+            )
         dest = settings.tools_dir
         archive = download(asset["browser_download_url"], dest / asset["name"], progress)
-        if archive.suffix == ".zip":
-            with zipfile.ZipFile(archive) as z:
-                z.extractall(dest)
-        else:
-            import tarfile
-
-            with tarfile.open(archive) as t:
-                t.extractall(dest, filter="data")
-            for exe in dest.rglob("stockfish-ubuntu*"):
-                if exe.is_file():
-                    exe.chmod(0o755)
+        unpack_stockfish(archive, dest)
         archive.unlink()
 
     out.append(Item("stockfish", "Stockfish", 60_000_000, stockfish_present, stockfish_fetch))
