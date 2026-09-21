@@ -7,13 +7,13 @@ import { isTauri, invoke } from "@tauri-apps/api/core";
 import { panel } from "./api";
 import { prefs, store } from "./panel.svelte";
 
-export type ShellSettings = { close: "tray" | "quit"; autostart: boolean };
+export type ShellSettings = { close: "quit" | "tray"; autostart: boolean };
 
 export const inShell = (): boolean => isTauri();
 
 export async function shellSettings(): Promise<ShellSettings> {
-  if (!isTauri()) return { close: "tray", autostart: false };
-  return invoke<ShellSettings>("shell_settings").catch(() => ({ close: "tray", autostart: false }));
+  if (!isTauri()) return { close: "quit", autostart: false };
+  return invoke<ShellSettings>("shell_settings").catch(() => ({ close: "quit", autostart: false }));
 }
 
 export async function setShellSettings(s: Partial<ShellSettings>): Promise<void> {

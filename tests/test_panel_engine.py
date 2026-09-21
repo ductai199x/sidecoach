@@ -223,10 +223,17 @@ def test_the_engine_and_coach_outlive_a_session(tmp_path: Path) -> None:
         settings, analysis=False, coach=False, record=False, frame_source=game_frames()
     )
     assert engine._assessing is None and engine._coaching is None
+    assert engine.warm_status()["done"] is False
     engine.warm(background=False)
     assessing, coaching = engine._assessing, engine._coaching
     assert assessing is not None and coaching is not None, "warm built nothing"
     assert engine._warm_done.is_set()
+    # The splash screen's view of it: eight stages, none left pending or loading.
+    warm = engine.warm_status()
+    assert warm["done"] is True and len(warm["stages"]) == 8
+    assert {s["state"] for s in warm["stages"]} <= {"done", "off"}, warm["stages"]
+    assert warm["stages"][-1]["name"] == "ready" and warm["stages"][-1]["state"] == "done"
+    assert all("seconds" in s for s in warm["stages"])
     texts = [ln["text"] for ln in engine.poll(0)["lines"]]
     assert sum(t.startswith("engine:") for t in texts) == 1
     assert sum(t.startswith("coach:") for t in texts) == 1

@@ -25,7 +25,7 @@
   let values = $state<Record<string, any>>({});
   let secrets = $state<Record<string, string>>({});
   let clearSecrets = $state<Record<string, boolean>>({});
-  let shell = $state<ShellSettings>({ close: "tray", autostart: false });
+  let shell = $state<ShellSettings>({ close: "quit", autostart: false });
   let advanced = $state(false);
   let saving = $state(false);
   let result = $state<{ ok: boolean; changed?: string[]; now?: string[]; next?: string[]; restart?: string[]; errors?: { loc: (string | number)[]; msg: string }[] } | null>(null);
@@ -282,8 +282,8 @@
         <div class="field">
           <label for="close">When the window is closed</label>
           <select id="close" bind:value={shell.close}>
+            <option value="quit">Quit</option>
             <option value="tray">Keep running in the tray (the coach keeps watching; the icon by the clock brings the window back)</option>
-            <option value="quit">Quit everything</option>
           </select>
         </div>
       {:else}

@@ -33,7 +33,16 @@ const START_TIMEOUT: Duration = Duration::from_secs(120);
 struct Sidecar {
     child: Mutex<Option<Child>>,
     port: Mutex<Option<u16>>,
+    /// Why the sidecar is not serving, when it is not: the splash screen shows it.
+    error: Mutex<Option<String>>,
     token: String,
+}
+
+/// What the splash screen polls until the sidecar serves or fails.
+#[derive(Clone, Serialize)]
+struct SidecarStatus {
+    port: Option<u16>,
+    error: Option<String>,
 }
 
 /// The shell's own settings, kept apart from the sidecar's TOML because the shell needs
@@ -41,14 +50,15 @@ struct Sidecar {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct ShellSettings {
-    close: String, // "tray" | "quit"
+    close: String, // "quit" | "tray"
     autostart: bool,
 }
 
 impl Default for ShellSettings {
     fn default() -> Self {
         Self {
-            close: "tray".into(),
+            // Closing the window quits (Tai, 2026-09-21); the tray is opted into.
+            close: "quit".into(),
             autostart: false,
         }
     }
@@ -298,6 +308,59 @@ fn sidecar_port(state: State<'_, Sidecar>) -> Option<u16> {
 }
 
 #[tauri::command]
+fn sidecar_status(state: State<'_, Sidecar>) -> SidecarStatus {
+    SidecarStatus {
+        port: *state.port.lock().unwrap(),
+        error: state.error.lock().unwrap().clone(),
+    }
+}
+
+/// The splash screen has shown the warm-up through (or was dismissed): the main window
+/// comes up and the splash goes away. Harmless when there is no splash.
+#[tauri::command]
+fn splash_done(app: AppHandle) {
+    show_main(&app);
+    if let Some(splash) = app.get_webview_window("splash") {
+        let _ = splash.close();
+    }
+}
+
+fn show_main(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// The splash screen: a small frameless window over the desktop while the sidecar
+/// starts and warms up (docs/app-plan.md, "everything loads when the app opens"). The
+/// main window stays hidden until the splash says it is done. `SIDECOACH_NO_SPLASH`
+/// skips it (the smoke test, development), showing the main window at once.
+fn open_splash(app: &AppHandle) -> bool {
+    if std::env::var("SIDECOACH_NO_SPLASH").is_ok() {
+        return false;
+    }
+    let built = WebviewWindowBuilder::new(app, "splash", WebviewUrl::App("splash".into()))
+        .title("Sidecoach")
+        .inner_size(720.0, 480.0)
+        .resizable(false)
+        .decorations(false)
+        .shadow(true) // Windows 11 rounds and shadows a frameless window that asks
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .center()
+        .build();
+    match built {
+        Ok(_) => true,
+        Err(err) => {
+            eprintln!("splash: {err}");
+            false
+        }
+    }
+}
+
+#[tauri::command]
 fn sidecar_token(state: State<'_, Sidecar>) -> String {
     state.token.clone()
 }
@@ -480,10 +543,10 @@ pub fn run() {
         // run-if-installed, a second click on the shortcut, or a reopen while the panel sits
         // in the tray all show the running window instead.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+            if let Some(splash) = app.get_webview_window("splash") {
+                let _ = splash.set_focus();
+            } else {
+                show_main(app);
             }
         }))
         .plugin(tauri_plugin_opener::init())
@@ -493,6 +556,8 @@ pub fn run() {
         .manage(Shell::default())
         .invoke_handler(tauri::generate_handler![
             sidecar_port,
+            sidecar_status,
+            splash_done,
             sidecar_token,
             data_dir_command,
             shell_settings,
@@ -502,6 +567,10 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             *handle.state::<Shell>().settings.lock().unwrap() = load_shell_settings(&handle);
+            let splash = open_splash(&handle);
+            if !splash {
+                show_main(&handle);
+            }
             std::thread::spawn(move || {
                 let state = handle.state::<Sidecar>();
                 match start_sidecar(&handle, &state) {
@@ -536,8 +605,12 @@ pub fn run() {
                     }
                     Err(err) => {
                         eprintln!("sidecar: {err}");
+                        *state.error.lock().unwrap() = Some(err.clone());
                         if let Some(window) = handle.get_webview_window("main") {
                             let _ = window.set_title(&format!("Sidecoach: {err}"));
+                        }
+                        if !splash {
+                            show_main(&handle);
                         }
                     }
                 }
@@ -545,8 +618,8 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // The main window closing hides to the tray unless the setting says quit; the
-            // other windows just close.
+            // The main window closing quits, unless the setting says the tray; the other
+            // windows just close.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     let close = window

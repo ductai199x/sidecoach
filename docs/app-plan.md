@@ -112,7 +112,31 @@ Process rules, decided:
   Start that comes sooner waits for it. Stop keeps Stockfish and the coach for the next
   Start; only exit closes them, and the shell's hard kill leaves nothing behind (Stockfish
   exits on its closed stdin). The microphone test in the settings therefore needs no
-  loading, and neither does the first move of a game.
+  loading, and neither does the first move of a game. A splash screen covers it: the
+  shell opens a frameless card (`splash` window, the `/splash` route) before the sidecar
+  is spawned and keeps the main window hidden until the card says `splash_done`; the card
+  polls `sidecar_status` for the port, then `/api/health`, whose `warm` field lists the
+  eight stages (piece recognition, voice, ear, microphone, Stockfish, coach, board reading,
+  ready) -- drawn as White's first rank: each stage that finishes puts its piece on its
+  square, rook on a1 to rook on h1, a failed stage's piece greyed. Behind it, the pieces
+  of light (Tai's brief, 2026-09-21: pleasing, cool, and chess): two thousand points on a
+  lathe profile form a king, turn slowly, blow apart hard, each point on its own path, and
+  gather slowly as the next piece -- queen, rook, bishop, pawn -- about five seconds a
+  piece, two per warm-up; low ribbons of light drift beneath them. Esc opens the window
+  without waiting (unadvertised); a sidecar that fails shows why, with "Open anyway".
+  Reopening from the tray shows no splash; `SIDECOACH_NO_SPLASH` skips it (the smoke
+  test); `/splash?demo` in a browser fakes the stages for looking at the design. The
+  window is exactly the card, undecorated, rounded and shadowed by Windows (a transparent
+  webview showed its own dark backdrop, so no transparency).
+
+- **The logo** (Tai, 2026-09-21): a knight in profile, amber (#F2B441) with a navy
+  (#141A2A) mane stroke, whose eye is a camera lens -- it watches. Explored with
+  gpt-image-2.5 (`tools/brand/logo_ideas.py`: 8 concepts x 2 at medium, then the pick four
+  ways at high, $0.86 in all, every call on the usage ledger), the chosen render cleaned
+  to two flat colours and traced (`tools/brand/vectorise.py`, vtracer spline mode, 7 paths)
+  into `desktop/brand/logo.svg`; the icon set comes from `desktop/brand/icon-source.png`
+  (the mark on a rounded tile a step lighter than the navy, so the mane shows) through
+  `npm run tauri icon`. The renders themselves stay under `data/brand/`, uncommitted.
 
 - The frontend is served from the shell's own origin (`http://tauri.localhost` on Windows,
   `tauri://localhost` on Linux) and calls the sidecar cross-origin; FastAPI allows exactly
@@ -126,10 +150,11 @@ Process rules, decided:
   guarded by a lock file with the port inside, so a second launch focuses the first.
 - Ports are ephemeral. The browser flow keeps `--port 8765` as its default; the app never
   uses a fixed port.
-- **Closing the window** (Tai, 2026-09-21) is a setting with two values: *keep running in
-  the tray* (the default: the close request hides the window, the sidecar keeps watching
-  and the coach keeps talking, the tray icon by the clock brings the window back, the
-  tray's Quit ends everything) and *quit everything*. The shell owns this; the sidecar
+- **Closing the window** (Tai, 2026-09-21) is a setting with two values: *quit* (the
+  default: the window's close ends everything) and *keep running in the tray* (opted
+  into: the close request hides the window, the sidecar keeps watching and the coach
+  keeps talking, the tray icon by the clock brings the window back, the tray's Quit ends
+  everything). The shell owns this; the sidecar
   never learns the window went away. The setting lives in the shell's own small config
   (`shell.json` in the app config dir) so the shell can honour it before the sidecar is up.
 - **Delivery** (Tai, 2026-09-21) is one `Sidecoach-setup.exe`: Tauri's NSIS bundle, per

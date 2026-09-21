@@ -4,6 +4,7 @@
   "description": "Every window of the app: the panel, the puzzle and settings windows. The menu bar, the tray, always-on-top, the updater and the opener are built from the page.",
   "windows": [
     "main",
+    "splash",
     "w-*"
   ],
   "remote": {

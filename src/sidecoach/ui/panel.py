@@ -66,6 +66,18 @@ THRESHOLD_FIELDS = frozenset(
 # The voice settings that rebuild the voice or the ear when saved (a model reloads).
 VOICE_RELOAD = frozenset(f"voice.{name}" for name in ("lang", "model_dir", "tts_device"))
 EAR_RELOAD = frozenset(f"voice.{name}" for name in ("stt_device", "mic_device"))
+# The warm-up's stages, in order, as the splash screen shows them: one square of a rank
+# each. A stage is pending, loading, done, or off (missing or failed, with the reason).
+WARM_STAGES: tuple[tuple[str, str], ...] = (
+    ("pieces", "Piece recognition"),
+    ("voice", "Voice"),
+    ("ear", "Ear"),
+    ("mic", "Microphone"),
+    ("engine", "Stockfish"),
+    ("coach", "Coach"),
+    ("vision", "Board reading"),
+    ("ready", "Ready"),
+)
 # The settings page's microphone test turns itself off this long after the page's
 # last look at it.
 HEAR_TEST_TIMEOUT_S = 20.0
@@ -219,6 +231,8 @@ class PanelEngine:
     _coaching: Any = field(default=None, init=False)
     _warm_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _warm_done: threading.Event = field(default_factory=threading.Event, init=False)
+    _warm_stages: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
+    _warm_begun: float = field(default=0.0, init=False)
     # A settings save that changed what the engine was built from (the Stockfish binary,
     # the tools folder): the next Start rebuilds it.
     _engine_stale: bool = field(default=False, init=False)
@@ -317,9 +331,16 @@ class PanelEngine:
     def _warm(self) -> None:
         with self._warm_lock:
             self._warm_done.clear()
+            self._warm_begun = time.monotonic()
+            with self._lock:
+                self._warm_stages = {
+                    name: {"name": name, "label": label, "state": "pending"}
+                    for name, label in WARM_STAGES
+                }
             try:
                 from sidecoach.vision.pieces import embedder
 
+                self._stage("pieces", "loading")
                 net = embedder()
                 if net is not None:
                     primed = net.prime()
@@ -328,17 +349,54 @@ class PanelEngine:
                         "info",
                         f"pieces: embedding net on {net.device.detail}, primed in {primed:.1f}s",
                     )
+                    self._stage("pieces", "done", f"on {net.device.detail}")
                 else:
                     self._emit("sys", "warn", "pieces: silhouette overlap (no embedding net)")
+                    self._stage("pieces", "off", "no embedding net; silhouettes instead")
                 self._warm_voice()
-                self._prepare_stages()
+                self._stage("engine", "loading")
+                self._stage("coach", "loading")
+                assessing, coaching = self._prepare_stages()
+                if not assessing.on:
+                    self._stage("engine", "off", assessing.detail)
+                if not coaching.on:
+                    self._stage("coach", "off", coaching.detail)
+                self._stage("vision", "loading")
                 self._warm_pipeline()
+                self._stage("vision", "done")
                 self._warm_engines()
+                if assessing.on:
+                    self._stage("engine", "done", assessing.detail)
                 self._warm_model()
+                if coaching.on:
+                    self._stage("coach", "done", coaching.detail)
+                self._stage("ready", "done")
             except Exception as exc:  # noqa: BLE001 - the session builds what is missing
                 self._emit("sys", "warn", f"warm-up: {exc!r}")
+                with self._lock:
+                    for stage in self._warm_stages.values():
+                        if stage["state"] in ("pending", "loading"):
+                            stage["state"] = "off"
+                            stage["detail"] = f"{exc!r}"
             finally:
                 self._warm_done.set()
+
+    def _stage(self, name: str, state: str, detail: str = "") -> None:
+        """One warm-up stage's state, with the seconds since the warm-up began."""
+        with self._lock:
+            stage = self._warm_stages.get(name)
+            if stage is None:
+                return
+            stage["state"] = state
+            stage["detail"] = detail
+            stage["seconds"] = round(time.monotonic() - self._warm_begun, 1)
+
+    def warm_status(self) -> dict[str, Any]:
+        """What the splash screen polls: every stage and whether the warm-up is over."""
+        with self._lock:
+            stages = [dict(s) for s in self._warm_stages.values()]
+        seconds = round(time.monotonic() - self._warm_begun, 1) if self._warm_begun else 0.0
+        return {"done": self._warm_done.is_set(), "seconds": seconds, "stages": stages}
 
     def _warm_pipeline(self) -> None:
         """The session's modules imported (~0.2 s) and the vision's first pass paid (cv2
@@ -866,7 +924,9 @@ class PanelEngine:
         for label, provider in (("voice", self._tts), ("ear", self._stt)):
             load = getattr(provider, "load", None)
             if load is None:
+                self._stage(label, "off", provider.healthcheck()[1])
                 continue
+            self._stage(label, "loading")
             ok = load()
             device = getattr(provider, "device", None)
             seconds = getattr(provider, "load_seconds", None)
@@ -884,13 +944,16 @@ class PanelEngine:
                     + (f", primed in {primed:.1f}s" if primed is not None else ""),
                     device=device.name,
                 )
+                self._stage(label, "done", detail)
             else:
                 self._emit("sys", "warn", f"{label}: {detail}")
+                self._stage(label, "off", detail)
         with self._lock:
             self._state["voice_detail"] = self._tts.healthcheck()[1]
             self._state["stt_detail"] = self._stt.healthcheck()[1]
         ok, detail = self._mic.healthcheck()
         self._emit("sys", "info" if ok else "warn", f"mic: {detail}")
+        self._stage("mic", "loading")
         wanted = self.settings.voice.listen
         if wanted != "off":
             # A deaf ear has no use for the microphone or the push-to-talk key: neither
@@ -900,6 +963,7 @@ class PanelEngine:
                 self.set_listen(wanted)
             else:
                 self._emit("voice", "warn", "listening: off (no ear to hear with)")
+        self._stage("mic", "done" if ok else "off", detail)
 
     def _on_speech_start(self) -> None:
         """The user started talking: the coach stops mid-sentence (barge-in)."""

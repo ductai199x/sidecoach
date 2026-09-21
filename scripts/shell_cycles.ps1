@@ -55,6 +55,8 @@ try {
         Remove-Item $Lock -ErrorAction SilentlyContinue
         Set-Content -Path $shellJson -Value ('{"close":"' + $(if ($how -eq "tray") { "tray" } else { "quit" }) + '","autostart":false}')
         $t0 = Get-Date
+        # No splash: the cycles close the main window by its handle, which must be the main one.
+        $env:SIDECOACH_NO_SPLASH = "1"
         $p = Start-Process -FilePath $Exe -PassThru
         $port = $null
         $deadline = (Get-Date).AddSeconds(90)

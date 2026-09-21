@@ -171,7 +171,13 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         """What the shell polls after spawning the sidecar, and what a lock-file check asks."""
-        return {"ok": True, "version": __version__, "pid": os.getpid(), "running": engine.running}
+        return {
+            "ok": True,
+            "version": __version__,
+            "pid": os.getpid(),
+            "running": engine.running,
+            "warm": engine.warm_status(),
+        }
 
     perf_lock = threading.Lock()  # two pages posting at once must not tear a line
 

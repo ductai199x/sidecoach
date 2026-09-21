@@ -78,8 +78,8 @@ Then, in the app:
 1. **Settings → AI Coach**: pick a provider and paste its API key, choose a model on
    your own machine, or choose *No model* for the free, offline coach.
 2. Open the site you play on, press **Start**, and play.
-3. Close the window to keep the coach in the tray, or quit from the tray. Settings
-   apply the moment you save them; the two that need a restart say so.
+3. Closing the window quits; a setting keeps the coach running in the tray instead.
+   Settings apply the moment you save them; the two that need a restart say so.
 
 Linux and Android are planned; the plan and its measurements are in
 [docs/app-plan.md](docs/app-plan.md).

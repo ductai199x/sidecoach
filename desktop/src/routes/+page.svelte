@@ -27,9 +27,9 @@
   let splitMoves = $state<HTMLElement | null>(null);
   let splitTerm = $state<HTMLElement | null>(null);
 
-  // The debug area folds to its status strip; the choice is remembered, and a small
-  // screen (stacked, or under 800 px tall) starts folded so the board has the room.
-  let folded = $state(false);
+  // The debug area folds to its status strip. It starts folded (Tai, 2026-09-21: the
+  // terminal is off by default; View > Terminal opens it) and the choice is remembered.
+  let folded = $state(true);
   function toggleFold() {
     folded = !folded;
     prefs.setStr("fold", folded ? "1" : "0");
@@ -66,7 +66,7 @@
   onMount(() => {
     layoutMode();
     const saved = prefs.getStr("fold");
-    folded = saved === null ? stacked() || window.innerHeight < 800 : saved === "1";
+    folded = saved === null ? true : saved === "1";
     document.documentElement.classList.toggle("noboard", !panes.board);
     refit();
     const onResize = () => refit();
