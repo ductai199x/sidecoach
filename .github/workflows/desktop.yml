@@ -1,6 +1,8 @@
-# The desktop app on Windows: the Python checks and tests, the Svelte build, the embedded
-# interpreter, the Tauri bundle, the WebDriver smoke test, and on a tag the installer as a
-# release asset with the updater's latest.json (docs/app-plan.md, section 6, step 10).
+# The desktop app on Windows, in two jobs that run at once: the Python checks and the
+# tests that need no GPU (the vision suite is the GPU's; it does not run here, Tai
+# 2026-09-21), and the app -- the Svelte build, the embedded interpreter, the Tauri
+# build, the smoke test, and on a tag the installer as a release asset with the
+# updater's latest.json (docs/app-plan.md, section 6, step 10).
 #
 # Secrets the release job needs (Settings > Secrets):
 #   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD  -- the updater's key
@@ -16,7 +18,23 @@ on:
   pull_request:
 
 jobs:
-  windows:
+  python:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Checks
+        run: |
+          uv sync --group dev --group panel
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run pyright
+      - name: "Tests (no GPU: the vision suite stays at home)"
+        run: uv run pytest -q -m "not slow and not vision" --durations=10
+
+  app:
     runs-on: windows-latest
     permissions:
       contents: write
@@ -26,18 +44,9 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-      - name: Python checks and tests
-        run: |
-          uv sync --group dev --group panel
-          uv run ruff check .
-          uv run ruff format --check .
-          uv run pyright
-          uv run pytest -q -m "not slow"
-
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -56,6 +65,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
+          cache-on-failure: true
 
       - name: Embedded interpreter
         run: uv run python scripts/build_sidecar.py
