@@ -138,7 +138,11 @@ export async function buildShell(terminal: { shown: () => boolean; toggle: () =>
   // Settings is its own entry in the bar (Tai, 2026-09-21): one click, not a submenu.
   const settingsItem = await item("Settings", () => openWindow("settings"), "settings");
   const menu = await Menu.new({ items: [file, game, view, voice, data, settingsItem, debug, help] });
-  await menu.setAsAppMenu();
+  // The panel's window only: an app-wide menu would sit on the puzzle and settings windows
+  // too, which carry nothing of the panel's (Tai, 2026-09-21: those stay in the parent).
+  // macOS has no per-window menu; there the app menu is the one there is.
+  if (navigator.userAgent.includes("Mac")) await menu.setAsAppMenu();
+  else await menu.setAsWindowMenu(win);
 
   // Keep the check items honest against the page's state.
   const refresh = async () => {

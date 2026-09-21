@@ -47,7 +47,10 @@ struct ShellSettings {
 
 impl Default for ShellSettings {
     fn default() -> Self {
-        Self { close: "tray".into(), autostart: false }
+        Self {
+            close: "tray".into(),
+            autostart: false,
+        }
     }
 }
 
@@ -57,7 +60,10 @@ struct Shell {
 }
 
 fn settings_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_config_dir().ok().map(|d| d.join("shell.json"))
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|d| d.join("shell.json"))
 }
 
 fn load_shell_settings(app: &AppHandle) -> ShellSettings {
@@ -80,7 +86,11 @@ fn save_shell_settings(app: &AppHandle, s: &ShellSettings) {
 /// the executable with a `pyproject.toml` and the package.
 fn repo_root() -> Option<PathBuf> {
     let mut starts = vec![std::env::current_dir().ok()];
-    starts.push(std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)));
+    starts.push(
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(PathBuf::from)),
+    );
     for start in starts.into_iter().flatten() {
         let mut dir = Some(start.as_path());
         while let Some(d) = dir {
@@ -116,7 +126,13 @@ fn embedded_python(app: &AppHandle) -> Option<PathBuf> {
     app.path()
         .resource_dir()
         .ok()
-        .map(|r| r.join("python").join(if cfg!(windows) { "python.exe" } else { "bin/python3" }))
+        .map(|r| {
+            r.join("python").join(if cfg!(windows) {
+                "python.exe"
+            } else {
+                "bin/python3"
+            })
+        })
         .filter(|p| p.exists())
 }
 
@@ -128,7 +144,8 @@ fn sidecar_command(app: &AppHandle, token: &str) -> Result<Command, String> {
         c.args(["-m", "sidecoach", "panel"]);
         c
     } else {
-        let root = repo_root().ok_or("no embedded Python and no repository root (pyproject.toml) found")?;
+        let root = repo_root()
+            .ok_or("no embedded Python and no repository root (pyproject.toml) found")?;
         let mut c = Command::new("uv");
         c.args(["run", "--no-sync", "sidecoach", "panel"]);
         c.current_dir(root);
@@ -164,11 +181,16 @@ fn sidecar_command(app: &AppHandle, token: &str) -> Result<Command, String> {
 /// One HTTP GET to the sidecar's health route; true on a 200.
 fn healthy(port: u16) -> bool {
     let addr = format!("127.0.0.1:{port}");
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr.parse().expect("address"), Duration::from_millis(500)) else {
+    let Ok(mut stream) =
+        TcpStream::connect_timeout(&addr.parse().expect("address"), Duration::from_millis(500))
+    else {
         return false;
     };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    if stream.write_all(b"GET /api/health HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").is_err() {
+    if stream
+        .write_all(b"GET /api/health HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+        .is_err()
+    {
         return false;
     }
     let mut head = [0u8; 64];
@@ -194,8 +216,12 @@ fn start_sidecar(app: &AppHandle, state: &Sidecar) -> Result<u16, String> {
         .and_then(|d| std::fs::File::create(d.join("sidecar.log")).ok())
         .map(Stdio::from)
         .unwrap_or_else(Stdio::inherit);
-    cmd.stdout(Stdio::piped()).stderr(stderr).stdin(Stdio::null());
-    let mut child = cmd.spawn().map_err(|e| format!("cannot start the sidecar: {e}"))?;
+    cmd.stdout(Stdio::piped())
+        .stderr(stderr)
+        .stdin(Stdio::null());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("cannot start the sidecar: {e}"))?;
     let stdout = child.stdout.take().ok_or("no stdout from the sidecar")?;
     let started = Instant::now();
     // A thread drains stdout for the sidecar's whole life (a full pipe would block it,
@@ -226,7 +252,9 @@ fn start_sidecar(app: &AppHandle, state: &Sidecar) -> Result<u16, String> {
     *state.child.lock().unwrap() = Some(child);
     while !healthy(port) {
         if started.elapsed() > START_TIMEOUT {
-            return Err(format!("the sidecar on port {port} never answered /api/health"));
+            return Err(format!(
+                "the sidecar on port {port} never answered /api/health"
+            ));
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -234,10 +262,14 @@ fn start_sidecar(app: &AppHandle, state: &Sidecar) -> Result<u16, String> {
     Ok(port)
 }
 
-fn stop_sidecar(state: &Sidecar) {
+fn stop_sidecar(app: &AppHandle, state: &Sidecar) {
     if let Some(mut child) = state.child.lock().unwrap().take() {
         let _ = child.kill();
         let _ = child.wait();
+        // The kill skips the sidecar's own cleanup; its lock file names a dead process.
+        if let Some(dir) = data_dir(app).or_else(|| repo_root().map(|r| r.join("data"))) {
+            let _ = std::fs::remove_file(dir.join("panel.lock"));
+        }
     }
 }
 
@@ -290,7 +322,11 @@ struct ShellSettingsPatch {
 }
 
 #[tauri::command]
-fn set_shell_settings(app: AppHandle, shell: State<'_, Shell>, settings: ShellSettingsPatch) -> ShellSettings {
+fn set_shell_settings(
+    app: AppHandle,
+    shell: State<'_, Shell>,
+    settings: ShellSettingsPatch,
+) -> ShellSettings {
     let mut current = shell.settings.lock().unwrap();
     if let Some(close) = settings.close {
         if close == "tray" || close == "quit" {
@@ -306,10 +342,20 @@ fn set_shell_settings(app: AppHandle, shell: State<'_, Shell>, settings: ShellSe
 
 /// A page of the app in a window of its own: `settings`, `setup`, or `puzzle/<id>`. A
 /// second request for the same route brings the window it has to the front.
+///
+/// Async on purpose: a synchronous command runs on the main thread, and on Windows the
+/// webview's creation completes through that thread's message loop -- built from a sync
+/// command the window came up with a webview that never got its bounds, white and empty.
 #[tauri::command]
-fn open_window(app: AppHandle, route: String) -> Result<(), String> {
+async fn open_window(app: AppHandle, route: String) -> Result<(), String> {
     let route = route.trim_start_matches('/').to_string();
-    let label: String = format!("w-{}", route.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>());
+    let label: String = format!(
+        "w-{}",
+        route
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+    );
     if let Some(w) = app.get_webview_window(&label) {
         let _ = w.show();
         let _ = w.unminimize();
@@ -317,25 +363,129 @@ fn open_window(app: AppHandle, route: String) -> Result<(), String> {
         return Ok(());
     }
     let (title, width, height) = if route.starts_with("puzzle/") {
-        (format!("Sidecoach · {}", route.replace("puzzle/", "puzzle ")), 1180.0, 820.0)
+        (
+            format!("Sidecoach · {}", route.replace("puzzle/", "puzzle ")),
+            1180.0,
+            820.0,
+        )
     } else if route == "settings" {
         ("Sidecoach · Settings".to_string(), 900.0, 760.0)
     } else {
         ("Sidecoach".to_string(), 900.0, 700.0)
     };
-    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(route.into()))
-        .title(title)
+    // Errors from before the page's own code runs (a page that never boots) reach the
+    // terminal through the sidecar; the page installs the same handlers once connected.
+    let state = app.state::<Sidecar>();
+    let report = match (*state.port.lock().unwrap(), state.token.as_str()) {
+        (Some(port), token) => format!(
+            r#"(() => {{
+  const send = (text) => {{ try {{ fetch("http://127.0.0.1:{port}/api/client_log", {{ method: "POST", keepalive: true,
+    headers: {{ "Content-Type": "application/json", "Authorization": "Bearer {token}" }},
+    body: JSON.stringify({{ text: String(text).slice(0, 2000), page: location.pathname }}) }}).catch(() => {{}}); }} catch (_) {{}} }};
+  window.addEventListener("error", (e) => send((e.message || e) + " @ " + (e.filename || "?") + ":" + (e.lineno || 0)));
+  window.addEventListener("unhandledrejection", (e) => send("unhandled rejection: " + (e.reason && (e.reason.stack || e.reason.message) || e.reason)));
+  if ({trace}) {{
+    send("boot " + location.href);
+    document.addEventListener("DOMContentLoaded", () => send("dom " + document.documentElement.outerHTML.length + " chars: " + document.documentElement.outerHTML.slice(0, 400).replace(/\s+/g, " ")));
+  }}
+}})();"#,
+            trace = std::env::var("SIDECOACH_PAGE_TRACE").is_ok(),
+        ),
+        _ => String::new(),
+    };
+    // SIDECOACH_PAGE_TRACE: every asset the window asks the shell for, and what it got, in
+    // <data dir>/shell-trace.log -- the way to see why a window came up blank.
+    let trace = std::env::var("SIDECOACH_PAGE_TRACE").is_ok();
+    let trace_file = data_dir(&app)
+        .or_else(|| repo_root().map(|r| r.join("data")))
+        .map(|d| d.join("shell-trace.log"));
+    let mut builder =
+        WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(route.clone().into()))
+            .initialization_script(&report)
+            .title(title);
+    if trace {
+        if let Some(file) = trace_file {
+            // What the resolver itself says for this route, before the webview asks.
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&file)
+            {
+                let found = app
+                    .asset_resolver()
+                    .get(route.clone())
+                    .map(|a| a.bytes().len());
+                let _ = writeln!(
+                    f,
+                    "resolver {route:?} -> {found:?}; url {:?}",
+                    app.config().build.frontend_dist
+                );
+            }
+            builder = builder.on_web_resource_request(move |request, response| {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&file)
+                {
+                    let _ = writeln!(
+                        f,
+                        "{} -> {} {} bytes",
+                        request.uri(),
+                        response.status(),
+                        response.body().len()
+                    );
+                }
+            });
+        }
+    }
+    let window = builder
         .inner_size(width, height)
         .min_inner_size(600.0, 420.0)
         .build()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if trace {
+        // Where the webview says it is, a few seconds in.
+        let file = data_dir(&app)
+            .or_else(|| repo_root().map(|r| r.join("data")))
+            .map(|d| d.join("shell-trace.log"));
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(4));
+            if let Some(file) = file {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&file)
+                {
+                    let _ = writeln!(
+                        f,
+                        "window url after 4 s: {:?}; eval: {:?}",
+                        window.url(),
+                        window.eval("void 0")
+                    );
+                }
+            }
+        });
+    }
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let sidecar = Sidecar { token: random_token(), ..Default::default() };
+    let sidecar = Sidecar {
+        token: random_token(),
+        ..Default::default()
+    };
     let app = tauri::Builder::default()
+        // First, so a second launch never gets as far as a second window: the installer's
+        // run-if-installed, a second click on the shortcut, or a reopen while the panel sits
+        // in the tray all show the running window instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -360,10 +510,18 @@ pub fn run() {
                         // the window to be pointed at it; the product keeps its own page.
                         if let Ok(query) = std::env::var("SIDECOACH_PAGE_QUERY") {
                             if let Some(window) = handle.get_webview_window("main") {
-                                if let Ok(parsed) = format!("http://127.0.0.1:{port}/{query}").parse() {
+                                if let Ok(parsed) =
+                                    format!("http://127.0.0.1:{port}/{query}").parse()
+                                {
                                     let _ = window.navigate(parsed);
                                 }
                             }
+                        }
+                        // Development: a second window (`settings`, `setup`, `puzzle/<id>`)
+                        // opened at start, to test one without the menu.
+                        if let Ok(route) = std::env::var("SIDECOACH_OPEN_WINDOW") {
+                            let _ =
+                                tauri::async_runtime::block_on(open_window(handle.clone(), route));
                         }
                     }
                     Err(err) => {
@@ -381,7 +539,14 @@ pub fn run() {
             // other windows just close.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
-                    let close = window.app_handle().state::<Shell>().settings.lock().unwrap().close.clone();
+                    let close = window
+                        .app_handle()
+                        .state::<Shell>()
+                        .settings
+                        .lock()
+                        .unwrap()
+                        .close
+                        .clone();
                     if close == "tray" {
                         api.prevent_close();
                         let _ = window.hide();
@@ -393,7 +558,7 @@ pub fn run() {
         .expect("error while building the Sidecoach shell");
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
-            stop_sidecar(&handle.state::<Sidecar>());
+            stop_sidecar(handle, &handle.state::<Sidecar>());
         }
     });
 }

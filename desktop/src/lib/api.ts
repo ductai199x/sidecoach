@@ -14,18 +14,45 @@ let ready: Promise<void> | null = null;
 export function connect(): Promise<void> {
   if (ready) return ready;
   ready = (async () => {
-    if (!isTauri()) return;
+    if (!isTauri()) {
+      reportErrors();
+      return;
+    }
     for (;;) {
       const port = await invoke<number | null>("sidecar_port").catch(() => null);
       if (port) {
         base = `http://127.0.0.1:${port}`;
         token = await invoke<string>("sidecar_token").catch(() => "");
+        reportErrors();
         return;
       }
       await new Promise((r) => setTimeout(r, 300));
     }
   })();
   return ready;
+}
+
+let reporting = false;
+
+/** Uncaught errors and rejections of this page go to the panel's terminal (sys channel). */
+export function reportErrors(): void {
+  if (reporting || typeof window === "undefined") return;
+  reporting = true;
+  const send = (text: string) => {
+    try {
+      void fetch(`${base}/api/client_log`, {
+        method: "POST",
+        headers: headers(true),
+        body: JSON.stringify({ text: text.slice(0, 2000), page: location.pathname }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch { /* nothing to do about it */ }
+  };
+  window.addEventListener("error", (e) => send(`${e.message} @ ${e.filename || "?"}:${e.lineno || 0}`));
+  window.addEventListener("unhandledrejection", (e) => {
+    const r = e.reason as { stack?: string; message?: string } | undefined;
+    send(`unhandled rejection: ${r?.stack || r?.message || String(e.reason)}`);
+  });
 }
 
 /** The sidecar's origin ("" in the browser), for links that must reach it directly. */

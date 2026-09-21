@@ -61,6 +61,16 @@ class _Ask(BaseModel):
     text: str
 
 
+class _ClientLog(BaseModel):
+    """A line from the page itself -- an uncaught error, a failed asset -- so a window that
+    never booted still says why, in the terminal of the panel (the settings window of the
+    installed app opened white, and nothing anywhere said what had failed)."""
+
+    text: str
+    page: str = ""
+    level: str = "error"
+
+
 class _Perf(BaseModel):
     """A sample from the page's own meter (`?perf=<label>`): frame rate, long frames and
     the poll round trip, appended to data/perf/<label>.jsonl for the shell's evaluation."""
@@ -164,6 +174,13 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
         line = json.dumps({"t": time.time(), **body.sample}) + "\n"
         with perf_lock, (folder / f"{label}.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(line)
+        return {"ok": True}
+
+    @app.post("/api/client_log")
+    def client_log(body: _ClientLog) -> dict[str, bool]:
+        level = body.level if body.level in ("info", "warn", "error") else "error"
+        where = f" [{body.page}]" if body.page else ""
+        engine._emit("sys", level, f"page{where}: {body.text[:2000]}")
         return {"ok": True}
 
     @app.post("/api/dump")
@@ -506,9 +523,10 @@ def _attached_port(settings: Settings, host: str) -> int | None:
     return None
 
 
-def _watch_parent(pid: int, stop: Any) -> None:
+def _watch_parent(pid: int, stop: Any, lock: Path | None = None) -> None:
     """Exit the process when `pid` is gone: the shell that spawned this sidecar has died or
-    was killed, and an engine nobody can reach must not keep the screen capture going."""
+    was killed, and an engine nobody can reach must not keep the screen capture going.
+    The lock file goes too, so nothing names this process once it is gone."""
     import psutil
 
     def loop() -> None:
@@ -517,6 +535,9 @@ def _watch_parent(pid: int, stop: Any) -> None:
             if not psutil.pid_exists(pid):
                 with contextlib.suppress(Exception):
                     stop()
+                if lock is not None:
+                    with contextlib.suppress(OSError):
+                        lock.unlink()
                 os._exit(0)
 
     threading.Thread(target=loop, name="parent-watch", daemon=True).start()
@@ -580,7 +601,7 @@ def run_server(
         lock.parent.mkdir(parents=True, exist_ok=True)
         lock.write_text(json.dumps({"port": port, "pid": os.getpid()}), encoding="utf-8")
     if parent_pid is not None:
-        _watch_parent(parent_pid, engine.stop)
+        _watch_parent(parent_pid, engine.stop, lock)
     if replay is not None:
         engine.start()  # a recording plays on its own; live capture waits for the Start button
     url = f"http://{host}:{port}/"
