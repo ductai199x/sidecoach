@@ -1,11 +1,17 @@
 [package]
 name = "sidecoach-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "Sidecoach: the chess coaching companion, as a desktop app"
 authors = ["Tai Duc Nguyen"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# The executable is `sidecoach` (sidecoach.exe on Windows): what a person types and what
+# the installers and the .desktop entry name; the crate keeps its own name.
+[[bin]]
+name = "sidecoach"
+path = "src/main.rs"
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary

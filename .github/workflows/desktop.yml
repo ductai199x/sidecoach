@@ -84,7 +84,7 @@ jobs:
       - name: Smoke test the built app
         shell: pwsh
         run: |
-          $exe = Get-ChildItem desktop/src-tauri/target/release -Filter sidecoach-desktop.exe | Select-Object -First 1
+          $exe = Get-ChildItem desktop/src-tauri/target/release -Filter sidecoach.exe | Select-Object -First 1
           # The interpreter the bundle would carry, named outright: without the bundle step
           # it is not copied next to the exe.
           $env:SIDECOACH_PYTHON = (Resolve-Path desktop/resources/python/python.exe).Path

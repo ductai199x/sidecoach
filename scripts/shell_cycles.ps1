@@ -9,13 +9,13 @@
 #         (the sidecar's parent watchdog).
 #   kill  the shell killed outright; the watchdog takes the sidecar with it.
 #
-#   pwsh scripts/shell_cycles.ps1 -Exe desktop/src-tauri/target/release/sidecoach-desktop.exe -Cycles 6
+#   pwsh scripts/shell_cycles.ps1 -Exe desktop/src-tauri/target/release/sidecoach.exe -Cycles 6
 #
 # The shell setting is written to shell.json in the app's config directory before each
 # launch and restored afterwards. A second launch while a shell runs is answered by the
 # running one (single instance), so every cycle first makes sure none is left.
 param(
-    [string]$Exe = "desktop/src-tauri/target/debug/sidecoach-desktop.exe",
+    [string]$Exe = "desktop/src-tauri/target/debug/sidecoach.exe",
     [int]$Cycles = 6,
     [string]$Lock = "data/panel.lock",
     [string]$ConfigDir = (Join-Path $env:APPDATA "dev.sidecoach.desktop")
@@ -30,7 +30,7 @@ $saved = if (Test-Path $shellJson) { Get-Content $shellJson -Raw } else { $null 
 New-Item -ItemType Directory -Force $ConfigDir | Out-Null
 
 function Sidecars { Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" | Where-Object { $_.CommandLine -like "*sidecoach*panel*" } }
-function Shells { Get-Process -Name sidecoach-desktop -ErrorAction SilentlyContinue }
+function Shells { Get-Process -Name sidecoach -ErrorAction SilentlyContinue }
 function Clear-Left {
     Shells | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
     Sidecars | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }

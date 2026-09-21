@@ -6,7 +6,7 @@ run, with the page's own meter (`?perf=<label>` in the panel) writing beside it.
 p50/p95/max of the tree's RSS and CPU and the growth from the first to the last minute.
 
     uv run --no-sync python scripts/perf_sample.py --pid 1234 --seconds 600 --label idle
-    uv run --no-sync python scripts/perf_sample.py --name sidecoach-desktop.exe --label loaded
+    uv run --no-sync python scripts/perf_sample.py --name sidecoach.exe --label loaded
     uv run --no-sync python scripts/perf_sample.py --summary data/perf/idle.csv data/perf/idle.jsonl
 
 The CSV goes to data/perf/<label>.csv; `--summary` reads a CSV (and a page JSONL when
@@ -222,7 +222,7 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--pid", type=int)
-    ap.add_argument("--name", help="the tree's root by process name (sidecoach-desktop.exe)")
+    ap.add_argument("--name", help="the tree's root by process name (sidecoach.exe)")
     ap.add_argument("--seconds", type=float, default=600.0)
     ap.add_argument("--label", default="run")
     ap.add_argument("--out-dir", type=Path, default=Path("data/perf"))
