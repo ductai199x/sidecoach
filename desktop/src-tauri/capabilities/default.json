@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The main window: the panel, with the menu bar, the tray and always-on-top built from the page. The remote URL is the Phase 0 spike (the panel served by the Python sidecar); the product bundles the frontend and drops it.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*/*", "http://localhost:*/*"]
+  },
+  "permissions": [
+    "core:default",
+    "core:menu:default",
+    "core:tray:default",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-title",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-is-always-on-top",
+    "core:app:allow-default-window-icon",
+    "core:app:allow-app-hide",
+    "core:app:allow-app-show",
+    "opener:default"
+  ]
+}

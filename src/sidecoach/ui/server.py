@@ -8,11 +8,25 @@ browser (debuggable with real devtools) and the API is testable end to end with 
 
 `build_app` makes the app around an engine (a recording-fed engine in a test, a live one in
 the field); `run_server` opens the browser and serves it.
+
+The desktop shell (desktop/, docs/app-plan.md) runs this server as a sidecar: `run_server`
+with `port=0` binds an ephemeral port and prints one JSON line `{"port": N}` on stdout for
+the shell to read; `parent_pid` makes the server exit when that process is gone, so a
+crashed shell never leaves an orphan; a lock file under the data directory lets a second
+launch attach to the first instead of starting another engine; `token` guards every /api
+route with a bearer the shell hands to the page; and the shell's own origins are allowed
+by CORS, because the bundled frontend calls the sidecar cross-origin.
 """
 
 from __future__ import annotations
 
 import contextlib
+import json
+import os
+import socket
+import sys
+import threading
+import time
 import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -32,9 +46,25 @@ if TYPE_CHECKING:
 
 WEB = Path(__file__).parent / "web"
 
+# The origins the desktop shell's bundled frontend is served from (Tauri on Windows, Tauri
+# on Linux, the Vite dev server), allowed to call the API cross-origin. The browser flow
+# is same-origin and needs none of this.
+SHELL_ORIGINS = ["http://tauri.localhost", "tauri://localhost", "http://localhost:1420"]
+LOCK_FILE = "panel.lock"
+# How often the server checks that the parent it was told to follow is still alive.
+PARENT_CHECK_S = 2.0
+
 
 class _Ask(BaseModel):
     text: str
+
+
+class _Perf(BaseModel):
+    """A sample from the page's own meter (`?perf=<label>`): frame rate, long frames and
+    the poll round trip, appended to data/perf/<label>.jsonl for the shell's evaluation."""
+
+    label: str = "page"
+    sample: dict[str, Any]
 
 
 class _Voice(BaseModel):
@@ -83,13 +113,58 @@ class _Rect(BaseModel):
     h: int
 
 
-def build_app(engine: PanelEngine) -> FastAPI:
-    """A FastAPI app serving the panel UI and the control API over `engine`."""
+def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
+    """A FastAPI app serving the panel UI and the control API over `engine`. With `token`,
+    every /api route but /api/health wants `Authorization: Bearer <token>`."""
     from fastapi import FastAPI
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import JSONResponse
     from fastapi.staticfiles import StaticFiles
+
+    from sidecoach import __version__
 
     api = PanelApi(engine)
     app = FastAPI(title="sidecoach panel")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=SHELL_ORIGINS,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    if token:
+
+        @app.middleware("http")
+        async def _bearer(request: Request, call_next: Any) -> Any:
+            path = request.url.path
+            if path.startswith("/api/") and path != "/api/health" and request.method != "OPTIONS":
+                header = request.headers.get("authorization", "")
+                if header != f"Bearer {token}":
+                    return JSONResponse({"ok": False, "error": "unauthorised"}, status_code=401)
+            return await call_next(request)
+
+    @app.get("/api/health")
+    def health() -> dict[str, Any]:
+        """What the shell polls after spawning the sidecar, and what a lock-file check asks."""
+        return {"ok": True, "version": __version__, "pid": os.getpid(), "running": engine.running}
+
+    perf_lock = threading.Lock()  # two pages posting at once must not tear a line
+
+    @app.post("/api/perf")
+    def perf(body: _Perf) -> dict[str, bool]:
+        folder = engine.settings.data_dir / "perf"
+        folder.mkdir(parents=True, exist_ok=True)
+        label = "".join(ch for ch in body.label if ch.isalnum() or ch in "-_") or "page"
+        line = json.dumps({"t": time.time(), **body.sample}) + "\n"
+        with perf_lock, (folder / f"{label}.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(line)
+        return {"ok": True}
+
+    @app.post("/api/dump")
+    def dump() -> dict[str, Any]:
+        """Write the frames the engine keeps in memory, and its log, to the data directory:
+        the one way anything about a live session reaches the disk in the app."""
+        return {"ok": True, "path": engine.dump()}
 
     @app.get("/api/poll")
     def poll(since: int = 0) -> dict[str, Any]:
@@ -293,7 +368,9 @@ def make_engine(
     fps: int = 10,
     replay: Path | None = None,
     record: bool = True,
+    persist: bool = True,
     speed: float = 1.0,
+    loop: bool = False,
     tts_device: str | None = None,
     stt_device: str | None = None,
     listen: str | None = None,
@@ -320,20 +397,78 @@ def make_engine(
         from sidecoach.replay.recording import Recording
 
         def frames() -> Any:
-            first_ts: float | None = None
-            wall0 = time.monotonic()
-            for i, (tick, frame) in enumerate(Recording(replay).frames()):
-                if first_ts is None:
-                    first_ts = tick.ts
-                if speed > 0:
-                    due = wall0 + (tick.ts - first_ts) / speed
-                    delay = due - time.monotonic()
-                    if delay > 0:
-                        time.sleep(min(delay, 1.0))
-                yield (i, tick.ts, frame)
+            # Looped, the recording plays again from its start on a fresh clock, its
+            # timestamps offset so time never runs backwards for the pipeline (a soak).
+            i = 0
+            offset = 0.0
+            while True:
+                first_ts: float | None = None
+                last_ts = 0.0
+                wall0 = time.monotonic()
+                for tick, frame in Recording(replay).frames():
+                    if first_ts is None:
+                        first_ts = tick.ts
+                    if speed > 0:
+                        due = wall0 + (tick.ts - first_ts) / speed
+                        delay = due - time.monotonic()
+                        if delay > 0:
+                            time.sleep(min(delay, 1.0))
+                    last_ts = tick.ts - first_ts
+                    yield (i, offset + last_ts, frame)
+                    i += 1
+                if not loop:
+                    return
+                offset += last_ts + 5.0
 
         frame_source = frames()
-    return PanelEngine(settings, monitor=monitor, fps=fps, record=record, frame_source=frame_source)
+    return PanelEngine(
+        settings,
+        monitor=monitor,
+        fps=fps,
+        record=record,
+        persist=persist,
+        frame_source=frame_source,
+    )
+
+
+def _attached_port(settings: Settings, host: str) -> int | None:
+    """The port of a sidecar already serving this data directory, if its lock file names
+    a live process that answers /api/health; else None (and a stale lock is removed)."""
+    lock = settings.data_dir / LOCK_FILE
+    if not lock.exists():
+        return None
+    try:
+        info = json.loads(lock.read_text(encoding="utf-8"))
+        port, pid = int(info["port"]), int(info["pid"])
+        import psutil
+
+        if psutil.pid_exists(pid):
+            with socket.create_connection((host, port), timeout=0.5) as conn:
+                conn.sendall(b"GET /api/health HTTP/1.0\r\nHost: x\r\n\r\n")
+                head = conn.recv(64)
+            if head.startswith(b"HTTP/1.") and b" 200" in head:
+                return port
+    except Exception:  # noqa: BLE001 - any doubt means no attach
+        pass
+    with contextlib.suppress(OSError):
+        lock.unlink()
+    return None
+
+
+def _watch_parent(pid: int, stop: Any) -> None:
+    """Exit the process when `pid` is gone: the shell that spawned this sidecar has died or
+    was killed, and an engine nobody can reach must not keep the screen capture going."""
+    import psutil
+
+    def loop() -> None:
+        while True:
+            time.sleep(PARENT_CHECK_S)
+            if not psutil.pid_exists(pid):
+                with contextlib.suppress(Exception):
+                    stop()
+                os._exit(0)
+
+    threading.Thread(target=loop, name="parent-watch", daemon=True).start()
 
 
 def run_server(
@@ -345,14 +480,35 @@ def run_server(
     port: int = 8765,
     replay: Path | None = None,
     record: bool = True,
+    persist: bool = True,
     speed: float = 1.0,
+    loop: bool = False,
     open_browser: bool = True,
     tts_device: str | None = None,
     stt_device: str | None = None,
     listen: str | None = None,
+    parent_pid: int | None = None,
+    token: str = "",
+    announce: bool = False,
 ) -> None:
-    """Serve the panel and open it in the browser. Blocks until the server is stopped."""
+    """Serve the panel and open it in the browser. Blocks until the server is stopped.
+
+    `port=0` picks a free port; `announce` prints `{"port": N}` as one JSON line on stdout
+    (the shell reads it); `parent_pid` ends the server when that process dies; a lock file
+    under the data directory makes a second launch print the first one's port and return.
+    """
     import uvicorn
+
+    if announce:
+        attached = _attached_port(settings, host)
+        if attached is not None:
+            print(json.dumps({"port": attached, "attached": True}), flush=True)
+            return
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    sock.listen(128)
+    port = sock.getsockname()[1]
 
     engine = make_engine(
         settings,
@@ -360,17 +516,37 @@ def run_server(
         fps=fps,
         replay=replay,
         record=record,
+        persist=persist,
         speed=speed,
+        loop=loop,
         tts_device=tts_device,
         stt_device=stt_device,
         listen=listen,
     )
-    app = build_app(engine)
+    app = build_app(engine, token=token)
+    lock = settings.data_dir / LOCK_FILE
+    with contextlib.suppress(OSError):
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(json.dumps({"port": port, "pid": os.getpid()}), encoding="utf-8")
+    if parent_pid is not None:
+        _watch_parent(parent_pid, engine.stop)
     if replay is not None:
         engine.start()  # a recording plays on its own; live capture waits for the Start button
     url = f"http://{host}:{port}/"
+    if announce:
+        print(json.dumps({"port": port, "pid": os.getpid()}), flush=True)
     if open_browser:
         # A headless box has no browser; the URL still serves either way.
         with contextlib.suppress(Exception):
             webbrowser.open(url)
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    try:
+        config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+        uvicorn.Server(config).run(sockets=[sock])
+    finally:
+        with contextlib.suppress(OSError):
+            if (
+                lock.exists()
+                and json.loads(lock.read_text(encoding="utf-8")).get("pid") == os.getpid()
+            ):
+                lock.unlink()
+        sys.stdout.flush()

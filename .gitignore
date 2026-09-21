@@ -22,3 +22,12 @@ sidecoach.toml
 
 # Reference material read at dev time only (books, annotations) -- never committed.
 refs/
+
+# The desktop shell's build products (desktop/): node_modules, the Svelte build, the Cargo
+# target, Tauri's generated schemas, and the embedded Python resources.
+desktop/node_modules/
+desktop/build/
+desktop/.svelte-kit/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/resources/

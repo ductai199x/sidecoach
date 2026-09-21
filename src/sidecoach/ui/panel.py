@@ -29,10 +29,12 @@ test, or with `sidecoach panel --replay` while developing -- without a live scre
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import queue
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -92,6 +94,41 @@ HEALTH_EVERY_S = 1.0
 STALL_WARN_S = 2.0
 
 
+class FrameRing:
+    """The last frames the pipeline saw, in memory only, as JPEGs at half scale: about
+    200 KB each, so `maxlen` 150 frames (a minute at a changing board) stay under 40 MB.
+    Encoding costs a few milliseconds per changed frame and nothing on a still one."""
+
+    def __init__(self, maxlen: int = 150, quality: int = 85) -> None:
+        self._frames: deque[tuple[float, bytes]] = deque(maxlen=maxlen)
+        self._quality = quality
+        self._lock = threading.Lock()
+
+    def push(self, ts: float, frame: Any) -> None:
+        try:
+            import cv2
+
+            small = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
+            ok, buf = cv2.imencode(".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), self._quality])
+        except Exception:  # noqa: BLE001 - a frame the ring cannot keep is not an error
+            return
+        if ok:
+            with self._lock:
+                self._frames.append((ts, buf.tobytes()))
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._frames)
+
+    def write(self, folder: Path) -> int:
+        """The frames as files under `folder`, named by their timestamp; returns the count."""
+        with self._lock:
+            frames = list(self._frames)
+        for ts, data in frames:
+            (folder / f"{ts:014.3f}.jpg").write_bytes(data)
+        return len(frames)
+
+
 class _VoiceLogHandler(logging.Handler):
     """Forwards the voice provider's warnings (a failed load, a failed line) to the log."""
 
@@ -114,6 +151,11 @@ class PanelEngine:
     # Record a live session (frames + events.jsonl + debug.jsonl) like `watch` does. A replay
     # is never recorded; it still gets a session folder for its debug log.
     record: bool = True
+    # The app's mode (docs/app-plan.md, Tai 2026-09-21): with persist off nothing of a
+    # session reaches the disk on its own -- no session folder, no debug.jsonl, no
+    # recording -- only the profile, which is the player's own model. The recent frames
+    # live in `frames`, a ring in memory, and `dump()` writes them out when asked.
+    persist: bool = True
     analysis: bool = True
     coach: bool = True
     voice: str = "af_sarah"
@@ -158,6 +200,7 @@ class PanelEngine:
     # Screen rectangles (x, y, w, h in physical pixels) painted flat before the pipeline
     # sees a live frame -- the panel's own board, so the vision never locks onto it.
     _exclude: list[tuple[int, int, int, int]] = field(default_factory=list, init=False)
+    frames: FrameRing = field(default_factory=lambda: FrameRing(), init=False)
 
     def __post_init__(self) -> None:
         # Each voice model is built exactly once here and kept for the engine's life; the
@@ -651,6 +694,23 @@ class PanelEngine:
             "first_token_last_s": round(token_last, 2) if token_n else None,
         }
 
+    @property
+    def running(self) -> bool:
+        with self._lock:
+            return bool(self._state.get("running"))
+
+    def dump(self) -> str:
+        """Write the frames held in memory and the log to data/dumps/<stamp>/: the only way
+        a session reaches the disk when nothing is persisted. Returns the folder."""
+        folder = self.settings.data_dir / "dumps" / time.strftime("%Y%m%d-%H%M%S")
+        folder.mkdir(parents=True, exist_ok=True)
+        n = self.frames.write(folder)
+        with (folder / "debug.jsonl").open("w", encoding="utf-8") as fh:
+            for rec in self._log.since(0):
+                fh.write(json.dumps(rec) + "\n")
+        self._emit("sys", "info", f"dumped {n} frames and the log to {folder}")
+        return str(folder)
+
     def _session_dir(self, live: bool) -> Path:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         kind = "recordings" if live and self.record else "sessions"
@@ -668,9 +728,12 @@ class PanelEngine:
         self._side = Side
         live = self.frame_source is None
         session = self._session_dir(live)
-        self._log.attach(session / "debug.jsonl")
-        self._set(running=True, status="starting", session_dir=str(session))
-        self._emit("sys", "info", "engine started")
+        if self.persist:
+            self._log.attach(session / "debug.jsonl")
+        self._set(
+            running=True, status="starting", session_dir=str(session) if self.persist else None
+        )
+        self._emit("sys", "info", "engine started" + ("" if self.persist else " (nothing saved)"))
 
         # Frames: the live screen (gated, and recorded when asked) or the injected source.
         cap: Any = None
@@ -693,7 +756,7 @@ class PanelEngine:
                 f"({getattr(cap, 'name', 'capture')})",
             )
             gate = ChangeGate(keyframe_interval_s=1.0)
-            if self.record:
+            if self.record and self.persist:
                 recorder = Recorder(
                     session, monitor=monitor, region=region, fps=self.fps, keyframe_interval_s=1.0
                 )
@@ -825,6 +888,8 @@ class PanelEngine:
                     else:
                         changed = gate.changed(frame, ts)
 
+                if changed:
+                    self.frames.push(ts, frame)
                 begun = time.perf_counter()
                 events: list[Event] = []
                 try:

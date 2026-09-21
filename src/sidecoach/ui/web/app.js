@@ -714,7 +714,9 @@ function reportBoardRect() {
 async function tick() {
   try {
     reportBoardRect();
+    const t0 = performance.now();
     const res = await api.poll(cursor);
+    if (perf) perf.polls.push(performance.now() - t0);
     if (res.cursor !== undefined) cursor = Math.max(cursor, res.cursor);
     if (res.lines) for (const line of res.lines) addLine(line);
     if (res.state) renderState(res.state);
@@ -722,6 +724,44 @@ async function tick() {
     /* window closing or api not ready; ignore this tick */
   }
   setTimeout(tick, 250);
+}
+
+// --- the page's own meter (?perf=<label>) --------------------------------------
+//
+// For the desktop shell's evaluation (docs/app-plan.md, section 4): frames per second from
+// requestAnimationFrame, frames longer than 50 ms, and the poll round trip, shown in the
+// status strip, kept on window.__perf, and posted every five seconds to /api/perf, which
+// appends them to data/perf/<label>.jsonl. Off unless the query string asks.
+let perf = null;
+function startPerf(label) {
+  perf = { label, frames: 0, long: 0, polls: [], fpsMin: Infinity, fpsSum: 0, fpsN: 0, last: performance.now(), second: performance.now(), longTotal: 0, framesTotal: 0 };
+  const item = document.createElement("span");
+  item.className = "hitem";
+  item.innerHTML = '<span class="hk">ui</span><span id="h-ui" class="hv" title="The page: frames per second (the minimum this run), frames over 50 ms, the poll round trip p50/p95">–</span>';
+  const strip = el("h-rss") && el("h-rss").closest(".hitem");
+  if (strip && strip.parentNode) strip.parentNode.insertBefore(item, strip); else document.body.appendChild(item);
+  const pct = (arr, p) => { if (!arr.length) return null; const s = [...arr].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(s.length * p))]; };
+  const frame = (now) => {
+    const dt = now - perf.last; perf.last = now;
+    perf.frames++; perf.framesTotal++;
+    if (dt > 50) { perf.long++; perf.longTotal++; }
+    if (now - perf.second >= 1000) {
+      const fps = perf.frames * 1000 / (now - perf.second);
+      perf.fpsMin = Math.min(perf.fpsMin, fps); perf.fpsSum += fps; perf.fpsN++;
+      perf.frames = 0; perf.second = now;
+      const p50 = pct(perf.polls, 0.5), p95 = pct(perf.polls, 0.95);
+      el("h-ui").textContent = fps.toFixed(0) + " fps (min " + perf.fpsMin.toFixed(0) + "), long " + perf.longTotal + ", poll " + (p50 == null ? "–" : p50.toFixed(0) + "/" + p95.toFixed(0) + " ms");
+      window.__perf = { fps, fps_min: perf.fpsMin, fps_mean: perf.fpsSum / perf.fpsN, long_frames: perf.longTotal, frames: perf.framesTotal, poll_p50: p50, poll_p95: p95 };
+    }
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+  setInterval(() => {
+    if (!window.__perf) return;
+    const host = window.__TAURI__ ? "tauri" : /Electron/.test(navigator.userAgent) ? "electron" : "browser";
+    post("/api/perf", { label, sample: { host, ...window.__perf, ua: navigator.userAgent } }).catch(() => {});
+    perf.polls = perf.polls.slice(-200);
+  }, 5000);
 }
 
 // --- controls ----------------------------------------------------------------
@@ -960,6 +1000,8 @@ async function main() {
   if (first.lines) for (const line of first.lines) addLine(line);
   if (first.cursor !== undefined) cursor = first.cursor;
   renderSend();
+  const label = new URLSearchParams(location.search).get("perf");
+  if (label) startPerf(label);
   setTimeout(tick, 250);
 }
 

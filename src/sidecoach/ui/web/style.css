@@ -516,3 +516,7 @@ html.stacked .vsplit, html.stacked .hsplit, html.stacked .tsplit { display: none
 }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* The shell's View menu can hide the board: the main area gives the panel the width. */
+html.noboard main { grid-template-columns: minmax(var(--panel-min), 1fr); }
+html.noboard #left, html.noboard #splitBoard { display: none; }

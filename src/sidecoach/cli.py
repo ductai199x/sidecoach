@@ -1914,7 +1914,9 @@ def panel(
         int | None, typer.Option(help="Monitor index, see doctor; default the primary")
     ] = None,
     fps: Annotated[int, typer.Option(help="Capture rate")] = 10,
-    port: Annotated[int, typer.Option(help="Port for the local panel server")] = 8765,
+    port: Annotated[
+        int, typer.Option(help="Port for the local panel server; 0 picks a free one")
+    ] = 8765,
     replay: Annotated[
         Path | None,
         typer.Option(help="Feed the panel from a recording instead of the live screen (dev)"),
@@ -1926,6 +1928,9 @@ def panel(
     speed: Annotated[
         float, typer.Option(help="Replay pace: 1.0 = as played, 2.0 = twice as fast, 0 = unpaced")
     ] = 1.0,
+    loop: Annotated[
+        bool, typer.Option("--loop", help="Play the recording again when it ends (a soak)")
+    ] = False,
     tts_device: Annotated[
         str | None,
         typer.Option(help="Where the voice runs: cuda (default, falls back to cpu) or cpu"),
@@ -1937,6 +1942,24 @@ def panel(
     listen: Annotated[
         str | None, typer.Option(help="How the coach listens: off, ptt (hold to talk), or vad")
     ] = None,
+    persist: Annotated[
+        bool,
+        typer.Option(
+            help="Keep a session folder (the debug log, the recording); --no-persist is the "
+            "app's mode: nothing of a session reaches the disk, frames stay in memory"
+        ),
+    ] = True,
+    parent_pid: Annotated[
+        int | None,
+        typer.Option(help="Exit when this process is gone (the desktop shell that spawned us)"),
+    ] = None,
+    token: Annotated[
+        str, typer.Option(help="A bearer every /api request must carry (the shell's)")
+    ] = "",
+    announce: Annotated[
+        bool,
+        typer.Option(help='Print {"port": N} as one JSON line on stdout for a shell to read'),
+    ] = False,
     config: ConfigOpt = None,
 ) -> None:
     """Open the panel: the live coach in the browser -- a board, coach messages, a voice, an
@@ -1954,7 +1977,9 @@ def panel(
         console.print(f"[red]panel extras missing:[/red] {exc}; run `uv sync --group panel`")
         raise typer.Exit(1) from exc
     settings = load_settings(config)
-    console.print(f"panel serving at http://127.0.0.1:{port}/  (Ctrl-C to stop)")
+    if not announce:
+        where = f"http://127.0.0.1:{port}/" if port else "a free port"
+        console.print(f"panel serving at {where}  (Ctrl-C to stop)")
     run_server(
         settings,
         monitor=monitor,
@@ -1962,11 +1987,16 @@ def panel(
         port=port,
         replay=replay,
         record=record,
+        persist=persist,
         speed=speed,
+        loop=loop,
         open_browser=browser,
         tts_device=tts_device,
         stt_device=stt_device,
         listen=listen,
+        parent_pid=parent_pid,
+        token=token,
+        announce=announce,
     )
 
 

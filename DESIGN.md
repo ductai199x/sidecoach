@@ -304,6 +304,8 @@ M4 Review and profile: post-game review, SQLite, error taxonomy, session summari
 
 M5 Companion panel. M6 Recommendations from Lichess puzzles and the chess.com catalogue. M7 Voice. M8 Overlay. M9 Maia and remaining motif groups tuned. Later: macOS and Linux capture, Android, iOS, EULA, public release.
 
+The panel as an installed application -- a Tauri 2 shell around the Python pipeline as a sidecar on Windows, then Linux, then a native Android app -- is planned in `docs/app-plan.md` (2026-09-21), starting with a measured spike of the shell.
+
 State of the milestones (2026-09-19):
 
 - M3 Coach: shipped and evaluated. The game is one conversation in a single harness message (section 5.5); disclosure, the policy, the fact bundle, claim verification both ways, and the coach's context C as twelve distilled lessons; `openai:gpt-5.6-luna` at medium effort by default with any OpenAI-compatible endpoint behind `sidecoach.llm`. Held-out pass rate .994 on 320 moments under the binary judge (docs/eval-results.md); the play-through ICR method and the judge are in `tools/eval/`.
