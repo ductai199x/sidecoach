@@ -120,6 +120,10 @@ def requirements() -> list[str]:
             # The override that kept the CPU build out of the dev environment: here it is
             # the one we want.
             line = line.split(";")[0].strip()
+        if not WINDOWS and line.startswith("opencv-python=="):
+            # The Linux wheel of opencv-python bundles Qt and GTK (116 MB) for windows the
+            # sidecar never opens; the headless wheel is the same OpenCV without them.
+            line = "opencv-python-headless==" + line.split("==", 1)[1]
         lines.append(line)
     if not any(ln.startswith("onnxruntime==") for ln in lines):
         gpu = [ln for ln in text.splitlines() if ln.startswith("onnxruntime-gpu==")]
@@ -146,6 +150,14 @@ def prune(root: Path) -> None:
             shutil.rmtree(p, ignore_errors=True)
     for p in root.rglob("*.pyc"):
         p.unlink(missing_ok=True)
+    if not WINDOWS:
+        # python-build-standalone's libpython carries its debug info (207 MB); stripped it
+        # is 37. The static archive is for embedding, not for us.
+        for so in root.glob("lib/libpython3*.so*"):
+            if so.is_file() and not so.is_symlink():
+                subprocess.run(["strip", "--strip-unneeded", str(so)], check=False)
+        for a in root.glob("lib/python3.*/config-*/libpython3*.a"):
+            a.unlink(missing_ok=True)
 
 
 def size(root: Path) -> int:
