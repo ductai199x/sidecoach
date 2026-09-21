@@ -81,8 +81,11 @@ Then, in the app:
 3. Closing the window quits; a setting keeps the coach running in the tray instead.
    Settings apply the moment you save them; the two that need a restart say so.
 
-Linux and Android are planned; the plan and its measurements are in
-[docs/app-plan.md](docs/app-plan.md).
+Linux is in progress (an AppImage and a .deb build and run; screen capture on a real
+desktop is the open piece), Android is planned; the plan and its measurements are in
+[docs/app-plan.md](docs/app-plan.md). On Linux the voice and the microphone need
+`libportaudio2` (the .deb declares it; the AppImage needs it installed), and the GPU
+needs the NVIDIA driver.
 
 ---
 

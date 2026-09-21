@@ -47,6 +47,13 @@
     "resources": {
       "../resources/python/": "python/"
     },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libportaudio2"
+        ]
+      }
+    },
     "windows": {
       "nsis": {
         "installMode": "currentUser",
