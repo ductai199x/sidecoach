@@ -75,7 +75,12 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    facts = json.loads((FACTS / f"{args.game}.json").read_text(encoding="utf-8"))
+    # A master game by default; a recorded game's facts (data/eval/facts/recordings) when
+    # the stem is found there instead.
+    path = FACTS / f"{args.game}.json"
+    if not path.exists():
+        path = FACTS.parent / "recordings" / f"{args.game}.json"
+    facts = json.loads(path.read_text(encoding="utf-8"))
     moves = [s for s in facts["script"] if s["kind"] == "move"]
     side = Side.WHITE if args.side == "white" else Side.BLACK
     user_colour = chess.WHITE if side == Side.WHITE else chess.BLACK

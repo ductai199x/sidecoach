@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Any
 
 from sidecoach.config import LLMSettings
 from sidecoach.llm.openai_compat import THINKING_CONTROLS, OpenAICompatProvider, ThinkingControl
@@ -64,7 +65,13 @@ PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
 }
 
 
-def make_provider(settings: LLMSettings, *, timeout_s: float | None = None) -> OpenAICompatProvider:
+def make_provider(settings: LLMSettings, *, timeout_s: float | None = None) -> Any:
+    """The coach's model: a preset, a custom endpoint, or none at all (llm/offline.py),
+    where the coach speaks from the board and its templates."""
+    if settings.provider == "none":
+        from sidecoach.llm.offline import OfflineProvider
+
+        return OfflineProvider()
     defaults = PROVIDER_DEFAULTS.get(settings.provider)
     if defaults is None:
         # A custom endpoint: everything comes from the settings.

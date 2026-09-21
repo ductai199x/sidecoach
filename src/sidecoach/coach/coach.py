@@ -103,6 +103,51 @@ def _exciting(label: Label | None) -> bool:
 VERDICTS: dict[str, list[str]] = {
     label: [opener + "." for opener in openers] for label, openers in OPENERS.items()
 }
+# The templates said without a model, where the same sentence four times in a game
+# wears thin (a master-game pass, offline, 2026-09-21): a choice each time, never the
+# last one said. The orienting question at a critical moment names nothing on the board.
+DECISIVE_QUESTIONS = [
+    "This is a moment to slow down. What is your opponent's most dangerous idea here, and "
+    "which of your pieces is doing the least?",
+    "Take your time here: it matters. What does your opponent want to do next, and can "
+    "you stop it and improve at the same time?",
+    "A critical moment. Before you move, what are their checks, captures and threats?",
+    "Slow down. If you passed, what would your opponent play -- and does your move answer it?",
+    "This one counts. Which of your pieces would you most like to improve, and what are they "
+    "threatening right now?",
+]
+# The hint when the sheet gives nothing to point at: what to take stock of.
+STUCK_GENERIC = [
+    "Take stock: what changed with the last move, and what does it allow?",
+    "Start from their last move: what does it attack, and what did it leave behind?",
+    "List the forcing moves first -- the checks and captures -- then the quiet ones.",
+    "Which of your pieces is worst placed? A move that fixes it is rarely wrong.",
+]
+# The theme-level hint, "{theme}" the idea the sheet names (a noun phrase, "a pin", or a
+# plan, "finishing your development"; the frames read with either).
+THEME_HINTS = [
+    "The idea here is {theme}. What would make it count?",
+    "Think about {theme}. What is the first step?",
+    "Something to build on: {theme}. Which move serves it?",
+]
+# The one fact the question level allows: whether the answer is forcing or quiet.
+FORCING_HINTS = [
+    "Something forcing is on: is there a check or a capture worth calculating first?",
+    "There is a forcing move here. Go through your checks and captures, in order.",
+    "Start with the forcing moves: which check or capture changes the most?",
+]
+QUIET_HINTS = [
+    "Nothing forcing is on. Which of your pieces is doing the least, and where would it do more?",
+    "A quiet move is wanted. Which piece would you most like to improve?",
+    "No tactic to find here. What would your opponent least like you to do?",
+]
+# A question at the question level, where nothing of the position may be named.
+ASK_GENERIC = [
+    "What is your opponent's most dangerous idea here?",
+    "Before anything else: what does your opponent want to play next?",
+    "Which of your pieces is doing the least right now?",
+    "What did their last move change -- what does it attack, and what did it leave?",
+]
 # Verbalized sampling: how many candidate replies to ask for, and the room and warmth to
 # give the distribution. Warmer than a single reply on purpose, since a check filters them.
 VS_CANDIDATES = 4
@@ -670,6 +715,26 @@ class Speaker:
         repaired = False
         streamed = False
         provider = self.routine_provider if request.routine else self.provider
+        if getattr(provider, "offline", False):
+            # No model (llm.provider none): the request's fallback is the reply -- the
+            # verdict from the board, the lesson or hint template, the review's own
+            # sentences -- or silence when there is none. Free and offline.
+            self.fallbacks += 1
+            text = request.fallback
+            return Spoken(
+                message=CoachMessage(
+                    text=text,
+                    level=request.level,
+                    trigger=request.trigger,
+                    game_id=request.game_id,
+                    ply=request.ply,
+                    fen=request.board.fen(),
+                    annotations=[*request.annotations, *mentions_in(text, request.board)],
+                ),
+                level=request.level,
+                problems=[],
+                attempts=0,
+            )
         while attempts < 2:
             attempts += 1
             stats: dict[str, Any] = {}
@@ -1132,6 +1197,8 @@ class Coach:
         # The conversation is read from the caller's thread and from a claims check.
         self._lock = threading.RLock()
         self._last_verdict: str | None = None
+        # The last template said from each rotating list, keyed by the list.
+        self._last_said: dict[str, str] = {}
         # What the game is (GameStarted.kind): a game from the start, or a position -- a
         # puzzle, an analysis board -- where the mating move gets no word and the end no
         # summary (Tai, 2026-09-20: a solved puzzle is left, not summed up); every other
@@ -1559,11 +1626,33 @@ class Coach:
         )
         self.conversation.analysed(event, position.facts)
         if position is self._current and self.user_to_move:
-            trigger = self.policy.on_position_analysed(event.ply, decisive=event.decisive)
+            decisive = event.decisive and not self._obvious_recapture(position, event)
+            trigger = self.policy.on_position_analysed(event.ply, decisive=decisive)
             if trigger is not None:
                 level = position.disclosure.apply(Unlock.DECISIVE) or position.disclosure.level
                 self.policy.said(position.ply)
                 self._speak(trigger, position, level, ts)
+
+    def _obvious_recapture(self, position: _Position, event: Analysis) -> bool:
+        """The opponent just took something and the engine's move takes back on the same
+        square: the lines diverge because everything else drops a piece, not because there
+        is anything to find, so the decisive question stays unasked (a book recapture drew
+        "This is a moment to slow down", offline, 2026-09-21). A recapture that is not the
+        best move -- a zwischenzug on -- keeps the question."""
+        last = self.moves.get(position.ply)
+        before = self.positions.get(position.ply - 1)
+        if last is None or before is None or not event.lines or not event.lines[0].moves:
+            return False
+        try:
+            taken = chess.Move.from_uci(last.uci)
+            best = chess.Move.from_uci(event.lines[0].moves[0])
+        except ValueError:
+            return False
+        return (
+            before.board.is_capture(taken)
+            and best.to_square == taken.to_square
+            and position.board.is_capture(best)
+        )
 
     def _on_assessment(self, event: MoveAssessment, ts: float) -> None:
         self.conversation.assess(event)
@@ -1668,6 +1757,19 @@ class Coach:
         self._last_verdict = chosen
         return chosen.format(san=san)
 
+    def _rotate(self, key: str, phrases: Sequence[str]) -> str:
+        """One of `phrases`, never the one said last under `key`."""
+        choices = [p for p in phrases if p != self._last_said.get(key)] or list(phrases)
+        chosen = random.choice(choices)
+        self._last_said[key] = chosen
+        return chosen
+
+    def _nature_hint(self, forcing: bool) -> str:
+        """What the nature of the answer allows: forcing, or quiet."""
+        return self._rotate(
+            "forcing" if forcing else "quiet", FORCING_HINTS if forcing else QUIET_HINTS
+        )
+
     def _opening_so_far(self) -> str | None:
         """The opening the game was in: the last name the book gave."""
         with self._lock:
@@ -1737,7 +1839,11 @@ class Coach:
 
     def _review_template(self) -> str:
         """The record in a sentence, for when the model's review fails the checks: the
-        tally and where ground was lost, from the same records the messages carry."""
+        tally and where the most ground was lost, from the same records the messages
+        carry; once the game is over, the review's own sentences (a lost game's "how did
+        I do" once named three late inaccuracies and not the blunder, offline)."""
+        if self._review_lines:
+            return " ".join(self._review_lines[:4])
         with self._lock:
             judged = [
                 r
@@ -1747,7 +1853,7 @@ class Coach:
             if not judged:
                 return "I have not seen enough of this game yet to say."
             counts: dict[str, int] = {}
-            lost: list[str] = []
+            lost: list[tuple[float, int, str]] = []
             for r in judged:
                 assert r.assessment is not None
                 label = (
@@ -1755,11 +1861,14 @@ class Coach:
                 )
                 counts[label] = counts.get(label, 0) + 1
                 if r.assessment.severity.value != "none":
-                    lost.append(f"{self.conversation._numbered(r.move)} ({label})")
+                    numbered = f"{self.conversation._numbered(r.move)} ({label})"
+                    lost.append((r.assessment.expected_loss, r.move.ply, numbered))
         good = sum(counts.get(k, 0) for k in ("brilliant", "great", "best", "excellent"))
         text = f"{good} of your {len(judged)} moves were best or excellent."
         if lost:
-            text += " You lost ground at " + ", ".join(lost[-3:]) + "."
+            # The three that cost the most, told in the order they were played.
+            worst = sorted(sorted(lost, key=lambda t: -t[0])[:3], key=lambda t: t[1])
+            text += " You lost the most ground at " + ", ".join(t[2] for t in worst) + "."
         else:
             text += " Nothing cost you real ground."
         return text
@@ -1927,17 +2036,16 @@ class Coach:
         assert facts is not None
         theme = facts.theme or facts.plan or "the position"
         region = facts.region or "the whole board"
-        # The theme-level template: the idea when there is one; when the sheet names none,
-        # what the nature says ("The idea here is the position" was said, once).
-        if facts.theme or facts.plan:
-            theme_hint = f"The idea here is {theme}. What would make it count?"
-        elif facts.nature and facts.nature.startswith("forcing"):
-            theme_hint = "The answer is forcing: which check or capture is worth calculating first?"
-        else:
-            theme_hint = (
-                "Nothing forcing is on. Which of your pieces is doing the least, and where "
-                "would it do more?"
-            )
+        forcing = bool(facts.nature and facts.nature.startswith("forcing"))
+
+        def theme_hint() -> str:
+            """The theme-level template: the idea when there is one; when the sheet names
+            none, what the nature says ("The idea here is the position" was said, once).
+            Drawn when it is used, so a draw is never spent on a turn that says nothing."""
+            if facts.theme or facts.plan:
+                return self._rotate("theme", THEME_HINTS).format(theme=theme)
+            return self._nature_hint(forcing)
+
         if trigger is Trigger.REVIEW:
             return (
                 "The game is over. Sum it up from the review in the last message and the "
@@ -1952,16 +2060,15 @@ class Coach:
                 "The player is to move and this is a critical moment. Ask one orienting "
                 "question that makes them look for the right thing without pointing at "
                 "any square, piece or move. Do not evaluate the position out loud.",
-                "This is a moment to slow down. What is your opponent's most dangerous idea "
-                "here, and which of your pieces is doing the least?",
+                self._rotate("decisive", DECISIVE_QUESTIONS),
             )
         if trigger is Trigger.STUCK:
             if level >= DisclosureLevel.REGION:
                 fallback = f"Look at {region}. Something is going on there."
             elif level >= DisclosureLevel.THEME:
-                fallback = theme_hint
+                fallback = theme_hint()
             else:
-                fallback = "Take stock: what changed with the last move, and what does it allow?"
+                fallback = self._rotate("stuck", STUCK_GENERIC)
             return (
                 "The player has been thinking for a while and is stuck. Give one hint, at the "
                 "level of what the fact sheet allows, in one or two sentences, ending with a "
@@ -1970,14 +2077,28 @@ class Coach:
                 fallback,
             )
         if trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE) and assessment and played:
+            # The better move is the engine's own from the position the player faced
+            # (assessment.best, UCI); the fact sheet's first candidate stands in when the
+            # assessment has none. Without a model this sentence is the whole lesson, so
+            # it must never name the move played as the better one.
             best = facts.candidates[0] if facts.candidates else "another move"
+            if assessment.best:
+                with contextlib.suppress(ValueError, IndexError):
+                    best = position.board.san(chess.Move.from_uci(assessment.best[0]))
+            if best == played.san and trigger is Trigger.POST_MISTAKE:
+                best = "another move"
             loss = assessment.expected_loss
             label = assessment.label.value if assessment.label else assessment.severity.value
             words = _in_words(position.board, played.san)
             better_words = _in_words(position.board, best) if facts.candidates else best
             routine = not facts.candidates or best == played.san or _local(assessment.label)
             if trigger is Trigger.POST_MISTAKE:
-                fallback = f"{played.san} cost you. {best} was better; the idea was {theme}."
+                # With a theme or a plan the lesson names the idea; without one it stops at
+                # the better move ("the idea was the position" was said, offline).
+                idea = facts.theme or facts.plan
+                fallback = f"{played.san} cost you. {best} was better" + (
+                    f"; the idea was {idea}." if idea else "."
+                )
                 instruction = (
                     f"The player just played {played.san} ({words}), which was a {label}: it "
                     f"cost {loss:.0%} of the game. The better move was {best} ({better_words}). "
@@ -2076,16 +2197,36 @@ class Coach:
         elif level >= DisclosureLevel.REGION:
             fallback = f"Look at {region}."
         elif level >= DisclosureLevel.THEME:
-            fallback = theme_hint
-        elif facts.nature and facts.nature.startswith("forcing"):
+            fallback = theme_hint()
+        elif forcing:
             # The one fact the QUESTION level allows: whether the answer is forcing. The
             # generic "opponent's idea" question pointed the wrong way in a position where
             # the player had a capture to find.
-            fallback = (
-                "Something forcing is on: is there a check or a capture worth calculating first?"
-            )
+            fallback = self._nature_hint(forcing)
         else:
-            fallback = "What is your opponent's most dangerous idea here?"
+            fallback = self._rotate("ask", ASK_GENERIC)
+        # The position answered about is not the one on the board (its analysis has not
+        # landed): say so, or the template speaks of a past position as the present --
+        # "the line is Bb3 ..." right after Bb3 was played (the offline pass, 2026-09-21).
+        current = self._current
+        if current is not None and position.ply != current.ply:
+            own = self._last_own_move()
+            if own is not None and own.move.ply == current.ply and position.ply == own.move.ply - 1:
+                san = own.move.san
+                rest = facts.line[1:] if facts.line and facts.line[0] == san else facts.line
+                if level >= DisclosureLevel.LINE and rest:
+                    fallback = f"It's their move. After your {san}, the line runs {' '.join(rest)}."
+                elif level >= DisclosureLevel.CANDIDATE and facts.candidates:
+                    choice = facts.candidates[0]
+                    fallback = "It's their move now. " + (
+                        f"{san} was the engine's choice too."
+                        if choice == san
+                        else f"The engine's choice there was {choice}; you played {san}."
+                    )
+                else:
+                    fallback = f"It's their move. See what they do about {san}, then ask again."
+            else:
+                fallback = "Give me a moment; I am still reading this position."
         # A question about a fact that is never withheld -- the material, the opening, who
         # stands better -- falls back to that fact, not to the hint for the position.
         if _ASK_MATERIAL.search(said) and facts.material:

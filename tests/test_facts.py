@@ -92,6 +92,38 @@ def test_describe_tactic_reads_a_fork_the_best_move_creates() -> None:
     assert text == "the knight on g6 forks the rook on f8 and the rook on h8"
 
 
+def test_describe_tactic_names_only_enemy_targets() -> None:
+    """A master-game pass offline (2026-09-21) said "the rook on e5 bears on the pawn on
+    d6" of the player's own pawn: the capturing-defender tag's second square is where a
+    later move lands, and the board had moved on. A described target is the enemy's, and
+    the piece named must bear on it, or the square alone is named."""
+    # Discovered attack, given as [vacated, slider, target]: read after the move only.
+    board = chess.Board("4k3/8/8/8/8/8/8/R2N1K2 w - - 0 1")
+    best = chess.Move.from_uci("d1e3")  # the knight steps off the rank; the rook does not see e8
+    assert describe_tactic(board, "discoveredAttack", ["d1", "a1", "e8"], best_move=best) is None
+    # A slider whose line opens onto an enemy piece.
+    board = chess.Board("r3k3/8/8/8/8/8/8/R2N3K w - - 0 1")
+    best = chess.Move.from_uci("d1e3")
+    assert describe_tactic(board, "discoveredAttack", ["d1", "a1", "a8"], best_move=best) == (
+        "the rook on a1 now bears on the rook on a8"
+    )
+    # Capturing the defender: nothing is said unless an enemy piece stands on the square.
+    board = chess.Board("4k3/8/3P4/4R3/8/8/8/4K3 w - - 0 1")
+    assert describe_tactic(board, "capturingDefender", ["e5", "d6"]) is None
+    board = chess.Board("4k3/8/3p4/4R3/8/8/8/4K3 w - - 0 1")
+    assert describe_tactic(board, "capturingDefender", ["e5", "d6"]) == (
+        "the rook on e5 removes a defender of the pawn on d6"
+    )
+    # A queen check that picks up pawns: the king first, the rest by value, three at most.
+    board = chess.Board("8/5pQp/5p1k/8/8/1p6/8/4K3 b - - 0 1")
+    assert describe_tactic(board, "fork", ["g7", "f6", "h6", "f7", "h7"]) == (
+        "the queen on g7 forks the king on h6, the pawn on f6 and the pawn on f7"
+    )
+    # A fork whose targets are not both the enemy's is not described.
+    fork = chess.Board("3r1R2/8/4N3/8/8/8/8/4K1k1 w - - 0 1")
+    assert describe_tactic(fork, "fork", ["e6", "d8", "f8"]) is None
+
+
 def test_the_nature_of_the_best_move_is_forcing_or_quiet() -> None:
     """From the question level the sheet says whether the answer is a check, a capture or a
     promotion, or a quiet improving move: it names nothing, and it stops the stuck hint

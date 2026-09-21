@@ -261,13 +261,39 @@ def _tactic_on(board: chess.Board, name: str, squares: Sequence[str]) -> str | N
         return f"{named(1)} is pinned to {named(2)} by {named(0)}"
     elif name == "skewer" and aligned:
         return f"{named(0)} skewers {named(1)} and {named(2)} behind it"
-    elif name == "fork" and len(sqs) >= 3 and pieces[0] and all(pieces[1:]):
-        targets = " and ".join(named(i) for i in range(1, len(sqs)))
-        return f"{named(0)} forks {targets}"
+
+    def enemy_of(i: int, j: int) -> bool:
+        return bool(pieces[i] and pieces[j]) and pieces[i].color != pieces[j].color  # type: ignore[union-attr]
+
+    if name == "fork" and len(sqs) >= 3 and pieces[0] and all(pieces[1:]):
+        # The forking piece must bear on every target, and every target must be the enemy's:
+        # a fork read off a board that has moved on is otherwise built from the wrong pieces.
+        if all(enemy_of(0, i) and sqs[i] in board.attacks(sqs[0]) for i in range(1, len(sqs))):
+            # The king first, then the most valuable, at most three: "the queen on f7 forks
+            # the pawn on b3 and the king on h5 and the pawn on f6 and the pawn on h7" was
+            # said of a queen check that picks up a pawn.
+            def worth(i: int) -> int:
+                kind = pieces[i].piece_type  # type: ignore[union-attr]
+                return 100 if kind == chess.KING else _VALUES[kind]
+
+            order = sorted(range(1, len(sqs)), key=lambda i: -worth(i))[:3]
+            targets = [named(i) for i in order]
+            listed = (
+                targets[0] if len(targets) == 1 else ", ".join(targets[:-1]) + f" and {targets[-1]}"
+            )
+            return f"{named(0)} forks {listed}"
     elif name in ("hangingPiece", "trappedPiece") and pieces and pieces[0]:
         return f"{named(0)} is {'loose' if name == 'hangingPiece' else 'trapped'}"
-    elif name in ("discoveredAttack", "capturingDefender") and len(sqs) >= 2 and all(pieces[:2]):
-        return f"{named(0)} bears on {named(1)}"
+    elif name == "discoveredAttack" and len(sqs) >= 3:
+        # The tagger records the vacated square, the slider, then what it now attacks; the
+        # slider's line is open only once the move has been played.
+        if enemy_of(1, 2) and sqs[2] in board.attacks(sqs[1]):
+            return f"{named(1)} now bears on {named(2)}"
+    elif name == "capturingDefender" and len(sqs) >= 2 and enemy_of(0, 1):
+        # The capture removes the guard of the square the mover uses later: worth a word
+        # only while an enemy piece stands there to name ("removes a defender of g4", of
+        # an empty square, said nothing the capture itself did not).
+        return f"{named(0)} removes a defender of {named(1)}"
     return None
 
 

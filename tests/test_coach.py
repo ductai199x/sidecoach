@@ -823,7 +823,7 @@ def test_material_is_always_from_the_users_side_and_the_review_draws_on_the_tall
     coach.ask("what do I keep missing?", 10.0)
     out = _messages(coach)
     assert out[-1].text == (
-        "1 of your 3 moves were best or excellent. You lost ground at 2. Qh5 (inaccuracy)."
+        "1 of your 3 moves were best or excellent. You lost the most ground at 2. Qh5 (inaccuracy)."
     )
 
 
@@ -836,13 +836,16 @@ def test_a_quick_answer_is_a_turn_before_the_model_and_a_failed_reply_adds_nothi
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)
     coach.ask("hint", 8.0)
     out = _messages(coach)
-    quick = "Something forcing is on: is there a check or a capture worth calculating first?"
-    assert [m.text for m in out] == [quick]
+    # The quick answer is one of the forcing-nature hints (they rotate).
+    from sidecoach.coach.coach import FORCING_HINTS
+
+    assert len(out) == 1 and out[0].text in FORCING_HINTS
+    quick = out[0].text
     # The request carried the quick answer as the coach's own turn, then the directive.
     given = _given(provider, 0)
     said = _current_move_message(given).split("## Said here", 1)[1].strip(chr(10)).splitlines()
     assert said[-2] == '    PLAYER said: "hint"'
-    assert said[-1].startswith('    YOU (the coach) said: "Something forcing')
+    assert said[-1] == f'    YOU (the coach) said: "{quick}"'
     assert "build on it, do not repeat it" in _directive(given)
     assert "PLAYER said" not in _directive(given)
     # The rejected reply is in the log, with its calls, and nowhere else.
