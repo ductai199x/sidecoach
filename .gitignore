@@ -11,3 +11,6 @@ local.properties
 *.apk
 *.aab
 /app/build/
+
+# Scratch: emulator logs, screenshots, spike logs pulled off a device.
+/data/
