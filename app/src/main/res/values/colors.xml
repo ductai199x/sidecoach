@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The brand: the amber of the mark on the navy of the desktop app. -->
+    <color name="amber">#F2B441</color>
+    <color name="navy">#141A2A</color>
+</resources>
