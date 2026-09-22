@@ -27,6 +27,7 @@ import androidx.core.app.ServiceCompat
 import com.sidecoach.MainActivity
 import com.sidecoach.SidecoachApp
 import com.sidecoach.R
+import com.sidecoach.ui.PanelEngine
 import com.sidecoach.vision.GameWatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -110,6 +111,7 @@ class CaptureService : Service() {
         if (projection == null) {
             Log.w(TAG, "the consent token was refused; it is good for one session only")
             state.value = State(error = "The screen-capture permission was not granted.")
+            PanelEngine.emit("sys", "warn", "the screen-capture permission was not granted")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -134,6 +136,7 @@ class CaptureService : Service() {
             handler,
         )
 
+        PanelEngine.running(true)
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         vision = GameWatcher(this, File(filesDir, "themes"))
         val visionWorker = HandlerThread("vision").also { it.start() }
@@ -312,6 +315,23 @@ class CaptureService : Service() {
             copy.recycle()
             if (outcome == null) return
             state.value = state.value.copy(reading = outcome)
+            PanelEngine.watched(
+                boardFound = outcome.boardFound,
+                verified = outcome.verified,
+                fit = outcome.fit,
+                fen = outcome.fen,
+                ply = outcome.ply,
+                userSide = outcome.userSide,
+                bottom = outcome.userSide,
+                screen = outcome.state,
+                following = outcome.following,
+                engineOn = outcome.engineOn,
+                coachOn = false,
+                fps = state.value.latest?.fps ?: 0.0,
+                pipelineMs = outcome.detectMs to outcome.readMs,
+                coachPending = 0,
+                rssMb = null,
+            )
             val now = SystemClock.elapsedRealtime()
             if (now - lastOutcomeAt > 5000) {
                 lastOutcomeAt = now
@@ -357,6 +377,7 @@ class CaptureService : Service() {
         frame = null
         preview = null
         state.value = state.value.copy(running = false, preview = null)
+        PanelEngine.running(false)
         super.onDestroy()
     }
 

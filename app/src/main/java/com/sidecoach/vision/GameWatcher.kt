@@ -21,6 +21,7 @@ import com.sidecoach.analysis.GameAnnotator
 import com.sidecoach.events.Label
 import com.sidecoach.events.MoveAssessment
 import com.sidecoach.state.GamePipeline
+import com.sidecoach.ui.PanelEngine
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Mat
@@ -103,6 +104,8 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
         /** What the engine has said about the moves so far, newest last. */
         val verdicts: List<String> = emptyList(),
         val engineOn: Boolean = false,
+        /** Whether the reconciler has a game it is following. */
+        val following: Boolean = false,
         val finished: String? = null,
         /** Cells the net had to embed on this frame: 64 at a bootstrap, a handful after. */
         val fresh: Int = 0,
@@ -130,9 +133,13 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
             val took = SystemClock.elapsedRealtime() - began
             for (event in events) {
                 note(event)
+                PanelEngine.onGameEvent(event)
                 assessing.submit(event)
             }
-            for (event in assessing.drain()) note(event)
+            for (event in assessing.drain()) {
+                note(event)
+                PanelEngine.onEngineEvent(event)
+            }
             if (++reads % 5 == 1) {
                 Log.i(
                     TAG,
@@ -156,6 +163,7 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
                 moves = ArrayList(spoken),
                 verdicts = ArrayList(verdicts),
                 engineOn = assessing.on,
+                following = rec != null && rec.started,
                 userSide = pipeline.bottom?.name?.lowercase(),
                 state = state,
                 finished = rec?.result,

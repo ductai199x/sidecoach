@@ -1,0 +1,162 @@
+package com.sidecoach.ui
+
+import android.util.Log
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * The control surface the page calls, route for route with `sidecoach/ui/server.py`.
+ *
+ * Thin over [PanelEngine]. What the phone does not have yet answers honestly -- the voice
+ * says it has no voices, the microphone says it is not listening, the profile and the puzzle
+ * room say they are not here -- rather than pretending, so the page shows them off instead of
+ * hanging on a promise.
+ */
+class PanelApi(private val version: String, private val setup: SetupApi) : LocalServer.Api {
+
+    override fun handle(
+        method: String,
+        path: String,
+        query: Map<String, String>,
+        body: String,
+    ): LocalServer.Reply? {
+        val json = if (body.isBlank()) JSONObject() else runCatching { JSONObject(body) }
+            .getOrElse { JSONObject() }
+        return when {
+            path == "/api/health" -> ok(
+                JSONObject().apply {
+                    put("ok", true)
+                    put("version", version)
+                    put("pid", android.os.Process.myPid())
+                    put("running", PanelEngine.poll(Int.MAX_VALUE).getJSONObject("state").optBoolean("running"))
+                    put("warm", JSONObject().apply {
+                        // The phone warms as it goes; the splash has nothing to wait for.
+                        put("done", true)
+                        put("seconds", 0.0)
+                        put("stages", JSONArray())
+                    })
+                }
+            )
+
+            path == "/api/poll" -> ok(PanelEngine.poll(query["since"]?.toIntOrNull() ?: 0))
+
+            path == "/api/start" -> {
+                PanelEngine.onStart?.invoke()
+                ok(done())
+            }
+
+            path == "/api/stop" -> {
+                PanelEngine.onStop?.invoke()
+                ok(done())
+            }
+
+            path == "/api/hint" -> ask("hint")
+            path == "/api/move" -> ask("what should I play")
+            path == "/api/line" -> ask("show me the line")
+            path == "/api/ask" -> ask(json.optString("text"))
+
+            path == "/api/flip" -> {
+                PanelEngine.onFlip?.invoke()
+                ok(done())
+            }
+
+            path == "/api/end" -> {
+                PanelEngine.onEnd?.invoke(json.optString("outcome"))
+                ok(done())
+            }
+
+            // The engine runs alongside the game on the phone; there is no separate
+            // analysis pass to kick off.
+            path == "/api/analyze" -> ok(done())
+
+            path == "/api/client_log" -> {
+                val where = json.optString("page").ifEmpty { "" }
+                val level = json.optString("level").ifEmpty { "error" }
+                PanelEngine.emit(
+                    "sys",
+                    if (level in listOf("info", "warn", "error")) level else "error",
+                    "page" + (if (where.isEmpty()) "" else " [$where]") + ": " +
+                        json.optString("text").take(2000),
+                )
+                ok(done())
+            }
+
+            // The page's own frame meter. The phone keeps no perf files.
+            path == "/api/perf" -> ok(done())
+
+            path == "/api/dump" -> {
+                val lines = PanelEngine.all()
+                PanelEngine.emit("sys", "info", "${lines.size} records in the log")
+                ok(JSONObject().apply { put("ok", true); put("path", JSONObject.NULL) })
+            }
+
+            // The panel's own board cannot be on the phone's screen behind the page; the
+            // app simply does not read while its own window is in front.
+            path == "/api/exclude" -> ok(done())
+
+            path == "/api/muted" -> {
+                PanelEngine.set("muted" to json.optBoolean("muted", true))
+                ok(done())
+            }
+
+            path == "/api/voice" -> ok(JSONObject().put("ok", false))
+            path == "/api/say" -> ok(JSONObject().put("ok", false))
+            path == "/api/hear_test" -> ok(
+                JSONObject().apply { put("ok", false); put("on", false) }
+            )
+
+            path == "/api/listen" -> {
+                // No speech recognition on the phone yet: the mode stays off, and the page
+                // reads that back from the state.
+                PanelEngine.set("listen" to "off")
+                ok(done())
+            }
+
+            path == "/api/ptt" -> ok(done())
+
+            path == "/api/dictation/cancel" ->
+                ok(JSONObject().apply { put("ok", true); put("text", "") })
+
+            path == "/api/record" -> ok(
+                JSONObject().apply {
+                    put("ok", false)
+                    put("on", false)
+                    put("running", false)
+                    put("folder", JSONObject.NULL)
+                }
+            )
+
+            path == "/api/reset_profile" || path == "/api/clear_caches" || path == "/api/correct" ->
+                ok(JSONObject().put("ok", false))
+
+            path.startsWith("/api/puzzle/") -> ok(
+                JSONObject().apply { put("ok", false); put("error", "no puzzle room on the phone yet") }
+            )
+
+            path == "/api/setup/status" -> ok(setup.status())
+            path == "/api/setup/start" -> ok(setup.start())
+            path == "/api/setup/cancel" -> ok(setup.cancel())
+            path == "/api/setup/remove_pack" -> ok(JSONObject().put("ok", false))
+
+            path == "/api/settings" -> ok(JSONObject().put("ok", false))
+
+            else -> {
+                Log.i(TAG, "no route for $method $path")
+                null
+            }
+        }
+    }
+
+    private fun ask(text: String): LocalServer.Reply {
+        if (text.isNotBlank()) PanelEngine.onAsk?.invoke(text)
+        return ok(done())
+    }
+
+    private fun done(): JSONObject = JSONObject().put("ok", true)
+
+    private fun ok(json: JSONObject) = LocalServer.Reply(json.toString())
+
+    companion object {
+        private const val TAG = "sidecoach.panel"
+    }
+}

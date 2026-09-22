@@ -39,6 +39,14 @@ android {
         }
     }
 
+    androidResources {
+        // The panel's page keeps its chunks in `_app/`, and the default pattern skips any
+        // directory whose name begins with an underscore: without this the page loads and
+        // every script it asks for comes back as index.html.
+        ignoreAssetsPatterns += listOf()
+        ignoreAssetsPattern = "!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~"
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
