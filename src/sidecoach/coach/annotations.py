@@ -138,16 +138,18 @@ def annotations_for(
     if region:
         for square in _region_squares(region):
             add(Annotation(kind="square", squares=[square], color="region", opacity=0.35))
-        for square in squares_in(region):
+        for square in sorted(squares_in(region)):
             add(Annotation(kind="square", squares=[square], color="focus", opacity=0.6))
     for square in visible.get("focus") or []:
         add(Annotation(kind="square", squares=[square], color="focus"))
     piece = visible.get("piece")
     if piece:
-        for square in squares_in(piece):
+        for square in sorted(squares_in(piece)):
             add(Annotation(kind="ring", squares=[square], color="focus"))
     for text in visible.get("ideas") or []:
-        for square in squares_in(text):
+        # Sorted: `squares_in` returns a set of strings, and CPython randomises string
+        # hashing per process, so the marks came out in a different order on every run.
+        for square in sorted(squares_in(text)):
             add(Annotation(kind="square", squares=[square], color="mention", opacity=0.6))
     for san in (visible.get("threats") or [])[:2]:
         # A threat is the opponent's move, read after a null move.

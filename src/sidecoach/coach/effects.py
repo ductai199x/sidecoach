@@ -110,7 +110,9 @@ def describe_effects(
         piece = after.piece_at(square)
         return VALUE[piece.piece_type] if piece else 0
 
-    new = sorted(after_attacked - before_attacked, key=lambda s: -value_at(s))
+    # By value, then by square: the operands are sets, so equal-valued pieces came out
+    # in CPython's hash order and the coach named a different one on another machine.
+    new = sorted(after_attacked - before_attacked, key=lambda s: (-value_at(s), s))
     by_mover = [s for s in new if move.to_square in after.attackers(us, s)]
     by_others = [s for s in new if s not in by_mover]
     worth = [s for s in by_mover if value_at(s) >= 3]
@@ -142,7 +144,7 @@ def describe_effects(
     before_loose = _undefended(board, us)
     after_loose = _undefended(after, us)
     left = [s for s in after_loose - before_loose if s != move.to_square] if hazards else []
-    for s in sorted(left, key=lambda s: -value_at(s)):
+    for s in sorted(left, key=lambda s: (-value_at(s), s)):
         tail = ", and it is attacked" if after.is_attacked_by(them, s) else ""
         out.append(f"leaves {_name(after, s)} undefended{tail}")
         break
@@ -151,7 +153,7 @@ def describe_effects(
         for s in before_loose - after_loose
         if s != move.from_square and after.is_attacked_by(them, s)
     ]
-    for s in sorted(covered, key=lambda s: -value_at(s)):
+    for s in sorted(covered, key=lambda s: (-value_at(s), s)):
         out.append(f"defends {_name(after, s)}, which was attacked")
         break
 
