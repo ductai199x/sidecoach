@@ -30,6 +30,12 @@
   function openSetup(e: MouseEvent) {
     if (inShell()) { e.preventDefault(); openWindow("setup"); }
   }
+  // In the shell the settings are a menu item and a window of their own; in a browser, and
+  // on a phone, which is a browser with no address bar, they need a way in from here.
+  function openSettings() {
+    if (inShell()) openWindow("settings");
+    else window.location.href = "/settings";
+  }
 
   let openMenu = $state<"game" | "data" | null>(null);
   const voices = $derived(store.state.voices || []);
@@ -84,7 +90,15 @@
         <button role="menuitem" data-action="profile" title="Every game, verdict, attempt and insight the profile holds" onclick={resetProfile}>Reset profile&hellip;</button>
       </div>
     </div>
-    <div class="ctlgroup" role="group" aria-label="Voice">
+    {#if !inShell()}
+      <button class="ghost settings-link" title="Settings" onclick={openSettings}>
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-1.7-1L15 3.2h-4l-.3 2.7a7.6 7.6 0 0 0-1.7 1l-2.4-1-2 3.4L6.6 11a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.6 7.6 0 0 0 1.7 1l.3 2.7h4l.3-2.7a7.6 7.6 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6zM13 15a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg>
+        Settings
+      </button>
+    {/if}
+    <!-- No voices means nothing to mute and nothing to choose: the group is not shown
+         rather than shown dead (a phone has no voice yet). -->
+    <div class="ctlgroup" role="group" aria-label="Voice" hidden={voices.length === 0}>
       <span class="ctllabel">voice</span>
       <button id="mute" class="iconbtn small" aria-pressed={!!store.state.muted} title={store.state.muted ? "Unmute the coach's voice" : "Mute the coach's voice"} onclick={() => store.setMuted(!store.state.muted)}>
         <svg class="ic-on" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>
@@ -96,3 +110,7 @@
     </div>
   </div>
 </header>
+
+<style>
+  .settings-link { display: inline-flex; align-items: center; gap: 6px; }
+</style>

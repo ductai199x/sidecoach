@@ -6,6 +6,7 @@
   // left out. Re-runnable from Help; nothing already present is fetched again.
   import { onMount } from "svelte";
   import { connect, get, post } from "$lib/api";
+  import { inShell } from "$lib/shell.svelte";
 
   type Item = { id: string; title: string; size: number; present: boolean; optional: boolean; detail: string };
   type Status = {
@@ -111,6 +112,9 @@
       {#if status.run?.finished?.length}<p class="muted">Done: {status.run.finished.join(", ")}</p>{/if}
     {/if}
   {/if}
+  {#if !inShell()}
+    <p class="back"><button type="button" class="link" onclick={() => (window.location.href = "/")}>&larr; Back to the panel</button></p>
+  {/if}
 </div>
 
 <style>
@@ -130,4 +134,6 @@
   .bar { height: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin: 12px 0 6px; }
   .fill { height: 100%; background: var(--accent); transition: width 0.4s; }
   code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .back { margin-top: 20px; }
+  .back .link { background: none; border: 0; padding: 0; font: inherit; font-weight: 600; color: var(--accent); cursor: pointer; }
 </style>

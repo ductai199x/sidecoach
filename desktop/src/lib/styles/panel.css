@@ -372,6 +372,8 @@ body.dragging-y { cursor: row-resize; user-select: none; }
 .sendbtn[data-state="vad"] { background: #3b4a2f; color: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
 .sendbtn[data-state="vad"].live { background: var(--accent); color: var(--accent-ink); animation: none; }
 .sendbtn[data-state="idle"] .ic-mic { display: block; opacity: .55; }
+/* Nothing to listen with: the arrow it will send with, waiting for something to send. */
+.sendbtn[data-state="quiet"] .ic-send { display: block; opacity: .4; }
 /* Dictated words about to send on their own: the ring closes over the second of quiet. */
 .sendbtn[data-state="send"].armed { animation: arm 1s linear forwards; }
 @keyframes arm { from { box-shadow: 0 0 0 6px #81b64c66; } to { box-shadow: 0 0 0 0 #81b64c00; } }
@@ -501,6 +503,9 @@ html.stacked .coach { flex-basis: auto; max-height: 40vh; min-height: 120px; }
 html.stacked .terminal, html.stacked .conversation { height: clamp(120px, 30vh, 300px); }
 html.stacked .search { flex: 1 1 100px; width: auto; }
 html.stacked .health .hv { margin-right: 6px; }
+/* Stacked, the readings are seven or eight rows deep, and a button centred against all of
+   them reads as though it belonged to the middle one: it goes to the top instead. */
+html.stacked .health { align-items: flex-start; }
 html.stacked .vsplit, html.stacked .hsplit, html.stacked .tsplit { display: none; }
 
 /* A short side-by-side window (a landscape phone): tighter header and panel, and the

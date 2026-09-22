@@ -21,6 +21,9 @@
   let awaitingClear = false;
 
   const dictation = $derived(store.state.dictation);
+  // No speech recognition -- the models were not built, the load failed, or this is the
+  // phone, where it is not ported yet -- means no listening button to press.
+  const canListen = $derived(store.state.stt_ready !== false);
   const keyHeld = $derived(!!store.state.ptt);
   const talking = $derived(keyHeld || !!dictation?.live);
   const armed = $derived(!!dictation?.sends_at && !dictation?.live);
@@ -33,14 +36,16 @@
     : text.trim().length > 0 ? "send"
     : store.listenMode === "ptt" ? "ptt"
     : store.listenMode === "vad" ? "vad"
-    : "idle",
+    : canListen ? "idle"
+    : "quiet",
   );
   const keyName = $derived(prettyKey(store.state.ptt_key || "ctrl_r"));
   const sendTitle = $derived(
     sendState === "send" ? (armed ? "Sending in a moment (type to keep it)" : "Send (Enter)")
     : sendState === "ptt" ? (talking ? "Listening…" : `Hold to talk (or hold Space or ${keyName})`)
     : sendState === "vad" ? "Listening"
-    : "Type a question, or turn listening on",
+    : canListen ? "Type a question, or turn listening on"
+    : "Type a question",
   );
 
   function prettyKey(k: string): string {
@@ -96,7 +101,7 @@
   }
   function onSendClick() {
     if (sendState === "send") send();
-    else if (sendState === "idle") input?.focus();
+    else if (sendState === "idle" || sendState === "quiet") input?.focus();
   }
 </script>
 
@@ -112,11 +117,13 @@
       oninput={onInput}
       onkeydown={(e) => { if (e.key === "Enter") send(); }}
     />
-    <button class="iconbtn" data-mode={store.listenMode} title={MODE_TITLES[store.listenMode] || ""} onclick={() => store.cycleListen()} aria-label="Listening mode">
-      <svg class="ic ic-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-8.1 3.9l1.5-1.5A3 3 0 0 0 15 12h2zM5.3 3.9 20.1 18.7l-1.4 1.4-3.2-3.2A6.9 6.9 0 0 1 13 18.9V21h-2v-2.1A7 7 0 0 1 5 12h2a5 5 0 0 0 7.1 4.5l-1.5-1.5A3 3 0 0 1 9 12V9.4L3.9 5.3z"/></svg>
-      <svg class="ic ic-ptt" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3h2a7 7 0 0 1-6 6.9V21h-2v-2.1A7 7 0 0 1 5 12h2a5 5 0 0 0 10 0z"/></svg>
-      <svg class="ic ic-vad" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10h2v4H3zm4-3h2v10H7zm4-4h2v18h-2zm4 4h2v10h-2zm4 3h2v4h-2z"/></svg>
-    </button>
+    {#if canListen}
+      <button class="iconbtn" data-mode={store.listenMode} title={MODE_TITLES[store.listenMode] || ""} onclick={() => store.cycleListen()} aria-label="Listening mode">
+        <svg class="ic ic-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-8.1 3.9l1.5-1.5A3 3 0 0 0 15 12h2zM5.3 3.9 20.1 18.7l-1.4 1.4-3.2-3.2A6.9 6.9 0 0 1 13 18.9V21h-2v-2.1A7 7 0 0 1 5 12h2a5 5 0 0 0 7.1 4.5l-1.5-1.5A3 3 0 0 1 9 12V9.4L3.9 5.3z"/></svg>
+        <svg class="ic ic-ptt" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3h2a7 7 0 0 1-6 6.9V21h-2v-2.1A7 7 0 0 1 5 12h2a5 5 0 0 0 10 0z"/></svg>
+        <svg class="ic ic-vad" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10h2v4H3zm4-3h2v10H7zm4-4h2v18h-2zm4 4h2v10h-2zm4 3h2v4h-2z"/></svg>
+      </button>
+    {/if}
     <button
       class="sendbtn"
       class:live={(sendState === "ptt" && (store.pttDown || keyHeld)) || (sendState === "vad" && !!dictation?.live)}

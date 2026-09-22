@@ -197,6 +197,8 @@ export type PanelState = {
   labels?: Record<string, string>;
   health?: Health;
   listen?: string;
+  /** Whether speech recognition loaded; false leaves the listening button out. */
+  stt_ready?: boolean;
   ptt?: boolean;
   ptt_key?: string;
   heard?: string;

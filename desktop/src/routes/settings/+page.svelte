@@ -387,6 +387,9 @@
   </div>
 
   <footer class="secfoot">
+    {#if !inShell()}
+      <button type="button" class="link back" onclick={() => (window.location.href = "/")}>&larr; Back</button>
+    {/if}
     {#if result?.ok}
       <span class="saved">{savedLine(result)}{#if result.restart?.length} <button type="button" class="link" onclick={saveAndRestart}>Restart now</button>{/if}</span>
     {:else if result && !result.ok}
@@ -399,7 +402,9 @@
 
 <style>
   .settings { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
-  .secnav { display: flex; gap: 4px; padding: 10px 14px; border-bottom: 1px solid var(--line); align-items: center; }
+  /* The tabs wrap: six of them side by side would be a floor of 600px, and a phone is
+     412. `.adv` keeps to the end of whatever row it lands on. */
+  .secnav { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 14px; border-bottom: 1px solid var(--line); align-items: center; }
   .secbtn { background: transparent; color: var(--muted); border: 1px solid transparent; border-radius: 6px; padding: 6px 10px; font: inherit; font-weight: 600; cursor: pointer; }
   .secbtn.on { color: var(--ink); background: var(--panel); border-color: var(--line); }
   .adv { margin-left: auto; color: var(--muted); font-size: 12px; }
@@ -429,11 +434,13 @@
   .link:hover { color: var(--ink); }
   .err { color: var(--error); font-size: 12px; margin: 4px 0 0; }
   .muted { color: var(--muted); font-size: 12px; }
-  .secret { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+  .secret { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+  .secret input { min-width: 180px; }
   .secret .state { color: var(--muted); font-size: 12px; min-width: 50px; }
   .secret input { flex: 1; }
-  .secfoot { display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-top: 1px solid var(--line); }
+  .secfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 18px; border-top: 1px solid var(--line); }
   .saved { color: var(--accent); font-size: 13px; }
+  .back { text-decoration: none; font-weight: 600; }
   .spacer { flex: 1; }
   code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 </style>

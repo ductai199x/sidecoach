@@ -332,6 +332,10 @@ class PanelEngine:
             "analysis_on": self.analysis,
             "voice_detail": self._tts.healthcheck()[1],
             "stt_detail": self._stt.healthcheck()[1],
+            # Whether the page's listening button has anything behind it. True while the
+            # models are still being built, so it does not appear partway through a run;
+            # the warm-up replaces it with the provider's own answer.
+            "stt_ready": self.voice_models,
             "listen": "off",
             "ptt": False,
             "ptt_key": self.settings.voice.ptt_key,
@@ -751,7 +755,9 @@ class PanelEngine:
         self._mic = Microphone(self.settings.voice.mic_device)
         self._listener.mic = self._mic
         with self._lock:
-            self._state["stt_detail"] = self._stt.healthcheck()[1]
+            ready, detail = self._stt.healthcheck()
+            self._state["stt_detail"] = detail
+            self._state["stt_ready"] = ready
         self._emit("voice", "info", f"speech recognition reloading: {self._state['stt_detail']}")
         threading.Thread(target=self._warm_voice, name="stt-reload", daemon=True).start()
         if mode != "off":
@@ -1055,7 +1061,9 @@ class PanelEngine:
                 self._stage(STAGE_OF[label], "off", detail)
         with self._lock:
             self._state["voice_detail"] = self._tts.healthcheck()[1]
-            self._state["stt_detail"] = self._stt.healthcheck()[1]
+            stt_ready, stt_detail = self._stt.healthcheck()
+            self._state["stt_detail"] = stt_detail
+            self._state["stt_ready"] = stt_ready
         ok, detail = self._mic.healthcheck()
         self._emit("sys", "info" if ok else "warn", f"mic: {detail}")
         self._stage("mic", "loading")
