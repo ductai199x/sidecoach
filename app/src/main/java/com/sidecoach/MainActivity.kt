@@ -9,9 +9,12 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -21,12 +24,23 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.sidecoach.bench.EmbedderBench
 import com.sidecoach.capture.CaptureService
 import com.sidecoach.capture.CaptureStats
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Spike A's screen: start the capture, watch what it costs, stop it.
@@ -62,6 +76,7 @@ class MainActivity : ComponentActivity() {
                     val state by CaptureService.capture.collectAsStateWithLifecycle()
                     Home(
                         running = state.running,
+                        preview = state.preview,
                         latest = state.latest,
                         logPath = state.logPath,
                         error = state.error,
@@ -88,6 +103,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun Home(
     running: Boolean,
+    preview: Bitmap?,
     latest: CaptureStats.Snapshot?,
     logPath: String?,
     error: String?,
@@ -111,6 +127,15 @@ private fun Home(
             Text(if (running) "Stop" else "Start watching")
         }
         error?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        preview?.let {
+            Text("What it sees", style = MaterialTheme.typography.titleMedium)
+            Image(
+                bitmap = it.asImageBitmap(),
+                contentDescription = "the screen as the coach reads it",
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
         if (latest != null) {
             Text("Last ten seconds", style = MaterialTheme.typography.titleMedium)
             Text(
@@ -127,5 +152,26 @@ private fun Home(
             )
         }
         logPath?.let { Text("Log: $it", style = MaterialTheme.typography.bodySmall) }
+
+        // Spike B's first question: what a board costs the piece net on this phone.
+        val context = LocalContext.current
+        val scope = rememberCoroutineScope()
+        var bench by remember { mutableStateOf<String?>(null) }
+        var benching by remember { mutableStateOf(false) }
+        Button(
+            enabled = !benching,
+            onClick = {
+                benching = true
+                bench = "embedding 64 cells, ten times over…"
+                scope.launch {
+                    val results = withContext(Dispatchers.Default) { EmbedderBench.run(context) }
+                    bench = results.joinToString(separator = "\n") { it.toString() }
+                    benching = false
+                }
+            },
+        ) {
+            Text("Time the piece net")
+        }
+        bench?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
     }
 }

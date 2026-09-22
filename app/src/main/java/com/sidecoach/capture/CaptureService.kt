@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -57,6 +58,11 @@ class CaptureService : Service() {
     private var stats: CaptureStats? = null
     private var lastFrameAt = 0L
     private var buffer: ByteArray? = null
+    // The frame as pixels we own, reused: the reader's buffer is handed back the moment
+    // the image is closed, so nothing may be kept from it.
+    private var frame: Bitmap? = null
+    private var preview: Bitmap? = null
+    private var lastPreviewAt = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -178,6 +184,7 @@ class CaptureService : Service() {
             plane.buffer.get(into)
             val copyMs = ((SystemClock.elapsedRealtimeNanos() - began) / 1_000_000).toInt()
             stats?.frame(copyMs, size)
+            keepForScreen(image, plane.rowStride)
         } catch (exc: Exception) {
             Log.w(TAG, "frame dropped: $exc")
         } finally {
@@ -188,6 +195,34 @@ class CaptureService : Service() {
             val snapshot = stats.take()
             state.value = state.value.copy(running = true, latest = snapshot)
         }
+    }
+
+    /**
+     * The newest frame, small, for the screen. The bitmap the reader's plane is copied
+     * into carries the row stride, so it is wider than the screen; the preview is the
+     * visible part of it, scaled down. Twice a second is plenty to look at.
+     */
+    private fun keepForScreen(image: android.media.Image, rowStride: Int) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastPreviewAt < PREVIEW_INTERVAL_MS) return
+        lastPreviewAt = now
+        val width = image.width
+        val height = image.height
+        val padded = rowStride / 4
+        val full = frame?.takeIf { it.width == padded && it.height == height }
+            ?: Bitmap.createBitmap(padded, height, Bitmap.Config.ARGB_8888).also { frame = it }
+        image.planes[0].buffer.rewind()
+        full.copyPixelsFromBuffer(image.planes[0].buffer)
+        val scale = PREVIEW_WIDTH.toFloat() / width
+        val small = Bitmap.createScaledBitmap(
+            if (padded == width) full else Bitmap.createBitmap(full, 0, 0, width, height),
+            PREVIEW_WIDTH,
+            (height * scale).toInt(),
+            true,
+        )
+        preview?.recycle()
+        preview = small
+        state.value = state.value.copy(preview = small)
     }
 
     override fun onDestroy() {
@@ -201,7 +236,9 @@ class CaptureService : Service() {
         thread = null
         handler = null
         buffer = null
-        state.value = state.value.copy(running = false)
+        frame?.recycle()
+        frame = null
+        state.value = state.value.copy(running = false, preview = null)
         super.onDestroy()
     }
 
@@ -241,6 +278,8 @@ class CaptureService : Service() {
         val latest: CaptureStats.Snapshot? = null,
         val logPath: String? = null,
         val error: String? = null,
+        /** The newest frame, small enough to draw: what the coach is looking at. */
+        val preview: Bitmap? = null,
     )
 
     companion object {
@@ -258,6 +297,8 @@ class CaptureService : Service() {
         const val TARGET_FPS = 2
         private const val MIN_INTERVAL_MS = 1000L / TARGET_FPS
         private const val BUFFERS = 3
+        private const val PREVIEW_WIDTH = 360
+        private const val PREVIEW_INTERVAL_MS = 500L
 
         private val state = MutableStateFlow(State())
         val capture: StateFlow<State> = state.asStateFlow()

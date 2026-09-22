@@ -33,6 +33,10 @@ android {
     buildFeatures {
         compose = true
     }
+    androidResources {
+        // The net is read straight out of the APK; compressing it would only cost time.
+        noCompress += "onnx"
+    }
 }
 
 dependencies {
@@ -46,6 +50,7 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+    implementation(libs.onnxruntime.android)
     debugImplementation(libs.androidx.ui.tooling)
 
     testImplementation(libs.junit)
