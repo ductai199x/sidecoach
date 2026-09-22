@@ -88,6 +88,57 @@ class ThemeModel(
     }
 
     companion object {
+        /** 8x8 foreground fractions, the cheap occupancy signal (`pieces.occupancy`). */
+        fun occupancy(frame: Mat, geometry: BoardGeometry): List<Sil> {
+            val out = ArrayList<Sil>(64)
+            for (r in 0 until 8) {
+                for (c in 0 until 8) {
+                    val crop = geometry.crop(frame, r, c, 2 * Squares.CELL)
+                    out.add(SilhouetteReader.of(crop))
+                    crop.release()
+                }
+            }
+            return out
+        }
+
+        /**
+         * Rows 0, 1, 6 and 7 occupied and rows 2 to 5 empty, allowing one stray cell
+         * (`pieces._start_shaped`): one move away from the start already differs in two,
+         * so the allowance is a single cell for a badge, a hover outline or a cursor.
+         */
+        fun startShaped(cells: List<Sil>): Boolean {
+            var wrong = 0
+            for (r in 0 until 8) {
+                for (c in 0 until 8) {
+                    val occupied = cells[r * 8 + c].fraction >= Pieces.PIECE_MIN_FRACTION
+                    if (occupied != (r <= 1 || r >= 6)) wrong++
+                }
+            }
+            return wrong <= 1
+        }
+
+        /**
+         * Which colour sits at the bottom of a start position: the brighter pieces are
+         * white (`pieces.orientation_from_start`).
+         */
+        fun orientationFromStart(cells: List<Sil>): Boolean {
+            val top = ArrayList<Double>(16)
+            val bottom = ArrayList<Double>(16)
+            for (c in 0 until 8) {
+                top.add(cells[c].luminance)
+                top.add(cells[8 + c].luminance)
+                bottom.add(cells[48 + c].luminance)
+                bottom.add(cells[56 + c].luminance)
+            }
+            return median(bottom) > median(top)
+        }
+
+        private fun median(values: List<Double>): Double {
+            val sorted = values.sorted()
+            val n = sorted.size
+            return if (n % 2 == 1) sorted[n / 2] else (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        }
+
         /** The start position in screen order for the side at the bottom: 64 labels. */
         fun startLabels(whiteAtBottom: Boolean): List<String> {
             val back = listOf("r", "n", "b", "q", "k", "b", "n", "r")

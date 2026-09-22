@@ -59,6 +59,10 @@ data class Fixture(
     val bottom: String,
     val width: Int,
     val height: Int,
+    /** What the Python measured on this frame, for the port to be held to. */
+    val fractions: DoubleArray,
+    val startShaped: Boolean,
+    val orientation: String,
 )
 
 object Fixtures {
@@ -80,6 +84,11 @@ object Fixtures {
                 bottom = o.getString("bottom"),
                 width = o.getInt("width"),
                 height = o.getInt("height"),
+                fractions = o.getJSONArray("fractions").let { a ->
+                    DoubleArray(a.length()) { a.getDouble(it) }
+                },
+                startShaped = o.getBoolean("start_shaped"),
+                orientation = o.getString("orientation"),
             )
         }
     }

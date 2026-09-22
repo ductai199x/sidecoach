@@ -75,11 +75,11 @@ class ScreenReader(context: Context) : AutoCloseable {
                 // -- an animation passes through shapes that look like one -- is the net
                 // asked for the 64 exemplars. The orientation comes from the same reading:
                 // the brighter pieces are white.
-                val cells = Silhouette.board(bgr, geometry)
-                if (Silhouette.startShaped(cells)) {
+                val cells = ThemeModel.occupancy(bgr, geometry)
+                if (ThemeModel.startShaped(cells)) {
                     startSeen++
                     if (startSeen >= START_FRAMES) {
-                        val whiteAtBottom = Silhouette.whiteAtBottom(cells)
+                        val whiteAtBottom = ThemeModel.orientationFromStart(cells)
                         val candidate = ThemeModel.learn(bgr, geometry, net, whiteAtBottom)
                         startSeen = 0
                         if (candidate != null) {

@@ -27,7 +27,15 @@ sys.path.insert(0, str(DESKTOP / "src"))
 import chess  # noqa: E402
 import cv2  # noqa: E402
 
+from sidecoach.events import Region  # noqa: E402
+
 from sidecoach.events import Side  # noqa: E402
+from sidecoach.vision.pieces import (  # noqa: E402
+    occupancy,
+    orientation_from_start,
+    looks_like_start_position,
+)
+from sidecoach.vision.squares import BoardGeometry  # noqa: E402
 from tests.synth import synthetic_board  # noqa: E402
 
 OUT = Path("D:/sidecoach-android/app/src/androidTest/assets/boards")
@@ -77,9 +85,17 @@ def main() -> None:
         )
         path = OUT / f"{spec['name']}.png"
         cv2.imwrite(str(path), frame)
+        # The Python's own numbers for this frame, so the Kotlin port is held to them
+        # rather than to my reading of the code: the foreground fraction of every cell,
+        # whether that occupancy has the shape of a start position, and the orientation.
+        geometry = BoardGeometry(Region(x0, y0, 8 * cell, 8 * cell), float(cell))
+        fractions = occupancy(frame, geometry)
         index.append(
             {
                 "name": spec["name"],
+                "fractions": [round(float(v), 5) for v in fractions.ravel()],
+                "start_shaped": bool(looks_like_start_position(frame, geometry)),
+                "orientation": orientation_from_start(frame, geometry).value,
                 "file": path.name,
                 "x": x0,
                 "y": y0,
