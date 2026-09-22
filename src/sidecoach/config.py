@@ -650,19 +650,19 @@ class VoiceSettings(BaseModel):
 class GpuSettings(BaseModel):
     mode: str = Field(
         default="auto",
-        description="Whether the voice, speech recognition and the board reader run on an "
-        "NVIDIA card. Automatic fetches what that needs once and falls back to the CPU on "
-        "any trouble.",
+        description="Whether the voice, speech recognition and the board reader run on the "
+        "NVIDIA graphics card (CUDA). Automatic fetches what that needs once and falls back "
+        "to the CPU on any trouble.",
         json_schema_extra=_extra(
             choices=["auto", "cpu", "cuda"],
             applies="restart",
-            label="Graphics card",
+            label="Hardware acceleration",
             choice_labels={
                 "auto": "Automatic -- use it when it works (recommended)",
                 "cpu": "Never -- CPU only",
                 "cuda": "Always",
             },
-            section="Graphics card",
+            section="Hardware acceleration",
         ),
     )
 

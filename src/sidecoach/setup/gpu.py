@@ -52,6 +52,53 @@ def platform_tag() -> str:
     return f"{system}-{machine}"
 
 
+def _held_by_process_windows(pid: int) -> int | None:
+    """What a process holds on the card, from the counter Task Manager reads
+    (`GPU Process Memory(pid_<pid>_*)` / `Dedicated Usage`): NVML does not account per process
+    under Windows' display driver. None when the counter is not there."""
+    import ctypes
+    from ctypes import wintypes
+
+    pdh = ctypes.windll.pdh  # type: ignore[attr-defined]
+    query = wintypes.HANDLE()
+    if pdh.PdhOpenQueryW(None, 0, ctypes.byref(query)) != 0:
+        return None
+    try:
+        counter = wintypes.HANDLE()
+        path = f"\\GPU Process Memory(pid_{pid}_*)\\Dedicated Usage"
+        if pdh.PdhAddEnglishCounterW(query, path, 0, ctypes.byref(counter)) != 0:
+            return None
+        if pdh.PdhCollectQueryData(query) != 0:
+            return None
+
+        class _Value(ctypes.Structure):
+            _fields_ = [("status", wintypes.DWORD), ("large", ctypes.c_longlong)]
+
+        class _Item(ctypes.Structure):
+            _fields_ = [("name", wintypes.LPWSTR), ("value", _Value)]
+
+        size = wintypes.DWORD(0)
+        count = wintypes.DWORD(0)
+        fmt = 0x0400  # PDH_FMT_LARGE
+        pdh.PdhGetFormattedCounterArrayW(
+            counter, fmt, ctypes.byref(size), ctypes.byref(count), None
+        )
+        if size.value == 0:
+            return 0
+        buf = ctypes.create_string_buffer(size.value)
+        if (
+            pdh.PdhGetFormattedCounterArrayW(
+                counter, fmt, ctypes.byref(size), ctypes.byref(count), buf
+            )
+            != 0
+        ):
+            return None
+        items = ctypes.cast(buf, ctypes.POINTER(_Item * count.value)).contents
+        return sum(int(item.value.large) for item in items)
+    finally:
+        pdh.PdhCloseQuery(query)
+
+
 def detect() -> dict[str, Any]:
     """The NVIDIA GPU, if any: name, driver, VRAM, and whether it is eligible for the pack."""
     out: dict[str, Any] = {"found": False, "eligible": False, "reason": ""}
@@ -67,13 +114,37 @@ def detect() -> dict[str, Any]:
             handle = pynvml.nvmlDeviceGetHandleByIndex(0)
             name = pynvml.nvmlDeviceGetName(handle)
             driver = pynvml.nvmlSystemGetDriverVersion()
-            memory = int(pynvml.nvmlDeviceGetMemoryInfo(handle).total)
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            memory, used, free = int(info.total), int(info.used), int(info.free)
+            # What this process holds on the card (the models, once loaded); a driver that
+            # does not account per process (WSL) leaves it unknown.
+            mine: int | None = None
+            with contextlib.suppress(Exception):
+                procs = list(pynvml.nvmlDeviceGetComputeRunningProcesses(handle))
+                with contextlib.suppress(Exception):
+                    procs += list(pynvml.nvmlDeviceGetGraphicsRunningProcesses(handle))
+                me = os.getpid()
+                held = [int(p.usedGpuMemory) for p in procs if p.pid == me and p.usedGpuMemory]
+                mine = sum(held) if held else None
+            if mine is None and os.name == "nt":
+                with contextlib.suppress(Exception):
+                    mine = _held_by_process_windows(os.getpid())
         finally:
             with contextlib.suppress(Exception):
                 pynvml.nvmlShutdown()
         name = name.decode() if isinstance(name, bytes) else str(name)
         driver = driver.decode() if isinstance(driver, bytes) else str(driver)
-        out.update({"found": True, "name": name, "driver": driver, "vram": int(memory)})
+        out.update(
+            {
+                "found": True,
+                "name": name,
+                "driver": driver,
+                "vram": memory,
+                "vram_used": used,
+                "vram_free": free,
+                "used_by_app": mine,
+            }
+        )
         major = int(driver.split(".")[0]) if driver.split(".")[0].isdigit() else 0
         if major < MIN_DRIVER_MAJOR:
             out["reason"] = (

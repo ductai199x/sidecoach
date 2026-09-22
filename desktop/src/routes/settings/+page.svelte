@@ -52,6 +52,24 @@
   // The live test of the microphone and speech recognition under "Hearing you": while it is on the
   // page polls the level and what was heard; the coach is not asked.
   type Heard = { raw: string; heard: string; seconds: number; stt_ms: number; t: number };
+  // Hardware acceleration, as this machine has it: shown under the setting only when a
+  // graphics card is found -- whether CUDA is ready, the card, its memory and what the
+  // app holds on it (the models, once loaded). Polled while the page is open.
+  type GpuStatus = {
+    mode: string;
+    gpu: { found: boolean; eligible: boolean; reason: string; name?: string; driver?: string; vram?: number; vram_used?: number; vram_free?: number; used_by_app?: number | null };
+    installed: string | null;
+    active: { pack: string | null; cuda: boolean; detail: string };
+  };
+  let gpuStatus = $state<GpuStatus | null>(null);
+  let gpuTimer: ReturnType<typeof setInterval> | null = null;
+  async function pollGpu() {
+    try {
+      const st = await get<{ gpu?: GpuStatus }>("/api/setup/status");
+      gpuStatus = st.gpu ?? null;
+    } catch { /* the next poll will tell */ }
+  }
+  const gb = (n: number | undefined | null) => (n == null ? "–" : (n / 1024 ** 3).toFixed(1) + " GB");
   let hearOn = $state(false);
   let hearLevel = $state(0);
   let hearList = $state<Heard[]>([]);
@@ -86,7 +104,7 @@
     hearLevel = 0;
     if (tell) await post("/api/hear_test", { on: false }).catch(() => {});
   }
-  onDestroy(() => { if (hearOn) void stopHearing(); });
+  onDestroy(() => { if (hearOn) void stopHearing(); if (gpuTimer) clearInterval(gpuTimer); });
 
   function fields(name: string): [string, Prop][] {
     if (!data) return [];
@@ -106,7 +124,7 @@
     engine: ["How hard Stockfish works", "What it looks at", "The program"],
     capture: ["Reading the screen"],
     profile: ["Your rating"],
-    gpu: ["Graphics card"],
+    gpu: ["Hardware acceleration"],
   };
   function sections(name: string, list: [string, Prop][]): [string, [string, Prop][]][] {
     const order = SECTION_ORDER[name] ?? [];
@@ -173,6 +191,8 @@
   }
 
   onMount(async () => {
+    void pollGpu();
+    gpuTimer = setInterval(() => void pollGpu(), 5000);
     await connect();
     data = await get<Described>("/api/settings");
     values = structuredClone($state.snapshot(data).settings);
@@ -337,6 +357,14 @@
         {#each groups as [title, list] (title)}
           {#if title && groups.length > 1}<h3>{title}</h3>{/if}
           {#each list as [key, p] (key)}{@render field(section, key, p)}{/each}
+          {#if section === "gpu" && gpuStatus?.gpu.found}
+            <div class="field test">
+              <span class="lbl">This machine</span>
+              <p class="desc"><b>CUDA:</b> {gpuStatus.active.cuda ? "ready -- the models run on the graphics card" : gpuStatus.gpu.eligible ? (gpuStatus.installed ? "not active (" + gpuStatus.active.detail + ")" : "available -- the acceleration pack is not installed yet (Help > Set up)") : "not usable: " + gpuStatus.gpu.reason}</p>
+              <p class="desc"><b>Graphics card:</b> {gpuStatus.gpu.name}{#if gpuStatus.gpu.driver} <span class="muted">(driver {gpuStatus.gpu.driver})</span>{/if}</p>
+              <p class="desc"><b>Memory:</b> {gb(gpuStatus.gpu.vram)} in all, {gb(gpuStatus.gpu.vram_free)} free{#if gpuStatus.gpu.used_by_app != null}; Sidecoach is using {gb(gpuStatus.gpu.used_by_app)}{:else}; what Sidecoach uses is not reported by this driver{/if}</p>
+            </div>
+          {/if}
           {#if section === "voice" && title === "Hearing you"}
             <div class="field test">
               <span class="lbl">Test the microphone and speech recognition</span>
