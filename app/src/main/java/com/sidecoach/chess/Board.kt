@@ -364,6 +364,23 @@ class Board {
     fun isQueensideCastling(move: Move): Boolean =
         isCastling(move) && squareFile(move.to) < squareFile(move.from)
 
+    fun hasKingsideCastlingRights(colour: Boolean): Boolean = castlingSide(colour, kingside = true)
+
+    fun hasQueensideCastlingRights(colour: Boolean): Boolean = castlingSide(colour, kingside = false)
+
+    private fun castlingSide(colour: Boolean, kingside: Boolean): Boolean {
+        val backrank = if (colour == WHITE) BB_RANK_1 else BB_RANK_8
+        val kingMask = kings and occupiedCo[if (colour) 1 else 0] and backrank and promoted.inv()
+        if (kingMask == BB_EMPTY) return false
+        var rights = cleanCastlingRights() and backrank
+        while (rights != BB_EMPTY) {
+            val rook = rights and (0uL - rights)
+            if (if (kingside) rook > kingMask else rook < kingMask) return true
+            rights = rights and (rights - 1uL)
+        }
+        return false
+    }
+
     /** Whether the piece on `square` may not leave its line without exposing what is behind. */
     fun isPinned(colour: Boolean, square: Int): Boolean = pinMask(colour, square) != BB_ALL
 

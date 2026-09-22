@@ -1,0 +1,176 @@
+"""Record what the desktop's positional layer says, for the Kotlin port to be held to.
+
+This is the half of the coach's knowledge that is not tactics: the open file, the passed
+pawn, the outpost, the bad bishop, the Lucena and the Philidor, and -- the highest-value
+fact of all -- what the engine's best move is *for*. The coach teaches from these sentences
+word for word, so the port has to produce them word for word.
+
+Everything here is pure, so it is compared exactly. The positions come from three places:
+the Lichess puzzle sample (middlegames and endgames with something going on), random games
+(openings, development, uncastled kings), and a handful of built endings for the textbook
+detectors that a random game almost never reaches. The move ideas are taken over every legal
+move of a position, which covers the idea table densely without an engine.
+
+    cd D:/chess-coaching-companion
+    uv run --no-sync python D:/sidecoach-android/tools/make_positional_fixtures.py
+"""
+
+from __future__ import annotations
+
+import csv
+import json
+import random
+import sys
+from pathlib import Path
+
+DESKTOP = Path("D:/chess-coaching-companion")
+sys.path.insert(0, str(DESKTOP))
+sys.path.insert(0, str(DESKTOP / "src"))
+
+import chess  # noqa: E402
+
+from sidecoach.analysis import positional  # noqa: E402
+from sidecoach.analysis.phase import phase_of  # noqa: E402
+
+OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "chess"
+PUZZLES = DESKTOP / "data" / "puzzles" / "sample.csv"
+
+# The textbook endings a random game does not reach, so every detector is exercised.
+BUILT = [
+    "8/8/8/8/8/1k6/1P6/1K6 w - - 0 1",            # opposition, key squares
+    "8/8/8/3k4/8/3K4/3P4/8 w - - 0 1",            # key squares, distant opposition
+    "1K6/1P6/8/8/8/8/r7/2k4R w - - 0 1",          # Lucena
+    "8/4k3/r7/4P3/4K3/8/8/7R b - - 0 1",          # Philidor: rook on the third rank
+    "8/8/3K4/8/3P4/8/8/7k w - - 0 1",             # the king on a key square
+    "8/8/8/8/1k6/8/1p6/1K1R4 b - - 0 1",          # rook and pawn v rook
+    "8/8/1R6/8/8/1k6/3r4/1K6 w - - 0 1",
+    "3k4/8/8/3K4/3P4/8/8/8 w - - 0 1",
+    "8/5p2/8/8/8/8/5P2/8 w - - 0 1",              # bare pawn race
+    "8/8/8/8/k7/8/5P2/6K1 w - - 0 1",             # square of the pawn
+    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+    "4k3/8/8/8/8/8/4P3/4K2R w K - 0 1",           # uncastled with rights
+    "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+    "rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 6",  # Sicilian structure
+    "r1bq1rk1/pp2bppp/2n1pn2/3p4/3P4/2NBPN2/PP3PPP/R1BQ1RK1 w - - 0 9",  # IQP shapes
+    "r1bq1rk1/pp3ppp/2n1pn2/2bp4/8/2NBPN2/PPQ2PPP/R1B2RK1 w - - 0 10",
+    "rnbqk2r/ppp1bppp/4pn2/3p4/2PP4/2N1PN2/PP3PPP/R1BQKB1R w KQkq - 0 6",
+    "r1bqk2r/pppn1ppp/4pn2/3p4/1bPP4/2N1PN2/PP3PPP/R1BQKB1R w KQkq - 0 6",
+    "8/pp3ppp/8/2p5/2P5/8/PP3PPP/8 w - - 0 20",   # majorities
+    "8/1p3p2/p7/8/8/P7/1P3P2/8 w - - 0 30",
+    "r5k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 20",     # open file
+    "3r2k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 20",
+    "8/3k4/3p4/3P4/3K4/8/8/8 w - - 0 40",         # closed, pawn pointing shapes
+    "rnbqk2r/pp2ppbp/3p1np1/2pP4/4P3/2N2N2/PP2BPPP/R1BQK2R b KQkq - 0 7",  # King's Indian
+    "rnbqkbnr/pp3ppp/4p3/2ppP3/3P4/8/PPP2PPP/RNBQKBNR w KQkq - 0 4",       # French advance
+]
+
+
+def feature_json(fact) -> dict:
+    return {"kind": fact.kind, "text": fact.text, "squares": list(fact.squares)}
+
+
+def case_for(board: chess.Board, phase: str) -> dict:
+    us = board.turn
+    them = not us
+    worst = positional.worst_piece_square(board, us)
+    ideas = []
+    for move in board.legal_moves:
+        idea = positional.best_move_idea(board, move, us, phase=phase, worst=worst, threat=None)
+        ideas.append({"move": move.uci(), "idea": None if idea is None else feature_json(idea)})
+    # The prophylaxis branch needs a threat: the opponent's first legal move after a pass.
+    threat = None
+    if not board.is_check():
+        passed = board.copy(stack=False)
+        passed.push(chess.Move.null())
+        threat = next(iter(passed.legal_moves), None)
+    threat_ideas = []
+    if threat is not None:
+        for move in list(board.legal_moves)[:12]:
+            idea = positional.best_move_idea(
+                board, move, us, phase=phase, worst=worst, threat=threat
+            )
+            threat_ideas.append(
+                {"move": move.uci(), "idea": None if idea is None else feature_json(idea)}
+            )
+    return {
+        "fen": board.fen(),
+        "phase": phase,
+        "worst": None if worst is None else chess.square_name(worst),
+        "features_us": [feature_json(f) for f in positional.features(board, us, phase=phase)],
+        "features_them": [feature_json(f) for f in positional.features(board, them, phase=phase)],
+        "top_us": [feature_json(f) for f in positional.top_features(board, us, phase=phase)],
+        "top_them": [feature_json(f) for f in positional.top_features(board, them, phase=phase)],
+        "ideas": ideas,
+        "threat": None if threat is None else threat.uci(),
+        "threat_ideas": threat_ideas,
+    }
+
+
+QUOTA = 25
+
+
+def kinds_of(case: dict) -> set[str]:
+    out = {f["kind"] for f in case["features_us"] + case["features_them"]}
+    out |= {i["idea"]["kind"] for i in case["ideas"] + case["threat_ideas"] if i["idea"]}
+    return out or {"(none)"}
+
+
+def choose(cases: list[dict]) -> list[dict]:
+    counts: dict[str, int] = {}
+    kept: list[dict] = []
+    for case in cases:
+        kinds = kinds_of(case)
+        if any(counts.get(kind, 0) < QUOTA for kind in kinds):
+            kept.append(case)
+            for kind in kinds:
+                counts[kind] = counts.get(kind, 0) + 1
+    return kept
+
+
+def main() -> None:
+    rng = random.Random(20260922)
+    cases: list[dict] = []
+
+    for fen in BUILT:
+        board = chess.Board(fen)
+        for phase in ("opening", "middlegame", "endgame"):
+            cases.append(case_for(board, phase))
+
+    # Random games: openings and middlegames, where development and the king's safety live.
+    for _ in range(80):
+        board = chess.Board()
+        for ply in range(rng.randint(2, 60)):
+            moves = list(board.legal_moves)
+            if not moves:
+                break
+            board.push(rng.choice(moves))
+            if ply % 5 == 0:
+                cases.append(case_for(board, phase_of(board, False)))
+
+    # The puzzle sample: real middlegames and endgames.
+    if PUZZLES.exists():
+        with PUZZLES.open(newline="", encoding="utf-8") as handle:
+            for row in list(csv.DictReader(handle))[:900]:
+                board = chess.Board(row["FEN"])
+                moves = [chess.Move.from_uci(u) for u in row["Moves"].split()]
+                for index, move in enumerate(moves):
+                    if move not in board.legal_moves:
+                        break
+                    if index % 2 == 1:
+                        cases.append(case_for(board, phase_of(board, False)))
+                    board.push(move)
+
+    seen_all = len(cases)
+    cases = choose(cases)
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / "positional.json").write_text(json.dumps({"cases": cases}), encoding="utf-8")
+    counts: dict[str, int] = {}
+    for case in cases:
+        for kind in kinds_of(case):
+            counts[kind] = counts.get(kind, 0) + 1
+    print(f"{len(cases)} of {seen_all} positions -> {OUT / 'positional.json'}")
+    print("kinds: " + ", ".join(f"{k}x{v}" for k, v in sorted(counts.items())))
+
+
+if __name__ == "__main__":
+    main()
