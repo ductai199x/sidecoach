@@ -12,6 +12,13 @@ import com.sidecoach.events.Resync
 import com.sidecoach.events.ScreenState
 import com.sidecoach.events.ScreenStateChanged
 import com.sidecoach.events.Takeback
+import com.sidecoach.analysis.Analyser
+import com.sidecoach.analysis.Assessing
+import com.sidecoach.analysis.Engine
+import com.sidecoach.analysis.EngineAssets
+import com.sidecoach.analysis.GameAnnotator
+import com.sidecoach.events.Label
+import com.sidecoach.events.MoveAssessment
 import com.sidecoach.state.GamePipeline
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
@@ -40,6 +47,28 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
     private var frameId = 0
     private var reads = 0
 
+    /**
+     * The engine, when it has a network to load. Without one the game is still watched and
+     * followed; it is only unassessed, and the screen says so.
+     */
+    private val assessing: Assessing = Assessing(
+        run {
+            val binary = Engine.binaryIn(context.applicationInfo.nativeLibraryDir)
+            val net = EngineAssets.found(context)
+            if (!binary.exists() || net == null) {
+                Log.i(TAG, "no engine yet: binary=${binary.exists()} net=${net != null}")
+                null
+            } else {
+                runCatching {
+                    val engine = Engine(binary, net, threads = ENGINE_THREADS, hashMb = ENGINE_HASH_MB)
+                    val analyser = Analyser(GameAnnotator(engine, depth = ENGINE_DEPTH))
+                    analyser.start()
+                    analyser
+                }.onFailure { Log.w(TAG, "the engine did not start: $it") }.getOrNull()
+            }
+        },
+    )
+
     /** What one frame yielded, for the screen and the log. */
     data class Watch(
         val boardFound: Boolean,
@@ -55,6 +84,9 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
         val moves: List<String> = emptyList(),
         val userSide: String? = null,
         val state: ScreenState = ScreenState.UNKNOWN,
+        /** What the engine has said about the moves so far, newest last. */
+        val verdicts: List<String> = emptyList(),
+        val engineOn: Boolean = false,
         val finished: String? = null,
         /** Cells the net had to embed on this frame: 64 at a bootstrap, a handful after. */
         val fresh: Int = 0,
@@ -65,6 +97,7 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
 
     private var state: ScreenState = ScreenState.UNKNOWN
     private val spoken = ArrayList<String>()
+    private val verdicts = ArrayList<String>()
 
     fun read(bitmap: Bitmap, ts: Double): Watch? {
         val pipeline = pipeline ?: return null
@@ -79,7 +112,11 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
             began = SystemClock.elapsedRealtime()
             val events = pipeline.process(bgr, ts, changed, frameId++, pixels)
             val took = SystemClock.elapsedRealtime() - began
-            for (event in events) note(event)
+            for (event in events) {
+                note(event)
+                assessing.submit(event)
+            }
+            for (event in assessing.drain()) note(event)
             if (++reads % 5 == 1) {
                 Log.i(
                     TAG,
@@ -101,6 +138,8 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
                 ply = rec?.board?.moveStack?.size ?: 0,
                 pgn = rec?.pgn() ?: "",
                 moves = ArrayList(spoken),
+                verdicts = ArrayList(verdicts),
+                engineOn = assessing.on,
                 userSide = pipeline.bottom?.name?.lowercase(),
                 state = state,
                 finished = rec?.result,
@@ -117,8 +156,14 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
     /** The events, as a line in the log and a line on the screen. */
     private fun note(event: Event) {
         when (event) {
+            is MoveAssessment -> {
+                val word = event.label?.name?.lowercase() ?: event.severity.name.lowercase()
+                verdicts.add("${event.ply}. $word (${"%.2f".format(event.expectedLoss)})")
+                if (verdicts.size > 20) verdicts.removeAt(0)
+            }
             is GameStarted -> {
                 spoken.clear()
+                verdicts.clear()
                 Log.i(TAG, "game started (${event.kind}), ${event.userSide} at the bottom")
             }
             is MovePlayed -> {
@@ -152,11 +197,21 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
     }
 
     override fun close() {
+        assessing.close()
         embedder?.close()
     }
 
     companion object {
         private const val TAG = "sidecoach.game"
+
+        /**
+         * What the engine gets on a phone. The desktop's defaults are four threads, 256 MB
+         * and depth 18; a phone has fewer cores to spare and a thermal budget, and the depth
+         * is what the loss is measured at on both sides of a move, so it stays the desktop's.
+         */
+        private const val ENGINE_THREADS = 2
+        private const val ENGINE_HASH_MB = 64
+        private const val ENGINE_DEPTH = 18
 
         /** OpenCV's native library, loaded once for the process. */
         val loaded: Boolean by lazy {

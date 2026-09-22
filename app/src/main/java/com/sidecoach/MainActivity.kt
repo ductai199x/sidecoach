@@ -23,6 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,6 +37,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.sidecoach.analysis.EngineAssets
 import com.sidecoach.bench.EmbedderBench
 import com.sidecoach.capture.CaptureService
 import com.sidecoach.capture.CaptureStats
@@ -141,12 +143,57 @@ private fun Board(watch: GameWatcher.Watch) {
     if (watch.pgn.isNotEmpty()) {
         Text(watch.pgn, style = MaterialTheme.typography.bodyMedium)
     }
+    if (watch.verdicts.isNotEmpty()) {
+        Text(watch.verdicts.takeLast(6).joinToString("  \u00b7  "), style = MaterialTheme.typography.bodyMedium)
+    }
     Text(
         "${watch.unsure} unsure \u00b7 ${watch.fresh} cells embedded \u00b7 " +
             "${if (watch.verified) "verified" else "held"} \u00b7 " +
-            "${if (watch.changed) "changed" else "still"} \u00b7 read in ${watch.readMs} ms",
+            "${if (watch.changed) "changed" else "still"} \u00b7 read in ${watch.readMs} ms" +
+            (if (watch.engineOn) "" else " \u00b7 no engine"),
         style = MaterialTheme.typography.bodySmall,
     )
+}
+
+/**
+ * The engine's network: 98 MB, fetched once. The desktop downloads the engine on first run
+ * and this is the same bargain the other way round -- the engine ships, the network does not.
+ */
+@Composable
+private fun EngineNet() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val state by EngineAssets.net.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { EngineAssets.found(context) }
+    when (val now = state) {
+        is EngineAssets.State.Ready ->
+            Text(
+                "The engine is ready (${now.file.length() / 1_000_000} MB network).",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        is EngineAssets.State.Fetching -> {
+            val done = if (now.total > 0) now.bytes * 100 / now.total else 0
+            Text(
+                "Fetching the engine's network: $done% of ${now.total / 1_000_000} MB",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        else -> {
+            if (now is EngineAssets.State.Failed) {
+                Text("The network did not download: ${now.why}", style = MaterialTheme.typography.bodySmall)
+            }
+            Text(
+                "Without the engine's network the game is watched and followed, but nothing " +
+                    "is assessed. It is 98 MB and is fetched once.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Button(onClick = {
+                scope.launch { withContext(Dispatchers.IO) { EngineAssets.fetch(context) } }
+            }) {
+                Text("Get the engine's network")
+            }
+        }
+    }
 }
 
 @Composable
@@ -177,6 +224,7 @@ private fun Home(
             Text(if (running) "Stop" else "Start watching")
         }
         error?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        EngineNet()
         reading?.let { Board(it) }
         preview?.let {
             Text("What it sees", style = MaterialTheme.typography.titleMedium)
