@@ -37,6 +37,10 @@ android {
         // The net is read straight out of the APK; compressing it would only cost time.
         noCompress += "onnx"
     }
+    packaging {
+        // OpenCV ships every ABI; a phone needs one, and the emulator the other.
+        jniLibs.useLegacyPackaging = false
+    }
 }
 
 dependencies {
@@ -51,6 +55,7 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation(libs.onnxruntime.android)
+    implementation(libs.opencv)
     debugImplementation(libs.androidx.ui.tooling)
 
     testImplementation(libs.junit)
