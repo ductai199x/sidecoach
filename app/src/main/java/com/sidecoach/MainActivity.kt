@@ -240,7 +240,7 @@ private fun Home(
             Text(
                 """
                 frames ${latest.frames} (${"%.1f".format(latest.fps)} fps), ${latest.dropped} skipped
-                cpu ${"%.1f".format(latest.cpuPercent)} % of a core
+                cpu ${"%.1f".format(latest.cpuPercent)} % of a core, engine ${"%.1f".format(latest.engineCpuPercent)} %
                 battery ${latest.batteryPercent} %, ${latest.batteryMa} mA · thermal ${latest.thermal}
                 """.trimIndent(),
                 style = MaterialTheme.typography.bodySmall,

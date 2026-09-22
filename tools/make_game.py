@@ -34,7 +34,13 @@ PHONE_W, PHONE_H = 672, 1496
 CELL = 83
 X0, Y0 = 4, 300
 
-GAME = ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4", "cxd4", "Bb4+")
+# Thirty plies of a real opening into a middlegame: long enough to see what a game
+# costs rather than what a handful of moves do.
+GAME = (
+    "e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4",
+    "cxd4", "Bb4+", "Nc3", "Nxe4", "O-O", "Bxc3", "d5", "Bf6", "Re1", "Ne7",
+    "Rxe4", "d6", "Bg5", "Bxg5", "Nxg5", "O-O", "Nxh7", "Kxh7", "Qh5+", "Kg8",
+)
 
 
 def main() -> None:

@@ -153,6 +153,9 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
         }
     }
 
+    /** The engine process's CPU time in milliseconds; 0 when there is no engine. */
+    fun engineCpuMs(): Long = assessing.engineCpuMs()
+
     /** The events, as a line in the log and a line on the screen. */
     private fun note(event: Event) {
         when (event) {

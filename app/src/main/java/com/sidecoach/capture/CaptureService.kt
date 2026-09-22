@@ -139,7 +139,9 @@ class CaptureService : Service() {
         val visionWorker = HandlerThread("vision").also { it.start() }
         visionThread = visionWorker
         visionHandler = Handler(visionWorker.looper)
-        stats = CaptureStats(this, File(filesDir, "spike/capture-$stamp.jsonl"))
+        stats = CaptureStats(this, File(filesDir, "spike/capture-$stamp.jsonl")).also {
+            it.engineCpu = { vision?.engineCpuMs() ?: 0 }
+        }
         start(projection)
         state.value = State(running = true, logPath = "spike/capture-$stamp.jsonl")
         return START_NOT_STICKY
@@ -200,7 +202,8 @@ class CaptureService : Service() {
             plane.buffer.get(into)
             val copyMs = ((SystemClock.elapsedRealtimeNanos() - began) / 1_000_000).toInt()
             stats?.frame(copyMs, size)
-            keepForScreen(image, plane.rowStride)
+            keepTheFrame(image, plane.rowStride)
+            keepForScreen(image.width, image.height)
         } catch (exc: Exception) {
             Log.w(TAG, "frame dropped: $exc")
         } finally {
@@ -217,23 +220,39 @@ class CaptureService : Service() {
     }
 
     /**
-     * The newest frame, small, for the screen. The bitmap the reader's plane is copied
-     * into carries the row stride, so it is wider than the screen; the preview is the
-     * visible part of it, scaled down. Twice a second is plenty to look at.
+     * The newest frame, kept for the vision. Every one of them: the display sends a frame
+     * only when the screen changes, so the last one before a screen goes still is the one
+     * the vision will study until it changes again. Sampling these at the preview's rate
+     * left a board that appeared and stopped moving being read from the frame halfway
+     * through the animation that brought it in, for as long as nothing else moved -- on a
+     * quiet board, twenty-five seconds before it was found.
+     *
+     * The bitmap the reader's plane is copied into carries the row stride, so it is wider
+     * than the screen; the extra column is beyond the board and costs nothing.
      */
-    private fun keepForScreen(image: android.media.Image, rowStride: Int) {
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastPreviewAt < PREVIEW_INTERVAL_MS) return
-        lastPreviewAt = now
-        val width = image.width
-        val height = image.height
+    private fun keepTheFrame(image: android.media.Image, rowStride: Int) {
         val padded = rowStride / 4
+        val height = image.height
         val full = frame?.takeIf { it.width == padded && it.height == height }
             ?: Bitmap.createBitmap(padded, height, Bitmap.Config.ARGB_8888).also { frame = it }
         image.planes[0].buffer.rewind()
         synchronized(frameLock) { full.copyPixelsFromBuffer(image.planes[0].buffer) }
+    }
+
+    /**
+     * The newest frame, small, for the screen: the scaling is the expensive part and twice
+     * a second is plenty to look at.
+     */
+    private fun keepForScreen(width: Int, height: Int) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastPreviewAt < PREVIEW_INTERVAL_MS) return
+        lastPreviewAt = now
+        val full = frame ?: return
+        val padded = full.width
         val scale = PREVIEW_WIDTH.toFloat() / width
-        val visible = if (padded == width) full else Bitmap.createBitmap(full, 0, 0, width, height)
+        val visible = synchronized(frameLock) {
+            if (padded == width) full else Bitmap.createBitmap(full, 0, 0, width, height)
+        }
         val small = Bitmap.createScaledBitmap(visible, PREVIEW_WIDTH, (height * scale).toInt(), true)
         if (visible !== full) visible.recycle()
         preview?.recycle()
@@ -241,28 +260,29 @@ class CaptureService : Service() {
         state.value = state.value.copy(preview = small)
     }
 
-    /** Another look while there is nothing to read (see [LOOKING_INTERVAL_MS]). */
-    private val again = Runnable {
-        lastReadAt = 0L
-        askForARead()
-    }
-
-    /** The read that follows a screen going quiet (see [SETTLE_MS]). */
-    private val settle = Runnable {
-        lastReadAt = 0L
-        askForARead()
-    }
+    /** The tick: the newest frame through the vision, [TICK_MS] after the last. */
+    private val again = Runnable { askForARead() }
 
     /**
-     * Ask the vision for the newest frame, unless it is still busy with the last one. The
-     * display only hands us a frame when something changes, so a board sitting still
-     * produces none: the settle read catches the moment a move has finished animating.
+     * Ask the vision for the newest frame, unless it is still busy with the last one.
+     *
+     * The display hands us a frame only when the screen changes, so a board sitting still
+     * produces none and the tick is what keeps the pipeline running over it. That is not a
+     * phone quirk to be worked around at some cheaper rate: the desktop's loop runs at ten
+     * frames a second and everything downstream counts in those frames -- the tracker's
+     * three misses before it drops a lock and its re-fit every ten, the reconciler's memory
+     * of a covered cell, how long a cell may stay unexplained before a resync. Reading a
+     * couple of times a second stretched every one of them sevenfold, and a board that had
+     * locked a few pixels out stayed that way through four moves. So the phone ticks at the
+     * rate those constants were written for. What it does not do is the expensive part: the
+     * change gate sits on the board's own region and a tick that finds nothing new costs a
+     * handful of milliseconds.
      */
     private fun askForARead() {
-        handler?.removeCallbacks(settle)
-        handler?.postDelayed(settle, SETTLE_MS)
+        handler?.removeCallbacks(again)
+        handler?.postDelayed(again, TICK_MS)
         val now = SystemClock.elapsedRealtime()
-        if (now - lastReadAt < READ_INTERVAL_MS) return
+        if (now - lastReadAt < TICK_MS) return
         // Our own screens are not a game: see SidecoachApp.inFront.
         if (SidecoachApp.inFront) return
         synchronized(frameLock) {
@@ -290,16 +310,6 @@ class CaptureService : Service() {
             copy.recycle()
             if (outcome == null) return
             state.value = state.value.copy(reading = outcome)
-            // The display sends a frame only when something changes, so a board sitting
-            // still gives one chance and no more. While there is nothing to read -- no
-            // board, or a board whose theme is not learned yet -- the last frame is read
-            // again on a timer, as the desktop's capture loop reads every tick. Once a
-            // position is coming out, frames arrive when the board changes, which is
-            // exactly when there is anything new to see, and the timer stops.
-            if (outcome.fen == null) {
-                handler?.removeCallbacks(again)
-                handler?.postDelayed(again, LOOKING_INTERVAL_MS)
-            }
             val now = SystemClock.elapsedRealtime()
             if (now - lastOutcomeAt > 5000) {
                 lastOutcomeAt = now
@@ -328,7 +338,6 @@ class CaptureService : Service() {
         runCatching { display?.release() }
         runCatching { reader?.close() }
         runCatching { projection?.stop() }
-        handler?.removeCallbacks(settle)
         handler?.removeCallbacks(again)
         thread?.quitSafely()
         display = null
@@ -408,25 +417,12 @@ class CaptureService : Service() {
         private const val PREVIEW_WIDTH = 360
         private const val PREVIEW_INTERVAL_MS = 500L
 
-        /** How often a frame goes through the vision: a board changes when a piece moves. */
-        private const val READ_INTERVAL_MS = 500L
-
-        /** Quiet for this long and the last frame is read once more. */
-        private const val SETTLE_MS = 700L
-
         /**
-         * While there is no board or no theme, the last frame is read again this often.
-         *
-         * The desktop's loop runs at ten frames a second and its tracker counts in frames:
-         * twenty of them before a full search is tried again after one failed, three before
-         * the cheap one is. At a read a second those two seconds became twenty, and a board
-         * that appeared while the tracker was backing off went unseen for a third of a
-         * minute -- long enough to miss the start position and the game with it. So while
-         * there is nothing to read the phone ticks at the rate those constants were written
-         * for. A read takes as long as it takes and the next is not asked for until it is
-         * done, so this is a ceiling, not a promise.
+         * The desktop's ten frames a second, which is what everything downstream counts in.
+         * A read takes as long as it takes and the next is not asked for until it is done,
+         * so this is a ceiling, not a promise.
          */
-        private const val LOOKING_INTERVAL_MS = 100L
+        private const val TICK_MS = 100L
 
         private val state = MutableStateFlow(State())
         val capture: StateFlow<State> = state.asStateFlow()

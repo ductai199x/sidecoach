@@ -46,6 +46,20 @@ class Engine(
 ) : AutoCloseable {
 
     private var process: Process? = null
+
+    /**
+     * The engine process's id. Android's `Process` has no `pid()` on every release this app
+     * runs on; the field behind it has been called `pid` since the beginning.
+     */
+    private val enginePid: Int?
+        get() {
+            val current = process ?: return null
+            return runCatching {
+                val field = current.javaClass.getDeclaredField("pid")
+                field.isAccessible = true
+                field.getInt(current)
+            }.getOrNull()
+        }
     private var writer: Writer? = null
     private var reader: BufferedReader? = null
     private val lock = ReentrantLock()
@@ -55,6 +69,22 @@ class Engine(
     /** What the engine calls itself, for the log. */
     var name: String = binary.name
         private set
+
+    /**
+     * The engine's own CPU time in milliseconds, or 0 while it is not running. It is a
+     * separate process, so the app's /proc/self/stat does not count it and a profile that
+     * reads only that one sees the vision and none of the search.
+     */
+    fun cpuMs(): Long {
+        val pid = enginePid ?: return 0
+        return try {
+            val stat = File("/proc/$pid/stat").readText()
+            val after = stat.substring(stat.lastIndexOf(')') + 2).split(" ")
+            (after[11].toLong() + after[12].toLong()) * 10
+        } catch (exc: Exception) {
+            0
+        }
+    }
 
     fun open() {
         if (process != null) return

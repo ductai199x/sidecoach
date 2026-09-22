@@ -30,6 +30,8 @@ class CaptureStats(private val context: Context, private val log: File) {
         val copyP95: Int = 0,
         val frameKb: Int = 0,
         val cpuPercent: Double = 0.0,
+        /** The engine's own process, which /proc/self/stat cannot see. */
+        val engineCpuPercent: Double = 0.0,
         val batteryPercent: Int = -1,
         val batteryMa: Int = 0,
         val thermal: String = "?",
@@ -56,6 +58,15 @@ class CaptureStats(private val context: Context, private val log: File) {
         frames++
     }
 
+    /**
+     * The engine's CPU time in milliseconds, when there is an engine. It runs in its own
+     * process, so /proc/self/stat cannot see it and a profile that reads only that one sees
+     * the vision and none of the search.
+     */
+    var engineCpu: () -> Long = { 0 }
+
+    private var engineAtWindow = 0L
+
     /** A frame the reader had ready and the throttle skipped. */
     @Synchronized
     fun skipped() {
@@ -71,6 +82,7 @@ class CaptureStats(private val context: Context, private val log: File) {
         val now = SystemClock.elapsedRealtime()
         val windowS = (now - windowBegan) / 1000.0
         val cpuNow = processCpuMs()
+        val engineNow = engineCpu()
         val snapshot = Snapshot(
             elapsedS = (now - began) / 1000.0,
             frames = frames,
@@ -84,6 +96,8 @@ class CaptureStats(private val context: Context, private val log: File) {
             frameKb = frameBytes / 1024,
             // Of one core: 100% means this process kept a core busy for the window.
             cpuPercent = if (windowS > 0) (cpuNow - cpuAtWindow) / (windowS * 10.0) else 0.0,
+            engineCpuPercent =
+                if (windowS > 0) (engineNow - engineAtWindow) / (windowS * 10.0) else 0.0,
             batteryPercent = batteryPercent(),
             batteryMa = batteryMilliamps(),
             thermal = thermalWord(),
@@ -94,6 +108,7 @@ class CaptureStats(private val context: Context, private val log: File) {
         dropped = 0
         windowBegan = now
         cpuAtWindow = cpuNow
+        engineAtWindow = engineNow
         append(snapshot)
         return snapshot
     }
@@ -111,6 +126,7 @@ class CaptureStats(private val context: Context, private val log: File) {
             .put("copy_p95", s.copyP95)
             .put("frame_kb", s.frameKb)
             .put("cpu_percent", round2(s.cpuPercent))
+            .put("engine_cpu_percent", round2(s.engineCpuPercent))
             .put("battery_percent", s.batteryPercent)
             .put("battery_ma", s.batteryMa)
             .put("thermal", s.thermal)

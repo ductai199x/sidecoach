@@ -27,6 +27,9 @@ class Assessing(private val analyser: Analyser?) {
 
     val on: Boolean get() = analyser != null
 
+    /** The engine process's CPU time in milliseconds; 0 when there is no engine. */
+    fun engineCpuMs(): Long = analyser?.annotator?.engine?.cpuMs() ?: 0
+
     fun submit(event: Event) {
         val worker = analyser ?: return
         when (event) {
