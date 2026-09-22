@@ -187,6 +187,21 @@ credential store through `keyring`, with `.env` still honoured for development. 
 grows `--data-dir` and the environment variable `SIDECOACH_DATA_DIR`; `load_settings`
 already honours `SIDECOACH_CONFIG`.
 
+### 2.1 Where everything lives (audited 2026-09-21 on both platforms)
+
+| What | Windows | Linux | Written by | Removed by |
+|---|---|---|---|---|
+| The app: `sidecoach(.exe)`, the embedded interpreter, the uninstaller | `%LOCALAPPDATA%\Sidecoach\` | `/usr/bin/sidecoach`, `/usr/lib/Sidecoach/python/`, the `.desktop` entry and icons under `/usr/share/` (the AppImage: nothing installed) | the installer / dpkg | the uninstaller / `apt remove`; nothing else is ever written there (the bytecode cache goes to the data folder, `-Xpycache_prefix`) |
+| Data: the models (`models/hf`, `models/kokoro`), Stockfish (`tools/`), the openings, the CUDA pack (`packs/cuda/<n>`), the profile and puzzle databases, the theme cache, `pycache/`, `sidecar.log`, `panel.lock`, `dumps/` (File > Dump only) | `%LOCALAPPDATA%\dev.sidecoach.desktop\data\` | `~/.local/share/dev.sidecoach.desktop/data/` | the sidecar (first-run setup, sessions) | the person, by deleting the folder: the uninstaller keeps it on purpose (4.9 GB of downloads and the player's profile) |
+| The webview's own storage and cache | `…\dev.sidecoach.desktop\EBWebView\` (WebView2) | `~/.local/share/dev.sidecoach.desktop/` beside `data/` (WebKitGTK: `WebKitCache`, `localstorage`, `storage`, …) | the webview | with the folder above |
+| Settings: `sidecoach.toml` (the sidecar's), `shell.json` (closing, start with the system) | `%APPDATA%\dev.sidecoach.desktop\` | `~/.config/dev.sidecoach.desktop/` | the settings window | with the folder |
+| API keys | the Windows Credential Manager | the Secret Service (a keyring daemon) | the settings window | the settings window ("clear") |
+| Registry / desktop integration | the Uninstall key, the Start-menu and desktop shortcuts | the `.desktop` entry, the hicolor icons | the installer | the uninstaller (verified: gone after `/S`) |
+| Development only, never by the app | `%TEMP%` scratch of the scripts, `~\sidecoach-packs` (the pack to publish), `~\sidecoach-recordings` | `~/sidecoach` (the clone), `~/packs`, `~/.cache/tauri` (the packer) | the scripts, me | me |
+
+Nothing is written outside these places; the audit found two stale temp files and the pack
+script's empty staging folder, all removed, and the script fixed.
+
 ## 3. The menu bar and the settings
 
 Menus (decided; every item also reachable in the browser host):
