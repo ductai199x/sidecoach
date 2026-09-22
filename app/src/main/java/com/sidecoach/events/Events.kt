@@ -111,6 +111,68 @@ class MoveAssessment(
     val accuracy: Double? = null,
 ) : Event()
 
+// Coach and UI
+
+/**
+ * How much of what the analysis knows may reach the model, from DESIGN.md section 5.5.
+ * Hiding is by construction: the level decides which facts are shown at all.
+ */
+enum class DisclosureLevel(val value: Int) {
+    SILENT(0),
+    QUESTION(1),
+    THEME(2),
+    REGION(3),
+    PIECE(4),
+    CANDIDATE(5),
+    LINE(6),
+    ;
+
+    operator fun compareTo(other: Int): Int = value.compareTo(other)
+
+    companion object {
+        fun of(value: Int): DisclosureLevel = entries.first { it.value == value }
+    }
+}
+
+enum class Trigger(val slug: String) {
+    USER_ASK("user_ask"),
+    POST_MISTAKE("post_mistake"),
+    POST_MOVE("post_move"),
+    DECISIVE_QUESTION("decisive_question"),
+    STUCK("stuck"),
+    REVIEW("review"),
+}
+
+class UserUtterance(val text: String, val source: String = "text") : Event()
+
+/**
+ * A mark on the board that goes with a coach message: what the words are about.
+ *
+ * `kind` is "square" (a highlight), "ring" (around a piece) or "arrow" (from, to); `squares`
+ * holds one name, or two for an arrow. `color` is a role, not a hue -- good / warn / bad /
+ * threat / focus / mention / region / line -- so the page keeps the palette. Marks are built
+ * from the same disclosure-filtered facts the message was written from, so a mark never shows
+ * more than the words do.
+ */
+data class Annotation(
+    val kind: String,
+    val squares: List<String>,
+    val color: String = "focus",
+    val opacity: Double = 1.0,
+    val label: String? = null,
+)
+
+class CoachMessage(
+    val text: String,
+    val level: DisclosureLevel,
+    val trigger: Trigger,
+    val gameId: String? = null,
+    val ply: Int? = null,
+    /** The position the message is about, so a panel can show the marks on the right board. */
+    val fen: String? = null,
+    val annotations: List<Annotation> = emptyList(),
+) : Event()
+
 class ClockObservation(
     val whiteMs: Int? = null,
     val blackMs: Int? = null,

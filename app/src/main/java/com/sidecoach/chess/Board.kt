@@ -1021,6 +1021,83 @@ class Board {
         return san.toString()
     }
 
+    /**
+     * A move from its SAN, or null when the text names no legal move or names more than one.
+     *
+     * A parser, not a comparison with what [san] would write: python-chess accepts "Nxf7"
+     * for a knight moving to an empty f7, and the coach's own prose is read back through
+     * this, so a mark drawn from a sentence has to resolve the same way.
+     */
+    fun parseSan(text: String): Move? {
+        val san = text.trim()
+        if (san in listOf("O-O", "O-O+", "O-O#", "0-0", "0-0+", "0-0#")) {
+            var found: Move? = null
+            generateCastlingMoves { if (found == null && isKingsideCastling(it)) found = it }
+            return found
+        }
+        if (san in listOf("O-O-O", "O-O-O+", "O-O-O#", "0-0-0", "0-0-0+", "0-0-0#")) {
+            var found: Move? = null
+            generateCastlingMoves { if (found == null && isQueensideCastling(it)) found = it }
+            return found
+        }
+        val match = SAN_REGEX.matchEntire(san) ?: return null
+
+        // The target square. Our own pieces are masked out to exclude castling moves.
+        val toSquare = parseSquare(match.groupValues[4])
+        val toMask = BB_SQUARES[toSquare] and occupiedCo[if (turn) 1 else 0].inv()
+
+        val promotionText = match.groupValues[5]
+        val promotion = if (promotionText.isEmpty()) {
+            0
+        } else {
+            PIECE_SYMBOLS.indexOf(promotionText.last().lowercaseChar().toString())
+        }
+
+        var fromMask = BB_ALL
+        val fileText = match.groupValues[2]
+        val rankText = match.groupValues[3]
+        if (fileText.isNotEmpty()) fromMask = fromMask and BB_FILES[FILE_NAMES.indexOf(fileText[0])]
+        if (rankText.isNotEmpty()) fromMask = fromMask and BB_RANKS[rankText.toInt() - 1]
+
+        val pieceText = match.groupValues[1]
+        if (pieceText.isNotEmpty()) {
+            val pieceType = PIECE_SYMBOLS.indexOf(pieceText.lowercase())
+            fromMask = fromMask and piecesMask(pieceType, turn)
+        } else if (fileText.isNotEmpty() && rankText.isNotEmpty()) {
+            // A fully specified move, even one that is not a pawn move.
+            val from = square(FILE_NAMES.indexOf(fileText[0]), rankText.toInt() - 1)
+            val move = findMove(from, toSquare, promotion)
+            return if (move != null && move.promotion == promotion) move else null
+        } else {
+            fromMask = fromMask and pawns
+            // A pawn capture needs its file; without one the pawn is on the target's file.
+            if (fileText.isEmpty()) fromMask = fromMask and BB_FILES[squareFile(toSquare)]
+        }
+
+        var matched: Move? = null
+        var ambiguous = false
+        generateLegalMoves(fromMask, toMask) { move ->
+            if (move.promotion == promotion) {
+                if (matched != null) ambiguous = true
+                if (matched == null) matched = move
+            }
+        }
+        if (ambiguous) return null
+        return matched
+    }
+
+    /** `find_move`: the legal move between two squares, promoting to a queen by default. */
+    fun findMove(from: Int, to: Int, promotion: Int = 0): Move? {
+        var wanted = promotion
+        if (wanted == 0 && pawns and BB_SQUARES[from] != BB_EMPTY &&
+            BB_SQUARES[to] and BB_BACKRANKS != BB_EMPTY
+        ) {
+            wanted = QUEEN
+        }
+        val move = fromChess960(from, to, wanted)
+        return if (isLegal(move)) move else null
+    }
+
     fun boardFen(): String {
         val builder = StringBuilder()
         var empty = 0
@@ -1103,6 +1180,10 @@ class Board {
     }
 
     companion object {
+        /** python-chess's own SAN pattern, so the same texts parse and the same ones do not. */
+        private val SAN_REGEX =
+            Regex("([NBKRQ])?([a-h])?([1-8])?[\\-x]?([a-h][1-8])(=?[nbrqkNBRQK])?[+#]?")
+
         /** a8..h8, a7..h7, ... a1..h1: the order a FEN is written in. */
         val SQUARES_180 = IntArray(64) { i -> (7 - i / 8) * 8 + (i % 8) }
     }
