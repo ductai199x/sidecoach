@@ -105,7 +105,7 @@ def manifest(tag: str, versions: dict[str, str]) -> dict:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--check", action="store_true", help="compare with the shipped manifests")
     args = ap.parse_args()
     versions = pins()

@@ -105,7 +105,7 @@ def tile(mark: Image.Image, size: int = 1024, radius: int = 224, fill: float = 0
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("render", type=Path)
     parser.add_argument("--out", type=Path, default=ROOT / "desktop" / "brand")
     args = parser.parse_args()

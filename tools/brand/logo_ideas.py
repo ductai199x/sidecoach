@@ -226,7 +226,7 @@ def contact_sheet(folder: Path, labels: list[tuple[str, Path]], cell: int = 256)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--model", default="gpt-image-2.5-sunburst")
     parser.add_argument("--quality", default="medium", choices=list(TOKENS_PER_IMAGE))
     parser.add_argument("--size", default="1024x1024")
