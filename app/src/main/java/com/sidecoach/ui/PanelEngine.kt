@@ -1,5 +1,6 @@
 package com.sidecoach.ui
 
+import android.os.SystemClock
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
@@ -61,6 +62,14 @@ object PanelEngine {
     private const val KEPT = 3000
 
     private val lock = Any()
+
+    /**
+     * When the session began. `ui/log.py` keeps a `time.monotonic()` of its own and stamps
+     * each record with the seconds since; the page prints that as mm:ss.s, so an epoch here
+     * would be both wrong and too wide for the column.
+     */
+    private val began = SystemClock.elapsedRealtime()
+
     private val records = ArrayDeque<Record>()
     private var cursor = 0
     private val state = LinkedHashMap<String, Any?>()
@@ -114,6 +123,8 @@ object PanelEngine {
             state["dictation"] = mapOf("text" to "", "live" to false, "sends_at" to null)
             state["voice_detail"] = "no voice on the phone yet"
             state["stt_detail"] = "no speech recognition on the phone yet"
+            // Nothing to listen with, so the composer leaves the listening button out.
+            state["stt_ready"] = false
             state["recording_dir"] = null
             state["record_wanted"] = false
             state["coach_on"] = false
@@ -149,11 +160,17 @@ object PanelEngine {
 
     // ---- what the session tells it -----------------------------------------------------
 
+    /** Seconds since the session began, rounded as Python's `round(x, 3)` rounds. */
+    private fun sinceStart(): Double =
+        BigDecimal((SystemClock.elapsedRealtime() - began) / 1000.0)
+            .setScale(3, RoundingMode.HALF_EVEN)
+            .toDouble()
+
     fun emit(chan: String, level: String, text: String, data: JSONObject? = null) {
         synchronized(lock) {
             cursor += 1
             records.addLast(
-                Record(cursor, System.currentTimeMillis() / 1000.0, chan, level, text, data)
+                Record(cursor, sinceStart(), chan, level, text, data)
             )
             while (records.size > KEPT) records.removeFirst()
         }

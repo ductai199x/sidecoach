@@ -80,23 +80,31 @@ class LocalServer(
             } catch (_: IOException) {
                 return
             }
-            pool.execute { serve(client) }
+            pool.execute {
+                try {
+                    serve(client)
+                } catch (_: IOException) {
+                    // The page navigated away and dropped the socket: ordinary.
+                } catch (exc: Exception) {
+                    Log.w(TAG, "a connection ended badly: $exc")
+                } finally {
+                    runCatching { client.close() }
+                }
+            }
         }
     }
 
     private fun serve(client: Socket) {
-        client.use {
-            it.tcpNoDelay = true
-            val input = it.getInputStream().buffered()
-            val output = BufferedOutputStream(it.getOutputStream())
-            // Keep the connection: the page polls four times a second and the panel's
-            // assets come in a burst when it loads.
-            while (running) {
-                val request = readRequest(input) ?: return
-                val reply = answer(request)
-                write(output, reply)
-                output.flush()
-            }
+        client.tcpNoDelay = true
+        val input = client.getInputStream().buffered()
+        val output = BufferedOutputStream(client.getOutputStream())
+        // Keep the connection: the page polls four times a second and the panel's assets
+        // come in a burst when it loads.
+        while (running) {
+            val request = readRequest(input) ?: return
+            val reply = answer(request)
+            write(output, reply)
+            output.flush()
         }
     }
 

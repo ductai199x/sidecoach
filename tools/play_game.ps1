@@ -32,12 +32,19 @@ if (-not $SkipInstall) {
 Start-Sleep -Seconds 3
 
 # Start watching: the button, then the system's consent dialog.
-function Tap-Text([string]$pattern) {
-    & $adb -s $Serial shell uiautomator dump /sdcard/ui.xml | Out-Null
-    $xml = & $adb -s $Serial shell cat /sdcard/ui.xml
-    $match = [regex]::Match($xml, "text=`"[^`"]*$pattern[^`"]*`"[^>]*bounds=`"\[(\d+),(\d+)\]\[(\d+),(\d+)\]`"")
-    if (-not $match.Success) {
-        $match = [regex]::Match($xml, "bounds=`"\[(\d+),(\d+)\]\[(\d+),(\d+)\]`"[^>]*text=`"[^`"]*$pattern[^`"]*`"")
+function Tap-Text([string]$pattern, [int]$Tries = 1) {
+    # The panel is a WebView: for the first seconds of a cold start its accessibility tree
+    # is empty, so a button that is certainly coming is worth waiting for.
+    $match = $null
+    for ($try = 0; $try -lt $Tries; $try++) {
+        if ($try -gt 0) { Start-Sleep -Seconds 2 }
+        & $adb -s $Serial shell uiautomator dump /sdcard/ui.xml | Out-Null
+        $xml = (& $adb -s $Serial shell cat /sdcard/ui.xml) -join ""
+        $match = [regex]::Match($xml, "text=`"[^`"]*$pattern[^`"]*`"[^>]*bounds=`"\[(\d+),(\d+)\]\[(\d+),(\d+)\]`"")
+        if (-not $match.Success) {
+            $match = [regex]::Match($xml, "bounds=`"\[(\d+),(\d+)\]\[(\d+),(\d+)\]`"[^>]*text=`"[^`"]*$pattern[^`"]*`"")
+        }
+        if ($match.Success) { break }
     }
     if (-not $match.Success) { Write-Host "  (no '$pattern' on screen)"; return $false }
     $x = ([int]$match.Groups[1].Value + [int]$match.Groups[3].Value) / 2
@@ -47,7 +54,7 @@ function Tap-Text([string]$pattern) {
 }
 
 Write-Host "starting the watcher..."
-Tap-Text "Start watching" | Out-Null
+Tap-Text "Start" -Tries 10 | Out-Null   # the panel page's own button
 Start-Sleep -Seconds 2
 foreach ($label in @("Entire screen", "Start now", "START NOW", "Allow")) {
     if (Tap-Text $label) { Start-Sleep -Seconds 1 }

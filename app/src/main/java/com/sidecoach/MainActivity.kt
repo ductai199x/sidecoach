@@ -5,19 +5,27 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.sidecoach.capture.CaptureService
 import com.sidecoach.ui.LocalServer
 import com.sidecoach.ui.PanelApi
 import com.sidecoach.ui.PanelEngine
+import com.sidecoach.ui.SettingsApi
+import com.sidecoach.ui.SettingsStore
 import com.sidecoach.ui.SetupApi
+import java.io.File
 
 /**
  * The panel, in a window.
@@ -67,9 +75,16 @@ class MainActivity : ComponentActivity() {
         PanelEngine.onStart = { runOnUiThread { startCapture() } }
         PanelEngine.onStop = { runOnUiThread { CaptureService.stop(this) } }
 
-        val port = LocalServer(assets, api = PanelApi(versionName(), SetupApi(this)))
-            .also { server = it }
-            .start()
+        val store = SettingsStore(this)
+        val port = LocalServer(
+            assets,
+            api = PanelApi(
+                versionName(),
+                SetupApi(this),
+                SettingsApi(store),
+                themes = File(filesDir, "themes"),
+            ),
+        ).also { server = it }.start()
 
         val view = WebView(this)
         web = view
@@ -77,10 +92,37 @@ class MainActivity : ComponentActivity() {
             javaScriptEnabled = true
             // The page remembers its pane sizes and switches in localStorage.
             domStorageEnabled = true
+            // Honour the page's own <meta name="viewport">: without this the WebView lays
+            // the page out at whatever width its widest element wants, and the right edge
+            // of the settings page was off the screen with no way to scroll to it.
+            useWideViewPort = true
+            loadWithOverviewMode = true
             // Everything it loads comes from the local server; nothing else is reachable.
             allowFileAccess = false
             allowContentAccess = false
             mediaPlaybackRequiresUserGesture = false
+        }
+        view.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?,
+            ): Boolean {
+                val url = request?.url ?: return false
+                // The panel's own routes stay in the window; a link out goes to the browser.
+                if (url.host == "127.0.0.1" || url.host == "localhost") return false
+                runCatching {
+                    startActivity(Intent(Intent.ACTION_VIEW, url))
+                }.onFailure { Log.i(TAG, "nothing opens $url") }
+                return true
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?,
+            ) {
+                Log.w(TAG, "the page could not load ${request?.url}: ${error?.description}")
+            }
         }
         view.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(message: ConsoleMessage): Boolean {
@@ -94,6 +136,20 @@ class MainActivity : ComponentActivity() {
         }
         setContentView(view)
         view.loadUrl("http://127.0.0.1:$port/")
+
+        // Back walks the page's own history -- out of the settings, back to the panel --
+        // and leaves the app only when there is nowhere left to go.
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                val page = web
+                if (page != null && page.canGoBack()) {
+                    page.goBack()
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        })
     }
 
     override fun onDestroy() {

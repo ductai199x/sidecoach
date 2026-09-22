@@ -1,6 +1,7 @@
 package com.sidecoach.ui
 
 import android.util.Log
+import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -12,7 +13,13 @@ import org.json.JSONObject
  * room say they are not here -- rather than pretending, so the page shows them off instead of
  * hanging on a promise.
  */
-class PanelApi(private val version: String, private val setup: SetupApi) : LocalServer.Api {
+class PanelApi(
+    private val version: String,
+    private val setup: SetupApi,
+    private val settings: SettingsApi,
+    /** Where the vision keeps what it has learned; `Clear caches` empties it. */
+    private val themes: File,
+) : LocalServer.Api {
 
     override fun handle(
         method: String,
@@ -126,8 +133,15 @@ class PanelApi(private val version: String, private val setup: SetupApi) : Local
                 }
             )
 
-            path == "/api/reset_profile" || path == "/api/clear_caches" || path == "/api/correct" ->
+            path == "/api/clear_caches" -> ok(clearCaches())
+
+            path == "/api/reset_profile" -> {
+                // The player model is not on the phone yet; saying so beats a silent no.
+                PanelEngine.emit("user", "info", "profile: there is no player model on the phone yet")
                 ok(JSONObject().put("ok", false))
+            }
+
+            path == "/api/correct" -> ok(JSONObject().put("ok", false))
 
             path.startsWith("/api/puzzle/") -> ok(
                 JSONObject().apply { put("ok", false); put("error", "no puzzle room on the phone yet") }
@@ -138,7 +152,8 @@ class PanelApi(private val version: String, private val setup: SetupApi) : Local
             path == "/api/setup/cancel" -> ok(setup.cancel())
             path == "/api/setup/remove_pack" -> ok(JSONObject().put("ok", false))
 
-            path == "/api/settings" -> ok(JSONObject().put("ok", false))
+            path == "/api/settings" && method == "GET" -> ok(settings.describe())
+            path == "/api/settings" -> ok(settings.update(json))
 
             else -> {
                 Log.i(TAG, "no route for $method $path")
@@ -164,6 +179,30 @@ class PanelApi(private val version: String, private val setup: SetupApi) : Local
     }
 
     private fun done(): JSONObject = JSONObject().put("ok", true)
+
+    /**
+     * `maintenance.clear_caches` for the phone: the theme files go, and what was done is
+     * said in words on the `user` channel, as the desktop says it. There is no puzzle store
+     * here to rebuild.
+     */
+    private fun clearCaches(): JSONObject {
+        val done = JSONArray()
+        val files = themes.listFiles { f: File -> f.name.startsWith("theme-") && f.name.endsWith(".bin") }
+            ?.sortedBy { it.name }
+            .orEmpty()
+        for (file in files) {
+            if (runCatching { file.delete() }.getOrDefault(false)) {
+                val line = "removed ${file.name}"
+                done.put(line)
+                PanelEngine.emit("user", "warn", "cache: $line")
+            }
+        }
+        if (done.length() == 0) PanelEngine.emit("user", "info", "cache: nothing to clear")
+        return JSONObject().apply {
+            put("ok", true)
+            put("done", done)
+        }
+    }
 
     private fun ok(json: JSONObject) = LocalServer.Reply(json.toString())
 
