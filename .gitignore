@@ -16,3 +16,5 @@ local.properties
 /data/
 # Rendered by tools/make_game.py for the on-device replay.
 app/src/debug/assets/game/
+# Fetched by tools/fetch_stockfish.py: the engine's source and its network.
+third_party/

@@ -33,8 +33,8 @@ AWKWARD = [
     "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
     "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2",  # en passant available
     "8/8/8/8/k1pP3R/8/8/4K3 b - d3 0 1",  # en passant that would skewer the king
-    "7k/8/8/8/8/8/5Q2/7K b - - 0 1",  # stalemate
-    "7k/8/6QK/8/8/8/8/8 b - - 0 1",  # checkmate
+    "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1",  # stalemate
+    "7k/6Q1/6K1/8/8/8/8/8 b - - 0 1",  # checkmate
     "8/8/8/4k3/8/8/8/4K3 w - - 0 1",  # bare kings
     "8/8/8/4k3/8/8/8/4KB2 w - - 0 1",  # king and bishop
     "8/8/8/4k3/8/8/8/4KN2 w - - 0 1",  # king and knight

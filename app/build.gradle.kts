@@ -25,6 +25,20 @@ android {
         }
     }
 
+    // Stockfish, from the source tools/fetch_stockfish.py puts in third_party/. Without
+    // it the app builds and everything but the engine works, so a fresh clone is not
+    // blocked on a download.
+    if (file("src/main/cpp/CMakeLists.txt").exists() &&
+        file("../third_party/stockfish/src/uci.cpp").exists()
+    ) {
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+                version = "3.22.1"
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -43,8 +57,10 @@ android {
         noCompress += "onnx"
     }
     packaging {
-        // OpenCV ships every ABI; a phone needs one, and the emulator the other.
-        jniLibs.useLegacyPackaging = false
+        // The engine is an executable in the library directory, and a file can only be
+        // executed if it exists as a file: with the libraries left in the APK there is
+        // nothing to run. The cost is the unpacked copy on disk.
+        jniLibs.useLegacyPackaging = true
     }
 }
 
