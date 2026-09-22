@@ -201,7 +201,11 @@ The shell passes `SIDECOACH_DATA_DIR` and `SIDECOACH_CONFIG` to the sidecar.
 | Development only, never by the app | `%TEMP%` scratch of the scripts, `~\sidecoach-packs` (the pack to publish), `~\sidecoach-recordings` | `~/sidecoach` (the clone), `~/packs`, `~/.cache/tauri` (the packer) | the scripts, me | me |
 
 Nothing is written outside these places; the audit found two stale temp files and the pack
-script's empty staging folder, all removed, and the script fixed.
+script's empty staging folder, all removed, and the script fixed. Two rules that came out of
+the rename (bfeca5a): in the app the shell owns the data folder -- the settings file never
+records `data_dir`/`tools_dir`, and whatever an old file says, the sidecar takes the shell's
+-- and nothing downloads behind the person's back: the hub is offline except inside the
+setup's own fetch, which shows size, speed and time left.
 
 ## 3. The menu bar and the settings
 
