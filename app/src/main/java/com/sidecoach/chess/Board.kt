@@ -28,6 +28,9 @@ data class Piece(val pieceType: Int, val colour: Boolean) {
     }
 }
 
+/** Which of python-chess's three `parse_san` exceptions the text would have raised. */
+enum class SanFailure { INVALID, ILLEGAL, AMBIGUOUS }
+
 data class Move(val from: Int, val to: Int, val promotion: Int = 0) {
     fun uci(): String {
         // python-chess writes the null move "0000"; no real move has from == to.
@@ -47,6 +50,38 @@ data class Move(val from: Int, val to: Int, val promotion: Int = 0) {
         fun fromUci(uci: String): Move {
             if (uci == "0000") return NULL
             return fromSquares(uci)
+        }
+
+        /**
+         * `Move.from_uci`, with the exception answered by null: "e2e4", "e7e8q", "0000".
+         *
+         * A drop ("P@e4") parses to a move from a square to itself, which is never
+         * pseudo-legal -- exactly what python-chess's drop move is on a standard board.
+         */
+        fun fromUciOrNull(uci: String): Move? {
+            if (uci == "0000") return NULL
+            if (uci.length == 4 && uci[1] == '@') {
+                val drop = PIECE_SYMBOLS.indexOf(uci[0].lowercaseChar().toString())
+                val where = squareOrNull(uci.substring(2, 4))
+                if (drop <= 0 || where == null) return null
+                return Move(where, where, 0)
+            }
+            if (uci.length !in 4..5) return null
+            val from = squareOrNull(uci.substring(0, 2)) ?: return null
+            val to = squareOrNull(uci.substring(2, 4)) ?: return null
+            var promotion = 0
+            if (uci.length == 5) {
+                promotion = PIECE_SYMBOLS.indexOf(uci.substring(4, 5))
+                if (promotion <= 0) return null
+            }
+            if (from == to) return null
+            return Move(from, to, promotion)
+        }
+
+        private fun squareOrNull(name: String): Int? {
+            val file = FILE_NAMES.indexOf(name[0])
+            val rank = RANK_NAMES.indexOf(name[1])
+            return if (file < 0 || rank < 0) null else square(file, rank)
         }
 
         private fun fromSquares(uci: String): Move = Move(
@@ -1049,19 +1084,32 @@ class Board {
      * for a knight moving to an empty f7, and the coach's own prose is read back through
      * this, so a mark drawn from a sentence has to resolve the same way.
      */
-    fun parseSan(text: String): Move? {
-        val san = text.trim()
-        if (san in listOf("O-O", "O-O+", "O-O#", "0-0", "0-0+", "0-0#")) {
+    fun parseSan(text: String): Move? = parseSanFully(text).first
+
+    /**
+     * The same parse, with which of python-chess's three failures it was.
+     *
+     * `coach/claims.py` tells them apart -- an ambiguous move asks which piece, an illegal
+     * one is flatly false, an unreadable one is not a move at all -- so what `parse_san`
+     * raises is returned here instead of being flattened into null.
+     */
+    fun parseSanFully(san: String): Pair<Move?, SanFailure?> {
+        if (san in KINGSIDE_SAN) {
             var found: Move? = null
             generateCastlingMoves { if (found == null && isKingsideCastling(it)) found = it }
-            return found
+            return if (found != null) found to null else null to SanFailure.ILLEGAL
         }
-        if (san in listOf("O-O-O", "O-O-O+", "O-O-O#", "0-0-0", "0-0-0+", "0-0-0#")) {
+        if (san in QUEENSIDE_SAN) {
             var found: Move? = null
             generateCastlingMoves { if (found == null && isQueensideCastling(it)) found = it }
-            return found
+            return if (found != null) found to null else null to SanFailure.ILLEGAL
         }
-        val match = SAN_REGEX.matchEntire(san) ?: return null
+        val match = SAN_REGEX.matchEntire(san)
+        if (match == null) {
+            // The null move, written four ways; anything else is not a move at all.
+            if (san in NULL_SAN) return Move.NULL to null
+            return null to SanFailure.INVALID
+        }
 
         // The target square. Our own pieces are masked out to exclude castling moves.
         val toSquare = parseSquare(match.groupValues[4])
@@ -1088,7 +1136,11 @@ class Board {
             // A fully specified move, even one that is not a pawn move.
             val from = square(FILE_NAMES.indexOf(fileText[0]), rankText.toInt() - 1)
             val move = findMove(from, toSquare, promotion)
-            return if (move != null && move.promotion == promotion) move else null
+            return if (move != null && move.promotion == promotion) {
+                move to null
+            } else {
+                null to SanFailure.ILLEGAL
+            }
         } else {
             fromMask = fromMask and pawns
             // A pawn capture needs its file; without one the pawn is on the target's file.
@@ -1103,8 +1155,9 @@ class Board {
                 if (matched == null) matched = move
             }
         }
-        if (ambiguous) return null
-        return matched
+        if (ambiguous) return null to SanFailure.AMBIGUOUS
+        val found = matched
+        return if (found != null) found to null else null to SanFailure.ILLEGAL
     }
 
     /** `find_move`: the legal move between two squares, promoting to a queen by default. */
@@ -1201,6 +1254,11 @@ class Board {
     }
 
     companion object {
+        private val KINGSIDE_SAN = listOf("O-O", "O-O+", "O-O#", "0-0", "0-0+", "0-0#")
+        private val QUEENSIDE_SAN =
+            listOf("O-O-O", "O-O-O+", "O-O-O#", "0-0-0", "0-0-0+", "0-0-0#")
+        private val NULL_SAN = listOf("--", "Z0", "0000", "@@@@")
+
         /** python-chess's own SAN pattern, so the same texts parse and the same ones do not. */
         private val SAN_REGEX =
             Regex("([NBKRQ])?([a-h])?([1-8])?[\\-x]?([a-h][1-8])(=?[nbrqkNBRQK])?[+#]?")

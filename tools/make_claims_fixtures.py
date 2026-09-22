@@ -1,0 +1,387 @@
+"""Record what the desktop makes of a claim and of a coach draft, for the Kotlin to match.
+
+`coach/claims.py` runs in both directions and only the extraction uses a model:
+`parse_claims` reads a reply, `verify_claims` checks each claim against the board, and
+`check_draft` checks the coach's own sentences before they are shown. All three are pure
+functions of text, board, facts and engine lines -- so the engine here is a recorded stub
+whose lines go into the fixture, and the model replies are written out verbatim.
+
+    cd D:/chess-coaching-companion
+    uv run --no-sync python D:/sidecoach-android/tools/make_claims_fixtures.py
+"""
+
+from __future__ import annotations
+
+import csv
+import json
+import sys
+from pathlib import Path
+
+DESKTOP = Path("D:/chess-coaching-companion")
+sys.path.insert(0, str(DESKTOP))
+sys.path.insert(0, str(DESKTOP / "src"))
+
+import chess  # noqa: E402
+
+from sidecoach.analysis.score import human_expected_score  # noqa: E402
+from sidecoach.coach import claims as C  # noqa: E402
+from sidecoach.coach.disclosure import PositionFacts  # noqa: E402
+from sidecoach.events import Line  # noqa: E402
+
+OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "chess"
+PUZZLES = DESKTOP / "data" / "puzzles" / "sample.csv"
+
+
+# --- the model replies `parse_claims` has to survive -----------------------------------------
+
+REPLIES = [
+    '[{"kind": "attacks", "subject": "my knight", "target": "e5", "move": null, '
+    '"text": "my knight hits e5"}]',
+    '```json\n[{"kind": "hanging", "subject": null, "target": "the pawn on d4", '
+    '"move": null, "text": "the d4 pawn is hanging"}]\n```',
+    '```\n[{"kind":"best","subject":null,"target":null,"move":"Nf3","text":"Nf3 is best"}]\n```',
+    '<think>The student says two things, so two claims.</think>\n'
+    '[{"kind":"safe","subject":null,"target":"my knight","move":null,"text":"safe"},'
+    '{"kind":"threatens","subject":"they","target":"my rook","move":null,"text":"threat"}]',
+    '{"kind": "plan", "subject": null, "target": null, "move": null, "text": "push the h-pawn"}',
+    '{"claims": [{"kind": "other", "subject": null, "target": null, "move": null, '
+    '"text": "I am winning"}]}',
+    'Here are the claims:\n[{"kind": "defends", "subject": "the bishop", "target": "d4", '
+    '"move": null, "text": "the bishop covers d4"}]\nThat is all.',
+    '[{"kind": "nonsense", "subject": null, "target": null, "move": null, "text": "x"},'
+    '{"kind": "ATTACKS ", "subject": "  my rook  ", "target": "none", "move": "  ", '
+    '"text": "  spaced  "}]',
+    '[{"kind": "attacks", "subject": 7, "target": ["e5"], "move": false, "text": 0}]',
+    '[{"kind": 5, "text": "no kind"}, "a string", 42, null, '
+    '{"kind": "safe", "target": "null", "move": "None"}]',
+    "[]",
+    "",
+    "no json at all, just prose about the position",
+    "[{broken json",
+    '{"claims": "not a list", "kind": "best", "move": "e4", "text": "e4"}',
+    '[{"kind":"threatens","subject":"I","target":null,"move":"Qxf7#","text":"mate on f7"}]',
+    "null",
+    '   \n\n [{"kind":"hanging","subject":"the knight","target":null,"move":null,"text":"hangs"}] ',
+]
+
+
+# --- the claims every position is asked about ------------------------------------------------
+#
+# A template is (kind, subject, target, move); "@1" and "@2" stand for the position's first
+# and second legal move in SAN, so the hypothetical-move branch fires on every board.
+
+TEMPLATES = [
+    ("attacks", "my knight", "e5", None),
+    ("attacks", "my knight", "their queen", None),
+    ("attacks", "the bishop", "my king", None),
+    ("attacks", "f3", "e5", None),
+    ("attacks", "d4", "d5", None),
+    ("attacks", "my rook", "their king", None),
+    ("attacks", "I", "their queen", None),
+    ("attacks", "they", "my king", None),
+    ("attacks", "my knight", None, None),
+    ("attacks", None, "e5", None),
+    ("attacks", "the unicorn", "e5", None),
+    ("attacks", "my queen", "e4", "@1"),
+    ("attacks", "@1", "e5", None),
+    ("attacks", "white's knight", "black's pawn", None),
+    ("defends", "my knight", "e5", None),
+    ("defends", "my bishop", "my pawn", None),
+    ("defends", "the rook", "their queen", None),
+    ("defends", "e1", "e2", None),
+    ("defends", "my king", None, None),
+    ("defends", None, None, None),
+    ("defends", "my knight", "d4", "@1"),
+    ("hanging", None, "the pawn", None),
+    ("hanging", None, "my queen", None),
+    ("hanging", None, "their knight", None),
+    ("hanging", None, "e4", None),
+    ("hanging", None, "my king", None),
+    ("hanging", "my rook", None, None),
+    ("hanging", None, None, None),
+    ("hanging", None, "their queen", "@1"),
+    ("safe", None, "my knight", None),
+    ("safe", None, "my king", None),
+    ("safe", None, "e5", None),
+    ("safe", None, "my pawn", None),
+    ("safe", "d4", None, None),
+    ("safe", None, "their rook", None),
+    ("safe", None, None, None),
+    ("safe", None, "my bishop", "@2"),
+    ("threatens", "they", "my queen", None),
+    ("threatens", "they", "my king", None),
+    ("threatens", "they", "e4", None),
+    ("threatens", "they", "their pawn", None),
+    ("threatens", "I", "their queen", None),
+    ("threatens", "I", "their king", None),
+    ("threatens", "they", None, "@1"),
+    ("threatens", "I", None, "@1"),
+    ("threatens", "I", None, "Qz9"),
+    ("threatens", "they", None, "Nf3"),
+    ("threatens", "they", None, None),
+    ("threatens", "they", "my rook", None),
+    ("best", None, None, "@1"),
+    ("best", None, None, "@2"),
+    ("best", None, None, "Nf3"),
+    ("best", None, None, "Qz9"),
+    ("best", None, None, "e9"),
+    ("best", None, None, None),
+    ("best", "@1", None, None),
+    ("best", None, None, "O-O"),
+    ("plan", None, None, None),
+    ("other", "my knight", "e5", "@1"),
+]
+
+
+# --- the coach drafts every position is checked against --------------------------------------
+
+DRAFTS = [
+    "Your knight on f3 eyes e5.",
+    "The bishop on c4 is aiming at f7.",
+    "White's queen on d1 has not moved.",
+    "Their rook on a8 is still at home.",
+    "The f3-knight covers d4 and h4.",
+    "Your c4 bishop and the e4 pawn hold the centre.",
+    "The knight on f3 is pinned.",
+    "Your rook on a1 is hanging.",
+    "The pawn on e4 is loose.",
+    "The bishop on c4 is safe.",
+    "The knight on f3 forks their queen and rook.",
+    "The rook on a1 skewers the king.",
+    "The bishop on c4 is trapped.",
+    "The queen on d1 is en prise.",
+    "The knight on f3 is undefended.",
+    "The pawn on d4 is now unprotected.",
+    "Consider Nf3, then Bb5 and finally O-O.",
+    "Nxf7+ wins the exchange, and after Kxf7 you have Qh5+.",
+    "Play e8=Q and the game is over.",
+    "What about Qh5 followed by Qxf7#?",
+    "Look at f7 and e4 before you decide.",
+    "0-0-0 is also possible here.",
+    "Bb5! is the move, though a4?! is not.",
+    "The open e-file belongs to you.",
+    "The d-file is open and your rook wants it.",
+    "Take the half-open c-file.",
+    "The a-file is now half-open.",
+    "Your passed pawn on d5 decides the game.",
+    "The pawn on e4 is passed.",
+    "Your passed a-pawn is the trump.",
+    "The h-pawn is a passed pawn.",
+    "Be careful in that area1 of the board; nothing here is a move.",
+    "Your knight on f3 is pinned, the rook on a1 is hanging, and Nf3 is impossible.",
+    "Nothing concrete at all, just a feeling about the position.",
+]
+
+
+class RecordedEngine:
+    """A deterministic stand-in: the lines depend only on the position, and are written down."""
+
+    def __init__(self) -> None:
+        self.seen: dict[str, list[dict]] = {}
+
+    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+        fen = board.fen()
+        legal = list(board.legal_moves)
+        if not legal:
+            self.seen[fen] = []
+            return []
+        # Three candidate lines whose scores straddle CANDIDATE_MARGIN, so the near-equal
+        # set is sometimes one move and sometimes several. No search, but the same answer
+        # every time for the same board.
+        base = (sum(ord(c) for c in fen) % 401) - 200
+        out: list[Line] = []
+        for index in range(min(3, len(legal))):
+            pick = legal[(index * 5 + len(legal)) % len(legal)]
+            work = board.copy(stack=False)
+            work.push(pick)
+            reply = list(work.legal_moves)
+            moves = [pick.uci()]
+            if reply:
+                moves.append(reply[(index + len(reply)) % len(reply)].uci())
+            cp = base - index * (1 if index == 1 else 40)
+            out.append(
+                Line(
+                    moves=moves,
+                    depth=14,
+                    expected_score=human_expected_score(cp, None),
+                    score_cp=cp,
+                )
+            )
+        self.seen[fen] = [
+            {
+                "moves": list(one.moves),
+                "depth": one.depth,
+                "expected_score": one.expected_score,
+                "score_cp": one.score_cp,
+            }
+            for one in out
+        ]
+        return out
+
+
+def facts_for(board: chess.Board) -> PositionFacts:
+    """Candidates and a threat line that belong to this position, plus one unreadable each."""
+    legal = list(board.legal_moves)
+    candidates = [board.san(move) for move in legal[:2]] + ["Qz9"]
+    passed = board.copy(stack=False)
+    threats: list[str] = []
+    if not board.is_check():
+        passed.push(chess.Move.null())
+        threats = [passed.san(move) for move in list(passed.legal_moves)[:2]] + ["Zz9"]
+    return PositionFacts(
+        fen=board.fen(),
+        side_to_move="white" if board.turn == chess.WHITE else "black",
+        phase="middlegame",
+        candidates=candidates,
+        threats=threats,
+    )
+
+
+def facts_json(facts: PositionFacts) -> dict:
+    return {
+        "fen": facts.fen,
+        "side_to_move": facts.side_to_move,
+        "phase": facts.phase,
+        "candidates": list(facts.candidates),
+        "threats": list(facts.threats),
+    }
+
+
+def claims_for(board: chess.Board) -> list[C.Claim]:
+    legal = list(board.legal_moves)
+    sans = [board.san(move) for move in legal[:2]]
+
+    def fill(value: str | None) -> str | None:
+        if value == "@1":
+            return sans[0] if sans else None
+        if value == "@2":
+            return sans[1] if len(sans) > 1 else None
+        return value
+
+    out = []
+    for kind, subject, target, move in TEMPLATES:
+        out.append(
+            C.Claim(
+                kind=C.ClaimKind(kind),
+                subject=fill(subject),
+                target=fill(target),
+                move=fill(move),
+                text=f"{kind}: {subject} / {target} / {move}",
+            )
+        )
+    return out
+
+
+def claim_json(claim: C.Claim) -> dict:
+    return {
+        "kind": str(claim.kind),
+        "subject": claim.subject,
+        "target": claim.target,
+        "move": claim.move,
+        "text": claim.text,
+    }
+
+
+def verdicts_json(verdicts: list[C.Verdict]) -> list[dict]:
+    return [{"result": v.result, "reason": v.reason} for v in verdicts]
+
+
+def after_frames(board: chess.Board) -> list[chess.Board]:
+    """The boards along a short line, as the coach's draft check is given them."""
+    frames: list[chess.Board] = []
+    work = board.copy(stack=False)
+    for _ in range(2):
+        legal = list(work.legal_moves)
+        if not legal:
+            break
+        work.push(legal[len(legal) // 2])
+        frames.append(work.copy(stack=False))
+    return frames
+
+
+def case_for(board: chess.Board) -> dict:
+    engine = RecordedEngine()
+    facts = facts_for(board)
+    stale = PositionFacts(
+        fen=chess.Board().fen(),
+        side_to_move="white",
+        phase="opening",
+        candidates=["e4", "d4"],
+        threats=["e5"],
+    )
+    claims = claims_for(board)
+    frames = after_frames(board)
+    return {
+        "fen": board.fen(),
+        "facts": facts_json(facts),
+        "stale_facts": facts_json(stale),
+        "after": [frame.fen() for frame in frames],
+        "claims": [claim_json(claim) for claim in claims],
+        # Bare, with the facts, with the engine, and with facts that belong elsewhere.
+        "bare": verdicts_json(C.verify_claims(claims, board)),
+        "with_facts": verdicts_json(C.verify_claims(claims, board, facts=facts)),
+        "with_engine": verdicts_json(C.verify_claims(claims, board, engine=engine, depth=14)),
+        "with_stale": verdicts_json(
+            C.verify_claims(claims, board, facts=stale, engine=engine, depth=14)
+        ),
+        "drafts": [
+            {
+                "text": text,
+                "now": [
+                    {"text": p.text, "reason": p.reason} for p in C.check_draft(text, board)
+                ],
+                "line": [
+                    {"text": p.text, "reason": p.reason}
+                    for p in C.check_draft(text, board, after=frames)
+                ],
+            }
+            for text in DRAFTS
+        ],
+        "engine": engine.seen,
+    }
+
+
+def main() -> None:
+    boards = [chess.Board()]
+    opening = chess.Board()
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4", "O-O"):
+        opening.push_san(san)
+        boards.append(opening.copy(stack=False))
+    # A few settled positions: an endgame, a check, a stalemate and a mate.
+    for fen in (
+        "8/8/8/4k3/8/8/4P3/4K3 w - - 0 1",
+        "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3",
+        "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1",
+        "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "4k3/8/8/8/8/8/4P3/R3K2R w KQ - 0 1",
+    ):
+        boards.append(chess.Board(fen))
+    if PUZZLES.exists():
+        with PUZZLES.open(newline="", encoding="utf-8") as handle:
+            for row in list(csv.DictReader(handle))[:24]:
+                board = chess.Board(row["FEN"])
+                for index, uci in enumerate(row["Moves"].split()):
+                    move = chess.Move.from_uci(uci)
+                    if move not in board.legal_moves:
+                        break
+                    if index % 2 == 1:
+                        boards.append(board.copy(stack=False))
+                    board.push(move)
+
+    cases = [case_for(board) for board in boards]
+    replies = [{"text": text, "claims": [claim_json(c) for c in C.parse_claims(text)]}
+               for text in REPLIES]
+
+    OUT.mkdir(parents=True, exist_ok=True)
+    payload = {"system": C.EXTRACT_SYSTEM, "replies": replies, "cases": cases}
+    (OUT / "claims.json").write_text(json.dumps(payload), encoding="utf-8")
+    size = (OUT / "claims.json").stat().st_size
+    print(
+        f"{len(cases)} positions x {len(TEMPLATES)} claims + {len(DRAFTS)} drafts, "
+        f"{len(replies)} replies -> {OUT / 'claims.json'} ({size / 1e6:.1f} MB)"
+    )
+
+
+if __name__ == "__main__":
+    main()
