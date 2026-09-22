@@ -1,25 +1,98 @@
 <script lang="ts">
   // Talking to the coach: a text box, the listening-mode button, the round button that
   // is Send while there is text, the hold-to-talk button in push-to-talk mode, the
-  // listening indicator in voice mode and just a mic otherwise; the quick chips; and what
-  // was heard, corrected against the board.
+  // listening indicator in voice mode and just a mic otherwise; and the quick chips.
+  //
+  // Dictation: what is said goes into the box as it is recognised (the sidecar streams
+  // partial results while the key is held), and sends on its own a second after the
+  // utterance ends -- unless more is said, which appends, or the person types, which makes
+  // the words theirs to edit and send (Tai, 2026-09-22).
+  import { panel } from "./api";
   import { MODE_TITLES, store } from "./panel.svelte";
 
   let text = $state("");
   let input = $state<HTMLInputElement | null>(null);
 
+  // The dictation merged into the box so far, and what the box held before it began.
+  let dictated = "";
+  let typed = "";
+  // After a cancel, the sidecar's old text may still arrive on a poll or two: ignored
+  // until it reports an empty dictation once.
+  let awaitingClear = false;
+
+  const dictation = $derived(store.state.dictation);
+  const keyHeld = $derived(!!store.state.ptt);
+  const talking = $derived(keyHeld || !!dictation?.live);
+  const armed = $derived(!!dictation?.sends_at && !dictation?.live);
+
+  // While the key is held or words are still arriving, the round button stays the mic (lit),
+  // whatever the box holds; otherwise text makes it Send.
   const sendState = $derived(
-    text.trim().length > 0 ? "send" : store.listenMode === "ptt" ? "ptt" : store.listenMode === "vad" ? "vad" : "idle",
+    talking && store.listenMode === "ptt" ? "ptt"
+    : talking && store.listenMode === "vad" ? "vad"
+    : text.trim().length > 0 ? "send"
+    : store.listenMode === "ptt" ? "ptt"
+    : store.listenMode === "vad" ? "vad"
+    : "idle",
   );
+  const keyName = $derived(prettyKey(store.state.ptt_key || "ctrl_r"));
   const sendTitle = $derived(
-    sendState === "send" ? "Send (Enter)" : sendState === "ptt" ? "Hold to talk (or hold Space)" : sendState === "vad" ? "Listening" : "Type a question, or turn listening on",
+    sendState === "send" ? (armed ? "Sending in a moment (type to keep it)" : "Send (Enter)")
+    : sendState === "ptt" ? (talking ? "Listening…" : `Hold to talk (or hold Space or ${keyName})`)
+    : sendState === "vad" ? "Listening"
+    : "Type a question, or turn listening on",
   );
+
+  function prettyKey(k: string): string {
+    const names: Record<string, string> = {
+      ctrl_r: "Right Ctrl", ctrl_l: "Left Ctrl", alt_r: "Right Alt", alt_l: "Left Alt",
+      shift_r: "Right Shift", shift_l: "Left Shift", cmd_r: "Right Cmd", cmd_l: "Left Cmd",
+      ctrl: "Ctrl", alt: "Alt", shift: "Shift", cmd: "Cmd",
+    };
+    return names[k] || (k.length === 1 ? k.toUpperCase() : k.replace(/^f(\d+)$/i, "F$1"));
+  }
+
+  // Mirror the sidecar's dictation into the box.
+  $effect(() => {
+    const t = dictation?.text ?? "";
+    if (awaitingClear) {
+      if (!t) awaitingClear = false;
+      return;
+    }
+    if (t === dictated) return;
+    if (!dictated) typed = text; // the dictation begins: remember what was typed
+    dictated = t;
+    text = [typed, t].filter(Boolean).join(" ");
+    if (!t) typed = ""; // sent (the sidecar asked the coach) -- the box is clear again
+    // The newest words stay in view: a long ask scrolls the box, as typing would.
+    requestAnimationFrame(() => { if (input) input.scrollLeft = input.scrollWidth; });
+  });
+
+  // Something was typed first: the words join it and the person sends the whole ask.
+  $effect(() => {
+    if (armed && typed) void takeOver();
+  });
+
+  async function takeOver() {
+    if (!dictated && !dictation?.text) return;
+    awaitingClear = true;
+    dictated = "";
+    typed = text;
+    await panel.cancelDictation().catch(() => {});
+  }
+
+  function onInput() {
+    // The person is editing: the dictation (if any) is theirs now, nothing sends itself.
+    if (dictated || dictation?.text) void takeOver();
+  }
 
   function send() {
     const t = text.trim();
     if (!t) return;
+    if (dictated || dictation?.text) void takeOver();
     store.ask(t);
     text = "";
+    typed = "";
   }
   function onSendClick() {
     if (sendState === "send") send();
@@ -33,9 +106,10 @@
       bind:this={input}
       bind:value={text}
       type="text"
-      placeholder="Ask the coach…"
+      placeholder={talking ? "Listening…" : "Ask the coach…"}
       autocomplete="off"
       spellcheck="false"
+      oninput={onInput}
       onkeydown={(e) => { if (e.key === "Enter") send(); }}
     />
     <button class="iconbtn" data-mode={store.listenMode} title={MODE_TITLES[store.listenMode] || ""} onclick={() => store.cycleListen()} aria-label="Listening mode">
@@ -45,7 +119,8 @@
     </button>
     <button
       class="sendbtn"
-      class:live={sendState === "ptt" && store.pttDown}
+      class:live={(sendState === "ptt" && (store.pttDown || keyHeld)) || (sendState === "vad" && !!dictation?.live)}
+      class:armed={sendState === "send" && armed}
       data-state={sendState}
       title={sendTitle}
       aria-label={sendTitle}
@@ -65,6 +140,5 @@
     <button class="qchip" title="A nudge at the current disclosure level" onclick={() => store.quick("hint")}>Hint</button>
     <button class="qchip" title="The engine's move, then why" onclick={() => store.quick("move")}>Best move</button>
     <button class="qchip" title="The engine's line" onclick={() => store.quick("line")}>Line</button>
-    {#if store.state.heard}<span class="heard">heard: <b>{store.state.heard}</b></span>{/if}
   </div>
 </div>

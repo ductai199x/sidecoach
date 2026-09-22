@@ -306,3 +306,103 @@ def test_recording_is_off_unless_asked_and_the_wish_is_kept(tmp_path: Path) -> N
     engine.set_record(False)
     assert engine._session_dir(live=True).parent.name == "sessions"
     assert any("from the next Start" in ln["text"] for ln in engine.poll(0)["lines"])
+
+
+class _Recogniser:
+    """Speech recognition that reads the words off the clip's length: one word per 0.4 s.
+    A clip of exactly `held` samples waits for `gate` first (a slow partial)."""
+
+    def __init__(self) -> None:
+        import threading
+
+        self.gate = threading.Event()
+        self.gate.set()
+        self.held = -1
+
+    def transcribe(self, audio: object) -> str:
+        n = len(audio)  # type: ignore[arg-type]
+        if n == self.held:
+            self.gate.wait(2)
+        return " ".join(["hello"] * max(1, int(n / 16000 / 0.4)))
+
+    def healthcheck(self) -> tuple[bool, str]:
+        return True, "fake"
+
+
+def test_dictation_streams_into_the_box_and_sends_after_a_second_of_quiet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What is said reaches the page as it is recognised, and is asked of the coach a second
+    after the utterance ends -- unless more is said first, which appends (Tai, 2026-09-22:
+    no 'heard:' line, the words in the text box, streamed, then sent)."""
+    import time
+
+    import numpy as np
+
+    from sidecoach.ui import panel as panel_mod
+
+    monkeypatch.setattr(panel_mod, "DICTATION_SEND_DELAY_S", 0.3)
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
+    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
+    engine._stt = _Recogniser()  # type: ignore[assignment]
+
+    def dictation() -> dict:
+        return engine.poll(0)["state"]["dictation"]
+
+    assert dictation() == {"text": "", "live": False, "sends_at": None}
+    # The key goes down: the box says it is listening.
+    engine._dictation_hold()
+    assert dictation()["live"] is True
+    # Partials while the key is held: the words so far, live.
+    engine._on_partial(np.zeros(16000, dtype=np.float32))
+    deadline = time.monotonic() + 2
+    while dictation()["text"] != "hello hello" and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert dictation() == {"text": "hello hello", "live": True, "sends_at": None}
+    # The key comes up: the final result replaces the partial and the send is armed.
+    engine._on_utterance(np.zeros(16000 * 2, dtype=np.float32), 2.0)
+    d = dictation()
+    assert d["text"] == "hello hello hello hello hello" and d["live"] is False
+    assert d["sends_at"] is not None
+    assert engine._commands.empty()
+    # Pressed again before it sends: it waits, and the next utterance appends.
+    engine._dictation_hold()
+    assert dictation()["sends_at"] is None
+    engine._on_utterance(np.zeros(16000 // 2, dtype=np.float32), 0.5)
+    assert dictation()["text"] == "hello hello hello hello hello hello"
+    # ...and after the quiet, one ask with everything, and the box is clear.
+    name, payload = engine._commands.get(timeout=2)
+    assert (name, payload) == ("ask_spoken", "hello hello hello hello hello hello")
+    assert dictation() == {"text": "", "live": False, "sends_at": None}
+    # A partial still being recognised when its utterance ends is dropped: the final
+    # result has those words, and they must not show twice.
+    stt = engine._stt
+    assert isinstance(stt, _Recogniser)
+    stt.held = 16000
+    stt.gate.clear()
+    engine._on_partial(np.zeros(16000, dtype=np.float32))  # blocks in transcribe
+    engine._on_utterance(np.zeros(16000 * 2, dtype=np.float32), 2.0)
+    stt.gate.set()
+    time.sleep(0.2)
+    assert dictation()["text"] == "hello hello hello hello hello"
+    engine.cancel_dictation()
+    # No 'heard:' line at info level any more: the words are on the page, not in the terminal.
+    assert not any(
+        ln["text"].startswith("heard:") and ln["level"] == "info" for ln in engine.poll(0)["lines"]
+    )
+
+
+def test_typing_over_a_dictation_keeps_the_words_and_stops_the_send(tmp_path: Path) -> None:
+    import numpy as np
+
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
+    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
+    engine._stt = _Recogniser()  # type: ignore[assignment]
+    engine._on_utterance(np.zeros(16000, dtype=np.float32), 1.0)
+    assert engine.poll(0)["state"]["dictation"]["sends_at"] is not None
+    assert engine.cancel_dictation() == {"ok": True, "text": "hello hello"}
+    assert engine.poll(0)["state"]["dictation"] == {"text": "", "live": False, "sends_at": None}
+    import time
+
+    time.sleep(1.2)
+    assert engine._commands.empty()

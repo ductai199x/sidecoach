@@ -266,6 +266,11 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
     def muted(body: _Muted) -> dict[str, bool]:
         return {"ok": api.set_muted(body.muted)}
 
+    @app.post("/api/dictation/cancel")
+    def dictation_cancel() -> dict[str, Any]:
+        """The person typed over the dictation: it stays in the box, nothing sends itself."""
+        return engine.cancel_dictation()
+
     @app.post("/api/record")
     def record(body: _Record) -> dict[str, Any]:
         """Record this session to the data folder (Debug > Record this session), or stop."""

@@ -31,7 +31,7 @@ export const CHANNELS = ["sys", "vision", "game", "engine", "coach", "voice", "u
 export const MODE_NEXT: Record<string, string> = { off: "ptt", ptt: "vad", vad: "off" };
 export const MODE_TITLES: Record<string, string> = {
   off: "Listening: off. Click for hold-to-talk",
-  ptt: "Listening: hold to talk (hold the round button, or Space). Click for always-on voice",
+  ptt: "Listening: hold to talk (hold the round button, Space, or the push-to-talk key). Click for always-on voice",
   vad: "Listening: voice (the coach hears you whenever you speak). Click to turn off",
 };
 
@@ -212,7 +212,7 @@ export class PanelStore {
   private addConvo(line: LogLine): void {
     const d = line.data || {};
     if (line.chan === "user" && line.text.startsWith("you: ")) {
-      this.convo.push({ id: nextId++, who: "you", label: "you", text: line.text.slice(5), calls: [] });
+      this.convo.push({ id: nextId++, who: "you", label: d.spoken ? "you · spoken" : "you", text: line.text.slice(5), calls: [] });
       this.lastCoachTurn = null;
     } else if (line.chan === "coach" && d.full) {
       const turn: ConvoTurn = {

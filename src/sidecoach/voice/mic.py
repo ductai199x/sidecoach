@@ -145,11 +145,19 @@ class Listener:
         on_speech_start: Callable[[], None] | None = None,
         coach_speaking: Callable[[], bool] | None = None,
         on_event: Callable[[str, str], None] | None = None,
+        on_partial: Callable[[np.ndarray], None] | None = None,
+        partial_every_s: float = 0.4,
     ) -> None:
         self.mic = mic
         self.gate = gate
         self.endpointer = Endpointer()
         self._on_utterance = on_utterance
+        # While an utterance is being captured, the audio so far every `partial_every_s`,
+        # for words on the screen as they are said (Tai, 2026-09-22: streamed, not at the
+        # end). Called on the listener thread; the handler must not block it.
+        self._on_partial = on_partial
+        self._partial_every_s = partial_every_s
+        self._last_partial = 0.0
         self._on_speech_start = on_speech_start or (lambda: None)
         self._coach_speaking = coach_speaking or (lambda: False)
         self._on_event = on_event or (lambda level, text: None)
@@ -223,17 +231,20 @@ class Listener:
                 self.level *= 0.5
                 continue
             self.level = max(float(np.abs(frame).max()), self.level * 0.8)
+            partial: np.ndarray | None = None
             with self._lock:
                 mode = self.mode
                 if mode == "ptt":
                     if self._ptt:
                         self._buffer.append(frame)
                         self._cap()
+                        partial = self._partial_due()
                     else:
                         self._pre.append(frame)
-                    continue
-                if mode != "vad":
-                    continue
+            if mode != "vad":
+                if partial is not None:
+                    self._on_partial(partial)  # type: ignore[misc]
+                continue
             # Voice mode: the VAD runs outside the lock; it is the slow part.
             prob = self.gate.probability(frame)
             with self._lock:
@@ -247,6 +258,7 @@ class Listener:
                         self.endpointer.reset()
                         self._finish(discard=False)
                         continue
+                    partial = self._partial_due()
                 else:
                     self._pre.append(frame)
                 if event == "start":
@@ -257,10 +269,22 @@ class Listener:
                 elif event == "drop":
                     self._finish(discard=True)
                     self._on_event("debug", "a sound too short to be an ask, ignored")
+            if partial is not None:
+                self._on_partial(partial)  # type: ignore[misc]
 
     def _cap(self) -> bool:
         """True (and stop growing) once an utterance has reached its maximum length."""
         return len(self._buffer) * HOP >= MAX_UTTERANCE_S * SAMPLE_RATE
+
+    def _partial_due(self) -> np.ndarray | None:
+        """The audio so far, when a partial is wanted and it is time for one (under the lock)."""
+        if self._on_partial is None or len(self._buffer) * HOP < 0.6 * SAMPLE_RATE:
+            return None
+        now = time.monotonic()
+        if now - self._last_partial < self._partial_every_s:
+            return None
+        self._last_partial = now
+        return np.concatenate(self._buffer)
 
     def _finish(self, *, discard: bool) -> None:
         """Hand the buffered frames over as one utterance (or drop them) and reset."""

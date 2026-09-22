@@ -372,6 +372,9 @@ body.dragging-y { cursor: row-resize; user-select: none; }
 .sendbtn[data-state="vad"] { background: #3b4a2f; color: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
 .sendbtn[data-state="vad"].live { background: var(--accent); color: var(--accent-ink); animation: none; }
 .sendbtn[data-state="idle"] .ic-mic { display: block; opacity: .55; }
+/* Dictated words about to send on their own: the ring closes over the second of quiet. */
+.sendbtn[data-state="send"].armed { animation: arm 1s linear forwards; }
+@keyframes arm { from { box-shadow: 0 0 0 6px #81b64c66; } to { box-shadow: 0 0 0 0 #81b64c00; } }
 @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 #81b64c33; } 50% { box-shadow: 0 0 0 5px #81b64c22; } }
 .chips-row { display: flex; align-items: center; gap: 6px; padding: 0 4px; flex-wrap: wrap; }
 .qchip {
@@ -380,8 +383,6 @@ body.dragging-y { cursor: row-resize; user-select: none; }
 }
 .qchip:hover { background: var(--panel2); border-color: #6b6865; }
 .qchip:active { background: var(--panel3); }
-.heard { font-size: 12px; color: var(--muted); margin-left: auto; padding: 2px 4px; }
-.heard b { color: #d9c8f2; font-weight: 600; }
 
 /* ---- terminal ---- */
 footer { border-top: 1px solid var(--line); background: var(--panel); }

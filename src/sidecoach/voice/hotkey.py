@@ -27,11 +27,16 @@ class GlobalPushToTalk:
     """Calls `on_press` once when the key goes down and `on_release` when it comes up."""
 
     def __init__(
-        self, key: str, on_press: Callable[[], None], on_release: Callable[[], None]
+        self,
+        key: str,
+        on_press: Callable[[], None],
+        on_release: Callable[[], None],
+        on_seen: Callable[[str], None] | None = None,
     ) -> None:
         self.key = (key or "").strip().lower()
         self._on_press = on_press
         self._on_release = on_release
+        self._on_seen = on_seen  # every key the hook sees, by name: what a keyboard sends
         self._listener: Any = None
         self._down = False
         self._lock = threading.Lock()
@@ -94,20 +99,38 @@ class GlobalPushToTalk:
             else keyboard.KeyCode.from_char(name)
         )
 
+        generic = name.split("_")[0] if isinstance(wanted, keyboard.Key) else ""
+
         def same(key: Any) -> bool:
             if key == wanted:
                 return True
-            # A modifier's generic name matches its sided key: "ctrl" for ctrl_l / ctrl_r.
-            return (
-                getattr(key, "name", "").startswith(name + "_")
-                if isinstance(wanted, keyboard.Key)
-                else False
-            )
+            got = getattr(key, "name", "") or ""
+            if not isinstance(wanted, keyboard.Key):
+                return False
+            # A modifier's generic name matches its sided keys ("ctrl" for ctrl_l and
+            # ctrl_r) -- and a sided name matches the generic key, because some keyboards
+            # and drivers report Right Ctrl as plain Ctrl (Tai's, 2026-09-22): the press
+            # arrives, just not under the name the setting uses.
+            return got.startswith(name + "_") or (got == generic and "_" in name)
 
-        return keyboard.Listener(
-            on_press=lambda key: self._press() if same(key) else None,
-            on_release=lambda key: self._release() if same(key) else None,
-        )
+        def seen(key: Any, what: str) -> None:
+            if self._on_seen is not None:
+                vk = getattr(key, "vk", None)
+                self._on_seen(
+                    f"{what} {getattr(key, 'name', None) or key!r}" + (f" (vk {vk})" if vk else "")
+                )
+
+        def pressed(key: Any) -> None:
+            seen(key, "down")
+            if same(key):
+                self._press()
+
+        def released(key: Any) -> None:
+            seen(key, "up")
+            if same(key):
+                self._release()
+
+        return keyboard.Listener(on_press=pressed, on_release=released)
 
     def _mouse_listener(self, name: str) -> Any:
         from pynput import mouse  # type: ignore[reportMissingImports]

@@ -26,8 +26,10 @@ screen, so it works on chess.com, Lichess, or anything else that draws a chessbo
   what was better and why. What the model may say is enforced by filtering the facts
   it sees, not by asking it to behave.
 - **Speaks and listens.** A local voice (Kokoro) reads the coach aloud, notation
-  included; local speech recognition (Parakeet) takes your questions, push-to-talk or hands-free,
-  corrected against the legal moves on the board.
+  included; local speech recognition (Parakeet) takes your questions, push-to-talk (a key
+  held from any window) or hands-free, corrected against the legal moves on the board.
+  Your words appear in the text box as you say them and go to the coach a second after
+  you stop, or later if you keep going -- or type, and they are yours to edit and send.
 - **Learns you.** Every game feeds a player model: where you lose ground and why. The
   coach carries that into the next session and recommends Lichess puzzles for the
   weak spot, playable inside the app.

@@ -81,6 +81,10 @@ WARM_STAGES: tuple[tuple[str, str], ...] = (
 )
 # The warm-up stage each voice model reports as (the log calls them by these names).
 STAGE_OF = {"voice": "voice", "speech recognition": "stt"}
+# Words said go into the text box as they are recognised and are sent as the ask this
+# long after the utterance ends -- unless the person presses again and adds to them, or
+# types, which makes the text theirs to edit and send (Tai, 2026-09-22).
+DICTATION_SEND_DELAY_S = 1.0
 # The settings page's microphone test turns itself off this long after the page's
 # last look at it.
 HEAR_TEST_TIMEOUT_S = 20.0
@@ -238,6 +242,11 @@ class PanelEngine:
     # session starts or stops its recording within a tick (Tai, 2026-09-21: off by default,
     # but there must be a way to record a bug).
     _record_wanted: bool | None = field(default=None, init=False)
+    # Dictation: the words on the screen so far and the timer that sends them.
+    _dictation_text: str = field(default="", init=False)
+    _dictation_timer: threading.Timer | None = field(default=None, init=False)
+    _partial_busy: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _utterance_gen: int = field(default=0, init=False)  # bumped when an utterance ends
     _warm_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _warm_done: threading.Event = field(default_factory=threading.Event, init=False)
     _warm_stages: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
@@ -275,12 +284,16 @@ class PanelEngine:
             on_speech_start=self._on_speech_start,
             coach_speaking=lambda: self._tts.busy,
             on_event=lambda level, text: self._emit("voice", level, text),
+            on_partial=self._on_partial,
         )
         # Held from any window -- the game has the focus mid-game, not the panel.
         self._hotkey = GlobalPushToTalk(
             self.settings.voice.ptt_key,
             on_press=lambda: self.ptt(True),
             on_release=lambda: self.ptt(False),
+            # Every key the hook sees, in the verbose terminal: what a keyboard calls the
+            # key a person is pressing when push-to-talk does not react.
+            on_seen=lambda what: self._emit("voice", "debug", f"key {what}"),
         )
         self._state = {
             "running": False,
@@ -309,7 +322,11 @@ class PanelEngine:
             "stt_detail": self._stt.healthcheck()[1],
             "listen": "off",
             "ptt": False,
+            "ptt_key": self.settings.voice.ptt_key,
             "heard": None,
+            # What is being said, as recognised so far: text, whether the microphone is
+            # still capturing it, and when it sends (a wall-clock ms timestamp, or null).
+            "dictation": {"text": "", "live": False, "sends_at": None},
             "clock": None,
             "health": {},
             "session_dir": None,
@@ -574,9 +591,11 @@ class PanelEngine:
                     new.voice.ptt_key,
                     on_press=lambda: self.ptt(True),
                     on_release=lambda: self.ptt(False),
+                    on_seen=lambda what: self._emit("voice", "debug", f"key {what}"),
                 )
                 if self._listener.mode == "ptt":
                     self.set_listen("ptt")
+                self._set(ptt_key=new.voice.ptt_key)
                 did("voice.ptt_key")
         if any(c in VOICE_RELOAD for c in changed):
             self._reload_voice()
@@ -788,6 +807,8 @@ class PanelEngine:
     def ptt(self, down: bool) -> None:
         """Push-to-talk pressed or released."""
         if down:
+            if self._listener.mode == "ptt":
+                self._dictation_hold()
             self._listener.press()
         else:
             self._listener.release()
@@ -992,8 +1013,100 @@ class PanelEngine:
                 self._emit("voice", "warn", "listening: off (speech recognition is not available)")
         self._stage("mic", "done" if ok else "off", detail)
 
+    def _board_on_screen(self) -> Any:
+        """The board the screen shows, for correcting what was heard, or None."""
+        import chess
+
+        with self._lock:
+            fen = self._state.get("fen")
+        if not fen:
+            return None
+        try:
+            return chess.Board(fen)
+        except ValueError:
+            return None
+
+    def _on_partial(self, audio: Any) -> None:
+        """The utterance so far, on the listener thread: recognised off it, one at a time
+        (a partial still running means this one is skipped, the next will catch up)."""
+        if self._hear_test_on or not self._partial_busy.acquire(blocking=False):
+            return
+        gen = self._utterance_gen
+
+        def work() -> None:
+            try:
+                raw = self._stt.transcribe(audio)
+                text = correct(raw, self._board_on_screen()).text if raw else ""
+                # Dropped when its utterance ended meanwhile: the final result has it.
+                if text and gen == self._utterance_gen:
+                    with self._lock:
+                        joined = f"{self._dictation_text} {text}".strip()
+                        self._state["dictation"] = {"text": joined, "live": True, "sends_at": None}
+            except Exception as exc:  # a partial is best effort; the final result still comes
+                self._emit("voice", "debug", f"partial recognition failed: {exc}")
+            finally:
+                self._partial_busy.release()
+
+        threading.Thread(target=work, name="stt-partial", daemon=True).start()
+
+    def _dictation_arm(self) -> None:
+        """(Re)start the second of quiet after which the dictation is sent."""
+        if self._dictation_timer is not None:
+            self._dictation_timer.cancel()
+        self._dictation_timer = threading.Timer(DICTATION_SEND_DELAY_S, self._dictation_send)
+        self._dictation_timer.daemon = True
+        self._dictation_timer.start()
+        with self._lock:
+            self._state["dictation"] = {
+                "text": self._dictation_text,
+                "live": False,
+                "sends_at": int((time.time() + DICTATION_SEND_DELAY_S) * 1000),
+            }
+
+    def _dictation_settle(self) -> None:
+        """An utterance that came to nothing: earlier words (if any) go on to send, else
+        the box stops saying it is listening."""
+        if self._dictation_text:
+            self._dictation_arm()
+        else:
+            with self._lock:
+                self._state["dictation"] = {"text": "", "live": False, "sends_at": None}
+
+    def _dictation_hold(self) -> None:
+        """A new press or a new utterance: whatever was about to send waits for the rest."""
+        if self._dictation_timer is not None:
+            self._dictation_timer.cancel()
+            self._dictation_timer = None
+        with self._lock:
+            self._state["dictation"] = {
+                "text": self._dictation_text,
+                "live": True,
+                "sends_at": None,
+            }
+
+    def _dictation_send(self) -> None:
+        with self._lock:
+            text, self._dictation_text = self._dictation_text, ""
+            self._dictation_timer = None
+            self._state["dictation"] = {"text": "", "live": False, "sends_at": None}
+        if text:
+            self.command("ask_spoken", text)
+
+    def cancel_dictation(self) -> dict[str, Any]:
+        """The person typed: the words stay theirs in the box, nothing sends on its own."""
+        if self._dictation_timer is not None:
+            self._dictation_timer.cancel()
+            self._dictation_timer = None
+        with self._lock:
+            text, self._dictation_text = self._dictation_text, ""
+            self._state["dictation"] = {"text": "", "live": False, "sends_at": None}
+        return {"ok": True, "text": text}
+
     def _on_speech_start(self) -> None:
-        """The user started talking: the coach stops mid-sentence (barge-in)."""
+        """The user started talking: the coach stops mid-sentence (barge-in), and a
+        dictation about to send waits for what is coming."""
+        if not self._hear_test_on:
+            self._dictation_hold()
         if self._tts.busy:
             self._tts.stop()
             self._emit("voice", "debug", "barge-in: the coach was cut off")
@@ -1003,8 +1116,7 @@ class PanelEngine:
 
         Runs on the listener thread; the ask is queued for the pipeline thread.
         """
-        import chess
-
+        self._utterance_gen += 1
         begun = time.perf_counter()
         raw = self._stt.transcribe(audio)
         ms = (time.perf_counter() - begun) * 1000
@@ -1017,27 +1129,28 @@ class PanelEngine:
             self._emit(
                 "voice", "debug", f"heard nothing in {seconds:.1f}s of audio", stt_ms=round(ms)
             )
+            self._dictation_settle()
             return
+        fixed = correct(raw, self._board_on_screen())
+        text = fixed.text
+        if not text:
+            self._dictation_settle()
+            return
+        # Into the text box, after whatever was said before in this dictation; sent after
+        # a second of quiet unless more comes. The terminal keeps the detail.
         with self._lock:
-            fen = self._state.get("fen")
-        board = None
-        if fen:
-            try:
-                board = chess.Board(fen)
-            except ValueError:
-                board = None
-        fixed = correct(raw, board)
-        self._set(heard=fixed.text)
+            self._dictation_text = f"{self._dictation_text} {text}".strip()
+        self._set(heard=text)
         self._emit(
             "voice",
-            "info",
-            f"heard: {fixed.text}",
+            "debug",
+            f"heard: {text}",
             raw=raw,
             moves=fixed.moves,
             seconds=round(seconds, 2),
             stt_ms=round(ms),
         )
-        self.command("ask_spoken", fixed.text)
+        self._dictation_arm()
 
     def _emit(self, chan: str, level: str, text: str, **data: Any) -> None:
         self._log.emit(chan, level, text, **data)
@@ -2081,8 +2194,8 @@ class PanelEngine:
                 break
             if name in ("ask", "ask_spoken"):
                 if coaching.on:
-                    if name == "ask":
-                        self._emit("user", "info", f"you: {payload}")
+                    # Spoken or typed, the ask is a turn of the conversation on the page.
+                    self._emit("user", "info", f"you: {payload}", spoken=name == "ask_spoken")
                     coaching.ask(str(payload), ts)
                     self._record_dialogue(
                         UserUtterance(
