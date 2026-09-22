@@ -1,1 +1,4 @@
 * text=auto
+
+# The panel page is the desktop build, byte for byte: no line-ending translation.
+app/src/main/assets/web/** -text
