@@ -155,14 +155,15 @@ fn sidecar_command(app: &AppHandle, token: &str) -> Result<Command, String> {
         // and the user's site-packages. An AppImage's launcher exports PYTHONHOME and
         // PYTHONPATH for any Python inside it, which sent this one looking for its
         // standard library in the wrong place (Phase 2, 2026-09-21).
-        c.args(["-I", "-m", "sidecoach", "panel"]);
-        c.env_remove("PYTHONHOME").env_remove("PYTHONPATH");
+        c.arg("-I");
         // The bytecode cache goes under the data directory, not into the install folder:
         // the uninstaller removes only what the installer wrote, and an AppImage is
-        // read-only anyway.
+        // read-only anyway. As an option, since -I ignores PYTHONPYCACHEPREFIX too.
         if let Some(dir) = data_dir(app) {
-            c.env("PYTHONPYCACHEPREFIX", dir.join("pycache"));
+            c.arg(format!("-Xpycache_prefix={}", dir.join("pycache").display()));
         }
+        c.args(["-m", "sidecoach", "panel"]);
+        c.env_remove("PYTHONHOME").env_remove("PYTHONPATH");
         c
     } else {
         let root = repo_root()
