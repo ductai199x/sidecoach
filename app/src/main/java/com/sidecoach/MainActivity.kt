@@ -32,12 +32,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sidecoach.bench.EmbedderBench
 import com.sidecoach.capture.CaptureService
 import com.sidecoach.capture.CaptureStats
+import com.sidecoach.vision.ScreenReader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -77,6 +79,7 @@ class MainActivity : ComponentActivity() {
                     Home(
                         running = state.running,
                         preview = state.preview,
+                        reading = state.reading,
                         latest = state.latest,
                         logPath = state.logPath,
                         error = state.error,
@@ -100,10 +103,44 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** The position the vision read, as a board and a line of FEN. */
+@Composable
+private fun Board(reading: ScreenReader.Reading) {
+    if (!reading.boardFound) {
+        Text("Looking for a board…", style = MaterialTheme.typography.bodyMedium)
+        return
+    }
+    val placement = reading.placement
+    if (placement == null) {
+        Text(
+            "Board found at ${reading.region?.x},${reading.region?.y}, cell " +
+                "${"%.0f".format(reading.cellPx)} px. Waiting for the start position to learn " +
+                "the pieces.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        return
+    }
+    Text("The position", style = MaterialTheme.typography.titleMedium)
+    Text(
+        placement.split('/').joinToString("\n") { rank ->
+            rank.flatMap { ch -> if (ch.isDigit()) List(ch - '0') { '.' } else listOf(ch) }
+                .joinToString(" ")
+        },
+        fontFamily = FontFamily.Monospace,
+        style = MaterialTheme.typography.bodyLarge,
+    )
+    Text(
+        "$placement\n${reading.unsure} unsure · ${if (reading.verified) "verified" else "held"} · " +
+            "board in ${reading.detectMs} ms · read in ${reading.readMs} ms",
+        style = MaterialTheme.typography.bodySmall,
+    )
+}
+
 @Composable
 private fun Home(
     running: Boolean,
     preview: Bitmap?,
+    reading: ScreenReader.Reading?,
     latest: CaptureStats.Snapshot?,
     logPath: String?,
     error: String?,
@@ -119,14 +156,15 @@ private fun Home(
     ) {
         Text("Sidecoach", style = MaterialTheme.typography.headlineMedium)
         Text(
-            if (running) "Watching the screen. Switch to your chess app; come back for the numbers."
-            else "Spike A: the screen read at ${CaptureService.TARGET_FPS} frames a second, half size.",
+            if (running) "Watching the screen. Switch to your chess app; the position it reads is here."
+            else "Watches the board on your screen and reads the position.",
             style = MaterialTheme.typography.bodyMedium,
         )
         Button(onClick = if (running) onStop else onStart) {
             Text(if (running) "Stop" else "Start watching")
         }
         error?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        reading?.let { Board(it) }
         preview?.let {
             Text("What it sees", style = MaterialTheme.typography.titleMedium)
             Image(
@@ -140,13 +178,9 @@ private fun Home(
             Text("Last ten seconds", style = MaterialTheme.typography.titleMedium)
             Text(
                 """
-                running ${"%.0f".format(latest.elapsedS)} s
                 frames ${latest.frames} (${"%.1f".format(latest.fps)} fps), ${latest.dropped} skipped
-                interval p50 ${latest.intervalP50} ms, p95 ${latest.intervalP95}, max ${latest.intervalMax}
-                copy p50 ${latest.copyP50} ms, p95 ${latest.copyP95}, frame ${latest.frameKb} KB
                 cpu ${"%.1f".format(latest.cpuPercent)} % of a core
-                battery ${latest.batteryPercent} %, ${latest.batteryMa} mA
-                thermal ${latest.thermal}
+                battery ${latest.batteryPercent} %, ${latest.batteryMa} mA · thermal ${latest.thermal}
                 """.trimIndent(),
                 style = MaterialTheme.typography.bodySmall,
             )

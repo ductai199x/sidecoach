@@ -18,6 +18,11 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            // OpenCV and onnxruntime each ship four ABIs and the APK came to 323 MB. The
+            // phone is arm64 and the emulator x86_64; a release build splits per ABI.
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
     }
 
     buildTypes {

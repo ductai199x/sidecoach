@@ -25,7 +25,9 @@ import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.sidecoach.MainActivity
+import com.sidecoach.SidecoachApp
 import com.sidecoach.R
+import com.sidecoach.vision.ScreenReader
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -63,6 +65,16 @@ class CaptureService : Service() {
     private var frame: Bitmap? = null
     private var preview: Bitmap? = null
     private var lastPreviewAt = 0L
+    // The vision: the board found, its theme learned, the position read. One reader for
+    // the session, on the capture thread, so a frame is read where it is copied.
+    private var vision: ScreenReader? = null
+    private var visionThread: HandlerThread? = null
+    private var visionHandler: Handler? = null
+    private var reading = false
+    private val frameLock = Any()
+    private var lastReadAt = 0L
+    private var lastPlacement: String? = null
+    private var lastOutcomeAt = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -123,6 +135,10 @@ class CaptureService : Service() {
         )
 
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        vision = ScreenReader(this)
+        val visionWorker = HandlerThread("vision").also { it.start() }
+        visionThread = visionWorker
+        visionHandler = Handler(visionWorker.looper)
         stats = CaptureStats(this, File(filesDir, "spike/capture-$stamp.jsonl"))
         start(projection)
         state.value = State(running = true, logPath = "spike/capture-$stamp.jsonl")
@@ -190,6 +206,9 @@ class CaptureService : Service() {
         } finally {
             image.close()
         }
+        // Only now, with the reader's buffer handed back: a board read with the image
+        // still open starved the display's queue and the frames stopped coming.
+        askForARead()
         val stats = stats ?: return
         if (stats.due()) {
             val snapshot = stats.take()
@@ -212,23 +231,83 @@ class CaptureService : Service() {
         val full = frame?.takeIf { it.width == padded && it.height == height }
             ?: Bitmap.createBitmap(padded, height, Bitmap.Config.ARGB_8888).also { frame = it }
         image.planes[0].buffer.rewind()
-        full.copyPixelsFromBuffer(image.planes[0].buffer)
+        synchronized(frameLock) { full.copyPixelsFromBuffer(image.planes[0].buffer) }
         val scale = PREVIEW_WIDTH.toFloat() / width
-        val small = Bitmap.createScaledBitmap(
-            if (padded == width) full else Bitmap.createBitmap(full, 0, 0, width, height),
-            PREVIEW_WIDTH,
-            (height * scale).toInt(),
-            true,
-        )
+        val visible = if (padded == width) full else Bitmap.createBitmap(full, 0, 0, width, height)
+        val small = Bitmap.createScaledBitmap(visible, PREVIEW_WIDTH, (height * scale).toInt(), true)
+        if (visible !== full) visible.recycle()
         preview?.recycle()
         preview = small
         state.value = state.value.copy(preview = small)
+    }
+
+    /** The read that follows a screen going quiet (see [SETTLE_MS]). */
+    private val settle = Runnable {
+        lastReadAt = 0L
+        askForARead()
+    }
+
+    /**
+     * Ask the vision for the newest frame, unless it is still busy with the last one. The
+     * display only hands us a frame when something changes, so a board sitting still
+     * produces none: the settle read catches the moment a move has finished animating.
+     */
+    private fun askForARead() {
+        handler?.removeCallbacks(settle)
+        handler?.postDelayed(settle, SETTLE_MS)
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastReadAt < READ_INTERVAL_MS) return
+        // Our own screens are not a game: see SidecoachApp.inFront.
+        if (SidecoachApp.inFront) return
+        synchronized(frameLock) {
+            if (reading) return
+            reading = true
+        }
+        lastReadAt = now
+        visionHandler?.post { readTheBoard() } ?: run { reading = false }
+    }
+
+    /** The newest frame through the vision, on the vision's own thread. */
+    private fun readTheBoard() {
+        try {
+            val copy = synchronized(frameLock) {
+                val full = frame ?: return
+                // A copy, so the capture thread may fill the next frame while this one is
+                // read: the read is the slow part, and it must not hold the capture up.
+                full.copy(Bitmap.Config.ARGB_8888, false)
+            } ?: return
+            val vision = vision ?: return
+            val outcome = runCatching { vision.read(copy) }
+                .onFailure { Log.w(TAG, "the frame could not be read: $it") }
+                .getOrNull()
+            copy.recycle()
+            if (outcome == null) return
+            state.value = state.value.copy(reading = outcome)
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastOutcomeAt > 5000) {
+                lastOutcomeAt = now
+                Log.i(
+                    TAG,
+                    "frame read: board=${outcome.boardFound} at=${outcome.region?.x},${outcome.region?.y} " +
+                        "cell=${"%.0f".format(outcome.cellPx)} fit=${"%.2f".format(outcome.fit)} " +
+                        "placement=${outcome.placement != null}",
+                )
+            }
+            val placement = outcome.placement
+            if (placement != null && placement != lastPlacement) {
+                lastPlacement = placement
+                Log.i(TAG, "position: $placement (${outcome.unsure} unsure, ${outcome.readMs} ms)")
+            }
+        } finally {
+            synchronized(frameLock) { reading = false }
+        }
     }
 
     override fun onDestroy() {
         runCatching { display?.release() }
         runCatching { reader?.close() }
         runCatching { projection?.stop() }
+        handler?.removeCallbacks(settle)
         thread?.quitSafely()
         display = null
         reader = null
@@ -236,6 +315,11 @@ class CaptureService : Service() {
         thread = null
         handler = null
         buffer = null
+        visionThread?.quitSafely()
+        visionThread = null
+        visionHandler = null
+        runCatching { vision?.close() }
+        vision = null
         frame?.recycle()
         frame = null
         state.value = state.value.copy(running = false, preview = null)
@@ -280,6 +364,8 @@ class CaptureService : Service() {
         val error: String? = null,
         /** The newest frame, small enough to draw: what the coach is looking at. */
         val preview: Bitmap? = null,
+        /** What the vision made of the newest frame it read. */
+        val reading: ScreenReader.Reading? = null,
     )
 
     companion object {
@@ -299,6 +385,12 @@ class CaptureService : Service() {
         private const val BUFFERS = 3
         private const val PREVIEW_WIDTH = 360
         private const val PREVIEW_INTERVAL_MS = 500L
+
+        /** How often a frame goes through the vision: a board changes when a piece moves. */
+        private const val READ_INTERVAL_MS = 500L
+
+        /** Quiet for this long and the last frame is read once more. */
+        private const val SETTLE_MS = 700L
 
         private val state = MutableStateFlow(State())
         val capture: StateFlow<State> = state.asStateFlow()
