@@ -58,6 +58,8 @@ panel = [
     "psutil>=6.0",
     # The OS credential store for the API keys the settings window takes (config.secrets_*).
     "keyring>=25.0",
+    # The Lichess puzzle file the first-run setup samples is zstd-compressed.
+    "zstandard>=0.22",
 ]
 # Exporting the embedding net (tools/classifier/export.py): Ultralytics for the pretrained
 # YOLO26n-cls weights (CPU torch comes with it), onnx for the export; `uv sync --group

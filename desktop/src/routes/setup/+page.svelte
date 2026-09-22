@@ -28,10 +28,33 @@
   const running = $derived(!!status?.run?.running);
   const percent = $derived(status?.run?.total ? Math.min(100, Math.round((100 * (status.run.done ?? 0)) / status.run.total)) : 0);
   const current = $derived(status?.items.find((i) => i.id === status?.run?.item));
+  // The download's speed and what is left, from the bytes between polls, smoothed over
+  // the last few seconds so the figure does not jitter.
+  let samples: { t: number; done: number }[] = [];
+  let speed = $state(0); // bytes per second
+  const remaining = $derived.by(() => {
+    const total = status?.run?.total ?? 0, done = status?.run?.done ?? 0;
+    if (!speed || total <= done) return "";
+    const s = (total - done) / speed;
+    return s < 60 ? `${Math.ceil(s)} s left` : s < 3600 ? `${Math.ceil(s / 60)} min left` : `${(s / 3600).toFixed(1)} h left`;
+  });
+  const rate = (bps: number) => (bps >= 1e6 ? (bps / 1e6).toFixed(1) + " MB/s" : Math.round(bps / 1e3) + " KB/s");
 
   async function refresh() {
     status = await get<Status>("/api/setup/status");
     for (const i of status.items) if (!(i.id in picked)) picked[i.id] = true;
+    if (status.run?.running) {
+      const now = performance.now(), done = status.run.done ?? 0;
+      // An item change resets the count (each item's bytes start again).
+      if (samples.length && done < samples[samples.length - 1].done) samples = [];
+      samples.push({ t: now, done });
+      samples = samples.filter((x) => now - x.t <= 5000);
+      const first = samples[0];
+      speed = samples.length > 1 && now > first.t ? ((done - first.done) * 1000) / (now - first.t) : 0;
+    } else {
+      samples = [];
+      speed = 0;
+    }
     timer = setTimeout(refresh, running ? 500 : 3000);
   }
   async function start() {
@@ -79,7 +102,7 @@
     {/if}
     {#if running}
       <div class="bar"><div class="fill" style="width: {percent}%"></div></div>
-      <p class="muted">{current ? current.title : "…"} · {percent}% of {gb(status.run.total ?? 0)}</p>
+      <p class="muted">{current ? current.title : "…"} · {gb(status.run.done ?? 0)} of {gb(status.run.total ?? 0)} ({percent}%){#if speed > 0} · {rate(speed)} · {remaining}{/if}</p>
       <button class="ghost" onclick={cancel}>Cancel</button>
     {:else if missing.length === 0}
       <p class="ok">Everything is in place.</p>
