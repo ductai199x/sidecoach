@@ -42,6 +42,8 @@ class ScreenReader(context: Context) : AutoCloseable {
         val verified: Boolean = false,
         val placement: String? = null,
         val unsure: Int = 0,
+        /** Cells the net had to embed on this frame: 64 at a bootstrap, a handful after. */
+        val fresh: Int = 0,
         val learned: Boolean = false,
         val detectMs: Long = 0,
         val readMs: Long = 0,
@@ -71,17 +73,16 @@ class ScreenReader(context: Context) : AutoCloseable {
             var learned = false
             if (model == null) {
                 // The desktop's order (state/pipeline.py): the cheap occupancy first, the
-                // start position's shape from it, and only on START_FRAMES frames in a row
+                // start position's shape from it, and only on START_FRAMES frames running
                 // -- an animation passes through shapes that look like one -- is the net
-                // asked for the 64 exemplars. The orientation comes from the same reading:
-                // the brighter pieces are white.
+                // asked for the 64 exemplars. The orientation comes from the same reading.
                 val cells = ThemeModel.occupancy(bgr, geometry)
                 if (ThemeModel.startShaped(cells)) {
                     startSeen++
                     if (startSeen >= START_FRAMES) {
-                        val whiteAtBottom = ThemeModel.orientationFromStart(cells)
-                        val candidate = ThemeModel.learn(bgr, geometry, net, whiteAtBottom)
                         startSeen = 0
+                        val whiteAtBottom = ThemeModel.orientationFromStart(cells)
+                        val candidate = ThemeModel.fromStartPosition(bgr, geometry, whiteAtBottom, net)
                         if (candidate != null) {
                             model = candidate
                             learned = true
@@ -89,8 +90,6 @@ class ScreenReader(context: Context) : AutoCloseable {
                                 TAG,
                                 "theme learned, ${if (whiteAtBottom) "white" else "black"} at the bottom",
                             )
-                        } else {
-                            Log.i(TAG, "the start frame is spoiled; waiting for a clean one")
                         }
                     }
                 } else {
@@ -102,7 +101,7 @@ class ScreenReader(context: Context) : AutoCloseable {
                 fit = board.fit, verified = tracker.verified, detectMs = detectMs,
             )
             val readBegan = SystemClock.elapsedRealtime()
-            val readings = theme.readBoard(bgr, geometry, net)
+            val readings = theme.classifyFrame(bgr, geometry, net)
             return Reading(
                 boardFound = true,
                 region = board.region,
@@ -110,7 +109,8 @@ class ScreenReader(context: Context) : AutoCloseable {
                 fit = board.fit,
                 verified = tracker.verified,
                 placement = theme.placement(readings),
-                unsure = readings.count { it.label == null },
+                unsure = readings.count { it.kind == Pieces.Kind.UNKNOWN },
+                fresh = theme.lastFresh,
                 learned = learned,
                 detectMs = detectMs,
                 readMs = SystemClock.elapsedRealtime() - readBegan,

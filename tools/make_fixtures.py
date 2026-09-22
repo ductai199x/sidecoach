@@ -31,6 +31,7 @@ from sidecoach.events import Region  # noqa: E402
 
 from sidecoach.events import Side  # noqa: E402
 from sidecoach.vision.pieces import (  # noqa: E402
+    ThemeModel,
     occupancy,
     orientation_from_start,
     looks_like_start_position,

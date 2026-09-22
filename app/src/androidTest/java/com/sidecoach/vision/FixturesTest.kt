@@ -63,6 +63,10 @@ data class Fixture(
     val fractions: DoubleArray,
     val startShaped: Boolean,
     val orientation: String,
+    /** The start fixture the Python bootstrapped from to classify this one, if any. */
+    val classifiedFrom: String? = null,
+    val symbols: List<String> = emptyList(),
+    val kinds: List<String> = emptyList(),
 )
 
 object Fixtures {
@@ -89,6 +93,13 @@ object Fixtures {
                 },
                 startShaped = o.getBoolean("start_shaped"),
                 orientation = o.getString("orientation"),
+                classifiedFrom = if (o.has("classified_from")) o.getString("classified_from") else null,
+                symbols = if (o.has("symbols")) o.getJSONArray("symbols").let { a ->
+                    List(a.length()) { a.getString(it) }
+                } else emptyList(),
+                kinds = if (o.has("kinds")) o.getJSONArray("kinds").let { a ->
+                    List(a.length()) { a.getString(it) }
+                } else emptyList(),
             )
         }
     }
