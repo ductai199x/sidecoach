@@ -32,6 +32,7 @@ class ScreenReader(context: Context) : AutoCloseable {
     private val tracker = BoardTracker()
     private var model: ThemeModel? = null
     private var startSeen = 0
+    private var quiet = 0
 
     /** What one frame yielded. */
     data class Reading(
@@ -94,6 +95,20 @@ class ScreenReader(context: Context) : AutoCloseable {
                     }
                 } else {
                     startSeen = 0
+                    if (++quiet % 20 == 1) {
+                        var wrong = 0
+                        val busy = StringBuilder()
+                        for (r in 0 until 8) {
+                            for (c in 0 until 8) {
+                                val occupied = cells[r * 8 + c].fraction >= Pieces.PIECE_MIN_FRACTION
+                                if (occupied != (r <= 1 || r >= 6)) {
+                                    wrong++
+                                    if (wrong <= 6) busy.append(" $r,$c=${"%.2f".format(cells[r * 8 + c].fraction)}")
+                                }
+                            }
+                        }
+                        Log.i(TAG, "no start position: $wrong cells off the shape:$busy")
+                    }
                 }
             }
             val theme = model ?: return Reading(

@@ -241,6 +241,12 @@ class CaptureService : Service() {
         state.value = state.value.copy(preview = small)
     }
 
+    /** Another look while there is nothing to read (see [LOOKING_INTERVAL_MS]). */
+    private val again = Runnable {
+        lastReadAt = 0L
+        askForARead()
+    }
+
     /** The read that follows a screen going quiet (see [SETTLE_MS]). */
     private val settle = Runnable {
         lastReadAt = 0L
@@ -283,6 +289,16 @@ class CaptureService : Service() {
             copy.recycle()
             if (outcome == null) return
             state.value = state.value.copy(reading = outcome)
+            // The display sends a frame only when something changes, so a board sitting
+            // still gives one chance and no more. While there is nothing to read -- no
+            // board, or a board whose theme is not learned yet -- the last frame is read
+            // again on a timer, as the desktop's capture loop reads every tick. Once a
+            // position is coming out, frames arrive when the board changes, which is
+            // exactly when there is anything new to see, and the timer stops.
+            if (outcome.placement == null) {
+                handler?.removeCallbacks(again)
+                handler?.postDelayed(again, LOOKING_INTERVAL_MS)
+            }
             val now = SystemClock.elapsedRealtime()
             if (now - lastOutcomeAt > 5000) {
                 lastOutcomeAt = now
@@ -308,6 +324,7 @@ class CaptureService : Service() {
         runCatching { reader?.close() }
         runCatching { projection?.stop() }
         handler?.removeCallbacks(settle)
+        handler?.removeCallbacks(again)
         thread?.quitSafely()
         display = null
         reader = null
@@ -391,6 +408,9 @@ class CaptureService : Service() {
 
         /** Quiet for this long and the last frame is read once more. */
         private const val SETTLE_MS = 700L
+
+        /** While there is no board or no theme, the last frame is read again this often. */
+        private const val LOOKING_INTERVAL_MS = 1000L
 
         private val state = MutableStateFlow(State())
         val capture: StateFlow<State> = state.asStateFlow()
