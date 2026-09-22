@@ -52,6 +52,65 @@ class GameEnded(
     val finalFen: String? = null,
 ) : Event()
 
+/** One line the engine gave, from the mover's point of view: `events.Line`. */
+data class Line(
+    val moves: List<String>,
+    val depth: Int,
+    val expectedScore: Double,
+    val scoreCp: Int? = null,
+    val mate: Int? = null,
+    val wdl: Triple<Int, Int, Int>? = null,
+)
+
+/** A tactical motif the position or the move carries: `events.MotifTag`. */
+data class MotifTag(
+    val name: String,
+    val squares: List<String> = emptyList(),
+    val move: String? = null,
+)
+
+class Analysis(
+    val gameId: String,
+    val fen: String,
+    val ply: Int,
+    val lines: List<Line>,
+    val decisive: Boolean,
+    val onlyMove: Boolean,
+    val threats: List<String> = emptyList(),
+    val tags: List<MotifTag> = emptyList(),
+    val opening: String? = null,
+) : Event()
+
+enum class Severity { NONE, INACCURACY, MISTAKE, BLUNDER }
+
+/**
+ * What a played move was, in the vocabulary the user already reads on chess.com.
+ *
+ * Severity says how much a move cost; the label says what kind of move it was, which needs
+ * the move before it and the opening book as well: a miss is a chance the opponent handed
+ * over and the mover did not take, a great move is one that took it or was the only move, a
+ * brilliant move is a sound sacrifice, a book move is still in theory.
+ */
+enum class Label { BOOK, BRILLIANT, GREAT, BEST, EXCELLENT, GOOD, INACCURACY, MISTAKE, MISS, BLUNDER }
+
+class MoveAssessment(
+    val gameId: String,
+    val ply: Int,
+    val uci: String,
+    val expectedLoss: Double,
+    val severity: Severity,
+    val best: List<String>,
+    val tags: List<MotifTag> = emptyList(),
+    /**
+     * The shallower of the two searches the loss was measured from. A position that hit the
+     * engine's time cap before reaching the depth asked for makes the comparison less exact.
+     */
+    val depth: Int = 0,
+    val label: Label? = null,
+    /** Per-move accuracy on the steepened curve, 0 to 100, so a game can be summed up. */
+    val accuracy: Double? = null,
+) : Event()
+
 class ClockObservation(
     val whiteMs: Int? = null,
     val blackMs: Int? = null,

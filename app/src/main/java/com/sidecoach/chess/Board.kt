@@ -842,21 +842,33 @@ class Board {
 
     fun isFivefoldRepetition(): Boolean = isRepetition(5)
 
-    fun isGameOver(): Boolean {
-        if (isCheckmate()) return true
-        if (isInsufficientMaterial()) return true
-        if (!anyLegalMove()) return true
-        if (isSeventyfiveMoves()) return true
-        return isFivefoldRepetition()
+    /** How a game ended. `winner` is null for a draw, as python-chess's `Outcome` has it. */
+    data class Outcome(val winner: Boolean?)
+
+    /**
+     * The outcome, or null while the game is on. `claimDraw` adds the draws a player has to
+     * claim -- the fifty-move rule and a threefold repetition -- to the ones that end a game
+     * by themselves.
+     */
+    fun outcome(claimDraw: Boolean = false): Outcome? {
+        if (isCheckmate()) return Outcome(!turn)
+        if (isInsufficientMaterial()) return Outcome(null)
+        if (!anyLegalMove()) return Outcome(null)
+        if (isSeventyfiveMoves()) return Outcome(null)
+        if (isFivefoldRepetition()) return Outcome(null)
+        if (claimDraw) {
+            if (canClaimFiftyMoves()) return Outcome(null)
+            if (canClaimThreefoldRepetition()) return Outcome(null)
+        }
+        return null
     }
 
-    fun result(): String {
-        if (isCheckmate()) return if (turn == WHITE) "0-1" else "1-0"
-        if (isInsufficientMaterial()) return "1/2-1/2"
-        if (!anyLegalMove()) return "1/2-1/2"
-        if (isSeventyfiveMoves()) return "1/2-1/2"
-        if (isFivefoldRepetition()) return "1/2-1/2"
-        return "*"
+    fun isGameOver(claimDraw: Boolean = false): Boolean = outcome(claimDraw) != null
+
+    fun result(claimDraw: Boolean = false): String {
+        val outcome = outcome(claimDraw) ?: return "*"
+        val winner = outcome.winner ?: return "1/2-1/2"
+        return if (winner == WHITE) "1-0" else "0-1"
     }
 
     /** `status() == STATUS_VALID`, bar the variant checks the desktop never meets. */

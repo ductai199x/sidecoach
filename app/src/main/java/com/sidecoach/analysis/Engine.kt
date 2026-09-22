@@ -4,6 +4,7 @@ import android.util.Log
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
+import com.sidecoach.events.Line
 import java.io.BufferedReader
 import java.io.File
 import java.io.IOException
@@ -11,16 +12,6 @@ import java.io.InputStreamReader
 import java.io.Writer
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
-
-/** One engine line, as `events.Line`. */
-data class Line(
-    val moves: List<String>,
-    val depth: Int,
-    val expectedScore: Double,
-    val scoreCp: Int? = null,
-    val mate: Int? = null,
-    val wdl: Triple<Int, Int, Int>? = null,
-)
 
 class EngineUnavailable(message: String) : RuntimeException(message)
 
@@ -45,7 +36,7 @@ class Engine(
     var hashMb: Int = 64,
     var multipv: Int = 6,
     var pvPlies: Int = DEFAULT_PV_PLIES,
-    /** How a line's score becomes an expected score; see [Score.expectedScore]. */
+    /** How a line's score becomes an expected score; see [expectedScore]. */
     var scoreModel: String = DEFAULT_SCORE_MODEL,
     /**
      * No single position may hold up a game. Some positions are pathologically slow to reach
@@ -240,7 +231,7 @@ class Engine(
     private fun line(info: Info, pvPlies: Int): Line = Line(
         moves = info.pv.take(pvPlies),
         depth = info.depth,
-        expectedScore = Score.expectedScore(scoreModel, info.scoreCp, info.mate, info.wdl),
+        expectedScore = expectedScore(scoreModel, info.scoreCp, info.mate, info.wdl),
         scoreCp = info.scoreCp,
         mate = info.mate,
         wdl = info.wdl,
