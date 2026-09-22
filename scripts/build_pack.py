@@ -120,6 +120,8 @@ def main() -> None:
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
     shutil.rmtree(env, ignore_errors=True)
+    if not args.staging:  # the temporary staging folder was ours to make and to remove
+        shutil.rmtree(staging, ignore_errors=True)
     print(f"pack: {zip_path} ({manifest['size'] / 1e6:.0f} MB) in {time.monotonic() - t0:.0f} s")
     print(f"manifest: {args.out / f'cuda-{tag}.json'}")
 
