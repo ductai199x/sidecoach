@@ -76,6 +76,23 @@ fun lsb(bb: Bitboard): Int = bb.countTrailingZeroBits()
 
 fun popcount(bb: Bitboard): Int = bb.countOneBits()
 
+/** `chess.SquareSet`'s own order: set squares from the lowest index up. */
+inline fun scanForward(bb: Bitboard, body: (Int) -> Unit) {
+    var rest = bb
+    while (rest != BB_EMPTY) {
+        val square = rest.countTrailingZeroBits()
+        body(square)
+        rest = rest and (rest - 1uL)
+    }
+}
+
+/** The set squares, lowest first: what iterating a `SquareSet` gives. */
+fun squaresOf(bb: Bitboard): List<Int> {
+    val out = ArrayList<Int>(popcount(bb))
+    scanForward(bb) { out.add(it) }
+    return out
+}
+
 /** `chess.scan_reversed`: set squares from the highest index down. */
 inline fun scanReversed(bb: Bitboard, body: (Int) -> Unit) {
     var rest = bb
@@ -145,6 +162,26 @@ private val BB_RAYS: Array<ULongArray> = Array(64) { a ->
 
 /** `chess.ray`: the whole line through both squares, empty when they are not aligned. */
 fun ray(a: Int, b: Int): Bitboard = BB_RAYS[a][b]
+
+/**
+ * `chess.square_knight_distance`: the moves a knight needs to get from one square to
+ * another. The mating patterns use it for the kill-box.
+ */
+fun squareKnightDistance(a: Int, b: Int): Int {
+    val dx = kotlin.math.abs(squareFile(a) - squareFile(b))
+    val dy = kotlin.math.abs(squareRank(a) - squareRank(b))
+    if (dx + dy == 1) return 3
+    if (dx == 2 && dy == 2) return 4
+    if (dx == 1 && dy == 1) {
+        // The corner is the special case: a knight cannot triangulate against the edge.
+        val corners = BB_SQUARES[A1] or BB_SQUARES[H1] or BB_SQUARES[A8] or BB_SQUARES[H8]
+        return if (BB_SQUARES[a] and corners != BB_EMPTY || BB_SQUARES[b] and corners != BB_EMPTY) 4 else 2
+    }
+    val m = kotlin.math.ceil(
+        maxOf(dx / 2.0, dy / 2.0, (dx + dy) / 3.0),
+    ).toInt()
+    return m + ((m + dx + dy) % 2)
+}
 
 /** `chess.between`: the squares strictly between two aligned squares. */
 fun between(a: Int, b: Int): Bitboard {

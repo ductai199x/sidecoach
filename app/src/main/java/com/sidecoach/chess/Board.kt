@@ -350,6 +350,35 @@ class Board {
             (abs(move.to - move.from) == 7 || abs(move.to - move.from) == 9) &&
             occupied and BB_SQUARES[move.to] == BB_EMPTY
 
+    /** `gives_check`: whether the move leaves the opponent in check. */
+    fun givesCheck(move: Move): Boolean {
+        push(move)
+        val check = isCheck()
+        pop()
+        return check
+    }
+
+    fun isKingsideCastling(move: Move): Boolean =
+        isCastling(move) && squareFile(move.to) > squareFile(move.from)
+
+    fun isQueensideCastling(move: Move): Boolean =
+        isCastling(move) && squareFile(move.to) < squareFile(move.from)
+
+    /** Whether the piece on `square` may not leave its line without exposing what is behind. */
+    fun isPinned(colour: Boolean, square: Int): Boolean = pinMask(colour, square) != BB_ALL
+
+    /** The squares the piece on `square` bears on, lowest first: `board.attacks`. */
+    fun attacks(square: Int): List<Int> = squaresOf(attacksMask(square))
+
+    /** The pieces of `colour` bearing on `square`, lowest first: `board.attackers`. */
+    fun attackers(colour: Boolean, square: Int): List<Int> = squaresOf(attackersMask(colour, square))
+
+    /** The squares of `colour`'s pieces of one type, lowest first: `board.pieces`. */
+    fun pieces(pieceType: Int, colour: Boolean): List<Int> = squaresOf(piecesMask(pieceType, colour))
+
+    /** The occupied squares, lowest first, as `sorted(board.piece_map())` gives them. */
+    fun occupiedSquares(): List<Int> = squaresOf(occupied)
+
     fun isCapture(move: Move): Boolean {
         val touched = BB_SQUARES[move.from] xor BB_SQUARES[move.to]
         return touched and occupiedCo[if (!turn) 1 else 0] != BB_EMPTY || isEnPassant(move)

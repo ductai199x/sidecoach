@@ -1,0 +1,109 @@
+package com.sidecoach.analysis
+
+import android.util.Log
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.chess.Board
+import com.sidecoach.chess.Move
+import com.sidecoach.events.MotifTag
+import org.json.JSONObject
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+
+/**
+ * The motif tagger held to the desktop's, tag for tag and square for square.
+ *
+ * The tagger gives the coach its theme, its focus squares and the sentence it says about a
+ * tactic, so a port that disagrees anywhere changes what the coach teaches. The positions
+ * are the Lichess puzzle sample the desktop validates against -- real tactics, walked move
+ * by move, which is where a tagger does its work.
+ */
+@RunWith(AndroidJUnit4::class)
+class MotifsTest {
+
+    private fun fixtures(): JSONObject {
+        val context = InstrumentationRegistry.getInstrumentation().context
+        val text = context.assets.open("chess/motifs.json").bufferedReader().use { it.readText() }
+        return JSONObject(text)
+    }
+
+    @Test
+    fun everyTagMatchesThePython() {
+        val data = fixtures().getJSONArray("cases")
+        val failures = ArrayList<String>()
+        val seen = HashMap<String, Int>()
+        val began = System.currentTimeMillis()
+        for (i in 0 until data.length()) {
+            val case = data.getJSONObject(i)
+            val board = Board(case.getString("fen"))
+            val move = Move.fromUci(case.getString("move"))
+            val pv = case.getJSONArray("pv").let { a ->
+                List(a.length()) { Move.fromUci(a.getString(it)) }
+            }
+            val mateIn = if (case.isNull("mate_in")) null else case.getInt("mate_in")
+
+            val mine = Motifs.tagsForMove(board, move, pv, mateIn)
+            compare("${case.getString("puzzle")} move", mine, case.getJSONArray("for_move"), failures)
+            for (tag in mine) seen[tag.name] = (seen[tag.name] ?: 0) + 1
+
+            val position = Motifs.tagsForPosition(board, listOf(move) + pv, mateIn)
+            compare(
+                "${case.getString("puzzle")} position",
+                position,
+                case.getJSONArray("for_position"),
+                failures,
+            )
+            for (tag in position) seen[tag.name] = (seen[tag.name] ?: 0) + 1
+        }
+        val took = System.currentTimeMillis() - began
+        Log.i(
+            TAG,
+            "${data.length()} positions tagged in $took ms; " +
+                seen.entries.sortedBy { it.key }.joinToString(", ") { "${it.key}x${it.value}" },
+        )
+        assertTrue(failures.take(8).joinToString("\n"), failures.isEmpty())
+    }
+
+    @Test
+    fun thePhaseMatchesThePython() {
+        val data = fixtures().getJSONArray("phases")
+        val failures = ArrayList<String>()
+        for (i in 0 until data.length()) {
+            val o = data.getJSONObject(i)
+            val mine = phaseOf(Board(o.getString("fen")), o.getBoolean("in_book"))
+            if (mine != o.getString("phase")) {
+                failures.add("${o.getString("fen")}: $mine, python says ${o.getString("phase")}")
+            }
+        }
+        Log.i(TAG, "${data.length()} phases checked")
+        assertTrue(failures.take(8).joinToString("\n"), failures.isEmpty())
+    }
+
+    private fun compare(
+        what: String,
+        mine: List<MotifTag>,
+        theirs: org.json.JSONArray,
+        failures: MutableList<String>,
+    ) {
+        val wanted = (0 until theirs.length()).map { i ->
+            val o = theirs.getJSONObject(i)
+            val squares = o.getJSONArray("squares").let { a -> List(a.length()) { a.getString(it) } }
+            MotifTag(o.getString("name"), squares, if (o.isNull("move")) null else o.getString("move"))
+        }
+        if (mine == wanted) return
+        if (failures.size < 8) {
+            failures.add(
+                "$what:\n  kotlin: ${mine.joinToString(" | ") { show(it) }}" +
+                    "\n  python: ${wanted.joinToString(" | ") { show(it) }}",
+            )
+        }
+    }
+
+    private fun show(tag: MotifTag): String =
+        "${tag.name}[${tag.squares.joinToString(",")}]" + (tag.move?.let { "@$it" } ?: "")
+
+    companion object {
+        private const val TAG = "sidecoach.analysis"
+    }
+}
