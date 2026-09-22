@@ -39,7 +39,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sidecoach.bench.EmbedderBench
 import com.sidecoach.capture.CaptureService
 import com.sidecoach.capture.CaptureStats
-import com.sidecoach.vision.ScreenReader
+import com.sidecoach.vision.GameWatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -103,24 +103,33 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** The position the vision read, as a board and a line of FEN. */
+/** The game as the watcher has it: the board, the moves so far, and what it costs. */
 @Composable
-private fun Board(reading: ScreenReader.Reading) {
-    if (!reading.boardFound) {
-        Text("Looking for a board…", style = MaterialTheme.typography.bodyMedium)
+private fun Board(watch: GameWatcher.Watch) {
+    if (!watch.boardFound) {
+        Text("Looking for a board\u2026", style = MaterialTheme.typography.bodyMedium)
         return
     }
-    val placement = reading.placement
-    if (placement == null) {
+    val fen = watch.fen
+    if (fen == null) {
         Text(
-            "Board found at ${reading.region?.x},${reading.region?.y}, cell " +
-                "${"%.0f".format(reading.cellPx)} px. Waiting for the start position to learn " +
+            "Board found at ${watch.region?.x},${watch.region?.y}, cell " +
+                "${"%.0f".format(watch.cellPx)} px. Waiting for the start position to learn " +
                 "the pieces.",
             style = MaterialTheme.typography.bodyMedium,
         )
         return
     }
-    Text("The position", style = MaterialTheme.typography.titleMedium)
+    val placement = fen.substringBefore(' ')
+    val turn = if (fen.contains(" w ")) "white" else "black"
+    Text(
+        when (watch.state) {
+            com.sidecoach.events.ScreenState.GAME_OVER -> "Game over ${watch.finished ?: ""}"
+            com.sidecoach.events.ScreenState.COVERED -> "The board is covered"
+            else -> "Ply ${watch.ply} \u00b7 $turn to move"
+        },
+        style = MaterialTheme.typography.titleMedium,
+    )
     Text(
         placement.split('/').joinToString("\n") { rank ->
             rank.flatMap { ch -> if (ch.isDigit()) List(ch - '0') { '.' } else listOf(ch) }
@@ -129,9 +138,13 @@ private fun Board(reading: ScreenReader.Reading) {
         fontFamily = FontFamily.Monospace,
         style = MaterialTheme.typography.bodyLarge,
     )
+    if (watch.pgn.isNotEmpty()) {
+        Text(watch.pgn, style = MaterialTheme.typography.bodyMedium)
+    }
     Text(
-        "$placement\n${reading.unsure} unsure · ${if (reading.verified) "verified" else "held"} · " +
-            "board in ${reading.detectMs} ms · read in ${reading.readMs} ms",
+        "${watch.unsure} unsure \u00b7 ${watch.fresh} cells embedded \u00b7 " +
+            "${if (watch.verified) "verified" else "held"} \u00b7 " +
+            "${if (watch.changed) "changed" else "still"} \u00b7 read in ${watch.readMs} ms",
         style = MaterialTheme.typography.bodySmall,
     )
 }
@@ -140,7 +153,7 @@ private fun Board(reading: ScreenReader.Reading) {
 private fun Home(
     running: Boolean,
     preview: Bitmap?,
-    reading: ScreenReader.Reading?,
+    reading: GameWatcher.Watch?,
     latest: CaptureStats.Snapshot?,
     logPath: String?,
     error: String?,

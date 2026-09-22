@@ -27,7 +27,7 @@ import androidx.core.app.ServiceCompat
 import com.sidecoach.MainActivity
 import com.sidecoach.SidecoachApp
 import com.sidecoach.R
-import com.sidecoach.vision.ScreenReader
+import com.sidecoach.vision.GameWatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -65,9 +65,9 @@ class CaptureService : Service() {
     private var frame: Bitmap? = null
     private var preview: Bitmap? = null
     private var lastPreviewAt = 0L
-    // The vision: the board found, its theme learned, the position read. One reader for
-    // the session, on the capture thread, so a frame is read where it is copied.
-    private var vision: ScreenReader? = null
+    // The vision: the board found, its theme learned, the position read, the game
+    // followed. One watcher for the session, on its own thread.
+    private var vision: GameWatcher? = null
     private var visionThread: HandlerThread? = null
     private var visionHandler: Handler? = null
     private var reading = false
@@ -135,7 +135,7 @@ class CaptureService : Service() {
         )
 
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        vision = ScreenReader(this)
+        vision = GameWatcher(this, File(filesDir, "themes"))
         val visionWorker = HandlerThread("vision").also { it.start() }
         visionThread = visionWorker
         visionHandler = Handler(visionWorker.looper)
@@ -283,7 +283,8 @@ class CaptureService : Service() {
                 full.copy(Bitmap.Config.ARGB_8888, false)
             } ?: return
             val vision = vision ?: return
-            val outcome = runCatching { vision.read(copy) }
+            val ts = SystemClock.elapsedRealtime() / 1000.0
+            val outcome = runCatching { vision.read(copy, ts) }
                 .onFailure { Log.w(TAG, "the frame could not be read: $it") }
                 .getOrNull()
             copy.recycle()
@@ -295,7 +296,7 @@ class CaptureService : Service() {
             // again on a timer, as the desktop's capture loop reads every tick. Once a
             // position is coming out, frames arrive when the board changes, which is
             // exactly when there is anything new to see, and the timer stops.
-            if (outcome.placement == null) {
+            if (outcome.fen == null) {
                 handler?.removeCallbacks(again)
                 handler?.postDelayed(again, LOOKING_INTERVAL_MS)
             }
@@ -306,13 +307,17 @@ class CaptureService : Service() {
                     TAG,
                     "frame read: board=${outcome.boardFound} at=${outcome.region?.x},${outcome.region?.y} " +
                         "cell=${"%.0f".format(outcome.cellPx)} fit=${"%.2f".format(outcome.fit)} " +
-                        "placement=${outcome.placement != null}",
+                        "ply=${outcome.ply} ${outcome.state}",
                 )
             }
-            val placement = outcome.placement
-            if (placement != null && placement != lastPlacement) {
-                lastPlacement = placement
-                Log.i(TAG, "position: $placement (${outcome.unsure} unsure, ${outcome.readMs} ms)")
+            val fen = outcome.fen
+            if (fen != null && fen != lastPlacement) {
+                lastPlacement = fen
+                Log.i(
+                    TAG,
+                    "position: $fen (${outcome.unsure} unsure, ${outcome.fresh} embedded, " +
+                        "${outcome.readMs} ms)",
+                )
             }
         } finally {
             synchronized(frameLock) { reading = false }
@@ -382,7 +387,7 @@ class CaptureService : Service() {
         /** The newest frame, small enough to draw: what the coach is looking at. */
         val preview: Bitmap? = null,
         /** What the vision made of the newest frame it read. */
-        val reading: ScreenReader.Reading? = null,
+        val reading: GameWatcher.Watch? = null,
     )
 
     companion object {
@@ -409,8 +414,19 @@ class CaptureService : Service() {
         /** Quiet for this long and the last frame is read once more. */
         private const val SETTLE_MS = 700L
 
-        /** While there is no board or no theme, the last frame is read again this often. */
-        private const val LOOKING_INTERVAL_MS = 1000L
+        /**
+         * While there is no board or no theme, the last frame is read again this often.
+         *
+         * The desktop's loop runs at ten frames a second and its tracker counts in frames:
+         * twenty of them before a full search is tried again after one failed, three before
+         * the cheap one is. At a read a second those two seconds became twenty, and a board
+         * that appeared while the tracker was backing off went unseen for a third of a
+         * minute -- long enough to miss the start position and the game with it. So while
+         * there is nothing to read the phone ticks at the rate those constants were written
+         * for. A read takes as long as it takes and the next is not asked for until it is
+         * done, so this is a ceiling, not a promise.
+         */
+        private const val LOOKING_INTERVAL_MS = 100L
 
         private val state = MutableStateFlow(State())
         val capture: StateFlow<State> = state.asStateFlow()

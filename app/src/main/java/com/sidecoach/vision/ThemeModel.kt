@@ -57,6 +57,12 @@ class ThemeModel(
 
     private val cells = HashMap<Int, Cell>()
 
+    /**
+     * The rank-digit exemplars from the board's left edge, learned with the theme: how a
+     * board read cold tells which side sits at the bottom (`vision/coordinates.py`).
+     */
+    var rankLabels: Map<Int, BooleanArray> = emptyMap()
+
     /** Cells the last frame had to embed: what the reading costs, for the log. */
     var lastFresh: Int = 64
         private set
@@ -164,7 +170,7 @@ class ThemeModel(
         frame: Mat,
         geometry: BoardGeometry,
         embedder: CellEmbedder?,
-    ): List<Pieces.CellReading> {
+    ): MutableList<Pieces.CellReading> {
         val crops = ArrayList<Mat>(64)
         val bytes = ArrayList<ByteArray>(64)
         for (r in 0 until 8) {
@@ -552,6 +558,26 @@ class ThemeModel(
             for (r in 0 until 8) {
                 for (c in 0 until 8) {
                     val occupied = cells[r * 8 + c].fraction >= Pieces.PIECE_MIN_FRACTION
+                    if (occupied != (r <= 1 || r >= 6)) wrong++
+                }
+            }
+            return wrong <= 1
+        }
+
+        /** Whether the frame's occupancy has the shape of the start position. */
+        fun looksLikeStartPosition(frame: Mat, geometry: BoardGeometry): Boolean =
+            startShaped(occupancy(frame, geometry))
+
+        /**
+         * [looksLikeStartPosition] from readings already taken, by the same rule, so a frame
+         * that has been classified need not be silhouetted a second time
+         * (`pieces.start_shaped`).
+         */
+        fun startShapedReadings(readings: List<Pieces.CellReading>): Boolean {
+            var wrong = 0
+            for (r in 0 until 8) {
+                for (c in 0 until 8) {
+                    val occupied = readings[r * 8 + c].fgFraction >= Pieces.PIECE_MIN_FRACTION
                     if (occupied != (r <= 1 || r >= 6)) wrong++
                 }
             }

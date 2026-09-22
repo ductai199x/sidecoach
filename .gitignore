@@ -14,3 +14,5 @@ local.properties
 
 # Scratch: emulator logs, screenshots, spike logs pulled off a device.
 /data/
+# Rendered by tools/make_game.py for the on-device replay.
+app/src/debug/assets/game/

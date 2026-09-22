@@ -27,7 +27,7 @@ class EmbedStagesTest {
 
         var t = System.nanoTime()
         val crops = ArrayList<Mat>(64)
-        for (r in 0 until 8) for (c in 0 until 8) crops.add(geometry.crop(frame, r, c))
+        for (r in 0 until 8) for (c in 0 until 8) crops.add(geometry.crop(frame, r, c, 2 * Squares.CELL))
         val cropMs = (System.nanoTime() - t) / 1_000_000
 
         t = System.nanoTime()

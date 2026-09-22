@@ -80,7 +80,7 @@ class ReconcileTest {
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
     }
 
-    private fun readings(array: org.json.JSONArray): Readings = Array(64) { i ->
+    private fun readings(array: org.json.JSONArray): Readings = (0 until 64).map { i ->
         val o = array.getJSONObject(i)
         CellReading(
             kind = when (o.getString("kind")) {
@@ -104,7 +104,7 @@ class ReconcileTest {
             highlighted = o.getBoolean("highlighted"),
             guess = if (o.isNull("guess")) null else o.getString("guess"),
         )
-    }
+    }.toMutableList()
 
     /** The same line `make_reconcile_fixtures.py` writes; the game id is random, so it is out. */
     private fun line(event: Event): String = when (event) {

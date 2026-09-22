@@ -65,7 +65,7 @@ data class BoardGeometry(val region: Region, val cellPx: Double) {
      * when shrinking but degenerates to nearest-neighbour when enlarging, so a small cell
      * blown up is interpolated instead.
      */
-    fun crop(frame: Mat, row: Int, col: Int, size: Int = Squares.EMBED_CROP): Mat {
+    fun crop(frame: Mat, row: Int, col: Int, size: Int = Squares.CELL): Mat {
         val box = cellBox(row, col)
         val x0 = max(0, box.x)
         val y0 = max(0, box.y)

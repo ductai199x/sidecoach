@@ -55,8 +55,11 @@ import java.util.UUID
  * the game; resync fires only when several stay unexplained for a long time.
  */
 
-/** The readings of one frame, indexed row * 8 + column in screen order. */
-typealias Readings = Array<CellReading>
+/**
+ * The readings of one frame, indexed row * 8 + column in screen order. Mutable because
+ * the pipeline replaces a badged king's reading in place, as `pipeline._badged_kings` does.
+ */
+typealias Readings = MutableList<CellReading>
 
 typealias Observation = LinkedHashMap<Int, CellReading>
 
