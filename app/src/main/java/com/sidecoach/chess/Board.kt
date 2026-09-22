@@ -29,13 +29,27 @@ data class Piece(val pieceType: Int, val colour: Boolean) {
 }
 
 data class Move(val from: Int, val to: Int, val promotion: Int = 0) {
-    fun uci(): String =
-        squareName(from) + squareName(to) + if (promotion != 0) PIECE_SYMBOLS[promotion] else ""
+    fun uci(): String {
+        // python-chess writes the null move "0000"; no real move has from == to.
+        if (isNull) return "0000"
+        return squareName(from) + squareName(to) + if (promotion != 0) PIECE_SYMBOLS[promotion] else ""
+    }
 
     override fun toString(): String = uci()
 
+    /** python-chess's `bool(move)`: the null move is the falsy one. */
+    val isNull: Boolean get() = from == 0 && to == 0 && promotion == 0
+
     companion object {
-        fun fromUci(uci: String): Move = Move(
+        /** `chess.Move.null()`: hand the turn over without changing anything else. */
+        val NULL = Move(0, 0, 0)
+
+        fun fromUci(uci: String): Move {
+            if (uci == "0000") return NULL
+            return fromSquares(uci)
+        }
+
+        private fun fromSquares(uci: String): Move = Move(
             parseSquare(uci.substring(0, 2)),
             parseSquare(uci.substring(2, 4)),
             if (uci.length > 4) PIECE_SYMBOLS.indexOf(uci.substring(4, 5)) else 0,
@@ -688,6 +702,12 @@ class Board {
         halfmoveClock += 1
         if (turn == BLACK) fullmoveNumber += 1
 
+        // On a null move, simply swap turns and reset the en passant square.
+        if (move.isNull) {
+            turn = !turn
+            return
+        }
+
         if (isZeroing(move)) halfmoveClock = 0
 
         val fromBb = BB_SQUARES[move.from]
@@ -989,6 +1009,7 @@ class Board {
     }
 
     private fun algebraicWithoutSuffix(move: Move): String {
+        if (move.isNull) return "--"
         if (isCastling(move)) {
             return if (squareFile(move.to) < squareFile(move.from)) "O-O-O" else "O-O"
         }
