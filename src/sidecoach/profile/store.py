@@ -348,6 +348,25 @@ class Store:
             ).fetchall()
         return [GameRow(**dict(row)) for row in rows]
 
+    def delete_game(self, game_id: str) -> None:
+        """Every row of a game: one followed provisionally that turned out not to be one."""
+        with self._lock, self._db:
+            for table in ("evidence", "dialogue", "recommendations", "moves", "games"):
+                self._db.execute(f"DELETE FROM {table} WHERE game_id = ?", (game_id,))
+
+    def purge_unfinished(self, min_plies: int) -> int:
+        """Games with no result and fewer than `min_plies` moves -- positions the app was
+        closed on before they could qualify -- removed; returns how many."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT g.game_id FROM games g LEFT JOIN moves m ON m.game_id = g.game_id "
+                "WHERE g.result IS NULL GROUP BY g.game_id HAVING COUNT(m.move_id) < ?",
+                (min_plies,),
+            ).fetchall()
+        for row in rows:
+            self.delete_game(str(row["game_id"]))
+        return len(rows)
+
     def games_count(self) -> int:
         with self._lock:
             row = self._db.execute(

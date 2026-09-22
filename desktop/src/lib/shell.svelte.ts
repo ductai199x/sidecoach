@@ -111,10 +111,10 @@ export async function buildShell(terminal: { shown: () => boolean; toggle: () =>
     ],
   });
   const verboseItem = await check("Verbose terminal", store.filters.verbose, () => (store.filters.verbose = !store.filters.verbose), "debug-verbose");
-  // Recording is off unless asked: the frames, the events and the log of this session go
-  // to the data folder's recordings/, to show a bug. Starts and stops within a second of a
-  // running session; before Start it applies from Start.
-  const recordItem = await check("Record this session (to show a bug)", !!store.state.record_wanted, async () => {
+  // The saved opt-in (Settings > Screen > Record sessions): the frames, the events and
+  // the log of every session go to the data folder's recordings/, to show a bug. Starts
+  // and stops within a second of a running session; before Start it applies from Start.
+  const recordItem = await check("Record sessions (to show a bug)", !!store.state.record_wanted, async () => {
     const on = !store.state.record_wanted;
     const r = await panel.setRecord(on);
     store.state.record_wanted = r.on;

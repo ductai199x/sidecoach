@@ -291,12 +291,14 @@ def test_each_position_is_measured_once() -> None:
     after.push(e2e4)
     annotator.assess("g", after, chess.Move.from_uci("e7e5"), 2)
     whole = [fen for fen, multipv in zip(fake.calls, fake.multipvs, strict=True) if multipv != 1]
-    assert len(whole) == 3, "start, after e4, after e5: each measured whole once"
-    assert fake.multipvs.count(1) == 2, "one verdict search per move"
+    assert len(whole) == 2, "after e4, after e5: each measured whole once"
+    # The start is measured for the verdict alone (its whole analysis is the pipeline's
+    # own position submit); each position after a move once thin, then whole.
+    assert fake.multipvs.count(1) == 3, "one verdict search per position"
     annotator.reset()
     annotator.assess("g", board, e2e4, 1)
     whole = [fen for fen, multipv in zip(fake.calls, fake.multipvs, strict=True) if multipv != 1]
-    assert len(whole) == 5, "a new game measures again"
+    assert len(whole) == 3, "a new game measures again"
 
 
 def test_assessment_carries_the_loss_the_best_line_and_the_tags() -> None:
@@ -423,3 +425,38 @@ def _drain(analyser: Analyser, timeout: float = 10.0) -> list[object]:
             return events
         time.sleep(0.01)
     return events
+
+
+def test_behind_a_fast_game_the_analyser_keeps_the_verdicts_and_drops_stale_analyses() -> None:
+    """Moves arriving faster than the engine measures them: every ply still gets its
+    verdict (the best line at the full depth, both positions), and the whole analysis --
+    candidates, threats -- is run only for the position the player faces (2026-09-22: a
+    queen ending at two seconds a move ran forty plies behind, every word on a move
+    'not spoken: board moved on', and the review waited on the backlog)."""
+    from sidecoach.analysis.annotator import Analyser
+    from sidecoach.events import Analysis, MoveAssessment
+
+    fake = FakeEngine({})
+    annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+    analyser = Analyser(annotator)
+    board = chess.Board()
+    # Five plies queued before the worker starts: it is behind from the first one.
+    for ply, san in enumerate(["e4", "e5", "Nf3", "Nc6", "Bb5"], start=1):
+        move = board.parse_san(san)
+        analyser.submit_move("g", board, move, ply)
+        board.push(move)
+    analyser.start()
+    deadline = time.monotonic() + 5
+    got: list = []
+    while time.monotonic() < deadline and len([e for e in got if isinstance(e, Analysis)]) < 1:
+        got += analyser.poll()
+        time.sleep(0.02)
+    time.sleep(0.1)
+    got += analyser.poll()
+    analyser.close()
+    assessments = [e for e in got if isinstance(e, MoveAssessment)]
+    analyses = [e for e in got if isinstance(e, Analysis)]
+    assert [a.ply for a in assessments] == [1, 2, 3, 4, 5], "a verdict for every ply"
+    assert [a.ply for a in analyses] == [5], "the whole analysis for the latest position only"
+    assert analyser.skipped == 4
+    assert fake.multipvs.count(6) == 1, "one whole measurement: the position the player faces"

@@ -19,7 +19,9 @@ import json
 import queue
 import random
 import re
+import statistics
 import threading
+from collections import deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -506,6 +508,16 @@ class _Position:
     last_move: str | None = None
 
 
+# The game's pace: the user's last few think times. Under FAST_PACE_S a move, the game
+# is fast -- a model reply (two to five seconds) would land after the next move, and a
+# spoken sentence (three to five) would be talked over the next two. So a fast game
+# gets the coach's templates, written from the board at once, and gets them as text;
+# the voice resumes when the player slows down (see the panel's PACE_RESUME_S) and for
+# what they ask (Tai, 2026-09-22: "the coach has to be able to keep up with the game").
+FAST_PACE_S = 6.0
+PACE_MOVES = 4
+
+
 @dataclass
 class _Request:
     trigger: Trigger
@@ -543,6 +555,9 @@ class _Request:
     # writes (the same model at less reasoning, by default none: the first sound comes
     # in under a second instead of three).
     routine: bool = False
+    # A fast game: the fallback -- the template written from the board -- is the reply,
+    # and the model is not called (it could not keep up).
+    template_only: bool = False
 
 
 def _after_best(request: _Request) -> list[chess.Board]:
@@ -715,10 +730,11 @@ class Speaker:
         repaired = False
         streamed = False
         provider = self.routine_provider if request.routine else self.provider
-        if getattr(provider, "offline", False):
-            # No model (llm.provider none): the request's fallback is the reply -- the
-            # verdict from the board, the lesson or hint template, the review's own
-            # sentences -- or silence when there is none. Free and offline.
+        if getattr(provider, "offline", False) or request.template_only:
+            # No model (llm.provider none), or no time for one (a fast game): the
+            # request's fallback is the reply -- the verdict from the board, the lesson
+            # or hint template, the review's own sentences -- or silence when there is
+            # none. Free and offline.
             self.fallbacks += 1
             text = request.fallback
             return Spoken(
@@ -1206,6 +1222,8 @@ class Coach:
         # summary (Tai, 2026-09-20: a solved puzzle is left, not summed up); every other
         # move gets its word or its lesson as in a game.
         self.kind = "game"
+        # The user's last few think times, for the game's pace (see FAST_PACE_S).
+        self._think_s: deque[float] = deque(maxlen=PACE_MOVES)
         # The player model as the profile stage last reported it, and the review of the
         # game just ended, for the coach's summary.
         self.profile: ProfileSnapshot | None = None
@@ -1565,7 +1583,24 @@ class Coach:
         # and thus the control's band; increment slack does not cross the coarse bands.
         self.policy.time_control = time_control_of(self._clock_peak_ms)
 
+    @property
+    def pace_s(self) -> float | None:
+        """The user's recent think time, in seconds: the median of the last few moves,
+        or None before there are two to go by."""
+        if len(self._think_s) < 2:
+            return None
+        return statistics.median(self._think_s)
+
+    @property
+    def fast_pace(self) -> bool:
+        """Whether the game is being played faster than the coach can keep up with a
+        model and a voice: templates and text until the player slows down."""
+        pace = self.pace_s
+        return pace is not None and pace < FAST_PACE_S
+
     def _on_move(self, event: MovePlayed, ts: float) -> None:
+        if event.by_user and event.think_ms is not None:
+            self._think_s.append(event.think_ms / 1000.0)
         self.board = chess.Board(event.fen_after)
         self.moves[event.ply] = event
         self.conversation.move(event)
@@ -1968,6 +2003,9 @@ class Coach:
             assessment=assessment,
             stream_to=self.stream_sink(trigger, position.ply) if self.stream_sink else None,
             routine=routine,
+            # A fast game gets the template, not a model reply; what the player asks, and
+            # the review of a game that is over, always get the model.
+            template_only=(self.fast_pace and trigger not in (Trigger.USER_ASK, Trigger.REVIEW)),
         )
         self.speaker.submit(request)
 

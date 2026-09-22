@@ -1360,3 +1360,73 @@ def test_a_puzzle_solved_by_mate_gets_no_word_and_no_summary() -> None:
         51.5,
     )
     assert [m.trigger for m in _messages(coach)] == [Trigger.POST_MISTAKE]
+
+
+def test_a_fast_game_gets_the_templates_and_no_model_call() -> None:
+    """The user's think times set the pace: under FAST_PACE_S a move, the coach's word
+    on a move -- even a mistake's lesson -- is the template written from the board,
+    at once, with no model call that could not keep up (Tai, 2026-09-22: a queen
+    ending at two seconds a move, the coach silent from ply 80 to the mate). What the
+    player asks still goes to the model."""
+    from sidecoach.coach.coach import FAST_PACE_S
+
+    coach, provider = _coach(["never used for a move", "[p=1.0] Asked and answered."])
+    coach.local_verdicts = False
+    _start(coach)
+    board = chess.Board()
+    plies = ("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6")
+    for ply, san in enumerate(plies, start=1):
+        move = board.parse_san(san)
+        before = board.fen()
+        board.push(move)
+        coach.on_event(
+            MovePlayed(
+                game_id="g",
+                ply=ply,
+                san=san,
+                uci=move.uci(),
+                fen_before=before,
+                fen_after=board.fen(),
+                by_user=(ply % 2 == 1),
+                think_ms=int(FAST_PACE_S * 1000 / 3),  # three times faster than the line
+            ),
+            float(ply),
+        )
+    assert coach.fast_pace, "two quick moves of the user's and the game counts as fast"
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    _mate_in_one_played(coach)
+    out = _messages(coach)
+    assert len(out) == 1 and out[0].trigger is Trigger.POST_MOVE and out[0].text
+    assert provider.prompts == [], "no model call in a fast game"
+    # The ask is the exception: the player is waiting for it.
+    coach.ask("what was that about", 12.0)
+    out = _messages(coach)
+    assert out and out[-1].trigger is Trigger.USER_ASK
+    assert len(provider.prompts) >= 1, "the ask goes to the model"
+    # Slow down and the model comes back.
+    for ply in (8, 9):
+        coach.on_event(
+            MovePlayed(
+                game_id="g",
+                ply=ply,
+                san="a3",
+                uci="a2a3",
+                fen_before=board.fen(),
+                fen_after=board.fen(),
+                by_user=True,
+                think_ms=int(FAST_PACE_S * 3000),
+            ),
+            20.0 + ply,
+        )
+    assert not coach.fast_pace
+
+
+def test_the_voice_holds_its_word_in_a_fast_game_and_says_it_when_the_player_slows() -> None:
+    from sidecoach.ui.panel import PanelEngine
+
+    va = PanelEngine.voice_action
+    assert va("post_move", "Qxf7#: mate.", 7, 7, False, None, True) == "text"
+    assert va("post_mistake", "Bb7 was a miss.", 7, 7, False, None, True) == "text"
+    assert va("user_ask", "Yes.", 7, 7, False, None, True) == "speak", "an ask is answered aloud"
+    assert va("review", "You won.", 7, 7, False, None, True) == "speak"
+    assert va("post_move", "Qxf7#: mate.", 7, 7, False, None, False) == "speak"

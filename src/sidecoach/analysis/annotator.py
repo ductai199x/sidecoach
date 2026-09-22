@@ -94,6 +94,10 @@ class GameAnnotator:
     book: Book | None = None
     with_threats: bool = True
     _cache: dict[str, Measured] = field(default_factory=dict, init=False, repr=False)
+    # Positions measured for a verdict only: the best line at the full depth, no
+    # candidates, no threats. Kept apart from `_cache`, so a later whole measurement of
+    # the same position is not answered with the thin one.
+    _verdict_cache: dict[str, Measured] = field(default_factory=dict, init=False, repr=False)
     # The last move assessed: game, ply, loss, where it landed and whether it captured, so
     # the next move knows whether the opponent just erred and whether it is merely taking
     # back.
@@ -104,7 +108,32 @@ class GameAnnotator:
     def reset(self) -> None:
         """Forget the cache; a new game shares no positions with the last one."""
         self._cache.clear()
+        self._verdict_cache.clear()
         self._previous = None
+
+    def measure_for_verdict(self, board: chess.Board) -> Measured:
+        """The position measured for a verdict: whole if it already is, else its best
+        line alone at the full depth -- what `eval_loss` needs, at a fraction of the
+        cost. When the engine is behind a fast game, this is all a stale ply gets
+        (2026-09-22: a queen ending played at two seconds a move ran the analyser forty
+        plies behind, and every word on a move came after the board had moved on)."""
+        key = board.fen()
+        whole = self._cache.get(key)
+        if whole is not None:
+            return whole
+        thin = self._verdict_cache.get(key)
+        if thin is not None:
+            return thin
+        lines = self.engine.analyse(board, depth=self.depth, multipv=1)
+        thin = Measured(
+            fen=key,
+            lines=lines,
+            score=position_score(board, lines),
+            decisive=False,
+            only_move=False,
+        )
+        self._verdict_cache[key] = thin
+        return thin
 
     def measure(self, board: chess.Board) -> Measured:
         key = board.fen()
@@ -159,21 +188,12 @@ class GameAnnotator:
         whole; a position already measured whole is not searched again."""
         if move not in before.legal_moves:
             raise ValueError(f"{move.uci()} is not legal in {before.fen()}")
-        measured_before = self.measure(before)
+        measured_before = self.measure_for_verdict(before)
         # The history comes along: the opening a game is in is a fact about its moves, not
         # about the position, and the position after this move is the next move's history.
         after = before.copy()
         after.push(move)
-        measured_after = self._cache.get(after.fen())
-        if measured_after is None:
-            lines = self.engine.analyse(after, depth=self.depth, multipv=1)
-            measured_after = Measured(
-                fen=after.fen(),
-                lines=lines,
-                score=position_score(after, lines),
-                decisive=False,
-                only_move=False,
-            )
+        measured_after = self.measure_for_verdict(after)
         loss = eval_loss(measured_before.lines, move.uci(), measured_after.score)
         tags = self._move_tags(before, move, measured_after)
         best = measured_before.lines[0].moves if measured_before.lines else []
@@ -313,6 +333,7 @@ class Analyser:
         self.max_pending = max_pending
         self.dropped = 0
         self.failures = 0
+        self.skipped = 0  # whole analyses not run for plies the game had already left
         self.last_error: str | None = None
         self._requests: queue.Queue[_Request | None] = queue.Queue()
         self._results: queue.SimpleQueue[Event] = queue.SimpleQueue()
@@ -392,12 +413,19 @@ class Analyser:
                         self.annotator.analysis_event(request.game_id, request.board, request.ply)
                     )
                 else:
-                    # The verdict first, from the best line alone; the position whole after.
+                    # The verdict first, from the best line alone; the position whole after
+                    # -- unless newer moves are waiting: then this ply is history, its
+                    # verdict is all the coach and the review need, and the whole analysis
+                    # (candidates, threats, the decisive-moment call) goes to the position
+                    # the player is actually looking at.
                     self._results.put(
                         self.annotator.assess_move(
                             request.game_id, request.board, request.move, request.ply
                         )
                     )
+                    if not self._requests.empty():
+                        self.skipped += 1
+                        continue
                     after = request.board.copy()
                     after.push(request.move)
                     self._results.put(

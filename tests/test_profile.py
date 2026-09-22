@@ -949,15 +949,15 @@ def test_words_that_say_nothing_change_nothing() -> None:
 
 
 def test_a_position_is_coached_but_never_recorded() -> None:
-    """A puzzle, an analysis board or a game joined from the middle begins as a
-    GameStarted of kind "position": the profile keeps no game, no evidence, no review
-    and no session count for it (a solved puzzle stood in the record as a game won by
-    checkmate in three moves at 100% accuracy, 2026-09-20)."""
+    """A puzzle or an analysis board begins as a GameStarted of kind "position" and is
+    over within a few plies: the profile keeps no game, no evidence, no review and no
+    session count for it (a solved puzzle stood in the record as a game won by
+    checkmate in three moves at 100% accuracy, 2026-09-20). One that runs on is a game
+    joined late; see the test below."""
     f = Feed()
     f.play("e4")
     puzzle = chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R b KQkq - 0 1")
     f.send(GameStarted(game_id="p", user_side=Side.BLACK, start_fen=puzzle.fen(), kind="position"))
-    assert f.store.game("p") is None
     move = puzzle.parse_san("d4")
     fen_before = puzzle.fen()
     puzzle.push(move)
@@ -989,3 +989,81 @@ def test_a_position_is_coached_but_never_recorded() -> None:
     assert f.store.game("p") is None and f.store.moves("p") == [] and f.store.evidence("p") == []
     assert f.store.games_count() == 0
     assert f.profiler.end_session(f.ts + 1) is None, "nothing to sum up: no game was played"
+
+
+def _feed_position(f: Feed, board: chess.Board, game_id: str, plies: int) -> None:
+    """`plies` legal moves played on a joined position, each with its verdict."""
+    for i in range(plies):
+        move = next(iter(board.legal_moves))
+        fen_before = board.fen()
+        by_user = (board.turn == chess.WHITE) == (f.user_side is Side.WHITE)
+        board.push(move)
+        f.send(
+            MovePlayed(
+                game_id=game_id,
+                ply=i + 1,
+                san=move.uci(),
+                uci=move.uci(),
+                fen_before=fen_before,
+                fen_after=board.fen(),
+                by_user=by_user,
+                think_ms=1500,
+            )
+        )
+        f.send(
+            MoveAssessment(
+                game_id=game_id,
+                ply=i + 1,
+                uci=move.uci(),
+                expected_loss=0.0,
+                severity=Severity.NONE,
+                best=[move.uci()],
+                label=Label.GOOD,
+                accuracy=100.0,
+            )
+        )
+
+
+def test_a_game_joined_from_the_middle_is_still_a_game() -> None:
+    """A position that runs long enough to be no puzzle is a game joined late: recorded
+    from the join, reviewed at the end (Tai, 2026-09-22: a 133-ply bot game joined at
+    move 3 ended in checkmate with no review, no summary, not a word -- 'a position')."""
+    from sidecoach.profile.profiler import PROVISIONAL_PLIES
+
+    f = Feed(user_side=Side.BLACK)
+    joined = chess.Board("rnbqkb1r/pppp1ppp/5n2/4p3/4P3/2N5/PPPP1PPP/R1BQKBNR w KQkq - 2 3")
+    f.send(GameStarted(game_id="j", user_side=Side.BLACK, start_fen=joined.fen(), kind="position"))
+    assert f.store.game("j") is not None, "followed from the join, provisionally"
+    _feed_position(f, joined, "j", PROVISIONAL_PLIES)
+    ended = f.send(
+        GameEnded(
+            game_id="j", result="0-1", reason="game over on board", pgn="", final_fen=joined.fen()
+        )
+    )
+    assert any(isinstance(e, GameReview) for e in ended), "a game joined late is reviewed"
+    assert f.store.games_count() == 1
+    assert len(f.store.moves("j")) == PROVISIONAL_PLIES
+
+
+def test_a_position_that_ends_early_leaves_nothing_behind() -> None:
+    """A puzzle solved in a few plies, or a position left for another, was never a
+    game: its provisional rows go."""
+    from sidecoach.profile.profiler import PROVISIONAL_PLIES
+
+    f = Feed(user_side=Side.WHITE)
+    puzzle = chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R w KQkq - 0 1")
+    f.send(GameStarted(game_id="p", user_side=Side.WHITE, start_fen=puzzle.fen(), kind="position"))
+    _feed_position(f, puzzle, "p", 3)
+    assert f.store.game("p") is not None
+    ended = f.send(GameEnded(game_id="p", result="1-0", reason="game over on board", pgn=""))
+    assert ended == [] and f.store.game("p") is None and f.store.moves("p") == []
+    # Left for the next puzzle before it ended: the same.
+    other = chess.Board("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1")
+    f.send(GameStarted(game_id="q", user_side=Side.WHITE, start_fen=other.fen(), kind="position"))
+    _feed_position(f, other, "q", PROVISIONAL_PLIES - 1)
+    f.send(GameStarted(game_id="r", user_side=Side.WHITE, start_fen=other.fen(), kind="position"))
+    assert f.store.game("q") is None and f.store.games_count() == 0
+    # Closed on a position: the next session's start clears it.
+    assert f.store.game("r") is not None
+    Profiler(f.store, session_id="s2", ts=100.0)
+    assert f.store.game("r") is None

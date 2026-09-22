@@ -58,6 +58,12 @@ from sidecoach.profile.store import Store
 # A finished game waits this long for the engine's last verdicts before its review is
 # built from what is there.
 REVIEW_GRACE_S = 90.0
+# A position begun from a board read cold -- a puzzle, an analysis board, or a live game
+# joined from the middle -- is followed as a game provisionally and kept once this many
+# plies have been played on it: no puzzle runs that long, and a game joined a few moves in
+# is still a game (Tai, 2026-09-22: a 133-ply bot game joined at move 3 got no review
+# because it was "a position"). Abandoned or ended sooner, its rows are removed.
+PROVISIONAL_PLIES = 16
 # The player's first words within this long after the coach's lesson on a mistake are
 # about that mistake: kept beside it as their self-report.
 SELF_REPORT_S = 60.0
@@ -121,6 +127,7 @@ class _Game:
     lesson: tuple[tuple[int, int], float] | None = None
     # The game is over; its review waits for the last verdicts (see `_maybe_review`).
     end: GameEnded | None = None
+    provisional: bool = False  # a position, not yet known to be a game
     ended_at: float = 0.0
     reviewed: bool = False
 
@@ -152,6 +159,7 @@ class Profiler:
         self.store = store
         self.session_id = session_id or uuid.uuid4().hex[:8]
         self.store.start_session(self.session_id, ts)
+        self.store.purge_unfinished(PROVISIONAL_PLIES)
         self._game: _Game | None = None
         self._clock: tuple[int | None, int | None] = (None, None)
         self._reviews: list[GameReview] = []
@@ -220,31 +228,44 @@ class Profiler:
         return []
 
     def _start(self, event: GameStarted, ts: float) -> list[Event]:
+        self._drop_if_provisional()
         if event.kind != "game":
-            # A puzzle, an analysis board, a game joined from the middle: coached, not
-            # recorded -- a solved puzzle was "a game won by checkmate in 3 moves,
-            # accuracy 100" in the record (2026-09-20). A position that is a puzzle of
-            # the store is followed for its outcome, though.
+            # A puzzle, an analysis board, or a game joined from the middle. A puzzle of
+            # the store is followed for its outcome, not as a game -- a solved puzzle was
+            # "a game won by checkmate in 3 moves, accuracy 100" in the record
+            # (2026-09-20). Anything else is followed as a game provisionally (see
+            # PROVISIONAL_PLIES). A puzzle on the panel's own board (kind "puzzle") is
+            # scored by the panel through `record_puzzle`.
             self._game = None
             self._attempt = None
             self._attempt_game = None
-            # A puzzle on the panel's own board (kind "puzzle") is scored by the panel
-            # through `record_puzzle`; one on the screen is matched here.
-            if self.puzzles is not None and event.kind == "position":
+            if event.kind != "position":
+                return []
+            if self.puzzles is not None:
                 self._attempt = self._puzzle_at(event.start_fen)
                 self._attempt_game = event.game_id if self._attempt is not None else None
-            return []
+                if self._attempt is not None:
+                    return []
         self._game = _Game(
             game_id=event.game_id,
             user_side=event.user_side,
             start_fen=event.start_fen,
             started_at=ts,
             last_fen=event.start_fen,
+            provisional=event.kind != "game",
         )
         self.store.start_game(
             event.game_id, ts, event.user_side.value, event.start_fen, self.session_id
         )
         return []
+
+    def _drop_if_provisional(self) -> None:
+        """A provisional game that never qualified -- a puzzle solved or left, an
+        analysis board closed -- leaves nothing in the record."""
+        game = self._game
+        if game is not None and game.provisional:
+            self.store.delete_game(game.game_id)
+            self._game = None
 
     def _move(self, game: _Game, event: MovePlayed, ts: float) -> list[Event]:
         key = (game.segment, event.ply)
@@ -276,6 +297,8 @@ class Profiler:
             material=material_balance(after, user),
             ts=ts,
         )
+        if game.provisional and len(game.plies) >= PROVISIONAL_PLIES:
+            game.provisional = False  # long enough to be no puzzle: a game, joined late
         return []
 
     def _score_for_user(self, game: _Game, event: Analysis) -> float | None:
@@ -420,6 +443,9 @@ class Profiler:
         return []
 
     def _end(self, game: _Game, event: GameEnded, ts: float) -> list[Event]:
+        if game.provisional:
+            self._drop_if_provisional()  # over before it could be a game: a puzzle
+            return []
         game.ended = True
         game.end = event
         game.ended_at = ts

@@ -114,11 +114,14 @@ class GlobalPushToTalk:
             return got.startswith(name + "_") or (got == generic and "_" in name)
 
         def seen(key: Any, what: str) -> None:
-            if self._on_seen is not None:
-                vk = getattr(key, "vk", None)
-                self._on_seen(
-                    f"{what} {getattr(key, 'name', None) or key!r}" + (f" (vk {vk})" if vk else "")
-                )
+            # Only a key that could be the push-to-talk key is named: modifiers, function
+            # keys and the like. Never a character -- the hook sees every key in every
+            # window, and a log that names them is a keylogger (found in a live ring on
+            # 2026-09-22, with a whole typed message in it).
+            if self._on_seen is None or not isinstance(key, keyboard.Key):
+                return
+            vk = getattr(key, "vk", None)
+            self._on_seen(f"{what} {key.name}" + (f" (vk {vk})" if vk else ""))
 
         def pressed(key: Any) -> None:
             seen(key, "down")

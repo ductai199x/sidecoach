@@ -110,6 +110,11 @@ STALE_AFTER = {"post_move": 2, "post_mistake": 2, "decisive_question": 0, "stuck
 STALE_PLIES = 2  # the fallback for any other trigger
 # A "verdict" this short (post-move "exf5: good.") is skipped when the voice is busy.
 SHORT_VERDICT = 40
+# A fast game (coach.fast_pace): the coach's words are shown, not spoken -- a sentence
+# would be talked over the next two moves. The last unspoken word is said after all
+# once the player has been thinking in that position this long: they slowed down, and
+# a lesson or a question is worth hearing then (Tai, 2026-09-22).
+PACE_RESUME_S = 6.0
 HEALTH_EVERY_S = 1.0
 # A tick of the engine loop that takes longer than this is logged with where the time
 # went: the capture, the recorder, the vision, or the rest (engine, profile, coach). A
@@ -237,11 +242,13 @@ class PanelEngine:
     # ends them at exit. A settings save reaches into them whenever they exist.
     _assessing: Any = field(default=None, init=False)
     _coaching: Any = field(default=None, init=False)
-    # Recording, asked for from the page (Debug > Record this session): None leaves it to
-    # the launch flags (--record/--no-record), True or False overrides them, and a running
-    # session starts or stops its recording within a tick (Tai, 2026-09-21: off by default,
-    # but there must be a way to record a bug).
-    _record_wanted: bool | None = field(default=None, init=False)
+    # Recording is the saved opt-in `capture.record` (Settings, or Debug > Record sessions,
+    # which writes the same setting), or the launch flags in development
+    # (--record with --persist). A running session starts or stops its recording within a
+    # tick of the setting changing (Tai, 2026-09-21: off by default, but there must be a
+    # way to record a bug; 2026-09-22: a setting, and on the spot). A recording that
+    # failed (a display change, a full disk) stays off until the next Start.
+    _record_failed: bool = field(default=False, init=False)
     # Dictation: the words on the screen so far and the timer that sends them.
     _dictation_text: str = field(default="", init=False)
     _dictation_timer: threading.Timer | None = field(default=None, init=False)
@@ -254,6 +261,9 @@ class PanelEngine:
     # A settings save that changed what the engine was built from (the Stockfish binary,
     # the tools folder): the next Start rebuilds it.
     _engine_stale: bool = field(default=False, init=False)
+    # The coach's last word held back for pace: (trigger, text, ply, when), spoken once
+    # the player slows down in that position.
+    _held_word: tuple[str, str, int | None, float] | None = field(default=None, init=False)
     # The settings page's live test of the microphone and speech recognition: while on, it
     # listens (voice activity) and what it hears goes to `_heard_test`, not to the coach;
     # the mode it interrupted is restored after. It switches itself off when the page
@@ -315,7 +325,7 @@ class PanelEngine:
             "voices": english_voices(self.settings.voice_model_dir() / "voices-v1.0.bin"),
             "muted": self.muted,
             "recording_dir": None,
-            "record_wanted": self.record and self.persist,
+            "record_wanted": self._recording_wanted(),
             "coach_on": self.coach,
             "analysis_on": self.analysis,
             "voice_detail": self._tts.healthcheck()[1],
@@ -572,6 +582,11 @@ class PanelEngine:
         def did(name: str) -> None:
             applied.append(name)
 
+        if "capture.record" in changed:
+            # The session loop reads the wish every tick; the page's switch follows now.
+            self._record_failed = False
+            self._set(record_wanted=self._recording_wanted())
+            did("capture.record")
         with contextlib.suppress(Exception):
             if "voice.voice" in changed:
                 self.set_voice(new.voice.voice)
@@ -931,14 +946,25 @@ class PanelEngine:
         clip = np.asarray(audio, dtype=np.float32)
         self._on_utterance(clip, seconds if seconds is not None else len(clip) / 16000)
 
+    def _recording_wanted(self) -> bool:
+        """Record: the saved opt-in, or the development launch flags."""
+        return bool(self.settings.capture.record or (self.record and self.persist))
+
     def set_record(self, on: bool) -> dict[str, Any]:
-        """Record this session (frames, events and the log to data/recordings/<stamp>),
-        or stop. Takes effect within a tick of a running session, at Start otherwise."""
+        """The Debug menu's switch: the same setting as Settings > Screen > Record sessions,
+        saved to the settings file, applied within a tick of a running session."""
+        from sidecoach.config import save_settings
+
         with self._lock:
-            self._record_wanted = on
-            self._state["record_wanted"] = on
+            self.settings.capture.record = on
+            self._record_failed = False
+            self._state["record_wanted"] = self._recording_wanted()
             running = self._state.get("running", False)
             folder = self._state.get("recording_dir")
+        try:
+            save_settings(self.settings)
+        except OSError as exc:
+            self._emit("sys", "warn", f"the setting could not be saved: {exc}")
         self._emit(
             "sys",
             "info",
@@ -1167,6 +1193,7 @@ class PanelEngine:
         ply_now: int,
         busy: bool,
         playing: tuple[str, int | None] | None = None,
+        fast: bool = False,
     ) -> str:
         """What the voice should do with a coach message, so it never talks about a
         position the board has left behind.
@@ -1187,6 +1214,8 @@ class PanelEngine:
         if trigger == "user_ask":
             # The user asked; the answer is owed aloud even if the board has moved on.
             return "supersede" if busy else "speak"
+        if fast and trigger != "review":
+            return "text"  # a fast game: on the page now, aloud if the player slows down
         allowed = STALE_AFTER.get(trigger, STALE_PLIES - 1)
         if ply is not None and ply_now - ply > allowed:
             return "stale"
@@ -1222,7 +1251,7 @@ class PanelEngine:
                 ply_now = int(self._state.get("ply") or 0)
             if not started:
                 action = self.voice_action(
-                    name, sentence, ply, ply_now, self._tts.busy, self._voicing
+                    name, sentence, ply, ply_now, self._tts.busy, self._voicing, self._coach_fast()
                 )
                 if action == "supersede":
                     self._tts.stop()
@@ -1243,7 +1272,9 @@ class PanelEngine:
             return "muted"
         with self._lock:
             ply_now = int(self._state.get("ply") or 0)
-        action = self.voice_action(trigger, text, ply, ply_now, self._tts.busy, self._voicing)
+        action = self.voice_action(
+            trigger, text, ply, ply_now, self._tts.busy, self._voicing, self._coach_fast()
+        )
         if action == "supersede":
             self._tts.stop()
         if action in ("speak", "supersede"):
@@ -1251,7 +1282,37 @@ class PanelEngine:
             self._await_audio(trigger, ply, text)
             self._tts.say(text)
             self._emit("voice", "debug", f"speaking ({self.voice}): {elide(text, 60)}")
+        elif action == "text":
+            self._held_word = (trigger, text, ply, time.monotonic())
         return action
+
+    def _coach_fast(self) -> bool:
+        coach = self._coaching.coach if self._coaching is not None else None
+        return bool(coach is not None and coach.fast_pace)
+
+    def _say_held_word(self, coaching: Any) -> None:
+        """A word held back for pace is spoken once the player has been thinking in that
+        position for PACE_RESUME_S: the game slowed down. A word about a position the
+        board has left is dropped."""
+        held = self._held_word
+        if held is None or self.muted:
+            return
+        trigger, text, ply, since = held
+        coach = coaching.coach
+        with self._lock:
+            ply_now = int(self._state.get("ply") or 0)
+        if ply is not None and ply_now - ply > STALE_AFTER.get(trigger, STALE_PLIES - 1):
+            self._held_word = None
+            return
+        if coach is None or not coach.policy.user_to_move:
+            return
+        if time.monotonic() - since < PACE_RESUME_S or self._tts.busy:
+            return
+        self._held_word = None
+        self._voicing = (trigger, ply)
+        self._await_audio(trigger, ply, text)
+        self._tts.say(text)
+        self._emit("voice", "debug", f"speaking ({self.voice}), the game slowed: {elide(text, 60)}")
 
     # ---- latency, amortised: the move to the first sound, the model's first token ----------
 
@@ -1328,9 +1389,7 @@ class PanelEngine:
 
     def _session_dir(self, live: bool) -> Path:
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        wanted = self._record_wanted
-        recording = (self.record and self.persist) if wanted is None else wanted
-        kind = "recordings" if live and recording else "sessions"
+        kind = "recordings" if live and self._recording_wanted() else "sessions"
         return self.settings.data_dir / kind / stamp
 
     def _run(self) -> None:
@@ -1379,10 +1438,9 @@ class PanelEngine:
             first_folder: Path | None = session  # the launch flags' recording goes to the session
 
             def _ensure_recording() -> None:
-                """Start or stop recording as asked: the launch flags unless the page said."""
+                """Start or stop recording as the setting says, every tick."""
                 nonlocal recorder, events_log, first_folder
-                wanted = self._record_wanted
-                want = (self.record and self.persist) if wanted is None else wanted
+                want = self._recording_wanted() and not self._record_failed
                 if want and recorder is None:
                     folder = first_folder or (
                         self.settings.data_dir / "recordings" / time.strftime("%Y%m%d-%H%M%S")
@@ -1542,8 +1600,7 @@ class PanelEngine:
                             # A display change or a full disk must not end the session, and
                             # must not be retried every tick.
                             self._emit("sys", "error", f"recording stopped: {exc}")
-                            self._record_wanted = False
-                            self._set(record_wanted=False)
+                            self._record_failed = True
                             ensure_recording()
                             changed = gate.changed(frame, ts)
                     else:
@@ -1616,6 +1673,7 @@ class PanelEngine:
                 coaching.tick(ts)
                 coaching.drain()
                 spoken_seen, failures_seen = self._coach_meta(coaching, spoken_seen, failures_seen)
+                self._say_held_word(coaching)
                 silence = self._coach_silence(coaching, silence)
                 self._refresh_state(pipe)
 
@@ -1670,6 +1728,7 @@ class PanelEngine:
                 events_log.close()
             if cap is not None:
                 cap.close()
+            self._record_failed = False  # a fresh Start may record again
             self._set(running=False, status="stopped", recording_dir=None)
             self._emit("sys", "info", "engine stopped")
             self._log.close()
@@ -2038,6 +2097,8 @@ class PanelEngine:
                     meta.append("not spoken: board moved on")
                 elif action == "skip":
                     meta.append("not spoken: voice busy")
+                elif action == "text":
+                    meta.append("text: fast game")
                 elif action == "supersede":
                     meta.append("cut in")
                 self._emit(
@@ -2320,6 +2381,8 @@ class PanelEngine:
             status=(
                 "waiting for a start"
                 if pipe.model is None
+                else f"game over {rec.result or ''} · waiting for the next game".replace("  ", " ")
+                if rec is not None and rec.finished
                 else "following a position"
                 if rec is not None and rec.kind != "game"
                 else "following a game"

@@ -59,6 +59,19 @@ class CaptureSettings(BaseModel):
             applies="now", label="Frames per second", section="Reading the screen"
         ),
     )
+    # Off, nothing from the screen is ever saved (Tai, 2026-09-21). An opt-in that stays
+    # until turned off, and applies on the spot: a running session starts (or stops)
+    # recording within a second of Save; otherwise it holds from the next Start.
+    record: bool = Field(
+        default=False,
+        description="Save every session -- the frames of the screen, the events and the log "
+        "-- under the data folder's recordings/, to send along with a bug report. Off, "
+        "nothing from your screen is saved. Takes effect at once, and stays on until you "
+        "turn it off; a recording is a few hundred MB per game.",
+        json_schema_extra=_extra(
+            applies="now", label="Record sessions (to show a bug)", section="Reading the screen"
+        ),
+    )
 
 
 class EngineSettings(BaseModel):

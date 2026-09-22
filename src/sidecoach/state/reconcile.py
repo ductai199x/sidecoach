@@ -210,6 +210,11 @@ class Reconciler:
         return self._finished
 
     @property
+    def result(self) -> str | None:
+        """The finished game's result ("1-0", "0-1", "1/2-1/2", "*"), else None."""
+        return self._result if self._finished else None
+
+    @property
     def base_fen(self) -> str:
         """The position the move stack starts from: the start, or the last resync."""
         return self._base_fen

@@ -288,22 +288,33 @@ def test_the_panel_starts_with_the_settings_voice(tmp_path: Path) -> None:
     assert named.voice == "af_bella"
 
 
-def test_recording_is_off_unless_asked_and_the_wish_is_kept(tmp_path: Path) -> None:
-    """The app starts the sidecar with --no-record --no-persist; Debug > Record this session
-    turns recording on for the next Start or the running one (Tai, 2026-09-21: off by
-    default, but there must be a way to record a bug)."""
+def test_recording_is_a_saved_opt_in_applied_on_the_spot(tmp_path: Path) -> None:
+    """The app starts the sidecar with --no-record --no-persist; the setting
+    capture.record (Settings > Screen, or Debug > Record sessions, the same switch) turns
+    recording on for the running session or the next Start, and stays until turned off
+    (Tai, 2026-09-21: off by default, but there must be a way to record a bug;
+    2026-09-22: an option in Settings, working on the spot)."""
+    from sidecoach.config import load_settings
+
     settings = Settings(data_dir=tmp_path, voice=_SILENT)
+    settings._source = tmp_path / "sidecoach.toml"
     engine = PanelEngine(
         settings, analysis=False, coach=False, record=False, persist=False, frame_source=iter(())
     )
     state = engine.poll(0)["state"]
     assert state["record_wanted"] is False and state["recording_dir"] is None
+    # The Debug menu writes the setting.
     reply = engine.set_record(True)
     assert reply == {"ok": True, "on": True, "running": False, "folder": None}
     assert engine.poll(0)["state"]["record_wanted"] is True
-    # The session folder follows the wish, not the launch flag.
+    assert load_settings(tmp_path / "sidecoach.toml").capture.record is True
+    # The session folder follows the setting, not the launch flag.
     assert engine._session_dir(live=True).parent.name == "recordings"
-    engine.set_record(False)
+    # Settings > Save applies at once.
+    new = settings.model_copy(deep=True)
+    new.capture.record = False
+    assert "capture.record" in engine.apply_settings(new, ["capture.record"])
+    assert engine.poll(0)["state"]["record_wanted"] is False
     assert engine._session_dir(live=True).parent.name == "sessions"
     assert any("from the next Start" in ln["text"] for ln in engine.poll(0)["lines"])
 
