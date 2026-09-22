@@ -1,0 +1,145 @@
+package com.sidecoach.ui
+
+import android.content.Context
+import com.sidecoach.coach.PolicySettings
+import com.sidecoach.llm.LLMSettings
+import org.json.JSONObject
+
+/**
+ * The settings, as the panel's settings page reads and writes them.
+ *
+ * On a computer they are a TOML file; on a phone there is no file to edit by hand, so they
+ * are one JSON document in the app's own storage, over the defaults the desktop's
+ * `config.py` gives (shipped by `tools/sync_settings.py` with the schema the page renders
+ * from). What the page gets is therefore the same shape it gets on a computer: the values,
+ * the schema, where they live, and which keys are set.
+ *
+ * The API key goes in a store of its own, never in the settings document -- the same rule as
+ * the desktop's, where the key is in the environment or the credential store and the TOML
+ * holds only the name of the variable. The app's storage is private to it and the manifest
+ * turns backups off, so nothing carries the key off the phone.
+ */
+class SettingsStore(private val context: Context) {
+
+    private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    private val keys = context.getSharedPreferences("keys", Context.MODE_PRIVATE)
+
+    private val defaults: JSONObject by lazy {
+        JSONObject(read("settings/defaults.json") ?: "{}")
+    }
+
+    val schema: String by lazy { read("settings/schema.json") ?: "{}" }
+
+    val keyEnvs: JSONObject by lazy { JSONObject(read("settings/key_envs.json") ?: "{}") }
+
+    private fun read(asset: String): String? = try {
+        context.assets.open(asset).bufferedReader(Charsets.UTF_8).use { it.readText() }
+    } catch (_: Exception) {
+        null
+    }
+
+    /** The settings as they stand: the defaults, with whatever was saved over them. */
+    fun values(): JSONObject {
+        val out = JSONObject(defaults.toString())
+        val saved = prefs.getString("json", null) ?: return withPaths(out)
+        val over = runCatching { JSONObject(saved) }.getOrNull() ?: return withPaths(out)
+        merge(out, over)
+        return withPaths(out)
+    }
+
+    /** Where the phone keeps what it keeps; the page shows these and cannot change them. */
+    private fun withPaths(out: JSONObject): JSONObject {
+        out.put("data_dir", context.filesDir.absolutePath)
+        out.put("tools_dir", context.applicationInfo.nativeLibraryDir)
+        return out
+    }
+
+    /** One section of the settings, or an empty object. */
+    fun section(name: String): JSONObject = values().optJSONObject(name) ?: JSONObject()
+
+    fun save(values: JSONObject) {
+        prefs.edit().putString("json", values.toString()).apply()
+    }
+
+    fun secretNames(): List<String> {
+        val names = linkedSetOf("OPENAI_API_KEY", "DASHSCOPE_API_KEY")
+        val custom = section("llm").optString("api_key_env")
+        if (custom.isNotEmpty()) names.add(custom)
+        return names.toList()
+    }
+
+    fun secretSet(name: String): Boolean = !keys.getString(name, null).isNullOrEmpty()
+
+    fun secret(name: String): String? = keys.getString(name, null)
+
+    fun setSecret(name: String, value: String?) {
+        val editor = keys.edit()
+        if (value.isNullOrEmpty()) editor.remove(name) else editor.putString(name, value)
+        editor.apply()
+    }
+
+    /** The `[llm]` section as the factory wants it. */
+    fun llm(): LLMSettings {
+        val o = section("llm")
+        return LLMSettings(
+            provider = o.optString("provider", "none"),
+            model = nullable(o, "model"),
+            baseUrl = nullable(o, "base_url"),
+            apiKeyEnv = nullable(o, "api_key_env"),
+            thinkingControl = nullable(o, "thinking_control"),
+            reasoningEffort = nullable(o, "reasoning_effort"),
+            routineEffort = nullable(o, "routine_effort"),
+            pricePromptPerM = number(o, "price_prompt_per_m"),
+            priceCachedPerM = number(o, "price_cached_per_m"),
+            priceCompletionPerM = number(o, "price_completion_per_m"),
+            timeoutS = o.optDouble("timeout_s", 60.0),
+            extraBody = emptyMap(),
+        )
+    }
+
+    /** The `[coach]` section the interjection policy takes. */
+    fun policy(): PolicySettings {
+        val o = section("coach")
+        val base = PolicySettings()
+        return base.copy(
+            stuckSeconds = o.optDouble("stuck_seconds", base.stuckSeconds),
+            quiet = o.optBoolean("quiet", base.quiet),
+        )
+    }
+
+    fun persona(): String = section("coach").optString("persona", "warm_direct")
+
+    fun rating(): Pair<Int, Int> {
+        val o = section("profile")
+        return o.optInt("rating_low", 1000) to o.optInt("rating_high", 1400)
+    }
+
+    fun summariseEvery(): Int = section("coach").optInt("summarise_every", 0)
+
+    fun compactRecord(): Boolean = section("coach").optBoolean("compact_record", false)
+
+    fun verbalizedSampling(): Boolean = section("coach").optBoolean("verbalized_sampling", false)
+
+    fun localVerdicts(): Boolean = section("coach").optBoolean("local_verdicts", true)
+
+    fun verify(): String = section("coach").optString("verify", "")
+
+    private fun nullable(o: JSONObject, key: String): String? =
+        if (o.isNull(key)) null else o.optString(key).ifEmpty { null }
+
+    private fun number(o: JSONObject, key: String): Double? =
+        if (o.isNull(key)) null else o.optDouble(key).takeIf { !it.isNaN() }
+
+    /** The saved values over the defaults, section by section. */
+    private fun merge(into: JSONObject, from: JSONObject) {
+        for (key in from.keys()) {
+            val value = from.opt(key)
+            val existing = into.opt(key)
+            if (value is JSONObject && existing is JSONObject) {
+                merge(existing, value)
+            } else {
+                into.put(key, value)
+            }
+        }
+    }
+}

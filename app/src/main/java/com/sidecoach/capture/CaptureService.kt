@@ -288,8 +288,12 @@ class CaptureService : Service() {
         handler?.postDelayed(again, TICK_MS)
         val now = SystemClock.elapsedRealtime()
         if (now - lastReadAt < TICK_MS) return
-        // Our own screens are not a game: see SidecoachApp.inFront.
-        if (SidecoachApp.inFront) return
+        // Our own screens are not a game: see SidecoachApp.inFront. The coach still gets
+        // its tick, so a question asked from the panel is answered while it is in front.
+        if (SidecoachApp.inFront) {
+            visionHandler?.post { vision?.coachTick(now / 1000.0) }
+            return
+        }
         synchronized(frameLock) {
             if (reading) return
             reading = true
@@ -313,6 +317,7 @@ class CaptureService : Service() {
                 .onFailure { Log.w(TAG, "the frame could not be read: $it") }
                 .getOrNull()
             copy.recycle()
+            vision.coachTick(ts)
             if (outcome == null) return
             state.value = state.value.copy(reading = outcome)
             PanelEngine.watched(

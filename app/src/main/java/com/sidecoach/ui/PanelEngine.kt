@@ -396,6 +396,22 @@ object PanelEngine {
         emit("user", "info", "you: $text", JSONObject().put("spoken", spoken))
     }
 
+    /** A line from the coach that needed no model and no game: it is said as itself. */
+    fun answered(text: String, trigger: String = "user_ask") {
+        emit(
+            "coach",
+            "info",
+            "$trigger — $text",
+            JSONObject().apply {
+                put("full", text)
+                put("trigger", trigger)
+                put("ply", JSONObject.NULL)
+                put("voice", "text")
+                put("annotations", JSONArray())
+            },
+        )
+    }
+
     fun said(message: CoachMessage, problems: List<String>, attempts: Int) {
         val marks = JSONArray()
         for (mark in message.annotations) {

@@ -148,7 +148,18 @@ class PanelApi(private val version: String, private val setup: SetupApi) : Local
     }
 
     private fun ask(text: String): LocalServer.Reply {
-        if (text.isNotBlank()) PanelEngine.onAsk?.invoke(text)
+        if (text.isBlank()) return ok(done())
+        val coach = PanelEngine.onAsk
+        if (coach == null) {
+            // Nothing is watching, so there is no game to answer about: said now rather
+            // than kept for a Start minutes later, about another game.
+            PanelEngine.heard(text)
+            PanelEngine.answered(
+                "Press Start first: I can only answer about a game I am watching.",
+            )
+            return ok(done())
+        }
+        coach.invoke(text)
         return ok(done())
     }
 

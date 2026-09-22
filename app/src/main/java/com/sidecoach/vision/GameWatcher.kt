@@ -20,8 +20,10 @@ import com.sidecoach.analysis.EngineAssets
 import com.sidecoach.analysis.GameAnnotator
 import com.sidecoach.events.Label
 import com.sidecoach.events.MoveAssessment
+import com.sidecoach.coach.CoachRunner
 import com.sidecoach.state.GamePipeline
 import com.sidecoach.ui.PanelEngine
+import com.sidecoach.ui.SettingsStore
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Mat
@@ -59,6 +61,16 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
     private val gate = ChangeGate()
     private var frameId = 0
     private var reads = 0
+
+    /**
+     * The coach. It belongs to the watcher's lifetime, as the engine does: built when the
+     * session starts, and a model it cannot reach leaves it on, offline.
+     */
+    private val coaching = CoachRunner(SettingsStore(context)).also { runner ->
+        PanelEngine.onAsk = { text ->
+            runner.ask(text, android.os.SystemClock.elapsedRealtime() / 1000.0)
+        }
+    }
 
     /** The last clock the vision read, for the screen. */
     var clocks: ClockObservation? = null
@@ -136,10 +148,16 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
                 PanelEngine.onGameEvent(event)
                 assessing.submit(event)
             }
-            for (event in assessing.drain()) {
+            val assessed = assessing.drain()
+            for (event in assessed) {
                 note(event)
                 PanelEngine.onEngineEvent(event)
             }
+            // The coach, in the order the desktop's loop runs it: the game's events, then
+            // the engine's word on them. The tick and the drain are the loop's own, and
+            // happen whether or not this frame was read (see `coachTick`).
+            coaching.events(events, ts)
+            coaching.events(assessed, ts)
             if (++reads % 5 == 1) {
                 Log.i(
                     TAG,
@@ -175,6 +193,18 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
         } finally {
             bgr.release()
         }
+    }
+
+    /**
+     * Time passing for the coach, and whatever it has finished saying.
+     *
+     * Once a tick, whether or not a frame was read: the app does not read the screen while
+     * its own window is in front, and a question asked from that window still wants its
+     * answer.
+     */
+    fun coachTick(ts: Double) {
+        coaching.tick(ts)
+        coaching.drain()
     }
 
     /** The engine process's CPU time in milliseconds; 0 when there is no engine. */
@@ -232,6 +262,8 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
     }
 
     override fun close() {
+        PanelEngine.onAsk = null
+        coaching.close()
         assessing.close()
         embedder?.close()
     }
