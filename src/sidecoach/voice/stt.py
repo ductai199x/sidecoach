@@ -118,8 +118,12 @@ class ParakeetSTT:
                 self.load_seconds = time.perf_counter() - begun
                 self.device = where
                 return True
-            except Exception as exc:  # noqa: BLE001 - degrade to deaf, never crash the session
-                self._failed = f"{type(exc).__name__}: {exc}"
+            except Exception as exc:  # noqa: BLE001 - degrade to off, never crash the session
+                if "LocalEntryNotFound" in type(exc).__name__ or "outgoing traffic" in str(exc):
+                    # The app keeps the hub offline: the model is fetched by the setup only.
+                    self._failed = "not downloaded yet (Help > Set up)"
+                else:
+                    self._failed = f"{type(exc).__name__}: {exc}"
                 log.warning("Parakeet unavailable, speech recognition is off: %s", exc)
                 return False
 

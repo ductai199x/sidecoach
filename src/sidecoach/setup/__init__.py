@@ -109,11 +109,32 @@ def hf_home(settings: Settings) -> Path:
 
 
 def apply_hf_home(settings: Settings) -> None:
-    """Point onnx-asr's downloads at the app's cache (a no-op outside the app)."""
-    if os.environ.get("SIDECOACH_DATA_DIR") and "HF_HOME" not in os.environ:
-        home = hf_home(settings)
-        home.mkdir(parents=True, exist_ok=True)
-        os.environ["HF_HOME"] = str(home)
+    """Point onnx-asr's cache at the app's folder, and keep the hub offline: nothing is
+    downloaded behind the person's back -- only the setup fetches, with its meter (the
+    warm-up of a fresh install pulled 2.4 GB on its own, 2026-09-21). A no-op outside
+    the app."""
+    if os.environ.get("SIDECOACH_DATA_DIR"):
+        if "HF_HOME" not in os.environ:
+            home = hf_home(settings)
+            home.mkdir(parents=True, exist_ok=True)
+            os.environ["HF_HOME"] = str(home)
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+
+@contextlib.contextmanager
+def hub_online() -> Any:
+    """The hub allowed to download, for the setup's fetch only."""
+    try:
+        from huggingface_hub import constants  # type: ignore[import-not-found]
+    except ImportError:
+        yield
+        return
+    before = constants.HF_HUB_OFFLINE
+    constants.HF_HUB_OFFLINE = False
+    try:
+        yield
+    finally:
+        constants.HF_HUB_OFFLINE = before
 
 
 def download(
@@ -262,8 +283,9 @@ def items(settings: Settings) -> list[Item]:
         try:
             import onnx_asr  # type: ignore[import-not-found]
 
-            onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", providers=["CPUExecutionProvider"])
-            onnx_asr.load_vad("silero", providers=["CPUExecutionProvider"])
+            with hub_online():
+                onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", providers=["CPUExecutionProvider"])
+                onnx_asr.load_vad("silero", providers=["CPUExecutionProvider"])
         finally:
             stop.set()
 

@@ -679,13 +679,14 @@ class Settings(BaseModel):
 
     data_dir: Path = Field(
         default=Path("data"),
-        description="Where the app keeps its data: the profile, the caches, the models.",
-        json_schema_extra=_extra(applies="restart", kind="path", label="Data folder"),
+        description="Where the app keeps its data: the profile, the caches, the models. In the "
+        "app this is the app's own folder and not a setting.",
+        json_schema_extra=_extra(applies="restart", kind="path", label="Data folder", dev=True),
     )
     tools_dir: Path = Field(
         default=Path("tools"),
         description="Where Stockfish is looked for when no path is set.",
-        json_schema_extra=_extra(applies="next", kind="path", label="Tools folder", advanced=True),
+        json_schema_extra=_extra(applies="next", kind="path", label="Tools folder", dev=True),
     )
     capture: CaptureSettings = Field(default_factory=CaptureSettings, description="The screen")
     engine: EngineSettings = Field(default_factory=EngineSettings, description="Stockfish")
@@ -790,11 +791,11 @@ def load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
     settings._source = candidate
     data_dir = os.environ.get("SIDECOACH_DATA_DIR")
     if data_dir:
+        # In the app the shell owns the data folder (one folder named for the app), and
+        # Stockfish lives under it: whatever an older file says, these two are the shell's
+        # (a file that pinned a folder since moved sent Stockfish missing, 2026-09-21).
         settings.data_dir = Path(data_dir)
-        # In the app, Stockfish lives under the data directory too, unless the file says
-        # where else; the development default `tools/` is relative to a checkout.
-        if settings.tools_dir == Path("tools"):
-            settings.tools_dir = settings.data_dir / "tools"
+        settings.tools_dir = settings.data_dir / "tools"
     load_secrets(settings)
     return settings
 
@@ -822,8 +823,11 @@ def to_toml(settings: Settings) -> str:
     left out (TOML has no null), which reads back as the default."""
     lines: list[str] = ["# Sidecoach settings. Written by the app; edit by hand if you like.", ""]
     data = settings.model_dump(mode="json")
-    for key in ("data_dir", "tools_dir"):
-        lines.append(f"{key} = {_toml_value(data[key])}")
+    if not os.environ.get("SIDECOACH_DATA_DIR"):
+        # The folders are the shell's in the app and are never written there; a checkout's
+        # file keeps them.
+        for key in ("data_dir", "tools_dir"):
+            lines.append(f"{key} = {_toml_value(data[key])}")
     for section, values in data.items():
         if not isinstance(values, dict):
             continue
