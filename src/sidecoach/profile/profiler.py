@@ -192,6 +192,8 @@ class Profiler:
             return []
         if game.ended and isinstance(event, MovePlayed | Takeback | Resync | GameEnded):
             return []
+        if isinstance(event, Analysis | MoveAssessment) and event.game_id != game.game_id:
+            return []  # the engine's late word on the game before this one
         if isinstance(event, MovePlayed):
             return self._move(game, event, ts)
         if isinstance(event, Analysis):
@@ -258,6 +260,12 @@ class Profiler:
             event.game_id, ts, event.user_side.value, event.start_fen, self.session_id
         )
         return []
+
+    @property
+    def game_over_unreviewed(self) -> bool:
+        """A game of the record that has ended and still waits for its review."""
+        game = self._game
+        return game is not None and game.end is not None and not game.reviewed
 
     @property
     def following_a_game(self) -> bool:

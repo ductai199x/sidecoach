@@ -171,6 +171,12 @@ class Listener:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
+        # Utterances are handed over on a thread of their own: `release` runs on the
+        # keyboard hook's thread, and a recognition there (hundreds of milliseconds)
+        # held the listener's lock and, on Windows, overran the hook's timeout -- after
+        # which the system removes the hook and push-to-talk silently dies (2026-09-22).
+        self._deliveries: queue.Queue[tuple[np.ndarray, float] | None] = queue.Queue()
+        self._deliverer: threading.Thread | None = None
 
     # ---- control ------------------------------------------------------------------------
 
@@ -299,7 +305,19 @@ class Listener:
         seconds = len(audio) / SAMPLE_RATE
         if seconds < 0.25:
             return
-        try:
-            self._on_utterance(audio, time.monotonic() - started if started else seconds)
-        except Exception as exc:  # noqa: BLE001 - a bad utterance must not stop listening
-            log.warning("utterance handler failed: %s", exc)
+        self._deliveries.put((audio, time.monotonic() - started if started else seconds))
+        if self._deliverer is None or not self._deliverer.is_alive():
+            self._deliverer = threading.Thread(target=self._deliver, name="utterances", daemon=True)
+            self._deliverer.start()
+
+    def _deliver(self) -> None:
+        """Utterances to the handler, one after the other, off the hook's thread."""
+        while True:
+            item = self._deliveries.get()
+            if item is None:
+                return
+            audio, seconds = item
+            try:
+                self._on_utterance(audio, seconds)
+            except Exception as exc:  # noqa: BLE001 - a bad utterance must not stop listening
+                log.warning("utterance handler failed: %s", exc)

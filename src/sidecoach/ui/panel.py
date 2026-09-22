@@ -1322,7 +1322,10 @@ class PanelEngine:
         if ply is not None and ply_now - ply > STALE_AFTER.get(trigger, STALE_PLIES - 1):
             self._held_word = None
             return
-        if coach is None or not coach.policy.user_to_move:
+        if coach is None or coach.finished:
+            self._held_word = None  # the game is over: the review speaks, not a late verdict
+            return
+        if not coach.policy.user_to_move:
             return
         # Thinking in this position for PACE_RESUME_S -- counted from when the position
         # appeared, not from when the word arrived.
@@ -1682,12 +1685,19 @@ class PanelEngine:
                 for event in events:
                     self._dispatch_game(event, assessing, chess)
 
+                # Idle read before the drain: then everything the engine will say about
+                # this game is in what the drain returns, and a finished game can be
+                # reviewed now -- a failed search never sends its verdict, and the review
+                # would otherwise wait out the grace period for it.
+                engine_idle = assessing.idle
                 engine_events = assessing.drain()
                 if events_log is not None:
                     for event in engine_events:
                         events_log.write(event.model_dump_json() + "\n")
                 opening = self._dispatch_engine(engine_events, opening, chess)
-                profile_events = self._profile(profiler, [*events, *engine_events], tick=True)
+                profile_events = self._profile(
+                    profiler, [*events, *engine_events], tick=True, flush=engine_idle
+                )
 
                 coaching.events(events, ts)
                 coaching.events(engine_events, ts)
@@ -1777,7 +1787,7 @@ class PanelEngine:
         try:
             for event in events:
                 out += profiler.on_event(event, now)
-            if flush:
+            if flush and profiler.game_over_unreviewed:
                 out += profiler.flush(now)
             elif tick:
                 out += profiler.tick(now)

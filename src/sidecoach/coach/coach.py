@@ -398,6 +398,7 @@ class _FirstCandidate:
         self.spoken = ""  # what the sink has been given
         self.problems: list[str] = []
         self.done = False
+        self.declined = False  # the sink refused the first sentence: the voice is not wanted
 
     def _candidate(self) -> tuple[str, bool]:
         """The first candidate's text so far, and whether it is complete."""
@@ -434,6 +435,7 @@ class _FirstCandidate:
             self.problems = faults
             return False
         if not self.sink(fresh):
+            self.declined = True
             return False
         self.spoken = complete
         return True
@@ -805,7 +807,9 @@ class Speaker:
                 # Nothing said: the first candidate failed its first sentence, or the
                 # voice declined. The reply is read whole from here, as without a sink;
                 # what stopped the stream goes in the call's stats for the log.
-                stats["stream_problems"] = reader.problems or ["the voice declined"]
+                stats["stream_problems"] = reader.problems or (
+                    ["the voice declined"] if reader.declined else ["the stream ended early"]
+                )
             scored = [
                 (prob, candidate, self._problems(candidate, request))
                 for prob, candidate in _parse_candidates(raw)
@@ -835,6 +839,11 @@ class Speaker:
                 text, problems = _sample_reply(passed), []
                 break
             problems = scored[0][2] if scored else ["empty reply"]
+            if reader is not None and reader.declined:
+                # The voice declined the reply (the board had moved on, or the voice was
+                # busy): a second call about that moment would be paid for nothing. What
+                # the stream gave is not clean, so the template stands.
+                break
             # The second try carries the complaint inside the directive: appending the failed
             # attempt and the complaint as two more messages doubled the prompt on a long
             # game (131k tokens became 276k, past the model's context).
@@ -1659,6 +1668,8 @@ class Coach:
         self.policy.new_position(0, ts, user_to_move=self.user_to_move)
 
     def _on_analysis(self, event: Analysis, ts: float) -> None:
+        if event.game_id != self.game_id:
+            return  # the engine's late word on the game before this one
         position = self.positions.get(event.ply)
         if position is None or position.board.fen() != event.fen:
             return
@@ -1697,6 +1708,8 @@ class Coach:
         )
 
     def _on_assessment(self, event: MoveAssessment, ts: float) -> None:
+        if event.game_id != self.game_id:
+            return  # the engine's late word on the game before this one
         self.conversation.assess(event)
         move = self.moves.get(event.ply)
         if move is None or not move.by_user:

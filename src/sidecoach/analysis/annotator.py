@@ -358,7 +358,12 @@ class Analyser:
         self._requests: queue.Queue[_Request | None] = queue.Queue()
         self._results: queue.SimpleQueue[Event] = queue.SimpleQueue()
         self._thread: threading.Thread | None = None
-        self._busy = threading.Event()
+        # Requests submitted and not yet answered (or dropped): counted, not read off
+        # the queue, so `pending` is never 0 in the instant between a request leaving
+        # the queue and the worker starting on it -- a review taken then would miss
+        # the last verdict.
+        self._outstanding = 0
+        self._count_lock = threading.Lock()
 
     def __enter__(self) -> Analyser:
         self.start()
@@ -369,7 +374,8 @@ class Analyser:
 
     @property
     def pending(self) -> int:
-        return self._requests.qsize() + (1 if self._busy.is_set() else 0)
+        with self._count_lock:
+            return self._outstanding
 
     def start(self) -> None:
         if self._thread is not None:
@@ -399,6 +405,7 @@ class Analyser:
                 self._requests.get_nowait()
             except queue.Empty:
                 break
+            self._settle()
         self.annotator.reset()
 
     def poll(self) -> list[Event]:
@@ -417,16 +424,22 @@ class Analyser:
             try:
                 self._requests.get_nowait()
                 self.dropped += 1
+                self._settle()
             except queue.Empty:
                 pass
+        with self._count_lock:
+            self._outstanding += 1
         self._requests.put(request)
+
+    def _settle(self) -> None:
+        with self._count_lock:
+            self._outstanding = max(0, self._outstanding - 1)
 
     def _run(self) -> None:
         while True:
             request = self._requests.get()
             if request is None:
                 return
-            self._busy.set()
             try:
                 if request.move is None:
                     self._results.put(
@@ -463,7 +476,7 @@ class Analyser:
                 self.failures += 1
                 self.last_error = f"{type(exc).__name__}: {exc}"
             finally:
-                self._busy.clear()
+                self._settle()
 
 
 def open_analyser(

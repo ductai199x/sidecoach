@@ -61,9 +61,9 @@ def _coach(replies: Sequence[str]) -> tuple[Coach, ScriptedProvider]:
     return coach, provider
 
 
-def _mate_analysis(ply: int, decisive: bool = True) -> Analysis:
+def _mate_analysis(ply: int, decisive: bool = True, game_id: str = "g") -> Analysis:
     return Analysis(
-        game_id="g",
+        game_id=game_id,
         fen=SCHOLAR,
         ply=ply,
         lines=[
@@ -1291,7 +1291,7 @@ def test_a_puzzle_solved_by_mate_gets_no_word_and_no_summary() -> None:
             GameStarted(game_id=f"p{n}", user_side=Side.WHITE, start_fen=puzzle, kind="position"),
             10.0 * n,
         )
-        coach.on_event(_mate_analysis(0), 10.0 * n + 0.5)
+        coach.on_event(_mate_analysis(0, game_id=f"p{n}"), 10.0 * n + 0.5)
         _messages(coach)  # the decisive-moment nudge on the position itself
         provider.prompts.clear()
         board = chess.Board(puzzle)
@@ -1331,7 +1331,7 @@ def test_a_puzzle_solved_by_mate_gets_no_word_and_no_summary() -> None:
     coach.on_event(
         GameStarted(game_id="q", user_side=Side.WHITE, start_fen=puzzle, kind="position"), 50.0
     )
-    coach.on_event(_mate_analysis(0), 50.5)
+    coach.on_event(_mate_analysis(0, game_id="q"), 50.5)
     _messages(coach)
     board = chess.Board(puzzle)
     move = board.push_san("Nf3")

@@ -846,8 +846,13 @@ class _Assessing:
                 event.game_id, before, chess.Move.from_uci(event.uci), event.ply
             )
             self._from[event.ply] = event.fen_before
-        elif isinstance(event, GameStarted) and event.start_fen != chess.STARTING_FEN:
-            self.analyser.submit_position(event.game_id, chess.Board(event.start_fen), 0)
+        elif isinstance(event, GameStarted):
+            # The engine's queue is the last game's: dropped, so this game is measured
+            # from its first move (the last game was reviewed from what had come).
+            self.analyser.reset()
+            self._from.clear()
+            if event.start_fen != chess.STARTING_FEN:
+                self.analyser.submit_position(event.game_id, chess.Board(event.start_fen), 0)
         elif isinstance(event, Resync):
             self.analyser.reset()
             self._from.clear()
@@ -880,6 +885,11 @@ class _Assessing:
             if log is not None:
                 log.write(assessed.model_dump_json() + "\n")
         return drained
+
+    @property
+    def idle(self) -> bool:
+        """Nothing queued or being measured: every verdict that will come has come."""
+        return self.analyser is None or not self.analyser.pending
 
     def wait(
         self, timeout: float = 30.0, log: TextIO | None = None, indent: str = "  "
