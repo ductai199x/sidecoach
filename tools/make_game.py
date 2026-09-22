@@ -26,7 +26,8 @@ sys.path.insert(0, str(DESKTOP / "src"))
 import chess  # noqa: E402
 import cv2  # noqa: E402
 
-from tests.synth import synthetic_board  # noqa: E402
+from tests.synth import draw_clock_box, synthetic_board  # noqa: E402
+from sidecoach.vision.clock import GlyphTemplates  # noqa: E402
 
 OUT = Path("D:/sidecoach-android/app/src/debug/assets/game")
 
@@ -43,26 +44,69 @@ GAME = (
 )
 
 
+# A 5+2 game, so the clocks fall and take their increment the way a real one does. The
+# player is White at the bottom, so White's box is the lower one and is the light one.
+START_MS = 5 * 60 * 1000
+INCREMENT_MS = 2000
+THINK_MS = 6000
+
+
+def clock_text(ms: int) -> str:
+    """The clock as chess.com draws it: M:SS, and tenths under a minute."""
+    ms = max(0, ms)
+    if ms < 60_000:
+        return f"{ms // 60000}:{ms % 60000 // 1000:02d}.{ms % 1000 // 100}"
+    return f"{ms // 60000}:{ms % 60000 // 1000:02d}"
+
+
+def with_clocks(frame, white_ms: int, black_ms: int, running: str, templates) -> None:
+    """Both boxes, right-aligned with the board, White's below and Black's above."""
+    side = 8 * CELL
+    offset = int(round(0.37 * CELL))
+    for which, ms, light in (("black", black_ms, False), ("white", white_ms, True)):
+        y = Y0 - offset if which == "black" else Y0 + side + offset
+        draw_clock_box(
+            frame,
+            X0 + side,
+            y,
+            CELL,
+            clock_text(ms),
+            light=light,
+            # The running clock's hand sweeps; the idle one's is a dash.
+            icon_angle=(ms % 6000) / 6000.0 * 6.28 if which == running else None,
+            templates=templates,
+        )
+
+
 def main() -> None:
     if OUT.exists():
         shutil.rmtree(OUT)
     OUT.mkdir(parents=True)
+    templates = GlyphTemplates.load()
     board = chess.Board()
-    frames = [
-        synthetic_board(
+    white_ms, black_ms = START_MS, START_MS
+    first = synthetic_board(
+        width=PHONE_W, height=PHONE_H, x0=X0, y0=Y0, cell=CELL,
+        board=board.copy(), theme="green", style="cburnett", coordinates=True,
+    )
+    with_clocks(first, white_ms, black_ms, "white", templates)
+    frames = [first]
+    for san in GAME:
+        mover = "white" if board.turn == chess.WHITE else "black"
+        if mover == "white":
+            white_ms = white_ms - THINK_MS + INCREMENT_MS
+        else:
+            black_ms = black_ms - THINK_MS + INCREMENT_MS
+        move = board.push_san(san)
+        frame = synthetic_board(
             width=PHONE_W, height=PHONE_H, x0=X0, y0=Y0, cell=CELL,
             board=board.copy(), theme="green", style="cburnett", coordinates=True,
+            highlight=move,
         )
-    ]
-    for san in GAME:
-        move = board.push_san(san)
-        frames.append(
-            synthetic_board(
-                width=PHONE_W, height=PHONE_H, x0=X0, y0=Y0, cell=CELL,
-                board=board.copy(), theme="green", style="cburnett", coordinates=True,
-                highlight=move,
-            )
+        with_clocks(
+            frame, white_ms, black_ms, "black" if mover == "white" else "white", templates
         )
+        frames.append(frame)
     for i, frame in enumerate(frames):
         cv2.imwrite(str(OUT / f"{i:02d}.png"), frame)
     print(f"{len(frames)} frames -> {OUT}")

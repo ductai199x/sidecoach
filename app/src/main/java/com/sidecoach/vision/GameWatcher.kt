@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.SystemClock
 import android.util.Log
+import com.sidecoach.events.ClockObservation
 import com.sidecoach.events.Event
 import com.sidecoach.events.GameEnded
 import com.sidecoach.events.GameStarted
@@ -42,10 +43,25 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
         .getOrNull()
 
     private val store = themeDirectory?.let { ThemeStore(it) }
-    private val pipeline: GamePipeline? = embedder?.let { GamePipeline(it, store) }
+    private val pipeline: GamePipeline? = embedder?.let { one ->
+        GamePipeline(one, store).apply {
+            // The clocks, when the templates are there: a missing reader costs the clocks
+            // and nothing else, so it is not an error.
+            val templates = GlyphTemplates.load(context.assets)
+            if (templates == null) {
+                Log.i(TAG, "no clock templates: the clocks will not be read")
+            } else {
+                clock = ClockReader(templates)
+            }
+        }
+    }
     private val gate = ChangeGate()
     private var frameId = 0
     private var reads = 0
+
+    /** The last clock the vision read, for the screen. */
+    var clocks: ClockObservation? = null
+        private set
 
     /**
      * The engine, when it has a network to load. Without one the game is still watched and
@@ -176,6 +192,14 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
                     TAG,
                     "${event.ply}. ${event.san} (${event.uci}) " +
                         "${if (event.byUser) "you" else "them"}, ${event.thinkMs ?: 0} ms",
+                )
+            }
+            is ClockObservation -> {
+                clocks = event
+                Log.i(
+                    TAG,
+                    "clock: white ${event.whiteMs} black ${event.blackMs}, " +
+                        "running ${event.running ?: "-"}",
                 )
             }
             is Takeback -> Log.i(TAG, "takeback of ${event.plies} plies")

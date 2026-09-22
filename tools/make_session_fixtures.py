@@ -23,6 +23,7 @@ import itertools
 import json
 import random
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -116,13 +117,20 @@ REPLIES = [
     "[p=0.34] Which of your pieces is worst placed?",
 ]
 
-# What the verifier says, in order, cycling: clean, clean, one unsupported, clean.
-VERIFY_REPLIES = [
-    '{"unsupported": []}',
-    '{"unsupported": []}',
-    '{"unsupported": ["the bishop is doing real work"]}',
-    '{"reply": "That was fine. The centre holds."}',
-]
+# What the verifier says. Keyed on what it was asked about, never on when: its calls run in
+# a thread pool and their order is not fixed. A repair request is the one that lists the
+# unsupported statements; one candidate is faulted, so the repair path runs.
+VERIFY_CLEAN = '{"unsupported": []}'
+VERIFY_FAULT = '{"unsupported": ["the bishop is doing real work"]}'
+VERIFY_REPAIR = '{"reply": "That was fine. The centre holds."}'
+VERIFY_FAULTED_PHRASE = "the bishop is doing real work"
+
+
+def verifier_reply(content: str) -> str:
+    """What the recorded verifier answers, from the call's own text."""
+    if "Unsupported statements:" in content:
+        return VERIFY_REPAIR
+    return VERIFY_FAULT if VERIFY_FAULTED_PHRASE in content else VERIFY_CLEAN
 
 # What the claims check hands back for an ask that carries a claim, in order, cycling.
 CLAIM_VERDICTS = [
@@ -162,6 +170,37 @@ class RecordedProvider:
                 "reply": text,
             }
         )
+        return Completion(text=text, stats={"recorded": True})
+
+
+class RecordedVerifier:
+    """The verifier: answers by what it was asked, since its calls run in a thread pool."""
+
+    name = "recorded-verifier"
+    offline = False
+
+    def __init__(self, calls: list[dict[str, Any]]) -> None:
+        self.calls = calls
+        self._lock = threading.Lock()
+
+    def healthcheck(self) -> tuple[bool, str]:
+        return True, "recorded"
+
+    def chat(self, system, messages, *, max_tokens=1500, temperature=0.7, thinking=False):
+        content = "\n".join(str(m.get("content") or "") for m in messages)
+        text = verifier_reply(content)
+        with self._lock:
+            self.calls.append(
+                {
+                    "kind": "verify",
+                    "index": -1,
+                    "system": system,
+                    "messages": [dict(m) for m in messages],
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "reply": text,
+                }
+            )
         return Completion(text=text, stats={"recorded": True})
 
 
@@ -221,8 +260,13 @@ class Script:
         step["messages"] = [message_json(m) for m in out]
         step["spoken"] = [spoken_json(s) for s in self.coach.spoken[self._spoken :]]
         self._spoken = len(self.coach.spoken)
-        step["calls"] = self.calls[self._calls :]
+        fresh = self.calls[self._calls :]
         self._calls = len(self.calls)
+        step["calls"] = [one for one in fresh if one["kind"] != "verify"]
+        step["verify_calls"] = sorted(
+            (one for one in fresh if one["kind"] == "verify"),
+            key=lambda one: "\n".join(str(m["content"]) for m in one["messages"]),
+        )
         step["fallbacks"] = self.coach.speaker.fallbacks
         step["failures"] = self.coach.speaker.failures
         step["dropped"] = self.coach.speaker.dropped
@@ -331,7 +375,7 @@ def draft_check(text: str, board: chess.Board, after=()) -> list[str]:
 def run(annotator: GameAnnotator, with_verifier: bool) -> dict[str, Any]:
     calls: list[dict[str, Any]] = []
     provider = RecordedProvider(REPLIES, calls, "coach")
-    verifier = RecordedProvider(VERIFY_REPLIES, calls, "verify") if with_verifier else None
+    verifier = RecordedVerifier(calls) if with_verifier else None
     claim_index = itertools.count()
 
     def claims(text: str, board: chess.Board, facts: Any) -> list[str]:
@@ -448,7 +492,6 @@ def run(annotator: GameAnnotator, with_verifier: bool) -> dict[str, Any]:
     return {
         "with_verifier": with_verifier,
         "replies": REPLIES,
-        "verify_replies": VERIFY_REPLIES,
         "claim_verdicts": CLAIM_VERDICTS,
         "steps": script.steps,
     }
@@ -492,7 +535,7 @@ def main() -> None:
     calls = sum(len(s["calls"]) for one in runs for s in one["steps"])
     print(
         f"{len(runs)} runs, {steps} steps, {calls} model calls "
-        f"-> {OUT / 'coach.json'} ({size / 1e6:.1f} MB)"
+        f"-> {OUT / 'session.json'} ({size / 1e6:.1f} MB)"
     )
 
 

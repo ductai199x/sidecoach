@@ -255,7 +255,9 @@ class CaptureService : Service() {
         }
         val small = Bitmap.createScaledBitmap(visible, PREVIEW_WIDTH, (height * scale).toInt(), true)
         if (visible !== full) visible.recycle()
-        preview?.recycle()
+        // The outgoing preview is not recycled: the screen may still be drawing it, and a
+        // recycled bitmap under a Canvas takes the whole app down. It is 360 pixels wide and
+        // goes out twice a second; the collector can have it.
         preview = small
         state.value = state.value.copy(preview = small)
     }
@@ -353,6 +355,7 @@ class CaptureService : Service() {
         vision = null
         frame?.recycle()
         frame = null
+        preview = null
         state.value = state.value.copy(running = false, preview = null)
         super.onDestroy()
     }

@@ -27,9 +27,11 @@ import com.sidecoach.vision.Pieces.Kind
 import com.sidecoach.vision.Pieces.Side
 import com.sidecoach.vision.Region
 import com.sidecoach.vision.ResultBadges
+import com.sidecoach.vision.ClockReader
 import com.sidecoach.vision.Squares
 import com.sidecoach.vision.ThemeModel
 import com.sidecoach.vision.ThemeStore
+import com.sidecoach.vision.Which
 import org.opencv.core.Mat
 
 /**
@@ -39,11 +41,9 @@ import org.opencv.core.Mat
  * The recogniser is rebuilt from every new start position it sees, so a board theme or piece
  * set changed between games is harmless, and the orientation is decided per game.
  *
- * Two pieces of the desktop's pipeline are not here yet and are absent rather than faked: the
- * clock (`vision/clock.py`), which the desktop already treats as optional -- a missing clock
- * costs the clock, never the session -- and so the turn is never settled from a running clock;
- * and the app's own-window exclusion, which on Android is `SidecoachApp.inFront` deciding not
- * to read at all.
+ * One piece of the desktop's pipeline is not here and is absent rather than faked: the app's
+ * own-window exclusion, which on Android is `SidecoachApp.inFront` deciding not to read at
+ * all.
  */
 class GamePipeline(
     private val embedder: CellEmbedder,
@@ -65,6 +65,28 @@ class GamePipeline(
          */
         const val BADGE_FRAMES = 2
         const val BADGE_PATIENCE = 12
+
+        /**
+         * Clocks. A reading is bottom/top relative to the board; the side at the bottom is the
+         * user, so the bottom box is the user's clock. chess.com draws white's box light and
+         * black's dark, but the board orientation is the game's own truth, so the colours are
+         * keyed from `bottom` rather than the box tint. Everything here tolerates a missing,
+         * hidden, or misread clock by producing nothing: a bad clock costs the clock, never
+         * the session.
+         */
+        const val CLOCK_MIN_CONFIDENCE = 0.4
+
+        /** Three hours; anything above is a misread, not a clock. */
+        const val CLOCK_MAX_MS = 3 * 60 * 60 * 1000
+
+        /** A loser whose clock read this little at the end lost on time. */
+        const val FLAG_MS = 1000
+
+        /**
+         * A resync or a cold start that left the side to move open takes it from the clock
+         * that is running, when the clock was read this recently.
+         */
+        const val CLOCK_TURN_FRESH_S = 3.0
 
         /**
          * A game joined from the middle is read cold from the theme cache: tried this often,
@@ -89,6 +111,16 @@ class GamePipeline(
     var bottom: Side? = null
     var board: BoardCandidate? = null
     var bootstraps = 0
+
+    /** The clock reader, when the app has its templates; without one there are no clocks. */
+    var clock: ClockReader? = null
+
+    /**
+     * The last clock observation emitted, so an unchanged reading is not repeated, and when
+     * it was read.
+     */
+    private var lastClock: Triple<Int?, Int?, Side?>? = null
+    private var lastClockTs: Double? = null
 
     private var startSeen = 0
     private var startOnScreen = false
@@ -157,6 +189,8 @@ class GamePipeline(
         var fresh = changed || unreadChange || readingsValue == null || key != readingsKey
         unreadChange = false
         val events = mutableListOf<Event>()
+        // This tick carries new pixels: the moment to sample the clock.
+        if (changed) events.addAll(readClock(frame, ts))
         var rebuilt = false
         if (fresh) {
             val current = model
@@ -207,6 +241,7 @@ class GamePipeline(
         val wasStarted = rec.started
         if (fresh) badgeFrame = badgedKings(frame, geometry)
         events.addAll(resyncReoriented(rec.update(currentReadings, ts), frame, geometry, ts))
+        events.addAll(turnFromClock(ts))
         if (fresh) events.addAll(endOnBadges())
         events.addAll(dialogOverTheBoard(readingsValue!!, ts))
         if (wasStarted && !rebuilt && fresh &&
@@ -387,8 +422,50 @@ class GamePipeline(
             return "draw agreed"
         }
         if (board.isCheckmate()) return "checkmate"
-        // The clock is not ported yet, so "lost on time" cannot be told from a resignation.
+        val seen = lastClock
+        if (seen != null) {
+            val loserMs = if (result == "1-0") seen.second else seen.first
+            if (loserMs != null && loserMs <= FLAG_MS) return "lost on time"
+        }
         return "resignation"
+    }
+
+    /**
+     * A clock observation for this frame, or nothing.
+     *
+     * Never raises, never reports a clock the board is not oriented for, and repeats nothing:
+     * a missing, hidden, or misread clock simply produces no event, so the coach's cadence
+     * falls back to its untimed defaults rather than breaking.
+     */
+    private fun readClock(frame: Mat, ts: Double): MutableList<Event> {
+        val reader = clock ?: return mutableListOf()
+        val side = bottom ?: return mutableListOf()
+        val where = board ?: return mutableListOf()
+        val observation = try {
+            clockObservation(reader.read(frame, where, ts), side)
+        } catch (_: Exception) {
+            // A clock must never take the pipeline down.
+            return mutableListOf()
+        } ?: return mutableListOf()
+        val key = Triple(observation.whiteMs, observation.blackMs, observation.running)
+        lastClockTs = ts
+        if (key == lastClock) return mutableListOf()
+        lastClock = key
+        return mutableListOf(observation)
+    }
+
+    /**
+     * A side to move left open by a resync or a cold start, settled by the clock that is
+     * running -- read on this tick or a moment ago.
+     */
+    private fun turnFromClock(ts: Double): MutableList<Event> {
+        val rec = reconciler ?: return mutableListOf()
+        val seen = lastClock
+        if (!rec.turnUnknown || seen == null) return mutableListOf()
+        val running = seen.third ?: return mutableListOf()
+        val read = lastClockTs ?: return mutableListOf()
+        if (ts - read > CLOCK_TURN_FRESH_S) return mutableListOf()
+        return rec.turnFromClock(running == Side.WHITE)
     }
 
     /** End the game on the user's word, stamped like every other event. */

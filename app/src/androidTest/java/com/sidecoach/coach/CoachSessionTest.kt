@@ -74,6 +74,33 @@ class CoachSessionTest {
         val reply: String,
     )
 
+    /**
+     * The verifier: answers by what it was asked about, since [Speaker] checks its
+     * candidates in a thread pool and their calls are in no fixed order.
+     */
+    private class RecordedVerifier(val log: MutableList<Call>) : LLMProvider {
+        override val name = "recorded-verifier"
+
+        override fun healthcheck(): Pair<Boolean, String> = true to "recorded"
+
+        override fun chat(
+            system: String,
+            messages: List<ChatMessage>,
+            maxTokens: Int,
+            temperature: Double,
+            thinking: Boolean,
+        ): Completion {
+            val content = messages.joinToString("\n") { it.content }
+            val text = when {
+                "Unsupported statements:" in content -> VERIFY_REPAIR
+                VERIFY_FAULTED_PHRASE in content -> VERIFY_FAULT
+                else -> VERIFY_CLEAN
+            }
+            synchronized(log) { log.add(Call("verify", -1, system, messages, maxTokens, temperature, text)) }
+            return Completion(text = text, stats = mapOf("recorded" to true))
+        }
+    }
+
     /** A model that answers by call index, and writes down every call it was given. */
     private class Recorded(
         val replies: List<String>,
@@ -116,7 +143,6 @@ class CoachSessionTest {
             val withVerifier = one.getBoolean("with_verifier")
             val label = if (withVerifier) "verified" else "plain"
             val replies = strings(one.getJSONArray("replies"))
-            val verifyReplies = strings(one.getJSONArray("verify_replies"))
             val claimVerdicts = one.getJSONArray("claim_verdicts").let { all ->
                 (0 until all.length()).map { strings(all.getJSONArray(it)) }
             }
@@ -124,7 +150,7 @@ class CoachSessionTest {
             val draws = intArrayOf(0)
             val log = ArrayList<Call>()
             val provider = Recorded(replies, "coach", log)
-            val verifier = if (withVerifier) Recorded(verifyReplies, "verify", log) else null
+            val verifier = if (withVerifier) RecordedVerifier(log) else null
             var claimIndex = 0
             val coach = Coach(
                 provider,
@@ -169,37 +195,18 @@ class CoachSessionTest {
                         (0 until all.length()).map { wantSpoken(all.getJSONObject(it)) }
                     },
                 )
-                val freshCalls = log.drop(seenCalls)
+                val all = log.drop(seenCalls)
                 seenCalls = log.size
-                calls += freshCalls.size
+                calls += all.size
+                val freshCalls = all.filter { it.kind != "verify" }
+                checkCalls(
+                    "$where verify call",
+                    all.filter { it.kind == "verify" }
+                        .sortedBy { c -> c.messages.joinToString("\n") { it.content } },
+                    step.getJSONArray("verify_calls"),
+                )
                 val wanted = step.getJSONArray("calls")
-                check("$where call count", freshCalls.size, wanted.length())
-                for (k in freshCalls.indices) {
-                    if (k >= wanted.length()) break
-                    val want = wanted.getJSONObject(k)
-                    val call = freshCalls[k]
-                    check("$where call $k kind", call.kind, want.getString("kind"))
-                    check("$where call $k index", call.index, want.getInt("index"))
-                    check("$where call $k system", call.system, want.getString("system"))
-                    check("$where call $k max tokens", call.maxTokens, want.getInt("max_tokens"))
-                    check(
-                        "$where call $k temperature",
-                        call.temperature,
-                        want.getDouble("temperature"),
-                    )
-                    val wantMessages = want.getJSONArray("messages")
-                    check("$where call $k turns", call.messages.size, wantMessages.length())
-                    for (m in call.messages.indices) {
-                        if (m >= wantMessages.length()) break
-                        val turn = wantMessages.getJSONObject(m)
-                        check("$where call $k turn $m role", call.messages[m].role, turn.getString("role"))
-                        check(
-                            "$where call $k turn $m content",
-                            call.messages[m].content,
-                            turn.getString("content"),
-                        )
-                    }
-                }
+                checkCalls("$where call", freshCalls, wanted)
                 check("$where fallbacks", coach.speaker.fallbacks, step.getInt("fallbacks"))
                 check("$where failures", coach.speaker.failures, step.getInt("failures"))
                 check("$where dropped", coach.speaker.dropped, step.getInt("dropped"))
@@ -217,6 +224,32 @@ class CoachSessionTest {
         val took = System.currentTimeMillis() - began
         Log.i(TAG, "${runs.length()} runs, $steps steps, $calls model calls, $took ms")
         assertTrue(failures.joinToString("\n\n"), failures.isEmpty())
+    }
+
+    private fun checkCalls(what: String, mine: List<Call>, theirs: JSONArray) {
+        check("$what count", mine.size, theirs.length())
+        for (k in mine.indices) {
+            if (k >= theirs.length()) break
+            val want = theirs.getJSONObject(k)
+            val call = mine[k]
+            check("$what $k kind", call.kind, want.getString("kind"))
+            if (call.kind != "verify") check("$what $k index", call.index, want.getInt("index"))
+            check("$what $k system", call.system, want.getString("system"))
+            check("$what $k max tokens", call.maxTokens, want.getInt("max_tokens"))
+            check("$what $k temperature", call.temperature, want.getDouble("temperature"))
+            val wantMessages = want.getJSONArray("messages")
+            check("$what $k turns", call.messages.size, wantMessages.length())
+            for (m in call.messages.indices) {
+                if (m >= wantMessages.length()) break
+                val turn = wantMessages.getJSONObject(m)
+                check("$what $k turn $m role", call.messages[m].role, turn.getString("role"))
+                check(
+                    "$what $k turn $m content",
+                    call.messages[m].content,
+                    turn.getString("content"),
+                )
+            }
+        }
     }
 
     private fun apply(coach: Coach, step: JSONObject) {
@@ -444,5 +477,11 @@ class CoachSessionTest {
     companion object {
         private const val TAG = "sidecoach.coach"
         private const val GAME_ID = "parity"
+
+        // What the recorded verifier answers, keyed on the call's own text.
+        private const val VERIFY_CLEAN = "{\"unsupported\": []}"
+        private const val VERIFY_FAULT = "{\"unsupported\": [\"the bishop is doing real work\"]}"
+        private const val VERIFY_REPAIR = "{\"reply\": \"That was fine. The centre holds.\"}"
+        private const val VERIFY_FAULTED_PHRASE = "the bishop is doing real work"
     }
 }
