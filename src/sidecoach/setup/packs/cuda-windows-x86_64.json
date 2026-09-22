@@ -1,0 +1,73 @@
+{
+  "version": "1",
+  "platform": "windows-x86_64",
+  "min_driver": "580.00",
+  "size": 1311047146,
+  "wheels": [
+    {
+      "name": "onnxruntime-gpu",
+      "version": "1.30.0",
+      "filename": "onnxruntime_gpu-1.30.0-cp312-cp312-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/19/ef/e15db03ea1fce9bc60349add2604df8c39abac10d28d4eef27b621845139/onnxruntime_gpu-1.30.0-cp312-cp312-win_amd64.whl",
+      "size": 160478594,
+      "sha256": "882da66f936e1f560b155118c5953dc45268cd92893abb8d31a940f4d1effb36"
+    },
+    {
+      "name": "nvidia-cudnn-cu13",
+      "version": "9.26.0.51",
+      "filename": "nvidia_cudnn_cu13-9.26.0.51-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/d6/1f/9c5d7ed254d7040192b4bb4eef669ba3ed66a3c4576c50f7d2385b255c8e/nvidia_cudnn_cu13-9.26.0.51-py3-none-win_amd64.whl",
+      "size": 419603885,
+      "sha256": "8e37a83d7dd7c2663afcae38b1c95c5e9e7c9754f313800da95ca81439fa37f9"
+    },
+    {
+      "name": "nvidia-cublas",
+      "version": "13.7.0.27",
+      "filename": "nvidia_cublas-13.7.0.27-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/f5/90/549ebae2524f3b7a695537f111c4c6a9e926ebc703c57371aa5558489e1b/nvidia_cublas-13.7.0.27-py3-none-win_amd64.whl",
+      "size": 424483695,
+      "sha256": "15d3963ae9de7292348ced320c849ff27f76b0f433b81589e9eb87f5407841c9"
+    },
+    {
+      "name": "nvidia-cuda-runtime",
+      "version": "13.4.49",
+      "filename": "nvidia_cuda_runtime-13.4.49-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/e9/91/e05721886461a33d2e433f27c1b17070fc9f6cf5064034ebc9c7ae6a0b6e/nvidia_cuda_runtime-13.4.49-py3-none-win_amd64.whl",
+      "size": 2777531,
+      "sha256": "65953fd8e1ac0477d088befb2e6c725c2f848996e6fd49c23241ab1a7c800c29"
+    },
+    {
+      "name": "nvidia-cuda-nvrtc",
+      "version": "13.4.59",
+      "filename": "nvidia_cuda_nvrtc-13.4.59-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/90/6e/69533ceccc2d4baed70c065427fc920ceb5a4905d8067860be879132b050/nvidia_cuda_nvrtc-13.4.59-py3-none-win_amd64.whl",
+      "size": 46966829,
+      "sha256": "93755e0f94e717c61168fb348ab5e2f5c67aa2f918416b1786f55ff813f6923d"
+    },
+    {
+      "name": "nvidia-cufft",
+      "version": "12.4.0.34",
+      "filename": "nvidia_cufft-12.4.0.34-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/7e/e5/59d908df294673f4e564b7cedb6f3e8954d029b3ce08083ea676836ec4aa/nvidia_cufft-12.4.0.34-py3-none-win_amd64.whl",
+      "size": 160953138,
+      "sha256": "a62fc7d3a21869baec8bad95a66625c70a8321672c41ea2218fcf55e07f5ad4b"
+    },
+    {
+      "name": "nvidia-curand",
+      "version": "10.4.4.49",
+      "filename": "nvidia_curand-10.4.4.49-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/43/01/4f07dbd74ef3e1801a478901de09aef37b3ed4af1488d858aa305e6c1ac4/nvidia_curand-10.4.4.49-py3-none-win_amd64.whl",
+      "size": 56731134,
+      "sha256": "51b463b4cac6aa73ab54ecf2b752046d8a5f760957becc0aea90f2ca9abdaf56"
+    },
+    {
+      "name": "nvidia-nvjitlink",
+      "version": "13.4.52",
+      "filename": "nvidia_nvjitlink-13.4.52-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/7b/94/acbd5a345328f3d22af19c73f36371439ebd58d56fa65fcef914139e6935/nvidia_nvjitlink-13.4.52-py3-none-win_amd64.whl",
+      "size": 39052340,
+      "sha256": "4bd7c27adc7832da5e6b8580fa64a42b9eebc94baae3ddcbedf4719f0bab2bb8"
+    }
+  ],
+  "written": "2026-09-21"
+}

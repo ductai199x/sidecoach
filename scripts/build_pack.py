@@ -1,35 +1,28 @@
-"""Build the CUDA pack the app fetches for an eligible NVIDIA GPU (setup/gpu.py).
+"""Write the CUDA pack's manifests, shipped with the app (sidecoach/setup/packs/).
 
-docs/app-plan.md, section 7: onnxruntime-gpu and the nvidia CUDA 13 / cuDNN 9 wheels at
-the versions of this environment (what Tai runs), installed into a scratch environment
-with `uv pip --no-deps` (their dependencies are the base environment's), zipped as
-`site-packages/...` with a manifest beside it. The sidecar puts the pack's folder ahead
-of its own site-packages when activating it, so the pack's onnxruntime shadows the CPU
-one; nothing in the base environment changes.
+The pack is onnxruntime-gpu and the nvidia CUDA 13 / cuDNN 9 wheels at the versions of
+this environment (what the tests and the games ran on). Nothing is built or hosted: for
+each platform the manifest names the exact wheel files on PyPI -- URL, size, SHA-256,
+from PyPI's own index -- and the app's first-run setup downloads them from there,
+verifies them and unpacks them into `<data>/packs/cuda/<version>/site-packages`
+(setup/gpu.py). Run it after `uv lock` moves any of these packages.
 
-    uv run --no-sync python scripts/build_pack.py --out C:/somewhere/packs
-
-Publish the zip and the JSON as release assets of the `packs-v<version>` tag; the
-sidecar reads `<base>/cuda-<platform>.json` (setup/gpu.py, SIDECOACH_PACK_URL to test
-against a local folder: `file:///C:/somewhere/packs`).
+    uv run --no-sync python scripts/build_pack.py            # both platforms' manifests
+    uv run --no-sync python scripts/build_pack.py --check    # only say what would change
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import platform
-import shutil
-import subprocess
 import sys
-import tempfile
 import time
-import zipfile
+import urllib.request
 from importlib import metadata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+OUT = ROOT / "src" / "sidecoach" / "setup" / "packs"
 PACK_VERSION = "1"
 MIN_DRIVER = "580.00"
 PACKAGES = (
@@ -42,89 +35,99 @@ PACKAGES = (
     "nvidia-curand",
     "nvidia-nvjitlink",
 )
+# The wheel each platform takes: the platform tag it must carry, and the Python tags allowed.
+PLATFORMS = {
+    "windows-x86_64": ("win_amd64",),
+    "linux-x86_64": ("manylinux", "x86_64"),
+}
+PY_TAGS = ("py3", "cp312", "abi3")
 
 
-def platform_tag() -> str:
-    system = platform.system().lower()
-    machine = platform.machine().lower()
-    if machine in ("amd64", "x86_64"):
-        machine = "x86_64"
-    return f"{system}-{machine}"
-
-
-def pins() -> list[str]:
-    """The packages at the versions installed here (the ones the tests and the games ran on)."""
-    out = []
+def pins() -> dict[str, str]:
+    out: dict[str, str] = {}
     for name in PACKAGES:
         try:
-            out.append(f"{name}=={metadata.version(name)}")
+            out[name] = metadata.version(name)
         except metadata.PackageNotFoundError:
             print(f"warning: {name} is not installed here; skipped", file=sys.stderr)
     return out
 
 
-def run(*args: str) -> None:
-    print("+", " ".join(args), flush=True)
-    subprocess.run(args, check=True)
+def pypi_files(name: str, version: str) -> list[dict]:
+    request = urllib.request.Request(
+        f"https://pypi.org/pypi/{name}/{version}/json", headers={"User-Agent": "sidecoach"}
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.load(response)["urls"]
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    ap.add_argument("--out", type=Path, default=ROOT / "desktop" / "resources" / "packs")
-    ap.add_argument(
-        "--staging", type=Path, default=None, help="scratch folder (a temp dir by default)"
-    )
-    args = ap.parse_args()
-    t0 = time.monotonic()
-    staging = args.staging or Path(tempfile.mkdtemp(prefix="sidecoach-pack-"))
-    env = staging / "env"
-    if env.exists():
-        shutil.rmtree(env)
-    run("uv", "venv", "--python", "3.12", str(env))
-    python = env / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python")
-    run("uv", "pip", "install", "--python", str(python), "--no-deps", *pins())
-    site = env / (
-        "Lib/site-packages" if platform.system() == "Windows" else "lib/python3.12/site-packages"
-    )
-    for p in site.rglob("__pycache__"):
-        shutil.rmtree(p, ignore_errors=True)
+def pick(files: list[dict], tag: str) -> dict | None:
+    """The one wheel for `tag`: the platform tags in its name, and a Python tag we run."""
+    must = PLATFORMS[tag]
+    wanted = [
+        f
+        for f in files
+        if f["packagetype"] == "bdist_wheel"
+        and all(m in f["filename"] for m in must)
+        and any(f"-{py}-" in f["filename"] for py in PY_TAGS)
+    ]
+    if not wanted:
+        return None
+    # Newest manylinux baseline last; the first is the most compatible choice.
+    wanted.sort(key=lambda f: f["filename"])
+    return wanted[0]
 
-    tag = platform_tag()
-    args.out.mkdir(parents=True, exist_ok=True)
-    zip_name = f"cuda-{tag}-v{PACK_VERSION}.zip"
-    zip_path = args.out / zip_name
-    if zip_path.exists():
-        zip_path.unlink()
-    files = [p for p in site.rglob("*") if p.is_file()]
-    print(f"zipping {len(files)} files from {site}")
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as z:
-        for p in files:
-            z.write(p, "site-packages/" + p.relative_to(site).as_posix())
-    digest = hashlib.sha256()
-    with zip_path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(chunk)
-    manifest = {
+
+def manifest(tag: str, versions: dict[str, str]) -> dict:
+    wheels = []
+    for name, version in versions.items():
+        f = pick(pypi_files(name, version), tag)
+        if f is None:
+            raise SystemExit(f"{name}=={version}: no wheel for {tag} on PyPI")
+        wheels.append(
+            {
+                "name": name,
+                "version": version,
+                "filename": f["filename"],
+                "url": f["url"],
+                "size": int(f["size"]),
+                "sha256": f["digests"]["sha256"],
+            }
+        )
+    return {
         "version": PACK_VERSION,
         "platform": tag,
-        "url": zip_name,
-        "size": zip_path.stat().st_size,
-        "sha256": digest.hexdigest(),
         "min_driver": MIN_DRIVER,
-        "packages": pins(),
-        "built": time.strftime("%Y-%m-%d"),
+        "size": sum(w["size"] for w in wheels),
+        "wheels": wheels,
+        "written": time.strftime("%Y-%m-%d"),
     }
-    (args.out / f"cuda-{tag}.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-    )
-    shutil.rmtree(env, ignore_errors=True)
-    if not args.staging:  # the temporary staging folder was ours to make and to remove
-        shutil.rmtree(staging, ignore_errors=True)
-    print(f"pack: {zip_path} ({manifest['size'] / 1e6:.0f} MB) in {time.monotonic() - t0:.0f} s")
-    print(f"manifest: {args.out / f'cuda-{tag}.json'}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--check", action="store_true", help="compare with the shipped manifests")
+    args = ap.parse_args()
+    versions = pins()
+    OUT.mkdir(parents=True, exist_ok=True)
+    changed = 0
+    for tag in PLATFORMS:
+        m = manifest(tag, versions)
+        path = OUT / f"cuda-{tag}.json"
+        old = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        same = {k: v for k, v in old.items() if k != "written"} == {
+            k: v for k, v in m.items() if k != "written"
+        }
+        note = "" if same else " (changed)"
+        print(f"{tag}: {len(m['wheels'])} wheels, {m['size'] / 1e6:.0f} MB{note}")
+        if same:
+            continue
+        changed += 1
+        if not args.check:
+            path.write_text(json.dumps(m, indent=2) + "\n", encoding="utf-8")
+            print(f"  -> {path}")
+    return 1 if (args.check and changed) else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

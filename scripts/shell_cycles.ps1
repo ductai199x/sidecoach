@@ -18,7 +18,7 @@ param(
     [string]$Exe = "desktop/src-tauri/target/debug/sidecoach.exe",
     [int]$Cycles = 6,
     [string]$Lock = "data/panel.lock",
-    [string]$ConfigDir = (Join-Path $env:APPDATA "dev.sidecoach.desktop")
+    [string]$ConfigDir = (Join-Path $env:APPDATA "Sidecoach")
 )
 $ErrorActionPreference = "Stop"
 Add-Type @"

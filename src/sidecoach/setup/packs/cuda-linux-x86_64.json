@@ -1,0 +1,73 @@
+{
+  "version": "1",
+  "platform": "linux-x86_64",
+  "min_driver": "580.00",
+  "size": 1527803508,
+  "wheels": [
+    {
+      "name": "onnxruntime-gpu",
+      "version": "1.30.0",
+      "filename": "onnxruntime_gpu-1.30.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/9e/80/d96143329dbe925d434b016c890a5caa785fac8e14a1570e5d6818b63545/onnxruntime_gpu-1.30.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "size": 246685715,
+      "sha256": "6acc0f4b3d5ac5f2984432faa59dd8fcce6775f8b43a7140afa0f322c7a703b1"
+    },
+    {
+      "name": "nvidia-cudnn-cu13",
+      "version": "9.26.0.51",
+      "filename": "nvidia_cudnn_cu13-9.26.0.51-py3-none-manylinux_2_27_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/ac/1b/ea72dd62f26ce3e0a7870b85148b75a5987507629b712deebeb87f7cce9a/nvidia_cudnn_cu13-9.26.0.51-py3-none-manylinux_2_27_x86_64.whl",
+      "size": 519150073,
+      "sha256": "9c976d539786698c71d6bcdbe2053b7485fae062ff7e1215d2f2ff67b1a2149a"
+    },
+    {
+      "name": "nvidia-cublas",
+      "version": "13.7.0.27",
+      "filename": "nvidia_cublas-13.7.0.27-py3-none-manylinux_2_27_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/da/b3/358ee3e2237d4d663cd7a50e4dae3b07bbc5c93bf1eab034c17d66b7e428/nvidia_cublas-13.7.0.27-py3-none-manylinux_2_27_x86_64.whl",
+      "size": 440472026,
+      "sha256": "481adf76a6b7585a7a4cd5f53298589abe207415dd584887751b99baa85491d4"
+    },
+    {
+      "name": "nvidia-cuda-runtime",
+      "version": "13.4.49",
+      "filename": "nvidia_cuda_runtime-13.4.49-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/e6/cb/b5959bff298d114338aaf4bface538ca9f2a721c439618fb252162f6192e/nvidia_cuda_runtime-13.4.49-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "size": 2495545,
+      "sha256": "0b228cc646acda27e9b512b8b94417c3ff8b3d24a0ad9b1d6603dc6c2a908046"
+    },
+    {
+      "name": "nvidia-cuda-nvrtc",
+      "version": "13.4.59",
+      "filename": "nvidia_cuda_nvrtc-13.4.59-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/c5/17/c81fb9e706ddf37ac8d71ce701437c1cf8ee3c324c25b4be344fbdfbeae7/nvidia_cuda_nvrtc-13.4.59-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl",
+      "size": 53299359,
+      "sha256": "f6cb36996797989976bd021d89e263be379668be7a4249cc95a3d11590bda652"
+    },
+    {
+      "name": "nvidia-cufft",
+      "version": "12.4.0.34",
+      "filename": "nvidia_cufft-12.4.0.34-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/55/60/70a14cd17aeea797ea7f05500d463ed62aaeb41afbe8a559d7de795dc79b/nvidia_cufft-12.4.0.34-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "size": 161750088,
+      "sha256": "dcfd1c860e242b03518eeb30d21deb8c9496e6660b0d3f5485a2ffc492a7185a"
+    },
+    {
+      "name": "nvidia-curand",
+      "version": "10.4.4.49",
+      "filename": "nvidia_curand-10.4.4.49-py3-none-manylinux_2_27_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/b9/c5/fc1b11443428fee82b239bf5ad1f6f7917509560714f7549321a5d34dd40/nvidia_curand-10.4.4.49-py3-none-manylinux_2_27_x86_64.whl",
+      "size": 61498481,
+      "sha256": "5992fea10ff452dc4f0357d2c76ab8ac7e31f5fa99938a019abc18545ab5e3ce"
+    },
+    {
+      "name": "nvidia-nvjitlink",
+      "version": "13.4.52",
+      "filename": "nvidia_nvjitlink-13.4.52-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/7f/c1/091f198d7f87e31d67fa9680eec8f8e4c6f889881f729b759db36ff01612/nvidia_nvjitlink-13.4.52-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl",
+      "size": 42452221,
+      "sha256": "90401db7e5a580a5067a468b3086e0b65f3b96ab3c42524afd741efc8a0e150a"
+    }
+  ],
+  "written": "2026-09-21"
+}

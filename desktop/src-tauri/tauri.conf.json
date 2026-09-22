@@ -3,7 +3,7 @@
   "productName": "Sidecoach",
   "version": "0.1.1",
   "mainBinaryName": "sidecoach",
-  "identifier": "dev.sidecoach.desktop",
+  "identifier": "sidecoach",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",

@@ -2,12 +2,16 @@
 (docs/app-plan.md, section 7).
 
 The app ships with the CPU build of onnxruntime. When an eligible NVIDIA GPU is found
-(`detect`), the pack -- onnxruntime-gpu and the nvidia CUDA/cuDNN wheels, zipped by
-scripts/build_pack.py into a `site-packages` folder with a manifest -- is one more line
-in the first-run setup, or a toast later. `activate` puts an installed pack ahead of the
-base environment on `sys.path` before onnxruntime is first imported and preloads its
-DLLs; a pack that fails to initialise leaves the CPU in charge and says so. The base
-environment is never modified: removing the pack is deleting its folder.
+(`detect`), the pack -- onnxruntime-gpu and the nvidia CUDA/cuDNN wheels -- is one more
+line in the first-run setup, or a toast later. The pack is nothing we host: its manifest,
+shipped in the package (`packs/cuda-<platform>.json`, written by scripts/build_pack.py
+from PyPI's index), names the exact wheel files with their PyPI URLs and SHA-256; `install`
+downloads them from PyPI, verifies each, and unpacks them into a `site-packages` folder
+under the data directory (Tai, 2026-09-21: a new user with nothing must get the GPU on
+their own). `activate` puts an installed pack ahead of the base environment on `sys.path`
+before onnxruntime is first imported and preloads its DLLs; a pack that fails to
+initialise leaves the CPU in charge and says so. The base environment is never modified:
+removing the pack is deleting its folder.
 
 `gpu.mode` in the settings: auto (the default), cpu (never), cuda (always; a failure is
 an error). The state of the pack and of the GPU is what `status` reports to the page.
@@ -23,6 +27,7 @@ import shutil
 import sys
 import urllib.request
 import zipfile
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -33,11 +38,8 @@ from sidecoach.config import Settings
 MIN_DRIVER_MAJOR = 580
 MIN_VRAM_BYTES = 4 * 1024**3
 PACK_VERSION = "1"
-# Where the packs are published: <base>/cuda-<platform>.json describes the zip beside it.
-PACK_BASE = os.environ.get(
-    "SIDECOACH_PACK_URL",
-    "https://github.com/ductai199x/sidecoach/releases/download/packs-v" + PACK_VERSION,
-)
+# A manifest elsewhere (a path or a URL) for trying one out: the shipped one otherwise.
+PACK_MANIFEST_OVERRIDE = os.environ.get("SIDECOACH_PACK_MANIFEST", "")
 
 _activated: dict[str, Any] = {"pack": None, "cuda": False, "detail": ""}
 
@@ -95,45 +97,107 @@ def installed(settings: Settings) -> Path | None:
     root = packs_dir(settings)
     if not root.exists():
         return None
+    # A pack is complete when its manifest is beside its site-packages; a staging folder
+    # of an install that did not finish is neither.
     versions = sorted(
-        (p for p in root.iterdir() if (p / "site-packages").exists()), key=lambda p: p.name
+        (
+            p
+            for p in root.iterdir()
+            if not p.name.endswith(".staging")
+            and (p / "site-packages").is_dir()
+            and (p / "manifest.json").is_file()
+        ),
+        key=lambda p: p.name,
     )
     return versions[-1] if versions else None
 
 
-def manifest_url() -> str:
-    return f"{PACK_BASE}/cuda-{platform_tag()}.json"
+def manifest_source() -> str:
+    """Where this platform's manifest comes from: the package, unless overridden."""
+    return PACK_MANIFEST_OVERRIDE or f"sidecoach.setup.packs/cuda-{platform_tag()}.json"
 
 
-def fetch_manifest() -> dict[str, Any]:
-    request = urllib.request.Request(manifest_url(), headers={"User-Agent": "sidecoach-setup"})
-    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
-        return json.load(response)
+def manifest() -> dict[str, Any]:
+    """The pack for this platform: the wheels to fetch, from PyPI, with their digests."""
+    if PACK_MANIFEST_OVERRIDE:
+        if PACK_MANIFEST_OVERRIDE.startswith(("http://", "https://", "file:")):
+            request = urllib.request.Request(
+                PACK_MANIFEST_OVERRIDE, headers={"User-Agent": "sidecoach-setup"}
+            )
+            with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+                return json.load(response)
+        return json.loads(Path(PACK_MANIFEST_OVERRIDE).read_text(encoding="utf-8"))
+    name = f"cuda-{platform_tag()}.json"
+    ref = resources.files("sidecoach.setup.packs") / name
+    if not ref.is_file():
+        raise RuntimeError(f"no CUDA pack for {platform_tag()} (no {name} shipped)")
+    return json.loads(ref.read_text(encoding="utf-8"))
+
+
+def pack_size(m: dict[str, Any]) -> int:
+    return int(m.get("size") or sum(int(w.get("size") or 0) for w in m.get("wheels", [])))
+
+
+def unpack_wheel(wheel: Path, site: Path) -> None:
+    """A wheel into a site-packages folder: its top-level files as they are, and the
+    `<name>.data/purelib|platlib` trees merged in; scripts and headers are not ours."""
+    with zipfile.ZipFile(wheel) as z:
+        for info in z.infolist():
+            parts = info.filename.split("/")
+            if len(parts) > 1 and parts[0].endswith(".data"):
+                if len(parts) > 2 and parts[1] in ("purelib", "platlib"):
+                    rel = "/".join(parts[2:])
+                else:
+                    continue
+            else:
+                rel = info.filename
+            if not rel or rel.endswith("/"):
+                continue
+            out = site / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with z.open(info) as src, out.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
 
 
 def install(settings: Settings, progress: Any = None) -> Path:
-    """Fetch the pack for this platform and unpack it under the data directory."""
+    """Fetch this platform's wheels from PyPI, verify them, and unpack them into a pack
+    under the data directory. Progress counts bytes over the whole pack."""
     from sidecoach.setup import download
 
-    manifest = fetch_manifest()
-    version = str(manifest.get("version", PACK_VERSION))
+    m = manifest()
+    version = str(m.get("version", PACK_VERSION))
     target = packs_dir(settings) / version
     if (target / "site-packages").exists():
         return target
-    url = manifest["url"]
-    if not url.startswith(("http://", "https://", "file:")):
-        url = f"{PACK_BASE}/{url}"
-    archive = download(
-        url, packs_dir(settings) / f"cuda-{version}.zip", progress, manifest.get("sha256")
-    )
     staging = packs_dir(settings) / f"{version}.staging"
     if staging.exists():
         shutil.rmtree(staging)
-    with zipfile.ZipFile(archive) as z:
-        z.extractall(staging)
-    (staging / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    staging.replace(target)
-    archive.unlink()
+    wheels_dir = staging / "wheels"
+    site = staging / "site-packages"
+    site.mkdir(parents=True)
+    total = pack_size(m)
+    done_before = 0
+    try:
+        for wheel in m["wheels"]:
+            base = done_before
+
+            def report(done: int, _total: int | None, base: int = base) -> None:
+                if progress:
+                    progress(base + done, total)
+
+            path = download(
+                wheel["url"], wheels_dir / wheel["filename"], report, wheel.get("sha256")
+            )
+            size = int(wheel.get("size") or path.stat().st_size)
+            unpack_wheel(path, site)
+            path.unlink()
+            done_before += size
+        shutil.rmtree(wheels_dir, ignore_errors=True)
+        (staging / "manifest.json").write_text(json.dumps(m, indent=2), encoding="utf-8")
+        staging.replace(target)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)  # nothing half-done is left behind
+        raise
     return target
 
 
@@ -193,7 +257,7 @@ def status(settings: Settings) -> dict[str, Any]:
         "gpu": detect(),
         "installed": str(pack) if pack else None,
         "active": dict(_activated),
-        "manifest_url": manifest_url(),
+        "manifest": manifest_source(),
     }
 
 
@@ -207,10 +271,14 @@ def pack_item(settings: Settings) -> Any:
     gpu = detect()
     if not gpu.get("eligible"):
         return None
+    try:
+        size = pack_size(manifest())
+    except Exception:  # noqa: BLE001 - no manifest for this platform: no item
+        return None
     return Item(
         "cuda",
         f"GPU acceleration for the voice ({gpu.get('name', 'NVIDIA')})",
-        1_400_000_000,
+        size,
         lambda: installed(settings) is not None,
         lambda progress: install(settings, progress) and None,
         optional=True,

@@ -182,8 +182,9 @@ src/sidecoach/setup/       # downloads, packs, GPU detection, first-run state (n
 ```
 
 Per-user paths (as built; the table in 2.1 is the audited truth): Tauri's per-app folders
-under the identifier `dev.sidecoach.desktop` -- data in the local-data folder, the
-settings in the config folder -- so the install folder is never written to; the LLM key
+named `Sidecoach` (the identifier is `sidecoach`, one name everywhere, Tai 2026-09-21) --
+the program, the data and the webview's cache in one local folder, the settings in the
+config folder; the LLM key
 in the OS credential store through `keyring`, with `.env` still honoured for development.
 The shell passes `SIDECOACH_DATA_DIR` and `SIDECOACH_CONFIG` to the sidecar.
 
@@ -191,10 +192,10 @@ The shell passes `SIDECOACH_DATA_DIR` and `SIDECOACH_CONFIG` to the sidecar.
 
 | What | Windows | Linux | Written by | Removed by |
 |---|---|---|---|---|
-| The app: `sidecoach(.exe)`, the embedded interpreter, the uninstaller | `%LOCALAPPDATA%\Sidecoach\` | `/usr/bin/sidecoach`, `/usr/lib/Sidecoach/python/`, the `.desktop` entry and icons under `/usr/share/` (the AppImage: nothing installed) | the installer / dpkg | the uninstaller / `apt remove`; nothing else is ever written there (the bytecode cache goes to the data folder, `-Xpycache_prefix`) |
-| Data: the models (`models/hf`, `models/kokoro`), Stockfish (`tools/`), the openings, the CUDA pack (`packs/cuda/<n>`), the profile and puzzle databases, the theme cache, `pycache/`, `sidecar.log`, `panel.lock`, `dumps/` (File > Dump only) | `%LOCALAPPDATA%\dev.sidecoach.desktop\data\` | `~/.local/share/dev.sidecoach.desktop/data/` | the sidecar (first-run setup, sessions) | the person, by deleting the folder: the uninstaller keeps it on purpose (4.9 GB of downloads and the player's profile) |
-| The webview's own storage and cache | `…\dev.sidecoach.desktop\EBWebView\` (WebView2) | `~/.local/share/dev.sidecoach.desktop/` beside `data/` (WebKitGTK: `WebKitCache`, `localstorage`, `storage`, …) | the webview | with the folder above |
-| Settings: `sidecoach.toml` (the sidecar's), `shell.json` (closing, start with the system) | `%APPDATA%\dev.sidecoach.desktop\` | `~/.config/dev.sidecoach.desktop/` | the settings window | with the folder |
+| The app: `sidecoach(.exe)`, the embedded interpreter, the uninstaller | `%LOCALAPPDATA%\Sidecoach\` (the same folder as the data) | `/usr/bin/sidecoach`, `/usr/lib/Sidecoach/python/`, the `.desktop` entry and icons under `/usr/share/` (the AppImage: nothing installed) | the installer / dpkg | the uninstaller / `apt remove`; nothing else is ever written there (the bytecode cache goes to the data folder, `-Xpycache_prefix`) |
+| Data: the models (`models/hf`, `models/kokoro`), Stockfish (`tools/`), the openings, the CUDA pack (`packs/cuda/<n>`), the profile and puzzle databases, the theme cache, `pycache/`, `sidecar.log`, `panel.lock`, `dumps/` (File > Dump only) | `%LOCALAPPDATA%\Sidecoach\data\` | `~/.local/share/sidecoach/data/` | the sidecar (first-run setup, sessions) | the person, by deleting the folder: a plain uninstall or an upgrade keeps it (4.9 GB of downloads and the player's profile); the uninstaller's "delete app data" box removes the whole folder |
+| The webview's own storage and cache | `%LOCALAPPDATA%\Sidecoach\EBWebView\` (WebView2) | `~/.local/share/sidecoach/` beside `data/` (WebKitGTK: `WebKitCache`, `localstorage`, `storage`, …) | the webview | with the folder above |
+| Settings: `sidecoach.toml` (the sidecar's), `shell.json` (closing, start with the system) | `%APPDATA%\Sidecoach\` | `~/.config/sidecoach/` | the settings window | with the folder |
 | API keys | the Windows Credential Manager | the Secret Service (a keyring daemon) | the settings window | the settings window ("clear") |
 | Registry / desktop integration | the Uninstall key, the Start-menu and desktop shortcuts | the `.desktop` entry, the hicolor icons | the installer | the uninstaller (verified: gone after `/S`) |
 | Development only, never by the app | `%TEMP%` scratch of the scripts, `~\sidecoach-packs` (the pack to publish), `~\sidecoach-recordings` | `~/sidecoach` (the clone), `~/packs`, `~/.cache/tauri` (the packer) | the scripts, me | me |
@@ -471,17 +472,22 @@ States, `gpu.mode` in settings: `auto` (default), `cpu`, `cuda`.
 - `cpu`: nothing is detected, nothing is downloaded, nothing is prompted.
 - `cuda`: as `auto` but a failure is an error line rather than a silent fallback.
 
-The pack itself: a zip per platform built by `scripts/build_pack.py` (onnxruntime-gpu and
-the nvidia wheels at the pins of `pyproject.toml`, installed into a scratch environment,
-zipped), published as a release asset with its manifest (versions, size, SHA-256, minimum
-driver). At runtime the sidecar unzips it to `<data>/packs/cuda/<version>/` and, when
-enabled, adds that directory with `site.addsitedir` ahead of the base `site-packages`
-before importing onnxruntime, and calls `onnxruntime.preload_dlls(directory=…)` pointed at
-it. The base environment is never modified: removing the pack is deleting a folder;
-upgrading is fetching the next one. Settings > Performance shows the pack's state and a
-Remove button; the strip keeps showing the device per model as it does today.
+The pack itself is nothing we host (Tai, 2026-09-21: a new user with nothing must get the
+GPU on their own, and nothing of the app may lie about in odd places). `scripts/build_pack.py`
+writes a manifest per platform into the package (`sidecoach/setup/packs/cuda-<platform>.json`)
+from PyPI's own index: the exact wheel files of onnxruntime-gpu and the nvidia CUDA 13 /
+cuDNN 9 wheels at this environment's versions, with their PyPI URLs, sizes and SHA-256
+(Windows 1.31 GB, Linux 1.53 GB over eight wheels). At first run the setup downloads those
+wheels from PyPI, verifies each, and unpacks them into `<data>/packs/cuda/<version>/site-packages`
+(a wheel's `.data/purelib|platlib` merged in, scripts left out); a download that fails leaves
+nothing behind. `activate` puts that folder ahead of the base `site-packages` before
+onnxruntime is imported and preloads the libraries. The base environment is never modified:
+removing the pack is deleting its folder; upgrading is the next manifest. Settings >
+Performance shows the pack's state and a Remove button; the strip shows the device per model.
+`SIDECOACH_PACK_MANIFEST` points at another manifest (a path or URL) for trying one.
 
-Linux: the same, with the linux wheels, and the driver check through the same tools.
+Linux: the same manifest mechanism with the manylinux wheels, verified through the AppImage
+on 2026-09-21 (every model on `cuda` after the pack).
 
 ## 8. Phase 2: Linux, through WSL first
 
