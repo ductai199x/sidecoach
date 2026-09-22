@@ -178,3 +178,86 @@ class ClockObservation(
     val blackMs: Int? = null,
     val running: Pieces.Side? = null,
 ) : Event()
+
+// The profile stage's events. Only what the coach reads is here; the stage's own
+// structures (the turning points, the phase summaries, the taxonomy cells) come with it.
+
+/** A Lichess puzzle recommended: where to open it, how hard, what it trains. */
+data class PuzzleRef(
+    val id: String,
+    val url: String,
+    val rating: Int,
+    val themes: List<String> = emptyList(),
+)
+
+/**
+ * The game in numbers once it is over: the tally of the player's moves by label, their
+ * accuracy, where the game turned, and how the phases went. Computed from the engine's
+ * verdicts, so the coach can sum the game up without inventing it.
+ */
+class GameReview(
+    val gameId: String,
+    val userSide: Pieces.Side,
+    val result: String,
+    val reason: String? = null,
+    val opening: String? = null,
+    val moves: Int = 0,
+    val accuracy: Double? = null,
+    val tallies: Map<String, Int> = emptyMap(),
+    /** Expected score lost by cause over the game, largest first. */
+    val causes: Map<String, Double> = emptyMap(),
+    /** The review in sentences, for the coach's summary and the panel's card. */
+    val lines: List<String> = emptyList(),
+) : Event()
+
+/**
+ * Practice for the player's weak spot after a game (DESIGN section 5.7): the motif the
+ * profile says costs them most, and a few puzzles of it near their level.
+ */
+class Recommendation(
+    val gameId: String,
+    val motif: String,
+    val motifWords: String,
+    val reason: String,
+    val level: Int,
+    val puzzles: List<PuzzleRef> = emptyList(),
+) : Event()
+
+/**
+ * A recommended (or any known) puzzle worked through on the screen: solved when every move
+ * of the solution came, failed at the first wrong one.
+ */
+class PuzzleOutcome(
+    val gameId: String,
+    val puzzleId: String,
+    val motif: String? = null,
+    val solved: Boolean,
+    /** The player's puzzle level after this outcome. */
+    val level: Int,
+) : Event()
+
+/**
+ * The player model as it stands: what the cells add up to in words, and the last session's
+ * summary, for the coach's continuity.
+ */
+class ProfileSnapshot(
+    val games: Int = 0,
+    val insights: List<String> = emptyList(),
+    val lastSession: String? = null,
+) : Event()
+
+/** A tagger name in words: hangingPiece -> hanging piece, mateIn2 -> mate in 2. */
+fun insightWords(name: String?): String {
+    if (name == null) return ""
+    val out = StringBuilder()
+    for (ch in name) {
+        if (ch.isUpperCase()) {
+            out.append(' ').append(ch.lowercaseChar())
+        } else if (ch.isDigit() && out.isNotEmpty() && !out[out.length - 1].isDigit()) {
+            out.append(' ').append(ch)
+        } else {
+            out.append(ch)
+        }
+    }
+    return out.toString().replace("f 2 f 7", "f2/f7").replace("x ray", "x-ray")
+}

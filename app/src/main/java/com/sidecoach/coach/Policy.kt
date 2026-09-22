@@ -81,7 +81,6 @@ class InterjectionPolicy(
      * answer to "why is the coach quiet?". Null once a trigger fires.
      */
     var lastReason: String? = null
-        private set
 
     /** The last ply the decisive question was asked at, while the positions stay decisive. */
     private var lastDecisivePly: Int? = null

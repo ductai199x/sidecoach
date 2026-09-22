@@ -885,7 +885,7 @@ class Conversation {
      * The move with its number, from the position it was played in (not the ply parity:
      * after a re-read the numbering restarts wherever the board stood).
      */
-    private fun numbered(move: MovePlayed): String {
+    fun numbered(move: MovePlayed): String {
         val before = Board(move.fenBefore)
         val number = before.fullmoveNumber
         return if (before.turn == WHITE) "$number. ${move.san}" else "$number... ${move.san}"
