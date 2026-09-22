@@ -729,7 +729,11 @@ def open_files(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
         pawns = [board.piece_at(sq) for sq in squares]
         our_pawns = any(p and p.piece_type == chess.PAWN and p.color == us for p in pawns)
         their_pawns = any(p and p.piece_type == chess.PAWN and p.color != us for p in pawns)
-        on_file = [sq for sq in heavy if chess.square_file(sq) == file_]
+        # Sorted, not set order: with two heavy pieces on one file, which one the coach
+        # names came out of CPython's set hashing -- a queen on a1 and a rook on a4 named
+        # the rook, the same pair one file over named the queen. The lowest square is the
+        # one a reader meets first.
+        on_file = sorted(sq for sq in heavy if chess.square_file(sq) == file_)
         if our_pawns or not on_file:
             continue
         letter = _FILES[file_]
