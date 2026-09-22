@@ -1609,6 +1609,15 @@ class Coach:
         pace = self.pace_s
         return pace is not None and pace < FAST_PACE_S
 
+    def fast_now(self, ts: float) -> bool:
+        """The pace is fast and the player has not slowed down in this position: once
+        they have been thinking longer than the fast pace, a hint or a lesson may take
+        the model's time and the voice again."""
+        if not self.fast_pace:
+            return False
+        since = self.policy.position_since
+        return not (self.policy.user_to_move and since is not None and ts - since >= FAST_PACE_S)
+
     def _on_move(self, event: MovePlayed, ts: float) -> None:
         if event.by_user and event.think_ms is not None:
             self._think_s.append(event.think_ms / 1000.0)
@@ -2029,7 +2038,7 @@ class Coach:
             routine=routine,
             # A fast game gets the template, not a model reply; what the player asks, and
             # the review of a game that is over, always get the model.
-            template_only=(self.fast_pace and trigger not in (Trigger.USER_ASK, Trigger.REVIEW)),
+            template_only=(self.fast_now(ts) and trigger not in (Trigger.USER_ASK, Trigger.REVIEW)),
         )
         self.speaker.submit(request)
 

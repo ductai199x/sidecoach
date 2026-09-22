@@ -600,10 +600,33 @@ class Profiler:
 
     def flush(self, ts: float) -> list[Event]:
         """Review a finished game now, from what is there: the session is closing, or the
-        next game is starting."""
+        next game is starting. A game of the record that never ended -- the site's
+        dialog hid the result and nobody said how it went -- is ended with the result
+        unknown first, so its moves are still reviewed and kept (2026-09-22: such a game
+        got nothing, and the next game's start was the moment it was forgotten)."""
         game = self._game
         if game is None:
             return []
+        if game.end is None and not game.ended:
+            if game.provisional or len(game.plies) < PROVISIONAL_PLIES:
+                # Too little to be a game of the record: a puzzle, or a game stopped
+                # after a few moves.
+                self.store.delete_game(game.game_id)
+                self._game = None
+                return []
+            ended = self._end(
+                game,
+                GameEnded(
+                    game_id=game.game_id,
+                    result="*",
+                    reason="the end was not seen",
+                    pgn=None,
+                    final_fen=game.last_fen,
+                ),
+                ts,
+            )
+            if ended:
+                return ended  # every verdict was in: reviewed on the spot
         return self._maybe_review(game, ts, force=True)
 
     # ---- the review and the snapshot ---------------------------------------------------
@@ -697,6 +720,9 @@ class Profiler:
         if reviews:
             outcomes = Counter()
             for r in reviews:
+                if r.result not in ("1-0", "0-1", "1/2-1/2"):
+                    outcomes["unfinished"] += 1
+                    continue
                 won = (r.result == "1-0") == (r.user_side is Side.WHITE)
                 outcomes["drew" if r.result == "1/2-1/2" else "won" if won else "lost"] += 1
             parts = [f"{n} {k}" for k, n in outcomes.items()]

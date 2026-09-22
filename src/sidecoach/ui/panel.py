@@ -265,6 +265,7 @@ class PanelEngine:
     # the player slows down in that position.
     _held_word: tuple[str, str, int | None, float] | None = field(default=None, init=False)
     _promotion_logged: bool = field(default=False, init=False)
+    _loop_ts: float = field(default=0.0, init=False)  # the last frame's time (the loop's clock)
     # The settings page's live test of the microphone and speech recognition: while on, it
     # listens (voice activity) and what it hears goes to `_heard_test`, not to the coach;
     # the mode it interrupted is restored after. It switches itself off when the page
@@ -592,126 +593,138 @@ class PanelEngine:
         """The settings saved: what can change on the running session does, and is
         returned as the list of dotted names applied. Everything the models load at
         start (a device, a provider of voice or speech recognition, the data directory) waits for a
-        restart; the screen's backend and the Stockfish binary for the next Start."""
+        restart; the screen's backend and the Stockfish binary for the next Start. Each
+        change is applied on its own: one that fails is named in the log and left out of
+        the list, and the others still go (one raise used to skip the rest silently)."""
         with self._lock:
             self.settings = new
         applied: list[str] = []
+        changed = list(changed)
 
-        def did(name: str) -> None:
-            applied.append(name)
+        def attempt(names: Sequence[str], apply: Callable[[], object]) -> None:
+            """Apply one change (or one group) if any of `names` changed."""
+            hit = [n for n in names if n in changed]
+            if not hit:
+                return
+            try:
+                apply()
+            except Exception as exc:  # noqa: BLE001 - the page must hear of it
+                self._emit("sys", "warn", f"{', '.join(hit)}: not applied ({exc})")
+                return
+            applied.extend(hit)
 
-        if "capture.record" in changed:
+        def set_record() -> None:
             # The session loop reads the wish every tick; the page's switch follows now.
             self._record_failed = False
             self._set(record_wanted=self._recording_wanted())
-            did("capture.record")
-        with contextlib.suppress(Exception):
-            if "voice.voice" in changed:
-                self.set_voice(new.voice.voice)
-                did("voice.voice")
-            if "voice.listen" in changed:
-                self.set_listen(new.voice.listen)
-                did("voice.listen")
-            if "voice.speed" in changed and hasattr(self._tts, "speed"):
-                self._tts.speed = new.voice.speed  # type: ignore[attr-defined]
-                did("voice.speed")
-            if "voice.output_device" in changed and hasattr(self._tts, "set_output_device"):
-                self._tts.set_output_device(new.voice.output_device)  # type: ignore[attr-defined]
-                did("voice.output_device")
-            if "voice.ptt_key" in changed:
-                self._hotkey.stop()
-                self._hotkey = GlobalPushToTalk(
-                    new.voice.ptt_key,
-                    on_press=lambda: self.ptt(True),
-                    on_release=lambda: self.ptt(False),
-                    on_seen=lambda what: self._emit("voice", "debug", f"key {what}"),
-                )
-                if self._listener.mode == "ptt":
-                    self.set_listen("ptt")
-                self._set(ptt_key=new.voice.ptt_key)
-                did("voice.ptt_key")
+
+        attempt(["capture.record"], set_record)
+        attempt(["voice.voice"], lambda: self.set_voice(new.voice.voice))
+        attempt(["voice.listen"], lambda: self.set_listen(new.voice.listen))
+        if hasattr(self._tts, "speed"):
+            attempt(["voice.speed"], lambda: setattr(self._tts, "speed", new.voice.speed))
+        if hasattr(self._tts, "set_output_device"):
+            attempt(
+                ["voice.output_device"],
+                lambda: self._tts.set_output_device(new.voice.output_device),  # type: ignore[attr-defined]
+            )
+
+        def rebind_hotkey() -> None:
+            self._hotkey.stop()
+            self._hotkey = GlobalPushToTalk(
+                new.voice.ptt_key,
+                on_press=lambda: self.ptt(True),
+                on_release=lambda: self.ptt(False),
+                on_seen=lambda what: self._emit("voice", "debug", f"key {what}"),
+            )
+            if self._listener.mode == "ptt":
+                self.set_listen("ptt")
+            self._set(ptt_key=new.voice.ptt_key)
+
+        attempt(["voice.ptt_key"], rebind_hotkey)
         if any(c in VOICE_RELOAD for c in changed):
             self._reload_voice()
             applied.extend(c for c in changed if c in VOICE_RELOAD)
         if any(c in STT_RELOAD for c in changed):
             self._reload_recogniser()
             applied.extend(c for c in changed if c in STT_RELOAD)
-        if "capture.fps" in changed:
-            did("capture.fps")  # the capture loop reads the rate every frame
+        attempt(["capture.fps"], lambda: None)  # the capture loop reads the rate every frame
         if any(c in ("engine.stockfish_path", "tools_dir") for c in changed):
             self._engine_stale = True
         for name in changed:
             if name.startswith("llm.price_"):
-                did(name)  # the session's cost is priced at each poll
+                applied.append(name)  # the session's cost is priced at each poll
         coach = self._coaching.coach if self._coaching is not None else None
         if coach is not None:
             from sidecoach.analysis.score import Thresholds
             from sidecoach.coach.prompt import system_message
 
-            with contextlib.suppress(Exception):
-                if "coach.stuck_seconds" in changed:
-                    coach.policy.settings.stuck_seconds = new.coach.stuck_seconds
-                    did("coach.stuck_seconds")
-                if "coach.quiet" in changed:
-                    coach.policy.settings.quiet = new.coach.quiet
-                    did("coach.quiet")
-                if any(
-                    c in ("coach.persona", "profile.rating_low", "profile.rating_high")
-                    for c in changed
-                ):
-                    coach.system = system_message(
-                        persona=new.coach.persona,
-                        rating=(new.profile.rating_low, new.profile.rating_high),
-                    )
-                    applied.extend(
-                        c
-                        for c in changed
-                        if c in ("coach.persona", "profile.rating_low", "profile.rating_high")
-                    )
-                for name in ("local_verdicts", "verbalized_sampling", "summarise_every"):
-                    if f"coach.{name}" in changed:
-                        setattr(coach, name, getattr(new.coach, name))
-                        did(f"coach.{name}")
-                if "coach.compact_record" in changed:
-                    coach.conversation.compact_record = new.coach.compact_record
-                    did("coach.compact_record")
-                if any(
-                    c.startswith("llm.") and not c.startswith("llm.price_") for c in changed
-                ) or any(c in ("coach.verify", "coach.verify_model") for c in changed):
-                    assert self._coaching is not None
-                    self._coaching.reprovision(new)
-                    self._emit("sys", "info", f"coach: {self._coaching.detail}")
-                    applied.extend(
-                        c
-                        for c in changed
-                        if c.startswith("llm.") and not c.startswith("llm.price_")
-                    )
-                    applied.extend(
-                        c for c in changed if c in ("coach.verify", "coach.verify_model")
-                    )
+            attempt(
+                ["coach.stuck_seconds"],
+                lambda: setattr(coach.policy.settings, "stuck_seconds", new.coach.stuck_seconds),
+            )
+            attempt(
+                ["coach.quiet"], lambda: setattr(coach.policy.settings, "quiet", new.coach.quiet)
+            )
+
+            def reword() -> None:
+                coach.system = system_message(
+                    persona=new.coach.persona,
+                    rating=(new.profile.rating_low, new.profile.rating_high),
+                )
+
+            attempt(["coach.persona", "profile.rating_low", "profile.rating_high"], reword)
+            for name in ("local_verdicts", "verbalized_sampling", "summarise_every"):
+                attempt(
+                    [f"coach.{name}"],
+                    lambda name=name: setattr(coach, name, getattr(new.coach, name)),
+                )
+            attempt(
+                ["coach.compact_record"],
+                lambda: setattr(coach.conversation, "compact_record", new.coach.compact_record),
+            )
+            model_fields = [
+                c
+                for c in changed
+                if (c.startswith("llm.") and not c.startswith("llm.price_"))
+                or c in ("coach.verify", "coach.verify_model")
+            ]
+
+            def reprovision() -> None:
+                assert self._coaching is not None
+                self._coaching.reprovision(new)
+                self._emit("sys", "info", f"coach: {self._coaching.detail}")
+
+            attempt(model_fields, reprovision)
             analyser = self._assessing.analyser if self._assessing is not None else None
             if analyser is not None:
-                with contextlib.suppress(Exception):
-                    if any(c.startswith("coach.") and c in THRESHOLD_FIELDS for c in changed):
-                        analyser.annotator.thresholds = Thresholds.from_settings(new.coach)
-                        applied.extend(c for c in changed if c in THRESHOLD_FIELDS)
-                    engine = analyser.annotator.engine
-                    if "engine.depth" in changed:
-                        analyser.annotator.depth = new.engine.depth
-                        did("engine.depth")
-                    if "engine.multipv" in changed:
-                        analyser.annotator.multipv = new.engine.multipv
-                        engine.multipv = new.engine.multipv
-                        did("engine.multipv")
-                    for name in ("pv_plies", "score_model", "max_seconds"):
-                        if f"engine.{name}" in changed:
-                            setattr(engine, name, getattr(new.engine, name))
-                            did(f"engine.{name}")
-                    if "engine.threads" in changed or "engine.hash_mb" in changed:
-                        engine.reconfigure(threads=new.engine.threads, hash_mb=new.engine.hash_mb)
-                        applied.extend(
-                            c for c in changed if c in ("engine.threads", "engine.hash_mb")
-                        )
+                attempt(
+                    [c for c in changed if c in THRESHOLD_FIELDS],
+                    lambda: setattr(
+                        analyser.annotator, "thresholds", Thresholds.from_settings(new.coach)
+                    ),
+                )
+                engine = analyser.annotator.engine
+                attempt(
+                    ["engine.depth"], lambda: setattr(analyser.annotator, "depth", new.engine.depth)
+                )
+
+                def multipv() -> None:
+                    analyser.annotator.multipv = new.engine.multipv
+                    engine.multipv = new.engine.multipv
+
+                attempt(["engine.multipv"], multipv)
+                for name in ("pv_plies", "score_model", "max_seconds"):
+                    attempt(
+                        [f"engine.{name}"],
+                        lambda name=name: setattr(engine, name, getattr(new.engine, name)),
+                    )
+                attempt(
+                    ["engine.threads", "engine.hash_mb"],
+                    lambda: engine.reconfigure(
+                        threads=new.engine.threads, hash_mb=new.engine.hash_mb
+                    ),
+                )
         return sorted(set(applied))
 
     def _reload_voice(self) -> None:
@@ -1305,8 +1318,9 @@ class PanelEngine:
         return action
 
     def _coach_fast(self) -> bool:
+        """The game is fast and the player has not slowed down in this position."""
         coach = self._coaching.coach if self._coaching is not None else None
-        return bool(coach is not None and coach.fast_pace)
+        return bool(coach is not None and coach.fast_now(self._loop_ts))
 
     def _say_held_word(self, coaching: Any, ts: float) -> None:
         """A word held back for pace is spoken once the player has been thinking in that
@@ -1605,6 +1619,7 @@ class PanelEngine:
                 if self._stop.is_set():
                     break
                 t_grab = time.perf_counter()
+                self._loop_ts = ts
                 latest = frame
                 changed = True
                 if live:

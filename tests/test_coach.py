@@ -1430,3 +1430,34 @@ def test_the_voice_holds_its_word_in_a_fast_game_and_says_it_when_the_player_slo
     assert va("user_ask", "Yes.", 7, 7, False, None, True) == "speak", "an ask is answered aloud"
     assert va("review", "You won.", 7, 7, False, None, True) == "speak"
     assert va("post_move", "Qxf7#: mate.", 7, 7, False, None, False) == "speak"
+
+
+def test_a_player_who_slows_down_in_a_fast_game_gets_the_model_back() -> None:
+    """The pace is the last few think times; the player thinking longer than that in
+    the position at hand has slowed down, and a hint or lesson may take the model's
+    time (and the voice) again."""
+    from sidecoach.coach.coach import FAST_PACE_S
+
+    coach, _provider = _coach([])
+    _start(coach)
+    board = chess.Board()
+    for ply, san in enumerate(("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"), start=1):
+        move = board.parse_san(san)
+        before = board.fen()
+        board.push(move)
+        coach.on_event(
+            MovePlayed(
+                game_id="g",
+                ply=ply,
+                san=san,
+                uci=move.uci(),
+                fen_before=before,
+                fen_after=board.fen(),
+                by_user=(ply % 2 == 1),
+                think_ms=1000,
+            ),
+            float(ply),
+        )
+    assert coach.fast_pace and coach.user_to_move
+    assert coach.fast_now(6.0 + 1.0), "a second into the position: still fast"
+    assert not coach.fast_now(6.0 + FAST_PACE_S + 1), "thinking longer than the pace: slowed"

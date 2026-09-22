@@ -1067,3 +1067,48 @@ def test_a_position_that_ends_early_leaves_nothing_behind() -> None:
     assert f.store.game("r") is not None
     Profiler(f.store, session_id="s2", ts=100.0)
     assert f.store.game("r") is None
+
+
+def test_a_game_whose_end_was_not_seen_is_still_reviewed_at_the_next_start() -> None:
+    """The site's dialog hid the result and nobody said how it went: at the next game's
+    start (or the session's end) the game is ended with the result unknown and its
+    moves reviewed and kept, rather than forgotten. One stopped after a few moves is
+    not a game of the record."""
+    from sidecoach.profile.profiler import PROVISIONAL_PLIES
+
+    f = Feed()
+    for san in (
+        "e4",
+        "e5",
+        "Nf3",
+        "Nc6",
+        "Bb5",
+        "a6",
+        "Ba4",
+        "Nf6",
+        "O-O",
+        "Be7",
+        "Re1",
+        "b5",
+        "Bb3",
+        "d6",
+        "c3",
+        "O-O",
+        "h3",
+        "Nb8",
+    ):
+        f.play(san)
+    assert f.ply >= PROVISIONAL_PLIES
+    got = f.send(GameStarted(game_id="h", user_side=Side.WHITE, start_fen=chess.STARTING_FEN))
+    review = next(e for e in got if isinstance(e, GameReview))
+    assert review.result == "*"
+    assert review.lines[0] == "You played white for 10 moves; I did not see how it ended."
+    kept = f.store.game("g")
+    assert kept is not None and kept.result == "*"
+    assert "1 unfinished" in (f.profiler.end_session(f.ts + 1) or "")
+    # The short one: gone.
+    short = Feed()
+    short.play("e4")
+    short.play("e5")
+    assert short.profiler.end_session(short.ts + 1) is None
+    assert short.store.game("g") is None
