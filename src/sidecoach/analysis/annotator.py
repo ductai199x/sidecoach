@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -34,6 +35,11 @@ from sidecoach.analysis.score import (
 )
 from sidecoach.analysis.threats import threat_moves
 from sidecoach.events import Analysis, Event, Line, MotifTag, MoveAssessment
+
+# A whole measurement while the analyser is behind a fast game, or was within
+# BEHIND_S: capped at HURRY_S and without the threat search (each could take max_seconds).
+HURRY_S = 1.0
+BEHIND_S = 10.0
 
 
 class Tagger(Protocol):
@@ -135,12 +141,18 @@ class GameAnnotator:
         self._verdict_cache[key] = thin
         return thin
 
-    def measure(self, board: chess.Board) -> Measured:
+    def measure(self, board: chess.Board, *, hurry: bool = False) -> Measured:
+        """The position whole: the candidates, the threats, the decisive-moment and
+        only-move calls. `hurry` caps the search at HURRY_S and skips the threats: the
+        analyser is (or was just) behind a fast game, and the player is not waiting ten
+        seconds for the candidates of a position they will have left."""
         key = board.fen()
         cached = self._cache.get(key)
         if cached is not None:
             return cached
-        lines = self.engine.analyse(board, depth=self.depth, multipv=self.multipv)
+        lines = self.engine.analyse(
+            board, depth=self.depth, multipv=self.multipv, time_s=HURRY_S if hurry else None
+        )
         measured = Measured(
             fen=key,
             lines=lines,
@@ -148,15 +160,22 @@ class GameAnnotator:
             decisive=is_decisive(board, lines, self.thresholds),
             only_move=is_only_move(board, lines, self.thresholds),
             threats=(
-                threat_moves(self.engine, board, depth=self.depth) if self.with_threats else []
+                threat_moves(self.engine, board, depth=self.depth)
+                if self.with_threats and not hurry
+                else []
             ),
         )
         self._cache[key] = measured
         return measured
 
-    def analysis_event(self, game_id: str, board: chess.Board, ply: int) -> Analysis:
-        """What the position holds, for the side to move."""
-        measured = self.measure(board)
+    def analysis_event(
+        self, game_id: str, board: chess.Board, ply: int, *, hurry: bool = False, thin: bool = False
+    ) -> Analysis:
+        """What the position holds, for the side to move. `thin`: only what the verdict
+        already measured (the best line; no threats, no decisive call) -- the analysis
+        of a position the game has left, so the coach still has the facts of the
+        position each move was played from and the review has its score."""
+        measured = self.measure_for_verdict(board) if thin else self.measure(board, hurry=hurry)
         return Analysis(
             game_id=game_id,
             fen=measured.fen,
@@ -334,6 +353,7 @@ class Analyser:
         self.dropped = 0
         self.failures = 0
         self.skipped = 0  # whole analyses not run for plies the game had already left
+        self._behind_until = 0.0  # the whole analysis is hurried until then
         self.last_error: str | None = None
         self._requests: queue.Queue[_Request | None] = queue.Queue()
         self._results: queue.SimpleQueue[Event] = queue.SimpleQueue()
@@ -423,13 +443,20 @@ class Analyser:
                             request.game_id, request.board, request.move, request.ply
                         )
                     )
-                    if not self._requests.empty():
-                        self.skipped += 1
-                        continue
                     after = request.board.copy()
                     after.push(request.move)
+                    behind = not self._requests.empty()
+                    if behind:
+                        self.skipped += 1
+                        self._behind_until = time.monotonic() + BEHIND_S
                     self._results.put(
-                        self.annotator.analysis_event(request.game_id, after, request.ply)
+                        self.annotator.analysis_event(
+                            request.game_id,
+                            after,
+                            request.ply,
+                            thin=behind,
+                            hurry=time.monotonic() < self._behind_until,
+                        )
                     )
             except Exception as exc:  # noqa: BLE001
                 # A failed analysis must never end a session; the game goes on unassessed.

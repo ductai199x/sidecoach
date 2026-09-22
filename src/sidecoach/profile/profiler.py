@@ -259,6 +259,13 @@ class Profiler:
         )
         return []
 
+    @property
+    def following_a_game(self) -> bool:
+        """Whether the current position counts as a game of the record: begun from the
+        start, or a joined position that has run PROVISIONAL_PLIES."""
+        game = self._game
+        return game is not None and not game.provisional
+
     def _drop_if_provisional(self) -> None:
         """A provisional game that never qualified -- a puzzle solved or left, an
         analysis board closed -- leaves nothing in the record."""

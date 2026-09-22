@@ -230,7 +230,9 @@ def test_the_verdict_comes_from_one_line_before_the_position_is_measured_whole(
         def __init__(self) -> None:
             self.calls: list[tuple[str, int]] = []
 
-        def analyse(self, board: chess.Board, *, depth: int, multipv: int = 1) -> list[Line]:
+        def analyse(
+            self, board: chess.Board, *, depth: int, multipv: int = 1, time_s: float | None = None
+        ) -> list[Line]:
             self.calls.append((board.fen(), multipv))
             lines = [Line(moves=["e2e4"], depth=depth, expected_score=0.52)]
             if multipv > 1:

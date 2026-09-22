@@ -516,6 +516,8 @@ class _Position:
 # what they ask (Tai, 2026-09-22: "the coach has to be able to keep up with the game").
 FAST_PACE_S = 6.0
 PACE_MOVES = 4
+# How many plies back the coach keeps a position and its facts.
+POSITIONS_KEPT = 40
 
 
 @dataclass
@@ -1606,7 +1608,10 @@ class Coach:
         self.conversation.move(event)
         position = _Position(ply=event.ply, board=self.board.copy(), last_move=event.san)
         self.positions[event.ply] = position
-        for old in [ply for ply in self.positions if ply < event.ply - 6]:
+        # Kept for a while: a verdict lands a few plies late when the engine is behind
+        # (2026-09-22: at six, the verdicts of plies 82-126 found no position and the
+        # coach said nothing, not even in the log).
+        for old in [ply for ply in self.positions if ply < event.ply - POSITIONS_KEPT]:
             del self.positions[old]
         self._current = position
         self.policy.new_position(event.ply, ts, user_to_move=self.user_to_move)
@@ -1698,6 +1703,12 @@ class Coach:
             return
         before = self.positions.get(event.ply - 1)
         if before is None or before.facts is None:
+            # Nothing to speak from: the position is gone, or its analysis never came.
+            # Said in the log, never silently.
+            why = "forgotten" if before is None else "not analysed"
+            self.policy.last_reason = (
+                f"no word on ply {event.ply}: the position before it was {why}"
+            )
             return
         trigger = self.policy.on_user_move_assessed(event)
         if trigger is None:

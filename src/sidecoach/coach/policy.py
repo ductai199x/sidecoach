@@ -102,6 +102,11 @@ class InterjectionPolicy:
     def user_to_move(self) -> bool:
         return self._user_to_move
 
+    @property
+    def position_since(self) -> float | None:
+        """When the position the user is thinking in appeared (the loop's clock)."""
+        return self._since
+
     # The triggers
 
     def on_user_move_assessed(self, assessment: MoveAssessment) -> Trigger | None:

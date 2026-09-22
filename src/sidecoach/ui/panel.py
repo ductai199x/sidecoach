@@ -264,6 +264,7 @@ class PanelEngine:
     # The coach's last word held back for pace: (trigger, text, ply, when), spoken once
     # the player slows down in that position.
     _held_word: tuple[str, str, int | None, float] | None = field(default=None, init=False)
+    _promotion_logged: bool = field(default=False, init=False)
     # The settings page's live test of the microphone and speech recognition: while on, it
     # listens (voice activity) and what it hears goes to `_heard_test`, not to the coach;
     # the mode it interrupted is restored after. It switches itself off when the page
@@ -556,7 +557,24 @@ class PanelEngine:
                 close_voice()
 
     def command(self, name: str, payload: Any = None) -> None:
-        """Queue a control action for the loop thread (ask, flip, analyse)."""
+        """Queue a control action for the loop thread (ask, flip, analyse). With no
+        session running there is no loop to take it: an ask is answered on the spot
+        rather than kept for a Start minutes later, about another game."""
+        with self._lock:
+            running = bool(self._state.get("running"))
+        if not running and name in ("ask", "ask_spoken"):
+            self._emit("user", "info", f"you: {payload}", spoken=name == "ask_spoken")
+            self._emit(
+                "coach",
+                "info",
+                "user_ask · not watching — Press Start first: I can only answer about a "
+                "game I am watching.",
+                full="Press Start first: I can only answer about a game I am watching.",
+                trigger="user_ask",
+                ply=None,
+                voice="text",
+            )
+            return
         self._commands.put((name, payload))
 
     def set_voice(self, voice: str) -> None:
@@ -1290,10 +1308,10 @@ class PanelEngine:
         coach = self._coaching.coach if self._coaching is not None else None
         return bool(coach is not None and coach.fast_pace)
 
-    def _say_held_word(self, coaching: Any) -> None:
+    def _say_held_word(self, coaching: Any, ts: float) -> None:
         """A word held back for pace is spoken once the player has been thinking in that
         position for PACE_RESUME_S: the game slowed down. A word about a position the
-        board has left is dropped."""
+        board has left is dropped. `ts` is the loop's clock (the frame's time)."""
         held = self._held_word
         if held is None or self.muted:
             return
@@ -1306,7 +1324,11 @@ class PanelEngine:
             return
         if coach is None or not coach.policy.user_to_move:
             return
-        if time.monotonic() - since < PACE_RESUME_S or self._tts.busy:
+        # Thinking in this position for PACE_RESUME_S -- counted from when the position
+        # appeared, not from when the word arrived.
+        began = coach.policy.position_since  # on the loop's clock, as `ts` is
+        thinking = ts - began if began is not None else time.monotonic() - since
+        if thinking < PACE_RESUME_S or self._tts.busy:
             return
         self._held_word = None
         self._voicing = (trigger, ply)
@@ -1673,7 +1695,7 @@ class PanelEngine:
                 coaching.tick(ts)
                 coaching.drain()
                 spoken_seen, failures_seen = self._coach_meta(coaching, spoken_seen, failures_seen)
-                self._say_held_word(coaching)
+                self._say_held_word(coaching, ts)
                 silence = self._coach_silence(coaching, silence)
                 self._refresh_state(pipe)
 
@@ -1853,12 +1875,13 @@ class PanelEngine:
         if isinstance(event, GameStarted):
             self._fen_before.clear()
             self._labels.clear()
+            self._promotion_logged = False
             what = (
                 "new game"
                 if event.kind == "game"
                 else "puzzle on the panel's board"
                 if event.kind == "puzzle"
-                else "position joined (puzzle or analysis)"
+                else "position joined (a puzzle, an analysis board, or a game joined late)"
             )
             self._emit(
                 "game",
@@ -2369,6 +2392,20 @@ class PanelEngine:
         fen = rec.board.fen() if rec is not None else None
         moves = [m.uci() for m in rec.board.move_stack] if rec is not None else []
         sans, fens = self._sans(rec) if rec is not None else ([], [])
+        # A joined position that has run long enough is a game of the record (the
+        # profile's call, profile.profiler.PROVISIONAL_PLIES): the page says so once.
+        profiler = self._profiler
+        a_game = rec is not None and (
+            rec.kind == "game" or (profiler is not None and profiler.following_a_game)
+        )
+        if a_game and rec is not None and rec.kind != "game" and not self._promotion_logged:
+            self._promotion_logged = True
+            self._emit(
+                "game",
+                "info",
+                f"{len(moves)} plies on the joined position: a game joined late, recorded "
+                "from the join and reviewed at the end",
+            )
         self._set(
             fen=fen,
             moves=sans,
@@ -2383,9 +2420,9 @@ class PanelEngine:
                 if pipe.model is None
                 else f"game over {rec.result or ''} · waiting for the next game".replace("  ", " ")
                 if rec is not None and rec.finished
-                else "following a position"
-                if rec is not None and rec.kind != "game"
                 else "following a game"
+                if a_game
+                else "following a position"
             ),
         )
 

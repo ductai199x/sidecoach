@@ -448,7 +448,7 @@ def test_behind_a_fast_game_the_analyser_keeps_the_verdicts_and_drops_stale_anal
     analyser.start()
     deadline = time.monotonic() + 5
     got: list = []
-    while time.monotonic() < deadline and len([e for e in got if isinstance(e, Analysis)]) < 1:
+    while time.monotonic() < deadline and len([e for e in got if isinstance(e, Analysis)]) < 5:
         got += analyser.poll()
         time.sleep(0.02)
     time.sleep(0.1)
@@ -457,6 +457,10 @@ def test_behind_a_fast_game_the_analyser_keeps_the_verdicts_and_drops_stale_anal
     assessments = [e for e in got if isinstance(e, MoveAssessment)]
     analyses = [e for e in got if isinstance(e, Analysis)]
     assert [a.ply for a in assessments] == [1, 2, 3, 4, 5], "a verdict for every ply"
-    assert [a.ply for a in analyses] == [5], "the whole analysis for the latest position only"
+    # Every ply still gets an Analysis -- a thin one from the verdict's own line for the
+    # plies the game has left (the coach needs the facts of the position each move was
+    # played from; the review its score) -- and the latest one the whole measurement.
+    assert [a.ply for a in analyses] == [1, 2, 3, 4, 5]
+    assert all(len(a.lines) == 1 and not a.threats for a in analyses[:4]), "thin for stale plies"
     assert analyser.skipped == 4
     assert fake.multipvs.count(6) == 1, "one whole measurement: the position the player faces"
