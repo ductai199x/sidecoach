@@ -286,3 +286,23 @@ def test_the_panel_starts_with_the_settings_voice(tmp_path: Path) -> None:
         settings, analysis=False, coach=False, record=False, frame_source=iter(()), voice="af_bella"
     )
     assert named.voice == "af_bella"
+
+
+def test_recording_is_off_unless_asked_and_the_wish_is_kept(tmp_path: Path) -> None:
+    """The app starts the sidecar with --no-record --no-persist; Debug > Record this session
+    turns recording on for the next Start or the running one (Tai, 2026-09-21: off by
+    default, but there must be a way to record a bug)."""
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
+    engine = PanelEngine(
+        settings, analysis=False, coach=False, record=False, persist=False, frame_source=iter(())
+    )
+    state = engine.poll(0)["state"]
+    assert state["record_wanted"] is False and state["recording_dir"] is None
+    reply = engine.set_record(True)
+    assert reply == {"ok": True, "on": True, "running": False, "folder": None}
+    assert engine.poll(0)["state"]["record_wanted"] is True
+    # The session folder follows the wish, not the launch flag.
+    assert engine._session_dir(live=True).parent.name == "recordings"
+    engine.set_record(False)
+    assert engine._session_dir(live=True).parent.name == "sessions"
+    assert any("from the next Start" in ln["text"] for ln in engine.poll(0)["lines"])

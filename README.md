@@ -35,9 +35,10 @@ screen, so it works on chess.com, Lichess, or anything else that draws a chessbo
   board and its templates: the word on every move, the lesson on a mistake, the
   questions and hints, the review. Free and offline. With a model (OpenAI, DashScope,
   or one running on your own machine) it explains and answers in full.
-- **Records nothing.** The app keeps a few seconds of frames in memory and writes
-  nothing to disk unless you ask for a dump. API keys go to the operating system's
-  credential store.
+- **Records nothing unless you ask.** The app keeps a few seconds of frames in memory and
+  writes nothing to disk on its own; *Debug › Record this session* saves the screen, the
+  events and the log to the data folder to show a bug, and stops when you say. API keys go
+  to the operating system's credential store.
 
 ---
 

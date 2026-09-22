@@ -114,6 +114,7 @@ export const panel = {
   ask: (text: string) => post("/api/ask", { text }),
   setVoice: (voice: string) => post("/api/voice", { voice }),
   setMuted: (muted: boolean) => post("/api/muted", { muted }),
+  setRecord: (on: boolean) => post<{ ok: boolean; on: boolean; running: boolean; folder: string | null }>("/api/record", { on }),
   setListen: (mode: string) => post("/api/listen", { mode }),
   end: (outcome: string) => post("/api/end", { outcome }),
   resetProfile: () => post("/api/reset_profile"),
@@ -185,6 +186,8 @@ export type PanelState = {
   bottom?: string;
   view_flip?: boolean;
   muted?: boolean;
+  record_wanted?: boolean;
+  recording_dir?: string | null;
   fen?: string | null;
   last_move?: string | null;
   fens?: string[];

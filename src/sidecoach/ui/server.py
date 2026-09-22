@@ -96,6 +96,10 @@ class _Muted(BaseModel):
     muted: bool
 
 
+class _Record(BaseModel):
+    on: bool
+
+
 class _Listen(BaseModel):
     mode: str
 
@@ -261,6 +265,11 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
     @app.post("/api/muted")
     def muted(body: _Muted) -> dict[str, bool]:
         return {"ok": api.set_muted(body.muted)}
+
+    @app.post("/api/record")
+    def record(body: _Record) -> dict[str, Any]:
+        """Record this session to the data folder (Debug > Record this session), or stop."""
+        return engine.set_record(body.on)
 
     @app.post("/api/exclude")
     def exclude(body: _Rect) -> dict[str, bool]:

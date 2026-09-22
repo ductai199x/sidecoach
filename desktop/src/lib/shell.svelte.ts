@@ -111,9 +111,18 @@ export async function buildShell(terminal: { shown: () => boolean; toggle: () =>
     ],
   });
   const verboseItem = await check("Verbose terminal", store.filters.verbose, () => (store.filters.verbose = !store.filters.verbose), "debug-verbose");
+  // Recording is off unless asked: the frames, the events and the log of this session go
+  // to the data folder's recordings/, to show a bug. Starts and stops within a second of a
+  // running session; before Start it applies from Start.
+  const recordItem = await check("Record this session (to show a bug)", !!store.state.record_wanted, async () => {
+    const on = !store.state.record_wanted;
+    const r = await panel.setRecord(on);
+    store.state.record_wanted = r.on;
+  }, "debug-record");
   const debug = await Submenu.new({
     text: "Debug",
     items: [
+      recordItem,
       verboseItem,
       await item("Open the panel in the browser", async () => {
         const url = (await import("./api")).apiBase() + "/";
@@ -153,6 +162,7 @@ export async function buildShell(terminal: { shown: () => boolean; toggle: () =>
       await stripItem.setChecked(panes.strip);
       await termItem.setChecked(terminal.shown());
       await muteItem.setChecked(!!store.state.muted);
+      await recordItem.setChecked(!!store.state.record_wanted);
       await verboseItem.setChecked(!!store.filters.verbose);
       for (const [mode, it] of Object.entries(listen)) await it.setChecked(store.listenMode === mode);
       await topItem.setChecked(await win.isAlwaysOnTop());

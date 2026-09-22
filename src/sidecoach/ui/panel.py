@@ -233,6 +233,11 @@ class PanelEngine:
     # ends them at exit. A settings save reaches into them whenever they exist.
     _assessing: Any = field(default=None, init=False)
     _coaching: Any = field(default=None, init=False)
+    # Recording, asked for from the page (Debug > Record this session): None leaves it to
+    # the launch flags (--record/--no-record), True or False overrides them, and a running
+    # session starts or stops its recording within a tick (Tai, 2026-09-21: off by default,
+    # but there must be a way to record a bug).
+    _record_wanted: bool | None = field(default=None, init=False)
     _warm_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _warm_done: threading.Event = field(default_factory=threading.Event, init=False)
     _warm_stages: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
@@ -296,6 +301,8 @@ class PanelEngine:
             "voice": self.voice,
             "voices": english_voices(self.settings.voice_model_dir() / "voices-v1.0.bin"),
             "muted": self.muted,
+            "recording_dir": None,
+            "record_wanted": self.record and self.persist,
             "coach_on": self.coach,
             "analysis_on": self.analysis,
             "voice_detail": self._tts.healthcheck()[1],
@@ -903,6 +910,21 @@ class PanelEngine:
         clip = np.asarray(audio, dtype=np.float32)
         self._on_utterance(clip, seconds if seconds is not None else len(clip) / 16000)
 
+    def set_record(self, on: bool) -> dict[str, Any]:
+        """Record this session (frames, events and the log to data/recordings/<stamp>),
+        or stop. Takes effect within a tick of a running session, at Start otherwise."""
+        with self._lock:
+            self._record_wanted = on
+            self._state["record_wanted"] = on
+            running = self._state.get("running", False)
+            folder = self._state.get("recording_dir")
+        self._emit(
+            "sys",
+            "info",
+            f"recording {'on' if on else 'off'}" + ("" if running else " (from the next Start)"),
+        )
+        return {"ok": True, "on": on, "running": running, "folder": folder}
+
     def set_muted(self, muted: bool) -> None:
         with self._lock:
             self.muted = muted
@@ -1193,7 +1215,9 @@ class PanelEngine:
 
     def _session_dir(self, live: bool) -> Path:
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        kind = "recordings" if live and self.record else "sessions"
+        wanted = self._record_wanted
+        recording = (self.record and self.persist) if wanted is None else wanted
+        kind = "recordings" if live and recording else "sessions"
         return self.settings.data_dir / kind / stamp
 
     def _run(self) -> None:
@@ -1220,6 +1244,10 @@ class PanelEngine:
         gate: Any = None
         region: Any = None
         events_log: IO[str] | None = None
+
+        def ensure_recording() -> None:  # a live capture replaces this below
+            return None
+
         if live:
             from sidecoach.capture.loop import capture_loop
             from sidecoach.capture.wgc_backend import make_capture
@@ -1235,13 +1263,51 @@ class PanelEngine:
                 f"({getattr(cap, 'name', 'capture')})",
             )
             gate = ChangeGate(keyframe_interval_s=1.0)
-            if self.record and self.persist:
-                recorder = Recorder(
-                    session, monitor=monitor, region=region, fps=self.fps, keyframe_interval_s=1.0
-                )
-                events_log = (session / "events.jsonl").open("w", encoding="utf-8")
-                self._emit("sys", "info", f"recording to {session}")
-            else:
+            first_folder: Path | None = session  # the launch flags' recording goes to the session
+
+            def _ensure_recording() -> None:
+                """Start or stop recording as asked: the launch flags unless the page said."""
+                nonlocal recorder, events_log, first_folder
+                wanted = self._record_wanted
+                want = (self.record and self.persist) if wanted is None else wanted
+                if want and recorder is None:
+                    folder = first_folder or (
+                        self.settings.data_dir / "recordings" / time.strftime("%Y%m%d-%H%M%S")
+                    )
+                    first_folder = None
+                    folder.mkdir(parents=True, exist_ok=True)
+                    recorder = Recorder(
+                        folder,
+                        monitor=monitor,
+                        region=region,
+                        fps=self.fps,
+                        keyframe_interval_s=1.0,
+                    )
+                    events_log = (folder / "events.jsonl").open("w", encoding="utf-8")
+                    self._log.attach(folder / "debug.jsonl")  # with everything logged so far
+                    self._set(recording_dir=str(folder))
+                    self._emit("sys", "info", f"recording to {folder}")
+                elif not want and recorder is not None:
+                    stored, mb = recorder.stored, recorder.size_bytes() / 1e6
+                    recorder.close()
+                    recorder = None
+                    if events_log is not None:
+                        events_log.close()
+                        events_log = None
+                    if not self.persist:
+                        self._log.detach()
+                    with self._lock:
+                        folder_name = self._state.get("recording_dir")
+                    self._set(recording_dir=None)
+                    self._emit(
+                        "sys",
+                        "info",
+                        f"recording stopped: {stored} frames, {mb:.0f} MB in {folder_name}",
+                    )
+
+            ensure_recording = _ensure_recording
+            ensure_recording()
+            if recorder is None:
                 self._emit("sys", "info", "not recording")
             # The rate is read every frame, so a saved capture.fps applies at once.
             frames: Iterable[Frame] = capture_loop(
@@ -1354,15 +1420,18 @@ class PanelEngine:
                         self.mask(frame, region, excluded)
 
                     gate.region = board_gate(pipe.board, region.w, region.h)
+                    ensure_recording()
                     if recorder is not None:
                         recorder.change_region = gate.region
                         try:
                             changed = recorder.write(frame, ts).stored is not None
                         except (ValueError, RuntimeError) as exc:
-                            # A display change or a full disk must not end the session.
+                            # A display change or a full disk must not end the session, and
+                            # must not be retried every tick.
                             self._emit("sys", "error", f"recording stopped: {exc}")
-                            recorder.close()
-                            recorder = None
+                            self._record_wanted = False
+                            self._set(record_wanted=False)
+                            ensure_recording()
                             changed = gate.changed(frame, ts)
                     else:
                         changed = gate.changed(frame, ts)
@@ -1488,7 +1557,7 @@ class PanelEngine:
                 events_log.close()
             if cap is not None:
                 cap.close()
-            self._set(running=False, status="stopped")
+            self._set(running=False, status="stopped", recording_dir=None)
             self._emit("sys", "info", "engine stopped")
             self._log.close()
 

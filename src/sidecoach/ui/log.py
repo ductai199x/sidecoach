@@ -61,6 +61,14 @@ class DebugLog:
             for record in self._records:
                 self._write(record)
 
+    def detach(self) -> None:
+        """Stop mirroring to a file (a recording that ended mid-session)."""
+        with self._lock:
+            if self._file is not None:
+                self._file.close()
+            self._file = None
+            self.path = None
+
     def _write(self, record: LogRecord) -> None:
         if self._file is None:
             return
