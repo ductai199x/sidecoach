@@ -181,11 +181,11 @@ src/sidecoach/ui/web/      # the frontend's build output for the browser host (c
 src/sidecoach/setup/       # downloads, packs, GPU detection, first-run state (new)
 ```
 
-Per-user paths (decided): data under `%LOCALAPPDATA%\Sidecoach\data` (Windows),
-`$XDG_DATA_HOME/sidecoach` (Linux); the settings file beside it; the LLM key in the OS
-credential store through `keyring`, with `.env` still honoured for development. The CLI
-grows `--data-dir` and the environment variable `SIDECOACH_DATA_DIR`; `load_settings`
-already honours `SIDECOACH_CONFIG`.
+Per-user paths (as built; the table in 2.1 is the audited truth): Tauri's per-app folders
+under the identifier `dev.sidecoach.desktop` -- data in the local-data folder, the
+settings in the config folder -- so the install folder is never written to; the LLM key
+in the OS credential store through `keyring`, with `.env` still honoured for development.
+The shell passes `SIDECOACH_DATA_DIR` and `SIDECOACH_CONFIG` to the sidecar.
 
 ### 2.1 Where everything lives (audited 2026-09-21 on both platforms)
 
