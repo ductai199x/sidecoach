@@ -13,18 +13,13 @@ import com.sidecoach.events.Resync
 import com.sidecoach.events.ScreenState
 import com.sidecoach.events.ScreenStateChanged
 import com.sidecoach.events.Takeback
-import com.sidecoach.analysis.Analyser
 import com.sidecoach.analysis.Assessing
-import com.sidecoach.analysis.Engine
-import com.sidecoach.analysis.EngineAssets
-import com.sidecoach.analysis.GameAnnotator
 import com.sidecoach.events.Label
 import com.sidecoach.events.MoveAssessment
 import com.sidecoach.coach.CoachRunner
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.state.GamePipeline
 import com.sidecoach.ui.PanelEngine
-import com.sidecoach.ui.SettingsStore
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Mat
@@ -40,11 +35,18 @@ import java.io.File
  * region, so a board that has not moved costs nothing however busy the rest of the screen
  * is -- and then through the pipeline, which answers with the game's events.
  */
-class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseable {
-
-    private val embedder: CellEmbedder? = runCatching { CellEmbedder.load(context) }
-        .onFailure { Log.w(TAG, "the piece net did not load: $it") }
-        .getOrNull()
+class GameWatcher(
+    context: Context,
+    themeDirectory: File? = null,
+    /**
+     * The net, the engine and the coach the warm-up built (`PanelWarm.forSession`). They
+     * belong to the app, not to a session: a watcher uses them and leaves them open, as the
+     * desktop's session uses `_assessing` and `_coaching` and Stop keeps them.
+     */
+    private val embedder: CellEmbedder?,
+    private val assessing: Assessing,
+    private val coaching: CoachRunner,
+) : AutoCloseable {
 
     private val store = themeDirectory?.let { ThemeStore(it) }
     private val pipeline: GamePipeline? = embedder?.let { one ->
@@ -63,13 +65,9 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
     private var frameId = 0
     private var reads = 0
 
-    /**
-     * The coach. It belongs to the watcher's lifetime, as the engine does: built when the
-     * session starts, and a model it cannot reach leaves it on, offline.
-     */
-    private val coaching = CoachRunner(SettingsStore(context)).also { runner ->
+    init {
         PanelEngine.onAsk = { text ->
-            runner.ask(text, android.os.SystemClock.elapsedRealtime() / 1000.0)
+            coaching.ask(text, android.os.SystemClock.elapsedRealtime() / 1000.0)
         }
         PanelEngine.onEnd = { outcome -> command("end", outcome) }
         PanelEngine.onFlip = { command("flip") }
@@ -101,28 +99,6 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
     /** The last clock the vision read, for the screen. */
     var clocks: ClockObservation? = null
         private set
-
-    /**
-     * The engine, when it has a network to load. Without one the game is still watched and
-     * followed; it is only unassessed, and the screen says so.
-     */
-    private val assessing: Assessing = Assessing(
-        run {
-            val binary = Engine.binaryIn(context.applicationInfo.nativeLibraryDir)
-            val net = EngineAssets.found(context)
-            if (!binary.exists() || net == null) {
-                Log.i(TAG, "no engine yet: binary=${binary.exists()} net=${net != null}")
-                null
-            } else {
-                runCatching {
-                    val engine = Engine(binary, net, threads = ENGINE_THREADS, hashMb = ENGINE_HASH_MB)
-                    val analyser = Analyser(GameAnnotator(engine, depth = ENGINE_DEPTH))
-                    analyser.start()
-                    analyser
-                }.onFailure { Log.w(TAG, "the engine did not start: $it") }.getOrNull()
-            }
-        },
-    )
 
     /** What one frame yielded, for the screen and the log. */
     data class Watch(
@@ -437,9 +413,6 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
         PanelEngine.onAnalyze = null
         lastFrame?.release()
         lastFrame = null
-        coaching.close()
-        assessing.close()
-        embedder?.close()
     }
 
     companion object {
@@ -457,15 +430,6 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
                 else -> "*" to "abandoned by the user"
             }
         }
-
-        /**
-         * What the engine gets on a phone. The desktop's defaults are four threads, 256 MB
-         * and depth 18; a phone has fewer cores to spare and a thermal budget, and the depth
-         * is what the loss is measured at on both sides of a move, so it stays the desktop's.
-         */
-        private const val ENGINE_THREADS = 2
-        private const val ENGINE_HASH_MB = 64
-        private const val ENGINE_DEPTH = 18
 
         /** OpenCV's native library, loaded once for the process. */
         val loaded: Boolean by lazy {

@@ -6,8 +6,11 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.content.Intent
+import android.graphics.Color
 import android.os.Bundle
 import android.util.Log
+import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.widget.FrameLayout
 import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -15,13 +18,18 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.sidecoach.capture.CaptureService
 import com.sidecoach.ui.LocalServer
 import com.sidecoach.ui.PanelApi
 import com.sidecoach.ui.PanelEngine
+import com.sidecoach.ui.PanelWarm
 import com.sidecoach.ui.SettingsApi
 import com.sidecoach.ui.SettingsStore
 import com.sidecoach.ui.SetupApi
@@ -69,6 +77,14 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Edge to edge on every version, as Android 15 and later always are: the bars are
+        // transparent, with light icons for the dark pages, and the frame paints under
+        // them in the page's own colours (see `framed`). Without this, Android 14 and
+        // earlier painted them the theme's black.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+        )
         super.onCreate(savedInstanceState)
         projections = getSystemService(MediaProjectionManager::class.java)
 
@@ -88,6 +104,9 @@ class MainActivity : ComponentActivity() {
 
         val view = WebView(this)
         web = view
+        // The ground the page paints on, not the WebView's white, for the moment before it
+        // first paints: the splash card's on a launch, the header's when already warm.
+        view.setBackgroundColor(getColor(if (PanelWarm.done) R.color.panel else R.color.splash_ground))
         view.settings.apply {
             javaScriptEnabled = true
             // The page remembers its pane sizes and switches in localStorage.
@@ -134,8 +153,11 @@ class MainActivity : ComponentActivity() {
             // chrome://inspect reaches it, as it reaches the desktop's window.
             WebView.setWebContentsDebuggingEnabled(true)
         }
-        setContentView(view)
-        view.loadUrl("http://127.0.0.1:$port/")
+        setContentView(framed(view))
+        // Everything a session needs loads now, so Start only starts the screen; the splash
+        // shows it land. Once: an app already warm opens on the panel.
+        PanelWarm.warm(this)
+        view.loadUrl("http://127.0.0.1:$port/" + if (PanelWarm.done) "" else "splash")
 
         // Back walks the page's own history -- out of the settings, back to the panel --
         // and leaves the app only when there is nowhere left to go.
@@ -150,6 +172,41 @@ class MainActivity : ComponentActivity() {
                 }
             }
         })
+    }
+
+    /**
+     * The page on the whole screen, under the system bars, told their heights: the local
+     * server writes them into each page as CSS variables before it paints, and a change
+     * reaches the page at once. The side insets (a camera cutout in landscape) and the
+     * keyboard are taken here instead: the keyboard resizes the page, so the ask box rises
+     * above it, and the navigation bar is under it then.
+     */
+    private fun framed(page: WebView): FrameLayout {
+        val frame = FrameLayout(this).apply { setBackgroundColor(getColor(R.color.splash_ground)) }
+        frame.addView(page, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        ViewCompat.setOnApplyWindowInsetsListener(frame) { _, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+            )
+            val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            (page.layoutParams as FrameLayout.LayoutParams).setMargins(bars.left, 0, bars.right, keyboard)
+            page.requestLayout()
+            val density = resources.displayMetrics.density
+            val top = Math.round(bars.top / density)
+            val bottom = if (keyboard > 0) 0 else Math.round(bars.bottom / density)
+            val style = "--inset-top: ${top}px; --inset-bottom: ${bottom}px"
+            if (style != server?.htmlStyle) {
+                server?.htmlStyle = style
+                page.evaluateJavascript(
+                    "(() => { const s = document.documentElement.style; " +
+                        "s.setProperty('--inset-top', '${top}px'); " +
+                        "s.setProperty('--inset-bottom', '${bottom}px'); })()",
+                    null,
+                )
+            }
+            WindowInsetsCompat.CONSUMED
+        }
+        return frame
     }
 
     override fun onDestroy() {

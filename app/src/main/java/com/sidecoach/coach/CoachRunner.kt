@@ -24,13 +24,71 @@ import com.sidecoach.ui.SettingsStore
  * thermal budget, and it serves one kind of question. Without one the coach still examines
  * the pieces and squares the player names -- only a line needs a search.
  */
-class CoachRunner(settings: SettingsStore) {
+class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
 
     val coach: Coach?
     var detail: String = "off"
         private set
 
     init {
+        coach = if (enabled) build(settings) else null
+    }
+
+    /**
+     * The coach itself, when it is wanted: `_Coaching.__init__` past its `if not enabled`.
+     * The desktop builds it only when there is an engine to measure moves with.
+     */
+    private fun build(settings: SettingsStore): Coach? {
+        val (model, detail) = provision(settings)
+        val offline = model is OfflineProvider
+        this.detail = "${model.name} ($detail)"
+        return try {
+            Coach(
+                model,
+                policy = InterjectionPolicy(settings.policy()),
+                draftCheck = { text, board, after ->
+                    checkDraft(text, board, after).map { "${it.text}: ${it.reason}" }
+                },
+                claims = if (offline) null else claimsCheck(model),
+                verifier = if (offline) null else verifier(settings, model),
+                engine = null,
+                summariseEvery = settings.summariseEvery(),
+                summariser = model,
+                compactRecord = settings.compactRecord(),
+                routineProvider = routineProvider(settings, model),
+                verbalizedSampling = settings.verbalizedSampling(),
+                localVerdicts = settings.localVerdicts(),
+                persona = settings.persona(),
+                rating = settings.rating(),
+            ).also { it.start() }
+        } catch (exc: Exception) {
+            Log.w(TAG, "the coach did not start: $exc")
+            null
+        }
+    }
+
+    /**
+     * The model changed in the settings: the providers are rebuilt and handed to the
+     * running coach, with the same fallback to offline as at start. `_Coaching.reprovision`.
+     */
+    fun reprovision(settings: SettingsStore) {
+        val coach = coach ?: return
+        val (provider, detail) = provision(settings)
+        val offline = provider is OfflineProvider
+        coach.setProviders(
+            provider,
+            routineProvider = routineProvider(settings, provider),
+            verifier = if (offline) null else verifier(settings, provider),
+            claims = if (offline) null else claimsCheck(provider),
+        )
+        this.detail = "${provider.name} ($detail)"
+    }
+
+    /**
+     * The model the settings name, and a line on it; the offline coach and the reason when
+     * it cannot be made or reached. What `_Coaching.__init__` and `reprovision` share.
+     */
+    private fun provision(settings: SettingsStore): Pair<LLMProvider, String> {
         var why = ""
         var provider: LLMProvider? = null
         var detail = ""
@@ -55,33 +113,7 @@ class CoachRunner(settings: SettingsStore) {
             provider = OfflineProvider()
             detail = provider.healthcheck().second + "; " + why
         }
-        val model = provider!!
-        val offline = model is OfflineProvider
-        this.detail = "${model.name} ($detail)"
-        coach = try {
-            Coach(
-                model,
-                policy = InterjectionPolicy(settings.policy()),
-                draftCheck = { text, board, after ->
-                    checkDraft(text, board, after).map { "${it.text}: ${it.reason}" }
-                },
-                claims = if (offline) null else claimsCheck(model),
-                verifier = if (offline) null else verifier(settings, model),
-                engine = null,
-                summariseEvery = settings.summariseEvery(),
-                summariser = model,
-                compactRecord = settings.compactRecord(),
-                routineProvider = routineProvider(settings, model),
-                verbalizedSampling = settings.verbalizedSampling(),
-                localVerdicts = settings.localVerdicts(),
-                persona = settings.persona(),
-                rating = settings.rating(),
-            ).also { it.start() }
-        } catch (exc: Exception) {
-            Log.w(TAG, "the coach did not start: $exc")
-            null
-        }
-        PanelEngine.emit("sys", if (offline) "warn" else "info", "coach: ${this.detail}")
+        return provider!! to detail
     }
 
     val on: Boolean get() = coach != null

@@ -1,6 +1,8 @@
 package com.sidecoach.analysis
 
+import android.content.Context
 import android.util.Log
+import com.sidecoach.ui.SettingsStore
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.STARTING_FEN
@@ -20,7 +22,11 @@ import com.sidecoach.events.Resync
  * there on a resync submits the position instead: the coach's hint and best move need the
  * position's analysis before any move is played.
  */
-class Assessing(private val analyser: Analyser?) {
+class Assessing(
+    val analyser: Analyser?,
+    /** A few words on the engine's state, for the panel's log: on, with its depth, or why not. */
+    val detail: String = if (analyser != null) "Stockfish, depth ${analyser.annotator.depth}" else "off",
+) {
 
     /** The position each pending ply was played from, so a verdict can be read out. */
     private val from = HashMap<Int, String>()
@@ -93,5 +99,45 @@ class Assessing(private val analyser: Analyser?) {
 
     companion object {
         private const val TAG = "sidecoach.analysis"
+
+        /**
+         * `cli._Assessing(settings, enabled)` with `cli._make_analyser`: the engine running
+         * and built from the settings, or none, and the words for which. The desktop points
+         * a missing engine at `sidecoach doctor`; the phone's binary ships in the APK, so
+         * what can be missing is the network, and Setup is where it comes from.
+         */
+        fun fromSettings(context: Context, settings: SettingsStore, enabled: Boolean = true): Assessing {
+            if (!enabled) return Assessing(null, "off")
+            val binary = Engine.binaryIn(context.applicationInfo.nativeLibraryDir)
+            val net = EngineAssets.found(context)
+            if (!binary.exists() || net == null) {
+                return Assessing(null, "no Stockfish network yet (see Setup)")
+            }
+            val config = settings.engine()
+            val analyser = try {
+                val engine = Engine(
+                    binary,
+                    net,
+                    threads = config.threads,
+                    hashMb = config.hashMb,
+                    multipv = config.multipv,
+                    pvPlies = config.pvPlies,
+                    scoreModel = config.scoreModel,
+                    maxSeconds = config.maxSeconds,
+                )
+                Analyser(
+                    GameAnnotator(
+                        engine,
+                        depth = config.depth,
+                        multipv = config.multipv,
+                        thresholds = settings.thresholds(),
+                    ),
+                ).also { it.start() }
+            } catch (exc: Exception) {
+                Log.w(TAG, "the engine did not start: $exc")
+                return Assessing(null, "Stockfish did not start: ${exc.message}")
+            }
+            return Assessing(analyser, "Stockfish, depth ${config.depth}")
+        }
     }
 }

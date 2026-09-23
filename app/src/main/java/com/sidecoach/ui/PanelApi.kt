@@ -36,12 +36,7 @@ class PanelApi(
                     put("version", version)
                     put("pid", android.os.Process.myPid())
                     put("running", PanelEngine.poll(Int.MAX_VALUE).getJSONObject("state").optBoolean("running"))
-                    put("warm", JSONObject().apply {
-                        // The phone warms as it goes; the splash has nothing to wait for.
-                        put("done", true)
-                        put("seconds", 0.0)
-                        put("stages", JSONArray())
-                    })
+                    put("warm", PanelWarm.status())
                 }
             )
 

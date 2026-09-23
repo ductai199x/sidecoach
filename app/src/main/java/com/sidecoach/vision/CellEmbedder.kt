@@ -38,6 +38,27 @@ class CellEmbedder private constructor(
     private val interleaved = FloatArray(INPUT * INPUT * 3)
     private val planar = FloatArray(INPUT * INPUT * 3)
 
+    /**
+     * Where the net runs, in the runtime's words: a CPU session, chosen on purpose
+     * (`voice.runtime.providers_for` says "cpu (as configured)" for the same choice).
+     */
+    val deviceDetail: String = "cpu (as configured)"
+
+    /**
+     * One start-position-sized batch through the net, so the first real one does not pay
+     * the runtime's warm-up; `embedding.CellEmbedder.prime`. Returns the seconds it took.
+     */
+    fun prime(): Double {
+        val begun = System.nanoTime()
+        val blank = Mat.zeros(INPUT, INPUT, CvType.CV_8UC3)
+        try {
+            embed(List(64) { blank })
+        } finally {
+            blank.release()
+        }
+        return (System.nanoTime() - begun) / 1e9
+    }
+
     /** Unit embeddings, one row of [DIM] per crop, in the order given. */
     fun embed(crops: List<Mat>): Array<FloatArray> {
         if (crops.isEmpty()) return emptyArray()

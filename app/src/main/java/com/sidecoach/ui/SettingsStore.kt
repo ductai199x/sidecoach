@@ -1,6 +1,7 @@
 package com.sidecoach.ui
 
 import android.content.Context
+import com.sidecoach.analysis.Thresholds
 import com.sidecoach.coach.PolicySettings
 import com.sidecoach.llm.LLMSettings
 import org.json.JSONObject
@@ -19,6 +20,21 @@ import org.json.JSONObject
  * holds only the name of the variable. The app's storage is private to it and the manifest
  * turns backups off, so nothing carries the key off the phone.
  */
+/**
+ * `config.EngineSettings`, the fields the phone's engine is built from. The defaults are the
+ * phone's own (tools/sync_settings.py writes them into the defaults asset): two threads and
+ * 64 MB where the desktop has four and 256, for the cores and the heat a phone can spare.
+ */
+data class EngineSettings(
+    val multipv: Int = 6,
+    val threads: Int = 2,
+    val hashMb: Int = 64,
+    val depth: Int = 18,
+    val pvPlies: Int = 12,
+    val scoreModel: String = "human",
+    val maxSeconds: Double? = 5.0,
+)
+
 class SettingsStore(private val context: Context) {
 
     private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -106,6 +122,43 @@ class SettingsStore(private val context: Context) {
             quiet = o.optBoolean("quiet", base.quiet),
         )
     }
+
+    /** The `engine` section, as `_make_analyser` reads it. */
+    fun engine(): EngineSettings {
+        val o = section("engine")
+        val base = EngineSettings()
+        return EngineSettings(
+            multipv = o.optInt("multipv", base.multipv),
+            threads = o.optInt("threads", base.threads),
+            hashMb = o.optInt("hash_mb", base.hashMb),
+            depth = o.optInt("depth", base.depth),
+            pvPlies = o.optInt("pv_plies", base.pvPlies),
+            scoreModel = o.optString("score_model", base.scoreModel),
+            maxSeconds = if (o.has("max_seconds") && o.isNull("max_seconds")) {
+                null
+            } else {
+                number(o, "max_seconds") ?: base.maxSeconds
+            },
+        )
+    }
+
+    /** `Thresholds.from_settings(settings.coach)`. */
+    fun thresholds(): Thresholds {
+        val o = section("coach")
+        val base = Thresholds()
+        return Thresholds(
+            inaccuracy = number(o, "inaccuracy") ?: base.inaccuracy,
+            mistake = number(o, "mistake") ?: base.mistake,
+            blunder = number(o, "blunder") ?: base.blunder,
+            decisiveGap = number(o, "decisive_gap") ?: base.decisiveGap,
+            onlyMoveGap = number(o, "only_move_gap") ?: base.onlyMoveGap,
+            excellent = number(o, "excellent") ?: base.excellent,
+            decided = number(o, "decided") ?: base.decided,
+        )
+    }
+
+    /** What the settings page's `listen` holds: off, ptt or vad. */
+    fun listen(): String = section("voice").optString("listen", "off")
 
     fun persona(): String = section("coach").optString("persona", "warm_direct")
 

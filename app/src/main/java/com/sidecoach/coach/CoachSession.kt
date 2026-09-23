@@ -204,17 +204,17 @@ class Coach(
      * this-many plies is folded into a summary by [summariser] (the coach's own model when
      * null). 0 is off.
      */
-    val summariseEvery: Int = 0,
+    var summariseEvery: Int = 0,
     summariser: LLMProvider? = null,
     compactRecord: Boolean = false,
     routineProvider: LLMProvider? = null,
     /** One reply instead of a verbalized distribution. */
-    val verbalizedSampling: Boolean = true,
+    var verbalizedSampling: Boolean = true,
     /**
      * The word on a sound move written from the board ([verdict]) instead of asked of the
      * model: free, immediate, true by construction (Tai, 2026-09-20).
      */
-    val localVerdicts: Boolean = true,
+    var localVerdicts: Boolean = true,
     persona: String? = null,
     rating: Pair<Int, Int>? = null,
     /** Which of a rotating list is said; injected so a test can fix the draw. */
@@ -237,7 +237,7 @@ class Coach(
     var streamSink: ((Trigger, Int?) -> ((String) -> Boolean)?)? = null
 
     var summariser: LLMProvider = summariser ?: provider
-    val system: String = systemMessage(persona = persona, rating = rating)
+    var system: String = systemMessage(persona = persona, rating = rating)
 
     /**
      * Run the claims check on the caller's thread (replay and evaluation) instead of a

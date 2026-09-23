@@ -32,7 +32,9 @@ if (-not $SkipInstall) {
 Start-Sleep -Seconds 3
 
 # Start watching: the button, then the system's consent dialog.
-function Tap-Text([string]$pattern, [int]$Tries = 1) {
+function Tap-Text([string]$pattern, [int]$Tries = 1, [switch]$Exact) {
+    # -Exact matches the whole label: "Start", and not the splash's "Starting..."
+    $text = if ($Exact) { "text=`"$pattern`"" } else { "text=`"[^`"]*$pattern[^`"]*`"" }
     # The panel is a WebView: for the first seconds of a cold start its accessibility tree
     # is empty, so a button that is certainly coming is worth waiting for.
     $match = $null
@@ -40,9 +42,9 @@ function Tap-Text([string]$pattern, [int]$Tries = 1) {
         if ($try -gt 0) { Start-Sleep -Seconds 2 }
         & $adb -s $Serial shell uiautomator dump /sdcard/ui.xml | Out-Null
         $xml = (& $adb -s $Serial shell cat /sdcard/ui.xml) -join ""
-        $match = [regex]::Match($xml, "text=`"[^`"]*$pattern[^`"]*`"[^>]*bounds=`"\[(\d+),(\d+)\]\[(\d+),(\d+)\]`"")
+        $match = [regex]::Match($xml, "$text[^>]*bounds=`"\[(\d+),(\d+)\]\[(\d+),(\d+)\]`"")
         if (-not $match.Success) {
-            $match = [regex]::Match($xml, "bounds=`"\[(\d+),(\d+)\]\[(\d+),(\d+)\]`"[^>]*text=`"[^`"]*$pattern[^`"]*`"")
+            $match = [regex]::Match($xml, "bounds=`"\[(\d+),(\d+)\]\[(\d+),(\d+)\]`"[^>]*$text")
         }
         if ($match.Success) { break }
     }
@@ -54,7 +56,8 @@ function Tap-Text([string]$pattern, [int]$Tries = 1) {
 }
 
 Write-Host "starting the watcher..."
-Tap-Text "Start" -Tries 10 | Out-Null   # the panel page's own button
+# The panel's own button, once the splash has handed over to it (a cold start warms up first).
+Tap-Text "Start" -Tries 20 -Exact | Out-Null
 Start-Sleep -Seconds 2
 foreach ($label in @("Entire screen", "Start now", "START NOW", "Allow")) {
     if (Tap-Text $label) { Start-Sleep -Seconds 1 }

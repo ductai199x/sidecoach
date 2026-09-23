@@ -28,6 +28,7 @@ import com.sidecoach.MainActivity
 import com.sidecoach.SidecoachApp
 import com.sidecoach.R
 import com.sidecoach.ui.PanelEngine
+import com.sidecoach.ui.PanelWarm
 import com.sidecoach.vision.GameWatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -138,10 +139,16 @@ class CaptureService : Service() {
 
         PanelEngine.running(true)
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        vision = GameWatcher(this, File(filesDir, "themes"))
         val visionWorker = HandlerThread("vision").also { it.start() }
         visionThread = visionWorker
         visionHandler = Handler(visionWorker.looper)
+        // The watcher uses what the warm-up built, and a Start that comes before the warm-up
+        // is done waits for it (`panel._run`) -- on the vision thread, never this one.
+        visionHandler?.post {
+            val (net, engine, coach) = PanelWarm.forSession(this)
+            vision = GameWatcher(this, File(filesDir, "themes"), net, engine, coach)
+            PanelEngine.set("status" to "watching")
+        }
         stats = CaptureStats(this, File(filesDir, "spike/capture-$stamp.jsonl")).also {
             it.engineCpu = { vision?.engineCpuMs() ?: 0 }
         }
@@ -410,6 +417,7 @@ class CaptureService : Service() {
             .setContentTitle("Watching the screen")
             .setContentText("Sidecoach is reading the board.")
             .setSmallIcon(R.drawable.ic_stat_capture)
+            .setColor(getColor(R.color.amber))
             .setOngoing(true)
             .setContentIntent(open)
             .addAction(0, "Stop", stop)

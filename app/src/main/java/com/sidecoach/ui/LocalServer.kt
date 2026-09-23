@@ -192,11 +192,26 @@ class LocalServer(
      * path that names no file is answered with index.html, as the desktop's server does.
      */
     private fun file(path: String): Reply {
-        val name = path.trimStart('/').ifEmpty { "index.html" }
-        val bytes = read(name) ?: read("index.html")
-        ?: return Reply(404, "text/plain; charset=utf-8", "no page".toByteArray())
-        return Reply(200, typeOf(if (read(name) != null) name else "index.html"), bytes)
+        val asked = path.trimStart('/').ifEmpty { "index.html" }
+        val found = read(asked)
+        val name = if (found != null) asked else "index.html"
+        val bytes = found ?: read(name)
+            ?: return Reply(404, "text/plain; charset=utf-8", "no page".toByteArray())
+        if (name.endsWith(".html") && htmlStyle.isNotEmpty()) {
+            // The system bars' heights, on <html> before the first paint (see `htmlStyle`).
+            val page = String(bytes, Charsets.UTF_8)
+                .replaceFirst("<html lang=\"en\">", "<html lang=\"en\" style=\"$htmlStyle\">")
+            return Reply(200, typeOf(name), page.toByteArray(Charsets.UTF_8))
+        }
+        return Reply(200, typeOf(name), bytes)
     }
+
+    /**
+     * Written into every page's <html> as its style: the system bars' heights as CSS
+     * variables (`--inset-top: 24px; --inset-bottom: 48px`), so a page drawn under them
+     * keeps its content clear from its first paint. Set by the activity from its insets.
+     */
+    @Volatile var htmlStyle: String = ""
 
     private fun read(name: String): ByteArray? = try {
         assets.open("$root/$name").use { it.readBytes() }

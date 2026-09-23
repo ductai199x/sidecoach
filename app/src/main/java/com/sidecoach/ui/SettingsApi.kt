@@ -71,6 +71,10 @@ class SettingsApi(private val store: SettingsStore) {
             }
         }
 
+        // What the kept coach and engine can change, they do now; a "now" field with nothing
+        // built to change is simply what the next build reads (`settings_api.update`).
+        PanelWarm.applySettings(store, changed)
+
         PanelEngine.emit(
             "sys",
             "info",

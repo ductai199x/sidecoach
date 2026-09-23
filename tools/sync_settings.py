@@ -39,6 +39,11 @@ def main() -> None:
     # The phone keeps its own folders; the page shows them read-only.
     defaults["data_dir"] = ""
     defaults["tools_dir"] = ""
+    # The engine a phone starts with: two threads and 64 MB where the desktop has four and
+    # 256, for the cores and the heat a phone can spare. The engine is built from these, as
+    # the desktop's `_make_analyser` builds it, so they are the phone's defaults to change.
+    defaults["engine"]["threads"] = 2
+    defaults["engine"]["hash_mb"] = 64
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
     (OUT / "defaults.json").write_text(json.dumps(defaults), encoding="utf-8")
