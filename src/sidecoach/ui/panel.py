@@ -173,6 +173,21 @@ class _VoiceLogHandler(logging.Handler):
         self._engine._emit("voice", level, record.getMessage())
 
 
+# What the person is told when a board stays unread (`BoardUnread`), by why.
+BOARD_UNREAD = {
+    "unlearned": (
+        "I can't read this board yet: I haven't learned these pieces on it. Show me the "
+        "starting position with this board and these pieces once -- a new game, or an "
+        "analysis board at the start -- and I'll know them from then on, puzzles included."
+    ),
+    "orientation": (
+        "I can see the pieces, but not which side is at the bottom: the board's "
+        "coordinates seem to be off. Turn them on in the site's board settings, or press "
+        "Flip to tell me."
+    ),
+}
+
+
 @dataclass
 class PanelEngine:
     """The live coaching loop behind the panel. Thread-safe to read; controlled by commands."""
@@ -1929,6 +1944,7 @@ class PanelEngine:
 
     def _dispatch_game(self, event: Any, assessing: Any, chess: Any) -> None:
         from sidecoach.events import (
+            BoardUnread,
             ClockObservation,
             GameEnded,
             GameStarted,
@@ -2005,6 +2021,19 @@ class PanelEngine:
             # A note: cells the game has not explained for a while. The game is kept as it
             # stands; nothing downstream starts again.
             self._emit("vision", "warn", f"board unexplained ({event.reason}); the game is kept")
+        elif isinstance(event, BoardUnread):
+            # A board up and nothing read from it: said in the coach's pane, where the
+            # person looks, as "Press Start first" is.
+            text = BOARD_UNREAD[event.reason]
+            self._emit(
+                "coach",
+                "info",
+                f"board · {event.reason} — {text}",
+                full=text,
+                trigger="board",
+                ply=None,
+                voice="text",
+            )
         elif isinstance(event, GameEnded):
             text = f"game over {event.result} ({event.reason})"
             if event.result == "*":

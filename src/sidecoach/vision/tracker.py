@@ -31,6 +31,16 @@ from sidecoach.vision.board_detect import (
 )
 
 
+def _edge_shift(a: Region, b: Region) -> int:
+    """The most any edge of region `a` moves to become region `b`, in pixels."""
+    return max(
+        abs(a.x - b.x),
+        abs(a.y - b.y),
+        abs((a.x + a.w) - (b.x + b.w)),
+        abs((a.y + a.h) - (b.y + b.h)),
+    )
+
+
 class BoardTracker:
     def __init__(
         self,
@@ -41,6 +51,7 @@ class BoardTracker:
         refine_every: int = 10,
         refine_offset_cells: float = 1.6,
         refit_gain: float = 1.1,
+        refit_deadband_px: int = 2,
         redetect_backoff: int = 20,
         near_backoff: int = 3,
         reject: Callable[[np.ndarray, Region, float], bool] | None = None,
@@ -51,6 +62,11 @@ class BoardTracker:
         self.refine_every = refine_every
         self.refine_offset_cells = refine_offset_cells
         self.refit_gain = refit_gain
+        # A re-fit that moves no edge by more than this is the same lock: a board flush with
+        # the frame's edge re-fitted a pixel or two either way every few seconds, and every
+        # cell moved under it was read again -- a second on the phone (Tai's puzzles on the
+        # Pixel, 2026-09-23). Sub-cell drift that small costs the reading nothing.
+        self.refit_deadband_px = refit_deadband_px
         self.redetect_backoff = redetect_backoff
         self.near_backoff = near_backoff
         # A veto on detected boards: called with the colour frame, a candidate's region and
@@ -109,7 +125,10 @@ class BoardTracker:
                 refined = refit.board
                 if self._passes(refined.fit, refined.contrast) and (
                     not self._passes(fit, contrast)
-                    or refit.strength > self.refit_gain * refit.reference
+                    or (
+                        refit.strength > self.refit_gain * refit.reference
+                        and _edge_shift(candidate.region, refined.region) > self.refit_deadband_px
+                    )
                 ):
                     candidate = refined
                     fit, contrast = refined.fit, refined.contrast

@@ -8,11 +8,13 @@ orientation is decided per game.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from typing import Literal
 
 import chess
 import numpy as np
 
 from sidecoach.events import (
+    BoardUnread,
     ClockObservation,
     Event,
     GameEnded,
@@ -68,7 +70,34 @@ CLOCK_TURN_FRESH_S = 3.0
 COLD_START_EVERY_S = 0.5
 COLD_START_HOLD = 3
 COLD_START_EXPIRE_S = 3.0
+# A board that has gone this long without being read, with no game followed on it, is
+# explained to the person once (`BoardUnread`) rather than left in silence.
+COLD_NOTICE_S = 6.0
+# A board no move explains has its coordinate labels read this often; two reads this far
+# apart saying the other side is at the bottom turn the game round (`_flip_if_turned`).
+FLIP_CHECK_EVERY_S = 0.25
 CLOCK_MAX_MS = 3 * 60 * 60 * 1000  # three hours; anything above is a misread, not a clock
+
+
+def _fit(readings: Readings) -> float:
+    """How surely a set read a board: the mean margin of its piece readings over the next
+    nearest kind. The right set reads its own pieces well clear of any other kind."""
+    margins = [cell.confidence for row in readings for cell in row if cell.kind == "piece"]
+    return sum(margins) / len(margins) if margins else 0.0
+
+
+def _loose_placement(readings: Readings, bottom: Side) -> chess.Board:
+    """The pieces a read names, a held or a ringed one included (its kind, or its best
+    guess) and an unreadable cell taken as empty: what the board shows, for telling a set
+    that reads it from one that does not, not a placement to adopt."""
+    board = chess.Board(None)
+    for row in range(8):
+        for col in range(8):
+            reading = readings[row][col]
+            symbol = reading.symbol or reading.guess
+            if reading.kind == "piece" and symbol is not None:
+                board.set_piece_at(square_at(row, col, bottom), chess.Piece.from_symbol(symbol))
+    return board
 
 
 def _plausible_ms(ms: int | None) -> int | None:
@@ -101,6 +130,10 @@ def clock_observation(reading: ClockReading | None, bottom: Side) -> ClockObserv
     return ClockObservation(white_ms=white_ms, black_ms=black_ms, running=running)
 
 
+# A board read cold: the set that read it, the side at the bottom, the readings, the placement.
+_ColdRead = tuple[ThemeModel, Side, Readings, chess.Board]
+
+
 @dataclass
 class GamePipeline:
     start_frames_needed: int = 2
@@ -130,6 +163,16 @@ class GamePipeline:
     # with how many times it has read the same and when it last did.
     _cold_tried: float | None = None
     _cold_candidate: tuple[str, int, float] | None = None
+    # The last cold read and what it was read from (the lock and the side told), so pixels
+    # that have not changed are not read again; since when no cold read has succeeded on
+    # this lock, and whether the person has been told.
+    _cold_last: tuple[tuple[Region, float, Side | None], _ColdRead | None] | None = None
+    _cold_since: float | None = None
+    _cold_noticed: bool = False
+    # The lock the start check last ran on with no model: unchanged pixels on it look the same.
+    _start_checked: tuple[Region, float] | None = None
+    # The other side the labels last said was at the bottom of an unexplained board, and when.
+    _flip_seen: tuple[Side, float] | None = None
     # The last screen state emitted, so a ScreenStateChanged fires only on a transition.
     _screen_state: ScreenState = ScreenState.UNKNOWN
     # When a dialog-sized cover first appeared over a live game's board, or None; and
@@ -159,9 +202,18 @@ class GamePipeline:
             self._unread_change = self._unread_change or changed
             if self.reconciler is not None:
                 self.reconciler.board_unseen()
+            # A board that comes back is waited for, and explained, afresh.
+            self._cold_last = None
+            self._cold_since = None
+            self._cold_noticed = False
+            self._start_checked = None
             return self._stamp(self._emit_screen_state(board_present=False), ts, frame_id)
         geometry = BoardGeometry(self.board.region, self.board.cell_px)
         key = (self.board.region, round(self.board.cell_px, 2))
+        new_pixels = fresh or self._unread_change
+        if new_pixels:
+            # These pixels are not the ones last read cold, whether or not this tick reads.
+            self._cold_last = None
         changed = (
             changed or self._unread_change or self._readings is None or key != self._readings_key
         )
@@ -182,8 +234,12 @@ class GamePipeline:
                 self._start_on_screen = start_shaped(self._readings) and not self._reads_as_start(
                     self._readings
                 )
-            else:
+            elif new_pixels or key != self._start_checked:
+                # With no model, unchanged pixels on the same lock look the same: not
+                # checked again on every tick a board sits there unread (a quarter of a
+                # second a frame on the phone).
                 self._start_on_screen = looks_like_start_position(frame, geometry)
+                self._start_checked = key
         self._start_seen = self._start_seen + 1 if self._start_on_screen else 0
         if self._should_bootstrap():
             # Decided on every verified tick, changed or not, so that a start position
@@ -207,6 +263,8 @@ class GamePipeline:
         events += self._resync_reoriented(
             self.reconciler.update(self._readings, ts), frame, geometry, ts
         )
+        if not any(isinstance(e, Resync | GameStarted) for e in events):
+            events += self._flip_if_turned(frame, geometry, ts)
         events += self._turn_from_clock(ts)
         if changed:
             events += self._end_on_badges()
@@ -428,6 +486,11 @@ class GamePipeline:
         self._last_clock_ts = None
         self._cold_tried = None
         self._cold_candidate = None
+        self._cold_last = None
+        self._cold_since = None
+        self._cold_noticed = False
+        self._start_checked = None
+        self._flip_seen = None
         self._dialog_since = None
         self._covered = False
         self._badges = None
@@ -482,6 +545,55 @@ class GamePipeline:
         kept = [e for e in events if not isinstance(e, Resync | PositionChanged | GameStarted)]
         return kept + reoriented
 
+    def _flip_if_turned(self, frame: np.ndarray, geometry: BoardGeometry, ts: float) -> list[Event]:
+        """A board no move explains whose coordinate labels say the other side is at the
+        bottom: the next puzzle, shown from its solver's side. It is read that way at once,
+        as a new game, from the readings already taken (`reorient`).
+
+        It used to wait for a resync to adopt the board on its head -- ten still frames,
+        a second and a half on the phone -- and then read all 64 cells again the right way
+        round, another second and a half; and a board that on its head was no legal
+        position waited for the long unexplained-board note, which after it stopped being
+        a Resync (the takeback fix) turned nothing round at all (Tai's puzzles on the Pixel,
+        2026-09-23: five to ten seconds, and stuck). The labels cost a few milliseconds;
+        two reads a moment apart must agree, so a piece dragged over the edge is not taken
+        for the board turning. A side the person chose with Flip stands."""
+        rec = self.reconciler
+        if (
+            rec is None
+            or self.model is None
+            or self.forced_bottom is not None
+            or rec.unexplained_frames < 1
+        ):
+            self._flip_seen = None
+            return []
+        seen = self._flip_seen
+        if seen is not None and ts - seen[1] < FLIP_CHECK_EVERY_S:
+            return []
+        labelled = read_bottom_side(frame, geometry, self.model.rank_labels)
+        if labelled is None or labelled == self.bottom:
+            self._flip_seen = None
+            return []
+        if seen is None or seen[0] != labelled:
+            self._flip_seen = (labelled, ts)
+            return []
+        self._flip_seen = None
+        return self.reorient(frame, geometry, labelled, ts)
+
+    def _reread(self, bottom: Side) -> _ColdRead | None:
+        """The frame's own readings taken with `bottom` at the bottom: the recogniser read
+        cells, not squares, so turning the board round needs no second read of its 64
+        cells -- a second and a half on the phone. None when the readings are not this
+        frame's, or not a quiet, complete, legal position that way round."""
+        if self.model is None or self._readings is None or self.board is None:
+            return None
+        if self._readings_key != (self.board.region, round(self.board.cell_px, 2)):
+            return None
+        placement = self._placement_from_readings(self._readings, bottom)
+        if placement is None or Reconciler._adopt_placement(placement) is None:
+            return None
+        return self.model, bottom, self._readings, placement
+
     def reorient(
         self,
         frame: np.ndarray,
@@ -496,8 +608,9 @@ class GamePipeline:
         say the other side (see `_resync_reoriented`). A game under way ends first. Nothing
         happens when the board cannot be read cleanly now (a piece in flight): the caller
         may set `forced_bottom` and forget the game, and the automatic cold start reads it
-        that way on the next quiet frame."""
-        read = self._cold_read(frame, geometry, bottom)
+        that way on the next quiet frame. The frame's own readings serve when they can
+        (`_reread`); a cold read from the theme cache otherwise."""
+        read = self._reread(bottom) or self._cold_read(frame, geometry, bottom)
         if read is None:
             return []
         events = self._end_in_progress("board reoriented") if end_previous else []
@@ -562,15 +675,17 @@ class GamePipeline:
             event.source_frame_id = frame_id
         return events
 
-    def _reads_as_start(self, readings: Readings) -> bool:
-        """Whether the recogniser reads the frame as the start position it was built on.
+    def _reads_as_start(self, readings: Readings, bottom: Side | None = None) -> bool:
+        """Whether the recogniser reads the frame as the start position it was built on,
+        with `bottom` (the game's, by default) at the bottom.
 
         Nothing may contradict the start (a piece read as another, an empty square where a
         piece belongs, a piece where none belongs), bar one cell for a badge or a lifted
         piece; and most of the board must be readable at all, since a new theme reads as
         unknown almost everywhere without contradicting anything.
         """
-        assert self.bottom is not None
+        bottom = self.bottom if bottom is None else bottom
+        assert bottom is not None
         start = chess.Board()
         contradictions = 0
         unknown = 0
@@ -580,7 +695,7 @@ class GamePipeline:
                 if reading.kind == "unknown":
                     unknown += 1
                     continue
-                piece = start.piece_at(square_at(r, c, self.bottom))
+                piece = start.piece_at(square_at(r, c, bottom))
                 if piece is None:
                     bad = reading.kind == "piece" and reading.symbol is not None
                 else:
@@ -608,7 +723,9 @@ class GamePipeline:
         self.model = model
         model.rank_labels = learn_rank_labels(frame, geometry, bottom)
         if self.cache is not None:
-            self.cache.save(model)
+            self.cache.save(model, key=self._learned_set(model, frame, geometry, bottom))
+        self._cold_since = None
+        self._cold_noticed = False
         self._last_clock = None
         if self.clock is not None:
             self.clock.reset()
@@ -618,29 +735,54 @@ class GamePipeline:
         self.bootstraps += 1
         return True
 
+    def _learned_set(
+        self, model: ThemeModel, frame: np.ndarray, geometry: BoardGeometry, bottom: Side
+    ) -> str | None:
+        """The cached set this start position shows again -- the same pieces on the same
+        board, learned before -- or None for a set not seen yet. Each set cached on these
+        board colours reads the frame; one that reads it as the start position is this set,
+        and the new model replaces it rather than standing beside it."""
+        assert self.cache is not None
+        if model.light_bg is None or model.dark_bg is None:
+            return None
+        for key, cached in self.cache.candidates(model.light_bg, model.dark_bg):
+            if self._reads_as_start(cached.classify_frame(frame, geometry), bottom):
+                return key
+        return None
+
     def _cold_read(
         self, frame: np.ndarray, geometry: BoardGeometry, bottom: Side | None
     ) -> tuple[ThemeModel, Side, Readings, chess.Board] | None:
-        """The board read cold from the theme cache: the cached recogniser for its
-        colours, the orientation (`bottom`, or the coordinate labels), the readings and
-        the placement they make -- or None when any of those is missing."""
+        """The board read cold from the theme cache: a cached recogniser for its colours,
+        the orientation (`bottom`, or the coordinate labels), the readings and the
+        placement they make -- or None when no learned set gives all of those.
+
+        One board's colours can carry several learned sets. Each reads the board; a set
+        whose read is not a quiet, complete, legal position is passed over (a set for other
+        pieces misreads them: a king taken for a bishop), and of those that give one the
+        surest read wins, so a set learned for other pieces on the same colours never
+        stands in for the right one (Tai's Pixel, 2026-09-23: a test board's set, cached
+        under chess.com's green, read his puzzle's pawns as the other colour's)."""
         if self.cache is None:
             return None
         sampled = sample_palette(frame, geometry)
         if sampled is None:
             return None
-        model = self.cache.get(*sampled)
-        if model is None:
-            return None
-        if bottom is None:
-            bottom = read_bottom_side(frame, geometry, model.rank_labels)
-        if bottom is None:
-            return None  # coordinates are off; the caller supplies the orientation and retries
-        readings = model.classify_frame(frame, geometry)
-        placement = self._placement_from_readings(readings, bottom)
-        if placement is None:
-            return None
-        return model, bottom, readings, placement
+        best: tuple[float, tuple[ThemeModel, Side, Readings, chess.Board]] | None = None
+        for _key, model in self.cache.candidates(*sampled):
+            side = bottom
+            if side is None:
+                side = read_bottom_side(frame, geometry, model.rank_labels)
+            if side is None:
+                continue  # coordinates off, or not this set's; the caller may say the side
+            readings = model.classify_frame(frame, geometry)
+            placement = self._placement_from_readings(readings, side)
+            if placement is None or Reconciler._adopt_placement(placement) is None:
+                continue
+            fit = _fit(readings)
+            if best is None or fit > best[0]:
+                best = (fit, (model, side, readings, placement))
+        return None if best is None else best[1]
 
     def _auto_cold_start(
         self, frame: np.ndarray, geometry: BoardGeometry, ts: float
@@ -655,15 +797,29 @@ class GamePipeline:
         page passing by is never taken for a game. A start position is left to the
         bootstrap, which learns the theme from it. The side to move comes from the
         running clock (`_turn_from_clock`) or from the first move seen.
+
+        Pixels that have not changed since the last read, on the same lock with the same
+        side told, read the same, so that read stands for this try: a board left unread --
+        a puzzle of a set not learned -- costs nothing while it sits there. New pixels drop
+        it (`process`), on a tick that tries or not. A board that stays unread is explained
+        once (`_cold_notice`).
         """
         if self.cache is None:
             return []
         if self._cold_tried is not None and ts - self._cold_tried < COLD_START_EVERY_S:
             return []
         self._cold_tried = ts
-        read = self._cold_read(frame, geometry, self.forced_bottom)
+        assert self.board is not None
+        seen = (self.board.region, round(self.board.cell_px, 2), self.forced_bottom)
+        if self._cold_last is None or self._cold_last[0] != seen:
+            read = self._cold_read(frame, geometry, self.forced_bottom)
+            self._cold_last = (seen, read)
+        else:
+            read = self._cold_last[1]
         if read is None:
-            return []  # nothing read cleanly this time; the candidate stands until it expires
+            # Nothing read cleanly this time; the candidate stands until it expires.
+            return self._cold_notice(frame, geometry, ts)
+        self._cold_since = None
         fen = read[3].board_fen()
         candidate = self._cold_candidate
         if (
@@ -679,6 +835,48 @@ class GamePipeline:
             return []
         self._cold_candidate = None
         return self._adopt_cold(*read, ts=ts)
+
+    def _cold_notice(self, frame: np.ndarray, geometry: BoardGeometry, ts: float) -> list[Event]:
+        """A board that has stayed unread for COLD_NOTICE_S is explained, once while it
+        stays: the person saw nothing happen and could not know why (Tai's puzzle on the
+        Pixel, 2026-09-23). Nothing is said when a learned set does read the board and only
+        a passing thing stands in the way -- a piece held, a selected piece's dots -- and
+        the wait starts again."""
+        if self._cold_since is None:
+            self._cold_since = ts
+            return []
+        if self._cold_noticed or ts - self._cold_since < COLD_NOTICE_S:
+            return []
+        reason = self._unread_reason(frame, geometry)
+        if reason is None:
+            self._cold_since = ts
+            return []
+        self._cold_noticed = True
+        return [BoardUnread(reason=reason)]
+
+    def _unread_reason(
+        self, frame: np.ndarray, geometry: BoardGeometry
+    ) -> Literal["unlearned", "orientation"] | None:
+        """Why a board goes unread: "orientation" when a learned set reads it as a position
+        but the coordinates say nothing (turned off), so Flip must; "unlearned" when no
+        learned set reads it as one -- its colours never seen, or its pieces not the ones the
+        sets on those colours learned -- so a start position shown once teaches it; None
+        when a learned set reads it with its orientation and only a passing thing (a piece
+        held, the dots of a selected piece) keeps the read from being clean."""
+        if self.cache is None:
+            return None
+        sampled = sample_palette(frame, geometry)
+        if sampled is None:
+            return None  # the two square colours cannot be told apart: not a board to read
+        for _key, model in self.cache.candidates(*sampled):
+            readings = model.classify_frame(frame, geometry)
+            told = self.forced_bottom
+            if told is None:
+                told = read_bottom_side(frame, geometry, model.rank_labels)
+            for side in [told] if told is not None else [Side.WHITE, Side.BLACK]:
+                if Reconciler._adopt_placement(_loose_placement(readings, side)) is not None:
+                    return None if told is not None else "orientation"
+        return "unlearned"
 
     def cold_start(
         self,
@@ -712,6 +910,8 @@ class GamePipeline:
         # Only now, with a legal position begun, is the pipeline switched onto this theme.
         self.model = model
         self.bottom = bottom
+        self._cold_since = None
+        self._cold_noticed = False
         self._readings = readings
         self._readings_key = (
             (self.board.region, round(self.board.cell_px, 2)) if self.board is not None else None

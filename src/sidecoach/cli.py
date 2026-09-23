@@ -422,7 +422,15 @@ def _replay_moves(
     import chess
     import cv2
 
-    from sidecoach.events import GameEnded, GameStarted, MovePlayed, Resync, Takeback, Unexplained
+    from sidecoach.events import (
+        BoardUnread,
+        GameEnded,
+        GameStarted,
+        MovePlayed,
+        Resync,
+        Takeback,
+        Unexplained,
+    )
     from sidecoach.state.pipeline import GamePipeline
     from sidecoach.vision.clock import ClockReader
 
@@ -512,6 +520,10 @@ def _replay_moves(
             elif isinstance(event, Unexplained):
                 console.print(
                     f"tick {tick.frame_id:5d} [yellow]Unexplained: {event.reason}[/yellow]"
+                )
+            elif isinstance(event, BoardUnread):
+                console.print(
+                    f"tick {tick.frame_id:5d} [yellow]Board unread: {event.reason}[/yellow]"
                 )
             elif isinstance(event, Resync):
                 console.print(f"tick {tick.frame_id:5d} [yellow]Resync: {event.reason}[/yellow]")
@@ -1815,6 +1827,7 @@ def watch(
     from sidecoach.capture.loop import CaptureFailed, capture_loop
     from sidecoach.capture.wgc_backend import make_capture
     from sidecoach.events import (
+        BoardUnread,
         GameEnded,
         GameStarted,
         MovePlayed,
@@ -1970,6 +1983,8 @@ def watch(
                         assessing.submit(event)
                     elif isinstance(event, Unexplained):
                         console.print(f"[yellow]board[/yellow]: {event.reason}; the game is kept")
+                    elif isinstance(event, BoardUnread):
+                        console.print(f"[yellow]board unread[/yellow]: {event.reason}")
                     elif isinstance(event, GameEnded):
                         console.print(f"[bold]game over[/bold] {event.result} ({event.reason})")
                         if event.pgn:

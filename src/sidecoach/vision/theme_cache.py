@@ -6,10 +6,13 @@ makes analysing a puzzle or a mid-game position from scratch impossible -- there
 position to learn from.
 
 This cache persists a learned model keyed by a fingerprint of the board's two square colours,
-which can be sampled from *any* board (a running game, a puzzle) without a model. So a theme
-seen once is recognised forever: the model is loaded from the cache and the position is read
-cold. (Knowing which side sits at the bottom -- the orientation -- is a separate problem the
-start position also used to answer; the cache supplies the piece style, not the orientation.)
+which can be sampled from *any* board (a running game, a puzzle) without a model, and by the
+piece set: one board's colours can carry several sets (a set changed, another site with the
+same colours, a test board), each learned once and kept beside the others; a set learned
+again replaces itself. So a theme seen once is recognised forever: the models are loaded
+from the cache and the one that reads the board is used to read the position cold. (Knowing
+which side sits at the bottom -- the orientation -- is a separate problem the start position
+also used to answer; the cache supplies the piece style, not the orientation.)
 
 Serialisation is pickle: the cache is local, self-generated, and never shared, so the format
 is ours to read and write. A cache written by an older version that no longer loads is simply
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import pickle
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -88,8 +92,16 @@ def sample_palette(
     return light_bg, dark_bg
 
 
+def _set_key(model: ThemeModel) -> str:
+    """A name for a learned set among those on the same board colours: from its start
+    cells' embeddings, or a fresh one when it has none."""
+    if model.exemplar_vectors is not None:
+        return hashlib.sha1(np.ascontiguousarray(model.exemplar_vectors).tobytes()).hexdigest()[:8]
+    return uuid.uuid4().hex[:8]
+
+
 class ThemeCache:
-    """A directory of learned themes, one pickled `ThemeModel` per palette fingerprint."""
+    """A directory of learned themes, one pickled `ThemeModel` per board-and-piece set."""
 
     def __init__(self, directory: Path) -> None:
         self.directory = Path(directory)
@@ -102,12 +114,15 @@ class ThemeCache:
     def _path(self, key: str) -> Path:
         return self.directory / f"theme-{key}.pkl"
 
-    def save(self, model: ThemeModel) -> str | None:
-        """Store a learned model under its own palette fingerprint. Returns the key, or None
-        when the model has no palette to key on."""
+    def save(self, model: ThemeModel, key: str | None = None) -> str | None:
+        """Store a learned model. `key` names the learned set it replaces -- the same pieces
+        on the same board learned again (`GamePipeline._learned_set`); without one it is
+        kept beside any other set on these board colours. Returns the key, or None when the
+        model has no palette to key on."""
         if model.light_bg is None or model.dark_bg is None:
             return None
-        key = palette_key(model.light_bg, model.dark_bg)
+        if key is None:
+            key = f"{palette_key(model.light_bg, model.dark_bg)}-{_set_key(model)}"
         self.directory.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": CACHE_VERSION,
@@ -150,23 +165,30 @@ class ThemeCache:
             )
         return self._palettes[key]
 
-    def get(self, light_bg: np.ndarray, dark_bg: np.ndarray) -> ThemeModel | None:
-        """The learned model whose palette is nearest this one within tolerance, or None.
+    def candidates(self, light_bg: np.ndarray, dark_bg: np.ndarray) -> list[tuple[str, ThemeModel]]:
+        """Every learned set whose board colours are within tolerance of these, nearest
+        first, with its key.
 
         A nearest-palette match rather than an exact key so a shade of rendering noise between
         sessions never causes a miss; a user has only a handful of themes, so the scan is cheap.
+        Each model is read afresh, so every caller gets one of its own.
         """
-        best: Path | None = None
-        best_distance = MATCH_TOLERANCE
+        near: list[tuple[float, Path]] = []
         for path in sorted(self.directory.glob("theme-*.pkl")):
             palette = self._palette(path)
             if palette is None:
                 continue
             distance = _distance(light_bg, dark_bg, *palette)
-            if distance <= best_distance:
-                best_distance = distance
-                best = path
-        if best is None:
-            return None
-        payload = self._read(best)
-        return None if payload is None else payload["model"]
+            if distance <= MATCH_TOLERANCE:
+                near.append((distance, path))
+        found: list[tuple[str, ThemeModel]] = []
+        for _, path in sorted(near, key=lambda item: item[0]):
+            payload = self._read(path)
+            if payload is not None:
+                found.append((path.stem.removeprefix("theme-"), payload["model"]))
+        return found
+
+    def get(self, light_bg: np.ndarray, dark_bg: np.ndarray) -> ThemeModel | None:
+        """The learned model whose palette is nearest this one within tolerance, or None."""
+        found = self.candidates(light_bg, dark_bg)
+        return found[0][1] if found else None

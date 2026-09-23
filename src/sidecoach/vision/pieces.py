@@ -1570,10 +1570,14 @@ class ThemeModel:
                     fresh.append((r, c))
         vectors: dict[tuple[int, int], np.ndarray] = {}
         net = embedder() if self.matcher == "embed" else None
-        if net is not None and fresh:
-            # The net embeds every cell that changed in one batch.
-            embedded = net.embed([crops[r][c] for r, c in fresh])
-            vectors = dict(zip(fresh, embedded, strict=True))
+        # The net embeds, in one batch, the cells that changed with a piece's worth of ink:
+        # only those are named by it (`_classify`). An empty square or a hint dot is the
+        # silhouette's to read, and embedding it anyway was most of a full read's cost --
+        # a second on the phone for a board that was mostly empty squares.
+        inked = [(r, c) for r, c in fresh if sils[r][c].fraction >= PIECE_MIN_FRACTION]
+        if net is not None and inked:
+            embedded = net.embed([crops[r][c] for r, c in inked])
+            vectors = dict(zip(inked, embedded, strict=True))
         readings: list[list[CellReading]] = []
         for r in range(8):
             row_readings: list[CellReading] = []
@@ -1588,7 +1592,7 @@ class ThemeModel:
                 reading = self._classify(
                     sils[r][c], r, c, is_covered, cell_px, vectors.get((r, c)), still, crops[r][c]
                 )
-                if still or vectors.get((r, c)) is None:
+                if still or net is None:
                     self._cells[(r, c)] = (crops[r][c], sils[r][c], is_covered, cell_px, reading)
                 else:
                     # Read in motion: the next frame, still or not, reads it again.

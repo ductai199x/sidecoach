@@ -163,8 +163,18 @@ class Reconciler:
     _finished: bool = False
     # The result the game ended with; "*" when the end was seen but not who won.
     _result: str | None = None
-    # Position resync: adopt a fully readable, stable board that no move story explains.
+    # Position resync: adopt a fully readable, stable board that no move story explains --
+    # held this many frames; or, when at least `resync_jump_cells` cells disagree (a new
+    # position, not a move), at least `resync_min_frames` spanning `resync_hold_s`: on a
+    # phone reading seven frames a second, ten frames were a second and a half, and more
+    # when the frames were slow ones (Tai's puzzles on the Pixel, 2026-09-23). A move is a
+    # handful of cells, and one whose squares wear the site's badges waits for the stale
+    # retry to explain it: adopted early, the mating move under the result badges went
+    # unrecorded (stress seed 839).
     resync_hold_frames: int = 10
+    resync_min_frames: int = 3
+    resync_hold_s: float = 0.4
+    resync_jump_cells: int = 12
     max_stale_subset_cells: int = 4
     # A pending story survives frames a drag blocks, up to this many, and may be extended
     # by the moves that follow it, up to this many plies in all.
@@ -177,7 +187,8 @@ class Reconciler:
     _turn_unknown: bool = False
     # What this game is (GameStarted.kind): a game from the start, or a position adopted.
     kind: str = "game"
-    _resync_candidate: tuple[str, int] | None = None
+    # The placement the resync would adopt, how many frames have shown it, and since when.
+    _resync_candidate: tuple[str, int, float] | None = None
     # Last stable reading of every cell and the frame it was seen in, plus the key of the
     # previous frame's reading, which a reading must repeat to count as stable.
     memory_frames: int = 30
@@ -939,6 +950,11 @@ class Reconciler:
         return self._unexplained_frames > 0
 
     @property
+    def unexplained_frames(self) -> int:
+        """For how many frames in a row the board has disagreed and no story explained it."""
+        return self._unexplained_frames
+
+    @property
     def agrees(self) -> bool:
         """Whether the last readable frame shows the latest position, ghosts aside: the
         record is up to date with the screen. False while a story is pending or a frame
@@ -1011,10 +1027,20 @@ class Reconciler:
             return []
         placement = self._placement(obs).board_fen()
         if self._resync_candidate and self._resync_candidate[0] == placement:
-            self._resync_candidate = (placement, self._resync_candidate[1] + 1)
+            self._resync_candidate = (
+                placement,
+                self._resync_candidate[1] + 1,
+                self._resync_candidate[2],
+            )
         else:
-            self._resync_candidate = (placement, 1)
-        if self._resync_candidate[1] < self.resync_hold_frames:
+            self._resync_candidate = (placement, 1, self._ts)
+        _, frames, since = self._resync_candidate
+        held = frames >= self.resync_hold_frames or (
+            len(diff) >= self.resync_jump_cells
+            and frames >= self.resync_min_frames
+            and self._ts - since >= self.resync_hold_s
+        )
+        if not held:
             return []
 
         adopted = self._adopt_placement(self._placement(obs), prefer=self._bottom_colour())

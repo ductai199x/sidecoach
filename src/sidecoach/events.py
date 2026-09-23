@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from enum import IntEnum, StrEnum
 from time import monotonic
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from pydantic import BaseModel, Field
 
@@ -141,6 +141,18 @@ class Unexplained(Event):
     game_id: str
     fen: str
     reason: str
+
+
+class BoardUnread(Event):
+    """A board on screen, no game followed on it, and nothing read from it for a while (Tai
+    on the Pixel, 2026-09-23: a puzzle up, "the program is not registering anything"). A
+    note for the person, said once while the board stays: "unlearned" when no learned
+    board-and-piece set reads it -- the colours never seen, or pieces the sets on those
+    colours misread -- so a start position shown once teaches it; "orientation" when a
+    learned set reads it but the coordinates cannot be, so Flip must say which side is at
+    the bottom."""
+
+    reason: Literal["unlearned", "orientation"]
 
 
 class GameEnded(Event):

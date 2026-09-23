@@ -78,7 +78,9 @@ export class PanelStore {
   ghostFen = $state<string | null>(null);
   hoverMarks = $state<Mark[] | null>(null);
   hoverSquare = $state<string | null>(null);
-  latestMarks = $state<{ ply: number | null; marks: Mark[] } | null>(null);
+  // The latest message's marks and the ply they were drawn at (a reply with no ply of its
+  // own, at the ply shown when it came), on the line of positions it came in.
+  latestMarks = $state<{ ply: number; marks: Mark[] } | null>(null);
 
   listenMode = $state("off");
   pttDown = $state(false);
@@ -112,7 +114,7 @@ export class PanelStore {
     let marks = this.hoverMarks;
     const plyShown = this.viewPly == null ? this.ply : this.viewPly;
     const latest = this.latestMarks;
-    if (!marks && latest && (latest.ply == null || (plyShown >= latest.ply && plyShown - latest.ply <= 1))) marks = latest.marks;
+    if (!marks && latest && plyShown >= latest.ply && plyShown - latest.ply <= 1) marks = latest.marks;
     const list = [...(marks || [])];
     if (this.hoverSquare) list.push({ kind: "square", squares: [this.hoverSquare], color: "mention", opacity: 0.9 });
     return list;
@@ -173,6 +175,10 @@ export class PanelStore {
       if (this.rows.length > MAX_ROWS) this.rows.splice(0, this.rows.length - MAX_ROWS);
     }
     const d = line.data;
+    // A new game, a position joined or a resync starts a line of positions numbered from its
+    // own start: the last message's marks belonged to the old one (a puzzle's arrows sat on
+    // the next puzzles' boards, Tai's Pixel, 2026-09-23).
+    if (line.chan === "game" && ((d && d.start_fen) || line.text.startsWith("resync:"))) this.latestMarks = null;
     if (line.chan === "coach" && d && d.full) this.addCoach(d);
     if (line.chan === "coach" && d && d.review) this.addReview(d);
     if (line.chan === "coach" && d && d.practice) this.coach.push({ kind: "practice", id: nextId++, practice: d.practice });
@@ -201,7 +207,7 @@ export class PanelStore {
       kind: "message", id: nextId++, trigger: String(d.trigger || "").replace("_", " "), disclosure: d.disclosure,
       ply: d.ply ?? null, fallback: !!d.fallback, full: d.full, marks, fen: d.fen ?? null,
     });
-    this.latestMarks = { ply: d.ply ?? null, marks };
+    this.latestMarks = { ply: d.ply ?? this.ply, marks };
   }
 
   private addReview(d: Record<string, any>): void {

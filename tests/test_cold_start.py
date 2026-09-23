@@ -323,3 +323,220 @@ def test_a_resync_onto_a_board_the_other_way_up_reads_the_labels(tmp_path: Path)
     assert any(isinstance(e, GameStarted) for e in events), "a new game, the right way up"
     assert live.bottom is Side.BLACK and live.reconciler is not None
     assert not _squares_off(live.reconciler.board, second)
+
+
+# The puzzle Tai had up on the Pixel (2026-09-23), just after Black's d5xc4.
+PUZZLE = "6r1/pp3k2/4b2R/2p1b1p1/2p3P1/P5P1/1P2BP2/2K2N2 w - - 0 1"
+LAST = chess.Move.from_uci("d5c4")
+
+
+def _learn(cache: ThemeCache, style: str, bottom: Side = Side.WHITE) -> None:
+    """A start position in `style` on chess.com's green, shown to a live pipeline."""
+    warm = GamePipeline(cache=cache)
+    for i in range(3):
+        warm.process(
+            synthetic_board(theme="green", style=style, bottom=bottom, coordinates=True), 0.1 * i
+        )
+    assert warm.model is not None and warm.model.rank_labels, f"{style} not learned"
+
+
+def _puzzle(style: str, **kwargs) -> np.ndarray:
+    return synthetic_board(
+        board=chess.Board(PUZZLE),
+        theme="green",
+        style=style,
+        coordinates=True,
+        highlight=LAST,
+        **kwargs,
+    )
+
+
+def _watch(pipe: GamePipeline, frame: np.ndarray, seconds: float, start: float = 0.0) -> list:
+    """`frame` held on screen for `seconds`, a tick every 0.3 s, its pixels new only on the
+    first: a puzzle sitting there while the person thinks."""
+    events: list = []
+    ts = start
+    while ts < start + seconds:
+        events += pipe.process(frame, ts, changed=ts == start)
+        ts += 0.3
+    return events
+
+
+def test_two_piece_sets_on_one_board_are_both_kept_and_each_read(tmp_path: Path) -> None:
+    """One board's colours, two piece sets learned from their start positions: both are
+    kept, and a puzzle in either is read with its own (the cache held one set per board
+    colours, and a test board's set cached under chess.com's green read Tai's puzzle's
+    black pawns as white: nothing was ever adopted)."""
+    from sidecoach.events import BoardUnread
+
+    cache = ThemeCache(tmp_path)
+    _learn(cache, "classic")
+    _learn(cache, "staunty")
+    assert len(list(tmp_path.glob("theme-*.pkl"))) == 2, "a second set stands beside the first"
+    for style in ("classic", "staunty"):
+        live = GamePipeline(cache=cache)
+        events = _watch(live, _puzzle(style), 3.0)
+        assert any(isinstance(e, GameStarted) for e in events), f"{style} puzzle not adopted"
+        assert not any(isinstance(e, BoardUnread) for e in events)
+        assert live.reconciler is not None
+        assert not _squares_off(live.reconciler.board, chess.Board(PUZZLE)), style
+
+
+def test_a_set_learned_again_replaces_itself(tmp_path: Path) -> None:
+    cache = ThemeCache(tmp_path)
+    _learn(cache, "staunty")
+    _learn(cache, "staunty")
+    _learn(cache, "staunty", Side.BLACK)
+    assert len(list(tmp_path.glob("theme-*.pkl"))) == 1, "the same set learned again is one file"
+
+
+def test_a_set_not_learned_is_explained_once_then_learned_from_a_start_position(
+    tmp_path: Path,
+) -> None:
+    """A puzzle in pieces not learned yet, on board colours that are: nothing is adopted
+    -- the other set's read is not the position -- and after a few seconds the person is
+    told, once, that a start position teaches it. Shown one, the set is learned beside the
+    other and the puzzle is read."""
+    from sidecoach.events import BoardUnread
+
+    cache = ThemeCache(tmp_path)
+    _learn(cache, "classic")
+    live = GamePipeline(cache=cache)
+    events = _watch(live, _puzzle("staunty"), 10.0)
+    assert not any(isinstance(e, GameStarted) for e in events), "adopted with the wrong set"
+    notices = [e for e in events if isinstance(e, BoardUnread)]
+    assert [n.reason for n in notices] == ["unlearned"], notices
+    assert 6.0 <= notices[0].ts <= 7.0, f"told at {notices[0].ts:.1f} s"
+    # Away from the board and back: explained again.
+    events = _watch(live, synthetic_board(pieces=False, x0=-2000), 1.0, start=20.0)
+    events = _watch(live, _puzzle("staunty"), 8.0, start=30.0)
+    assert [n.reason for n in events if isinstance(n, BoardUnread)] == ["unlearned"]
+    _learn(cache, "staunty")
+    assert len(list(tmp_path.glob("theme-*.pkl"))) == 2
+    fresh = GamePipeline(cache=cache)
+    events = _watch(fresh, _puzzle("staunty"), 3.0)
+    assert any(isinstance(e, GameStarted) for e in events)
+    assert fresh.reconciler is not None
+    assert not _squares_off(fresh.reconciler.board, chess.Board(PUZZLE))
+
+
+def test_a_puzzle_left_still_is_read_once(tmp_path: Path, monkeypatch) -> None:
+    """A still puzzle is adopted after the three reads a cold start waits for, and the
+    board is read once, not every half second: pixels that did not change read the same."""
+    cache = ThemeCache(tmp_path)
+    _learn(cache, "staunty")
+    reads = 0
+    original = ThemeCache.candidates
+
+    def counted(self, *args):
+        nonlocal reads
+        reads += 1
+        return original(self, *args)
+
+    monkeypatch.setattr(ThemeCache, "candidates", counted)
+    live = GamePipeline(cache=cache)
+    events = _watch(live, _puzzle("staunty"), 3.0)
+    started = [e for e in events if isinstance(e, GameStarted)]
+    assert started and 1.0 <= started[0].ts <= 2.0, "adopted after three reads, within two seconds"
+    assert reads == 1, f"the still board was read {reads} times"
+
+
+def test_a_selected_piece_is_not_explained(tmp_path: Path) -> None:
+    """The person clicks a piece of a learned set and thinks: its dots and rings keep the
+    read from being clean, but the set reads the board, so nothing is said; let go, the
+    puzzle is adopted."""
+    from sidecoach.events import BoardUnread
+
+    cache = ThemeCache(tmp_path)
+    _learn(cache, "staunty")
+    live = GamePipeline(cache=cache)
+    events = _watch(live, _puzzle("staunty", selected=chess.E2), 10.0)
+    assert not any(isinstance(e, BoardUnread) for e in events), "a held piece explained"
+    if not any(isinstance(e, GameStarted) for e in events):
+        events = _watch(live, _puzzle("staunty"), 3.0, start=10.0)
+        assert any(isinstance(e, GameStarted) for e in events)
+    assert live.reconciler is not None
+    assert not _squares_off(live.reconciler.board, chess.Board(PUZZLE))
+
+
+def test_a_board_without_coordinates_is_explained_as_its_orientation(tmp_path: Path) -> None:
+    """A learned set with the coordinates turned off: the pieces read, the side at the
+    bottom cannot be; the person is told Flip says it, and Flip does."""
+    from sidecoach.events import BoardUnread
+
+    cache = ThemeCache(tmp_path)
+    _learn(cache, "staunty")
+    frame = synthetic_board(
+        board=chess.Board(PUZZLE), theme="green", style="staunty", highlight=LAST
+    )
+    live = GamePipeline(cache=cache)
+    events = _watch(live, frame, 8.0)
+    assert [e.reason for e in events if isinstance(e, BoardUnread)] == ["orientation"]
+    live.forced_bottom = Side.WHITE
+    events = _watch(live, frame, 3.0, start=10.0)
+    assert any(isinstance(e, GameStarted) for e in events)
+    assert live.reconciler is not None
+    assert not _squares_off(live.reconciler.board, chess.Board(PUZZLE))
+
+
+def test_the_next_puzzle_from_the_other_side_is_turned_round_at_once(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A puzzle for White followed, then the next one shown from Black's side: the labels
+    turn the game round within half a second of the board standing still, from the
+    readings already taken -- no resync on its head first, and no second read of the board
+    (five to ten seconds a puzzle on the Pixel, 2026-09-23)."""
+    from sidecoach.events import Resync
+
+    cache = ThemeCache(tmp_path)
+    _warm(cache, "green", Side.WHITE)
+    _warm(cache, "green", Side.BLACK)
+    first = chess.Board(PUZZLE)
+    live = GamePipeline(cache=cache)
+    _join(live, synthetic_board(board=first, coordinates=True, highlight=LAST))
+    assert live.bottom is Side.WHITE
+    second = chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R b KQkq - 0 1")
+    frame = synthetic_board(board=second, bottom=Side.BLACK, coordinates=True)
+    reads = 0
+    original = ThemeCache.candidates
+
+    def counted(self, *args):
+        nonlocal reads
+        reads += 1
+        return original(self, *args)
+
+    monkeypatch.setattr(ThemeCache, "candidates", counted)
+    events: list = []
+    ts = 40.0
+    while ts < 42.0 and not any(isinstance(e, GameStarted) for e in events):
+        events += live.process(frame, ts, changed=ts == 40.0)
+        ts += 0.1
+    started = [e for e in events if isinstance(e, GameStarted)]
+    assert started, "the turned board was not taken up"
+    assert started[0].ts is not None and started[0].ts - 40.0 <= 0.6, started[0].ts
+    assert not any(isinstance(e, Resync) for e in events), "a resync on its head first"
+    assert reads == 0, "the board was read a second time to turn it round"
+    assert live.bottom is Side.BLACK and live.reconciler is not None
+    assert not _squares_off(live.reconciler.board, second)
+
+
+def test_a_new_position_on_a_slow_stream_is_taken_after_a_moment_not_ten_frames() -> None:
+    """Frames a third of a second apart, as a phone reads when the frames are heavy: the
+    next position is adopted once it has stood still for three frames and 0.4 s, not after
+    ten frames -- three seconds."""
+    from sidecoach.events import Resync
+
+    live = GamePipeline()
+    for i in range(3):
+        live.process(synthetic_board(coordinates=True), 0.1 * i)
+    assert live.reconciler is not None
+    later = chess.Board("r1bqk2r/1pppbppp/p1n2n2/4p3/B3P3/5N2/PPPP1PPP/RNBQ1RK1 w kq - 4 6")
+    frame = synthetic_board(board=later, coordinates=True)
+    events: list = []
+    ts = 10.0
+    while ts < 14.0 and not any(isinstance(e, Resync) for e in events):
+        events += live.process(frame, ts, changed=ts == 10.0)
+        ts += 0.33
+    resyncs = [e for e in events if isinstance(e, Resync)]
+    assert resyncs and resyncs[0].ts is not None and resyncs[0].ts - 10.0 <= 1.1, events
+    assert live.reconciler.base_fen.split()[0] == later.board_fen()

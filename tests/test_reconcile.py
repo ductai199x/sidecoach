@@ -507,6 +507,7 @@ def test_cells_unexplained_for_long_are_noted_and_the_game_is_kept() -> None:
     model, rec = _setup()
     rec.stale_after = 2
     rec.resync_after = 4
+    rec.resync_hold_s = 60.0  # the note is what is tested, not when a resync would adopt
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
     _play(model, rec, board, ["e4", "e5"], ts=0.0)
@@ -928,6 +929,7 @@ def test_resync_onto_a_mated_position_ends_the_game() -> None:
 
 def test_nothing_is_played_on_a_finished_game() -> None:
     model, rec = _setup()
+    rec.resync_hold_s = 60.0  # a review board held long enough is another position; not here
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
     ts = _play(model, rec, board, ["f3", "e5", "g4", "Qh4#"])
