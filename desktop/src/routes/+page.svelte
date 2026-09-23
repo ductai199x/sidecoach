@@ -26,6 +26,16 @@
   let splitBoard = $state<HTMLElement | null>(null);
   let splitMoves = $state<HTMLElement | null>(null);
   let splitTerm = $state<HTMLElement | null>(null);
+  let splitMobile = $state<HTMLElement | null>(null);
+
+  // Stacked, the board's side is the player's: the handle under it drags it, and the
+  // coach takes the room it gives up. Never so big the coach has no room, never tiny.
+  function mobileBoard(wanted: number | null): void {
+    const root = document.documentElement;
+    if (wanted === null || !mainEl) { root.style.removeProperty("--mboard"); return; }
+    const most = Math.max(160, Math.min(mainEl.clientWidth - 20, 640, mainEl.clientHeight - 250));
+    root.style.setProperty("--mboard", Math.round(Math.max(160, Math.min(most, wanted))) + "px");
+  }
 
   // The debug area folds to its status strip. It starts folded (Tai, 2026-09-21: the
   // terminal is off by default; View > Terminal opens it) and the choice is remembered.
@@ -69,7 +79,7 @@
     folded = saved === null ? true : saved === "1";
     document.documentElement.classList.toggle("noboard", !panes.board);
     refit();
-    const onResize = () => refit();
+    const onResize = () => { refit(); mobileBoard(prefs.get("mboard")); };
     window.addEventListener("resize", onResize);
     const ro = footer && window.ResizeObserver ? new ResizeObserver(refit) : null;
     if (ro && footer) ro.observe(footer);
@@ -94,6 +104,48 @@
       },
       () => { root.style.removeProperty("--term"); prefs.set("term", null); }));
     if (prefs.get("term") !== null) root.style.setProperty("--term", prefs.get("term") + "px");
+
+    // The phone's handle: the desktop's dividers are off when stacked, this one is only on.
+    if (splitMobile) {
+      const handle = splitMobile;
+      const down = (e: PointerEvent) => {
+        if (!stacked()) return;
+        e.preventDefault();
+        handle.setPointerCapture(e.pointerId);
+        const origin = e.clientY;
+        const start = (handle.parentElement as HTMLElement).getBoundingClientRect().width;
+        handle.classList.add("live");
+        const move = (ev: PointerEvent) => {
+          const w = start + (ev.clientY - origin);
+          mobileBoard(w);
+          prefs.set("mboard", w);
+        };
+        const done = () => {
+          handle.removeEventListener("pointermove", move);
+          handle.removeEventListener("pointerup", done);
+          handle.removeEventListener("pointercancel", done);
+          handle.classList.remove("live");
+        };
+        handle.addEventListener("pointermove", move);
+        handle.addEventListener("pointerup", done);
+        handle.addEventListener("pointercancel", done);
+      };
+      const reset = () => { prefs.set("mboard", null); mobileBoard(null); };
+      handle.addEventListener("pointerdown", down);
+      handle.addEventListener("dblclick", reset);
+      cleanups.push(() => { handle.removeEventListener("pointerdown", down); handle.removeEventListener("dblclick", reset); });
+    }
+    mobileBoard(prefs.get("mboard"));
+
+    // The header's height, for the first screen's sum (it is one row stacked, but a row
+    // whose height the font decides).
+    const bar = document.getElementById("bar");
+    const barRo = bar && window.ResizeObserver ? new ResizeObserver(() => {
+      root.style.setProperty("--bar-h", bar.getBoundingClientRect().height + "px");
+      mobileBoard(prefs.get("mboard"));
+    }) : null;
+    if (barRo && bar) barRo.observe(bar);
+    cleanups.push(() => barRo?.disconnect());
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && store.pinnedPly !== null) store.showLive();
@@ -145,6 +197,7 @@
 <main bind:this={mainEl}>
   <section id="left" hidden={!panes.board}>
     <Board fen={shown.fen} bottom={store.bottom} lastMove={shown.lastMove} marks={store.marks} bind:board={boardEl} />
+    <div class="msplit" bind:this={splitMobile} role="separator" aria-orientation="horizontal" aria-label="Board size" title="Drag to resize the board; double-tap to reset"></div>
     <div class="gameinfo" bind:this={infoEl}>
       <span class="strong">{store.state.user_side ? "you play " + store.state.user_side : "—"}</span>
       <span>ply {store.ply}</span>

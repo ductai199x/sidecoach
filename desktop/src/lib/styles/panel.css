@@ -56,10 +56,13 @@ body {
    both, and a veil the header's colour sits under the status bar, beneath the drawer and
    its scrim. Unset -- a desktop window, a browser -- all of it is nothing. */
 body { padding-top: var(--inset-top, 0px); padding-bottom: var(--inset-bottom, 0px); }
-body::before {
-  content: ""; position: fixed; top: 0; left: 0; right: 0; z-index: 40;
-  height: var(--inset-top, 0px); background: var(--panel); pointer-events: none;
+body::before, body::after {
+  content: ""; position: fixed; left: 0; right: 0; z-index: 40; pointer-events: none;
 }
+body::before { top: 0; height: var(--inset-top, 0px); background: var(--panel); }
+/* and the page's ground under the navigation bar, so what lies below the first screen
+   does not show through it */
+body::after { bottom: 0; height: var(--inset-bottom, 0px); background: var(--bg); }
 
 /* Thin, quiet scrollbars wherever something scrolls. */
 .moves-wrap, .coach, .terminal, .conversation {
@@ -500,16 +503,55 @@ html.stacked #bar { padding: 8px 12px; gap: 8px 12px; }
 html.stacked #bar .controls { flex: 1 1 auto; gap: 8px 14px; }
 html.stacked #bar .controls select { min-width: 0; max-width: 140px; }
 html.stacked .menulist { right: auto; left: 0; }
+/* Stacked (a phone), the first screen is the playing surface: the board at the size the
+   player dragged it to, the game line, the moves in one line, the coach taking what is
+   left, the ask box. The status strip and the terminal are below, a scroll away. */
 html.stacked main {
   display: flex; flex-direction: column; align-items: center;
-  padding: 10px; gap: 10px; overflow: visible;
+  padding: 8px 10px 10px; gap: 8px; overflow: visible;
+  height: calc(100vh - var(--bar-h, 56px));
+  height: calc(100dvh - var(--inset-top, 0px) - var(--inset-bottom, 0px) - var(--bar-h, 56px));
+  min-height: 460px;
 }
-html.stacked #left { width: 100%; max-width: 640px; }
+html.stacked #left { width: min(100%, var(--mboard, 640px)); gap: 0; flex: 0 0 auto; }
 html.stacked .board-wrap, html.stacked .board { width: 100%; height: auto; aspect-ratio: 1 / 1; }
 html.stacked .coord { font-size: max(9px, 1.6vw); }
-html.stacked #right { width: 100%; max-width: 640px; height: auto; max-height: none; align-self: center; }
-html.stacked .moves-wrap { flex-basis: 150px; }
-html.stacked .coach { flex-basis: auto; max-height: 40vh; min-height: 120px; }
+html.stacked .gameinfo { padding: 0 4px; min-height: 20px; }
+html.stacked #right {
+  width: 100%; max-width: 640px; align-self: center;
+  flex: 1 1 0; min-height: 0; max-height: none; padding: 8px; gap: 8px;
+}
+html.stacked #right .panel-title { display: none; }
+
+/* The handle under the board: drag it to size the board, double-tap to reset. */
+.msplit { display: none; }
+html.stacked .msplit {
+  display: flex; align-items: center; justify-content: center;
+  height: 22px; margin: 2px 0; touch-action: none; user-select: none; cursor: row-resize;
+  -webkit-tap-highlight-color: transparent;
+}
+html.stacked .msplit::after {
+  content: ""; width: 44px; height: 4px; border-radius: 2px;
+  background: var(--panel3); transition: background 120ms ease, width 120ms ease;
+}
+html.stacked .msplit.live::after { background: var(--accent); width: 56px; }
+
+/* The moves in one line that scrolls sideways and follows the game (chess.com on a
+   phone): the number, then each side's move with its badge. */
+html.stacked .moves-wrap {
+  flex: 0 0 auto; overflow-x: auto; overflow-y: hidden;
+  border: 0; border-radius: 8px; scrollbar-width: none;
+  mask-image: linear-gradient(to right, transparent 0, #000 14px);
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 14px);
+}
+html.stacked .moves-wrap::-webkit-scrollbar { display: none; }
+html.stacked #moves { display: flex; align-items: center; width: max-content; height: 40px; padding: 0 10px 0 6px; }
+html.stacked .mrow { display: flex; align-items: center; height: auto; padding: 0; gap: 1px; font-size: 14px; background: none; }
+html.stacked .mrow .num { margin: 0 3px 0 10px; font-size: 13px; }
+html.stacked .mrow:first-child .num { margin-left: 4px; }
+html.stacked .mrow .mv { padding: 4px 6px; border-radius: 5px; white-space: nowrap; }
+html.stacked .mrow .mv:empty { display: none; }
+html.stacked .coach { flex: 1 1 0; min-height: 80px; max-height: none; }
 html.stacked .terminal, html.stacked .conversation { height: clamp(120px, 30vh, 300px); }
 html.stacked .search { flex: 1 1 100px; width: auto; }
 html.stacked .health .hv { margin-right: 6px; }

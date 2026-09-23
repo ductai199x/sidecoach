@@ -4,6 +4,7 @@
   // plain). Hovering a move shows its position on the board; clicking pins it there, and
   // clicking it again (or Escape) comes back to the live board.
   import { store } from "./panel.svelte";
+  import { stacked } from "./layout";
   import { tick } from "svelte";
 
   const BADGED = new Set(["brilliant", "great", "best", "inaccuracy", "mistake", "miss", "blunder"]);
@@ -26,10 +27,25 @@
   const count = $derived((store.state.moves || []).length);
   const viewed = $derived(store.pinnedPly ?? store.viewPly);
 
-  // Follow the game: the newest move stays in view unless a move is pinned.
+  // Follow the game: the newest move stays in view unless a move is pinned. Stacked, the
+  // list is one line and follows sideways; a pinned move is brought into view there.
   $effect(() => {
     void count;
-    if (store.pinnedPly === null && wrap) tick().then(() => { if (wrap) wrap.scrollTop = wrap.scrollHeight; });
+    if (store.pinnedPly === null && wrap) {
+      tick().then(() => {
+        if (!wrap) return;
+        if (stacked()) wrap.scrollLeft = wrap.scrollWidth;
+        else wrap.scrollTop = wrap.scrollHeight;
+      });
+    }
+  });
+  $effect(() => {
+    void viewed;
+    if (!wrap || !stacked()) return;
+    tick().then(() => {
+      const el = wrap?.querySelector(".mv.view") as HTMLElement | null;
+      el?.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+    });
   });
 </script>
 

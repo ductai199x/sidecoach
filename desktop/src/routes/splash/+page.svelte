@@ -393,7 +393,7 @@
   /* One full-bleed card, under the phone's bars too: the page's inset padding and the
      header's veil are the panel's, not the splash's. */
   :global(body) { padding: 0 !important; }
-  :global(body)::before { display: none; }
+  :global(body)::before, :global(body)::after { display: none; }
   .card {
     box-sizing: border-box;
     width: 720px; height: 480px;
