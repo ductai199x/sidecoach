@@ -166,6 +166,20 @@ class SettingsStore(private val context: Context) {
     /** The coach's words over other apps ([Captions]); the phone's own setting. */
     fun captions(): Boolean = section("voice").optBoolean("captions", false)
 
+    /** How the captions' box looks; a colour that does not read keeps the default. */
+    fun captionStyle(): Captions.Style {
+        val voice = section("voice")
+        val plain = Captions.Style()
+        fun colour(name: String, fallback: Int): Int =
+            runCatching { android.graphics.Color.parseColor(voice.optString(name)) }.getOrDefault(fallback)
+        return Captions.Style(
+            text = colour("captions_text_color", plain.text),
+            background = colour("captions_background", plain.background),
+            opacityPercent = voice.optInt("captions_opacity", plain.opacityPercent).coerceIn(20, 100),
+            sizeSp = voice.optInt("captions_text_size", plain.sizeSp.toInt()).coerceIn(12, 32).toFloat(),
+        )
+    }
+
     fun speed(): Float = (number(section("voice"), "speed") ?: 1.0).toFloat()
 
     fun lang(): String = section("voice").optString("lang", "en-us")

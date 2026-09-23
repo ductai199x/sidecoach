@@ -59,9 +59,60 @@ def main() -> None:
         "type": "boolean",
         "applies": "now",
         "label": "Captions over other apps",
-        "section": "The coach's voice",
+        "section": "Captions",
     }
-    defaults["voice"]["captions"] = False
+    # How the box looks (Tai, 2026-09-23: "the user can tune things like text color, bg
+    # color, opacity, and text size").
+    voice["captions_text_color"] = {
+        "default": "#FFFFFF",
+        "description": "The colour of the captions' words.",
+        "title": "Captions Text Color",
+        "type": "string",
+        "applies": "now",
+        "kind": "color",
+        "label": "Text colour",
+        "section": "Captions",
+    }
+    voice["captions_background"] = {
+        "default": "#1F1F1F",
+        "description": "The colour of the box behind the words.",
+        "title": "Captions Background",
+        "type": "string",
+        "applies": "now",
+        "kind": "color",
+        "label": "Background colour",
+        "section": "Captions",
+    }
+    voice["captions_opacity"] = {
+        "default": 92,
+        "minimum": 20,
+        "maximum": 100,
+        "description": "How solid the box is, in percent: 100 hides what is behind it, lower "
+        "lets it show through.",
+        "title": "Captions Opacity",
+        "type": "integer",
+        "applies": "now",
+        "label": "Background opacity (%)",
+        "section": "Captions",
+    }
+    voice["captions_text_size"] = {
+        "default": 17,
+        "minimum": 12,
+        "maximum": 32,
+        "description": "How big the captions' words are; 17 is the usual size.",
+        "title": "Captions Text Size",
+        "type": "integer",
+        "applies": "now",
+        "label": "Text size",
+        "section": "Captions",
+    }
+    defaults["voice"].update(
+        captions=False,
+        captions_text_color="#FFFFFF",
+        captions_background="#1F1F1F",
+        captions_opacity=92,
+        captions_text_size=17,
+    )
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
     (OUT / "defaults.json").write_text(json.dumps(defaults), encoding="utf-8")

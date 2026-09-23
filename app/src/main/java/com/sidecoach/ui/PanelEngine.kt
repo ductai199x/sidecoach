@@ -211,6 +211,12 @@ object PanelEngine {
         synchronized(lock) { for ((key, value) in fields) state[key] = value }
     }
 
+    /** The game's moves (SAN) and the engine's label by ply, as the move list shows them. */
+    @Suppress("UNCHECKED_CAST")
+    fun moveList(): Pair<List<String>, Map<String, String>> = synchronized(lock) {
+        ((state["moves"] as? List<String>).orEmpty()) to ((state["labels"] as? Map<String, String>).orEmpty())
+    }
+
     /**
      * A session begins or is over: `panel._run`'s first and last lines. The phone saves no
      * session folder, as the desktop app's (`--no-persist`) does not.

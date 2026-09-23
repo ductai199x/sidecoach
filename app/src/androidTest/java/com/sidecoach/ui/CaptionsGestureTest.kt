@@ -115,7 +115,11 @@ class CaptionsGestureTest {
         tap(tall.centerX(), tall.centerY())
         assertTrue("a second double-tap kept the lines", waitFor { (box()?.height() ?: 0) == first.height() })
 
-        // A tap: the buttons.
+        // A tap: the buttons, and the game's moves under the words.
+        PanelEngine.set(
+            "moves" to listOf("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4", "cxd4", "Bb4+", "Nc3", "Nxe4", "O-O"),
+            "labels" to mapOf("1" to "book", "3" to "book", "5" to "best", "7" to "best", "9" to "best", "11" to "inaccuracy", "13" to "mistake", "15" to "brilliant"),
+        )
         Thread.sleep(400)
         tap(cx, cy)
         assertTrue("a tap showed no buttons", waitFor { (box()?.height() ?: 0) > first.height() })
@@ -154,9 +158,25 @@ class CaptionsGestureTest {
         Thread.sleep(300)
         shot("7_off")
 
-        // The settings page's switch puts them back.
+        // The settings page's switch puts them back, in the look the settings give.
         Captions.configure(app, true)
         assertTrue(Captions.enabled)
+        Captions.style(Captions.Style(text = 0xFFFFE066.toInt(), background = 0xFF0B2A4A.toInt(), opacityPercent = 70, sizeSp = 22f))
+        Captions.show("Bigger, yellow words on a see-through blue box: the settings' look.")
+        assertTrue("no styled box", waitFor { box() != null })
+        Thread.sleep(400)
+        assertTrue("bigger words did not make a taller box", box()!!.height() > first.height())
+        shot("8_styled")
+
+        // Saved on Sidecoach's own settings page: a sample line over it at once.
+        Captions.panelInFront(true)
+        assertTrue("the box stayed over the panel", waitFor { box() == null })
+        Captions.style(Captions.Style())
+        Captions.preview()
+        assertTrue("no preview over the settings page", waitFor { box() != null })
+        Thread.sleep(400)
+        shot("9_preview")
+        Captions.panelInFront(false)
         assertNotNull(Captions)
     }
 

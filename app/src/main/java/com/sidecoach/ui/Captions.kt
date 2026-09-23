@@ -3,14 +3,23 @@ package com.sidecoach.ui
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.BackgroundColorSpan
+import android.text.style.ForegroundColorSpan
+import android.text.style.ReplacementSpan
+import android.text.style.StyleSpan
 import android.util.TypedValue
 import android.view.GestureDetector
 import android.view.Gravity
@@ -19,6 +28,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.sidecoach.MainActivity
@@ -36,7 +46,7 @@ import kotlin.math.roundToInt
  * newest at the bottom, the earlier ones scrolling up; it fades a few seconds after the voice
  * stops. A line the voice does not say (muted, or a fast game) appears whole. Touch and hold
  * to move it anywhere; double-tap to see more lines; drag the bar at its foot for more or
- * fewer; tap for its buttons; drag it onto the cross at the bottom of the screen to turn
+ * fewer; tap for its buttons and the game's moves; drag it onto the cross at the bottom of the screen to turn
  * captions off. Taps anywhere else go to the app underneath. It keeps off the chess board --
  * the vision reads the board from the screen, and a box over it would hide squares -- and it
  * is not shown while Sidecoach's own panel is in front, which shows the words already.
@@ -45,7 +55,6 @@ import kotlin.math.roundToInt
  */
 object Captions {
     private const val PREFS = "captions"
-    private const val TEXT_SP = 17f
     private const val LINES = 2
     private const val EXPANDED_LINES = 6
     private const val MAX_LINES = 10
@@ -60,6 +69,28 @@ object Captions {
 
     @Volatile private var on = false
     @Volatile private var front = false
+
+    /**
+     * How the box looks, from the settings (Tai, 2026-09-23: the user tunes the text colour,
+     * the background colour, its opacity and the text size).
+     */
+    data class Style(
+        val text: Int = 0xFFFFFFFF.toInt(),
+        val background: Int = 0xFF1F1F1F.toInt(),
+        val opacityPercent: Int = 92,
+        val sizeSp: Float = 17f,
+    ) {
+        /** The background with its opacity. */
+        val fill: Int get() = ((opacityPercent.coerceIn(0, 100) * 255 / 100) shl 24) or (background and 0xFFFFFF)
+    }
+
+    @Volatile private var style = Style()
+
+    /** The settings' look, applied now to a box that is up and to every one after. */
+    fun style(look: Style) {
+        style = look
+        main.post { box?.restyle(look) }
+    }
 
     /** Where the board is on the screen, in pixels, from the vision; null when none is seen. */
     @Volatile var board: Rect? = null
@@ -113,10 +144,26 @@ object Captions {
         main.post { begin(text, 0) }
     }
 
+    /**
+     * A sample line over whatever is in front, Sidecoach's own settings page included: a change
+     * to the captions shows the moment it is saved (Tai, 2026-09-23: "applies instantly on
+     * save"). It starts a fresh box, and fades as any line does.
+     */
+    fun preview() {
+        if (!on) return
+        main.post {
+            drop()
+            said.setLength(0)
+            begin(PREVIEW, 0, force = true)
+        }
+    }
+
+    private const val PREVIEW = "This is how captions look. Spot on -- rooks belong on open files."
+
     // ---- the words ---------------------------------------------------------------------------
 
-    private fun begin(text: String, speechMs: Long) {
-        if (!on || front) return
+    private fun begin(text: String, speechMs: Long, force: Boolean = false) {
+        if (!on || (front && !force)) return
         val fresh = box == null
         finish()
         if (said.isNotEmpty()) said.append(if (fresh) "\n" else " ")
@@ -125,12 +172,14 @@ object Captions {
         saying = text.trim().replace(" -- ", " — ")
         sayingFrom = SystemClock.uptimeMillis()
         sayingMs = speechMs
-        if (!ensureBox()) {
+        // A preview over Sidecoach's own page lets every tap through, Save included.
+        if (!ensureBox(touchable = !force)) {
             finish()
             return
         }
         main.removeCallbacks(hideLater)
         main.removeCallbacks(tick)
+        box?.let { if (it.movesShown) it.showMoves() }
         tick.run()
     }
 
@@ -185,12 +234,12 @@ object Captions {
 
     // ---- the window --------------------------------------------------------------------------
 
-    private fun ensureBox(): Boolean {
+    private fun ensureBox(touchable: Boolean = true): Boolean {
         box?.let { return true }
         val ctx = app ?: return false
         if (!Settings.canDrawOverlays(ctx)) return false
         return runCatching {
-            val made = Box(ctx)
+            val made = Box(ctx, touchable)
             made.attach()
             box = made
             true
@@ -288,15 +337,17 @@ object Captions {
 
     /** The caption box: the words, the buttons a tap shows, and the bar that sets its height. */
     @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
-    private class Box(private val ctx: Context) : LinearLayout(ctx) {
+    private class Box(private val ctx: Context, touchable: Boolean = true) : LinearLayout(ctx) {
         private val windows = ctx.getSystemService(WindowManager::class.java)
         private val params: WindowManager.LayoutParams
         private val words = TextView(ctx)
         private val buttons = LinearLayout(ctx)
         private val mute = chip("Mute voice")
+        private val moves = TextView(ctx)
+        private val strip = HorizontalScrollView(ctx)
         private val bar = FrameLayout(ctx)
         private var lines = prefs(ctx).getInt("lines", LINES).coerceIn(1, MAX_LINES)
-        private val lineHeight: Int
+        private var lineHeight: Int
         private var attached = false
 
         /** A finger on the box: it neither fades nor moves on its own meanwhile. */
@@ -315,7 +366,7 @@ object Captions {
             setPadding(pad, dp(ctx, 12f), pad, dp(ctx, 4f))
             background = GradientDrawable().apply {
                 cornerRadius = dp(ctx, 20f).toFloat()
-                setColor(0xEB1F1F1F.toInt())
+                setColor(style.fill)
             }
             elevation = dp(ctx, 6f).toFloat()
 
@@ -327,11 +378,34 @@ object Captions {
                 bottomMargin = dp(ctx, 10f)
             })
 
-            words.setTextColor(0xFFFFFFFF.toInt())
-            words.setTextSize(TypedValue.COMPLEX_UNIT_SP, TEXT_SP)
+            words.setTextColor(style.text)
+            words.setTextSize(TypedValue.COMPLEX_UNIT_SP, style.sizeSp)
             words.setLineSpacing(0f, 1.15f)
             lineHeight = words.lineHeight
             addView(words, LayoutParams(LayoutParams.MATCH_PARENT, lineHeight * shownLines()))
+
+            // The game's moves, one line under the words, the newest in view: the panel's move
+            // list as the phone lays it out, with chess.com's badges (Tai, 2026-09-23).
+            moves.setTextColor(style.text)
+            moves.setTextSize(TypedValue.COMPLEX_UNIT_SP, style.sizeSp - 2f)
+            moves.isSingleLine = true
+            strip.isHorizontalScrollBarEnabled = false
+            strip.visibility = GONE
+            strip.addView(moves)
+            strip.setOnTouchListener { _, event ->
+                // Swiping through the moves keeps them up.
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> main.removeCallbacks(hideButtons)
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        main.postDelayed(hideButtons, CONTROLS_MS)
+                        rest()
+                    }
+                }
+                false
+            }
+            addView(strip, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(ctx, 8f)
+            })
 
             val grip = View(ctx).apply {
                 background = GradientDrawable().apply {
@@ -346,6 +420,7 @@ object Captions {
             val screen = screen(ctx)
             val width = min(screen.width() - dp(ctx, 32f), max(screen.width() * 4 / 5, dp(ctx, 320f)))
             params = overlayParams(width, WindowManager.LayoutParams.WRAP_CONTENT)
+            if (!touchable) params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             val saved = prefs(ctx)
             val x = saved.getInt("x", screen.left + (screen.width() - width) / 2)
             val y = saved.getInt("y", screen.bottom - dp(ctx, 220f))
@@ -472,16 +547,75 @@ object Captions {
             setText(words.text.toString())
         }
 
+        /** The settings' look, on the box that is up. */
+        fun restyle(look: Style) {
+            (background as GradientDrawable).setColor(look.fill)
+            words.setTextColor(look.text)
+            words.setTextSize(TypedValue.COMPLEX_UNIT_SP, look.sizeSp)
+            moves.setTextColor(look.text)
+            moves.setTextSize(TypedValue.COMPLEX_UNIT_SP, look.sizeSp - 2f)
+            lineHeight = words.lineHeight
+            setHeightTo(shownLines())
+        }
+
+        /** The move list, from the panel's state; hidden while the game has no moves. */
+        fun showMoves() {
+            val (sans, labels) = PanelEngine.moveList()
+            if (sans.isEmpty()) {
+                strip.visibility = GONE
+                return
+            }
+            moves.text = moveText(sans, labels)
+            strip.visibility = VISIBLE
+            strip.post { strip.scrollTo(moves.width, 0) }
+        }
+
+        private fun moveText(sans: List<String>, labels: Map<String, String>): CharSequence {
+            val out = SpannableStringBuilder()
+            for ((i, san) in sans.withIndex()) {
+                val ply = i + 1
+                if (i % 2 == 0) {
+                    if (i > 0) out.append("   ")
+                    val from = out.length
+                    out.append("${i / 2 + 1}. ")
+                    out.setSpan(ForegroundColorSpan(0xFF9A9A9A.toInt()), from, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                } else {
+                    out.append("  ")
+                }
+                val from = out.length
+                out.append(san)
+                if (ply == sans.size) {
+                    out.setSpan(BackgroundColorSpan(0x33FFFFFF), from, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    out.setSpan(StyleSpan(Typeface.BOLD), from, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+                val badge = BADGES[labels[ply.toString()]]
+                if (badge != null) {
+                    out.append(" ")
+                    val at = out.length
+                    out.append("\u2009")
+                    out.setSpan(Badge(badge.first, badge.second, dp(ctx, 16f)), at, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+            }
+            return out
+        }
+
         private fun toggleButtons() {
             val show = buttons.visibility != VISIBLE
             mute.text = if (PanelVoice.muted) "Unmute voice" else "Mute voice"
             buttons.visibility = if (show) VISIBLE else GONE
+            if (show) showMoves() else strip.visibility = GONE
             main.removeCallbacks(hideButtons)
             if (show) main.postDelayed(hideButtons, CONTROLS_MS)
             rest()
         }
 
-        private val hideButtons = Runnable { buttons.visibility = GONE }
+        private val hideButtons = Runnable {
+            buttons.visibility = GONE
+            strip.visibility = GONE
+        }
+
+        /** The moves up now, for a line that comes while they are. */
+        val movesShown: Boolean get() = strip.visibility == VISIBLE
 
         private fun openApp() {
             runCatching {
@@ -541,6 +675,52 @@ object Captions {
             windows.updateViewLayout(this, params)
             prefs(ctx).edit().putInt("x", x).putInt("y", y).apply()
             rest()
+        }
+    }
+
+    /**
+     * chess.com's move-quality badges, as the panel's move list draws them (`panel.css`): the
+     * colour and the mark, for the labels worth one; good and book stay plain.
+     */
+    private val BADGES = mapOf(
+        "brilliant" to (0xFF1BACA6.toInt() to "!!"),
+        "great" to (0xFF5B8BB0.toInt() to "!"),
+        "best" to (0xFF81B64C.toInt() to "\u2605"),
+        "inaccuracy" to (0xFFF7C631.toInt() to "?!"),
+        "mistake" to (0xFFFFA459.toInt() to "?"),
+        "miss" to (0xFFFF7769.toInt() to "\u2715"),
+        "blunder" to (0xFFFA412D.toInt() to "??"),
+    )
+
+    /** A badge in the move list: a coloured disc with its mark, the size of a letter. */
+    private class Badge(private val colour: Int, private val mark: String, private val size: Int) : ReplacementSpan() {
+        private val disc = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFFFFFFF.toInt()
+            typeface = Typeface.DEFAULT_BOLD
+            textAlign = Paint.Align.CENTER
+        }
+
+        override fun getSize(paint: Paint, text: CharSequence?, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int = size
+
+        override fun draw(
+            canvas: Canvas,
+            text: CharSequence?,
+            start: Int,
+            end: Int,
+            x: Float,
+            top: Int,
+            y: Int,
+            bottom: Int,
+            paint: Paint,
+        ) {
+            val r = size / 2f
+            val cy = (top + bottom) / 2f
+            disc.color = colour
+            canvas.drawCircle(x + r, cy, r, disc)
+            ink.textSize = size * if (mark.length > 1) 0.55f else 0.68f
+            val base = cy - (ink.descent() + ink.ascent()) / 2
+            canvas.drawText(mark, x + r, base, ink)
         }
     }
 

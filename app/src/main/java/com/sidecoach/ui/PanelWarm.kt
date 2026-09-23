@@ -118,6 +118,7 @@ object PanelWarm {
                 // knows the voices at once, and the voice stage below loads the model.
                 PanelVoice.build(appContext, SettingsStore(appContext))
                 Captions.configure(appContext, SettingsStore(appContext).captions())
+                Captions.style(SettingsStore(appContext).captionStyle())
                 PanelListen.build(appContext)
                 stage("pieces", "loading")
                 // OpenCV's native library first: the net's prime and the vision's pass both
@@ -407,6 +408,9 @@ object PanelWarm {
         attempt(listOf("voice.listen")) { PanelListen.setListen(store.listen()) }
         attempt(listOf("voice.speed")) { PanelVoice.tts?.speed = store.speed() }
         attempt(listOf("voice.captions")) { Captions.configure(appContext, store.captions(), ask = true) }
+        attempt(CAPTION_LOOK) { Captions.style(store.captionStyle()) }
+        // Saved, and seen at once: a sample line in the new look over the settings page.
+        if (changed.any { it == "voice.captions" || it in CAPTION_LOOK }) Captions.preview()
         if (changed.any { it in VOICE_RELOAD }) {
             // A new language, folder or device: the old voice is cut off, the new one built
             // and loaded off the caller's thread. `_reload_voice`.
@@ -503,6 +507,14 @@ object PanelWarm {
 
     /** `panel.STT_RELOAD`: the settings that rebuild speech recognition and the microphone. */
     private val STT_RELOAD = setOf("voice.stt_device", "voice.mic_device")
+
+    /** The captions' look (the phone's own settings): applied to the box at once. */
+    private val CAPTION_LOOK = listOf(
+        "voice.captions_text_color",
+        "voice.captions_background",
+        "voice.captions_opacity",
+        "voice.captions_text_size",
+    )
 
     /** Python's `f"{x:.1f}"`: half to even. */
     private fun f1(value: Double): String =
