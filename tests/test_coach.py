@@ -386,18 +386,18 @@ def test_in_blitz_a_good_move_earns_two_words_without_the_model() -> None:
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)
     _mate_in_one_played(coach)
     out = _messages(coach)
-    assert len(out) == 1 and out[0].text in [p.format(san="Qxf7#") for p in VERDICTS["best"]]
+    assert len(out) == 1 and out[0].text in VERDICTS["best"]
     assert provider.prompts == [], "no model call for a good move in blitz"
     # The wording is by the label and never the same twice running: "good, good, good"
-    # for a whole game wore thin.
-    seen = {coach._verdict("Nf3", "good") for _ in range(40)}
+    # for a whole game wore thin. Never the move: the player just played it.
+    seen = {coach._verdict("good") for _ in range(40)}
     assert len(seen) >= 3
     previous = None
     for _ in range(40):
-        current = coach._verdict("Nf3", "good")
+        current = coach._verdict("good")
         assert current != previous
         previous = current
-    assert coach._verdict("e4", "book") in [p.format(san="e4") for p in VERDICTS["book"]]
+    assert coach._verdict("book") in VERDICTS["book"]
 
 
 def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
@@ -432,7 +432,9 @@ def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
     instruction, fallback = coach._instruction(
         Trigger.POST_MOVE, position, DisclosureLevel.LINE, None, (), blunder, played
     )
-    assert fallback == "a3 cost you; Qxf7# was better."
+    from sidecoach.coach.coach import COST_YOU, FINE_TIGHTER
+
+    assert fallback in [c.format(best="Qxf7#") + "." for c in COST_YOU]
     assert "which was a blunder" in instruction and "fine" not in instruction
     assert "no lesson, no question" in instruction
     # A move a little behind the best is still fine.
@@ -442,7 +444,10 @@ def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
     _, fallback = coach._instruction(
         Trigger.POST_MOVE, position, DisclosureLevel.LINE, None, (), good, played
     )
-    assert fallback == "a3 was fine; Qxf7# was a little tighter."
+    assert fallback in [
+        f.format(best="Qxf7#") + ": the idea was a mating attack." for f in FINE_TIGHTER
+    ]
+    assert "Do not open with the move they played" in instruction
 
 
 def test_the_draft_checker_can_veto_a_false_claim() -> None:
@@ -992,7 +997,7 @@ def test_a_question_about_the_last_move_gets_its_verdict_in_full() -> None:
     assert out and out[-1].level is DisclosureLevel.LINE
     assert out[-1].fen == SCHOLAR
     # The fallback is the verdict itself, not a hint.
-    assert out[-1].text.startswith("Bxf7+ cost you 45% of the game. Qxf7# was better")
+    assert out[-1].text.startswith("It cost you 45% of the game. Qxf7# was better")
 
 
 def test_a_question_about_a_fine_last_move_says_it_was_fine() -> None:
@@ -1286,9 +1291,9 @@ def test_every_third_mistake_ends_by_asking_what_the_player_saw() -> None:
     )
     # What they expected, in the coach's own words: the directive never spells out the
     # "missed it or misjudged it" question the model would then repeat verbatim.
-    assert "what they expected to happen after a3" in instruction
+    assert "what they expected their move to do" in instruction
     assert "misjudge" not in instruction and "altogether" not in instruction
-    assert fallback.endswith("What were you expecting after a3?")
+    assert fallback.endswith("What were you expecting that move to do?")
 
     # Every third mistake -- while the player answers. The first answered within a
     # minute keeps the cadence; one that goes unanswered is the last of the game.

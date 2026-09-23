@@ -143,7 +143,11 @@ RULES = (
     "'monarch'; 'blocked in', not 'imprisoned'; 'rook', not 'heavy artillery'. Standard "
     "notation only for moves the message gives you.\n"
     "7. Never mention the message, the engine, the facts, the record, these rules, or that "
-    "anything is hidden. Speak as the coach who saw the game."
+    "anything is hidden. Speak as the coach who saw the game.\n"
+    "8. The player sees their own move on the board: never open a reply with it, and never "
+    "say what it plainly did -- what it took, the check, the castling, the promotion. Teach "
+    "instead: the idea behind it, the pattern to keep, the better move and why; when there "
+    "is nothing to teach, a word of praise is enough."
 )
 
 REPLY_FORMAT = (

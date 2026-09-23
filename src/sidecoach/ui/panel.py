@@ -89,7 +89,10 @@ DICTATION_SEND_DELAY_S = 1.0
 # last look at it.
 HEAR_TEST_TIMEOUT_S = 20.0
 # What the settings page's Listen button says, in the voice being tried.
-VOICE_SAMPLE = "Nf3: that's the move. Now, what is your opponent's most dangerous idea?"
+VOICE_SAMPLE = (
+    "That's the move -- rooks belong on open files. Now, what is your opponent's most "
+    "dangerous idea?"
+)
 
 Frame = tuple[int, float, Any]  # (frame_id, ts, frame)
 FrameSource = Iterable[Frame]
@@ -108,7 +111,8 @@ DEGRADED_FRAMES = 5
 # is stale. A hint about the live position is moot the moment the user moves (+1).
 STALE_AFTER = {"post_move": 2, "post_mistake": 2, "decisive_question": 0, "stuck": 0}
 STALE_PLIES = 2  # the fallback for any other trigger
-# A "verdict" this short (post-move "exf5: good.") is skipped when the voice is busy.
+# A "verdict" this short (post-move praise alone, "Good.") is skipped when the voice is busy;
+# one with a lesson in it is longer, and waits its turn.
 SHORT_VERDICT = 40
 # A fast game (coach.fast_pace): the coach's words are shown, not spoken -- a sentence
 # would be talked over the next two moves. The last unspoken word is said after all

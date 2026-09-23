@@ -158,9 +158,8 @@ def required(cls: Class, m: Moment) -> list[Fact]:
     f = m.facts
     out: list[Fact] = []
     if cls.id in ("verdict", "verdict_weaker"):
-        # The move just played need not be named in a one-line nod; its sense must be right.
-        if cls.id == "verdict_weaker":
-            out.append(Fact("move", m.last_san or "", "named"))
+        # The move just played is never named back to the player, who just played it (Tai,
+        # 2026-09-23); the verdict's sense must be right, and the better move named.
         out.append(Fact("label", m.last_label or "", "sense"))
         if cls.id == "verdict_weaker" and m.last_best_san:
             out.append(Fact("better_move", m.last_best_san, "named"))

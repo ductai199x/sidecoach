@@ -47,6 +47,12 @@ COACH_LINE = re.compile(
 )
 ATTACKS = (" forks ", " now bears on ", " removes a defender of ", " skewers ")
 PLACEHOLDERS = ("the idea was the position", "None", "nan", "{", "}", "undefined", "  ")
+# What the player sees on the board for themselves, never said back after their move (Tai,
+# 2026-09-23).
+PLAIN = re.compile(
+    r"(taking|takes) the (pawn|knight|bishop|rook|queen|king) on|with check|castling "
+    r"(king|queen)side|castles|promoting to"
+)
 
 
 def _pieces(board: chess.Board, before: chess.Board | None, text: str) -> list[str]:
@@ -111,11 +117,20 @@ def check_transcript(lines: list[str], facts: dict) -> list[str]:
         found += [f"placeholder {bad!r}" for bad in PLACEHOLDERS if bad in said]
         found += _pieces(board, before if c.group(1) == "after the move" else None, said)
         found += _colours(board, said)
-        lesson = re.match(r"^(\S+) cost you\. (\S+) was better", said)
-        if lesson and lesson.group(1) == lesson.group(2):
+        after_move = c.group(1) == "after the move"
+        lesson = re.match(
+            r"^(?:That one cost you: |That cost you something: |Not that one -- )(\S+)", said
+        )
+        if lesson and lesson.group(1) == last_played:
             found.append("the played move named as the better one")
-        if last_played and said.startswith(f"{last_played} was fine; {last_played} was"):
+        fine = re.match(r"^(?:Fine, but |That works, though |Playable -- )(\S+)", said)
+        if fine and fine.group(1) == last_played:
             found.append("fine/tighter names the same move")
+        if after_move and last_played and said.startswith(last_played):
+            found.append("opens with the move just played")
+        plain = PLAIN.search(said.lower()) if after_move else None
+        if plain:
+            found.append(f"says the move's {plain.group(0)!r} back")
         if said == last_coach:
             found.append("repeated verbatim")
         problems += [f"ply {ply}: {what}: {said!r}" for what in found]

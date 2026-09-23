@@ -7,6 +7,7 @@ import chess
 
 from sidecoach.coach.coach import Coach, Trigger
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
+from sidecoach.coach.verdicts import MATE
 from sidecoach.config import LLMSettings
 from sidecoach.events import Analysis, Line, MovePlayed
 from sidecoach.llm.factory import make_provider
@@ -39,11 +40,12 @@ def test_a_decisive_moment_and_a_move_get_the_templates_with_no_call() -> None:
     assert len(out) == 1 and out[0].trigger is Trigger.DECISIVE_QUESTION
     assert out[0].text and "?" in out[0].text
     assert coach.speaker.fallbacks == 1
-    # The player's best move: the verdict written from the board.
+    # The player's best move: the verdict written from the board -- here the mate, and
+    # never the move itself.
     _mate_in_one_played(coach)
     out = _messages(coach)
     assert len(out) == 1 and out[0].trigger is Trigger.POST_MOVE
-    assert "Qxf7#" in out[0].text
+    assert out[0].text in MATE and "Qxf7#" not in out[0].text
     assert provider.usage.calls == 0, "nothing was ever called"
 
 

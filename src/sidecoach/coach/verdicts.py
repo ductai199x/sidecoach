@@ -1,17 +1,21 @@
 """The word on a sound move, written from the facts rather than by the model.
 
-A best, great, excellent, good or book move that cost nothing gets a sentence: the
-verdict in chess.com's vocabulary, then what the move does when the board says so --
-the capture, the check, the castling, the promotion (describe_move), the tactic it
-makes (the tagger's tag, described only when every square it names still holds the
-piece it claims). Nothing else: no advice, no guess at what it allows, no numbers, no
-question -- the rules the model was given for the same word. The opener never repeats
-the last one.
+A best, great, excellent, good or book move that cost nothing gets a word of praise in
+chess.com's vocabulary, then -- when the board shows one -- what the move teaches: the mate,
+the tactic it makes (the tagger's tag, described only when every square it names still holds
+the piece it claims), or the strategic idea behind it (positional.best_move_idea, from the
+board's geometry), put as the principle to keep. Nothing else: no advice, no guess at what it
+allows, no numbers, no question -- the rules the model was given for the same word.
+
+Never the move itself, nor what it plainly does -- the capture, the check, the castling: the
+player has just played it and sees it on the board. Tai, 2026-09-23: "the coach shouldn't be
+starting the message with the move either since that's redundant ... either say something
+instructive or don't say anything at all is okay or just 'That's a good move'". The praise
+never repeats the last one, and a lesson taught in one of the last few words waits its turn.
 
 Tai, 2026-09-20: "if I made the best move or great move, we can synthesize the response
 without hitting the API". A routine call was 2.7k prompt tokens (mostly cached) and a
-second's wait for "Nf3 was best, developing with a threat"; this is free and immediate,
-and every word of it is true of the board.
+second's wait; this is free and immediate, and every word of it is true of the board.
 """
 
 from __future__ import annotations
@@ -21,27 +25,24 @@ from collections.abc import Sequence
 
 import chess
 
-from sidecoach.coach.facts import PIECE_NAMES, describe_tactic
+from sidecoach.analysis import positional
+from sidecoach.coach.facts import describe_tactic
 from sidecoach.events import MotifTag
 
-# The verdict, by the move's label; "{san}" is the move. What follows it, when the board
-# gives something, is joined with " -- " or ", ".
+# The praise, by the move's label. What the move teaches, when the board gives something,
+# follows it after " -- ".
 OPENERS: dict[str, list[str]] = {
-    "book": ["{san}: book", "{san}, still theory", "{san}: known territory"],
-    "brilliant": ["{san}!! -- brilliant", "{san} -- what a find", "{san}: yes, that's the shot"],
-    "great": ["{san}: great move", "{san} -- yes, the one move that works", "{san}! -- that's it"],
-    "best": [
-        "{san}: best",
-        "{san} -- that's the move",
-        "{san}, spot on",
-        "{san}: exactly",
-        "{san}: the engine's choice too",
-    ],
-    "excellent": ["{san}: excellent", "{san}: strong", "{san} -- very good", "{san}: nice"],
-    "good": ["{san}: good", "{san}: fine", "{san}, solid", "{san} works", "{san}: sound"],
+    "book": ["Book", "Still theory", "Known territory"],
+    "brilliant": ["Brilliant", "What a find", "Yes, that's the shot"],
+    "great": ["Great move", "Yes, the one move that works", "That's it"],
+    "best": ["Best", "That's the move", "Spot on", "Exactly", "The engine agrees"],
+    "excellent": ["Excellent", "Strong", "Very good", "Nice"],
+    "good": ["Good", "Fine", "Solid", "Sound"],
 }
-# The tags worth a clause, in the order one is chosen; the rest (a capture, a check, a
-# quiet move) are said by the move itself.
+# A mate needs no label: the game is won.
+MATE = ["Checkmate -- well played.", "And that's mate. Well played.", "Mate. Nicely done."]
+# The tags worth a lesson, in the order one is chosen; the rest (a capture, a check, a quiet
+# move) the player sees on the board.
 TACTICS = (
     "fork",
     "skewer",
@@ -53,40 +54,118 @@ TACTICS = (
     "trappedPiece",
     "hangingPiece",
 )
+# The idea behind a move (positional.best_move_idea's kinds) as the principle it follows:
+# what the player should keep, not what the move did. Two wordings each, taken in turn.
+PRINCIPLES: dict[str, tuple[str, str]] = {
+    "castle": (
+        "king safety first: a castled king is much harder to attack",
+        "the king tucked away, and a rook on its way to the centre",
+    ),
+    "rescue": (
+        "a piece in danger comes first",
+        "getting the attacked piece to safety before anything else",
+    ),
+    "prophylaxis": (
+        "it takes away your opponent's idea before it starts",
+        "prophylaxis: stop their plan before pushing your own",
+    ),
+    "activateKing": (
+        "in the endgame the king is a fighting piece, and it belongs in the centre",
+        "in the endgame the king walks to the centre and fights",
+    ),
+    "develop": (
+        "every piece you bring out is one more in the fight",
+        "develop first, attack later",
+    ),
+    "outpostMove": (
+        "a knight where no pawn can chase it is a strong piece",
+        "an outpost: no enemy pawn can drive that knight away",
+    ),
+    "centralise": (
+        "a piece in the centre reaches both sides of the board",
+        "pieces work best from the middle",
+    ),
+    "takeFile": ("rooks belong on open files", "an open file is a road for your rook"),
+    "rookBehindPasser": (
+        "rooks belong behind passed pawns",
+        "behind the passed pawn, the rook gains room with every step the pawn takes",
+    ),
+    "break": (
+        "a pawn break opens lines for your pieces",
+        "challenging their pawns opens the game for your pieces",
+    ),
+    "centre": (
+        "pawns in the centre give your pieces room",
+        "the fight is for the centre, and you joined it",
+    ),
+    "pawnStorm": (
+        "pawns thrown at their king pry open lines for the attack",
+        "the pawn storm: open lines toward their king",
+    ),
+    "pushPasser": ("passed pawns must be pushed", "a passed pawn gets stronger as it advances"),
+    "activate": (
+        "improving your worst piece is rarely wrong",
+        "your most passive piece joins the game",
+    ),
+    "space": (
+        "space on the flank cramps their pieces",
+        "more space, less room for their pieces",
+    ),
+    "simplify": (
+        "when you are ahead, trades bring the win closer",
+        "ahead in material, every trade helps you",
+    ),
+}
 
 
-def what_it_does(board: chess.Board, move: chess.Move, tags: Sequence[MotifTag]) -> str | None:
-    """A clause on the move, from the board: the mate, the check, the capture, the castling,
-    the promotion, or the tactic a tag names when the squares bear it out; None when the
-    move is quiet and no tag holds."""
+def _threat(board: chess.Board, threats: Sequence[str]) -> chess.Move | None:
+    """The opponent's first threat (the fact sheet's SAN, read after a pass), or None."""
+    if not threats or board.is_check():
+        return None
+    passed = board.copy(stack=False)
+    passed.push(chess.Move.null())
+    try:
+        return passed.parse_san(threats[0])
+    except ValueError:
+        return None
+
+
+def lesson(
+    board: chess.Board,
+    move: chess.Move,
+    tags: Sequence[MotifTag] = (),
+    *,
+    phase: str = "middlegame",
+    threats: Sequence[str] = (),
+    taught: Sequence[str] = (),
+    turn: int = 0,
+) -> tuple[str, str] | None:
+    """What a sound move teaches, as (kind, clause): the mate, the tactic a tag names when
+    the squares bear it out, or the idea behind the move as its principle. None when the
+    board shows none, or when its kind is in `taught` (said in one of the last few words).
+    `turn` picks between a principle's two wordings."""
     after = board.copy(stack=False)
     after.push(move)
     if after.is_checkmate():
-        return "checkmate"
+        return "mate", "checkmate"
     for tag in tags:
-        if tag.name in TACTICS and tag.squares:
+        if tag.name in TACTICS and tag.squares and tag.name not in taught:
             said = describe_tactic(after, tag.name, tag.squares)
             if said is not None:
-                return said
-    if board.is_castling(move):
-        side = "kingside" if chess.square_file(move.to_square) > 4 else "queenside"
-        return f"castling {side}"
-    parts: list[str] = []
-    if board.is_capture(move):
-        taken = board.piece_at(move.to_square)
-        what = (
-            "the pawn en passant"
-            if board.is_en_passant(move)
-            else f"the {PIECE_NAMES[taken.piece_type]}"
-            if taken
-            else "a piece"
-        )
-        parts.append(f"taking {what} on {chess.square_name(move.to_square)}")
-    if move.promotion:
-        parts.append(f"promoting to a {PIECE_NAMES[move.promotion]}")
-    if after.is_check():
-        parts.append("with check")
-    return ", ".join(parts) if parts else None
+                return tag.name, said
+    us = board.turn
+    idea = positional.best_move_idea(
+        board,
+        move,
+        us,
+        phase=phase,
+        worst=positional.worst_piece_square(board, us),
+        threat=_threat(board, threats),
+    )
+    if idea is None or idea.kind not in PRINCIPLES or idea.kind in taught:
+        return None
+    wordings = PRINCIPLES[idea.kind]
+    return idea.kind, wordings[turn % len(wordings)]
 
 
 def verdict(
@@ -95,21 +174,26 @@ def verdict(
     label: str | None,
     tags: Sequence[MotifTag] = (),
     *,
+    phase: str = "middlegame",
+    threats: Sequence[str] = (),
+    taught: Sequence[str] = (),
     last: str | None = None,
     rng: random.Random | None = None,
-) -> str:
-    """The sentence: the opener for the label (never `last`'s), then what the move does."""
+) -> tuple[str, str | None]:
+    """The sentence -- the praise for the label (never `last`'s), then what the move
+    teaches -- and the kind of lesson it taught, None when it is praise alone."""
     rng = rng or random.Random()
-    san = board.san(move)
+    taught_now = lesson(
+        board, move, tags, phase=phase, threats=threats, taught=taught, turn=rng.randrange(2)
+    )
+    if taught_now is not None and taught_now[0] == "mate":
+        choices = [m for m in MATE if m != last] or MATE
+        return rng.choice(choices), "mate"
     openers = OPENERS.get(label or "", OPENERS["good"])
-    # `last` is the previous sentence whole; its opener is what must not come again.
-    choices = [o for o in openers if last is None or not last.startswith(o.format(san=san))]
-    choices = choices or openers
-    opener = rng.choice(choices).format(san=san)
-    clause = what_it_does(board, move, tags)
-    if clause is None:
-        return opener + "."
-    if clause == "checkmate":
-        return f"{opener} -- checkmate."
-    joiner = " -- " if clause.startswith("the ") else ", "
-    return f"{opener}{joiner}{clause}."
+    # `last` is the previous sentence whole; its praise is what must not come again.
+    choices = [o for o in openers if last is None or not last.startswith(o)]
+    opener = rng.choice(choices or openers)
+    if taught_now is None:
+        return opener + ".", None
+    kind, clause = taught_now
+    return f"{opener} -- {clause}.", kind

@@ -100,8 +100,11 @@ def _exciting(label: Label | None) -> bool:
     return label is not None and label.value in EXCITING
 
 
-# The confirmations, by the move's label, in the vocabulary chess.com uses; "{san}" is the
-# move (coach/verdicts.py has them, with the clause on what the move does).
+# How many of the last lessons a sound move's word may not teach again (verdicts.lesson):
+# "develop first" after every developing move of an opening is a lecture, not a lesson.
+TAUGHT_MEMORY = 3
+# The praise, by the move's label, in the vocabulary chess.com uses (coach/verdicts.py has
+# it, with the lesson the board gives): said alone when there is no lesson to add.
 VERDICTS: dict[str, list[str]] = {
     label: [opener + "." for opener in openers] for label, openers in OPENERS.items()
 }
@@ -143,6 +146,19 @@ QUIET_HINTS = [
     "A quiet move is wanted. Which piece would you most like to improve?",
     "No tactic to find here. What would your opponent least like you to do?",
 ]
+# The word on a move a little behind the best, and the start of the lesson on one that cost
+# something; "{best}" is the better move. Without the move played in them, the same better
+# move twice running gave the same sentence twice (the offline sweep, 2026-09-23).
+FINE_TIGHTER = [
+    "Fine, but {best} was a little tighter",
+    "That works, though {best} was a touch better",
+    "Playable -- {best} was a little more precise",
+]
+COST_YOU = [
+    "That one cost you: {best} was better",
+    "That cost you something: {best} was the move",
+    "Not that one -- {best} was better",
+]
 # A question at the question level, where nothing of the position may be named.
 ASK_GENERIC = [
     "What is your opponent's most dangerous idea here?",
@@ -170,6 +186,16 @@ NO_NUMBERS = (
     "Do not quote the cost or any number: say how the move rates in words, and keep the "
     "figures for when the player asks. Name moves bare, as h3 or Bd5, never with a move "
     "number in front."
+)
+# The player has just played the move and sees it on the board: naming it, or saying what
+# it plainly did ("Nxd5 -- the knight taking the pawn on d5"), tells them nothing (Tai,
+# 2026-09-23: "we want the coach to be instructive, always find a moment to teach
+# something, not just a dumb bot").
+NOT_THE_MOVE = (
+    "Do not open with the move they played, and do not say what it plainly did on the board "
+    "-- what it took, the check, the castling, the promotion: they just played it and see it. "
+    "Say what it means instead: the idea behind it, the pattern to keep, the better move and "
+    "why."
 )
 
 
@@ -1226,6 +1252,8 @@ class Coach:
         # The conversation is read from the caller's thread and from a claims check.
         self._lock = threading.RLock()
         self._last_verdict: str | None = None
+        # The kinds of lesson the last sound moves' words taught (verdicts.lesson).
+        self._taught: deque[str] = deque(maxlen=TAUGHT_MEMORY)
         # The last template said from each rotating list, keyed by the list.
         self._last_said: dict[str, str] = {}
         # What the game is (GameStarted.kind): a game from the start, or a position -- a
@@ -1745,10 +1773,10 @@ class Coach:
             return  # the puzzle is solved with a mate: the site says so, and moves on
         # Every move of the player's gets a word from the coach. A lecture is only for a
         # move that cost something. Theory, the engine's own move and an excellent one get
-        # a sentence written from the board (coach/verdicts.py: the verdict, and what the
-        # move does), no model call; in blitz too. A great or brilliant move gets the
-        # model's delight at its full effort; a good move the model's word on the better
-        # one; the board's sentence stands in if the reply fails.
+        # a sentence written from the board (coach/verdicts.py: a word of praise, and what
+        # the move teaches when the board shows it), no model call; in blitz too. A great
+        # or brilliant move gets the model's delight at its full effort; a good move the
+        # model's word on the better one; the board's sentence stands in if the reply fails.
         if trigger is Trigger.POST_MOVE and event.severity is Severity.NONE:
             assert before.facts is not None
             best = before.facts.candidates[0] if before.facts.candidates else None
@@ -1769,16 +1797,21 @@ class Coach:
                 return
             label = event.label.value if event.label else None
             if self.local_verdicts:
-                text = local_verdict(
+                text, kind = local_verdict(
                     before.board,
                     chess.Move.from_uci(move.uci),
                     label,
                     event.tags,
+                    phase=before.facts.phase,
+                    threats=before.facts.threats,
+                    taught=tuple(self._taught),
                     last=self._last_verdict,
                 )
                 self._last_verdict = text
+                if kind is not None:
+                    self._taught.append(kind)
             else:
-                text = self._verdict(move.san, label)
+                text = self._verdict(label)
             marks = annotations_for(
                 before.facts,
                 DisclosureLevel.LINE,
@@ -1818,14 +1851,14 @@ class Coach:
         self._elicit_asked, self._elicit_answered = ts, False
         return True
 
-    def _verdict(self, san: str, label: str | None) -> str:
-        """The two-word confirmation of a fine move, worded by its label and never the same
-        as the last one: a game of "Nf3: good. Bb5: good. Nc3: good." wears thin."""
+    def _verdict(self, label: str | None) -> str:
+        """The word of praise on a fine move, by its label and never the same as the last
+        one: a game of "Good. Good. Good." wears thin."""
         phrases = VERDICTS.get(label or "", VERDICTS["good"])
         choices = [p for p in phrases if p != self._last_verdict] or phrases
         chosen = random.choice(choices)
         self._last_verdict = chosen
-        return chosen.format(san=san)
+        return chosen
 
     def set_providers(
         self,
@@ -2180,21 +2213,21 @@ class Coach:
                 best = "another move"
             loss = assessment.expected_loss
             label = assessment.label.value if assessment.label else assessment.severity.value
-            words = _in_words(position.board, played.san)
             better_words = _in_words(position.board, best) if facts.candidates else best
             routine = not facts.candidates or best == played.san or _local(assessment.label)
             if trigger is Trigger.POST_MISTAKE:
                 # With a theme or a plan the lesson names the idea; without one it stops at
                 # the better move ("the idea was the position" was said, offline).
                 idea = facts.theme or facts.plan
-                fallback = f"{played.san} cost you. {best} was better" + (
+                fallback = self._rotate("cost", COST_YOU).format(best=best) + (
                     f"; the idea was {idea}." if idea else "."
                 )
                 instruction = (
-                    f"The player just played {played.san} ({words}), which was a {label}: it "
-                    f"cost {loss:.0%} of the game. The better move was {best} ({better_words}). "
+                    f"The player just played {played.san}, which was a {label}: it cost "
+                    f"{loss:.0%} of the game. The better move was {best} ({better_words}). "
                     f"Explain the difference as a pattern to remember, in three sentences at "
-                    f"most, then ask one question that checks they see it. {NO_NUMBERS}"
+                    f"most, then ask one question that checks they see it. {NOT_THE_MOVE} "
+                    f"{NO_NUMBERS}"
                 )
                 if elicit:
                     # Sparingly: what they saw at that moment, for the profile's record
@@ -2203,35 +2236,43 @@ class Coach:
                     # they expected, in the coach's words: told to ask whether they
                     # "missed the idea altogether or misjudged the line", the model
                     # said exactly that, every time.
-                    fallback += f" What were you expecting after {played.san}?"
+                    fallback += " What were you expecting that move to do?"
                     instruction = (
-                        f"The player just played {played.san} ({words}), which was a {label}: "
-                        f"it cost {loss:.0%} of the game. The better move was {best} "
-                        f"({better_words}). Explain the difference as a pattern to remember, in "
-                        "three sentences at most, then -- instead of a check question -- ask, "
-                        f"in one short question of your own, what they expected to happen "
-                        f"after {played.san}. {NO_NUMBERS}"
+                        f"The player just played {played.san}, which was a {label}: it cost "
+                        f"{loss:.0%} of the game. The better move was {best} ({better_words}). "
+                        "Explain the difference as a pattern to remember, in three sentences at "
+                        "most, then -- instead of a check question -- ask, in one short "
+                        "question of your own, what they expected their move to do. "
+                        f"{NOT_THE_MOVE} {NO_NUMBERS}"
                     )
             elif _exciting(assessment.label):
                 # Rare and worth it: the board's own sentence stands in, the model says
                 # what makes it the move, with some delight.
-                fallback = local_verdict(
-                    position.board, chess.Move.from_uci(played.uci), label, assessment.tags
+                fallback, _ = local_verdict(
+                    position.board,
+                    chess.Move.from_uci(played.uci),
+                    label,
+                    assessment.tags,
+                    phase=facts.phase,
+                    threats=facts.threats,
+                    taught=tuple(self._taught),
+                    last=self._last_verdict,
                 )
+                self._last_verdict = fallback
                 meaning = {
                     "brilliant": "a sound sacrifice",
                     "great": "the one move that keeps the advantage, or the chance taken",
                 }[label]
                 instruction = (
-                    f"The player just played {played.san} ({words}): {label} -- {meaning}. "
-                    "Show some delight, in your own voice, in one or two sentences: name "
-                    "what makes it the move -- the chance taken, the only move, the "
-                    "sacrifice that works -- from the messages above, nothing invented. "
-                    "No question, no advice, and not the same words as your last such "
-                    f"sentence. {NO_NUMBERS}"
+                    f"The player just played {played.san}: {label} -- {meaning}. Show some "
+                    "delight, in your own voice, in one or two sentences: name what makes it "
+                    "the move -- the chance taken, the only move, the sacrifice that works, "
+                    "the idea it serves -- from the messages above, nothing invented. No "
+                    "question, no advice, and not the same words as your last such sentence. "
+                    f"{NOT_THE_MOVE} {NO_NUMBERS}"
                 )
             elif routine:
-                fallback = self._verdict(played.san, label)
+                fallback = self._verdict(label)
                 meaning = {
                     "book": "opening theory",
                     "brilliant": "a sound sacrifice",
@@ -2241,27 +2282,33 @@ class Coach:
                     "good": "a sound move, a little behind the best",
                 }.get(label, "a sound move")
                 instruction = (
-                    f"The player just played {played.san} ({words}): {label} -- {meaning}. "
-                    "One short sentence, fifteen words at most, in your own voice: a nod, or "
-                    "what the move does when a message says so. No question, no lecture, no "
-                    "advice, no guess at what it allows or risks, and not the same words as "
-                    f"your last such sentence. {NO_NUMBERS}"
+                    f"The player just played {played.san}: {label} -- {meaning}. One short "
+                    "sentence, fifteen words at most, in your own voice: a word of praise, and "
+                    "the idea behind the move as a lesson to keep when a message gives one -- "
+                    "the plan, the tactic. No question, no lecture, no advice, no guess at what "
+                    "it allows or risks, and not the same words as your last such sentence. "
+                    f"{NOT_THE_MOVE} {NO_NUMBERS}"
                 )
             elif assessment.severity in (Severity.MISTAKE, Severity.BLUNDER) or label == "miss":
                 # A mistake in blitz: the policy keeps it to the word after the move (no
                 # lesson), but the word says what the move was -- never "fine".
-                fallback = f"{played.san} cost you; {best} was better."
+                fallback = self._rotate("cost", COST_YOU).format(best=best) + "."
                 instruction = (
-                    f"The player just played {played.san} ({words}), which was a {label}: "
-                    f"{best} ({better_words}) was better. It is a fast game: one or two "
-                    f"sentences, no lesson, no question. {NO_NUMBERS}"
+                    f"The player just played {played.san}, which was a {label}: {best} "
+                    f"({better_words}) was better. It is a fast game: one or two sentences, no "
+                    f"lesson, no question. {NOT_THE_MOVE} {NO_NUMBERS}"
                 )
             else:
-                fallback = f"{played.san} was fine; {best} was a little tighter."
+                # The better move's idea, when the sheet has one, is the lesson in it.
+                idea = facts.theme or facts.plan
+                fallback = self._rotate("fine", FINE_TIGHTER).format(best=best) + (
+                    f": the idea was {idea}." if idea else "."
+                )
                 instruction = (
-                    f"The player just played {played.san} ({words}), which was fine but not "
-                    f"the strongest: {best} ({better_words}) was better, by a little. One or "
-                    f"two sentences. No lecture, no question. {NO_NUMBERS}"
+                    f"The player just played {played.san}, which was fine but not the "
+                    f"strongest: {best} ({better_words}) was better, by a little. One or two "
+                    "sentences: that it was fine, then the better move and the idea behind it "
+                    f"as a lesson to keep. No lecture, no question. {NOT_THE_MOVE} {NO_NUMBERS}"
                 )
             return instruction, fallback
         # An explicit ask. The player's words are already the last message of the
@@ -2315,16 +2362,16 @@ class Coach:
                 san = own.move.san
                 rest = facts.line[1:] if facts.line and facts.line[0] == san else facts.line
                 if level >= DisclosureLevel.LINE and rest:
-                    fallback = f"It's their move. After your {san}, the line runs {' '.join(rest)}."
+                    fallback = f"It's their move. After your move, the line runs {' '.join(rest)}."
                 elif level >= DisclosureLevel.CANDIDATE and facts.candidates:
                     choice = facts.candidates[0]
                     fallback = "It's their move now. " + (
-                        f"{san} was the engine's choice too."
+                        "Yours was the engine's choice too."
                         if choice == san
-                        else f"The engine's choice there was {choice}; you played {san}."
+                        else f"The engine's choice there was {choice}."
                     )
                 else:
-                    fallback = f"It's their move. See what they do about {san}, then ask again."
+                    fallback = "It's their move. See what they do about yours, then ask again."
             else:
                 fallback = "Give me a moment; I am still reading this position."
         # A question about a fact that is never withheld -- the material, the opening, who
@@ -2438,14 +2485,14 @@ class Coach:
             # became the reason a bishop retreat was an inaccuracy.
             idea = facts.theme or facts.plan or ""
             if verdict.severity is Severity.NONE:
-                fallback = self._verdict(san, label)
+                fallback = self._verdict(label)
                 directive = (
                     f"They ask about the move they already played, {san}. It was not bad: the "
                     f"verdict was {label}, and it cost nothing. Tell them so plainly, in one or "
                     "two sentences, and do not invent a fault. No question."
                 )
             else:
-                fallback = f"{san} cost you {loss:.0%} of the game."
+                fallback = f"It cost you {loss:.0%} of the game."
                 if best:
                     fallback += f" {best} was better" + (f"; the idea was {idea}." if idea else ".")
                 directive = (
