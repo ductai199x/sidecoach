@@ -96,6 +96,8 @@ PUZZLE_THEMES = [
 ]  # fmt: skip
 PUZZLES_PER_THEME = 200
 PUZZLES_MAX_SCAN = 600_000
+# The sample's size for the progress bar: about what the scan downloads.
+PUZZLES_BYTES = 30_000_000
 
 Progress = Callable[[int, int | None], None]  # (bytes done, bytes total or None)
 
@@ -320,7 +322,8 @@ def items(settings: Settings) -> list[Item]:
             for row in rows:
                 scanned += 1
                 if scanned % 20_000 == 0:
-                    progress(scanned, PUZZLES_MAX_SCAN)
+                    # In the item's own units (bytes), as the run's bar adds them up.
+                    progress(scanned * PUZZLES_BYTES // PUZZLES_MAX_SCAN, PUZZLES_BYTES)
                 themes = set(row[7].split())
                 wanted = [
                     t for t in PUZZLE_THEMES if t in themes and len(kept[t]) < PUZZLES_PER_THEME
@@ -345,7 +348,7 @@ def items(settings: Settings) -> list[Item]:
         Item(
             "puzzles",
             "A sample of the Lichess puzzles",
-            30_000_000,
+            PUZZLES_BYTES,
             puzzles_present,
             puzzles_fetch,
             optional=True,
