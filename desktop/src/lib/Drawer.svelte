@@ -204,12 +204,14 @@
   .dhead img { width: 40px; height: 40px; flex: 0 0 40px; filter: drop-shadow(0 0 12px rgba(242, 180, 65, 0.35)); }
   .dtitle { flex: 1 1 auto; min-width: 0; }
   .dname { font-size: 19px; font-weight: 750; letter-spacing: 0.2px; }
+  /* The whole status, wrapped: the bar above shows it cut short, so here it is in full
+     ("game over 1-0 · waiting for the next game · you play white"). The dot sits on the
+     first line. */
   .dsub {
-    display: flex; align-items: center; gap: 7px; margin-top: 3px;
-    font-size: 12.5px; color: var(--muted);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    display: flex; align-items: flex-start; gap: 7px; margin-top: 3px;
+    font-size: 12.5px; line-height: 17px; color: var(--muted);
   }
-  .dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--muted); opacity: 0.6; }
+  .dot { width: 7px; height: 7px; flex: 0 0 7px; margin-top: 5px; border-radius: 50%; background: var(--muted); opacity: 0.6; }
   .dot.on { background: var(--accent); opacity: 1; box-shadow: 0 0 0 3px rgba(129, 182, 76, 0.2); }
   .dclose {
     flex: 0 0 auto; width: 40px; height: 40px; padding: 0;

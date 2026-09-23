@@ -152,13 +152,16 @@
     filter: drop-shadow(0 0 8px rgba(242, 180, 65, 0.3));
   }
   :global(html.stacked) #bar .brand { font-size: 17px; margin-right: 2px; }
+  /* A block, not a flex box: an ellipsis is drawn only in a block's own line, so a long
+     status ("game over 1-0 · waiting for the next game") ends in "…" rather than mid-word.
+     The whole of it is in the drawer. */
   :global(html.stacked) #bar .status {
-    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    display: inline-flex; align-items: center; gap: 6px;
+    position: relative; display: block; min-width: 0; padding-left: 13px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   :global(html.stacked) #bar .status::before {
-    content: ""; flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%;
-    background: var(--muted); opacity: 0.6;
+    content: ""; position: absolute; left: 0; top: 50%; width: 7px; height: 7px;
+    margin-top: -3.5px; border-radius: 50%; background: var(--muted); opacity: 0.6;
   }
   :global(html.stacked) #bar .status.live::before {
     background: var(--accent); opacity: 1; box-shadow: 0 0 0 3px rgba(129, 182, 76, 0.2);
