@@ -8,6 +8,7 @@ import android.media.AudioTrack
 import android.os.SystemClock
 import android.util.Log
 import java.io.File
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 
 /**
@@ -16,7 +17,15 @@ import java.util.concurrent.LinkedBlockingQueue
  *
  * The graph is loaded once (by [load], or on the first line) and lives as long as the provider;
  * a voice is only a style chosen at synthesis time, so changing it reloads nothing. [say]
- * queues a line and returns at once; one worker thread synthesises and plays in order.
+ * queues a line and returns at once; one worker thread synthesises in order, as the desktop's
+ * does, and the next line waits until this one has been handed to the output.
+ *
+ * The phone's own (Tai, 2026-09-23): a line is spoken in pieces ([Kokoro.plan]), and a player
+ * thread plays each piece while the worker makes the next, so the first words come about twice
+ * as soon. The first piece waits until enough of the line is made that the rest arrives before
+ * it is needed, so a line never stops mid-way. While a piece is being made the engine is
+ * paused ([onSynthesis]): the two share the phone's big cores, and with both at work each runs
+ * at half speed.
  *
  * Where the desktop plays: one output stream opened at the first line and kept open, so a
  * Bluetooth headset does not swallow the first syllables while its link wakes (Tai,
@@ -50,6 +59,13 @@ class KokoroTts(
      */
     @Volatile var onPlay: ((String) -> Unit)? = null
 
+    /**
+     * Called with true as each piece of a line starts being synthesised and false when it is
+     * done, for whoever pauses the engine meanwhile (the panel): Kokoro or Stockfish at work,
+     * not both (Tai, 2026-09-23).
+     */
+    @Volatile var onSynthesis: ((Boolean) -> Unit)? = null
+
     private data class Line(
         val spoken: String,
         val given: String,
@@ -60,10 +76,25 @@ class KokoroTts(
     private val queue = LinkedBlockingQueue<Line>()
     private var worker: Thread? = null
 
+    /**
+     * A piece of a line's audio on its way to the output: the line with its first piece (whose
+     * playing waits for [startAt]), and with its last the latch the worker waits on.
+     */
+    private class Chunk(val samples: FloatArray, val mine: Int, val first: Line?, val done: CountDownLatch?)
+
+    private val chunks = LinkedBlockingQueue<Chunk>()
+    private var player: Thread? = null
+
     /** Bumped on every stop, so a synthesis in flight knows its line was cancelled. */
     private var generation = 0
-    private val lock = Any()
+    private val lock = Object()
     @Volatile private var playing = false
+
+    /** When the line being made may start to play, in elapsed-realtime milliseconds. Under [lock]. */
+    private var startAt = Long.MAX_VALUE
+
+    /** Milliseconds of synthesis a millisecond of speech takes now, as the last piece took. */
+    @Volatile private var pace = PACE_GUESS
 
     private var track: AudioTrack? = null
 
@@ -142,8 +173,12 @@ class KokoroTts(
 
     /** Drop everything queued and silence anything now playing. */
     fun stop() {
-        synchronized(lock) { generation += 1 }
+        synchronized(lock) {
+            generation += 1
+            lock.notifyAll()
+        }
         queue.clear()
+        while (true) chunks.poll()?.done?.countDown() ?: break
         runCatching {
             track?.let {
                 it.pause()
@@ -161,7 +196,10 @@ class KokoroTts(
     fun close() {
         failed = true
         stop()
-        synchronized(lock) { worker?.interrupt() }
+        synchronized(lock) {
+            worker?.interrupt()
+            player?.interrupt()
+        }
         val alone = using.writeLock()
         alone.lock()
         try {
@@ -179,6 +217,12 @@ class KokoroTts(
 
     private fun ensureWorker() {
         synchronized(lock) {
+            if (player?.isAlive != true) {
+                player = Thread({ play() }, "kokoro-play").apply {
+                    isDaemon = true
+                    start()
+                }
+            }
             if (worker?.isAlive == true) return
             worker = Thread({ run() }, "kokoro-tts").apply {
                 isDaemon = true
@@ -209,39 +253,131 @@ class KokoroTts(
         if (!load()) return // degraded to silence
         val model = kokoro ?: return
         val mine = synchronized(lock) { generation }
+        val done = CountDownLatch(1)
+        var handed = false
         val shared = using.readLock()
         shared.lock()
         val began = SystemClock.elapsedRealtime()
-        val samples = try {
+        var speech = 0L
+        val timings = ArrayList<String>()
+        try {
             if (kokoro == null) return // closed meanwhile
-            model.create(line.spoken, line.voice ?: voice, speed, lang)
+            val (style, pieces) = model.pieces(line.spoken, line.voice ?: voice, speed, lang)
+            // The speech each piece will make, in milliseconds, from its phonemes.
+            val expected = pieces.map { (phonemes, pause) ->
+                phonemes.codePointCount(0, phonemes.length) * Kokoro.MS_PER_PHONEME / speed + pause * 1000
+            }
+            synchronized(lock) { startAt = Long.MAX_VALUE }
+            var made = 0.0
+            for ((i, piece) in pieces.withIndex()) {
+                // A stop meanwhile means this line was cancelled.
+                if (synchronized(lock) { generation } != mine) return
+                val from = SystemClock.elapsedRealtime()
+                val samples = try {
+                    runCatching { onSynthesis?.invoke(true) }
+                    model.synthesize(piece, style, speed)
+                } finally {
+                    runCatching { onSynthesis?.invoke(false) }
+                }
+                val took = SystemClock.elapsedRealtime() - from
+                val ms = samples.size * 1000.0 / Kokoro.SAMPLE_RATE
+                if (ms > 0) pace = took / ms
+                made += ms
+                speech += ms.toLong()
+                timings.add("$took/${ms.toLong()}")
+                val last = i == pieces.size - 1
+                // Playing may start once every piece still to make will be ready before the
+                // speech ahead of it runs out: the next one's synthesis against what is made,
+                // the one after against that and the next one's speech, and so on.
+                var hold = 0.0
+                var making = 0.0
+                var ahead = made
+                for (j in i + 1 until pieces.size) {
+                    making += pace * expected[j] * MARGIN + PASS_MS
+                    hold = maxOf(hold, making - ahead)
+                    ahead += expected[j]
+                }
+                val out = if (last) samples.copyOf(samples.size + (Kokoro.SAMPLE_RATE * TAIL_SILENCE_S).toInt()) else samples
+                chunks.put(Chunk(out, mine, if (i == 0) line else null, if (last) done else null))
+                handed = last
+                synchronized(lock) {
+                    startAt = SystemClock.elapsedRealtime() + hold.toLong()
+                    lock.notifyAll()
+                }
+            }
         } catch (exc: Exception) { // a bad line must not kill the voice
             Log.w(TAG, "Kokoro synthesis failed for \"${line.spoken}\": $exc")
             return
         } finally {
             shared.unlock()
+            if (!handed) synchronized(lock) {
+                // What was made of a line that failed part-way plays now; a stopped line's
+                // pieces the player drops.
+                startAt = 0
+                lock.notifyAll()
+            }
         }
-        val took = SystemClock.elapsedRealtime() - began
         // Where a line's time goes, for the logcat: its wait in the queue, its synthesis, and
         // how long it speaks (a synthesis slower than the speech is the voice falling behind).
         Log.i(
             TAG,
-            "line: waited ${began - line.queuedAt} ms, synthesised in $took ms, " +
-                "${samples.size * 1000L / Kokoro.SAMPLE_RATE} ms of speech",
+            "line: waited ${began - line.queuedAt} ms, synthesised in ${SystemClock.elapsedRealtime() - began} ms, " +
+                "$speech ms of speech, in ${timings.size} piece${if (timings.size == 1) "" else "s"} " +
+                "(ms made in / ms of speech: ${timings.joinToString(" ")})",
         )
-        // A stop between synthesis and playback means this line was cancelled.
-        if (synchronized(lock) { generation } != mine) return
-        runCatching { onPlay?.invoke(line.given.ifEmpty { line.spoken }) }
+        // The next line waits until this one has been handed to the output, as on the desktop.
         try {
-            val padded = samples.copyOf(samples.size + (Kokoro.SAMPLE_RATE * TAIL_SILENCE_S).toInt())
-            val out = openTrack()
-            out.write(padded, 0, padded.size, AudioTrack.WRITE_BLOCKING)
-        } catch (exc: Exception) { // audio errors are not fatal
-            Log.w(TAG, "Kokoro playback failed: $exc")
+            done.await()
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
+    /**
+     * The player: each piece written to the output in order, the first of a line once its
+     * [startAt] has come, anything of a stopped line dropped.
+     */
+    private fun play() {
+        // The output's underruns when a line began: any more by its end were gaps in it.
+        var underruns = 0
+        while (true) {
+            val chunk = try {
+                chunks.take()
+            } catch (_: InterruptedException) {
+                return
+            }
+            try {
+                val line = chunk.first
+                if (line != null) {
+                    synchronized(lock) {
+                        while (generation == chunk.mine) {
+                            val wait = startAt - SystemClock.elapsedRealtime()
+                            if (wait <= 0) break
+                            lock.wait(wait)
+                        }
+                    }
+                }
+                if (synchronized(lock) { generation } != chunk.mine) continue
+                val out = openTrack()
+                if (line != null) {
+                    underruns = out.underrunCount
+                    Log.i(TAG, "line: first sound ${SystemClock.elapsedRealtime() - line.queuedAt} ms after it was queued")
+                    runCatching { onPlay?.invoke(line.given.ifEmpty { line.spoken }) }
+                }
+                out.write(chunk.samples, 0, chunk.samples.size, AudioTrack.WRITE_BLOCKING)
+                if (chunk.done != null) Log.i(TAG, "line: played with ${out.underrunCount - underruns} gaps")
+            } catch (_: InterruptedException) {
+                return
+            } catch (exc: Exception) { // audio errors are not fatal
+                Log.w(TAG, "Kokoro playback failed: $exc")
+            } finally {
+                chunk.done?.countDown()
+            }
         }
     }
 
     /** The open output track, opened at the first line and kept playing. */
+    @Synchronized
     private fun openTrack(): AudioTrack {
         track?.let { return it }
         val minimum = AudioTrack.getMinBufferSize(
@@ -290,7 +426,23 @@ class KokoroTts(
          */
         const val TAIL_SILENCE_S = 0.35
 
-        /** The graph's threads: the phone's big cores, not all eight. */
-        const val THREADS = 4
+        /**
+         * The graph's threads: the phone's big cores, not the two small ones. Five speak at 0.49
+         * of real time on the Pixel 10 Pro XL, four at 0.56 to 0.61; the engine is paused while
+         * they work.
+         */
+        const val THREADS = 5
+
+        /** [pace] before any piece has been timed: the Pixel's, with room to spare. */
+        private const val PACE_GUESS = 0.6
+
+        /**
+         * How much longer than its estimate the next piece is allowed to take: the speech a
+         * piece makes is guessed from its phonemes to within 6% in half the coach's lines.
+         */
+        private const val MARGIN = 1.15
+
+        /** The time a pass takes whatever its length, in milliseconds. */
+        private const val PASS_MS = 80.0
     }
 }

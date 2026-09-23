@@ -11,6 +11,8 @@ the desktop's own code:
   token ids, the batches and their pauses -- of the text as given and of its spoken form;
 - the trim of a few synthetic signals;
 - the batches of a few long phoneme strings (sentence, clause, word and mid-word cuts);
+- the pieces the phone speaks each spoken form in (`phone_speech.plan`, the phone's own plan:
+  the desktop speaks whole lines), at the coach's speed and at a slower and a faster one;
 - Kokoro's audio for a few short lines, full precision as the phone runs it (the phone's must
   match within a tolerance: the two runtimes' kernels differ in their last bits; int8 differed
   in more than that on the Pixel's ARM cores, and was slower there).
@@ -32,6 +34,7 @@ import base64
 import json
 import os
 import random
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +48,9 @@ from kokoro_onnx.tokenizer import Tokenizer  # noqa: E402
 from kokoro_onnx.trim import trim  # noqa: E402
 
 from sidecoach.voice.notation import speak_notation  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).parent))
+import phone_speech  # noqa: E402
 
 ANDROID = Path("D:/sidecoach-android")
 OUT = ANDROID / "app" / "src" / "androidTest" / "assets" / "voice" / "voice.json"
@@ -117,6 +123,15 @@ def front(tokenizer: Tokenizer, text: str) -> dict:
     }
 
 
+def plans(tokenizer: Tokenizer, cases: list[dict]) -> list[dict]:
+    out = []
+    for case in cases:
+        for speed in (1.0, 0.7, 1.4):
+            pieces = phone_speech.plan(tokenizer, case["spoken"], speed)
+            out.append({"text": case["spoken"], "speed": speed, "pieces": [p for p, _ in pieces], "pauses": [z for _, z in pieces]})
+    return out
+
+
 def signals() -> list[dict]:
     rng = np.random.default_rng(7)
     out = []
@@ -173,6 +188,7 @@ def main() -> None:
         "texts": cases,
         "trims": signals(),
         "long": long_strings(tokenizer),
+        "plans": plans(tokenizer, cases),
     }
     # The model the phone runs: the full-precision one (Tai, 2026-09-23).
     model = MODEL_DIR / "kokoro-v1.0.onnx"
@@ -188,6 +204,7 @@ def main() -> None:
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(fixtures, ensure_ascii=False), encoding="utf-8")
     print(f"{len(cases)} texts, {len(fixtures['trims'])} trims, {len(fixtures['long'])} long strings,"
+          f" {len(fixtures['plans'])} plans ({sum(len(x['pieces']) > 1 for x in fixtures['plans'])} in pieces),"
           f" {len(fixtures.get('audio', []))} audio -> {OUT} ({OUT.stat().st_size / 1e6:.1f} MB)")
 
 

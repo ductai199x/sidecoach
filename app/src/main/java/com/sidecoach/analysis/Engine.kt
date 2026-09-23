@@ -1,5 +1,6 @@
 package com.sidecoach.analysis
 
+import android.os.SystemClock
 import android.util.Log
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
@@ -24,10 +25,11 @@ class EngineUnavailable(message: String) : RuntimeException(message)
  * restart-once rule, the same line for each MultiPV index at the last depth reached, and
  * scores from the mover's point of view in expected score, never centipawns.
  *
- * Two things are the phone's own. The executable lives in the APK's library directory,
- * because that is the only place an Android app may execute a file from. And the network is
- * a separate 98 MB file the app fetches, because embedding it would put 98 MB in the APK for
- * every ABI; it is handed over through the EvalFile option.
+ * Three things are the phone's own. The executable lives in the APK's library directory,
+ * because that is the only place an Android app may execute a file from. The network is a
+ * separate 98 MB file the app fetches, because embedding it would put 98 MB in the APK for
+ * every ABI; it is handed over through the EvalFile option. And the engine can be paused
+ * ([pause]) while the voice synthesises.
  */
 open class Engine(
     private val binary: File,
@@ -47,19 +49,8 @@ open class Engine(
 
     private var process: Process? = null
 
-    /**
-     * The engine process's id. Android's `Process` has no `pid()` on every release this app
-     * runs on; the field behind it has been called `pid` since the beginning.
-     */
-    private val enginePid: Int?
-        get() {
-            val current = process ?: return null
-            return runCatching {
-                val field = current.javaClass.getDeclaredField("pid")
-                field.isAccessible = true
-                field.getInt(current)
-            }.getOrNull()
-        }
+    /** The engine process's id while it runs, read once when it starts ([processId]). */
+    @Volatile private var enginePid: Int? = null
     private var writer: Writer? = null
     private var reader: BufferedReader? = null
     private val lock = ReentrantLock()
@@ -98,6 +89,7 @@ open class Engine(
             throw EngineUnavailable("cannot start $binary: $exc")
         }
         process = started
+        enginePid = processId(started)
         writer = started.outputStream.bufferedWriter()
         reader = BufferedReader(InputStreamReader(started.inputStream))
         options.clear()
@@ -123,6 +115,8 @@ open class Engine(
         send("isready")
         readUntil("readyok") {}
         Log.i(TAG, "$name ready: ${threads} threads, ${hashMb} MB, net ${net?.name ?: "embedded"}")
+        // An engine started while the voice holds the old one paused (a restart) waits too.
+        synchronized(clock) { if (paused) signal(SIGSTOP) }
     }
 
     /** Threads and hash on the running engine (the settings saved mid-session). */
@@ -138,6 +132,13 @@ open class Engine(
 
     override fun close() {
         val current = process ?: return
+        // A stopped process reads nothing, `quit` included: it is let go on first.
+        synchronized(clock) {
+            if (paused) signal(SIGCONT)
+            enginePid = null
+            budgetMs = 0
+            clock.notifyAll()
+        }
         process = null
         runCatching { send("quit") }  // a dead engine needs no goodbye
         runCatching { current.waitFor() }
@@ -146,6 +147,107 @@ open class Engine(
         runCatching { current.destroy() }
         writer = null
         reader = null
+    }
+
+    // The voice's turn
+
+    /**
+     * Guards the pause and the running search's time: [paused], [budgetMs], [ranMs],
+     * [runningSince], [searchNumber].
+     */
+    private val clock = Object()
+    private var paused = false
+
+    /** The running search's time limit in milliseconds, 0 when none is kept. */
+    private var budgetMs = 0L
+
+    /** The time the search has run, up to [runningSince]. */
+    private var ranMs = 0L
+
+    /** When the search last ran on, 0 while it is paused or none is timed. */
+    private var runningSince = 0L
+    private var searchNumber = 0
+
+    /**
+     * Hold the engine still while the voice synthesises (Tai, 2026-09-23: Kokoro or Stockfish
+     * at work, not both -- they share the phone's big cores, and with both at work each runs at
+     * half speed). The process is stopped where it stands, never ended: its hash, which the
+     * next searches draw on, is kept whole (Tai: pause, never quit). A search's time limit
+     * counts only the time the engine runs ([watch]). Safe from any thread, and a no-op when
+     * already paused.
+     */
+    fun pause() {
+        synchronized(clock) {
+            if (paused) return
+            paused = true
+            if (runningSince != 0L) {
+                ranMs += SystemClock.elapsedRealtime() - runningSince
+                runningSince = 0
+            }
+            signal(SIGSTOP)
+            clock.notifyAll()
+        }
+    }
+
+    /** Let a [pause]d engine run on from where it stopped. A no-op when it is not paused. */
+    fun resume() {
+        synchronized(clock) {
+            if (!paused) return
+            paused = false
+            signal(SIGCONT)
+            if (budgetMs != 0L) runningSince = SystemClock.elapsedRealtime()
+            clock.notifyAll()
+        }
+    }
+
+    private fun signal(which: Int) {
+        val pid = enginePid ?: return
+        runCatching { android.os.Process.sendSignal(pid, which) }
+    }
+
+    /** Keep a search's time limit of [ms] from now: [watch] stops it when the time has run. */
+    private fun arm(ms: Long) {
+        val number = synchronized(clock) {
+            budgetMs = ms
+            ranMs = 0
+            runningSince = if (paused) 0 else SystemClock.elapsedRealtime()
+            ++searchNumber
+        }
+        Thread({ watch(number) }, "engine-clock").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun disarm() {
+        synchronized(clock) {
+            budgetMs = 0
+            runningSince = 0
+            clock.notifyAll()
+        }
+    }
+
+    /**
+     * The time limit of search [number]: `stop` once it has run its time, the pauses not
+     * counted. The engine's own `movetime` would count them, and cut a search short the moment
+     * it resumed; `stop` ends the search as `movetime` does, with its best move.
+     */
+    private fun watch(number: Int) {
+        synchronized(clock) {
+            while (searchNumber == number && budgetMs != 0L) {
+                if (paused) {
+                    clock.wait()
+                    continue
+                }
+                val left = budgetMs - ranMs - (SystemClock.elapsedRealtime() - runningSince)
+                if (left <= 0) {
+                    runCatching { send("stop") }
+                    budgetMs = 0
+                    return
+                }
+                clock.wait(left)
+            }
+        }
     }
 
     /**
@@ -209,18 +311,24 @@ open class Engine(
         send("position fen ${board.fen()}")
         val go = StringBuilder("go")
         if (depth != null) go.append(" depth ").append(depth)
-        if (timeS != null) go.append(" movetime ").append((timeS * 1000).toInt())
+        // The time limit is the desktop's `movetime`, kept here ([watch]) so that a pause
+        // does not count against it.
         send(go.toString())
+        if (timeS != null) arm((timeS * 1000).toLong())
         val best = HashMap<Int, Info>()
-        readUntil("bestmove") { line ->
-            if (line.startsWith("info ") && " pv " in " $line ") {
-                parseInfo(line)?.let { info ->
-                    val kept = best[info.multipv]
-                    // The last word on each line wins, which at a fixed depth is the
-                    // deepest: python-chess keeps the same.
-                    if (kept == null || info.depth >= kept.depth) best[info.multipv] = info
+        try {
+            readUntil("bestmove") { line ->
+                if (line.startsWith("info ") && " pv " in " $line ") {
+                    parseInfo(line)?.let { info ->
+                        val kept = best[info.multipv]
+                        // The last word on each line wins, which at a fixed depth is the
+                        // deepest: python-chess keeps the same.
+                        if (kept == null || info.depth >= kept.depth) best[info.multipv] = info
+                    }
                 }
             }
+        } finally {
+            if (timeS != null) disarm()
         }
         return best.entries.sortedBy { it.key }.map { it.value }
     }
@@ -300,6 +408,20 @@ open class Engine(
 
         /** The engine as the packager leaves it: an executable in the library directory. */
         fun binaryIn(nativeLibraryDir: String): File = File(nativeLibraryDir, "libstockfish.so")
+
+        /** Linux's stop and continue signals ([pause], [resume]); `android.os.Process` names neither. */
+        private const val SIGSTOP = 19
+        private const val SIGCONT = 18
+
+        /**
+         * A process's id. Android's `Process` has no `pid()` on every release this app runs
+         * on; the field behind it has been called `pid` since the beginning.
+         */
+        private fun processId(process: Process): Int? = runCatching {
+            val field = process.javaClass.getDeclaredField("pid")
+            field.isAccessible = true
+            field.getInt(process)
+        }.getOrNull()
     }
 }
 

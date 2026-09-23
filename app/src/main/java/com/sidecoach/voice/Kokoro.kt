@@ -77,20 +77,41 @@ class Kokoro(
         sentencePause: Double,
         clausePause: Double,
     ): Pair<FloatArray, List<Pair<String, Double>>> {
+        val style = checked(voice, speed)
+        val batches = batches(phonemes(tokenizer, text, lang), sentencePause, clausePause)
+        if (batches.isEmpty()) throw IllegalArgumentException("Nothing to synthesize, \"$text\" produced no phonemes")
+        return style to batches
+    }
+
+    /** `Kokoro._prepare`'s checks: the speed in range and the voice on offer; its style. */
+    private fun checked(voice: String, speed: Float): FloatArray {
         if (speed < 0.5f || speed > 2.0f) throw IllegalArgumentException("Speed should be between 0.5 and 2.0, got $speed")
         if (voice !in Voices.names(voicesPath)) throw IllegalArgumentException("Voice $voice not found in available voices")
-        val style = voiceStyle(voice)
-        var phonemes = tokenizer.phonemize(text, lang)
-        // Newlines are not in the vocabulary, so without this the lines of a text run together
-        // with no gap for the model to pause on.
-        phonemes = Py.split(phonemes).joinToString(" ")
-        val batched = splitPhonemes(phonemes, MAX_PHONEME_LENGTH)
-        if (batched.isEmpty()) throw IllegalArgumentException("Nothing to synthesize, \"$text\" produced no phonemes")
-        // Trimming removes the silence the model puts at a batch end, so the pause the
-        // punctuation calls for is added back when joining.
-        val batches = batched.dropLast(1).map { it to pauseAfter(it, sentencePause, clausePause) }
-        return style to (batches + (batched.last() to 0.0))
+        return voiceStyle(voice)
     }
+
+    /**
+     * The line as the phone speaks it ([plan]): the voice's style and the pieces, each with
+     * the pause after it, checked as [prepare] checks. Each piece is synthesised as a batch is
+     * ([synthesize]).
+     */
+    fun pieces(
+        text: String,
+        voice: String,
+        speed: Float,
+        lang: String,
+        sentencePause: Double = 0.25,
+        clausePause: Double = 0.1,
+    ): Pair<FloatArray, List<Pair<String, Double>>> {
+        val style = checked(voice, speed)
+        val pieces = plan(tokenizer, text, speed, lang, sentencePause, clausePause)
+        if (pieces.isEmpty()) throw IllegalArgumentException("Nothing to synthesize, \"$text\" produced no phonemes")
+        return style to pieces
+    }
+
+    /** `Kokoro._create_batch` with trimming, for one of [pieces]. */
+    fun synthesize(piece: Pair<String, Double>, style: FloatArray, speed: Float): FloatArray =
+        createBatch(piece.first, style, speed, piece.second)
 
     /** `Kokoro._create_batch` with trimming: synthesise, trim the silence, pause after. */
     private fun createBatch(phonemes: String, style: FloatArray, speed: Float, pause: Double): FloatArray {
@@ -218,6 +239,120 @@ class Kokoro(
                 if (pack(lengths, middle).size <= fewest) high = middle else low = middle + 1
             }
             return pack(lengths, low).map { (start, end) -> atoms.subList(start, end).joinToString(" ") }
+        }
+
+        /**
+         * `Kokoro._prepare`'s phonemes: the tokenizer's, whitespace runs made single spaces.
+         * Newlines are not in the vocabulary, so without this the lines of a text run together
+         * with no gap for the model to pause on.
+         */
+        fun phonemes(tokenizer: KokoroTokenizer, text: String, lang: String): String =
+            Py.split(tokenizer.phonemize(text, lang)).joinToString(" ")
+
+        /**
+         * `Kokoro._prepare`'s batches, each with the pause after it: trimming removes the
+         * silence the model puts at a batch end, so the pause the punctuation calls for is
+         * added back when joining.
+         */
+        fun batches(phonemes: String, sentencePause: Double, clausePause: Double): List<Pair<String, Double>> {
+            val batched = splitPhonemes(phonemes, MAX_PHONEME_LENGTH)
+            if (batched.isEmpty()) return emptyList()
+            return batched.dropLast(1).map { it to pauseAfter(it, sentencePause, clausePause) } + (batched.last() to 0.0)
+        }
+
+        /** Speech a phoneme makes at speed 1, in milliseconds (55.8 over the coach's lines). */
+        const val MS_PER_PHONEME = 56.0
+
+        /** A line with less speech than this, in seconds, is spoken whole. */
+        const val WHOLE_BELOW_S = 3.5
+
+        /** The shortest first piece, in phonemes: about a second of speech. */
+        const val FIRST_AT_LEAST = 16
+
+        /** Python's `\s` in a `str` pattern: the characters `str.isspace` holds ([Py.isSpace]). */
+        private const val SPACE = """[\s\u001C-\u001F\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]"""
+        private val DASH = Regex("""$SPACE+(?:--|—|–)$SPACE+""")
+        private val CLAUSE = Regex("""(?<=[.!?…,;:])$SPACE+""")
+
+        private fun length(s: String): Int = s.codePointCount(0, s.length)
+
+        /**
+         * The pieces the phone speaks a line in (`tools/phone_speech.py`; Tai, 2026-09-23: the
+         * phone only, the desktop speaks whole lines). On the desktop a line is one pass on the
+         * GPU in a tenth of a second; on the phone's CPU a pass takes about half as long as the
+         * speech, so a whole line starts only once all of it is made. In pieces, each is spoken
+         * while the next is made.
+         *
+         * A line of under [WHOLE_BELOW_S] of speech stays whole, batched as kokoro-onnx batches
+         * it: the desktop's own audio (in Tai's blind test the short lines sounded better
+         * whole). A longer line is cut where the text pauses -- after a stop, a colon, a
+         * semicolon or a comma in its phonemes, and at a dash in its text, which the
+         * phonemizer drops, so each dash-separated part is phonemized on its own -- and its
+         * clauses merged into few pieces: the first until it has [FIRST_AT_LEAST] phonemes,
+         * each after that up to twice the one before, and a tail of less than half the piece
+         * before joins it. A cut never falls between two words of a clause; a clause too long
+         * for one pass is cut as kokoro-onnx cuts it.
+         *
+         * Over the coach's lines at the Pixel's speed: the first sound 1.14 s after the line
+         * on average against 2.02 whole (p90 1.59 against 3.39), naturalness unchanged
+         * (UTMOS22 +0.003 on the cut lines), 9 of 779 words heard differently.
+         */
+        fun plan(
+            tokenizer: KokoroTokenizer,
+            text: String,
+            speed: Float,
+            lang: String,
+            sentencePause: Double = 0.25,
+            clausePause: Double = 0.1,
+        ): List<Pair<String, Double>> {
+            val whole = phonemes(tokenizer, text, lang)
+            if (length(whole) * MS_PER_PHONEME / 1000 / speed < WHOLE_BELOW_S) return batches(whole, sentencePause, clausePause)
+            val atoms = ArrayList<String>()
+            val parts = DASH.split(text)
+            for (part in parts) {
+                if (Py.strip(part).isEmpty()) continue
+                // A text with no dash is its one part, whose phonemes are the line's.
+                val phonemes = if (parts.size == 1) whole else phonemes(tokenizer, part, lang)
+                for (atom in CLAUSE.split(phonemes)) {
+                    if (Py.strip(atom).isEmpty()) continue
+                    if (length(atom) > MAX_PHONEME_LENGTH) atoms.addAll(splitPhonemes(atom)) else atoms.add(atom)
+                }
+            }
+            if (atoms.isEmpty()) return batches(whole, sentencePause, clausePause)
+            val sizes = atoms.map { length(it) }
+            val pieces = ArrayList<StringBuilder>()
+            val lengths = ArrayList<Int>()
+            val first = StringBuilder(atoms[0])
+            var size = sizes[0]
+            var i = 1
+            while (size < FIRST_AT_LEAST && i < atoms.size && size + 1 + sizes[i] <= MAX_PHONEME_LENGTH) {
+                first.append(' ').append(atoms[i])
+                size += 1 + sizes[i]
+                i += 1
+            }
+            pieces.add(first)
+            lengths.add(size)
+            while (i < atoms.size) {
+                val piece = StringBuilder(atoms[i])
+                size = sizes[i]
+                i += 1
+                val limit = minOf(MAX_PHONEME_LENGTH, 2 * lengths.last())
+                while (i < atoms.size && size + 1 + sizes[i] <= limit) {
+                    piece.append(' ').append(atoms[i])
+                    size += 1 + sizes[i]
+                    i += 1
+                }
+                pieces.add(piece)
+                lengths.add(size)
+            }
+            val n = pieces.size
+            if (n > 1 && lengths[n - 1] < lengths[n - 2] / 2 && lengths[n - 2] + 1 + lengths[n - 1] <= MAX_PHONEME_LENGTH) {
+                // A tail too short to stand alone joins the piece before it.
+                val last = pieces.removeAt(n - 1)
+                pieces[n - 2].append(' ').append(last)
+            }
+            val out = pieces.map { it.toString() }
+            return out.dropLast(1).map { it to pauseAfter(it, sentencePause, clausePause) } + (out.last() to 0.0)
         }
 
         /** `pause_after`: the silence a batch ending with this text should be followed by. */

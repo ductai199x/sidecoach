@@ -88,6 +88,25 @@ class VoiceParityTest {
     }
 
     @Test
+    fun aLineIsSpokenInThePiecesThePlanSays() {
+        val tokenizer = KokoroTokenizer(app)
+        val plans = fixtures.getJSONArray("plans")
+        var cut = 0
+        for (i in 0 until plans.length()) {
+            val case = plans.getJSONObject(i)
+            val text = case.getString("text")
+            val speed = case.getDouble("speed")
+            val want = strings(case.getJSONArray("pieces"))
+            val mine = Kokoro.plan(tokenizer, text, speed.toFloat(), "en-us")
+            check("plan #$i \"$text\" at $speed pieces", mine.map { it.first }, want)
+            check("plan #$i \"$text\" at $speed pauses", mine.map { it.second }, doubles(case.getJSONArray("pauses")))
+            if (want.size > 1) cut += 1
+        }
+        Log.i(TAG, "${plans.length()} plans, $cut in pieces")
+        assertTrue(failures.take(20).joinToString("\n\n") + "\n(${failures.size} failures)", failures.isEmpty())
+    }
+
+    @Test
     fun kokoroSpeaksAsTheDesktopDoes() {
         val dir = File(app.filesDir, "models/kokoro")
         val model = File(dir, KokoroTts.ONNX_FILE)

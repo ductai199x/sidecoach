@@ -92,6 +92,36 @@ class EngineTest {
     }
 
     @Test
+    fun aPausedEngineHoldsStillAndStillSearchesItsTime() {
+        val engine = engine()
+        assumeTrue("the engine or its network is missing", engine != null)
+        engine!!.use { sf ->
+            sf.open()
+            val board = Board("r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
+            var lines: List<com.sidecoach.events.Line> = emptyList()
+            val began = System.currentTimeMillis()
+            val search = kotlin.concurrent.thread { lines = sf.analyse(board, timeS = 1.0) }
+            Thread.sleep(300)
+            sf.pause()
+            Thread.sleep(100)
+            val held = sf.cpuMs()
+            Thread.sleep(1000)
+            val stillHeld = sf.cpuMs()
+            sf.resume()
+            search.join()
+            val took = System.currentTimeMillis() - began
+            val after = sf.cpuMs()
+            Log.i(TAG, "paused search: $took ms, engine cpu $held -> $stillHeld -> $after ms, depth ${lines.firstOrNull()?.depth}")
+            assertTrue("the engine ran while paused: $held -> $stillHeld ms", stillHeld - held <= 20)
+            // A second of search, less the pause: the pause does not count against it.
+            assertTrue("the pause cut the search short: $took ms", took >= 2000)
+            assertTrue("no lines", lines.isNotEmpty())
+            // The same process ran on, its hash with it: a restarted engine's time starts at 0.
+            assertTrue("the engine was restarted: $stillHeld -> $after ms", after > stillHeld)
+        }
+    }
+
+    @Test
     fun aFinishedPositionHasNoLines() {
         val engine = engine()
         assumeTrue("the engine or its network is missing", engine != null)

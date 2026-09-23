@@ -2,6 +2,7 @@ package com.sidecoach.ui
 
 import android.content.Context
 import android.os.SystemClock
+import com.sidecoach.analysis.Engine
 import com.sidecoach.coach.Coach
 import com.sidecoach.events.Trigger
 import com.sidecoach.voice.KokoroTts
@@ -72,6 +73,7 @@ object PanelVoice {
     fun build(context: Context, settings: SettingsStore) {
         val made = KokoroTts(context.applicationContext, modelDir(context), settings.voice(), settings.speed(), settings.lang())
         made.onPlay = { line -> onAudioStarts(line) }
+        made.onSynthesis = { synthesising -> juggle(synthesising) }
         // The voice it replaces is cut off and freed (off this thread: a line being
         // synthesised finishes first).
         tts?.let { old ->
@@ -86,6 +88,25 @@ object PanelVoice {
             "muted" to muted,
             "voice_detail" to made.healthcheck().second,
         )
+    }
+
+    /** The engine held paused while a piece of a line is made, to let go of after. */
+    @Volatile private var pausedEngine: Engine? = null
+
+    /**
+     * The phone's own (Tai, 2026-09-23): Kokoro or Stockfish at work, not both. They share the
+     * phone's big cores, and with both at work each runs at half speed, so the game's engine
+     * is paused (never ended: its hash is kept) while a piece is made, and runs on after.
+     */
+    private fun juggle(synthesising: Boolean) {
+        if (synthesising) {
+            val engine = PanelWarm.assessing?.analyser?.annotator?.engine ?: return
+            pausedEngine = engine
+            engine.pause()
+        } else {
+            pausedEngine?.resume()
+            pausedEngine = null
+        }
     }
 
     /** Change the speaking voice: a style on the loaded model, nothing reloads. `set_voice`. */
