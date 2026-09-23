@@ -136,6 +136,13 @@ button.ghost:hover { background: var(--panel2); }
 button.small { padding: 2px 8px; font-size: 12px; font-weight: 500; }
 button.running { background: var(--error); color: #fff; box-shadow: 0 3px 0 #b02a1c; }
 button.running:hover { background: #ff5a47; }
+/* A button that cannot be pressed now looks it -- Give up on a solved puzzle, Download
+   with nothing chosen, Save while saving -- and does not answer the pointer. */
+button:disabled { opacity: 0.45; cursor: default; }
+button:disabled:hover { background: var(--panel2); }
+button.ghost:disabled:hover { background: transparent; }
+button.primary:disabled:hover { background: var(--accent); }
+button.primary:disabled:active { transform: none; box-shadow: 0 3px 0 #5f8a36; }
 
 /* ---- main: board left (fixed), a divider, panel right; the trio centred in what is
    left. The panel is as tall as the main area, so a board dragged smaller gives it a

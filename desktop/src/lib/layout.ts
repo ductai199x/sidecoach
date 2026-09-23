@@ -16,6 +16,15 @@ export function layoutMode(): boolean {
 
 export const stacked = (): boolean => document.documentElement.classList.contains("stacked");
 
+/** Stacked, the board's width: the size the player dragged it to on the panel, within the
+ * room the main area has; the whole width (the stylesheet's default) when none was chosen. */
+export function mobileBoard(mainEl: HTMLElement | null, wanted: number | null): void {
+  const root = document.documentElement;
+  if (wanted === null || !mainEl) { root.style.removeProperty("--mboard"); return; }
+  const most = Math.max(160, Math.min(mainEl.clientWidth - 20, 640, mainEl.clientHeight - 250));
+  root.style.setProperty("--mboard", Math.round(Math.max(160, Math.min(most, wanted))) + "px");
+}
+
 /** The board's side from the room the main area has, smaller still if the player dragged
  * the divider. Re-measured on every resize and whenever the footer changes. */
 export function fitBoard(mainEl: HTMLElement | null, divider: HTMLElement | null, info: HTMLElement | null, wanted: number | null): void {

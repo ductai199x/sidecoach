@@ -227,6 +227,8 @@ export type PuzzleState = {
   rating?: number;
   url?: string;
   voice?: boolean;
+  // Whether the room has a voice at all; the voice button shows only when it has.
+  voice_ready?: boolean;
   closed?: boolean;
   llm?: { calls: number; prompt: number; completion: number; cost: number | null } | null;
 };

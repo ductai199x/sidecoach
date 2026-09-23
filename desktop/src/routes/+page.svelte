@@ -13,7 +13,7 @@
   import Strip from "$lib/Strip.svelte";
   import Terminal from "$lib/Terminal.svelte";
   import { panel } from "$lib/api";
-  import { fitBoard, layoutMode, splitter, stacked } from "$lib/layout";
+  import { fitBoard, layoutMode, mobileBoard as sizeMobileBoard, splitter, stacked } from "$lib/layout";
   import { prefs, store } from "$lib/panel.svelte";
   import { perf } from "$lib/perf.svelte";
   import { buildShell, buildTray, checkForUpdates, inShell, panes } from "$lib/shell.svelte";
@@ -30,12 +30,7 @@
 
   // Stacked, the board's side is the player's: the handle under it drags it, and the
   // coach takes the room it gives up. Never so big the coach has no room, never tiny.
-  function mobileBoard(wanted: number | null): void {
-    const root = document.documentElement;
-    if (wanted === null || !mainEl) { root.style.removeProperty("--mboard"); return; }
-    const most = Math.max(160, Math.min(mainEl.clientWidth - 20, 640, mainEl.clientHeight - 250));
-    root.style.setProperty("--mboard", Math.round(Math.max(160, Math.min(most, wanted))) + "px");
-  }
+  const mobileBoard = (wanted: number | null) => sizeMobileBoard(mainEl, wanted);
 
   // The debug area folds to its status strip. It starts folded (Tai, 2026-09-21: the
   // terminal is off by default; View > Terminal opens it) and the choice is remembered.
