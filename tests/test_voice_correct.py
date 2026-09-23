@@ -101,6 +101,34 @@ def test_a_promotion_that_names_no_piece_is_a_queen(heard: str, moves: list[str]
     assert correct(heard, board).moves == moves
 
 
+SCANDINAVIAN = chess.Board("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2")
+
+
+@pytest.mark.parametrize(
+    ("heard", "board", "text", "moves"),
+    [
+        # Only the king can go to f3: the knight the person named stays a knight, in words.
+        ("Night to F3", chess.Board("8/4P1k1/8/8/8/8/5K2/8 w - - 0 1"), "knight to f three", []),
+        # e4 was played: "pawn to e four" is not h4 because h4 sounds alike.
+        ("pawn to e four", SCANDINAVIAN, "pawn to e four", []),
+        # A square after "on" is a place, not a move there.
+        ("is the pawn on d five weak", SCANDINAVIAN, "is the pawn on d five weak", []),
+        ("knight takes the pawn on e five", SCANDINAVIAN, "knight takes the pawn on e five", []),
+        ("is my knight on f three safe", START, "is my knight on f three safe", []),
+        # Fuzz still mends the words around the piece and the square.
+        ("knight takes f three", START, "Nf3", ["Nf3"]),
+        ("e takes d five", SCANDINAVIAN, "exd5", ["exd5"]),
+    ],
+)
+def test_a_fuzzy_match_never_swaps_the_piece_or_the_square(
+    heard: str, board: chess.Board, text: str, moves: list[str]
+) -> None:
+    """Close is not enough: the piece and the square the person named must be the move's.
+    What matches no legal move stays as words, for the coach to read (Tai, 2026-09-23)."""
+    result = correct(heard, board)
+    assert (result.text, result.moves) == (text, moves)
+
+
 def test_an_illegal_move_is_left_as_words() -> None:
     # e takes d5 is not legal after 1.e4 f5 2.exf5 g6, so it stays as the user said it.
     result = correct("e takes d five", AFTER_G6)

@@ -179,13 +179,25 @@ def correct(text: str, board: chess.Board | None) -> Correction:
             span = tokens[i : i + n]
             if not _plausible(span):
                 continue
+            if n == 2 and i > 0 and tokens[i - 1] == "on" and len(span[0]) == 1:
+                continue  # "the pawn on d five" is a place, not a move there
             phrase = " ".join(span)
             if phrase in forms:
                 best = (1.0, n, forms[phrase])
                 break
+            keys = _keys(span)
             for form, san in forms.items():
                 ratio = difflib.SequenceMatcher(None, phrase, form).ratio()
-                if ratio >= _MIN_RATIO and (best is None or ratio > best[0]):
+                # Close is not enough: the piece and the square the person named must be the
+                # form's. Fuzz may mend how the words around them were heard, never swap them
+                # for another legal move -- "knight to f three" became Kf3 when only the king
+                # could go there (Tai, 2026-09-23: what matches no legal move stays as words,
+                # for the coach to read).
+                if (
+                    ratio >= _MIN_RATIO
+                    and (best is None or ratio > best[0])
+                    and _keys(form.split()) == keys
+                ):
                     best = (ratio, n, san)
         if best is not None and best[0] >= _MIN_RATIO:
             out.append(best[2])
@@ -225,6 +237,20 @@ _MOVE_VOCAB = (
         "equals",
     }
 )
+
+
+# The words that say which move: the piece, the square, the side castled to, what a pawn
+# becomes -- and "on", which makes a square a place ("the pawn on e five") rather than where a
+# move goes. A fuzzy match must keep all of them as they were said.
+_KEY_WORDS = (
+    _SQUARE_WORDS
+    | set("abcdefgh")
+    | {"knight", "bishop", "rook", "queen", "king", "pawn", "kingside", "queenside", "on"}
+)
+
+
+def _keys(words: list[str]) -> list[str]:
+    return [w for w in words if w in _KEY_WORDS]
 
 
 def _plausible(span: list[str]) -> bool:
