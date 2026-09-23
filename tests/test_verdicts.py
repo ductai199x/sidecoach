@@ -24,7 +24,7 @@ def _uci(fen: str, uci: str) -> tuple[chess.Board, chess.Move]:
 
 def test_the_lesson_is_what_the_board_teaches_not_what_the_move_did() -> None:
     board, mate = _uci(SCHOLAR, "h5f7")
-    assert lesson(board, mate) == ("mate", "checkmate")
+    assert lesson(board, mate) == ("mate", ["checkmate"])
     # A capture, a check, a promotion: said by the board, not by the coach.
     board, check = _uci("rnbqkbnr/pppp2pp/8/4pp2/4P3/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3", "d1h5")
     assert lesson(board, check, phase="opening") is None
@@ -34,18 +34,17 @@ def test_the_lesson_is_what_the_board_teaches_not_what_the_move_did() -> None:
     board, castle = _uci(
         "rnbqk2r/pppp1ppp/5n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4", "e1g1"
     )
-    assert lesson(board, castle, phase="opening") == ("castle", PRINCIPLES["castle"][0])
-    assert lesson(board, castle, phase="opening", turn=1) == ("castle", PRINCIPLES["castle"][1])
+    assert lesson(board, castle, phase="opening") == ("castle", list(PRINCIPLES["castle"]))
     board, rook = _uci("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1", "a1d1")
-    assert lesson(board, rook, phase="endgame") == ("takeFile", "rooks belong on open files")
+    assert lesson(board, rook, phase="endgame") == ("takeFile", list(PRINCIPLES["takeFile"]))
     board, e4 = _uci(chess.STARTING_FEN, "e2e4")
-    assert lesson(board, e4, phase="opening") == ("centre", PRINCIPLES["centre"][0])
+    assert lesson(board, e4, phase="opening") == ("centre", list(PRINCIPLES["centre"]))
     # A tag's tactic, described only when the squares bear it out after the move.
     board, fork = _uci("6k1/5ppp/8/r7/3r4/8/5PPP/2N3K1 w - - 0 1", "c1b3")
     tag = MotifTag(name="fork", squares=["b3", "a5", "d4"])
     assert lesson(board, fork, [tag]) == (
         "fork",
-        "the knight on b3 forks the rook on a5 and the rook on d4",
+        ["the knight on b3 forks the rook on a5 and the rook on d4"],
     )
     stale = MotifTag(name="fork", squares=["b3", "a2", "d4"])  # nothing on a2: not said
     assert lesson(board, fork, [stale]) != lesson(board, fork, [tag])

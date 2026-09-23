@@ -138,21 +138,20 @@ def lesson(
     phase: str = "middlegame",
     threats: Sequence[str] = (),
     taught: Sequence[str] = (),
-    turn: int = 0,
-) -> tuple[str, str] | None:
-    """What a sound move teaches, as (kind, clause): the mate, the tactic a tag names when
-    the squares bear it out, or the idea behind the move as its principle. None when the
-    board shows none, or when its kind is in `taught` (said in one of the last few words).
-    `turn` picks between a principle's two wordings."""
+) -> tuple[str, list[str]] | None:
+    """What a sound move teaches, as its kind and the ways to say it: the mate, the tactic a
+    tag names when the squares bear it out, or the idea behind the move as its principle
+    (two wordings). None when the board shows none, or when its kind is in `taught` (said
+    in one of the last few words)."""
     after = board.copy(stack=False)
     after.push(move)
     if after.is_checkmate():
-        return "mate", "checkmate"
+        return "mate", ["checkmate"]
     for tag in tags:
         if tag.name in TACTICS and tag.squares and tag.name not in taught:
             said = describe_tactic(after, tag.name, tag.squares)
             if said is not None:
-                return tag.name, said
+                return tag.name, [said]
     us = board.turn
     idea = positional.best_move_idea(
         board,
@@ -164,8 +163,7 @@ def lesson(
     )
     if idea is None or idea.kind not in PRINCIPLES or idea.kind in taught:
         return None
-    wordings = PRINCIPLES[idea.kind]
-    return idea.kind, wordings[turn % len(wordings)]
+    return idea.kind, list(PRINCIPLES[idea.kind])
 
 
 def verdict(
@@ -181,19 +179,18 @@ def verdict(
     rng: random.Random | None = None,
 ) -> tuple[str, str | None]:
     """The sentence -- the praise for the label (never `last`'s), then what the move
-    teaches -- and the kind of lesson it taught, None when it is praise alone."""
+    teaches -- and the kind of lesson it taught, None when it is praise alone. Every draw
+    is a `choice`, the praise before the wording, so the phone's port draws the same."""
     rng = rng or random.Random()
-    taught_now = lesson(
-        board, move, tags, phase=phase, threats=threats, taught=taught, turn=rng.randrange(2)
-    )
-    if taught_now is not None and taught_now[0] == "mate":
-        choices = [m for m in MATE if m != last] or MATE
-        return rng.choice(choices), "mate"
+    found = lesson(board, move, tags, phase=phase, threats=threats, taught=taught)
+    if found is not None and found[0] == "mate":
+        return rng.choice([m for m in MATE if m != last] or MATE), "mate"
     openers = OPENERS.get(label or "", OPENERS["good"])
     # `last` is the previous sentence whole; its praise is what must not come again.
     choices = [o for o in openers if last is None or not last.startswith(o)]
     opener = rng.choice(choices or openers)
-    if taught_now is None:
+    if found is None:
         return opener + ".", None
-    kind, clause = taught_now
+    kind, clauses = found
+    clause = rng.choice(clauses) if len(clauses) > 1 else clauses[0]
     return f"{opener} -- {clause}.", kind
