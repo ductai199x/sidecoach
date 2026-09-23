@@ -454,12 +454,13 @@ object Captions {
                     setHeightTo(shownLines())
                     return true
                 }
-                override fun onLongPress(e: MotionEvent) {
-                    moving = true
-                    performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                    target = Target(ctx).also { it.attach() }
-                }
+                override fun onLongPress(e: MotionEvent) = startMoving()
             })
+            // A finger that moves drags the box at once; waiting for a hold first lost the
+            // drag whenever a real finger drifted a few pixels before the hold was up (Tai on
+            // the Pixel, 2026-09-23: "I can't drag the box"). A tap and a double-tap stay
+            // where they are, so they are still told apart.
+            val slop = android.view.ViewConfiguration.get(ctx).scaledTouchSlop
             setOnTouchListener { _, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
@@ -469,11 +470,16 @@ object Captions {
                         startX = params.x
                         startY = params.y
                     }
-                    MotionEvent.ACTION_MOVE -> if (moving) {
-                        params.x = startX + (event.rawX - downX).roundToInt()
-                        params.y = startY + (event.rawY - downY).roundToInt()
-                        windows.updateViewLayout(this, params)
-                        target?.near(centre())
+                    MotionEvent.ACTION_MOVE -> {
+                        if (!moving && hypot((event.rawX - downX).toDouble(), (event.rawY - downY).toDouble()) > slop) {
+                            startMoving()
+                        }
+                        if (moving) {
+                            params.x = startX + (event.rawX - downX).roundToInt()
+                            params.y = startY + (event.rawY - downY).roundToInt()
+                            windows.updateViewLayout(this, params)
+                            target?.near(centre())
+                        }
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                         busy = false
@@ -488,6 +494,13 @@ object Captions {
                 gestures.onTouchEvent(event)
                 true
             }
+        }
+
+        private fun startMoving() {
+            if (moving) return
+            moving = true
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            target = Target(ctx).also { it.attach() }
         }
 
         private fun chip(label: String) = TextView(ctx).apply {

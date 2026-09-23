@@ -65,11 +65,27 @@ class CaptionsGestureTest {
         return what()
     }
 
-    /** Hold at [from], then drag in steps to [to]; [before] runs with the finger still down. */
-    private fun holdAndDrag(from: Pair<Int, Int>, to: Pair<Int, Int>, before: () -> Unit = {}) {
+    /**
+     * Hold at [from] for [holdMs] -- a real finger drifting a few pixels meanwhile when
+     * [drift] -- then drag in steps to [to]; [before] runs with the finger still down.
+     */
+    private fun holdAndDrag(
+        from: Pair<Int, Int>,
+        to: Pair<Int, Int>,
+        holdMs: Long = ViewConfiguration.getLongPressTimeout() + 300L,
+        drift: Boolean = false,
+        before: () -> Unit = {},
+    ) {
         val down = SystemClock.uptimeMillis()
         touch(MotionEvent.ACTION_DOWN, from.first, from.second, down)
-        Thread.sleep(ViewConfiguration.getLongPressTimeout() + 300L)
+        if (drift) {
+            for (i in 1..(holdMs / 50).toInt()) {
+                touch(MotionEvent.ACTION_MOVE, from.first + (i % 3) * 4, from.second + (i % 2) * 5, down)
+                Thread.sleep(50)
+            }
+        } else {
+            Thread.sleep(holdMs)
+        }
         val steps = 20
         for (i in 1..steps) {
             val x = from.first + (to.first - from.first) * i / steps
@@ -144,8 +160,18 @@ class CaptionsGestureTest {
         val saved = app.getSharedPreferences("captions", 0)
         assertTrue("the place was not kept", saved.getInt("y", -1) == moved.top)
 
+        // A finger that just drags, and one that drifts while it holds: both move the box
+        // (on the Pixel a real finger's drift lost the hold, and with it the drag).
+        holdAndDrag(moved.centerX() to moved.centerY(), moved.centerX() to moved.centerY() + 300, holdMs = 0)
+        assertTrue("a plain drag did not move the box", waitFor { (box()?.centerY() ?: 0) > moved.centerY() + 200 })
+        val dragged = box()!!
+        holdAndDrag(dragged.centerX() to dragged.centerY(), dragged.centerX() to dragged.centerY() - 300, drift = true)
+        assertTrue("a drifting hold did not move the box", waitFor { (box()?.centerY() ?: Int.MAX_VALUE) < dragged.centerY() - 200 })
+        Thread.sleep(300)
+        val back = box()!!
+
         // Onto the cross at the foot of the screen: captions off.
-        holdAndDrag(moved.centerX() to moved.centerY(), screen.widthPixels / 2 to screen.heightPixels - 250) {
+        holdAndDrag(back.centerX() to back.centerY(), screen.widthPixels / 2 to screen.heightPixels - 250) {
             shot("6_over_the_cross")
         }
         assertTrue("the box is still up", waitFor { box() == null })
