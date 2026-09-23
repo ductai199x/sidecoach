@@ -85,9 +85,10 @@ object PanelEngine {
     /** What an ask reaches: the coach, when one is running. */
     var onAsk: ((String) -> Unit)? = null
 
-    /** Flip and End game, when the session can take them. */
+    /** Flip, End game and Re-read, when the session can take them. */
     var onFlip: (() -> Unit)? = null
     var onEnd: ((String) -> Unit)? = null
+    var onAnalyze: (() -> Unit)? = null
 
     init {
         reset()
@@ -174,6 +175,21 @@ object PanelEngine {
             )
             while (records.size > KEPT) records.removeFirst()
         }
+    }
+
+    /** The side the page is showing as the player's, as `panel._state["user_side"]`. */
+    fun userSide(): String? = synchronized(lock) { state["user_side"] as? String }
+
+    /**
+     * The game is forgotten: `_end`'s "forget" branch, which drops what the page held about
+     * it and waits for the next start position.
+     */
+    fun forgotten() {
+        synchronized(lock) {
+            fenBefore.clear()
+            labels.clear()
+        }
+        set("game_id" to null, "user_side" to null, "following" to false)
     }
 
     fun set(vararg fields: Pair<String, Any?>) {

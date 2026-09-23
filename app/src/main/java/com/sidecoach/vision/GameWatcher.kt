@@ -21,6 +21,7 @@ import com.sidecoach.analysis.GameAnnotator
 import com.sidecoach.events.Label
 import com.sidecoach.events.MoveAssessment
 import com.sidecoach.coach.CoachRunner
+import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.state.GamePipeline
 import com.sidecoach.ui.PanelEngine
 import com.sidecoach.ui.SettingsStore
@@ -70,7 +71,32 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
         PanelEngine.onAsk = { text ->
             runner.ask(text, android.os.SystemClock.elapsedRealtime() / 1000.0)
         }
+        PanelEngine.onEnd = { outcome -> command("end", outcome) }
+        PanelEngine.onFlip = { command("flip") }
+        PanelEngine.onAnalyze = { command("analyze") }
     }
+
+    /**
+     * What the page asked for between frames. The panel's buttons are pressed from another
+     * thread; the vision's own thread drains them where `panel._drain_commands` drains its
+     * queue, so their events join the frame's.
+     */
+    private val commands = ArrayDeque<Pair<String, String>>()
+
+    /**
+     * The last frame read, and the board on it: `latest` and `latest_geom` in the desktop's
+     * loop. A command that needs pixels -- Flip, Re-read -- is pressed from the panel, and
+     * the app reads nothing while its own window is in front, so the frame it works from is
+     * the last one of the game's screen. Kept by swapping, never copied.
+     */
+    private var lastFrame: Mat? = null
+    private var lastGeometry: BoardGeometry? = null
+
+    /** The panel's board shown turned around; `panel._view_flip`. */
+    private var viewFlip = false
+
+    /** The side a cold read assumes at the bottom once the player has chosen one. */
+    private var forcedBottom: Pieces.Side? = null
 
     /** The last clock the vision read, for the screen. */
     var clocks: ClockObservation? = null
@@ -143,21 +169,9 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
             began = SystemClock.elapsedRealtime()
             val events = pipeline.process(bgr, ts, changed, frameId++, pixels)
             val took = SystemClock.elapsedRealtime() - began
-            for (event in events) {
-                note(event)
-                PanelEngine.onGameEvent(event)
-                assessing.submit(event)
-            }
-            val assessed = assessing.drain()
-            for (event in assessed) {
-                note(event)
-                PanelEngine.onEngineEvent(event)
-            }
-            // The coach, in the order the desktop's loop runs it: the game's events, then
-            // the engine's word on them. The tick and the drain are the loop's own, and
-            // happen whether or not this frame was read (see `coachTick`).
-            coaching.events(events, ts)
-            coaching.events(assessed, ts)
+            val geometry = pipeline.board?.let { BoardGeometry(it.region, it.cellPx) }
+            events += drainCommands(pipeline, bgr, geometry, ts)
+            dispatch(events, ts)
             if (++reads % 5 == 1) {
                 Log.i(
                     TAG,
@@ -191,8 +205,158 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
                 readMs = took,
             )
         } finally {
-            bgr.release()
+            // This frame becomes `latest`; the one it replaces is released. One frame is
+            // held, never a copy per tick.
+            val previous = lastFrame
+            lastFrame = bgr
+            lastGeometry = pipeline.board?.let { BoardGeometry(it.region, it.cellPx) }
+            if (previous !== bgr) previous?.release()
         }
+    }
+
+    /**
+     * The events of a frame -- or of a command drained between frames -- through the log,
+     * the page, the engine and the coach, in the order `panel`'s loop runs them.
+     */
+    private fun dispatch(events: List<Event>, ts: Double) {
+        for (event in events) {
+            note(event)
+            PanelEngine.onGameEvent(event)
+            assessing.submit(event)
+        }
+        val assessed = assessing.drain()
+        for (event in assessed) {
+            note(event)
+            PanelEngine.onEngineEvent(event)
+        }
+        // The coach, in the order the desktop's loop runs it: the game's events, then
+        // the engine's word on them. The tick and the drain are the loop's own, and
+        // happen whether or not this frame was read (see `coachTick`).
+        coaching.events(events, ts)
+        coaching.events(assessed, ts)
+    }
+
+    /** Queue one of the panel's commands for the vision thread. */
+    private fun command(name: String, payload: String = "") {
+        synchronized(commands) { commands.addLast(name to payload) }
+    }
+
+    /** `panel._drain_commands`, for the three the phone has. */
+    private fun drainCommands(
+        pipeline: GamePipeline,
+        frame: Mat?,
+        geometry: BoardGeometry?,
+        ts: Double,
+    ): MutableList<Event> {
+        val events = mutableListOf<Event>()
+        while (true) {
+            val (name, payload) = synchronized(commands) { commands.removeFirstOrNull() } ?: break
+            when (name) {
+                "end" -> events += endGame(pipeline, payload, ts)
+                "flip" -> events += flip(pipeline, frame, geometry, ts)
+                "analyze" -> events += analyse(pipeline, frame, geometry, ts)
+            }
+        }
+        return events
+    }
+
+    /** `panel._end`: the game ends on the user's word, or is forgotten altogether. */
+    private fun endGame(pipeline: GamePipeline, outcome: String, ts: Double): MutableList<Event> {
+        val rec = pipeline.reconciler
+        if (rec == null || !rec.started) {
+            PanelEngine.emit("user", "warn", "no game to end")
+            return mutableListOf()
+        }
+        val (result, reason) = outcomeResult(outcome, PanelEngine.userSide())
+        val events = pipeline.endGame(result, reason, ts)
+        if (events.isNotEmpty()) {
+            PanelEngine.emit("user", "info", "you ended the game: $reason ($result)")
+        }
+        if (outcome == "forget") {
+            pipeline.reset()
+            PanelEngine.forgotten()
+            PanelEngine.emit("game", "info", "forgot the game; waiting for a start position")
+        }
+        return events
+    }
+
+    /**
+     * `panel._flip`. Flip means three things.
+     *
+     * A game seen from its start position has its orientation from the pieces themselves, so
+     * flipping only turns the panel's board around (a view preference); re-reading an
+     * unchanged screen the wrong way up would resync to a rotated, bogus position. A game
+     * joined from the middle -- a puzzle, an analysis board, a resync -- had its orientation
+     * from the labels or from the game before, which can be wrong: flipping re-reads the
+     * screen with the other side at the bottom and begins again from that. With no game
+     * running, flipping chooses the side the next cold read assumes at the bottom.
+     */
+    private fun flip(
+        pipeline: GamePipeline,
+        frame: Mat?,
+        geometry: BoardGeometry?,
+        ts: Double,
+    ): MutableList<Event> {
+        val rec = pipeline.reconciler
+        if (rec != null && rec.started && rec.baseFen == STARTING_FEN) {
+            viewFlip = !viewFlip
+            PanelEngine.set("view_flip" to viewFlip)
+            PanelEngine.emit(
+                "user", "info", "view flipped (the game is still read from the screen as is)",
+            )
+            return mutableListOf()
+        }
+        val current = forcedBottom ?: pipeline.bottom ?: Pieces.Side.WHITE
+        val target = if (current == Pieces.Side.WHITE) Pieces.Side.BLACK else Pieces.Side.WHITE
+        val name = target.name.lowercase()
+        forcedBottom = target
+        pipeline.forcedBottom = target
+        PanelEngine.set("bottom" to name)
+        if (rec != null && rec.started) {
+            val events = if (frame != null && geometry != null) {
+                pipeline.reorient(frame, geometry, target, ts)
+            } else {
+                mutableListOf()
+            }
+            if (events.isNotEmpty()) {
+                PanelEngine.emit("user", "info", "board re-read with $name at the bottom")
+                return events
+            }
+            // Mid-move, or unreadable now: forget the game; the next quiet frame is read
+            // cold with this side at the bottom.
+            val forgotten = endGame(pipeline, "forget", ts)
+            PanelEngine.emit("user", "info", "re-reading the board with $name at the bottom")
+            return forgotten
+        }
+        PanelEngine.emit("user", "info", "analysis orientation: $name at the bottom")
+        return mutableListOf()
+    }
+
+    /** `panel._analyze`: read the position on the board now, cold. */
+    private fun analyse(
+        pipeline: GamePipeline,
+        frame: Mat?,
+        geometry: BoardGeometry?,
+        ts: Double,
+    ): MutableList<Event> {
+        if (frame == null || geometry == null) {
+            PanelEngine.emit("vision", "warn", "no board on screen to analyse yet")
+            return mutableListOf()
+        }
+        val events = runCatching { pipeline.coldStart(frame, geometry, forcedBottom, ts) }
+            .onFailure { PanelEngine.emit("vision", "error", "analyse failed: $it") }
+            .getOrNull() ?: return mutableListOf()
+        if (events.isEmpty()) {
+            PanelEngine.emit(
+                "vision",
+                "warn",
+                "could not read the position cold: no cached style match, coordinates off " +
+                    "(use Flip), or the board is mid-move",
+            )
+        } else {
+            PanelEngine.emit("vision", "info", "analysing the position on the board (cold start)")
+        }
+        return events
     }
 
     /**
@@ -203,6 +367,11 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
      * answer.
      */
     fun coachTick(ts: Double) {
+        val pipeline = pipeline
+        if (pipeline != null) {
+            val events = drainCommands(pipeline, lastFrame, lastGeometry, ts)
+            if (events.isNotEmpty()) dispatch(events, ts)
+        }
         coaching.tick(ts)
         coaching.drain()
     }
@@ -263,6 +432,11 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
 
     override fun close() {
         PanelEngine.onAsk = null
+        PanelEngine.onEnd = null
+        PanelEngine.onFlip = null
+        PanelEngine.onAnalyze = null
+        lastFrame?.release()
+        lastFrame = null
         coaching.close()
         assessing.close()
         embedder?.close()
@@ -270,6 +444,19 @@ class GameWatcher(context: Context, themeDirectory: File? = null) : AutoCloseabl
 
     companion object {
         private const val TAG = "sidecoach.game"
+
+        /** The PGN result and the reason for an outcome, from the user's side. */
+        fun outcomeResult(outcome: String, userSide: String?): Pair<String, String> {
+            val userWhite = userSide != "black"
+            return when (outcome) {
+                "resigned" ->
+                    (if (userWhite) "0-1" else "1-0") to "user resigned or lost on time"
+                "won" ->
+                    (if (userWhite) "1-0" else "0-1") to "opponent resigned or lost on time"
+                "draw" -> "1/2-1/2" to "draw agreed"
+                else -> "*" to "abandoned by the user"
+            }
+        }
 
         /**
          * What the engine gets on a phone. The desktop's defaults are four threads, 256 MB

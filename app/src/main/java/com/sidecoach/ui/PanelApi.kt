@@ -72,9 +72,10 @@ class PanelApi(
                 ok(done())
             }
 
-            // The engine runs alongside the game on the phone; there is no separate
-            // analysis pass to kick off.
-            path == "/api/analyze" -> ok(done())
+            path == "/api/analyze" -> {
+                PanelEngine.onAnalyze?.invoke()
+                ok(done())
+            }
 
             path == "/api/client_log" -> {
                 val where = json.optString("page").ifEmpty { "" }
