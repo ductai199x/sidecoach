@@ -42,6 +42,8 @@ class BoardActivity : ComponentActivity() {
         view = ImageView(this)
         view.scaleType = ImageView.ScaleType.FIT_CENTER
         view.setBackgroundColor(0xFF101010.toInt())
+        // A game shown to the watcher runs for minutes: the screen must not sleep under it.
+        view.keepScreenOn = true
         setContentView(view)
         show(intent)
     }
