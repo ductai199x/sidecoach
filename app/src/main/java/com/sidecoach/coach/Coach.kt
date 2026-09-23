@@ -87,8 +87,14 @@ internal fun isExciting(label: Label?): Boolean =
     label != null && label.name.lowercase() in EXCITING
 
 /**
- * The confirmations, by the move's label, in the vocabulary chess.com uses; "{san}" is the
- * move ([OPENERS] has them, with the clause on what the move does).
+ * How many of the last lessons a sound move's word may not teach again ([lesson]): "develop
+ * first" after every developing move of an opening is a lecture, not a lesson.
+ */
+const val TAUGHT_MEMORY = 3
+
+/**
+ * The praise, by the move's label, in the vocabulary chess.com uses ([OPENERS], with the
+ * lesson the board gives): said alone when there is no lesson to add.
  */
 val VERDICTS: Map<String, List<String>> =
     OPENERS.mapValues { (_, openers) -> openers.map { "$it." } }
@@ -140,6 +146,22 @@ val QUIET_HINTS = listOf(
 )
 
 /** A question at the question level, where nothing of the position may be named. */
+/**
+ * The word on a move a little behind the best, and the start of the lesson on one that cost
+ * something; "{best}" is the better move. Without the move played in them, the same better
+ * move twice running gave the same sentence twice (the offline sweep, 2026-09-23).
+ */
+val FINE_TIGHTER = listOf(
+    "Fine, but {best} was a little tighter",
+    "That works, though {best} was a touch better",
+    "Playable -- {best} was a little more precise",
+)
+val COST_YOU = listOf(
+    "That one cost you: {best} was better",
+    "That cost you something: {best} was the move",
+    "Not that one -- {best} was better",
+)
+
 val ASK_GENERIC = listOf(
     "What is your opponent's most dangerous idea here?",
     "Before anything else: what does your opponent want to play next?",
@@ -180,6 +202,18 @@ const val NO_NUMBERS =
     "Do not quote the cost or any number: say how the move rates in words, and keep the " +
         "figures for when the player asks. Name moves bare, as h3 or Bd5, never with a move " +
         "number in front."
+
+/**
+ * The player has just played the move and sees it on the board: naming it, or saying what it
+ * plainly did ("Nxd5 -- the knight taking the pawn on d5"), tells them nothing (Tai,
+ * 2026-09-23: "we want the coach to be instructive, always find a moment to teach something,
+ * not just a dumb bot").
+ */
+const val NOT_THE_MOVE =
+    "Do not open with the move they played, and do not say what it plainly did on the board " +
+        "-- what it took, the check, the castling, the promotion: they just played it and see it. " +
+        "Say what it means instead: the idea behind it, the pattern to keep, the better move and " +
+        "why."
 
 fun vsDirective(candidates: Int = VS_CANDIDATES): String {
     val count = NUMBER_WORDS[candidates] ?: candidates.toString()

@@ -188,21 +188,26 @@ class CoachPrimitivesTest {
                 val move = Move.fromUci(o.getString("move"))
                 val label = if (o.isNull("label")) null else o.getString("label")
                 val last = if (o.isNull("last")) null else o.getString("last")
-                val san = board.san(move)
+                val taught = strings(o.getJSONArray("taught"))
                 check(
-                    "openers ${o.getString("move")} $label",
-                    openersFor(san, label, last),
+                    "praise ${o.getString("move")} $label",
+                    praiseFor(label, last),
                     strings(o.getJSONArray("choices")),
                 )
+                val lesson = lesson(board, move, analysis.tags, facts.phase, facts.threats)
                 check(
-                    "clause ${o.getString("move")}",
-                    whatItDoes(board, move, analysis.tags),
-                    if (o.isNull("clause")) null else o.getString("clause"),
+                    "lesson ${o.getString("move")}",
+                    lesson?.let { listOf(it.first, it.second) },
+                    if (o.isNull("lesson")) {
+                        null
+                    } else {
+                        o.getJSONArray("lesson").let { listOf(it.getString(0), strings(it.getJSONArray(1))) }
+                    },
                 )
                 check(
                     "verdict ${o.getString("move")} $label",
-                    verdict(board, move, label, analysis.tags, last) { it[0] },
-                    o.getString("sentence"),
+                    verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last) { it[0] },
+                    o.getString("sentence") to if (o.isNull("kind")) null else o.getString("kind"),
                 )
             }
 

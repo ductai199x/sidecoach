@@ -283,6 +283,9 @@ class Coach(
 
     private var lastVerdict: String? = null
 
+    /** The kinds of lesson the last sound moves' words taught ([lesson]), [TAUGHT_MEMORY] at most. */
+    private val taught = ArrayDeque<String>()
+
     /** The last template said from each rotating list, keyed by the list. */
     private val lastSaid = HashMap<String, String>()
 
@@ -856,10 +859,10 @@ class Coach(
         }
         // Every move of the player's gets a word from the coach. A lecture is only for a move
         // that cost something. Theory, the engine's own move and an excellent one get a
-        // sentence written from the board (the verdict, and what the move does), no model
-        // call; in blitz too. A great or brilliant move gets the model's delight at its full
-        // effort; a good move the model's word on the better one; the board's sentence stands
-        // in if the reply fails.
+        // sentence written from the board (a word of praise, and what the move teaches when
+        // the board shows it), no model call; in blitz too. A great or brilliant move gets
+        // the model's delight at its full effort; a good move the model's word on the better
+        // one; the board's sentence stands in if the reply fails.
         if (trigger == Trigger.POST_MOVE && event.severity == Severity.NONE) {
             val facts = before.facts!!
             val best = facts.candidates.firstOrNull()
@@ -881,18 +884,25 @@ class Coach(
             }
             val label = event.label?.name?.lowercase()
             val text = if (localVerdicts) {
-                val written = verdict(
+                val (written, kind) = verdict(
                     before.board,
                     Move.fromUci(move.uci),
                     label,
                     event.tags,
+                    phase = facts.phase,
+                    threats = facts.threats,
+                    taught = taught.toList(),
                     last = lastVerdict,
                     pick = chooser,
                 )
                 lastVerdict = written
+                if (kind != null) {
+                    taught.addLast(kind)
+                    if (taught.size > TAUGHT_MEMORY) taught.removeFirst()
+                }
                 written
             } else {
-                verdictWord(move.san, label)
+                verdictWord(label)
             }
             val marks = annotationsFor(
                 before.facts!!,
@@ -938,15 +948,15 @@ class Coach(
     }
 
     /**
-     * The two-word confirmation of a fine move, worded by its label and never the same as
-     * the last one: a game of "Nf3: good. Bb5: good. Nc3: good." wears thin.
+     * The word of praise on a fine move, by its label and never the same as the last one: a
+     * game of "Good. Good. Good." wears thin.
      */
-    private fun verdictWord(san: String, label: String?): String {
+    private fun verdictWord(label: String?): String {
         val phrases = VERDICTS[label ?: ""] ?: VERDICTS.getValue("good")
         val choices = phrases.filter { it != lastVerdict }.ifEmpty { phrases }
         val chosen = chooser(choices)
         lastVerdict = chosen
-        return chosen.replace("{san}", san)
+        return chosen
     }
 
     /**
@@ -1357,7 +1367,6 @@ class Coach(
             if (best == played.san && trigger == Trigger.POST_MISTAKE) best = "another move"
             val loss = assessment.expectedLoss
             val label = assessment.label?.name?.lowercase() ?: assessment.severity.name.lowercase()
-            val words = inWords(position.board, played.san)
             val betterWords =
                 if (facts.candidates.isNotEmpty()) inWords(position.board, best) else best
             val routine = facts.candidates.isEmpty() || best == played.san ||
@@ -1368,28 +1377,28 @@ class Coach(
                 // With a theme or a plan the lesson names the idea; without one it stops at
                 // the better move ("the idea was the position" was said, offline).
                 val idea = facts.theme ?: facts.plan
-                fallback = "${played.san} cost you. $best was better" +
+                fallback = rotate("cost", COST_YOU).replace("{best}", best) +
                     (if (!idea.isNullOrEmpty()) "; the idea was $idea." else ".")
                 instructionText =
-                    "The player just played ${played.san} ($words), which was a $label: it " +
-                        "cost ${percent(loss)} of the game. The better move was $best " +
-                        "($betterWords). Explain the difference as a pattern to remember, in " +
-                        "three sentences at most, then ask one question that checks they see " +
-                        "it. $NO_NUMBERS"
+                    "The player just played ${played.san}, which was a $label: it cost " +
+                        "${percent(loss)} of the game. The better move was $best ($betterWords). " +
+                        "Explain the difference as a pattern to remember, in three sentences at " +
+                        "most, then ask one question that checks they see it. $NOT_THE_MOVE " +
+                        NO_NUMBERS
                 if (elicit) {
                     // Sparingly: what they saw at that moment, for the profile's record
                     // (causes.from_words reads "I thought it would..." as a line misjudged,
                     // "I didn't see..." as a threat missed). Asked as what they expected, in
                     // the coach's words: told to ask whether they "missed the idea altogether
                     // or misjudged the line", the model said exactly that, every time.
-                    fallback += " What were you expecting after ${played.san}?"
+                    fallback += " What were you expecting that move to do?"
                     instructionText =
-                        "The player just played ${played.san} ($words), which was a $label: " +
-                            "it cost ${percent(loss)} of the game. The better move was $best " +
-                            "($betterWords). Explain the difference as a pattern to remember, " +
-                            "in three sentences at most, then -- instead of a check question " +
-                            "-- ask, in one short question of your own, what they expected to " +
-                            "happen after ${played.san}. $NO_NUMBERS"
+                        "The player just played ${played.san}, which was a $label: it cost " +
+                            "${percent(loss)} of the game. The better move was $best " +
+                            "($betterWords). Explain the difference as a pattern to remember, in " +
+                            "three sentences at most, then -- instead of a check question -- ask, " +
+                            "in one short question of your own, what they expected their move to " +
+                            "do. $NOT_THE_MOVE $NO_NUMBERS"
                 }
             } else if (isExciting(assessment.label)) {
                 // Rare and worth it: the board's own sentence stands in, the model says what
@@ -1399,21 +1408,26 @@ class Coach(
                     Move.fromUci(played.uci),
                     label,
                     assessment.tags,
+                    phase = facts.phase,
+                    threats = facts.threats,
+                    taught = taught.toList(),
+                    last = lastVerdict,
                     pick = chooser,
-                )
+                ).first
+                lastVerdict = fallback
                 val meaning = when (label) {
                     "brilliant" -> "a sound sacrifice"
                     else -> "the one move that keeps the advantage, or the chance taken"
                 }
                 instructionText =
-                    "The player just played ${played.san} ($words): $label -- $meaning. " +
-                        "Show some delight, in your own voice, in one or two sentences: name " +
-                        "what makes it the move -- the chance taken, the only move, the " +
-                        "sacrifice that works -- from the messages above, nothing invented. " +
-                        "No question, no advice, and not the same words as your last such " +
-                        "sentence. $NO_NUMBERS"
+                    "The player just played ${played.san}: $label -- $meaning. Show some " +
+                        "delight, in your own voice, in one or two sentences: name what makes it " +
+                        "the move -- the chance taken, the only move, the sacrifice that works, " +
+                        "the idea it serves -- from the messages above, nothing invented. No " +
+                        "question, no advice, and not the same words as your last such sentence. " +
+                        "$NOT_THE_MOVE $NO_NUMBERS"
             } else if (routine) {
-                fallback = verdictWord(played.san, label)
+                fallback = verdictWord(label)
                 val meaning = when (label) {
                     "book" -> "opening theory"
                     "brilliant" -> "a sound sacrifice"
@@ -1424,27 +1438,32 @@ class Coach(
                     else -> "a sound move"
                 }
                 instructionText =
-                    "The player just played ${played.san} ($words): $label -- $meaning. " +
-                        "One short sentence, fifteen words at most, in your own voice: a nod, " +
-                        "or what the move does when a message says so. No question, no " +
-                        "lecture, no advice, no guess at what it allows or risks, and not the " +
-                        "same words as your last such sentence. $NO_NUMBERS"
+                    "The player just played ${played.san}: $label -- $meaning. One short " +
+                        "sentence, fifteen words at most, in your own voice: a word of praise, and " +
+                        "the idea behind the move as a lesson to keep when a message gives one -- " +
+                        "the plan, the tactic. No question, no lecture, no advice, no guess at what " +
+                        "it allows or risks, and not the same words as your last such sentence. " +
+                        "$NOT_THE_MOVE $NO_NUMBERS"
             } else if (assessment.severity == Severity.MISTAKE || assessment.severity == Severity.BLUNDER ||
                 label == "miss"
             ) {
                 // A mistake in blitz: the policy keeps it to the word after the move (no
                 // lesson), but the word says what the move was -- never "fine".
-                fallback = "${played.san} cost you; $best was better."
+                fallback = rotate("cost", COST_YOU).replace("{best}", best) + "."
                 instructionText =
-                    "The player just played ${played.san} ($words), which was a $label: " +
-                        "$best ($betterWords) was better. It is a fast game: one or two " +
-                        "sentences, no lesson, no question. $NO_NUMBERS"
+                    "The player just played ${played.san}, which was a $label: $best " +
+                        "($betterWords) was better. It is a fast game: one or two sentences, no " +
+                        "lesson, no question. $NOT_THE_MOVE $NO_NUMBERS"
             } else {
-                fallback = "${played.san} was fine; $best was a little tighter."
+                // The better move's idea, when the sheet has one, is the lesson in it.
+                val idea = facts.theme ?: facts.plan
+                fallback = rotate("fine", FINE_TIGHTER).replace("{best}", best) +
+                    (if (!idea.isNullOrEmpty()) ": the idea was $idea." else ".")
                 instructionText =
-                    "The player just played ${played.san} ($words), which was fine but not " +
-                        "the strongest: $best ($betterWords) was better, by a little. One or " +
-                        "two sentences. No lecture, no question. $NO_NUMBERS"
+                    "The player just played ${played.san}, which was fine but not the " +
+                        "strongest: $best ($betterWords) was better, by a little. One or two " +
+                        "sentences: that it was fine, then the better move and the idea behind it " +
+                        "as a lesson to keep. No lecture, no question. $NOT_THE_MOVE $NO_NUMBERS"
             }
             return instructionText to fallback
         }
@@ -1504,18 +1523,18 @@ class Coach(
                 }
                 fallback = when {
                     level.value >= DisclosureLevel.LINE.value && rest.isNotEmpty() ->
-                        "It's their move. After your $san, the line runs ${rest.joinToString(" ")}."
+                        "It's their move. After your move, the line runs ${rest.joinToString(" ")}."
 
                     level.value >= DisclosureLevel.CANDIDATE.value && facts.candidates.isNotEmpty() -> {
                         val choice = facts.candidates[0]
                         "It's their move now. " + if (choice == san) {
-                            "$san was the engine's choice too."
+                            "Yours was the engine's choice too."
                         } else {
-                            "The engine's choice there was $choice; you played $san."
+                            "The engine's choice there was $choice."
                         }
                     }
 
-                    else -> "It's their move. See what they do about $san, then ask again."
+                    else -> "It's their move. See what they do about yours, then ask again."
                 }
             } else {
                 fallback = "Give me a moment; I am still reading this position."
@@ -1626,13 +1645,13 @@ class Coach(
             // reason a bishop retreat was an inaccuracy.
             val idea = facts.theme ?: facts.plan ?: ""
             if (own.severity == Severity.NONE) {
-                fallback = verdictWord(san, label)
+                fallback = verdictWord(label)
                 directive =
                     "They ask about the move they already played, $san. It was not bad: the " +
                         "verdict was $label, and it cost nothing. Tell them so plainly, in one " +
                         "or two sentences, and do not invent a fault. No question."
             } else {
-                fallback = "$san cost you ${percent(loss)} of the game."
+                fallback = "It cost you ${percent(loss)} of the game."
                 if (best.isNotEmpty()) {
                     fallback += " $best was better" +
                         (if (idea.isNotEmpty()) "; the idea was $idea." else ".")

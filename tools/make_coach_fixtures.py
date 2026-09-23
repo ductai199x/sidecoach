@@ -207,29 +207,41 @@ def case_for(board: chess.Board, line_ucis: list[str], rng: random.Random, deep:
             )
 
     verdicts = []
+
+    class First:
+        """An rng whose every draw is the first choice, as the test's pick is."""
+
+        def choice(self, seq):  # noqa: ANN001, ANN202
+            return list(seq)[0]
+
     for move in (sample[:4] if deep else []):
+        found = V.lesson(board, move, analysis.tags, phase=facts.phase, threats=facts.threats)
         for label in ("best", "great", "excellent", "good", "book", "brilliant", None):
             openers = V.OPENERS.get(label or "", V.OPENERS["good"])
-            san = board.san(move)
-            last = "{san}: best".format(san=san) if label == "best" else None
-            choices = [o for o in openers if last is None or not last.startswith(o.format(san=san))]
-            choices = choices or openers
-            clause = V.what_it_does(board, move, analysis.tags)
-            if clause is None:
-                sentence = choices[0].format(san=san) + "."
-            elif clause == "checkmate":
-                sentence = f"{choices[0].format(san=san)} -- checkmate."
-            else:
-                joiner = " -- " if clause.startswith("the ") else ", "
-                sentence = f"{choices[0].format(san=san)}{joiner}{clause}."
+            last = openers[0] + "." if label == "best" else None
+            choices = [o for o in openers if last is None or not last.startswith(o)] or openers
+            taught = [found[0]] if found is not None and label == "good" else []
+            sentence, kind = V.verdict(
+                board,
+                move,
+                label,
+                analysis.tags,
+                phase=facts.phase,
+                threats=facts.threats,
+                taught=taught,
+                last=last,
+                rng=First(),  # type: ignore[arg-type]
+            )
             verdicts.append(
                 {
                     "move": move.uci(),
                     "label": label,
                     "last": last,
+                    "taught": taught,
                     "choices": choices,
-                    "clause": clause,
+                    "lesson": None if found is None else [found[0], found[1]],
                     "sentence": sentence,
+                    "kind": kind,
                 }
             )
 

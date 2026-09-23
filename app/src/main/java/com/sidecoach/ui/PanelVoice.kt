@@ -25,7 +25,10 @@ object PanelVoice {
     private val STALE_AFTER = mapOf("post_move" to 2, "post_mistake" to 2, "decisive_question" to 0, "stuck" to 0)
     private const val STALE_PLIES = 2
 
-    /** A "verdict" this short (post-move "exf5: good.") is skipped when the voice is busy. */
+    /**
+     * A "verdict" this short (post-move praise alone, "Good.") is skipped when the voice is
+     * busy; one with a lesson in it is longer, and waits its turn.
+     */
     private const val SHORT_VERDICT = 40
 
     /**
@@ -34,7 +37,9 @@ object PanelVoice {
      */
     private const val PACE_RESUME_S = 6.0
 
-    const val VOICE_SAMPLE = "Nf3: that's the move. Now, what is your opponent's most dangerous idea?"
+    const val VOICE_SAMPLE =
+        "That's the move -- rooks belong on open files. Now, what is your opponent's most " +
+            "dangerous idea?"
 
     /** The voice, once built (`panel._tts`); null until the warm-up makes it. */
     @Volatile var tts: KokoroTts? = null
