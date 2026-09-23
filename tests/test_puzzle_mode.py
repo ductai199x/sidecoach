@@ -192,3 +192,22 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(tmp_path
     assert store.setting("puzzle_level") == "1050"
     store.close()
     client.post(f"/api/puzzle/{MATE.id}/close")
+
+
+def test_puzzles_fetched_after_the_server_started_open_in_a_room(tmp_path: Path) -> None:
+    # Setup fetches the puzzles while the app runs: the session finds them at its next
+    # Start and recommends one, and the room must find it too, without a restart.
+    from fastapi.testclient import TestClient
+
+    from sidecoach.config import Settings, VoiceSettings
+    from sidecoach.ui.panel import PanelEngine
+    from sidecoach.ui.server import build_app
+
+    settings = Settings(data_dir=tmp_path, voice=VoiceSettings())
+    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+    client = TestClient(build_app(engine))
+    assert client.post(f"/api/puzzle/{FORK.id}/open").json()["ok"] is False
+    _csv(tmp_path)
+    opened = client.post(f"/api/puzzle/{FORK.id}/open").json()
+    assert opened["ok"] and opened["state"]["id"] == FORK.id
+    client.post(f"/api/puzzle/{FORK.id}/close")

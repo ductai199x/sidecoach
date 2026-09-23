@@ -103,6 +103,7 @@ class PuzzleRoom:
         with self._lock:
             state = self.session.state()
         state["voice"] = self.voice
+        state["voice_ready"] = self._speak is not None
         state["closed"] = self.closed
         usage = getattr(getattr(self._coaching.coach, "speaker", None), "provider", None)
         usage = getattr(usage, "usage", None)
@@ -270,6 +271,7 @@ class PuzzleRooms:
         *,
         store_path: Path | None,
         puzzles: PuzzleStore | None,
+        data_dir: Path | None = None,
         speak: Callable[[str], None] | None = None,
         stop_speaking: Callable[[], None] | None = None,
         analysis: bool = True,
@@ -279,6 +281,10 @@ class PuzzleRooms:
         self.settings = settings
         self.store_path = store_path
         self.puzzles = puzzles
+        # Where the puzzle store is opened when there was none: puzzles Setup fetches after
+        # the server started are then found at the next open, as the session finds them at
+        # its next Start.
+        self.data_dir = data_dir
         self._speak = speak
         self._stop_speaking = stop_speaking
         self.analysis = analysis
@@ -294,6 +300,11 @@ class PuzzleRooms:
             room = self._rooms.get(puzzle_id)
             if room is not None and not room.closed and not room.closing:
                 return room
+            if self.puzzles is None and self.data_dir is not None:
+                from sidecoach.profile.puzzles import open_store
+
+                with contextlib.suppress(Exception):
+                    self.puzzles = open_store(self.data_dir)
             if self.puzzles is None:
                 return None
             puzzle = self.puzzles.get(puzzle_id)

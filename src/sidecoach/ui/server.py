@@ -455,6 +455,7 @@ def _rooms_for(engine: PanelEngine) -> Any:
         engine.settings,
         store_path=engine.settings.data_dir / "profile.sqlite",
         puzzles=puzzles,
+        data_dir=engine.settings.data_dir,
         speak=speak,
         stop_speaking=stop,
         analysis=engine.analysis,
