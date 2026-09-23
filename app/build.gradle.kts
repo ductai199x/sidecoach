@@ -85,6 +85,8 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.onnxruntime.android)
     implementation(libs.opencv)
+    // The Android build of the library (its .aar), with the decoder for each ABI.
+    implementation(libs.zstd.jni) { artifact { type = "aar" } }
     debugImplementation(libs.androidx.ui.tooling)
 
     testImplementation(libs.junit)

@@ -1,12 +1,19 @@
 package com.sidecoach.setup
 
 import android.content.Context
+import com.github.luben.zstd.ZstdInputStream
 import com.sidecoach.analysis.EngineAssets
+import com.sidecoach.profile.Puzzles
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedInputStream
+import java.io.BufferedReader
 import java.io.File
+import java.io.FilterInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -18,8 +25,8 @@ import java.security.MessageDigest
  * The APK carries the code and the engine; at first run the app fetches, with one progress
  * bar for the lot, what the desktop fetches and the phone can use: the engine's network (the
  * phone's half of the desktop's Stockfish item -- the engine ships in the APK, because it has
- * to be executed from there, and the 98 MB network would be in it once per ABI) and the
- * opening tables. Each item knows whether it is present, how big it is, and how to fetch
+ * to be executed from there, and the 98 MB network would be in it once per ABI), the opening
+ * tables, and, when asked for, a sample of the Lichess puzzles for practice. Each item knows whether it is present, how big it is, and how to fetch
  * itself; [Setup] runs the missing ones on a thread and reports through `/api/setup/status`.
  */
 
@@ -29,6 +36,19 @@ typealias Progress = (done: Long, total: Long?) -> Unit
 const val USER_AGENT = "sidecoach-setup"
 const val OPENINGS_BASE = "https://raw.githubusercontent.com/lichess-org/chess-openings/master"
 val OPENINGS_VOLUMES = listOf("a", "b", "c", "d", "e")
+const val PUZZLES_URL = "https://database.lichess.org/lichess_db_puzzle.csv.zst"
+val PUZZLE_THEMES = listOf(
+    "fork", "pin", "skewer", "discoveredAttack", "hangingPiece", "trappedPiece",
+    "deflection", "attraction", "interference", "clearance", "exposedKing", "sacrifice",
+    "advancedPawn", "promotion", "xRayAttack", "capturingDefender", "doubleCheck",
+    "backRankMate", "smotheredMate", "anastasiaMate", "arabianMate", "bodenMate",
+    "hookMate", "dovetailMate", "mateIn1", "mateIn2", "mateIn3",
+)
+const val PUZZLES_PER_THEME = 200
+const val PUZZLES_MAX_SCAN = 600_000
+
+/** The sample's size for the progress bar: about what the scan downloads. */
+const val PUZZLES_BYTES = 30_000_000L
 
 /**
  * Fetch [url] to [target] through a temporary file, resuming a partial one, with progress
@@ -139,7 +159,107 @@ fun items(context: Context): List<Item> {
             },
         ),
     )
+
+    val puzzlesCsv = File(files, "puzzles/sample.csv")
+    out.add(
+        Item(
+            "puzzles",
+            "A sample of the Lichess puzzles",
+            PUZZLES_BYTES,
+            present = { puzzlesCsv.exists() },
+            fetch = { progress -> fetchPuzzles(puzzlesCsv, progress) },
+            optional = true,
+        ),
+    )
     return out
+}
+
+/**
+ * A few puzzles of each theme the tagger names, from the start of the Lichess puzzle file:
+ * streamed and decompressed as it comes, never stored whole, and the scan stops once every
+ * theme has its share or at [maxScan] rows. `setup.items`' `puzzles_fetch`; the source, the
+ * themes and the limits are parameters so a test can serve a small file of its own.
+ */
+fun fetchPuzzles(
+    target: File,
+    progress: Progress,
+    source: () -> InputStream = ::lichessPuzzles,
+    themes: List<String> = PUZZLE_THEMES,
+    perTheme: Int = PUZZLES_PER_THEME,
+    maxScan: Int = PUZZLES_MAX_SCAN,
+) {
+    val kept = LinkedHashMap<String, ArrayList<List<String>>>()
+    for (theme in themes) kept[theme] = ArrayList()
+    val seen = HashSet<String>()
+    var scanned = 0
+    val header: List<String>
+    ZstdInputStream(BufferedInputStream(source(), 1 shl 16)).use { zin ->
+        val rows = BufferedReader(InputStreamReader(zin, Charsets.UTF_8), 1 shl 16)
+        header = csvRow(rows.readLine() ?: throw IOException("the puzzle file is empty"))
+        while (true) {
+            val line = rows.readLine() ?: break
+            val row = csvRow(line)
+            scanned += 1
+            if (scanned % 20_000 == 0) {
+                // In the item's own units (bytes), as the run's bar adds them up.
+                progress(scanned.toLong() * PUZZLES_BYTES / maxScan, PUZZLES_BYTES)
+            }
+            val tagged = row[7].split(' ').filter { it.isNotEmpty() }.toHashSet()
+            val wanted = themes.filter { it in tagged && kept.getValue(it).size < perTheme }
+            if (wanted.isNotEmpty() && row[0] !in seen) {
+                seen.add(row[0])
+                for (theme in wanted) kept.getValue(theme).add(row)
+            }
+            if (themes.all { kept.getValue(it).size >= perTheme } || scanned >= maxScan) break
+        }
+    }
+    val unique = LinkedHashMap<String, List<String>>()
+    for (rows in kept.values) for (row in rows) unique[row[0]] = row
+    target.parentFile?.mkdirs()
+    target.bufferedWriter(Charsets.UTF_8).use { out ->
+        out.write(csvLine(header))
+        for (row in unique.values) out.write(csvLine(row))
+    }
+}
+
+/** Lichess's puzzle file, as it comes; closing it ends the connection. */
+fun lichessPuzzles(): InputStream {
+    val connection = (URL(PUZZLES_URL).openConnection() as HttpURLConnection).apply {
+        setRequestProperty("User-Agent", USER_AGENT)
+        connectTimeout = 60_000
+        readTimeout = 60_000
+        instanceFollowRedirects = true
+    }
+    val status = connection.responseCode
+    if (status >= 400) {
+        connection.disconnect()
+        throw IOException("HTTP $status for $PUZZLES_URL")
+    }
+    return object : FilterInputStream(connection.inputStream) {
+        override fun close() {
+            try {
+                super.close()
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+}
+
+/**
+ * One line of the puzzle file as `csv.reader` reads it. The file quotes nothing, so a plain
+ * split does -- a line with a quote in it goes through the whole reader.
+ */
+private fun csvRow(line: String): List<String> =
+    if ('"' in line) Puzzles.csvRows(line).firstOrNull() ?: emptyList() else line.split(',')
+
+/** A row as `csv.writer` writes it: minimal quoting, and \r\n after it. */
+private fun csvLine(row: List<String>): String = row.joinToString(",", postfix = "\r\n") { field ->
+    if (field.any { it == ',' || it == '"' || it == '\r' || it == '\n' }) {
+        "\"" + field.replace("\"", "\"\"") + "\""
+    } else {
+        field
+    }
 }
 
 /** The setup's state and the thread that runs it, one per app. `setup.Setup`. */
