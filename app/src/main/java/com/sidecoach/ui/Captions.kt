@@ -29,9 +29,10 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import com.sidecoach.MainActivity
+import com.sidecoach.R
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -46,10 +47,11 @@ import kotlin.math.roundToInt
  * newest at the bottom, the earlier ones scrolling up; it fades a few seconds after the voice
  * stops. A line the voice does not say (muted, or a fast game) appears whole. Touch and hold
  * to move it anywhere; double-tap to see more lines; drag the bar at its foot for more or
- * fewer; tap for its buttons and the game's moves; drag it onto the cross at the bottom of the screen to turn
- * captions off. Taps anywhere else go to the app underneath. It keeps off the chess board --
- * the vision reads the board from the screen, and a box over it would hide squares -- and it
- * is not shown while Sidecoach's own panel is in front, which shows the words already.
+ * fewer; tap for its buttons -- mute, and the panel's three quick pills -- and the game's
+ * moves; drag it onto the cross at the bottom of the screen to turn captions off. Taps
+ * anywhere else go to the app underneath. It keeps off the chess board -- the vision reads the
+ * board from the screen, and a box over it would hide squares -- and it is not shown while
+ * Sidecoach's own panel is in front, which shows the words already.
  *
  * Everything runs on the main thread; the public calls are safe from any.
  */
@@ -258,6 +260,12 @@ object Captions {
     /** Where the box is on the screen now, for the tests; null when it is not shown. */
     internal fun shownAt(): Rect? = box?.bounds()
 
+    /** Where the box's window really is on the screen, for the tests. */
+    internal fun windowAt(): Rect? = box?.onScreen()
+
+    /** Where each of the box's buttons is on the screen, by name, for the tests. */
+    internal fun buttonsAt(): Map<String, Rect> = box?.buttonBounds() ?: emptyMap()
+
     /** Whether captions are on. */
     internal val enabled: Boolean get() = on
 
@@ -342,7 +350,7 @@ object Captions {
         private val params: WindowManager.LayoutParams
         private val words = TextView(ctx)
         private val buttons = LinearLayout(ctx)
-        private val mute = chip("Mute voice")
+        private val mute = ImageView(ctx)
         private val moves = TextView(ctx)
         private val strip = HorizontalScrollView(ctx)
         private val bar = FrameLayout(ctx)
@@ -370,10 +378,27 @@ object Captions {
             }
             elevation = dp(ctx, 6f).toFloat()
 
+            // Mute, as an icon, then the panel's quick pills (Tai, 2026-09-23): a hint, the best
+            // move or the line without leaving the game, the answer spoken and captioned here.
             buttons.orientation = HORIZONTAL
+            buttons.gravity = Gravity.CENTER_VERTICAL
             buttons.visibility = GONE
-            buttons.addView(chip("Open Sidecoach").apply { setOnClickListener { openApp() } })
-            buttons.addView(mute.apply { setOnClickListener { toggleMute() } })
+            val round = dp(ctx, 34f)
+            val inset = dp(ctx, 7f)
+            mute.setPadding(inset, inset, inset, inset)
+            mute.background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0x33FFFFFF)
+            }
+            mute.tag = "mute"
+            mute.setOnClickListener { toggleMute() }
+            buttons.addView(mute, LayoutParams(round, round).apply { marginEnd = dp(ctx, 8f) })
+            for ((name, label) in listOf("hint" to "Hint", "move" to "Best move", "line" to "Line")) {
+                buttons.addView(chip(label).apply {
+                    tag = name
+                    setOnClickListener { quick(name) }
+                })
+            }
             addView(buttons, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = dp(ctx, 10f)
             })
@@ -428,21 +453,6 @@ object Captions {
             params.x = cx
             params.y = cy
 
-            // More lines or the buttons make the box taller. Low on the screen it grows upward, its
-            // foot where it was, as Live Caption's does; it stays on the screen either way.
-            addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
-                val grew = (bottom - top) - (oldBottom - oldTop)
-                if (grew == 0 || oldBottom == oldTop || moving) return@addOnLayoutChangeListener
-                val screen = screen(ctx)
-                var y = params.y
-                if (y + (oldBottom - oldTop) / 2 > screen.centerY()) y -= grew
-                y = y.coerceIn(screen.top, max(screen.top, screen.bottom - (bottom - top)))
-                if (y != params.y) {
-                    params.y = y
-                    windows.updateViewLayout(this, params)
-                }
-            }
-
             val gestures = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
                 override fun onDown(e: MotionEvent) = true
                 override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
@@ -496,6 +506,42 @@ object Captions {
             }
         }
 
+        /** The height the window was last asked for, until it is laid out at it. */
+        private var asked = 0
+
+        /**
+         * The box's height about to change -- more lines, the buttons, the moves, a text size.
+         * Low on the screen it grows upward, its foot where it was, as Live Caption's does; it
+         * stays on the screen either way. The new height is measured here and the new place
+         * asked for before the window grows, so the two come in one step: moved once it had
+         * grown, the window stayed where it was on the screen while the system sent its touches
+         * to the new place, and a tap on the buttons' row landed on the words.
+         */
+        fun reflow() {
+            if (!attached || moving || height == 0) return
+            val before = if (asked > 0) asked else height
+            measure(
+                MeasureSpec.makeMeasureSpec(params.width, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
+            )
+            val after = measuredHeight
+            if (after == before) return
+            asked = after
+            val screen = screen(ctx)
+            var y = params.y
+            if (y + before / 2 > screen.centerY()) y -= after - before
+            y = y.coerceIn(screen.top, max(screen.top, screen.bottom - after))
+            if (y != params.y) {
+                params.y = y
+                windows.updateViewLayout(this, params)
+            }
+        }
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            super.onLayout(changed, l, t, r, b)
+            asked = 0
+        }
+
         private fun startMoving() {
             if (moving) return
             moving = true
@@ -526,6 +572,13 @@ object Captions {
         private fun centre(): Pair<Int, Int> = (params.x + width / 2) to (params.y + height / 2)
 
         fun bounds(): Rect = Rect(params.x, params.y, params.x + width, params.y + height)
+
+        /** Where the window is on the screen, as the system shows it. */
+        fun onScreen(): Rect {
+            val at = IntArray(2)
+            getLocationOnScreen(at)
+            return Rect(at[0], at[1], at[0] + width, at[1] + height)
+        }
 
         fun attach() {
             alpha = 0f
@@ -558,6 +611,7 @@ object Captions {
             words.layoutParams = words.layoutParams.apply { height = lineHeight * n }
             words.requestLayout()
             setText(words.text.toString())
+            reflow()
         }
 
         /** The settings' look, on the box that is up. */
@@ -576,10 +630,12 @@ object Captions {
             val (sans, labels) = PanelEngine.moveList()
             if (sans.isEmpty()) {
                 strip.visibility = GONE
+                reflow()
                 return
             }
             moves.text = moveText(sans, labels)
             strip.visibility = VISIBLE
+            reflow()
             strip.post { strip.scrollTo(moves.width, 0) }
         }
 
@@ -612,11 +668,28 @@ object Captions {
             return out
         }
 
+        /** The speaker as the voice stands: struck through while it is muted. */
+        private fun showMuted(muted: Boolean) {
+            mute.setImageResource(if (muted) R.drawable.ic_voice_off else R.drawable.ic_voice_on)
+            mute.contentDescription = if (muted) "Unmute the coach's voice" else "Mute the coach's voice"
+        }
+
+        fun buttonBounds(): Map<String, Rect> {
+            if (buttons.visibility != VISIBLE) return emptyMap()
+            val at = IntArray(2)
+            return (0 until buttons.childCount).associate { i ->
+                val button = buttons.getChildAt(i)
+                button.getLocationOnScreen(at)
+                button.tag as String to Rect(at[0], at[1], at[0] + button.width, at[1] + button.height)
+            }
+        }
+
         private fun toggleButtons() {
             val show = buttons.visibility != VISIBLE
-            mute.text = if (PanelVoice.muted) "Unmute voice" else "Mute voice"
+            showMuted(PanelVoice.muted)
             buttons.visibility = if (show) VISIBLE else GONE
             if (show) showMoves() else strip.visibility = GONE
+            reflow()
             main.removeCallbacks(hideButtons)
             if (show) main.postDelayed(hideButtons, CONTROLS_MS)
             rest()
@@ -625,26 +698,30 @@ object Captions {
         private val hideButtons = Runnable {
             buttons.visibility = GONE
             strip.visibility = GONE
+            reflow()
         }
 
         /** The moves up now, for a line that comes while they are. */
         val movesShown: Boolean get() = strip.visibility == VISIBLE
 
-        private fun openApp() {
-            runCatching {
-                ctx.startActivity(
-                    Intent(ctx, MainActivity::class.java)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
-                )
-            }
-        }
-
         private fun toggleMute() {
             val now = !PanelVoice.muted
             Thread({ runCatching { PanelVoice.setMuted(now) } }, "captions-mute").start()
-            mute.text = if (now) "Unmute voice" else "Mute voice"
+            showMuted(now)
+            keepButtons()
+        }
+
+        /** A quick pill: what the panel's own asks (`store.quick`), the buttons kept up. */
+        private fun quick(name: String) {
+            PanelEngine.ask(PanelApi.QUICK.getValue(name))
+            keepButtons()
+        }
+
+        /** A button pressed: the buttons stay their full time again, and the box its own. */
+        private fun keepButtons() {
             main.removeCallbacks(hideButtons)
             main.postDelayed(hideButtons, CONTROLS_MS)
+            rest()
         }
 
         private var resizeFrom = 0f

@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import android.view.ViewConfiguration
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -20,7 +21,8 @@ import java.io.File
 /**
  * The caption box under a finger: its touches injected as the screen would send them, the
  * overlay window real. A double-tap shows more lines and a second one fewer; a tap shows the
- * buttons; touch, hold and drag moves the box, and dropping it on the cross turns captions off.
+ * buttons -- mute and the panel's quick pills, each doing what it does there; touch, hold and
+ * drag moves the box, and dropping it on the cross turns captions off.
  * Each state is screenshotted into the app's files (`captions/`) for a person to look at.
  */
 @RunWith(AndroidJUnit4::class)
@@ -50,10 +52,26 @@ class CaptionsGestureTest {
         Log.i(TAG, "screenshot $name")
     }
 
+    /**
+     * Where the box is, as the screen shows it -- not where it asked to be: the two parted once
+     * (a grown box stayed put on the screen while its touches went to the new place), and a
+     * test reading the asked-for place passed.
+     */
     private fun box(): Rect? {
         var at: Rect? = null
-        instrumentation.runOnMainSync { at = Captions.shownAt() }
+        instrumentation.runOnMainSync { at = Captions.windowAt() }
         return at
+    }
+
+    /** The box shown where it asked to be. */
+    private fun settled(): Boolean {
+        var asked: Rect? = null
+        var shown: Rect? = null
+        instrumentation.runOnMainSync {
+            asked = Captions.shownAt()
+            shown = Captions.windowAt()
+        }
+        return asked != null && asked == shown
     }
 
     private fun waitFor(ms: Long = 3000, what: () -> Boolean): Boolean {
@@ -113,6 +131,7 @@ class CaptionsGestureTest {
         )
         assertTrue("no caption box", waitFor { box() != null })
         Thread.sleep(400)
+        assertTrue("the box is not where it asked to be", waitFor { settled() })
         val first = box()!!
         shot("1_shown")
 
@@ -122,6 +141,7 @@ class CaptionsGestureTest {
         Thread.sleep(80)
         tap(cx, cy)
         assertTrue("a double-tap showed no more lines", waitFor { (box()?.height() ?: 0) > first.height() })
+        assertTrue("the taller box is not where it asked to be", waitFor { settled() })
         Thread.sleep(300)
         val tall = box()!!
         assertTrue("it grew downward: $first -> $tall", tall.bottom <= first.bottom + 2)
@@ -139,8 +159,42 @@ class CaptionsGestureTest {
         Thread.sleep(400)
         tap(cx, cy)
         assertTrue("a tap showed no buttons", waitFor { (box()?.height() ?: 0) > first.height() })
+        assertTrue("the box with its buttons is not where it asked to be", waitFor { settled() })
         Thread.sleep(300)
+        val withRow = box()!!
+        assertTrue("the buttons grew it downward: $first -> $withRow", withRow.bottom <= first.bottom + 2)
         shot("3_buttons")
+
+        // The row: mute as an icon, then the panel's quick pills, each asking what its pill
+        // on the panel asks.
+        var buttons: Map<String, Rect> = emptyMap()
+        instrumentation.runOnMainSync { buttons = Captions.buttonsAt() }
+        assertEquals(listOf("mute", "hint", "move", "line"), buttons.keys.toList())
+        val asked = mutableListOf<String>()
+        val session = PanelEngine.onAsk
+        PanelEngine.onAsk = { text, _ -> synchronized(asked) { asked.add(text) } }
+        try {
+            for (name in listOf("hint", "move", "line")) {
+                val at = buttons.getValue(name)
+                tap(at.centerX(), at.centerY())
+                Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
+            }
+            assertTrue("the pills asked ${synchronized(asked) { asked.toList() }}", waitFor {
+                synchronized(asked) { asked.toList() } == listOf("hint", "what should I play", "show me the line")
+            })
+        } finally {
+            PanelEngine.onAsk = session
+        }
+        val wasMuted = PanelVoice.muted
+        val speaker = buttons.getValue("mute")
+        tap(speaker.centerX(), speaker.centerY())
+        assertTrue("the icon did not mute", waitFor { PanelVoice.muted != wasMuted })
+        Thread.sleep(300)
+        shot("3b_muted")
+        tap(speaker.centerX(), speaker.centerY())
+        assertTrue("the icon did not unmute", waitFor { PanelVoice.muted == wasMuted })
+        instrumentation.runOnMainSync { buttons = Captions.buttonsAt() }
+        assertTrue("the buttons went while in use", buttons.isNotEmpty())
         Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
         val withButtons = box()!!
         tap(withButtons.left + withButtons.width() * 3 / 4, withButtons.bottom - 40)
@@ -154,6 +208,7 @@ class CaptionsGestureTest {
             shot("4_dragging")
         }
         assertTrue("the box did not move", waitFor { (box()?.centerY() ?: Int.MAX_VALUE) < screen.heightPixels / 2 })
+        assertTrue("the moved box is not where it asked to be", waitFor { settled() })
         Thread.sleep(300)
         shot("5_moved")
         val moved = box()!!
@@ -164,9 +219,11 @@ class CaptionsGestureTest {
         // (on the Pixel a real finger's drift lost the hold, and with it the drag).
         holdAndDrag(moved.centerX() to moved.centerY(), moved.centerX() to moved.centerY() + 300, holdMs = 0)
         assertTrue("a plain drag did not move the box", waitFor { (box()?.centerY() ?: 0) > moved.centerY() + 200 })
+        assertTrue("the dragged box is not where it asked to be", waitFor { settled() })
         val dragged = box()!!
         holdAndDrag(dragged.centerX() to dragged.centerY(), dragged.centerX() to dragged.centerY() - 300, drift = true)
         assertTrue("a drifting hold did not move the box", waitFor { (box()?.centerY() ?: Int.MAX_VALUE) < dragged.centerY() - 200 })
+        assertTrue("the box held and dragged is not where it asked to be", waitFor { settled() })
         Thread.sleep(300)
         val back = box()!!
 
@@ -190,6 +247,7 @@ class CaptionsGestureTest {
         Captions.style(Captions.Style(text = 0xFFFFE066.toInt(), background = 0xFF0B2A4A.toInt(), opacityPercent = 70, sizeSp = 22f))
         Captions.show("Bigger, yellow words on a see-through blue box: the settings' look.")
         assertTrue("no styled box", waitFor { box() != null })
+        assertTrue("the styled box is not where it asked to be", waitFor { settled() })
         Thread.sleep(400)
         assertTrue("bigger words did not make a taller box", box()!!.height() > first.height())
         shot("8_styled")

@@ -55,9 +55,9 @@ class PanelApi(
                 ok(done())
             }
 
-            path == "/api/hint" -> ask("hint")
-            path == "/api/move" -> ask("what should I play")
-            path == "/api/line" -> ask("show me the line")
+            path == "/api/hint" -> ask(QUICK.getValue("hint"))
+            path == "/api/move" -> ask(QUICK.getValue("move"))
+            path == "/api/line" -> ask(QUICK.getValue("line"))
             path == "/api/ask" -> ask(json.optString("text"))
 
             path == "/api/flip" -> {
@@ -307,5 +307,15 @@ class PanelApi(
 
     companion object {
         private const val TAG = "sidecoach.panel"
+
+        /**
+         * The panel's three quick pills and what each asks the coach (`panel.hint`, `.move`,
+         * `.line`); the caption box has them too.
+         */
+        val QUICK = linkedMapOf(
+            "hint" to "hint",
+            "move" to "what should I play",
+            "line" to "show me the line",
+        )
     }
 }
