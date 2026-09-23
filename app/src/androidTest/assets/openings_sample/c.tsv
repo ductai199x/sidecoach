@@ -1,0 +1,16 @@
+eco	name	pgn
+A45	Indian Defense	1. d4 Nf6
+B00	King's Pawn Game	1. e4
+B20	Sicilian Defense	1. e4 c5
+B90	Sicilian Defense: Najdorf Variation	1. e4 c5 2. Nf3 d6 3. d4 cxd4 4. Nxd4 Nf6 5. Nc3 a6
+C00	French Defense	1. e4 e6 2. d4 d5
+C20	King's Pawn Game	1. e4 e5
+C40	King's Knight Opening	1. e4 e5 2. Nf3
+C50	Italian Game	1. e4 e5 2. Nf3 Nc6 3. Bc4
+C50	Italian Game: Giuoco Pianissimo	1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. d3
+C60	Ruy Lopez	1. e4 e5 2. Nf3 Nc6 3. Bb5
+C65	Ruy Lopez: Berlin Defense	1. e4 e5 2. Nf3 Nc6 3. Bb5 Nf6
+D00	Queen's Pawn Game	1. d4 d5
+D30	Queen's Gambit Declined	1. d4 d5 2. c4 e6
+D35	Queen's Gambit Declined: Normal Defense	1. d4 d5 2. c4 e6 3. Nc3 Nf6
+E20	Nimzo-Indian Defense	1. d4 Nf6 2. c4 e6 3. Nc3 Bb4

@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.sidecoach.analysis.Assessing
 import com.sidecoach.analysis.EngineAssets
+import com.sidecoach.analysis.OpeningBook
 import com.sidecoach.chess.Board
 import com.sidecoach.coach.CoachRunner
 import com.sidecoach.coach.systemMessage
@@ -18,6 +19,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import java.io.File
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.net.URI
@@ -232,6 +234,12 @@ object PanelWarm {
             assessing = null
             coaching = null
             engineStale = false
+        }
+        // The opening tables fetched after the engine was built (Setup, on a first run): the
+        // kept annotator takes the book now rather than at the next launch.
+        val annotator = assessing?.analyser?.annotator
+        if (annotator != null && annotator.book == null) {
+            annotator.book = OpeningBook.load(File(appContext.filesDir, "openings"))
         }
         val store = SettingsStore(appContext)
         val engine = assessing ?: Assessing.fromSettings(appContext, store).also {

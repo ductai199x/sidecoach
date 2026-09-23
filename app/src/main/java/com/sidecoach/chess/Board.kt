@@ -809,6 +809,17 @@ class Board {
         return move
     }
 
+    /**
+     * The position before the first move of the stack: `chess.Board.root()`, restored from the
+     * first saved state as python-chess restores it.
+     */
+    fun root(): Board {
+        if (stateStack.isEmpty()) return copy(withStack = false)
+        val board = Board(null)
+        stateStack[0].restore(board)
+        return board
+    }
+
     fun copy(withStack: Boolean = true): Board {
         val board = Board(null)
         board.pawns = pawns; board.knights = knights; board.bishops = bishops
@@ -1211,9 +1222,16 @@ class Board {
         return if (builder.isEmpty()) "-" else builder.toString()
     }
 
-    fun fen(): String {
+    fun fen(): String = "${epd()} $halfmoveClock $fullmoveNumber"
+
+    /**
+     * The FEN without its move counters: `chess.Board.epd()` with no operations. Two move
+     * orders of unequal length reach the same EPD; the en passant square is named only when
+     * the capture is legal, as in the FEN.
+     */
+    fun epd(): String {
         val ep = if (hasLegalEnPassant()) squareName(epSquare!!) else "-"
-        return "${boardFen()} ${if (turn == WHITE) "w" else "b"} ${castlingXfen()} $ep $halfmoveClock $fullmoveNumber"
+        return "${boardFen()} ${if (turn == WHITE) "w" else "b"} ${castlingXfen()} $ep"
     }
 
     fun setFen(fen: String) {

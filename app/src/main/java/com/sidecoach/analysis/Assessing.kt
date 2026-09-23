@@ -3,6 +3,7 @@ package com.sidecoach.analysis
 import android.content.Context
 import android.util.Log
 import com.sidecoach.ui.SettingsStore
+import java.io.File
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.STARTING_FEN
@@ -31,6 +32,12 @@ class Assessing(
     /** The position each pending ply was played from, so a verdict can be read out. */
     private val from = HashMap<Int, String>()
 
+    /**
+     * The game's board with the moves that led to it, for the opening book: the opening is a
+     * fact about the moves, and the annotator asks with them. `_Assessing._game`.
+     */
+    private var game: Board? = null
+
     val on: Boolean get() = analyser != null
 
     /** The engine process's CPU time in milliseconds; 0 when there is no engine. */
@@ -40,16 +47,19 @@ class Assessing(
         val worker = analyser ?: return
         when (event) {
             is MovePlayed -> {
-                worker.submitMove(
-                    event.gameId, Board(event.fenBefore), Move.fromUci(event.uci), event.ply,
-                )
+                val before = historyTo(event.fenBefore)
+                val move = Move.fromUci(event.uci)
+                worker.submitMove(event.gameId, before, move, event.ply)
                 from[event.ply] = event.fenBefore
+                before.push(move)
+                game = before
             }
             is GameStarted -> {
                 // The engine's queue is the last game's: dropped, so this game is measured
                 // from its first move.
                 worker.reset()
                 from.clear()
+                game = Board(event.startFen)
                 if (event.startFen != STARTING_FEN) {
                     worker.submitPosition(event.gameId, Board(event.startFen), 0)
                 }
@@ -57,9 +67,27 @@ class Assessing(
             is Resync -> {
                 worker.reset()
                 from.clear()
+                // A position adopted, not played to: it has no history to look up.
+                game = Board(event.fen)
                 worker.submitPosition(event.gameId, Board(event.fen), 0)
             }
             else -> Unit
+        }
+    }
+
+    /**
+     * The game's board standing on [fen], with the moves that led there: the next move, or a
+     * takeback's position further back along them. A position the game never stood on starts
+     * again from itself, with no history -- as a resync does. `_Assessing._history_to`.
+     */
+    private fun historyTo(fen: String): Board {
+        val target = Board(fen)
+        val walked = game?.copy() ?: return target
+        val want = target.epd()
+        while (true) {
+            if (walked.epd() == want) return walked
+            if (walked.moveStack.isEmpty()) return target
+            walked.pop()
         }
     }
 
@@ -131,6 +159,10 @@ class Assessing(
                         depth = config.depth,
                         multipv = config.multipv,
                         thresholds = settings.thresholds(),
+                        // `_load_tagger` and `_load_book`: the motifs always, the book when
+                        // Setup has fetched its tables.
+                        tagger = Motifs,
+                        book = OpeningBook.load(File(context.filesDir, "openings")),
                     ),
                 ).also { it.start() }
             } catch (exc: Exception) {

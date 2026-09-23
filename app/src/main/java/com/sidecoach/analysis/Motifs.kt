@@ -55,7 +55,7 @@ import kotlin.math.abs
  * checkmate, 3 means this move plus two more, and a negative value means the mover gets
  * mated. A negative `mateIn` never produces a `mateIn*` tag.
  */
-object Motifs {
+object Motifs : Tagger {
 
     val TAG_ORDER: List<String> = listOf(
         // A. What the move is: read off the move and the board.
@@ -1025,11 +1025,11 @@ object Motifs {
      * empty list rather than raising: the caller feeds this from a vision pipeline that can
      * misread a board, and a bad read should not crash a live game.
      */
-    fun tagsForMove(
+    override fun tagsForMove(
         before: Board,
         move: Move,
-        pv: List<Move> = emptyList(),
-        mateIn: Int? = null,
+        pv: List<Move>,
+        mateIn: Int?,
     ): List<MotifTag> {
         if (!before.isLegal(move)) return emptyList()
         val mover = before.turn
@@ -1066,10 +1066,10 @@ object Motifs {
      * What is in the position for the side to move: the static features plus the tags of the
      * engine's best move, which is `pv[0]` when a PV is given.
      */
-    fun tagsForPosition(
+    override fun tagsForPosition(
         board: Board,
-        pv: List<Move> = emptyList(),
-        mateIn: Int? = null,
+        pv: List<Move>,
+        mateIn: Int?,
     ): List<MotifTag> {
         val mover = board.turn
         val tags = ArrayList(staticTags(enemyToMove(board, mover), mover))

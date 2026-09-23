@@ -2,6 +2,7 @@ package com.sidecoach.analysis
 
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
+import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.Event
 import com.sidecoach.events.Line
@@ -24,10 +25,17 @@ import java.util.concurrent.TimeUnit
  * matching depth is what makes the loss of a move meaningful: two searches of different
  * lengths would differ by more than most mistakes do.
  *
- * The desktop's tagger (`analysis/motifs.py`) and opening book are optional collaborators
- * there and absent here, so tags are empty and no opening is named -- which is what the
- * desktop does with a bare engine too.
+ * Its collaborators are the desktop's: the motif tagger (what a move did, what a position
+ * holds -- a sacrifice is what makes a move brilliant) and the opening book (whether a move is
+ * theory, which opening the game is in). Both are optional, so a bare engine still works;
+ * `Assessing.fromSettings` passes both, as `_make_analyser` does.
  */
+
+/** What the motif tagger provides: `annotator.Tagger`, which `Motifs` is. */
+interface Tagger {
+    fun tagsForMove(before: Board, move: Move, pv: List<Move> = emptyList(), mateIn: Int? = null): List<MotifTag>
+    fun tagsForPosition(board: Board, pv: List<Move> = emptyList(), mateIn: Int? = null): List<MotifTag>
+}
 
 /** A whole measurement while the analyser is behind a fast game: capped, and no threats. */
 const val HURRY_S = 1.0
@@ -52,6 +60,9 @@ class GameAnnotator(
     var depth: Int = 18,
     var multipv: Int = 6,
     var thresholds: Thresholds = Thresholds(),
+    var tagger: Tagger? = null,
+    /** Set late when the tables arrive after the engine was built, read by the worker. */
+    @Volatile var book: Book? = null,
     var withThreats: Boolean = true,
 ) {
 
@@ -152,8 +163,8 @@ class GameAnnotator(
             decisive = measured.decisive,
             onlyMove = measured.onlyMove,
             threats = measured.threats,
-            tags = emptyList<MotifTag>(),
-            opening = null,
+            tags = positionTags(board, measured),
+            opening = opening(board),
         )
     }
 
@@ -181,6 +192,7 @@ class GameAnnotator(
         after.push(move)
         val measuredAfter = measureForVerdict(after)
         val loss = evalLoss(measuredBefore.lines, move.uci(), measuredAfter.score)
+        val tags = moveTags(before, move, measuredAfter)
         val best = if (measuredBefore.lines.isEmpty()) emptyList() else measuredBefore.lines[0].moves
         var last = previous
         if (last != null && (last.gameId != gameId || last.ply != ply - 1)) {
@@ -198,9 +210,9 @@ class GameAnnotator(
             loss,
             thresholds,
             isBest = best.isNotEmpty() && best[0] == move.uci(),
-            inBook = false,
+            inBook = inBook(after),
             onlyMove = measuredBefore.onlyMove,
-            sacrifice = false,
+            sacrifice = tags.any { it.name == "sacrifice" },
             beforeScore = measuredBefore.score,
             opponentErred = opponentErred,
             obvious = obvious,
@@ -213,7 +225,7 @@ class GameAnnotator(
             expectedLoss = loss,
             severity = severityOf(loss, thresholds),
             best = best,
-            tags = emptyList(),
+            tags = tags,
             depth = minOf(
                 measuredBefore.depth,
                 if (measuredAfter.depth == 0) measuredBefore.depth else measuredAfter.depth,
@@ -222,6 +234,67 @@ class GameAnnotator(
             accuracy = moveAccuracy(loss),
         )
     }
+
+    // Tagging and openings are optional collaborators, so a bare engine still works.
+
+    /**
+     * What the position holds for the side to move; their mate distance counts their own
+     * next move, which is the same convention a move's tags use.
+     */
+    private fun positionTags(board: Board, measured: Measured): List<MotifTag> {
+        val tagger = tagger ?: return emptyList()
+        if (measured.lines.isEmpty()) return emptyList()
+        return tagger.tagsForPosition(board, pv = lineMoves(measured.lines[0]), mateIn = measured.lines[0].mate)
+    }
+
+    private fun moveTags(before: Board, move: Move, after: Measured): List<MotifTag> {
+        val tagger = tagger ?: return emptyList()
+        val pv = if (after.lines.isNotEmpty()) lineMoves(after.lines[0]) else emptyList()
+        return tagger.tagsForMove(before, move, pv = pv, mateIn = mateIn(before, move, after.lines))
+    }
+
+    /** Whether the game is still in theory after this move; needs the moves that got here. */
+    private fun inBook(board: Board): Boolean {
+        val book = book ?: return false
+        if (board.moveStack.isEmpty()) return false
+        if (board.root().fen() != STARTING_FEN) return false
+        return book.inBook(ArrayList(board.moveStack))
+    }
+
+    /**
+     * The opening this game is in, when the board carries the moves that got here. A position
+     * read off the screen, or one adopted by a resync, has no history to look up, and a
+     * fragment of a history would name the wrong opening.
+     */
+    private fun opening(board: Board): String? {
+        val book = book ?: return null
+        if (board.moveStack.isEmpty()) return null
+        if (board.root().fen() != STARTING_FEN) return null
+        val found = book.identify(ArrayList(board.moveStack)) ?: return null
+        return if (found.eco.isNotEmpty()) "${found.eco} ${found.name}" else found.name
+    }
+}
+
+/** A line's moves as moves, up to the first that does not parse: `annotator._moves`. */
+private fun lineMoves(line: Line): List<Move> {
+    val out = ArrayList<Move>()
+    for (uci in line.moves) out.add(Move.fromUciOrNull(uci) ?: break)
+    return out
+}
+
+/**
+ * Moves the mover needs to mate, counting this one; negative when the mover gets mated.
+ * `annotator._mate_in`: the engine reports the mate distance in the position after the move,
+ * where the opponent is to move and counts their own moves -- "mated in two" there means two
+ * more moves by the mover, three counting the one just played.
+ */
+internal fun mateIn(before: Board, move: Move, afterLines: List<Line>): Int? {
+    val after = before.copy(withStack = false)
+    after.push(move)
+    if (after.isCheckmate()) return 1
+    if (afterLines.isEmpty()) return null
+    val mate = afterLines[0].mate ?: return null
+    return if (mate > 0) -mate else Math.abs(mate) + 1
 }
 
 /**
@@ -288,7 +361,9 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
     }
 
     fun submitMove(gameId: String, before: Board, move: Move, ply: Int) {
-        submit(Request(gameId, ply, before.copy(withStack = false), move))
+        // With its moves: the book is asked with the moves that led here (`inBook`,
+        // `opening`), and a copy without them was in the book on the first move alone.
+        submit(Request(gameId, ply, before.copy(), move))
     }
 
     fun submitPosition(gameId: String, board: Board, ply: Int) {

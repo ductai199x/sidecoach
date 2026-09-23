@@ -144,7 +144,7 @@ class PanelApi(
             )
 
             path == "/api/setup/status" -> ok(setup.status())
-            path == "/api/setup/start" -> ok(setup.start())
+            path == "/api/setup/start" -> ok(setup.start(json))
             path == "/api/setup/cancel" -> ok(setup.cancel())
             path == "/api/setup/remove_pack" -> ok(JSONObject().put("ok", false))
 

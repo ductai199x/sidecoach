@@ -29,7 +29,7 @@ class EngineUnavailable(message: String) : RuntimeException(message)
  * a separate 98 MB file the app fetches, because embedding it would put 98 MB in the APK for
  * every ABI; it is handed over through the EvalFile option.
  */
-class Engine(
+open class Engine(
     private val binary: File,
     private val net: File?,
     var threads: Int = 2,
@@ -152,14 +152,16 @@ class Engine(
      * The best lines for `board`, best first, from the side to move's point of view. A
      * finished position has no lines: there is nothing to play.
      */
-    fun analyse(
+    open fun analyse(
         board: Board,
         depth: Int? = null,
         timeS: Double? = null,
         multipv: Int? = null,
         pvPlies: Int? = null,
     ): List<Line> {
-        if (board.isGameOver()) return emptyList()
+        // Over, a claimable draw included, as python-chess's `is_game_over(claim_draw=True)`:
+        // with the game's moves on the board, a threefold repetition can be claimed.
+        if (board.isGameOver(claimDraw = true)) return emptyList()
         if (depth == null && timeS == null) throw IllegalArgumentException("analyse needs a depth or a time limit")
         var capped = timeS
         val cap = maxSeconds
