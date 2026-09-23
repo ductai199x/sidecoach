@@ -400,6 +400,51 @@ def test_in_blitz_a_good_move_earns_two_words_without_the_model() -> None:
     assert coach._verdict("e4", "book") in [p.format(san="e4") for p in VERDICTS["book"]]
 
 
+def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
+    # Blitz keeps only the word after the move (the policy), so a blunder comes to the
+    # directive as POST_MOVE: no lesson and no question, but not "fine" either.
+    coach, _ = _coach([])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6), 6.5)
+    position = coach.positions[6]
+    assert position.facts is not None
+    board = chess.Board(SCHOLAR)
+    move = board.parse_san("a3")
+    board.push(move)
+    played = MovePlayed(
+        game_id="g",
+        ply=7,
+        san="a3",
+        uci=move.uci(),
+        fen_before=SCHOLAR,
+        fen_after=board.fen(),
+        by_user=True,
+    )
+    blunder = MoveAssessment(
+        game_id="g",
+        ply=7,
+        uci=move.uci(),
+        expected_loss=0.5,
+        severity=Severity.BLUNDER,
+        best=["h5f7"],
+        label=Label.BLUNDER,
+    )
+    instruction, fallback = coach._instruction(
+        Trigger.POST_MOVE, position, DisclosureLevel.LINE, None, (), blunder, played
+    )
+    assert fallback == "a3 cost you; Qxf7# was better."
+    assert "which was a blunder" in instruction and "fine" not in instruction
+    assert "no lesson, no question" in instruction
+    # A move a little behind the best is still fine.
+    good = blunder.model_copy(
+        update={"expected_loss": 0.03, "severity": Severity.NONE, "label": Label.GOOD}
+    )
+    _, fallback = coach._instruction(
+        Trigger.POST_MOVE, position, DisclosureLevel.LINE, None, (), good, played
+    )
+    assert fallback == "a3 was fine; Qxf7# was a little tighter."
+
+
 def test_the_draft_checker_can_veto_a_false_claim() -> None:
     def checker(text: str, board: chess.Board, after: Sequence[chess.Board] = ()) -> list[str]:
         return ["the rook on f7 is not there"] if "rook on f7" in text else []

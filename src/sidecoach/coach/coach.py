@@ -2247,6 +2247,15 @@ class Coach:
                     "advice, no guess at what it allows or risks, and not the same words as "
                     f"your last such sentence. {NO_NUMBERS}"
                 )
+            elif assessment.severity in (Severity.MISTAKE, Severity.BLUNDER) or label == "miss":
+                # A mistake in blitz: the policy keeps it to the word after the move (no
+                # lesson), but the word says what the move was -- never "fine".
+                fallback = f"{played.san} cost you; {best} was better."
+                instruction = (
+                    f"The player just played {played.san} ({words}), which was a {label}: "
+                    f"{best} ({better_words}) was better. It is a fast game: one or two "
+                    f"sentences, no lesson, no question. {NO_NUMBERS}"
+                )
             else:
                 fallback = f"{played.san} was fine; {best} was a little tighter."
                 instruction = (
