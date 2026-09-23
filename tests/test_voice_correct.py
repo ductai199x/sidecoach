@@ -81,6 +81,26 @@ def test_spoken_legal_moves_become_san(
     assert result.moves == moves
 
 
+@pytest.mark.parametrize(
+    ("heard", "moves"),
+    [
+        ("E8 Queen", ["e8=Q"]),
+        ("e eight, queen", ["e8=Q"]),
+        ("e eight equals queen", ["e8=Q"]),
+        ("e eight promotes to queen", ["e8=Q"]),
+        ("pawn to e eight", ["e8=Q"]),
+        ("e eight", ["e8=Q"]),
+        ("e eight knight", ["e8=N+"]),
+        ("e eight promotes to rook", ["e8=R"]),
+    ],
+)
+def test_a_promotion_that_names_no_piece_is_a_queen(heard: str, moves: list[str]) -> None:
+    """Every promotion shares the forms that name no piece ("e eight", "pawn to e eight"); the
+    knight's, generated last, used to take them all, so "e8 queen" came out as e8=N+."""
+    board = chess.Board("8/4P1k1/8/8/8/8/5K2/8 w - - 0 1")
+    assert correct(heard, board).moves == moves
+
+
 def test_an_illegal_move_is_left_as_words() -> None:
     # e takes d5 is not legal after 1.e4 f5 2.exf5 g6, so it stays as the user said it.
     result = correct("e takes d five", AFTER_G6)

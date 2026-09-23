@@ -131,7 +131,19 @@ def spoken_forms(board: chess.Board) -> dict[str, str]:
                 if victim:
                     variants.add(f"{piece} takes {chess.piece_name(victim)}")
                     variants.add(f"{piece} takes the {chess.piece_name(victim)}")
+        promotion = move.promotion
+        if promotion:
+            # What the pawn becomes is said after the square too: "e eight queen", "e eight
+            # equals queen", as well as the notation's "e eight promotes to queen".
+            name = chess.piece_name(promotion)
+            head = stem.split(" promotes to ")[0]
+            variants |= {f"{head} {name}", f"{head} equals {name}"}
         for v in variants:
+            # A promotion that does not say to what is a queen's: the forms that name no piece
+            # belong to it alone. The knight's, generated last, used to take them all, and
+            # "e8 queen" came out as e8=N+ (2026-09-23).
+            if promotion and promotion != chess.QUEEN and chess.piece_name(promotion) not in v:
+                continue
             forms[v] = san
     return forms
 
@@ -210,6 +222,7 @@ _MOVE_VOCAB = (
         "checkmate",
         "promotes",
         "promote",
+        "equals",
     }
 )
 
