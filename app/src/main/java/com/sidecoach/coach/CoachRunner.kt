@@ -11,6 +11,7 @@ import com.sidecoach.llm.makeProvider
 import com.sidecoach.profile.Ask
 import com.sidecoach.profile.Store
 import com.sidecoach.ui.PanelEngine
+import com.sidecoach.ui.PanelVoice
 import org.json.JSONArray
 import org.json.JSONObject
 import com.sidecoach.ui.SettingsStore
@@ -176,7 +177,16 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
      */
     @Volatile var sink: ((CoachMessage) -> Unit)? = null
 
-    /** Whatever the coach has finished saying, onto the panel, with what the checks found. */
+    private var failuresSeen = 0
+    private var silence: String? = null
+
+    /**
+     * Whatever the coach has finished saying, onto the panel, with what the checks found:
+     * `_Coaching.drain` then `panel._coach_meta`. Every turn of the conversation at debug (the
+     * Conversation tab is built from them), the record queries a question ran, each message
+     * with why it spoke and what it was checked against -- spoken by the voice's rules
+     * (`PanelVoice.speak`) -- each model reply's figures, and any new model failure.
+     */
     fun drain() {
         val coach = coach ?: return
         val sink = sink
@@ -185,8 +195,26 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
             return
         }
         coach.poll() // records each reply as a turn of the conversation
-        // What the coach looked up in the record for a question about the player, before
-        // the reply it went into, as `_coach_meta` logs it.
+        // Every message of the game's conversation, as the model will see it, at debug.
+        val turns = synchronized(coach.lock) {
+            coach.conversation.drainNew().filter { it.kind != "coach" }.map { entry ->
+                val text = if (entry.kind == "ply" && entry.record != null) {
+                    coach.conversation.renderPly(entry.record)
+                } else {
+                    entry.text
+                }
+                Triple(entry, text, entry.role)
+            }
+        }
+        for ((entry, text, role) in turns) {
+            PanelEngine.emit(
+                "coach",
+                "debug",
+                "turn (${entry.kind}): ${PanelEngine.elide(text, 80)}",
+                JSONObject().put("role", role).put("kind", entry.kind).put("body", text.take(6000)),
+            )
+        }
+        // What the coach looked up in the record for a question about the player.
         val answers = coach.profileAnswers
         while (profileSeen < answers.size) {
             val (kind, answer) = answers[profileSeen++]
@@ -216,13 +244,90 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
         val spoken = coach.spoken
         while (drained < spoken.size) {
             val one = spoken[drained++]
-            // A failed reply with nothing to fall back on is kept for the log, said to no one.
-            if (one.message.text.isEmpty()) continue
+            val message = one.message
             // Written down in the profile as the conversation (`panel._record_dialogue`).
-            PanelEngine.recordDialogue(one.message)
-            PanelEngine.said(one.message, one.problems, one.attempts)
+            if (message.text.isNotEmpty()) PanelEngine.recordDialogue(message)
+            val meta = arrayListOf(
+                message.trigger.slug,
+                "L${one.level.value}",
+                if (message.ply != null) "ply ${message.ply}" else "no ply",
+            )
+            if (one.attempts != 0) meta.add("${one.attempts} attempt${if (one.attempts != 1) "s" else ""}")
+            if (message.text.isEmpty()) {
+                // The model's reply failed the checks and the quick answer already stands.
+                PanelEngine.emit(
+                    "coach",
+                    "warn",
+                    meta.joinToString(" · ") + " — model reply rejected; the quick answer stands",
+                    JSONObject().apply {
+                        put("trigger", message.trigger.slug)
+                        put("disclosure", one.level.value)
+                        put("ply", message.ply ?: JSONObject.NULL)
+                        put("attempts", one.attempts)
+                        put("problems", JSONArray(one.problems))
+                    },
+                )
+            } else {
+                if (one.problems.isNotEmpty() && !one.streamed) {
+                    meta.add("draft rejected → template")
+                } else if (one.problems.isNotEmpty()) {
+                    meta.add("cut short: " + one.problems.joinToString("; "))
+                }
+                val action = if (one.streamed) "streamed" else PanelVoice.speak(message.trigger.slug, message.text, message.ply)
+                when (action) {
+                    "streamed" -> meta.add("streamed")
+                    "stale" -> meta.add("not spoken: board moved on")
+                    "skip" -> meta.add("not spoken: voice busy")
+                    "text" -> meta.add("text: fast game")
+                    "supersede" -> meta.add("cut in")
+                }
+                PanelEngine.said(message, one, meta.joinToString(" · "), action)
+            }
+            for ((index, call) in one.calls.withIndex()) {
+                // What the model actually wrote, so a stump or a leak can be traced to its
+                // source; a reply the token budget cut short is worth a warning.
+                val finish = (call.stats["finish_reason"] as? String)?.ifEmpty { null } ?: "?"
+                val tokens = call.stats["completion_tokens"]
+                val seconds = call.stats["elapsed_s"] as? Number
+                val first = call.stats["first_token_s"] as? Number
+                if (first != null) PanelVoice.noteFirstToken(first.toDouble())
+                @Suppress("UNCHECKED_CAST")
+                val streamProblems = call.stats["stream_problems"] as? List<String>
+                val summary = "model reply ${index + 1}: ${call.candidates} candidates, ${call.passed} passed" +
+                    (if (tokens != null) ", $tokens tokens" else "") +
+                    (if (seconds != null) " in ${fixed1(seconds.toDouble())}s" else "") +
+                    (if (first != null) " (first token ${fixed1(first.toDouble())}s)" else "") +
+                    (if (finish == "length") ", cut off by the token budget" else "") +
+                    (if (!streamProblems.isNullOrEmpty()) "; stream stopped: ${streamProblems.joinToString("; ")}" else "")
+                PanelEngine.emit(
+                    "coach",
+                    if (finish == "length") "warn" else "debug",
+                    summary,
+                    JSONObject().apply {
+                        put("raw", PanelEngine.elide(call.raw, 2000))
+                        put("prompt", call.prompt.takeLast(6000))
+                        put("finish_reason", finish)
+                        put("completion_tokens", tokens ?: JSONObject.NULL)
+                        put("elapsed_s", seconds ?: JSONObject.NULL)
+                        put("candidates", call.candidates)
+                        put("passed", call.passed)
+                    },
+                )
+            }
         }
+        val speaker = coach.speaker
+        if (speaker.failures > failuresSeen) {
+            PanelEngine.emit("coach", "error", "LLM call failed: ${speaker.lastError}")
+            failuresSeen = speaker.failures
+        }
+        // At debug, why the coach is quiet -- only when the reason changes. `_coach_silence`.
+        val reason = coach.policy.lastReason
+        if (reason != null && reason != silence) PanelEngine.emit("coach", "debug", "quiet: $reason")
+        silence = reason
     }
+
+    private fun fixed1(value: Double): String =
+        java.math.BigDecimal(value).setScale(1, java.math.RoundingMode.HALF_EVEN).toPlainString()
 
     val pending: Int get() = coach?.speaker?.pending ?: 0
 

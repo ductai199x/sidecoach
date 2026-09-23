@@ -25,6 +25,7 @@ import com.sidecoach.coach.CoachRunner
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.state.GamePipeline
 import com.sidecoach.ui.PanelEngine
+import com.sidecoach.ui.PanelVoice
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Mat
@@ -412,8 +413,10 @@ class GameWatcher(
             if (events.isNotEmpty() || !dispatched) dispatch(events, ts)
         }
         dispatched = false
+        PanelVoice.loopTs = ts
         coaching.tick(ts)
         coaching.drain()
+        PanelVoice.sayHeldWord(coaching.coach, ts)
         if (pipeline != null) refreshState(pipeline)
     }
 

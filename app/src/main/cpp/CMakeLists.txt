@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(sidecoach_engine CXX)
+project(sidecoach_native C CXX)
 
 # Stockfish, built from the source `tools/fetch_stockfish.py` fetches.
 #
@@ -77,3 +77,82 @@ endif()
 
 find_library(log-lib log)
 target_link_libraries(stockfish ${log-lib})
+
+# ---- espeak-ng, for the voice's phonemes ------------------------------------------------
+#
+# The desktop's voice turns text into phonemes with espeak-ng 1.52.0 (kokoro-onnx asks it
+# through phonemizer). The same tag, from the source `tools/fetch_espeak.py` fetches, is built
+# here as espeak-ng's own CMake builds its library -- the library only: its data is compiled
+# by running the tool it builds, which a cross-compile cannot do, so the app carries the
+# desktop's compiled English data in its assets instead. What the options switch off (async
+# speech, Klatt, speech-player, MBROLA, sonic, pcaudio) is sound synthesis; the app uses
+# espeak-ng for phonemes only. The JNI bridge (espeak_jni.c) is linked into the same library.
+
+set(ESPEAK ${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/espeak-ng)
+
+if(EXISTS ${ESPEAK}/src/libespeak-ng/speech.c)
+    set(HAVE_MKSTEMP 1)
+    set(USE_ASYNC 0)
+    set(USE_KLATT 0)
+    set(USE_LIBPCAUDIO 0)
+    set(USE_LIBSONIC 0)
+    set(USE_MBROLA 0)
+    set(USE_SPEECHPLAYER 0)
+    set(PROJECT_VERSION 1.52.0)
+    configure_file(${ESPEAK}/src/libespeak-ng/config.h.in ${CMAKE_CURRENT_BINARY_DIR}/espeak/config.h)
+
+    set(ESPEAK_LIB ${ESPEAK}/src/libespeak-ng)
+    set(UCD ${ESPEAK}/src/ucd-tools/src)
+    add_library(sidecoach_espeak SHARED
+        ${ESPEAK_LIB}/common.c
+        ${ESPEAK_LIB}/mnemonics.c
+        ${ESPEAK_LIB}/error.c
+        ${ESPEAK_LIB}/ieee80.c
+        ${ESPEAK_LIB}/compiledata.c
+        ${ESPEAK_LIB}/compiledict.c
+        ${ESPEAK_LIB}/dictionary.c
+        ${ESPEAK_LIB}/encoding.c
+        ${ESPEAK_LIB}/intonation.c
+        ${ESPEAK_LIB}/langopts.c
+        ${ESPEAK_LIB}/numbers.c
+        ${ESPEAK_LIB}/phoneme.c
+        ${ESPEAK_LIB}/phonemelist.c
+        ${ESPEAK_LIB}/readclause.c
+        ${ESPEAK_LIB}/setlengths.c
+        ${ESPEAK_LIB}/soundicon.c
+        ${ESPEAK_LIB}/spect.c
+        ${ESPEAK_LIB}/ssml.c
+        ${ESPEAK_LIB}/synthdata.c
+        ${ESPEAK_LIB}/synthesize.c
+        ${ESPEAK_LIB}/tr_languages.c
+        ${ESPEAK_LIB}/translate.c
+        ${ESPEAK_LIB}/translateword.c
+        ${ESPEAK_LIB}/voices.c
+        ${ESPEAK_LIB}/wavegen.c
+        ${ESPEAK_LIB}/speech.c
+        ${ESPEAK_LIB}/espeak_api.c
+        ${UCD}/case.c
+        ${UCD}/categories.c
+        ${UCD}/ctype.c
+        ${UCD}/proplist.c
+        ${UCD}/scripts.c
+        ${UCD}/tostring.c
+        espeak_jni.c
+    )
+    target_include_directories(sidecoach_espeak PRIVATE
+        ${CMAKE_CURRENT_BINARY_DIR}/espeak
+        ${ESPEAK}/src/include
+        ${ESPEAK}/src/include/compat
+        ${UCD}/include
+        ${ESPEAK_LIB}
+    )
+    target_compile_definitions(sidecoach_espeak PRIVATE
+        LIBESPEAK_NG_EXPORT=1
+        PATH_ESPEAK_DATA="/nonexistent"
+    )
+    target_compile_options(sidecoach_espeak PRIVATE
+        -O2 -fwrapv -fno-exceptions
+        -Wno-unused-parameter -Wno-missing-prototypes -Wno-unused-but-set-variable
+    )
+    target_link_libraries(sidecoach_espeak m ${log-lib})
+endif()

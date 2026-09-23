@@ -11,6 +11,8 @@ import com.sidecoach.coach.systemMessage
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.llm.OpenAICompatProvider
+import com.sidecoach.llm.combine
+import com.sidecoach.llm.pricesFor
 import com.sidecoach.vision.BoardDetect
 import com.sidecoach.vision.BoardTracker
 import com.sidecoach.vision.CellEmbedder
@@ -115,6 +117,9 @@ object PanelWarm {
                 }
             }
             try {
+                // The voice built, not loaded (`panel._build_tts` at construction): the page
+                // knows the voices at once, and the voice stage below loads the model.
+                PanelVoice.build(appContext, SettingsStore(appContext))
                 stage("pieces", "loading")
                 // OpenCV's native library first: the net's prime and the vision's pass both
                 // need it (the desktop has cv2 the moment it imports the vision).
@@ -248,18 +253,43 @@ object PanelWarm {
         }
         val coach = coaching ?: CoachRunner(store, enabled = engine.on).also {
             coaching = it
+            // The voice takes a model reply sentence by sentence as it is written.
+            it.coach?.streamSink = { trigger, ply -> PanelVoice.streamSink(trigger, ply) }
             PanelEngine.emit("sys", if (it.on) "info" else "warn", "coach: ${it.detail}")
         }
+        PanelVoice.coach = coach.coach
         return engine to coach
     }
 
     /**
-     * `_warm_voice` on a phone with neither model yet: both stages off with the reason, as
-     * the desktop's are when a provider has nothing to load; then the microphone, which
-     * speech recognition that is off has no use for.
+     * `_warm_voice`: the voice loaded once, off the pipeline thread, and one line synthesised
+     * and thrown away so the first spoken one is not the slow one; then speech recognition,
+     * which the phone has not got yet, and the microphone, which it has no use for without it.
      */
     private fun warmVoice() {
-        stage("voice", "off", "no voice on the phone yet")
+        val tts = PanelVoice.tts
+        if (tts == null) {
+            stage("voice", "off", "voice off")
+        } else {
+            stage("voice", "loading")
+            val ok = tts.load()
+            val detail = tts.healthcheck().second
+            if (ok) {
+                val primed = tts.prime()
+                PanelEngine.emit(
+                    "sys",
+                    "info",
+                    "voice: $detail; loaded once in ${f1(tts.loadSeconds ?: 0.0)}s" +
+                        (if (primed != null) ", primed in ${f1(primed)}s" else ""),
+                    JSONObject().put("device", "cpu"),
+                )
+                stage("voice", "done", detail)
+            } else {
+                PanelEngine.emit("sys", "warn", "voice: $detail")
+                stage("voice", "off", detail)
+            }
+            PanelEngine.set("voice_detail" to tts.healthcheck().second)
+        }
         stage("stt", "off", "no speech recognition on the phone yet")
         val detail = "no microphone on the phone yet"
         PanelEngine.emit("sys", "warn", "mic: $detail")
@@ -345,6 +375,17 @@ object PanelWarm {
             applied.addAll(hit)
         }
         if (changed.any { it == "engine.stockfish_path" || it == "tools_dir" }) engineStale = true
+        attempt(listOf("voice.voice")) { PanelVoice.setVoice(store.voice()) }
+        attempt(listOf("voice.speed")) { PanelVoice.tts?.speed = store.speed() }
+        if (changed.any { it in VOICE_RELOAD }) {
+            // A new language, folder or device: the old voice is cut off, the new one built
+            // and loaded off the caller's thread. `_reload_voice`.
+            runCatching { PanelVoice.tts?.stop() }
+            PanelVoice.build(appContext, store)
+            PanelEngine.emit("voice", "info", "voice reloading: ${PanelVoice.tts?.healthcheck()?.second}")
+            thread(name = "voice-reload", isDaemon = true) { warmVoice() }
+            applied.addAll(changed.filter { it in VOICE_RELOAD })
+        }
         for (name in changed) if (name.startsWith("llm.price_")) applied.add(name)
         val runner = coaching
         val coach = runner?.coach
@@ -395,6 +436,36 @@ object PanelWarm {
         }
         return applied.toSortedSet().toList()
     }
+
+    /**
+     * The session's model calls for the status strip: the game coach's ledger and the puzzle
+     * rooms', combined; null when the coach has no model that keeps one. `_health`'s `llm`.
+     */
+    fun usage(): Map<String, Any?>? {
+        // Health is refreshed every tick, the desktop's once a second: so is this.
+        val now = System.nanoTime()
+        if (now - usageAt < 1_000_000_000L) return usageLast
+        usageAt = now
+        usageLast = computeUsage()
+        return usageLast
+    }
+
+    @Volatile private var usageAt = 0L
+    @Volatile private var usageLast: Map<String, Any?>? = null
+
+    private fun computeUsage(): Map<String, Any?>? {
+        val provider = coaching?.coach?.speaker?.provider as? OpenAICompatProvider ?: return null
+        val store = SettingsStore(appContext)
+        val ledgers = ArrayList<Map<String, Any?>>()
+        ledgers.add(provider.usage.summary(pricesFor(store.llm(), provider.model)))
+        for (room in PuzzleRooms.sharedOrNull()?.usages().orEmpty()) {
+            ledgers.add(room.summary(pricesFor(store.llm(), provider.model)))
+        }
+        return combine(ledgers)
+    }
+
+    /** `panel.VOICE_RELOAD`: the voice settings that need a new voice, not a changed one. */
+    private val VOICE_RELOAD = setOf("voice.lang", "voice.model_dir", "voice.tts_device")
 
     /** Python's `f"{x:.1f}"`: half to even. */
     private fun f1(value: Double): String =

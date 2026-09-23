@@ -101,12 +101,23 @@ class PanelApi(
             path == "/api/exclude" -> ok(done())
 
             path == "/api/muted" -> {
-                PanelEngine.set("muted" to json.optBoolean("muted", true))
+                if (!json.has("muted")) return unprocessable()
+                PanelVoice.setMuted(json.getBoolean("muted"))
                 ok(done())
             }
 
-            path == "/api/voice" -> ok(JSONObject().put("ok", false))
-            path == "/api/say" -> ok(JSONObject().put("ok", false))
+            path == "/api/voice" -> {
+                if (!json.has("voice")) return unprocessable()
+                PanelVoice.setVoice(json.getString("voice"))
+                ok(done())
+            }
+
+            // One line in a voice, for the settings page's Listen button.
+            path == "/api/say" -> {
+                val voice = if (json.isNull("voice")) null else json.optString("voice")
+                val text = if (json.isNull("text")) "" else json.optString("text")
+                ok(JSONObject().put("ok", PanelVoice.saySample(voice, text.ifEmpty { PanelVoice.VOICE_SAMPLE })))
+            }
             path == "/api/hear_test" -> ok(
                 JSONObject().apply { put("ok", false); put("on", false) }
             )

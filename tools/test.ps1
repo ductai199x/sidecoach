@@ -53,6 +53,23 @@ if ($net) {
     Write-Host "no network in third_party; the engine tests will say so and skip"
 }
 
+# The voice's model files (Kokoro int8 and its voices), from the desktop's data folder, the
+# same way: what the voice tests synthesise with. Missing, those tests say so and skip.
+$voiceDir = "D:\chess-coaching-companion\data\models\kokoro"
+foreach ($name in @("kokoro-v1.0.int8.onnx", "voices-v1.0.bin")) {
+    $file = Join-Path $voiceDir $name
+    if (-not (Test-Path $file)) { Write-Host "no $name in $voiceDir; the voice tests will skip"; continue }
+    $there = & $adb -s $Serial shell "run-as com.sidecoach ls files/models/kokoro/$name 2>/dev/null"
+    if (-not $there) {
+        Write-Host "pushing $name ($([int]((Get-Item $file).Length / 1MB)) MB)..."
+        & $adb -s $Serial push $file "/data/local/tmp/$name" | Out-Null
+        & $adb -s $Serial shell chmod 644 "/data/local/tmp/$name"
+        & $adb -s $Serial shell "run-as com.sidecoach mkdir -p files/models/kokoro"
+        & $adb -s $Serial shell "run-as com.sidecoach sh -c 'cat /data/local/tmp/$name > files/models/kokoro/$name'"
+        & $adb -s $Serial shell rm "/data/local/tmp/$name"
+    }
+}
+
 & $adb -s $Serial logcat -c
 $args = @("-w", "-e", "listener", "androidx.test.internal.runner.listener.LogRunListener")
 if ($Class) { $args += @("-e", "class", $Class) }
@@ -62,4 +79,4 @@ Write-Host "running..."
 
 Write-Host ""
 Write-Host "--- what the tests logged ---"
-& $adb -s $Serial logcat -d "sidecoach.chess:I" "sidecoach.vision:I" "sidecoach.state:I" "sidecoach.engine:I" "*:S"
+& $adb -s $Serial logcat -d "sidecoach.chess:I" "sidecoach.vision:I" "sidecoach.state:I" "sidecoach.engine:I" "sidecoach.voice:I" "*:S"

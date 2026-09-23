@@ -371,6 +371,9 @@ class PuzzleRooms(
     companion object {
         @Volatile private var shared: PuzzleRooms? = null
 
+        /** The app's rooms if any were made, without making them. */
+        fun sharedOrNull(): PuzzleRooms? = shared
+
         /**
          * The app's rooms (`server._rooms_for`): the puzzle store in the app's files, the
          * profile store beside it for the outcomes, the motifs the session's recommendations

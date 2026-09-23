@@ -160,6 +160,13 @@ class SettingsStore(private val context: Context) {
     /** What the settings page's `listen` holds: off, ptt or vad. */
     fun listen(): String = section("voice").optString("listen", "off")
 
+    /** The voice the coach speaks in, how fast, in which language: `settings.voice`. */
+    fun voice(): String = section("voice").optString("voice", "af_sarah")
+
+    fun speed(): Float = (number(section("voice"), "speed") ?: 1.0).toFloat()
+
+    fun lang(): String = section("voice").optString("lang", "en-us")
+
     fun persona(): String = section("coach").optString("persona", "warm_direct")
 
     fun rating(): Pair<Int, Int> {

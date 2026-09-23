@@ -11,6 +11,7 @@ import com.sidecoach.profile.Profiler
 import java.io.File
 import com.sidecoach.Maintenance
 import com.sidecoach.chess.Board
+import com.sidecoach.coach.Spoken
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
 import com.sidecoach.events.Analysis
@@ -123,16 +124,16 @@ object PanelEngine {
             state["ply"] = 0
             state["kind"] = "game"
             state["status"] = "idle"
-            // The voice is not on the phone yet; the page reads these and shows it off.
+            // The voice: filled in by `PanelVoice.build` when the warm-up makes it.
             state["voice"] = ""
             state["voices"] = emptyList<String>()
-            state["muted"] = true
+            state["muted"] = false
             state["listen"] = "off"
             state["ptt"] = false
             state["ptt_key"] = ""
             state["heard"] = null
             state["dictation"] = mapOf("text" to "", "live" to false, "sends_at" to null)
-            state["voice_detail"] = "no voice on the phone yet"
+            state["voice_detail"] = "the voice is not built yet"
             state["stt_detail"] = "no speech recognition on the phone yet"
             // Nothing to listen with, so the composer leaves the listening button out.
             state["stt_ready"] = false
@@ -253,14 +254,40 @@ object PanelEngine {
             "analysis_on" to engineOn,
             "coach_on" to coachOn,
             "health" to mapOf(
+                // The session's model calls: tokens, and dollars when the prices are known.
+                "llm" to PanelWarm.usage(),
+                "latency" to PanelVoice.latency(),
+                "rss_mb" to (rssMb ?: residentMb()),
+                "tts_device" to if (PanelVoice.tts?.loaded == true) "cpu" else null,
+                "stt_device" to null,
+                "mic_dropped" to 0,
                 "fps" to round1(fps),
                 "lock" to lock,
                 "stage" to if (following) "following" else "waiting for a start",
                 "pipeline_ms" to listOf(pipelineMs.first, pipelineMs.second),
-                "rss_mb" to rssMb,
+                "lag_ms" to null,
+                "recording" to "off",
                 "coach_pending" to coachPending,
             ),
         )
+    }
+
+    private var rssAt = 0L
+    private var rss: Long? = null
+
+    /**
+     * This process's resident memory in MB, as psutil gives the desktop's: /proc/self/statm's
+     * resident pages, read at most once a second.
+     */
+    private fun residentMb(): Long? {
+        val now = SystemClock.elapsedRealtime()
+        if (now - rssAt < 1000) return rss
+        rssAt = now
+        rss = runCatching {
+            val pages = java.io.File("/proc/self/statm").readText().trim().split(" ")[1].toLong()
+            Math.round(pages * 4096 / 1e6)
+        }.getOrNull()
+        return rss
     }
 
     /** The game's own events, as `panel._dispatch_game` writes them down. */
@@ -306,6 +333,7 @@ object PanelEngine {
                 val who = if (event.byUser) "you" else "opponent"
                 val think = event.thinkMs?.let { ", " + round1(it / 1000.0) + "s" } ?: ""
                 fenBefore[event.ply] = event.fenBefore
+                PanelVoice.noteMove(event.ply)
                 synchronized(lock) {
                     @Suppress("UNCHECKED_CAST")
                     state["moves"] = (state["moves"] as List<String>) + event.san
@@ -481,27 +509,33 @@ object PanelEngine {
         return marks
     }
 
-    fun said(message: CoachMessage, problems: List<String>, attempts: Int) {
-        val marks = marks(message.annotations)
-        val trigger = message.trigger.slug
+    /**
+     * A coach message on the page, as `_coach_meta` logs it: [meta] (the trigger, the
+     * disclosure, the ply, the attempts, what the checks and the voice did), the text, and
+     * underneath everything the page draws it from.
+     */
+    fun said(message: CoachMessage, spoken: Spoken, meta: String, action: String) {
         emit(
             "coach",
-            if (problems.isEmpty()) "info" else "warn",
-            "$trigger — " + elide(message.text, 80),
+            if (spoken.problems.isEmpty()) "info" else "warn",
+            "$meta — " + elide(message.text, 80),
             JSONObject().apply {
                 put("full", message.text)
-                put("trigger", trigger)
-                put("disclosure", message.level.value)
+                put("trigger", message.trigger.slug)
+                put("disclosure", spoken.level.value)
                 put("ply", message.ply ?: JSONObject.NULL)
-                put("attempts", attempts)
-                put("problems", JSONArray(problems))
-                put("fallback", problems.isNotEmpty())
-                put("voice", "text")
+                put("attempts", spoken.attempts)
+                put("problems", JSONArray(spoken.problems))
+                put("fallback", spoken.problems.isNotEmpty())
+                put("voice", action)
                 put("fen", message.fen ?: JSONObject.NULL)
-                put("annotations", marks)
+                put("annotations", marks(message.annotations))
             },
         )
     }
+
+    /** The ply the board is on, as the voice reads it (`self._state.get("ply")`). */
+    fun plyNow(): Int = synchronized(lock) { (state["ply"] as? Number)?.toInt() ?: 0 }
 
     // ---- the profile ---------------------------------------------------------------------
 

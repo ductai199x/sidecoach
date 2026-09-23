@@ -278,7 +278,8 @@ class Coach(
     private var clockPeakMs: Int? = null
 
     /** The conversation is read from the caller's thread and from a claims check. */
-    private val lock = Any()
+    /** The coach's own lock; the panel reads the conversation under it. */
+    internal val lock = Any()
 
     private var lastVerdict: String? = null
 

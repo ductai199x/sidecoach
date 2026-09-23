@@ -34,6 +34,21 @@ import java.security.MessageDigest
 typealias Progress = (done: Long, total: Long?) -> Unit
 
 const val USER_AGENT = "sidecoach-setup"
+
+/**
+ * The voice's files, name -> (url, bytes): `setup.KOKORO_FILES`, with the int8 model where the
+ * desktop takes the full-precision one (Tai, 2026-09-23: int8 on the phone, 92 MB for 326).
+ */
+val KOKORO_FILES: Map<String, Pair<String, Long>> = linkedMapOf(
+    "kokoro-v1.0.int8.onnx" to (
+        "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx" to
+            92_361_271L
+        ),
+    "voices-v1.0.bin" to (
+        "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin" to
+            28_214_398L
+        ),
+)
 const val OPENINGS_BASE = "https://raw.githubusercontent.com/lichess-org/chess-openings/master"
 val OPENINGS_VOLUMES = listOf("a", "b", "c", "d", "e")
 const val PUZZLES_URL = "https://database.lichess.org/lichess_db_puzzle.csv.zst"
@@ -122,6 +137,29 @@ class Item(
 fun items(context: Context): List<Item> {
     val files = context.filesDir
     val out = ArrayList<Item>()
+
+    val kokoroDir = File(files, "models/kokoro")
+    out.add(
+        Item(
+            "kokoro",
+            "The voice (Kokoro)",
+            KOKORO_FILES.values.sumOf { it.second },
+            present = { KOKORO_FILES.keys.all { File(kokoroDir, it).exists() } },
+            fetch = { progress ->
+                var base = 0L
+                for ((name, entry) in KOKORO_FILES) {
+                    val (url, size) = entry
+                    if (File(kokoroDir, name).exists()) {
+                        base += size
+                        continue
+                    }
+                    val at = base
+                    download(url, File(kokoroDir, name), { done, _ -> progress(at + done, null) })
+                    base += size
+                }
+            },
+        ),
+    )
 
     out.add(
         Item(
