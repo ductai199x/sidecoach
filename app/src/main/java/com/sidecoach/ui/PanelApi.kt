@@ -9,16 +9,16 @@ import org.json.JSONObject
  * The control surface the page calls, route for route with `sidecoach/ui/server.py`.
  *
  * Thin over [PanelEngine]. What the phone does not have yet answers honestly -- the voice
- * says it has no voices, the microphone says it is not listening, the profile and the puzzle
- * room say they are not here -- rather than pretending, so the page shows them off instead of
+ * says it has no voices, the microphone says it is not listening, the puzzle room says it
+ * is not here -- rather than pretending, so the page shows them off instead of
  * hanging on a promise.
  */
 class PanelApi(
     private val version: String,
     private val setup: SetupApi,
     private val settings: SettingsApi,
-    /** Where the vision keeps what it has learned; `Clear caches` empties it. */
-    private val themes: File,
+    /** The app's files: the profile `Reset profile` empties, the caches `Clear caches` removes. */
+    private val files: File,
 ) : LocalServer.Api {
 
     override fun handle(
@@ -129,15 +129,25 @@ class PanelApi(
                 }
             )
 
-            path == "/api/clear_caches" -> ok(clearCaches())
+            path == "/api/clear_caches" -> ok(
+                JSONObject().put("ok", true).put("done", JSONArray(PanelEngine.clearCaches(files)))
+            )
 
-            path == "/api/reset_profile" -> {
-                // The player model is not on the phone yet; saying so beats a silent no.
-                PanelEngine.emit("user", "info", "profile: there is no player model on the phone yet")
-                ok(JSONObject().put("ok", false))
+            path == "/api/reset_profile" -> ok(
+                JSONObject().put("ok", true).put("path", PanelEngine.resetProfile(files))
+            )
+
+            path == "/api/correct" -> {
+                // `_Correct`: game_id and ply required, segment 0 and cause null by default.
+                if (!json.has("game_id") || !json.has("ply")) return unprocessable()
+                val cause = if (json.isNull("cause")) null else json.optString("cause")
+                ok(
+                    JSONObject().put(
+                        "ok",
+                        PanelEngine.correct(json.getString("game_id"), json.optInt("segment", 0), json.getInt("ply"), cause),
+                    )
+                )
             }
-
-            path == "/api/correct" -> ok(JSONObject().put("ok", false))
 
             path.startsWith("/api/puzzle/") -> ok(
                 JSONObject().apply { put("ok", false); put("error", "no puzzle room on the phone yet") }
@@ -176,29 +186,12 @@ class PanelApi(
 
     private fun done(): JSONObject = JSONObject().put("ok", true)
 
-    /**
-     * `maintenance.clear_caches` for the phone: the theme files go, and what was done is
-     * said in words on the `user` channel, as the desktop says it. There is no puzzle store
-     * here to rebuild.
-     */
-    private fun clearCaches(): JSONObject {
-        val done = JSONArray()
-        val files = themes.listFiles { f: File -> f.name.startsWith("theme-") && f.name.endsWith(".bin") }
-            ?.sortedBy { it.name }
-            .orEmpty()
-        for (file in files) {
-            if (runCatching { file.delete() }.getOrDefault(false)) {
-                val line = "removed ${file.name}"
-                done.put(line)
-                PanelEngine.emit("user", "warn", "cache: $line")
-            }
-        }
-        if (done.length() == 0) PanelEngine.emit("user", "info", "cache: nothing to clear")
-        return JSONObject().apply {
-            put("ok", true)
-            put("done", done)
-        }
-    }
+    /** What FastAPI answers a body that does not fit the route's model. */
+    private fun unprocessable() = LocalServer.Reply(
+        422,
+        "application/json; charset=utf-8",
+        JSONObject().put("detail", "the body does not fit the request").toString().toByteArray(),
+    )
 
     private fun ok(json: JSONObject) = LocalServer.Reply(json.toString())
 

@@ -12,10 +12,11 @@ import java.io.File
  *
  * Every frame's interval and the time to copy it out of the [android.media.ImageReader]
  * are recorded; every [WINDOW_MS] a snapshot of those, of this process's CPU, of the
- * battery and of the thermal status goes to a JSONL file and to the screen. Nothing here
+ * battery and of the thermal status goes to the screen, and in a debug build to a JSONL
+ * file ([log]; null otherwise: the installed app saves nothing of a session). Nothing here
  * keeps a frame: the pixels are measured and dropped.
  */
-class CaptureStats(private val context: Context, private val log: File) {
+class CaptureStats(private val context: Context, private val log: File?) {
 
     /** One window's worth, as the screen shows it and the file keeps it. */
     data class Snapshot(
@@ -114,6 +115,7 @@ class CaptureStats(private val context: Context, private val log: File) {
     }
 
     private fun append(s: Snapshot) {
+        val log = log ?: return
         val line = JSONObject()
             .put("t", s.elapsedS)
             .put("frames", s.frames)

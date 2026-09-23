@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
@@ -69,7 +70,7 @@ class CaptureService : Service() {
     private var lastPreviewAt = 0L
     // The vision: the board found, its theme learned, the position read, the game
     // followed. One watcher for the session, on its own thread.
-    private var vision: GameWatcher? = null
+    @Volatile private var vision: GameWatcher? = null
     private var visionThread: HandlerThread? = null
     private var visionHandler: Handler? = null
     private var reading = false
@@ -145,15 +146,22 @@ class CaptureService : Service() {
         // The watcher uses what the warm-up built, and a Start that comes before the warm-up
         // is done waits for it (`panel._run`) -- on the vision thread, never this one.
         visionHandler?.post {
+            // A Start pressed while the last session was still closing waits for it: the
+            // engine and the coach are shared, and its close resets them.
+            retiring?.join(RETIRE_WAIT_MS)
+            retiring = null
             val (net, engine, coach) = PanelWarm.forSession(this)
             vision = GameWatcher(this, File(filesDir, "themes"), net, engine, coach)
-            PanelEngine.set("status" to "watching")
         }
-        stats = CaptureStats(this, File(filesDir, "spike/capture-$stamp.jsonl")).also {
+        // The window's numbers go to a file in a debug build only: the installed app saves
+        // nothing of a session (Tai, 2026-09-21).
+        val debuggable = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+        val logPath = if (debuggable) "spike/capture-$stamp.jsonl" else null
+        stats = CaptureStats(this, logPath?.let { File(filesDir, it) }).also {
             it.engineCpu = { vision?.engineCpuMs() ?: 0 }
         }
         start(projection)
-        state.value = State(running = true, logPath = "spike/capture-$stamp.jsonl")
+        state.value = State(running = true, logPath = logPath)
         return START_NOT_STICKY
     }
 
@@ -338,10 +346,10 @@ class CaptureService : Service() {
                 screen = outcome.state,
                 following = outcome.following,
                 engineOn = outcome.engineOn,
-                coachOn = false,
+                coachOn = outcome.coachOn,
                 fps = state.value.latest?.fps ?: 0.0,
                 pipelineMs = outcome.detectMs to outcome.readMs,
-                coachPending = 0,
+                coachPending = outcome.coachPending,
                 rssMb = null,
             )
             val now = SystemClock.elapsedRealtime()
@@ -380,16 +388,28 @@ class CaptureService : Service() {
         thread = null
         handler = null
         buffer = null
-        visionThread?.quitSafely()
+        // The session closes on the vision thread, after any read in flight: the engine's
+        // backlog, the review, the coach's last replies, the stores. Only then is it over.
+        val worker = visionThread
+        val closing = visionHandler
         visionThread = null
         visionHandler = null
-        runCatching { vision?.close() }
-        vision = null
+        if (closing != null && worker != null) {
+            closing.post {
+                val one = vision
+                vision = null
+                runCatching { one?.close() }.onFailure { Log.w(TAG, "the session did not close cleanly: $it") }
+                PanelEngine.running(false)
+            }
+            worker.quitSafely()
+            retiring = worker
+        } else {
+            PanelEngine.running(false)
+        }
         frame?.recycle()
         frame = null
         preview = null
         state.value = state.value.copy(running = false, preview = null)
-        PanelEngine.running(false)
         super.onDestroy()
     }
 
@@ -438,6 +458,13 @@ class CaptureService : Service() {
 
     companion object {
         private const val TAG = "sidecoach.capture"
+
+        /**
+         * The last session's vision thread while it closes; a new session joins it first.
+         * A few seconds of engine backlog and the coach's last replies, bounded well within.
+         */
+        @Volatile private var retiring: HandlerThread? = null
+        private const val RETIRE_WAIT_MS = 60_000L
         private const val CHANNEL = "capture"
         private const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "com.sidecoach.capture.STOP"

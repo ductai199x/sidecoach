@@ -141,7 +141,11 @@ class CoachSessionTest {
         for (r in 0 until runs.length()) {
             val one = runs.getJSONObject(r)
             val withVerifier = one.getBoolean("with_verifier")
-            val label = if (withVerifier) "verified" else "plain"
+            val label = when {
+                one.optBoolean("blitz") -> "blitz"
+                withVerifier -> "verified"
+                else -> "plain"
+            }
             val replies = strings(one.getJSONArray("replies"))
             val claimVerdicts = one.getJSONArray("claim_verdicts").let { all ->
                 (0 until all.length()).map { strings(all.getJSONArray(it)) }

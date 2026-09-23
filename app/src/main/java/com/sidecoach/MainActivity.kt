@@ -13,6 +13,8 @@ import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.widget.FrameLayout
 import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
+import android.webkit.JsResult
+import android.app.AlertDialog
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -99,7 +101,7 @@ class MainActivity : ComponentActivity() {
                 versionName(),
                 SetupApi(this),
                 SettingsApi(store),
-                themes = File(filesDir, "themes"),
+                files = filesDir,
             ),
         ).also { server = it }.start(preferred = ports.getInt(PORT_KEY, 0))
         // The same port next time, so the page's origin -- and its saved sizes and switches
@@ -150,6 +152,27 @@ class MainActivity : ComponentActivity() {
         view.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(message: ConsoleMessage): Boolean {
                 Log.i(TAG, "page: ${message.message()} (${message.sourceId()}:${message.lineNumber()})")
+                return true
+            }
+
+            // The page's own questions ("Reset the profile? ...") as the app's dialogs: the
+            // WebView's default one is headed with the local server's address.
+            override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult): Boolean {
+                AlertDialog.Builder(this@MainActivity)
+                    .setMessage(message)
+                    .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
+                    .setOnCancelListener { result.confirm() }
+                    .show()
+                return true
+            }
+
+            override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult): Boolean {
+                AlertDialog.Builder(this@MainActivity)
+                    .setMessage(message)
+                    .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
+                    .setNegativeButton(android.R.string.cancel) { _, _ -> result.cancel() }
+                    .setOnCancelListener { result.cancel() }
+                    .show()
                 return true
             }
         }

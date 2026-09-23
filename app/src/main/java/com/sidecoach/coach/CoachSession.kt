@@ -184,7 +184,17 @@ internal fun inWords(board: Board, san: String): String {
 }
 
 /** What the record's question-answerer hands back; the profile stage owns it. */
-class ProfileAnswer(val text: String, val exchanges: List<Any?> = emptyList())
+/**
+ * What `profile.ask.answer` gives back: the answer in prose, the queries it ran (Ask.Exchange),
+ * how many model calls it took, and whether the model never wrote prose (the text is then the
+ * coach's own fallback from the last rows).
+ */
+class ProfileAnswer(
+    val text: String,
+    val exchanges: List<Any?> = emptyList(),
+    val calls: Int = 0,
+    val failed: Boolean = false,
+)
 
 /** What `claims.verifyClaims` gives the coach: one checked sentence per claim. */
 fun interface ClaimsCheck {
@@ -1418,6 +1428,16 @@ class Coach(
                         "or what the move does when a message says so. No question, no " +
                         "lecture, no advice, no guess at what it allows or risks, and not the " +
                         "same words as your last such sentence. $NO_NUMBERS"
+            } else if (assessment.severity == Severity.MISTAKE || assessment.severity == Severity.BLUNDER ||
+                label == "miss"
+            ) {
+                // A mistake in blitz: the policy keeps it to the word after the move (no
+                // lesson), but the word says what the move was -- never "fine".
+                fallback = "${played.san} cost you; $best was better."
+                instructionText =
+                    "The player just played ${played.san} ($words), which was a $label: " +
+                        "$best ($betterWords) was better. It is a fast game: one or two " +
+                        "sentences, no lesson, no question. $NO_NUMBERS"
             } else {
                 fallback = "${played.san} was fine; $best was a little tighter."
                 instructionText =

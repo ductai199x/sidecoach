@@ -10,7 +10,11 @@ one: a test harness, not part of what is installed. They are generated, so they 
 committed either.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_game.py
+    uv run --no-sync python D:/sidecoach-android/tools/make_game.py [moller|trap]
+
+`moller` (the default) is thirty clean plies of theory; `trap` is the Blackburne Shilling
+trap, where White takes the bait twice and is mated on move seven -- a game that ends on the
+board by itself, with mistakes for the review to find and the profile to practise.
 """
 
 from __future__ import annotations
@@ -37,11 +41,20 @@ X0, Y0 = 4, 300
 
 # Thirty plies of a real opening into a middlegame: long enough to see what a game
 # costs rather than what a handful of moves do.
-GAME = (
+MOLLER = (
     "e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4",
     "cxd4", "Bb4+", "Nc3", "Nxe4", "O-O", "Bxc3", "d5", "Bf6", "Re1", "Ne7",
     "Rxe4", "d6", "Bg5", "Bxg5", "Nxg5", "O-O", "Nxh7", "Kxh7", "Qh5+", "Kg8",
 )
+
+# The Blackburne Shilling trap: 4. Nxe5? and 5. Nxf7?? lose to the queen's raid and a mate.
+TRAP = (
+    "e4", "e5", "Nf3", "Nc6", "Bc4", "Nd4", "Nxe5", "Qg5", "Nxf7", "Qxg2",
+    "Rf1", "Qxe4+", "Be2", "Nf3#",
+)
+
+GAMES = {"moller": MOLLER, "trap": TRAP}
+GAME = GAMES[sys.argv[1]] if len(sys.argv) > 1 else MOLLER
 
 
 # A 5+2 game, so the clocks fall and take their increment the way a real one does. The

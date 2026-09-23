@@ -91,6 +91,21 @@ class Assessing(
         }
     }
 
+    /** Nothing queued or being measured: every verdict that will come has come. */
+    val idle: Boolean get() = analyser == null || analyser.pending == 0
+
+    /** Let the engine catch up at the end of a game, so nothing is lost on the way out. */
+    fun wait(timeoutS: Double = 30.0): List<Event> {
+        val worker = analyser ?: return emptyList()
+        val drained = ArrayList<Event>()
+        val deadline = System.nanoTime() + (timeoutS * 1e9).toLong()
+        while (worker.pending != 0 && System.nanoTime() < deadline) {
+            drained += drain()
+            Thread.sleep(50)
+        }
+        return drained + drain()
+    }
+
     fun reset() {
         analyser?.reset()
         from.clear()

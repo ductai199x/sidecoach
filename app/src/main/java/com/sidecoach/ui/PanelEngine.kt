@@ -1,6 +1,15 @@
 package com.sidecoach.ui
 
 import android.os.SystemClock
+import com.sidecoach.events.ProfileEvidence
+import com.sidecoach.events.ProfileSnapshot
+import com.sidecoach.events.PuzzleOutcome
+import com.sidecoach.events.Recommendation
+import com.sidecoach.events.GameReview
+import com.sidecoach.profile.Causes
+import com.sidecoach.profile.Profiler
+import java.io.File
+import com.sidecoach.Maintenance
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
@@ -196,9 +205,18 @@ object PanelEngine {
         synchronized(lock) { for ((key, value) in fields) state[key] = value }
     }
 
+    /**
+     * A session begins or is over: `panel._run`'s first and last lines. The phone saves no
+     * session folder, as the desktop app's (`--no-persist`) does not.
+     */
     fun running(on: Boolean) {
-        set("running" to on, "status" to if (on) "watching" else "idle")
-        emit("sys", "info", if (on) "watching the screen" else "stopped watching")
+        if (on) {
+            set("running" to true, "status" to "starting", "session_dir" to null)
+            emit("sys", "info", "engine started (nothing saved)")
+        } else {
+            set("running" to false, "status" to "stopped")
+            emit("sys", "info", "engine stopped")
+        }
     }
 
     /** What the vision made of this frame: the lock, the pace, the position. */
@@ -236,7 +254,7 @@ object PanelEngine {
             "health" to mapOf(
                 "fps" to round1(fps),
                 "lock" to lock,
-                "stage" to screen.name.lowercase(),
+                "stage" to if (following) "following" else "waiting for a start",
                 "pipeline_ms" to listOf(pipelineMs.first, pipelineMs.second),
                 "rss_mb" to rssMb,
                 "coach_pending" to coachPending,
@@ -478,10 +496,213 @@ object PanelEngine {
         )
     }
 
+    // ---- the profile ---------------------------------------------------------------------
+
+    /** The running session's player model (`panel._profiler`); null between sessions. */
+    @Volatile var profiler: Profiler? = null
+
+    /** The puzzles recommended last, and the motif each was for. */
+    @Volatile var practiceIds: List<String> = emptyList()
+    val puzzleMotifs: MutableMap<String, String> = java.util.concurrent.ConcurrentHashMap()
+
+    /** `panel._profile_state`: what the page shows of the player model. */
+    fun profileState(snapshot: ProfileSnapshot): Map<String, Any?> = mapOf(
+        "games" to snapshot.games,
+        "insights" to snapshot.insights,
+        "last_session" to snapshot.lastSession,
+    )
+
+    /**
+     * Feed the profile stage (`panel._profile`); its own events go on to the coach, and the
+     * review and the snapshot to the page (the review as a card in the coach's stream, with
+     * the insights of the moment). [tick] lets a finished game's review time out waiting for
+     * the engine; [flush] reviews it now.
+     */
+    fun profile(profiler: Profiler, events: List<Event>, tick: Boolean = false, flush: Boolean = false): List<Event> {
+        val out = ArrayList<Event>()
+        val now = System.currentTimeMillis() / 1000.0
+        try {
+            for (event in events) out += profiler.onEvent(event, now)
+            if (flush && profiler.gameOverUnreviewed) {
+                out += profiler.flush(now)
+            } else if (tick) {
+                out += profiler.tick(now)
+            }
+        } catch (exc: Exception) {  // a profile bug must not end the session
+            emit("sys", "error", "profile error: $exc")
+        }
+        val snapshot = out.firstOrNull { it is ProfileSnapshot } as ProfileSnapshot?
+        for (event in out) {
+            when (event) {
+                is GameReview -> {
+                    val review = reviewJson(event)
+                    set("review" to review)
+                    val insights = snapshot?.insights ?: emptyList()
+                    emit(
+                        "coach",
+                        "info",
+                        "review: " + elide(event.lines.joinToString(" "), 80),
+                        JSONObject().put("review", review).put("insights", JSONArray(insights)),
+                    )
+                }
+                is Recommendation -> {
+                    val practice = practiceJson(event)
+                    practiceIds = event.puzzles.map { it.id }
+                    for (puzzle in event.puzzles) puzzleMotifs[puzzle.id] = event.motif
+                    set("practice" to practice)
+                    emit(
+                        "coach",
+                        "info",
+                        "practice: ${event.motifWords} -- " + event.puzzles.joinToString(", ") { it.id } +
+                            " (level ${event.level}); ${event.reason}",
+                        JSONObject().put("practice", practice),
+                    )
+                }
+                is PuzzleOutcome -> logOutcome(event)
+                is ProfileSnapshot -> set("profile" to profileState(event))
+                is ProfileEvidence -> {
+                    val motif = if (event.motif != null) " (${event.motif})" else ""
+                    emit(
+                        "game",
+                        "debug",
+                        "evidence at ply ${event.ply}: ${event.cause}$motif, ${format2(event.expectedLoss)} in the ${event.phase}",
+                    )
+                }
+                else -> Unit
+            }
+        }
+        return out
+    }
+
+    /** What was said, written down in the profile: `panel._record_dialogue`. */
+    fun recordDialogue(event: Event) {
+        val profiler = profiler ?: return
+        try {
+            profiler.onEvent(event, System.currentTimeMillis() / 1000.0)
+        } catch (exc: Exception) {
+            emit("sys", "error", "profile error: $exc")
+        }
+    }
+
+    /** `panel._log_outcome`. */
+    fun logOutcome(event: PuzzleOutcome) {
+        emit(
+            "game",
+            "info",
+            "puzzle ${event.puzzleId} ${if (event.solved) "solved" else "failed"}" +
+                (if (event.motif != null) " (${event.motif})" else "") + "; puzzle level ${event.level}",
+            JSONObject().put("puzzle_id", event.puzzleId).put("solved", event.solved).put("puzzle_level", event.level),
+        )
+    }
+
+    /**
+     * The user's word on why a mistake happened, on the review's card: the profile moves the
+     * evidence and the review is redrawn. `panel.correct`.
+     */
+    fun correct(gameId: String, segment: Int, ply: Int, cause: String?): Boolean {
+        if (cause != null && cause !in Causes.CAUSES) throw IllegalArgumentException("cause must be one of ${Causes.CAUSES}")
+        val profiler = profiler ?: return false
+        val ok = profiler.correct(gameId, segment, ply, cause)
+        if (ok) {
+            val review = synchronized(lock) { state["review"] as? JSONObject }
+            if (review != null && review.optString("game_id") == gameId) {
+                // The state's review is replaced, not edited: a poll may be serialising it.
+                val fresh = JSONObject(review.toString())
+                val points = fresh.optJSONArray("turning_points") ?: JSONArray()
+                for (i in 0 until points.length()) {
+                    val tp = points.getJSONObject(i)
+                    if (tp.optInt("segment", 0) == segment && tp.opt("ply") == ply) tp.put("cause", cause ?: JSONObject.NULL)
+                }
+                set("review" to fresh, "profile" to profileState(profiler.snapshot()))
+            }
+            emit("user", "info", "you corrected the cause of the mistake at ply $ply: $cause")
+        }
+        return ok
+    }
+
+    /**
+     * Empty the player model (`maintenance.reset_profile`): every table of the file emptied in
+     * place, so the running session's store stays open on it and simply finds nothing. The
+     * running profiler, if any, drops its game in progress, and the page shows a fresh, empty
+     * profile. Returns the path.
+     */
+    fun resetProfile(files: File): String {
+        val path = Maintenance.resetProfile(files)
+        val profiler = profiler
+        if (profiler != null) {
+            profiler.forget()
+            set("profile" to profileState(profiler.snapshot()), "review" to null, "practice" to null)
+        }
+        practiceIds = emptyList()
+        puzzleMotifs.clear()
+        emit("user", "warn", "profile reset: $path is empty")
+        return path.path
+    }
+
+    /**
+     * Remove the caches (`maintenance.clear_caches`): the theme files, and the puzzle store
+     * rebuilt from its CSVs when the running session holds it open.
+     */
+    fun clearCaches(files: File): List<String> {
+        val done = Maintenance.clearCaches(files, profiler?.puzzles)
+        for (line in done) emit("user", "warn", "cache: $line")
+        if (done.isEmpty()) emit("user", "info", "cache: nothing to clear")
+        return done
+    }
+
+    /** A review as the page reads it: `GameReview.model_dump`. */
+    private fun reviewJson(r: GameReview): JSONObject = JSONObject().apply {
+        put("game_id", r.gameId)
+        put("user_side", r.userSide.name.lowercase())
+        put("result", r.result)
+        put("reason", r.reason ?: JSONObject.NULL)
+        put("opening", r.opening ?: JSONObject.NULL)
+        put("moves", r.moves)
+        put("accuracy", r.accuracy ?: JSONObject.NULL)
+        put("tallies", JSONObject().apply { for ((k, v) in r.tallies) put(k, v) })
+        put("turning_points", JSONArray(r.turningPoints.map { tp ->
+            JSONObject().apply {
+                put("ply", tp.ply)
+                put("san", tp.san)
+                put("label", tp.label)
+                put("expected_loss", tp.expectedLoss)
+                put("segment", tp.segment)
+                put("best_san", tp.bestSan ?: JSONObject.NULL)
+                put("cause", tp.cause ?: JSONObject.NULL)
+                put("motif", tp.motif ?: JSONObject.NULL)
+                put("phase", tp.phase)
+                put("fen_before", tp.fenBefore ?: JSONObject.NULL)
+            }
+        }))
+        put("phases", JSONArray(r.phases.map {
+            JSONObject().put("phase", it.phase).put("moves", it.moves).put("expected_loss", it.expectedLoss).put("mistakes", it.mistakes)
+        }))
+        put("causes", JSONObject().apply { for ((k, v) in r.causes) put(k, v) })
+        put("lines", JSONArray(r.lines))
+    }
+
+    /** A recommendation as the page reads it: `Recommendation.model_dump`. */
+    private fun practiceJson(r: Recommendation): JSONObject = JSONObject().apply {
+        put("game_id", r.gameId)
+        put("motif", r.motif)
+        put("motif_words", r.motifWords)
+        put("reason", r.reason)
+        put("level", r.level)
+        put("puzzles", JSONArray(r.puzzles.map {
+            JSONObject().put("id", it.id).put("url", it.url).put("rating", it.rating).put("themes", JSONArray(it.themes))
+        }))
+    }
+
     // ---- the odds and ends ---------------------------------------------------------------
 
-    private fun elide(text: String, limit: Int): String =
-        if (text.length <= limit) text else text.take(limit - 1) + "…"
+    /**
+     * The first [limit] characters of a line, with an ellipsis when it was cut: `log.elide`,
+     * whitespace run together first.
+     */
+    fun elide(text: String, limit: Int = 80): String {
+        val flat = text.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+        return if (flat.length <= limit) flat else flat.take(limit - 1).trimEnd() + "…"
+    }
 
     private fun format2(value: Double): String =
         BigDecimal(value).setScale(2, RoundingMode.HALF_EVEN).toPlainString()

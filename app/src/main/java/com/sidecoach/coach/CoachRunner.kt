@@ -7,7 +7,11 @@ import com.sidecoach.llm.LLMProvider
 import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.llm.OpenAICompatProvider
 import com.sidecoach.llm.makeProvider
+import com.sidecoach.profile.Ask
+import com.sidecoach.profile.Store
 import com.sidecoach.ui.PanelEngine
+import org.json.JSONArray
+import org.json.JSONObject
 import com.sidecoach.ui.SettingsStore
 
 /**
@@ -135,22 +139,75 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
     }
 
     fun ask(text: String, ts: Double) {
-        val coach = coach ?: return
-        PanelEngine.heard(text)
-        coach.ask(text, ts)
+        coach?.ask(text, ts)
     }
 
     private var drained = 0
+    private var profileSeen = 0
+
+    /**
+     * The record the coach's model may query for a question about the player over their games
+     * (`profile.ask`), for the session: its own model writes the SQL, read-only.
+     */
+    fun useRecord(store: Store?) {
+        val coach = coach ?: return
+        coach.profileAsk = if (store == null) {
+            null
+        } else {
+            { question -> Ask.answer(question, store, coach.speaker.provider) }
+        }
+    }
+
+    /** The coach's replies in flight, waited for at a Stop: `_Coaching.wait`. */
+    fun wait(timeoutS: Double = 30.0) {
+        val coach = coach ?: return
+        val deadline = System.nanoTime() + (timeoutS * 1e9).toLong()
+        while (coach.speaker.pending != 0 && System.nanoTime() < deadline) {
+            drain()
+            Thread.sleep(50)
+        }
+        drain()
+    }
 
     /** Whatever the coach has finished saying, onto the panel, with what the checks found. */
     fun drain() {
         val coach = coach ?: return
         coach.poll() // records each reply as a turn of the conversation
+        // What the coach looked up in the record for a question about the player, before
+        // the reply it went into, as `_coach_meta` logs it.
+        val answers = coach.profileAnswers
+        while (profileSeen < answers.size) {
+            val (kind, answer) = answers[profileSeen++]
+            if (kind == "error") {
+                PanelEngine.emit("coach", "error", "record lookup failed: $answer")
+                continue
+            }
+            answer as ProfileAnswer
+            for ((i, exchange) in answer.exchanges.withIndex()) {
+                exchange as Ask.Exchange
+                val head = exchange.error ?: "${exchange.rows.size} rows"
+                val sql = exchange.sql.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+                PanelEngine.emit(
+                    "coach",
+                    if (exchange.error != null) "warn" else "info",
+                    "record query ${i + 1}: ${PanelEngine.elide(sql, 90)} — $head",
+                    JSONObject().apply {
+                        put("sql", exchange.sql)
+                        put("columns", JSONArray(exchange.columns))
+                        put("rows", JSONArray(exchange.rows.take(20).map { row -> JSONArray(row.map { it.toString() }) }))
+                        put("error", exchange.error ?: JSONObject.NULL)
+                    },
+                )
+            }
+            if (answer.failed) PanelEngine.emit("coach", "warn", "record: the model wrote no answer; the rows stand in")
+        }
         val spoken = coach.spoken
         while (drained < spoken.size) {
             val one = spoken[drained++]
             // A failed reply with nothing to fall back on is kept for the log, said to no one.
             if (one.message.text.isEmpty()) continue
+            // Written down in the profile as the conversation (`panel._record_dialogue`).
+            PanelEngine.recordDialogue(one.message)
             PanelEngine.said(one.message, one.problems, one.attempts)
         }
     }

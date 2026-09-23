@@ -372,6 +372,64 @@ def draft_check(text: str, board: chess.Board, after=()) -> list[str]:
     return [f"{item.text}: {item.reason}" for item in check_draft(text, board, after=after)]
 
 
+# The Blackburne Shilling trap: 4. Nxe5? and 5. Nxf7?? lose to the queen's raid and a mate.
+TRAP = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nd4", "Nxe5", "Qg5", "Nxf7", "Qxg2", "Rf1", "Qxe4+",
+        "Be2", "Nf3#"]
+
+
+def run_blitz(annotator: GameAnnotator) -> dict[str, Any]:
+    """A 5+0 game: the coach's blitz manners -- a word after each move and no lesson, the
+    board's own sentence for a routine one -- through two mistakes, a mate and the review."""
+    calls: list[dict[str, Any]] = []
+    provider = RecordedProvider(REPLIES, calls, "coach")
+    coach = Coach(
+        provider,
+        draft_check=draft_check,
+        claims=lambda text, board, facts: [],
+        summarise_every=0,
+        compact_record=False,
+        persona="warm_direct",
+        rating=(1000, 1400),
+    )
+    coach.sync_claims = True
+    coach.sync_summaries = True
+    script = Script(coach, calls)
+
+    ts = 1000.0
+    started = GameStarted(game_id=GAME_ID, user_side=Side.WHITE, start_fen=chess.STARTING_FEN)
+    coach.on_event(started, ts)
+    script.record({"op": "new_game", "ts": ts, "user_side": "white",
+                   "start_fen": chess.STARTING_FEN, "kind": "game"})
+    ts += 1.0
+    coach.on_event(ClockObservation(white_ms=300000, black_ms=300000), ts)
+    script.record({"op": "clock", "ts": ts, "white_ms": 300000, "black_ms": 300000})
+
+    board, ply, ts = play_game(annotator, coach, script, TRAP, chess.Board(), 0, ts, {})
+
+    ts += 1.0
+    coach.on_event(GameEnded(game_id=GAME_ID, result="0-1", reason="checkmate"), ts)
+    script.record({"op": "ended", "ts": ts, "result": "0-1", "reason": "checkmate"})
+    review_lines = [
+        "You played white and lost by checkmate in 8 moves.",
+        "Ground lost at 5. Nxf7, a blunder costing 0.38; O-O was better.",
+    ]
+    ts += 1.0
+    coach.on_event(
+        GameReview(game_id=GAME_ID, user_side=Side.WHITE, result="0-1", lines=review_lines), ts
+    )
+    script.record({"op": "review", "ts": ts, "lines": review_lines})
+    ts += 1.0
+    coach.ask("why was Nxf7 bad?", ts)
+    script.record({"op": "ask", "ts": ts, "text": "why was Nxf7 bad?"})
+    return {
+        "with_verifier": False,
+        "blitz": True,
+        "replies": REPLIES,
+        "claim_verdicts": [[]],
+        "steps": script.steps,
+    }
+
+
 def run(annotator: GameAnnotator, with_verifier: bool) -> dict[str, Any]:
     calls: list[dict[str, Any]] = []
     provider = RecordedProvider(REPLIES, calls, "coach")
@@ -525,6 +583,19 @@ def main() -> None:
                 book=book,
             )
             runs.append(run(annotator, with_verifier))
+        _counter = Draws()
+        runs.append(
+            run_blitz(
+                GameAnnotator(
+                    engine=engine,
+                    depth=DEPTH,
+                    multipv=6,
+                    thresholds=Thresholds(),
+                    tagger=motifs,
+                    book=book,
+                )
+            )
+        )
     finally:
         engine.close()
 
