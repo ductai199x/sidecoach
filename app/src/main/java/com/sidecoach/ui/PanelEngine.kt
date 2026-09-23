@@ -27,6 +27,7 @@ import com.sidecoach.events.Resync
 import com.sidecoach.events.ScreenState
 import com.sidecoach.events.ScreenStateChanged
 import com.sidecoach.events.Takeback
+import com.sidecoach.events.Unexplained
 import com.sidecoach.analysis.sanLine
 import org.json.JSONArray
 import org.json.JSONObject
@@ -87,6 +88,9 @@ object PanelEngine {
     /** The positions before each ply, for the verdict lines; the labels for the move list. */
     private val fenBefore = HashMap<Int, String>()
     private val labels = LinkedHashMap<Int, String>()
+
+    /** The game's last ply as the moves came, so a takeback knows which plies it withdrew. */
+    private var lastPly = 0
 
     /** What Start and Stop reach: the activity owns the projection consent. */
     var onStart: (() -> Unit)? = null
@@ -306,6 +310,7 @@ object PanelEngine {
             is GameStarted -> {
                 fenBefore.clear()
                 labels.clear()
+                lastPly = 0
                 val what = when (event.kind) {
                     "game" -> "new game"
                     "puzzle" -> "puzzle on the panel's board"
@@ -343,6 +348,7 @@ object PanelEngine {
                 val who = if (event.byUser) "you" else "opponent"
                 val think = event.thinkMs?.let { ", " + round1(it / 1000.0) + "s" } ?: ""
                 fenBefore[event.ply] = event.fenBefore
+                lastPly = event.ply
                 PanelVoice.noteMove(event.ply)
                 synchronized(lock) {
                     @Suppress("UNCHECKED_CAST")
@@ -367,19 +373,43 @@ object PanelEngine {
                 )
             }
 
-            is Takeback -> emit(
-                "game",
-                "warn",
-                "takeback ${event.plies} ply",
-                JSONObject().put("fen", event.fen),
-            )
+            is Takeback -> {
+                emit(
+                    "game",
+                    "warn",
+                    "takeback ${event.plies} ply",
+                    JSONObject().put("fen", event.fen),
+                )
+                // The withdrawn moves' badges leave the move list: a replacement played at the
+                // same ply showed the withdrawn move's.
+                lastPly = maxOf(0, lastPly - event.plies)
+                synchronized(lock) {
+                    for (gone in labels.keys.filter { it > lastPly }) labels.remove(gone)
+                    for (gone in fenBefore.keys.filter { it > lastPly }) fenBefore.remove(gone)
+                }
+                set("labels" to labels.entries.associate { e -> e.key.toString() to e.value })
+            }
 
-            is Resync -> emit(
-                "game",
-                "warn",
-                "resync: ${event.reason}",
-                JSONObject().put("fen", event.fen),
-            )
+            is Resync -> {
+                emit(
+                    "game",
+                    "warn",
+                    "resync: ${event.reason}",
+                    JSONObject().put("fen", event.fen),
+                )
+                // The numbering starts again from the adopted position: the old plies' badges
+                // would sit on the new moves.
+                synchronized(lock) {
+                    labels.clear()
+                    fenBefore.clear()
+                }
+                lastPly = 0
+                set("labels" to emptyMap<String, String>())
+            }
+
+            // A note: cells the game has not explained for a while. The game is kept as it
+            // stands; nothing downstream starts again.
+            is Unexplained -> emit("vision", "warn", "board unexplained (${event.reason}); the game is kept")
 
             is GameEnded -> {
                 val text = if (event.result == "*") {

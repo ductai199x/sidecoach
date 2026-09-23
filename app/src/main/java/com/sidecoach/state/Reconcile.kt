@@ -27,6 +27,7 @@ import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.PositionChanged
 import com.sidecoach.events.Resync
 import com.sidecoach.events.Takeback
+import com.sidecoach.events.Unexplained
 import com.sidecoach.vision.Pieces
 import com.sidecoach.vision.Pieces.CellReading
 import com.sidecoach.vision.Pieces.Kind
@@ -1617,7 +1618,7 @@ class Reconciler(
         if (persistent.size < resyncCells || unexplainedFrames < resyncAfter) return mutableListOf()
         unexplainedFrames = 0
         val names = persistent.sorted().joinToString(", ") { squareName(it) }
-        return mutableListOf(Resync(gameId = gameId, fen = board.fen(), reason = "unexplained: $names"))
+        return mutableListOf(Unexplained(gameId = gameId, fen = board.fen(), reason = "unexplained: $names"))
     }
 
     /**
@@ -1646,7 +1647,7 @@ class Reconciler(
             // the game. Report it and let the next frames explain the board again.
             pending = null
             return mutableListOf(
-                Resync(
+                Unexplained(
                     gameId = gameId, fen = board.fen(),
                     reason = "refused illegal commit ${move.uci()}",
                 ),

@@ -13,6 +13,7 @@ import com.sidecoach.events.Resync
 import com.sidecoach.events.ScreenState
 import com.sidecoach.events.ScreenStateChanged
 import com.sidecoach.events.Takeback
+import com.sidecoach.events.Unexplained
 import com.sidecoach.events.UserUtterance
 import com.sidecoach.profile.Profiler
 import com.sidecoach.profile.PuzzleStore
@@ -495,6 +496,7 @@ class GameWatcher(
             }
             is Takeback -> Log.i(TAG, "takeback of ${event.plies} plies")
             is Resync -> Log.i(TAG, "resync: ${event.reason}")
+            is Unexplained -> Log.i(TAG, "board unexplained: ${event.reason}; the game is kept")
             is GameEnded -> Log.i(TAG, "game over ${event.result}: ${event.reason} — ${event.pgn}")
             is ScreenStateChanged -> {
                 state = event.state

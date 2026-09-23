@@ -776,6 +776,8 @@ class Coach(
         val active = conversation.activeRecords()
         val ply = if (active.isNotEmpty()) active.last().move.ply else 0
         for (gone in positions.keys.filter { it > ply }) positions.remove(gone)
+        // The withdrawn moves go too: a late word on one was taken for the move that replaced it.
+        for (gone in moves.keys.filter { it > ply }) moves.remove(gone)
         var position = positions[ply]
         if (position == null) {
             position = CoachPosition(ply = ply, board = board.copy())
@@ -835,8 +837,11 @@ class Coach(
 
     private fun onAssessment(event: MoveAssessment, ts: Double) {
         if (event.gameId != gameId) return // the engine's late word on the game before this one
+        val played = moves[event.ply]
+        // The verdict on a move taken back since, not on the one played there now.
+        if (played != null && played.uci != event.uci) return
         conversation.assess(event)
-        val move = moves[event.ply] ?: return
+        val move = played ?: return
         if (!move.byUser) return
         val before = positions[event.ply - 1]
         if (before == null || before.facts == null) {

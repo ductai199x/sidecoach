@@ -13,6 +13,8 @@ import com.sidecoach.events.Label
 import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.MoveAssessment
 import com.sidecoach.events.Resync
+import com.sidecoach.events.Takeback
+import com.sidecoach.events.Analysis
 
 /**
  * The game's events into the engine, and the engine's verdicts back out: the `_Assessing`
@@ -31,6 +33,18 @@ class Assessing(
 
     /** The position each pending ply was played from, so a verdict can be read out. */
     private val from = HashMap<Int, String>()
+
+    /**
+     * The game as it stands now: its id, its last ply, and each ply's move and the position
+     * after it -- what a takeback withdraws, and what [drain] holds the engine's words against.
+     */
+    private var gameId: String? = null
+    private var ply = 0
+    private val line = HashMap<Int, String>()
+    private val fens = HashMap<Int, String>()
+
+    /** Each ply's move as this glue holds the game now, for the tests. */
+    internal val playedLine: Map<Int, String> get() = HashMap(line)
 
     /**
      * The game's board with the moves that led to it, for the opening book: the opening is a
@@ -59,12 +73,30 @@ class Assessing(
                 from[event.ply] = event.fenBefore
                 before.push(move)
                 game = before
+                gameId = event.gameId
+                ply = event.ply
+                line[event.ply] = event.uci
+                fens[event.ply] = event.fenAfter
+            }
+            is Takeback -> {
+                // Moves withdrawn: the engine lets go of them at once, and what it still says
+                // about them is not passed on ([drain]).
+                val back = maxOf(0, ply - event.plies)
+                worker.withdraw(event.gameId, back)
+                for (gone in line.keys.filter { it > back }) {
+                    line.remove(gone)
+                    fens.remove(gone)
+                    from.remove(gone)
+                }
+                ply = back
+                game = historyTo(event.fen)
             }
             is GameStarted -> {
                 // The engine's queue is the last game's: dropped, so this game is measured
                 // from its first move.
                 worker.reset()
                 from.clear()
+                forget(event.gameId)
                 game = Board(event.startFen)
                 if (event.startFen != STARTING_FEN) {
                     worker.submitPosition(event.gameId, Board(event.startFen), 0)
@@ -73,12 +105,42 @@ class Assessing(
             is Resync -> {
                 worker.reset()
                 from.clear()
+                forget(event.gameId)
                 // A position adopted, not played to: it has no history to look up.
                 game = Board(event.fen)
                 worker.submitPosition(event.gameId, Board(event.fen), 0)
             }
             else -> Unit
         }
+    }
+
+    /** A game begins, or its numbering starts again (a resync): no plies stand yet. */
+    private fun forget(id: String) {
+        gameId = id
+        ply = 0
+        line.clear()
+        fens.clear()
+    }
+
+    /**
+     * The engine's word on a move or a position the game has since taken back: a ply past the
+     * game's last, or one whose move or position is no longer the game's. Passed on, a
+     * withdrawn move's verdict was taken for the replacement played at its ply.
+     */
+    private fun stale(event: Event): Boolean {
+        val (id, at) = when (event) {
+            is MoveAssessment -> event.gameId to event.ply
+            is Analysis -> event.gameId to event.ply
+            else -> return false
+        }
+        if (id != gameId) return false
+        if (at > ply) return true
+        if (event is MoveAssessment) {
+            val played = line[at]
+            return played != null && played != event.uci
+        }
+        val fen = fens[at] ?: return false
+        return fen.split(" ").take(4) != (event as Analysis).fen.split(" ").take(4)
     }
 
     /**
@@ -120,7 +182,7 @@ class Assessing(
     /** What the engine has finished, logged and handed back for the coach. */
     fun drain(): List<Event> {
         val worker = analyser ?: return emptyList()
-        val drained = worker.poll()
+        val drained = worker.poll().filter { !stale(it) }
         for (event in drained) {
             if (event is MoveAssessment) {
                 val fen = from.remove(event.ply)

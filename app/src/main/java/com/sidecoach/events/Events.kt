@@ -44,6 +44,14 @@ class Takeback(val gameId: String, val plies: Int, val fen: String) : Event()
 
 class Resync(val gameId: String, val fen: String, val reason: String) : Event()
 
+/**
+ * Cells that have disagreed with the game for a long while, or a move refused as illegal: a
+ * note for the log, the game kept as it stands. Not a resync -- the position did not jump and
+ * the numbering goes on. Sent as a Resync, it made the coach and the engine restart their
+ * numbering while the reconciler kept its own (Tai's game on the Pixel, 2026-09-23).
+ */
+class Unexplained(val gameId: String, val fen: String, val reason: String) : Event()
+
 class GameEnded(
     val gameId: String,
     val result: String,

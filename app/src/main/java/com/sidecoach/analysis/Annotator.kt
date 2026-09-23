@@ -314,6 +314,10 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
     /** Whole analyses not run for plies the game had already left. */
     var skipped = 0
         private set
+
+    /** Requests let go because the game took their move back. */
+    var withdrawn = 0
+        private set
     var lastError: String? = null
         private set
 
@@ -335,7 +339,16 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
         val ply: Int,
         val board: Board,
         val move: Move?,
-    )
+    ) {
+        /**
+         * Set when the game takes the move back while it is being measured ([withdraw]):
+         * nothing about it is delivered, and the position after it is not measured.
+         */
+        @Volatile var withdrawn = false
+    }
+
+    /** The request the worker is on, so a takeback can let go of it. */
+    @Volatile private var current: Request? = null
 
     /** The sentinel that ends the worker. */
     private val stop = Request("", 0, Board(null), null)
@@ -384,6 +397,32 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
         annotator.reset()
     }
 
+    /**
+     * The game's moves after [ply] taken back: what is queued for them is dropped, and one
+     * being measured is let go once its search ends -- nothing about it is delivered, and the
+     * position after it is not measured. The engine gets to the replacement move at once,
+     * where it used to measure every withdrawn move first (Tai, 2026-09-23: "takebacks make
+     * the program lag behind by a lot"; seconds on the phone). `Analyser.withdraw`.
+     */
+    fun withdraw(gameId: String, ply: Int) {
+        val kept = ArrayList<Request>()
+        while (true) {
+            val request = requests.poll() ?: break
+            if (request !== stop && request.gameId == gameId && request.ply > ply) {
+                withdrawn += 1
+                settle()
+            } else {
+                kept.add(request)
+            }
+        }
+        for (request in kept) requests.put(request)
+        val now = current
+        if (now != null && now.gameId == gameId && now.ply > ply) {
+            now.withdrawn = true
+            withdrawn += 1
+        }
+    }
+
     fun poll(): List<Event> {
         val out = ArrayList<Event>()
         while (true) out.add(results.poll() ?: break)
@@ -414,17 +453,19 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
         while (true) {
             val request = requests.take()
             if (request === stop) return
+            current = request
             try {
                 if (request.move == null) {
-                    results.add(annotator.analysisEvent(request.gameId, request.board, request.ply))
+                    val event = annotator.analysisEvent(request.gameId, request.board, request.ply)
+                    if (!request.withdrawn) results.add(event)
                 } else {
                     // The verdict first, from the best line alone; the position whole after --
                     // unless newer moves are waiting: then this ply is history, its verdict is
                     // all the coach and the review need, and the whole analysis goes to the
                     // position the player is actually looking at.
-                    results.add(
-                        annotator.assessMove(request.gameId, request.board, request.move, request.ply),
-                    )
+                    val verdict = annotator.assessMove(request.gameId, request.board, request.move, request.ply)
+                    if (request.withdrawn) continue
+                    results.add(verdict)
                     val after = request.board.copy()
                     after.push(request.move)
                     val behind = requests.isNotEmpty()
@@ -447,6 +488,7 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
                 failures += 1
                 lastError = "${exc::class.java.simpleName}: ${exc.message}"
             } finally {
+                current = null
                 settle()
             }
         }

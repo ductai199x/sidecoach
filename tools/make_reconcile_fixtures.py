@@ -37,6 +37,7 @@ from sidecoach.events import (  # noqa: E402
     MovePlayed,
     PositionChanged,
     Resync,
+    Unexplained,
     Side,
     Takeback,
 )
@@ -85,6 +86,8 @@ def event_json(event) -> str:
         return f"Takeback {event.plies} {event.fen}"
     if isinstance(event, Resync):
         return f"Resync {event.reason} | {event.fen}"
+    if isinstance(event, Unexplained):
+        return f"Unexplained {event.reason} | {event.fen}"
     if isinstance(event, GameEnded):
         return f"GameEnded {event.result} {event.reason} | {event.pgn} | {event.final_fen}"
     return type(event).__name__

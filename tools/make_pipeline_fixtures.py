@@ -18,6 +18,7 @@ several frames is stored once and named several times.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import sys
@@ -38,12 +39,17 @@ from sidecoach.events import (  # noqa: E402
     Resync,
     ScreenStateChanged,
     Takeback,
+    Unexplained,
 )
 from sidecoach.replay.recording import ChangeGate, board_gate  # noqa: E402
 from sidecoach.state.pipeline import GamePipeline  # noqa: E402
 from tests import synth  # noqa: E402
 
 OUT = Path("D:/sidecoach-android/app/src/androidTest/assets/pipeline")
+
+# Every frame written, by its pixels: a board shown again -- in the same scenario or another --
+# is the file already written, named again, so the committed frames stay few.
+WRITTEN: dict[str, tuple[str, object]] = {}
 
 WIDTH, HEIGHT = 420, 860
 CELL = 50
@@ -66,6 +72,8 @@ def event_json(event) -> str:
         return f"Takeback {event.plies} {event.fen}"
     if isinstance(event, Resync):
         return f"Resync {event.reason} | {event.fen}"
+    if isinstance(event, Unexplained):
+        return f"Unexplained {event.reason} | {event.fen}"
     if isinstance(event, GameEnded):
         return f"GameEnded {event.result} {event.reason} | {event.pgn}"
     if isinstance(event, ScreenStateChanged):
@@ -168,10 +176,90 @@ def a_resignation(theme: str, style: str) -> list[dict]:
     return states
 
 
+GAME = [
+    "e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4",
+    "cxd4", "Bb4+", "Bd2", "Bxd2+", "Nbxd2", "d5", "exd5", "Nxd5", "Qb3", "Nce7",
+    "Qb5+", "c6",
+]  # fmt: skip
+
+
+def _played(theme: str, style: str, sans: list[str]) -> tuple[chess.Board, list[dict]]:
+    board = chess.Board()
+    states = [dict(board_kwargs(board=board.copy(), theme=theme, style=style), _repeat=3)]
+    for san in sans:
+        move = board.push_san(san)
+        states.append(
+            dict(board_kwargs(board=board.copy(), theme=theme, style=style, highlight=move), _repeat=2)
+        )
+    return board, states
+
+
+def _replace(board: chess.Board, states: list[dict], theme: str, style: str, sans: list[str]) -> None:
+    """The player looks at the position a moment, then plays on from it."""
+    states.append(dict(board_kwargs(board=board.copy(), theme=theme, style=style), _repeat=3))
+    for san in sans:
+        move = board.push_san(san)
+        states.append(
+            dict(board_kwargs(board=board.copy(), theme=theme, style=style, highlight=move), _repeat=3)
+        )
+
+
+def quick_takebacks(theme: str, style: str, per_position: int, slide: bool) -> list[dict]:
+    """Takeback pressed again and again, fast (Tai's game on the Pixel, 2026-09-23): back two
+    plies a press from ply 22 to ply 10, each earlier position up for a frame or two -- the
+    pieces caught sliding back in between -- or all twelve at once; then a different move."""
+    board, states = _played(theme, style, GAME)
+    for _press in range(6):
+        for _ply in range(2):
+            move = board.peek()
+            if slide:
+                states.append(
+                    dict(
+                        board_kwargs(
+                            board=board.copy(), theme=theme, style=style,
+                            animating=(move.to_square, move.from_square, 0.5),
+                        ),
+                        _repeat=1,
+                    )
+                )
+            board.pop()
+        if per_position:
+            states.append(
+                dict(board_kwargs(board=board.copy(), theme=theme, style=style), _repeat=per_position)
+            )
+    _replace(board, states, theme, style, ["e5", "d5"])
+    return states
+
+
+def an_unexplained_stretch(theme: str, style: str) -> list[dict]:
+    """A board that keeps changing and never settles, with cells the game cannot account for,
+    for longer than the reconciler waits (`resync_after`): a note, `Unexplained`, and the game
+    kept -- then back eleven plies with a different move, counted from the same game."""
+    board, states = _played(theme, style, GAME[:12])
+    odd = []
+    for knight in (chess.H3, chess.H4):
+        shown = board.copy()
+        for square in (chess.A2, chess.B2, chess.G2):
+            shown.remove_piece_at(square)
+        shown.set_piece_at(knight, chess.Piece(chess.KNIGHT, chess.BLACK))
+        odd.append(shown)
+    for i in range(170):
+        states.append(
+            dict(board_kwargs(board=odd[i % 2].copy(), theme=theme, style=style), _repeat=1)
+        )
+    for _ in range(11):
+        board.pop()
+    _replace(board, states, theme, style, ["Nf6", "e5"])
+    return states
+
+
 SCENARIOS = {
     "mate-green": lambda: scholars_mate("green", "cburnett"),
     "resign-green": lambda: a_resignation("green", "cburnett"),
     "takeback-brown": lambda: a_game_and_a_takeback("brown", "cburnett"),
+    "quick-takebacks-green": lambda: quick_takebacks("green", "cburnett", 2, True),
+    "takeback-jump-green": lambda: quick_takebacks("green", "cburnett", 0, False),
+    "unexplained-green": lambda: an_unexplained_stretch("green", "cburnett"),
 }
 
 
@@ -184,12 +272,19 @@ def run(name: str, states: list[dict]) -> dict:
     frame_id = 0
     for index, state in enumerate(states):
         repeat = state.pop("_repeat", 1)
-        image = flatten_around(synth.synthetic_board(**state))
         # A state held for several frames is one file, named several times: what the
-        # pipeline sees is the same pixels again, which is what a still board is.
-        path = folder / f"{index:03d}.png"
-        cv2.imwrite(str(path), image)
-        stored = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        # pipeline sees is the same pixels again, which is what a still board is; and a
+        # board seen before is the file it was written to then.
+        image = flatten_around(synth.synthetic_board(**state))
+        digest = hashlib.sha1(image.tobytes()).hexdigest()
+        if digest in WRITTEN:
+            name_of, stored = WRITTEN[digest]
+        else:
+            path = folder / f"{index:03d}.png"
+            cv2.imwrite(str(path), image, [cv2.IMWRITE_PNG_COMPRESSION, 9])
+            stored = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            name_of = f"{name}/{index:03d}.png"
+            WRITTEN[digest] = (name_of, stored)
         for _ in range(repeat):
             ts = frame_id / FPS
             gate.region = board_gate(pipeline.board, WIDTH, HEIGHT)
@@ -197,7 +292,7 @@ def run(name: str, states: list[dict]) -> dict:
             events = pipeline.process(stored, ts, changed=changed, frame_id=frame_id)
             frames.append(
                 {
-                    "file": f"{name}/{index:03d}.png",
+                    "file": name_of,
                     "ts": ts,
                     "changed": changed,
                     "events": [event_json(event) for event in events],

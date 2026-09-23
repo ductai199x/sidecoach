@@ -10,6 +10,7 @@ import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.PositionChanged
 import com.sidecoach.events.Resync
 import com.sidecoach.events.Takeback
+import com.sidecoach.events.Unexplained
 import com.sidecoach.vision.Pieces
 import com.sidecoach.vision.Pieces.CellReading
 import com.sidecoach.vision.Pieces.Kind
@@ -116,6 +117,7 @@ class ReconcileTest {
                 "${if (event.byUser) "user" else "them"} ${event.thinkMs}"
         is Takeback -> "Takeback ${event.plies} ${event.fen}"
         is Resync -> "Resync ${event.reason} | ${event.fen}"
+        is Unexplained -> "Unexplained ${event.reason} | ${event.fen}"
         is GameEnded ->
             "GameEnded ${event.result} ${event.reason} | ${event.pgn} | ${event.finalFen}"
         else -> event::class.java.simpleName
