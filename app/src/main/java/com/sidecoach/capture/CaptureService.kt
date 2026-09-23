@@ -277,8 +277,17 @@ class CaptureService : Service() {
         val full = frame?.takeIf { it.width == padded && it.height == height }
             ?: Bitmap.createBitmap(padded, height, Bitmap.Config.ARGB_8888).also { frame = it }
         image.planes[0].buffer.rewind()
-        synchronized(frameLock) { full.copyPixelsFromBuffer(image.planes[0].buffer) }
+        synchronized(frameLock) {
+            full.copyPixelsFromBuffer(image.planes[0].buffer)
+            frameVersion++
+        }
     }
+
+    // Which frame the display last sent, and which one the vision last read: equal, the
+    // screen has not changed since, and the tick reads the last frame's pixels again rather
+    // than copying the same four megabytes out and converting them (`GameWatcher.read`).
+    private var frameVersion = 0L
+    private var readVersion = -1L
 
     /**
      * The newest frame, small, for the screen: the scaling is the expensive part and twice
@@ -345,16 +354,21 @@ class CaptureService : Service() {
         try {
             val copy = synchronized(frameLock) {
                 val full = frame ?: return
-                // A copy, so the capture thread may fill the next frame while this one is
-                // read: the read is the slow part, and it must not hold the capture up.
-                full.copy(Bitmap.Config.ARGB_8888, false)
-            } ?: return
+                if (frameVersion == readVersion) {
+                    null // nothing new from the display: the last frame again
+                } else {
+                    readVersion = frameVersion
+                    // A copy, so the capture thread may fill the next frame while this one is
+                    // read: the read is the slow part, and it must not hold the capture up.
+                    full.copy(Bitmap.Config.ARGB_8888, false) ?: return
+                }
+            }
             val vision = vision ?: return
             val ts = SystemClock.elapsedRealtime() / 1000.0
             val outcome = runCatching { vision.read(copy, ts) }
                 .onFailure { Log.w(TAG, "the frame could not be read: $it") }
                 .getOrNull()
-            copy.recycle()
+            copy?.recycle()
             vision.coachTick(ts)
             if (outcome == null) return
             state.value = state.value.copy(reading = outcome)

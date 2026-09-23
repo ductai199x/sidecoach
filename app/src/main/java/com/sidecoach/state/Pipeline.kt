@@ -143,6 +143,9 @@ class GamePipeline(
     /** The current frame's pixels when the caller already read them out of the Mat. */
     private var framePixels: FramePixels? = null
 
+    /** The last frame's grey image, for a tick that brings the same pixels again. */
+    private var lastGray: com.sidecoach.vision.Plane? = null
+
     /** What the last frame cost, by stage, for the log. */
     var detectMs = 0L
         private set
@@ -167,10 +170,12 @@ class GamePipeline(
         changed: Boolean = true,
         frameId: Int? = null,
         pixels: FramePixels? = null,
+        /** The same pixels as the last call's frame: its grey image is the last one. */
+        sameFrame: Boolean = false,
     ): MutableList<Event> {
         framePixels = pixels
         var began = android.os.SystemClock.elapsedRealtime()
-        val gray = BoardDetect.toGray(frame)
+        val gray = lastGray.takeIf { sameFrame } ?: BoardDetect.toGray(frame).also { lastGray = it }
         board = tracker.update(gray)
         detectMs = android.os.SystemClock.elapsedRealtime() - began
         classifyMs = 0

@@ -131,6 +131,9 @@ class GameWatcher(
     private var lastFrame: Mat? = null
     private var lastGeometry: BoardGeometry? = null
 
+    /** The last frame's pixels as the gate reads them, for a tick that brings no new frame. */
+    private var lastPixels: FramePixels? = null
+
     /** The panel's board shown turned around; `panel._view_flip`. */
     private var viewFlip = false
 
@@ -175,18 +178,27 @@ class GameWatcher(
     private val spoken = ArrayList<String>()
     private val verdicts = ArrayList<String>()
 
-    fun read(bitmap: Bitmap, ts: Double): Watch? {
+    /**
+     * One tick of the desktop's loop over [bitmap], the newest frame -- or over the last one
+     * again when [bitmap] is null: the display sent nothing since, so the screen is what it
+     * was. The tick is the same either way (the desktop reads the same pixels ten times a
+     * second too); the phone only skips converting, comparing and measuring pixels it has
+     * already converted, compared and measured.
+     */
+    fun read(bitmap: Bitmap?, ts: Double): Watch? {
         val pipeline = pipeline ?: return null
-        val bgr = toBgr(bitmap) ?: return null
+        val same = bitmap == null
+        val bgr = (if (same) lastFrame else toBgr(bitmap!!)) ?: return null
         try {
             var began = SystemClock.elapsedRealtime()
-            val pixels = FramePixels.of(bgr)
+            val pixels = lastPixels.takeIf { same } ?: FramePixels.of(bgr)
             // The desktop moves the gate onto the board before deciding a frame changed.
             gate.region = ChangeGate.boardGate(pipeline.board, pixels.width, pixels.height)
-            val changed = gate.changed(pixels, ts)
+            val changed = if (same) gate.changedAgain(pixels, ts) else gate.changed(pixels, ts)
+            lastPixels = pixels
             val gateMs = SystemClock.elapsedRealtime() - began
             began = SystemClock.elapsedRealtime()
-            val events = pipeline.process(bgr, ts, changed, frameId++, pixels)
+            val events = pipeline.process(bgr, ts, changed, frameId++, pixels, sameFrame = same)
             val took = SystemClock.elapsedRealtime() - began
             val geometry = pipeline.board?.let { BoardGeometry(it.region, it.cellPx) }
             events += drainCommands(pipeline, bgr, geometry, ts)

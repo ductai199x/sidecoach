@@ -37,13 +37,14 @@ typealias Progress = (done: Long, total: Long?) -> Unit
 const val USER_AGENT = "sidecoach-setup"
 
 /**
- * The voice's files, name -> (url, bytes): `setup.KOKORO_FILES`, with the int8 model where the
- * desktop takes the full-precision one (Tai, 2026-09-23: int8 on the phone, 92 MB for 326).
+ * The voice's files, name -> (url, bytes): `setup.KOKORO_FILES`, the desktop's own -- the
+ * full-precision model, which on the phone's ARM cores is twice the int8 one's speed and the
+ * desktop's exact voice (Tai, 2026-09-23).
  */
 val KOKORO_FILES: Map<String, Pair<String, Long>> = linkedMapOf(
-    "kokoro-v1.0.int8.onnx" to (
-        "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx" to
-            92_361_271L
+    "kokoro-v1.0.onnx" to (
+        "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx" to
+            325_532_387L
         ),
     "voices-v1.0.bin" to (
         "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin" to

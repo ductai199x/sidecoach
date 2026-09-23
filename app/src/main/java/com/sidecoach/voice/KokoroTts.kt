@@ -50,7 +50,12 @@ class KokoroTts(
      */
     @Volatile var onPlay: ((String) -> Unit)? = null
 
-    private data class Line(val spoken: String, val given: String, val voice: String?)
+    private data class Line(
+        val spoken: String,
+        val given: String,
+        val voice: String?,
+        val queuedAt: Long = SystemClock.elapsedRealtime(),
+    )
 
     private val queue = LinkedBlockingQueue<Line>()
     private var worker: Thread? = null
@@ -206,6 +211,7 @@ class KokoroTts(
         val mine = synchronized(lock) { generation }
         val shared = using.readLock()
         shared.lock()
+        val began = SystemClock.elapsedRealtime()
         val samples = try {
             if (kokoro == null) return // closed meanwhile
             model.create(line.spoken, line.voice ?: voice, speed, lang)
@@ -215,6 +221,14 @@ class KokoroTts(
         } finally {
             shared.unlock()
         }
+        val took = SystemClock.elapsedRealtime() - began
+        // Where a line's time goes, for the logcat: its wait in the queue, its synthesis, and
+        // how long it speaks (a synthesis slower than the speech is the voice falling behind).
+        Log.i(
+            TAG,
+            "line: waited ${began - line.queuedAt} ms, synthesised in $took ms, " +
+                "${samples.size * 1000L / Kokoro.SAMPLE_RATE} ms of speech",
+        )
         // A stop between synthesis and playback means this line was cancelled.
         if (synchronized(lock) { generation } != mine) return
         runCatching { onPlay?.invoke(line.given.ifEmpty { line.spoken }) }
@@ -260,7 +274,13 @@ class KokoroTts(
 
     companion object {
         private const val TAG = "sidecoach.voice"
-        const val ONNX_FILE = "kokoro-v1.0.int8.onnx"
+        /**
+         * The full-precision model, as the desktop runs it (Tai, 2026-09-23): on the Pixel's ARM
+         * cores it speaks twice as fast as the int8 one (0.61 of real time against 1.20), whose
+         * quantised convolutions onnxruntime does not speed up there, and its audio is the
+         * desktop's to the sample.
+         */
+        const val ONNX_FILE = "kokoro-v1.0.onnx"
         const val VOICES_FILE = "voices-v1.0.bin"
 
         /**

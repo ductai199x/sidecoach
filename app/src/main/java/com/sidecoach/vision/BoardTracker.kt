@@ -48,29 +48,60 @@ class BoardTracker(
 
     private fun passes(fit: Double, contrast: Double) = fit >= minFit && contrast >= minContrast
 
+    // A still screen hands the tracker the same grey image tick after tick. Everything it
+    // computes from the image -- the fit at a geometry, the square colours, a re-fit, a search
+    // -- is a pure function of the image and its arguments, so what was computed on this image
+    // with these arguments is not computed again: the phone's frames on a board that is not
+    // moving then cost next to nothing. The tracker's own bookkeeping -- the ticks since a
+    // re-fit, the misses, the back-off -- still runs every tick, as the desktop's does, so its
+    // decisions are the same.
+    private var memoGray: Plane? = null
+    private val memo = HashMap<Any, Any?>()
+
+    private fun <T> once(gray: Plane, key: Any, compute: () -> T): T {
+        if (gray !== memoGray) {
+            memo.clear()
+            memoGray = gray
+        }
+        if (memo.containsKey(key)) {
+            @Suppress("UNCHECKED_CAST")
+            return memo[key] as T
+        }
+        return compute().also { memo[key] = it }
+    }
+
+    private fun fitScore(gray: Plane, region: Region, cell: Double, colours: Colours?) =
+        once(gray, listOf("fit", region, cell, colours)) { BoardRefine.fitScore(gray, region, cell, colours) }
+
     fun update(gray: Plane): BoardCandidate? {
         val held = board
         if (held != null) {
             framesSinceRefine++
             var candidate = held
-            var (fit, contrast) = BoardRefine.fitScore(gray, candidate.region, candidate.cellPx, colours)
+            var (fit, contrast) = fitScore(gray, candidate.region, candidate.cellPx, colours)
             if (!passes(fit, contrast) && colours != null) {
                 // The theme may have changed between games with the board in place: a
                 // fresh palette that validates, outer ring included, re-locks the colours.
                 // A dialog over most of the board fails this too, since its palette is the
                 // dialog, so it cannot rewrite the lock.
-                val (freshFit, freshContrast) = BoardRefine.fitScore(gray, candidate.region, candidate.cellPx)
+                val (freshFit, freshContrast) = fitScore(gray, candidate.region, candidate.cellPx, null)
                 if (passes(freshFit, freshContrast)) {
-                    colours = BoardRefine.squareColours(gray, candidate.region, candidate.cellPx)
+                    val region = candidate.region
+                    val cell = candidate.cellPx
+                    colours = once(gray, listOf("colours", region, cell)) {
+                        BoardRefine.squareColours(gray, region, cell)
+                    }
                     fit = freshFit
                     contrast = freshContrast
                 }
             }
             if (framesSinceRefine >= refineEvery) {
                 framesSinceRefine = 0
-                val refit = BoardRefine.refine(
-                    gray, candidate, offsetCells = refineOffsetCells, colours = colours,
-                )
+                val lockColours = colours
+                val atLock = candidate
+                val refit = once(gray, listOf("refine", atLock, refineOffsetCells, lockColours)) {
+                    BoardRefine.refine(gray, atLock, offsetCells = refineOffsetCells, colours = lockColours)
+                }
                 // A re-fit is adopted only when it validates on its own, and then only when
                 // this frame failed at the lock's geometry or the re-fit's comb is clearly
                 // stronger. The fit score cannot arbitrate: it is blind to shifts of up to
@@ -113,7 +144,13 @@ class BoardTracker(
         framesSinceRefine = 0
         board = boards.firstOrNull()
         val found = board
-        colours = if (found != null) BoardRefine.squareColours(gray, found.region, found.cellPx) else null
+        colours = if (found != null) {
+            once(gray, listOf("colours", found.region, found.cellPx)) {
+                BoardRefine.squareColours(gray, found.region, found.cellPx)
+            }
+        } else {
+            null
+        }
         if (found != null) {
             cooldown = 0
             nearCooldown = 0
@@ -132,20 +169,18 @@ class BoardTracker(
         detections++
         val last = lastCellPx
         if (last != null) {
-            val near = BoardDetect.detect(
-                gray,
-                minFit = minFit,
-                minContrast = minContrast,
-                minCell = maxOf(8, (last * 0.8).toInt()),
-                maxCell = (last * 1.25).toInt() + 1,
-            )
+            val minCell = maxOf(8, (last * 0.8).toInt())
+            val maxCell = (last * 1.25).toInt() + 1
+            val near = once(gray, listOf("detect", minCell, maxCell)) {
+                BoardDetect.detect(gray, minFit = minFit, minContrast = minContrast, minCell = minCell, maxCell = maxCell)
+            }
             if (near.isNotEmpty()) {
                 lastCellPx = near[0].cellPx
                 return near
             }
         }
         if (!full) return emptyList()
-        val boards = BoardDetect.detect(gray, minFit = minFit, minContrast = minContrast)
+        val boards = once(gray, listOf("detect")) { BoardDetect.detect(gray, minFit = minFit, minContrast = minContrast) }
         if (boards.isNotEmpty()) lastCellPx = boards[0].cellPx
         return boards
     }

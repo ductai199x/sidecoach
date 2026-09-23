@@ -20,7 +20,7 @@ import kotlin.math.sqrt
  * The voice's front end against the desktop's own (`tools/make_voice_fixtures.py`): notation read
  * out, phonemizer's phonemes, Kokoro's phonemes, tokens, batches and pauses, for every coach line
  * of the recorded sessions and the edge cases; the silence trims; the long strings' batches; and
- * Kokoro int8's audio within a tolerance.
+ * Kokoro's audio within a tolerance.
  */
 @RunWith(AndroidJUnit4::class)
 class VoiceParityTest {
@@ -92,11 +92,11 @@ class VoiceParityTest {
         val dir = File(app.filesDir, "models/kokoro")
         val model = File(dir, KokoroTts.ONNX_FILE)
         val voices = File(dir, KokoroTts.VOICES_FILE)
-        assumeTrue("no Kokoro int8 in $dir (tools/test.ps1 pushes it)", model.exists() && voices.exists())
+        assumeTrue("no Kokoro in $dir (tools/test.ps1 pushes it)", model.exists() && voices.exists())
         assumeTrue("no audio fixtures", fixtures.has("audio"))
         val began = System.currentTimeMillis()
         val kokoro = Kokoro.load(app, model, voices, KokoroTts.THREADS)
-        Log.i(TAG, "Kokoro int8 loaded in ${System.currentTimeMillis() - began} ms")
+        Log.i(TAG, "Kokoro loaded in ${System.currentTimeMillis() - began} ms")
         kokoro.use {
             val audio = fixtures.getJSONArray("audio")
             for (i in 0 until audio.length()) {

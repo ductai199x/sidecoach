@@ -34,19 +34,46 @@ class ChangeGate(
         if (baseline == null || lastWidth != pixels.width || lastHeight != pixels.height) return true
         var gate = region?.let { clampRegion(it, pixels.width, pixels.height) }
         if (gate != null && (gate.w == 0 || gate.h == 0)) gate = null
+        measured = pixels
+        measuredRegion = region
         return framesDiffer(baseline, pixels, gate) ||
             (keyframeIntervalS != null && ts - lastTs >= keyframeIntervalS)
     }
 
+    // The pixels the difference was last measured on, and the region it was measured in.
+    private var measured: FramePixels? = null
+    private var measuredRegion: Region? = null
+
+    /**
+     * [changed] for a tick that brings the very pixels of the last one (the phone's display
+     * sends nothing while the screen is still), measured in the same region. Their difference
+     * from the baseline cannot be over the threshold: either the last frame was committed and
+     * the baseline is these pixels, or it was not, and these pixels were measured against this
+     * baseline and found below it. So only the keyframe clock can make them due -- the same
+     * answer [changed] gives, without comparing the board's pixels again.
+     */
+    fun changedAgain(pixels: FramePixels, ts: Double): Boolean {
+        if (pixels !== measured || region != measuredRegion) return changed(pixels, ts)
+        val due = keyframeIntervalS != null && ts - lastTs >= keyframeIntervalS
+        if (due) commit(pixels, ts)
+        return due
+    }
+
     /** Make this frame the baseline later frames are compared against. */
     fun commit(pixels: FramePixels, ts: Double) {
-        val into = last?.takeIf { it.size == pixels.bytes.size } ?: ByteArray(pixels.bytes.size)
-        System.arraycopy(pixels.bytes, 0, into, 0, pixels.bytes.size)
-        last = into
-        lastWidth = pixels.width
-        lastHeight = pixels.height
+        // A baseline already copied from these very pixels holds them: only its time moves.
+        if (pixels !== committed) {
+            val into = last?.takeIf { it.size == pixels.bytes.size } ?: ByteArray(pixels.bytes.size)
+            System.arraycopy(pixels.bytes, 0, into, 0, pixels.bytes.size)
+            last = into
+            lastWidth = pixels.width
+            lastHeight = pixels.height
+            committed = pixels
+        }
         lastTs = ts
     }
+
+    private var committed: FramePixels? = null
 
     fun changed(pixels: FramePixels, ts: Double): Boolean {
         val due = due(pixels, ts)

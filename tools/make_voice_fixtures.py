@@ -11,8 +11,9 @@ the desktop's own code:
   token ids, the batches and their pauses -- of the text as given and of its spoken form;
 - the trim of a few synthetic signals;
 - the batches of a few long phoneme strings (sentence, clause, word and mid-word cuts);
-- Kokoro int8's audio for a few short lines (the phone's must match within a tolerance: the
-  two runtimes' kernels differ in their last bits).
+- Kokoro's audio for a few short lines, full precision as the phone runs it (the phone's must
+  match within a tolerance: the two runtimes' kernels differ in their last bits; int8 differed
+  in more than that on the Pixel's ARM cores, and was slower there).
 
 The corpus: every coach message in the recorded coach sessions, and cases written for the
 edges -- punctuation at the start and the end, a line of marks alone, decimals, quotes,
@@ -173,7 +174,8 @@ def main() -> None:
         "trims": signals(),
         "long": long_strings(tokenizer),
     }
-    model = MODEL_DIR / "kokoro-v1.0.int8.onnx"
+    # The model the phone runs: the full-precision one (Tai, 2026-09-23).
+    model = MODEL_DIR / "kokoro-v1.0.onnx"
     if model.exists():
         # On the CPU, as the phone runs it: kokoro-onnx would take the desktop's GPU.
         import onnxruntime as rt

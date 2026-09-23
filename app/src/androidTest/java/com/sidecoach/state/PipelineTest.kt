@@ -43,7 +43,19 @@ import org.opencv.imgproc.Imgproc
 class PipelineTest {
 
     @Test
-    fun everyFrameIsReadAsThePythonReadsIt() {
+    fun everyFrameIsReadAsThePythonReadsIt() = readAll(sameFrameShortcut = false)
+
+    /**
+     * The phone's still screen: a frame the display sent before, read again. The fixtures
+     * hold a frame over several ticks as a still screen does, and here every repeat takes the
+     * shortcut the capture takes (`GameWatcher.read` with no new bitmap: the last pixels, the
+     * gate's `changedAgain`, the pipeline's last grey image and the tracker's remembered
+     * results). The answers must still be the desktop's, frame for frame.
+     */
+    @Test
+    fun aStillScreenReadAgainIsReadAsThePythonReadsIt() = readAll(sameFrameShortcut = true)
+
+    private fun readAll(sameFrameShortcut: Boolean) {
         val context = InstrumentationRegistry.getInstrumentation().context
         val text = context.assets.open("pipeline/index.json").bufferedReader().use { it.readText() }
         val runs = JSONObject(text).getJSONArray("runs")
@@ -57,21 +69,32 @@ class PipelineTest {
                 val frames = run.getJSONArray("frames")
                 val decoded = HashMap<String, Mat>()
                 var moves = 0
+                var lastFile: String? = null
+                var lastPixels: FramePixels? = null
+                var shortcuts = 0
                 val began = System.currentTimeMillis()
                 for (f in 0 until frames.length()) {
                     val frame = frames.getJSONObject(f)
                     val file = frame.getString("file")
                     val mat = decoded.getOrPut(file) { load(file) }
-                    val pixels = FramePixels.of(mat)
+                    val same = sameFrameShortcut && file == lastFile
+                    if (same) shortcuts++
+                    val pixels = lastPixels.takeIf { same } ?: FramePixels.of(mat)
                     gate.region = ChangeGate.boardGate(pipeline.board, pixels.width, pixels.height)
-                    val changed = gate.changed(pixels, frame.getDouble("ts"))
+                    val changed = if (same) {
+                        gate.changedAgain(pixels, frame.getDouble("ts"))
+                    } else {
+                        gate.changed(pixels, frame.getDouble("ts"))
+                    }
+                    lastFile = file
+                    lastPixels = pixels
                     if (changed != frame.getBoolean("changed") && failures.size < 8) {
                         failures.add(
                             "$name frame $f ($file): the gate says changed=$changed, " +
                                 "python says ${frame.getBoolean("changed")}",
                         )
                     }
-                    val events = pipeline.process(mat, frame.getDouble("ts"), changed, f, pixels)
+                    val events = pipeline.process(mat, frame.getDouble("ts"), changed, f, pixels, sameFrame = same)
                     val mine = events.map { line(it) }
                     val theirs = frame.getJSONArray("events").let { a ->
                         List(a.length()) { a.getString(it) }
@@ -89,8 +112,8 @@ class PipelineTest {
                 val rec = pipeline.reconciler
                 Log.i(
                     "sidecoach.state",
-                    "$name: ${frames.length()} frames, $moves moves, ${pipeline.bootstraps} " +
-                        "bootstraps, $took ms — ${rec?.pgn()}",
+                    "$name: ${frames.length()} frames ($shortcuts read again), $moves moves, " +
+                        "${pipeline.bootstraps} bootstraps, $took ms — ${rec?.pgn()}",
                 )
                 if (rec?.pgn() != run.getString("pgn")) {
                     failures.add("$name: pgn is '${rec?.pgn()}', python's is '${run.getString("pgn")}'")

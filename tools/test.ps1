@@ -56,7 +56,7 @@ if ($net) {
 # The voice's model files (Kokoro int8 and its voices), from the desktop's data folder, the
 # same way: what the voice tests synthesise with. Missing, those tests say so and skip.
 $voiceDir = "D:\chess-coaching-companion\data\models\kokoro"
-foreach ($name in @("kokoro-v1.0.int8.onnx", "voices-v1.0.bin")) {
+foreach ($name in @("kokoro-v1.0.onnx", "voices-v1.0.bin")) {
     $file = Join-Path $voiceDir $name
     if (-not (Test-Path $file)) { Write-Host "no $name in $voiceDir; the voice tests will skip"; continue }
     $there = & $adb -s $Serial shell "run-as com.sidecoach ls files/models/kokoro/$name 2>/dev/null"
