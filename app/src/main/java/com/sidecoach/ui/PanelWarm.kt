@@ -38,10 +38,7 @@ import kotlin.concurrent.withLock
  * land (docs/app-plan.md, "everything loads when the app opens"). The phone does the same.
  * The engine and the coach are built here and kept across Starts, rebuilt only when a save
  * changed what they were built from; a save that can reach them does so now
- * ([applySettings], the coach and engine half of `panel.apply_settings`).
- *
- * The phone has no voice, speech recognition or microphone yet: those stages are off, each
- * with the reason, as the desktop's are when a model is missing.
+ * ([applySettings], `panel.apply_settings` for what the phone has).
  */
 object PanelWarm {
 
@@ -120,6 +117,7 @@ object PanelWarm {
                 // The voice built, not loaded (`panel._build_tts` at construction): the page
                 // knows the voices at once, and the voice stage below loads the model.
                 PanelVoice.build(appContext, SettingsStore(appContext))
+                PanelListen.build(appContext)
                 stage("pieces", "loading")
                 // OpenCV's native library first: the net's prime and the vision's pass both
                 // need it (the desktop has cv2 the moment it imports the vision).
@@ -262,9 +260,10 @@ object PanelWarm {
     }
 
     /**
-     * `_warm_voice`: the voice loaded once, off the pipeline thread, and one line synthesised
-     * and thrown away so the first spoken one is not the slow one; then speech recognition,
-     * which the phone has not got yet, and the microphone, which it has no use for without it.
+     * `_warm_voice`: both voice models loaded once, off the pipeline thread, each primed with
+     * one inference so the first real one is not the slow one, and where they landed said;
+     * then the microphone, and listening in the mode the settings name -- when there is speech
+     * recognition to listen with.
      */
     private fun warmVoice() {
         val tts = PanelVoice.tts
@@ -288,17 +287,45 @@ object PanelWarm {
                 PanelEngine.emit("sys", "warn", "voice: $detail")
                 stage("voice", "off", detail)
             }
-            PanelEngine.set("voice_detail" to tts.healthcheck().second)
         }
-        stage("stt", "off", "no speech recognition on the phone yet")
-        val detail = "no microphone on the phone yet"
-        PanelEngine.emit("sys", "warn", "mic: $detail")
+        val stt = PanelListen.stt
+        if (stt == null) {
+            stage("stt", "off", "speech recognition off")
+        } else {
+            stage("stt", "loading")
+            val ok = stt.load()
+            val detail = stt.healthcheck().second
+            if (ok) {
+                val primed = stt.prime()
+                PanelEngine.emit(
+                    "sys",
+                    "info",
+                    "speech recognition: $detail; loaded once in ${f1(stt.loadSeconds ?: 0.0)}s" +
+                        (if (primed != null) ", primed in ${f1(primed)}s" else ""),
+                    JSONObject().put("device", "cpu"),
+                )
+                stage("stt", "done", detail)
+            } else {
+                PanelEngine.emit("sys", "warn", "speech recognition: $detail")
+                stage("stt", "off", detail)
+            }
+        }
+        PanelVoice.tts?.let { PanelEngine.set("voice_detail" to it.healthcheck().second) }
+        val (sttReady, sttDetail) = stt?.healthcheck() ?: (false to "speech recognition off")
+        PanelEngine.set("stt_detail" to sttDetail, "stt_ready" to sttReady)
+        val (ok, detail) = PanelListen.mic?.healthcheck() ?: (false to "no microphone")
+        PanelEngine.emit("sys", if (ok) "info" else "warn", "mic: $detail")
         stage("mic", "loading")
         val wanted = SettingsStore(appContext).listen()
         if (wanted != "off") {
-            PanelEngine.emit("voice", "warn", "listening: off (speech recognition is not available)")
+            // Speech recognition that is off has no use for the microphone: it does not open.
+            if (stt?.healthcheck()?.first == true) {
+                PanelListen.setListen(wanted)
+            } else {
+                PanelEngine.emit("voice", "warn", "listening: off (speech recognition is not available)")
+            }
         }
-        stage("mic", "off", detail)
+        stage("mic", if (ok) "done" else "off", detail)
     }
 
     /**
@@ -356,10 +383,10 @@ object PanelWarm {
     }
 
     /**
-     * The settings saved: what the kept coach and engine can change, they do now; the list
-     * of dotted names applied. Each change on its own: one that fails is named in the log and
-     * the others still go. The coach and engine half of `panel.apply_settings` -- the rest of
-     * it is the voice, the recording and the capture, which the phone does not have.
+     * The settings saved: what the kept voice, hearing, coach and engine can change, they do
+     * now; the list of dotted names applied. Each change on its own: one that fails is named in
+     * the log and the others still go. `panel.apply_settings`, less what the phone does not
+     * have: a recording, a capture backend, an output device to choose and a push-to-talk key.
      */
     fun applySettings(store: SettingsStore, changed: List<String>): List<String> {
         val applied = ArrayList<String>()
@@ -376,6 +403,7 @@ object PanelWarm {
         }
         if (changed.any { it == "engine.stockfish_path" || it == "tools_dir" }) engineStale = true
         attempt(listOf("voice.voice")) { PanelVoice.setVoice(store.voice()) }
+        attempt(listOf("voice.listen")) { PanelListen.setListen(store.listen()) }
         attempt(listOf("voice.speed")) { PanelVoice.tts?.speed = store.speed() }
         if (changed.any { it in VOICE_RELOAD }) {
             // A new language, folder or device: the old voice is cut off, the new one built
@@ -385,6 +413,10 @@ object PanelWarm {
             PanelEngine.emit("voice", "info", "voice reloading: ${PanelVoice.tts?.healthcheck()?.second}")
             thread(name = "voice-reload", isDaemon = true) { warmVoice() }
             applied.addAll(changed.filter { it in VOICE_RELOAD })
+        }
+        if (changed.any { it in STT_RELOAD }) {
+            PanelListen.reload { warmVoice() }
+            applied.addAll(changed.filter { it in STT_RELOAD })
         }
         for (name in changed) if (name.startsWith("llm.price_")) applied.add(name)
         val runner = coaching
@@ -466,6 +498,9 @@ object PanelWarm {
 
     /** `panel.VOICE_RELOAD`: the voice settings that need a new voice, not a changed one. */
     private val VOICE_RELOAD = setOf("voice.lang", "voice.model_dir", "voice.tts_device")
+
+    /** `panel.STT_RELOAD`: the settings that rebuild speech recognition and the microphone. */
+    private val STT_RELOAD = setOf("voice.stt_device", "voice.mic_device")
 
     /** Python's `f"{x:.1f}"`: half to even. */
     private fun f1(value: Double): String =

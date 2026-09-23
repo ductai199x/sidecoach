@@ -41,9 +41,8 @@ import java.util.Locale
  * The page is the desktop's own, so the shape of what it is given is the desktop's:
  * `{"state": {...}, "lines": [...], "cursor": n}`, the state's keys as `PanelState` in
  * `desktop/src/lib/api.ts` names them, and one log record per thing that happened, on the
- * channel the terminal filters by. Anything the phone does not have yet -- the voice, the
- * microphone, the profile, the puzzle room -- is reported as absent rather than faked, and
- * the page's own code shows it as off.
+ * channel the terminal filters by. What the phone does not have -- a recording, a GPU -- is
+ * reported as absent rather than faked, and the page's own code shows it as off.
  *
  * One engine for the app, since the capture is a foreground service and the page is a
  * window onto it.
@@ -93,8 +92,8 @@ object PanelEngine {
     var onStart: (() -> Unit)? = null
     var onStop: (() -> Unit)? = null
 
-    /** What an ask reaches: the coach, when one is running. */
-    var onAsk: ((String) -> Unit)? = null
+    /** What an ask reaches: the session's loop, when one is running; whether it was spoken. */
+    var onAsk: ((String, Boolean) -> Unit)? = null
 
     /** Flip, End game and Re-read, when the session can take them. */
     var onFlip: (() -> Unit)? = null
@@ -134,9 +133,11 @@ object PanelEngine {
             state["heard"] = null
             state["dictation"] = mapOf("text" to "", "live" to false, "sends_at" to null)
             state["voice_detail"] = "the voice is not built yet"
-            state["stt_detail"] = "no speech recognition on the phone yet"
-            // Nothing to listen with, so the composer leaves the listening button out.
-            state["stt_ready"] = false
+            state["stt_detail"] = "nemo-parakeet-tdt-0.6b-v3, cpu (not loaded yet)"
+            // Whether the page's listening button has anything behind it. True while the
+            // models are still being built, so it does not appear partway through a run; the
+            // warm-up replaces it with the recogniser's own answer.
+            state["stt_ready"] = true
             state["recording_dir"] = null
             state["record_wanted"] = false
             state["coach_on"] = false
@@ -187,6 +188,9 @@ object PanelEngine {
             while (records.size > KEPT) records.removeFirst()
         }
     }
+
+    /** The position on the screen as the page shows it (`self._state.get("fen")`), or null. */
+    fun fen(): String? = synchronized(lock) { state["fen"] as? String }
 
     /** The side the page is showing as the player's, as `panel._state["user_side"]`. */
     fun userSide(): String? = synchronized(lock) { state["user_side"] as? String }
@@ -259,8 +263,8 @@ object PanelEngine {
                 "latency" to PanelVoice.latency(),
                 "rss_mb" to (rssMb ?: residentMb()),
                 "tts_device" to if (PanelVoice.tts?.loaded == true) "cpu" else null,
-                "stt_device" to null,
-                "mic_dropped" to 0,
+                "stt_device" to PanelListen.sttDevice(),
+                "mic_dropped" to PanelListen.micDropped(),
                 "fps" to round1(fps),
                 "lock" to lock,
                 "stage" to if (following) "following" else "waiting for a start",
@@ -476,18 +480,27 @@ object PanelEngine {
         emit("user", "info", "you: $text", JSONObject().put("spoken", spoken))
     }
 
-    /** A line from the coach that needed no model and no game: it is said as itself. */
-    fun answered(text: String, trigger: String = "user_ask") {
+    /**
+     * An ask, typed or [spoken], for the session's loop (`panel.command("ask" | "ask_spoken")`).
+     * With no session running there is no loop to take it: it is answered on the spot rather
+     * than kept for a Start minutes later, about another game.
+     */
+    fun ask(text: String, spoken: Boolean = false) {
+        val session = onAsk
+        if (session != null) {
+            session(text, spoken)
+            return
+        }
+        heard(text, spoken)
         emit(
             "coach",
             "info",
-            "$trigger — $text",
+            "user_ask · not watching — Press Start first: I can only answer about a game I am watching.",
             JSONObject().apply {
-                put("full", text)
-                put("trigger", trigger)
+                put("full", "Press Start first: I can only answer about a game I am watching.")
+                put("trigger", "user_ask")
                 put("ply", JSONObject.NULL)
                 put("voice", "text")
-                put("annotations", JSONArray())
             },
         )
     }

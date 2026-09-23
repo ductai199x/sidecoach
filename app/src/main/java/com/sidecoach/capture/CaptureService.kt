@@ -7,7 +7,9 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.Manifest
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
@@ -29,6 +31,7 @@ import com.sidecoach.MainActivity
 import com.sidecoach.SidecoachApp
 import com.sidecoach.R
 import com.sidecoach.ui.PanelEngine
+import com.sidecoach.ui.PanelListen
 import com.sidecoach.ui.PanelWarm
 import com.sidecoach.vision.GameWatcher
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -100,13 +103,33 @@ class CaptureService : Service() {
         }
 
         // The foreground notification first: the projection may not be taken before the
-        // service carries the mediaProjection type.
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            notification(),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
-        )
+        // service carries the mediaProjection type. The microphone type too, when the person
+        // has allowed the microphone: an app behind the game hears only through a service
+        // that holds it, and the session is when the coach is talked to over the game.
+        var hears = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                    (if (hears) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0),
+            )
+        } catch (exc: SecurityException) {
+            if (!hears) throw exc
+            // Android would not let the service hold the microphone: the screen alone, and the
+            // coach hears only while the panel is in front.
+            Log.w(TAG, "the microphone type was refused: $exc")
+            PanelEngine.emit("voice", "warn", "the session cannot hold the microphone; the coach hears only while the panel is in front")
+            hears = false
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+            )
+        }
+        PanelListen.sessionHolds(hears)
 
         val manager = getSystemService(MediaProjectionManager::class.java)
         val projection = runCatching { manager.getMediaProjection(resultCode, data) }.getOrNull()
@@ -377,6 +400,8 @@ class CaptureService : Service() {
     }
 
     override fun onDestroy() {
+        // The service's hold on the microphone goes with it; the panel in front keeps it open.
+        PanelListen.sessionHolds(false)
         runCatching { display?.release() }
         runCatching { reader?.close() }
         runCatching { projection?.stop() }

@@ -32,9 +32,18 @@ class LocalServer(
 ) {
 
     /** What answers `/api/...`; anything else is a file from the asset folder. */
-    fun interface Api {
-        /** The reply, or null for "no such route". */
-        fun handle(method: String, path: String, query: Map<String, String>, body: String): Reply?
+    interface Api {
+        /**
+         * The reply, or null for "no such route". [body] is the request's body as text; [raw]
+         * the same bytes as they came, for the one route that takes audio (`/api/hear`).
+         */
+        fun handle(
+            method: String,
+            path: String,
+            query: Map<String, String>,
+            body: String,
+            raw: ByteArray = ByteArray(0),
+        ): Reply?
     }
 
     class Reply(
@@ -118,8 +127,10 @@ class LocalServer(
         val method: String,
         val path: String,
         val query: Map<String, String>,
-        val body: String,
-    )
+        val raw: ByteArray,
+    ) {
+        val body: String get() = String(raw, Charsets.UTF_8)
+    }
 
     private fun readRequest(input: InputStream): Request? {
         val line = readLine(input) ?: return null
@@ -137,7 +148,7 @@ class LocalServer(
                 length = header.substring(colon + 1).trim().toIntOrNull() ?: 0
             }
         }
-        var body = ""
+        var body = ByteArray(0)
         if (length > 0) {
             val bytes = ByteArray(length)
             var read = 0
@@ -146,7 +157,7 @@ class LocalServer(
                 if (n < 0) break
                 read += n
             }
-            body = String(bytes, 0, read, Charsets.UTF_8)
+            body = if (read == length) bytes else bytes.copyOf(read)
         }
         val mark = target.indexOf('?')
         val path = if (mark < 0) target else target.substring(0, mark)
@@ -183,7 +194,7 @@ class LocalServer(
     private fun answer(request: Request): Reply {
         if (request.path.startsWith("/api/")) {
             val reply = try {
-                api.handle(request.method, request.path, request.query, request.body)
+                api.handle(request.method, request.path, request.query, request.body, request.raw)
             } catch (exc: Exception) {
                 Log.w(TAG, "${request.path} failed: $exc")
                 return Reply(500, "application/json; charset=utf-8", """{"ok":false}""".toByteArray())

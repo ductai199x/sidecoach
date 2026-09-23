@@ -70,6 +70,32 @@ foreach ($name in @("kokoro-v1.0.int8.onnx", "voices-v1.0.bin")) {
     }
 }
 
+# The recogniser's files (Parakeet int8, its vocabulary and config) and the voice gate
+# (Silero), from the desktop's Hugging Face cache, where Setup puts them on the phone.
+$hub = Join-Path $env:USERPROFILE ".cache\huggingface\hub"
+$pushes = @(
+    @("models--istupakov--parakeet-tdt-0.6b-v3-onnx", "encoder-model.int8.onnx", "models/parakeet"),
+    @("models--istupakov--parakeet-tdt-0.6b-v3-onnx", "decoder_joint-model.int8.onnx", "models/parakeet"),
+    @("models--istupakov--parakeet-tdt-0.6b-v3-onnx", "vocab.txt", "models/parakeet"),
+    @("models--istupakov--parakeet-tdt-0.6b-v3-onnx", "config.json", "models/parakeet"),
+    @("models--istupakov--silero-vad-onnx", "silero_vad.onnx", "models/silero")
+)
+foreach ($push in $pushes) {
+    $repo, $name, $dest = $push
+    $file = Get-ChildItem (Join-Path $hub "$repo\snapshots") -Recurse -Filter $name -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $file) { Write-Host "no $name in the Hugging Face cache; the listening tests will skip"; continue }
+    $there = & $adb -s $Serial shell "run-as com.sidecoach ls files/$dest/$name 2>/dev/null"
+    if (-not $there) {
+        Write-Host "pushing $name ($([int]($file.Length / 1MB)) MB)..."
+        & $adb -s $Serial push $file.FullName "/data/local/tmp/$name" | Out-Null
+        & $adb -s $Serial shell chmod 644 "/data/local/tmp/$name"
+        & $adb -s $Serial shell "run-as com.sidecoach mkdir -p files/$dest"
+        & $adb -s $Serial shell "run-as com.sidecoach sh -c 'cat /data/local/tmp/$name > files/$dest/$name'"
+        & $adb -s $Serial shell rm "/data/local/tmp/$name"
+    }
+}
+
 & $adb -s $Serial logcat -c
 $args = @("-w", "-e", "listener", "androidx.test.internal.runner.listener.LogRunListener")
 if ($Class) { $args += @("-e", "class", $Class) }

@@ -25,8 +25,9 @@ import java.security.MessageDigest
  * The APK carries the code and the engine; at first run the app fetches, with one progress
  * bar for the lot, what the desktop fetches and the phone can use: the engine's network (the
  * phone's half of the desktop's Stockfish item -- the engine ships in the APK, because it has
- * to be executed from there, and the 98 MB network would be in it once per ABI), the opening
- * tables, and, when asked for, a sample of the Lichess puzzles for practice. Each item knows whether it is present, how big it is, and how to fetch
+ * to be executed from there, and the 98 MB network would be in it once per ABI), the voice,
+ * the opening tables, speech recognition, and, when asked for, a sample of the Lichess puzzles
+ * for practice. Each item knows whether it is present, how big it is, and how to fetch
  * itself; [Setup] runs the missing ones on a thread and reports through `/api/setup/status`.
  */
 
@@ -48,6 +49,23 @@ val KOKORO_FILES: Map<String, Pair<String, Long>> = linkedMapOf(
         "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin" to
             28_214_398L
         ),
+)
+/**
+ * Speech recognition's files, folder -> name -> (url, bytes): what `onnx_asr.load_model` and
+ * `load_vad("silero")` fetch through the hub for the desktop, with Parakeet's int8 graphs where
+ * the desktop takes the full-precision ones (Tai, 2026-09-23: 670 MB for 2.5 GB).
+ */
+private const val HF = "https://huggingface.co"
+val STT_FILES: Map<String, Map<String, Pair<String, Long>>> = linkedMapOf(
+    "models/parakeet" to linkedMapOf(
+        "encoder-model.int8.onnx" to ("$HF/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.int8.onnx" to 652_183_999L),
+        "decoder_joint-model.int8.onnx" to ("$HF/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/decoder_joint-model.int8.onnx" to 18_202_004L),
+        "vocab.txt" to ("$HF/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/vocab.txt" to 93_939L),
+        "config.json" to ("$HF/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/config.json" to 97L),
+    ),
+    "models/silero" to linkedMapOf(
+        "silero_vad.onnx" to ("$HF/istupakov/silero-vad-onnx/resolve/main/silero_vad.onnx" to 2_327_524L),
+    ),
 )
 const val OPENINGS_BASE = "https://raw.githubusercontent.com/lichess-org/chess-openings/master"
 val OPENINGS_VOLUMES = listOf("a", "b", "c", "d", "e")
@@ -193,6 +211,31 @@ fun items(context: Context): List<Item> {
                     val target = File(openingsDir, "$v.tsv")
                     if (!target.exists()) download("$OPENINGS_BASE/$v.tsv", target)
                     progress((i + 1) * 100_000L, null)
+                }
+            },
+        ),
+    )
+
+    out.add(
+        Item(
+            "stt",
+            "Speech recognition (Parakeet) and the voice gate (Silero)",
+            STT_FILES.values.sumOf { folder -> folder.values.sumOf { it.second } },
+            present = {
+                STT_FILES.all { (folder, names) -> names.keys.all { File(files, "$folder/$it").exists() } }
+            },
+            fetch = { progress ->
+                var base = 0L
+                for ((folder, names) in STT_FILES) {
+                    for ((name, entry) in names) {
+                        val (url, size) = entry
+                        val target = File(files, "$folder/$name")
+                        if (!target.exists()) {
+                            val at = base
+                            download(url, target, { done, _ -> progress(at + done, null) })
+                        }
+                        base += size
+                    }
                 }
             },
         ),

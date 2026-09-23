@@ -108,7 +108,7 @@ class GameWatcher(
         // A question about the player over their games: the coach's model writes the queries
         // itself (profile/Ask), read-only over this store.
         coaching.useRecord(profileStore)
-        PanelEngine.onAsk = { text -> command("ask", text) }
+        PanelEngine.onAsk = { text, spoken -> command(if (spoken) "ask_spoken" else "ask", text) }
         PanelEngine.onEnd = { outcome -> command("end", outcome) }
         PanelEngine.onFlip = { command("flip") }
         PanelEngine.onAnalyze = { command("analyze") }
@@ -282,11 +282,12 @@ class GameWatcher(
         while (true) {
             val (name, payload) = synchronized(commands) { commands.removeFirstOrNull() } ?: break
             when (name) {
-                "ask" -> if (coaching.on) {
-                    // Typed, the ask is a turn of the conversation on the page.
-                    PanelEngine.heard(payload)
+                "ask", "ask_spoken" -> if (coaching.on) {
+                    // Spoken or typed, the ask is a turn of the conversation on the page.
+                    val spoken = name == "ask_spoken"
+                    PanelEngine.heard(payload, spoken)
                     coaching.ask(payload, ts)
-                    PanelEngine.recordDialogue(UserUtterance(payload, source = "text"))
+                    PanelEngine.recordDialogue(UserUtterance(payload, source = if (spoken) "voice" else "text"))
                 } else {
                     PanelEngine.emit("user", "warn", "no coach to ask: $payload")
                 }

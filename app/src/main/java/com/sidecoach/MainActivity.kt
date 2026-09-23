@@ -31,6 +31,7 @@ import com.sidecoach.capture.CaptureService
 import com.sidecoach.ui.LocalServer
 import com.sidecoach.ui.PanelApi
 import com.sidecoach.ui.PanelEngine
+import com.sidecoach.ui.PanelListen
 import com.sidecoach.ui.PanelWarm
 import com.sidecoach.ui.SettingsApi
 import com.sidecoach.ui.PuzzleRooms
@@ -78,6 +79,11 @@ class MainActivity : ComponentActivity() {
         askForScreen()
     }
 
+    /** The microphone, asked for when a listening mode first needs it (see `PanelListen`). */
+    private val microphone = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> PanelListen.permitted(granted) }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         // Edge to edge on every version, as Android 15 and later always are: the bars are
@@ -93,6 +99,7 @@ class MainActivity : ComponentActivity() {
 
         PanelEngine.onStart = { runOnUiThread { startCapture() } }
         PanelEngine.onStop = { runOnUiThread { CaptureService.stop(this) } }
+        PanelListen.askPermission = { runOnUiThread { microphone.launch(Manifest.permission.RECORD_AUDIO) } }
 
         val store = SettingsStore(this)
         val ports = getSharedPreferences("panel", MODE_PRIVATE)
@@ -238,9 +245,22 @@ class MainActivity : ComponentActivity() {
         return frame
     }
 
+    // The coach may hear while its panel is in front; behind another app, only a session holds
+    // the microphone (`PanelListen`).
+    override fun onStart() {
+        super.onStart()
+        PanelListen.visible(true)
+    }
+
+    override fun onStop() {
+        PanelListen.visible(false)
+        super.onStop()
+    }
+
     override fun onDestroy() {
         PanelEngine.onStart = null
         PanelEngine.onStop = null
+        PanelListen.askPermission = null
         web?.destroy()
         web = null
         server?.stop()

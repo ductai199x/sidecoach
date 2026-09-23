@@ -10,9 +10,8 @@ import org.json.JSONObject
 /**
  * The control surface the page calls, route for route with `sidecoach/ui/server.py`.
  *
- * Thin over [PanelEngine]. What the phone does not have yet answers honestly -- the voice
- * says it has no voices, the microphone says it is not listening -- rather than pretending,
- * so the page shows them off instead of hanging on a promise.
+ * Thin over [PanelEngine]. What the phone does not have -- a recording, a GPU pack -- answers
+ * honestly rather than pretending, so the page shows it off instead of hanging on a promise.
  */
 class PanelApi(
     private val version: String,
@@ -29,6 +28,7 @@ class PanelApi(
         path: String,
         query: Map<String, String>,
         body: String,
+        raw: ByteArray,
     ): LocalServer.Reply? {
         val json = if (body.isBlank()) JSONObject() else runCatching { JSONObject(body) }
             .getOrElse { JSONObject() }
@@ -118,21 +118,25 @@ class PanelApi(
                 val text = if (json.isNull("text")) "" else json.optString("text")
                 ok(JSONObject().put("ok", PanelVoice.saySample(voice, text.ifEmpty { PanelVoice.VOICE_SAMPLE })))
             }
-            path == "/api/hear_test" -> ok(
-                JSONObject().apply { put("ok", false); put("on", false) }
-            )
+            // The settings page's live test of the microphone and speech recognition.
+            path == "/api/hear_test" && method == "GET" -> ok(PanelListen.hearStatus())
+            path == "/api/hear_test" -> ok(PanelListen.setHearTest(json.optBoolean("on", true)))
 
             path == "/api/listen" -> {
-                // No speech recognition on the phone yet: the mode stays off, and the page
-                // reads that back from the state.
-                PanelEngine.set("listen" to "off")
+                if (!json.has("mode")) return unprocessable()
+                ok(JSONObject().put("ok", true).put("mode", PanelListen.setListen(json.getString("mode"))))
+            }
+
+            path == "/api/ptt" -> {
+                if (!json.has("down")) return unprocessable()
+                PanelListen.ptt(json.getBoolean("down"))
                 ok(done())
             }
 
-            path == "/api/ptt" -> ok(done())
+            path == "/api/hear" -> hear(raw)
 
-            path == "/api/dictation/cancel" ->
-                ok(JSONObject().apply { put("ok", true); put("text", "") })
+            // The person typed over the dictation: it stays in the box, nothing sends itself.
+            path == "/api/dictation/cancel" -> ok(PanelListen.cancelDictation())
 
             path == "/api/record" -> ok(
                 JSONObject().apply {
@@ -189,18 +193,51 @@ class PanelApi(
 
     private fun ask(text: String): LocalServer.Reply {
         if (text.isBlank()) return ok(done())
-        val coach = PanelEngine.onAsk
-        if (coach == null) {
-            // Nothing is watching, so there is no game to answer about: said now rather
-            // than kept for a Start minutes later, about another game.
-            PanelEngine.heard(text)
-            PanelEngine.answered(
-                "Press Start first: I can only answer about a game I am watching.",
-            )
-            return ok(done())
-        }
-        coach.invoke(text)
+        PanelEngine.ask(text)
         return ok(done())
+    }
+
+    /**
+     * A 16 kHz mono WAV in the body is treated as something the user said -- the way to
+     * exercise the whole hear -> correct -> ask path without a microphone. `server.hear`, with
+     * Python's `wave` reading the file: PCM only, and anything but 16 kHz mono 16-bit refused.
+     */
+    private fun hear(raw: ByteArray): LocalServer.Reply {
+        val wav = java.nio.ByteBuffer.wrap(raw).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        fun tag(at: Int) = String(raw, at, 4, Charsets.US_ASCII)
+        if (raw.size < 12 || tag(0) != "RIFF" || tag(8) != "WAVE") throw IllegalArgumentException("file does not start with RIFF id")
+        var at = 12
+        var format = -1
+        var channels = 0
+        var rate = 0
+        var width = 0
+        var data: Pair<Int, Int>? = null
+        while (at + 8 <= raw.size) {
+            val id = tag(at)
+            val size = wav.getInt(at + 4)
+            val start = at + 8
+            when (id) {
+                "fmt " -> {
+                    format = wav.getShort(start).toInt() and 0xffff
+                    channels = wav.getShort(start + 2).toInt()
+                    rate = wav.getInt(start + 4)
+                    width = wav.getShort(start + 14).toInt() / 8
+                }
+                "data" -> data = start to minOf(size, raw.size - start)
+            }
+            if (data != null) break
+            at = start + size + (size and 1)
+        }
+        if (format != 1) throw IllegalArgumentException("unknown format: $format")
+        val (start, length) = data ?: throw IllegalArgumentException("data chunk missing")
+        if (rate != 16000 || channels != 1 || width != 2) {
+            return ok(JSONObject().put("ok", false).put("error", "need 16 kHz mono 16-bit PCM WAV"))
+        }
+        val audio = FloatArray(length / 2)
+        for (i in audio.indices) audio[i] = wav.getShort(start + 2 * i) / 32768.0f
+        PanelListen.hear(audio)
+        val seconds = java.math.BigDecimal(audio.size / 16000.0).setScale(2, java.math.RoundingMode.HALF_EVEN).toDouble()
+        return ok(JSONObject().put("ok", true).put("seconds", seconds))
     }
 
     private fun done(): JSONObject = JSONObject().put("ok", true)
