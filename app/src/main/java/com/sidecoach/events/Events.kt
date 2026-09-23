@@ -52,6 +52,15 @@ class Resync(val gameId: String, val fen: String, val reason: String) : Event()
  */
 class Unexplained(val gameId: String, val fen: String, val reason: String) : Event()
 
+/**
+ * A board on screen, no game followed on it, and nothing read from it for a while (Tai on
+ * the Pixel, 2026-09-23: a puzzle up, "the program is not registering anything"). A note for
+ * the person, said once while the board stays: "unlearned" when no learned board-and-piece
+ * set reads it, so a start position shown once teaches it; "orientation" when a learned set
+ * reads it but the coordinates cannot be, so Flip must say which side is at the bottom.
+ */
+class BoardUnread(val reason: String) : Event()
+
 class GameEnded(
     val gameId: String,
     val result: String,

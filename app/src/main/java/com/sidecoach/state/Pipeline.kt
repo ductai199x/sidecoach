@@ -6,6 +6,7 @@ import com.sidecoach.chess.Move
 import com.sidecoach.chess.Piece
 import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.squareDistance
+import com.sidecoach.events.BoardUnread
 import com.sidecoach.events.Event
 import com.sidecoach.events.GameEnded
 import com.sidecoach.events.GameStarted
@@ -96,6 +97,18 @@ class GamePipeline(
         const val COLD_START_EVERY_S = 0.5
         const val COLD_START_HOLD = 3
         const val COLD_START_EXPIRE_S = 3.0
+
+        /**
+         * A board that has gone this long without being read, with no game followed on it, is
+         * explained to the person once ([BoardUnread]) rather than left in silence.
+         */
+        const val COLD_NOTICE_S = 6.0
+
+        /**
+         * A board no move explains has its coordinate labels read this often; two reads this
+         * far apart saying the other side is at the bottom turn the game round ([flipIfTurned]).
+         */
+        const val FLIP_CHECK_EVERY_S = 0.25
     }
 
     var startFramesNeeded = 2
@@ -134,6 +147,21 @@ class GamePipeline(
     private var unreadChange = false
     private var coldTried: Double? = null
     private var coldCandidate: Triple<String, Int, Double>? = null
+
+    /**
+     * The last cold read and what it was read from (the lock and the side told), so pixels
+     * that have not changed are not read again; since when no cold read has succeeded on this
+     * lock, and whether the person has been told.
+     */
+    private var coldLast: Pair<Triple<Region, Double, Side?>, ColdRead?>? = null
+    private var coldSince: Double? = null
+    private var coldNoticed = false
+
+    /** The lock the start check last ran on with no model: unchanged pixels on it look the same. */
+    private var startChecked: Pair<Region, Double>? = null
+
+    /** The other side the labels last said was at the bottom of an unexplained board, and when. */
+    private var flipSeen: Pair<Side, Double>? = null
     private var screenState: ScreenState = ScreenState.UNKNOWN
     private var dialogSince: Double? = null
     private var covered = false
@@ -187,10 +215,18 @@ class GamePipeline(
             // frame is still unread.
             unreadChange = unreadChange || changed
             reconciler?.boardUnseen()
+            // A board that comes back is waited for, and explained, afresh.
+            coldLast = null
+            coldSince = null
+            coldNoticed = false
+            startChecked = null
             return stamp(emitScreenState(boardPresent = false), ts, frameId)
         }
         val geometry = BoardGeometry(candidate.region, candidate.cellPx)
         val key = candidate.region to Math.round(candidate.cellPx * 100.0) / 100.0
+        val newPixels = changed || unreadChange
+        // These pixels are not the ones last read cold, whether or not this tick reads.
+        if (newPixels) coldLast = null
         var fresh = changed || unreadChange || readingsValue == null || key != readingsKey
         unreadChange = false
         val events = mutableListOf<Event>()
@@ -211,10 +247,14 @@ class GamePipeline(
                 readingsKey = key
                 startOnScreen = ThemeModel.startShapedReadings(readingsValue!!) &&
                     !readsAsStart(readingsValue!!)
-            } else {
+            } else if (newPixels || key != startChecked) {
+                // With no model, unchanged pixels on the same lock look the same: not checked
+                // again on every tick a board sits there unread (a quarter of a second a
+                // frame on the phone).
                 began = android.os.SystemClock.elapsedRealtime()
                 startOnScreen = ThemeModel.looksLikeStartPosition(frame, geometry)
                 classifyMs = android.os.SystemClock.elapsedRealtime() - began
+                startChecked = key
             }
         }
         startSeen = if (startOnScreen) startSeen + 1 else 0
@@ -246,6 +286,7 @@ class GamePipeline(
         val wasStarted = rec.started
         if (fresh) badgeFrame = badgedKings(frame, geometry)
         events.addAll(resyncReoriented(rec.update(currentReadings, ts), frame, geometry, ts))
+        if (events.none { it is Resync || it is GameStarted }) events.addAll(flipIfTurned(frame, geometry, ts))
         events.addAll(turnFromClock(ts))
         if (fresh) events.addAll(endOnBadges())
         events.addAll(dialogOverTheBoard(readingsValue!!, ts))
@@ -492,6 +533,11 @@ class GamePipeline(
         screenState = ScreenState.UNKNOWN
         coldTried = null
         coldCandidate = null
+        coldLast = null
+        coldSince = null
+        coldNoticed = false
+        startChecked = null
+        flipSeen = null
         dialogSince = null
         covered = false
         badges = null
@@ -531,6 +577,58 @@ class GamePipeline(
      * Read the board again with `bottom` at the bottom and begin again from what it shows. A
      * game under way ends first. Nothing happens when the board cannot be read cleanly now.
      */
+    /**
+     * A board no move explains whose coordinate labels say the other side is at the bottom:
+     * the next puzzle, shown from its solver's side. It is read that way at once, as a new
+     * game, from the readings already taken ([reorient]).
+     *
+     * It used to wait for a resync to adopt the board on its head -- ten still frames, a
+     * second and a half on the phone -- and then read all 64 cells again the right way round,
+     * another second and a half; and a board that on its head was no legal position waited
+     * for the long unexplained-board note, which after it stopped being a Resync (the
+     * takeback fix) turned nothing round at all (Tai's puzzles on the Pixel, 2026-09-23: five
+     * to ten seconds, and stuck). The labels cost a few milliseconds; two reads a moment
+     * apart must agree, so a piece dragged over the edge is not taken for the board turning.
+     * A side the person chose with Flip stands.
+     */
+    private fun flipIfTurned(frame: Mat, geometry: BoardGeometry, ts: Double): MutableList<Event> {
+        val rec = reconciler
+        val current = model
+        if (rec == null || current == null || forcedBottom != null || rec.unexplainedFor < 1) {
+            flipSeen = null
+            return mutableListOf()
+        }
+        val seen = flipSeen
+        if (seen != null && ts - seen.second < FLIP_CHECK_EVERY_S) return mutableListOf()
+        val labelled = Coordinates.readBottomSide(frame, geometry, current.rankLabels)
+        if (labelled == null || labelled == bottom) {
+            flipSeen = null
+            return mutableListOf()
+        }
+        if (seen == null || seen.first != labelled) {
+            flipSeen = labelled to ts
+            return mutableListOf()
+        }
+        flipSeen = null
+        return reorient(frame, geometry, labelled, ts)
+    }
+
+    /**
+     * The frame's own readings taken with [side] at the bottom: the recogniser read cells, not
+     * squares, so turning the board round needs no second read of its 64 cells -- a second
+     * and a half on the phone. Null when the readings are not this frame's, or not a quiet,
+     * complete, legal position that way round.
+     */
+    private fun reread(side: Side): ColdRead? {
+        val current = model ?: return null
+        val readings = readingsValue ?: return null
+        val lock = board ?: return null
+        if (readingsKey != (lock.region to Math.round(lock.cellPx * 100.0) / 100.0)) return null
+        val placement = placementFromReadings(readings, side) ?: return null
+        if (adoptPlacement(placement) == null) return null
+        return ColdRead(current, side, readings, placement)
+    }
+
     fun reorient(
         frame: Mat,
         geometry: BoardGeometry,
@@ -538,7 +636,8 @@ class GamePipeline(
         ts: Double,
         endPrevious: Boolean = true,
     ): MutableList<Event> {
-        val read = coldRead(frame, geometry, bottom) ?: return mutableListOf()
+        // The frame's own readings serve when they can; a cold read from the theme cache otherwise.
+        val read = reread(bottom) ?: coldRead(frame, geometry, bottom) ?: return mutableListOf()
         val events = if (endPrevious) endInProgress("board reoriented") else mutableListOf()
         events.addAll(adoptCold(read, ts))
         return events
@@ -592,8 +691,8 @@ class GamePipeline(
      * board must be readable at all, since a new theme reads as unknown almost everywhere
      * without contradicting anything.
      */
-    private fun readsAsStart(readings: Readings): Boolean {
-        val bottomSide = bottom ?: return false
+    private fun readsAsStart(readings: Readings, at: Side? = null): Boolean {
+        val bottomSide = at ?: bottom ?: return false
         val start = Board()
         var contradictions = 0
         var unknown = 0
@@ -625,7 +724,9 @@ class GamePipeline(
         bottom = side
         model = built
         built.rankLabels = Coordinates.learnRankLabels(frame, geometry, side)
-        cache?.save(built)
+        cache?.let { it.save(built, learnedSet(it, built, frame, geometry, side)) }
+        coldSince = null
+        coldNoticed = false
         reconciler?.let {
             it.bottom = side
             it.userSide = side
@@ -639,16 +740,124 @@ class GamePipeline(
      * orientation (`bottom`, or the coordinate labels), the readings and the placement they
      * make -- or null when any of those is missing.
      */
+    /**
+     * The cached set this start position shows again -- the same pieces on the same board,
+     * learned before -- or null for a set not seen yet. Each set cached on these board colours
+     * reads the frame; one that reads it as the start position is this set, and the new model
+     * replaces it rather than standing beside it.
+     */
+    private fun learnedSet(store: ThemeStore, model: ThemeModel, frame: Mat, geometry: BoardGeometry, side: Side): String? {
+        for ((key, cached) in store.candidates(model.lightBg, model.darkBg)) {
+            if (readsAsStart(cached.classifyFrame(frame, geometry, embedder), side)) return key
+        }
+        return null
+    }
+
+    /**
+     * The board read cold from the theme cache: a cached recogniser for its colours, the
+     * orientation ([bottom], or the coordinate labels), the readings and the placement they
+     * make -- or null when no learned set gives all of those.
+     *
+     * One board's colours can carry several learned sets. Each reads the board; a set whose
+     * read is not a quiet, complete, legal position is passed over (a set for other pieces
+     * misreads them: a king taken for a bishop), and of those that give one the surest read
+     * wins, so a set learned for other pieces on the same colours never stands in for the
+     * right one (Tai's Pixel, 2026-09-23: a test board's set, cached under chess.com's green,
+     * read his puzzle's black pawns as white).
+     */
     private fun coldRead(frame: Mat, geometry: BoardGeometry, bottom: Side?): ColdRead? {
         val store = cache ?: return null
         val sampled = com.sidecoach.vision.ThemeCache.samplePalette(frame, geometry) ?: return null
-        val cached = store.get(sampled.first, sampled.second) ?: return null
-        val side = bottom ?: Coordinates.readBottomSide(frame, geometry, cached.rankLabels)
-        // Coordinates are off; the caller supplies the orientation and retries.
-            ?: return null
-        val readings = cached.classifyFrame(frame, geometry, embedder)
-        val placement = placementFromReadings(readings, side) ?: return null
-        return ColdRead(cached, side, readings, placement)
+        var best: Pair<Double, ColdRead>? = null
+        for ((_, cached) in store.candidates(sampled.first, sampled.second)) {
+            // Coordinates off, or not this set's; the caller may say the side.
+            val side = bottom ?: Coordinates.readBottomSide(frame, geometry, cached.rankLabels) ?: continue
+            val readings = cached.classifyFrame(frame, geometry, embedder)
+            val placement = placementFromReadings(readings, side) ?: continue
+            if (adoptPlacement(placement) == null) continue
+            val fit = fit(readings)
+            if (best == null || fit > best.first) best = fit to ColdRead(cached, side, readings, placement)
+        }
+        return best?.second
+    }
+
+    /**
+     * How surely a set read a board: the mean margin of its piece readings over the next
+     * nearest kind. The right set reads its own pieces well clear of any other kind.
+     */
+    private fun fit(readings: Readings): Double {
+        var sum = 0.0
+        var n = 0
+        for (cell in readings) {
+            if (cell.kind == Kind.PIECE) { sum += cell.confidence; n += 1 }
+        }
+        return if (n == 0) 0.0 else sum / n
+    }
+
+    /**
+     * The pieces a read names, a held or a ringed one included (its kind, or its best guess)
+     * and an unreadable cell taken as empty: what the board shows, for telling a set that
+     * reads it from one that does not, not a placement to adopt.
+     */
+    private fun loosePlacement(readings: Readings, bottom: Side): Board {
+        val board = Board(null)
+        for (row in 0 until 8) {
+            for (col in 0 until 8) {
+                val reading = readings[row * 8 + col]
+                val symbol = reading.symbol ?: reading.guess
+                if (reading.kind == Kind.PIECE && symbol != null) {
+                    board.setPieceAt(Squares.squareAt(row, col, bottom == Side.WHITE), Piece.fromSymbol(symbol))
+                }
+            }
+        }
+        return board
+    }
+
+    /**
+     * A board that has stayed unread for [COLD_NOTICE_S] is explained, once while it stays:
+     * the person saw nothing happen and could not know why (Tai's puzzle on the Pixel,
+     * 2026-09-23). Nothing is said when a learned set does read the board and only a passing
+     * thing stands in the way -- a piece held, a selected piece's dots -- and the wait starts
+     * again.
+     */
+    private fun coldNotice(frame: Mat, geometry: BoardGeometry, ts: Double): MutableList<Event> {
+        val since = coldSince
+        if (since == null) {
+            coldSince = ts
+            return mutableListOf()
+        }
+        if (coldNoticed || ts - since < COLD_NOTICE_S) return mutableListOf()
+        val reason = unreadReason(frame, geometry)
+        if (reason == null) {
+            coldSince = ts
+            return mutableListOf()
+        }
+        coldNoticed = true
+        return mutableListOf(BoardUnread(reason))
+    }
+
+    /**
+     * Why a board goes unread: "orientation" when a learned set reads it as a position but
+     * the coordinates say nothing (turned off), so Flip must; "unlearned" when no learned set
+     * reads it as one -- its colours never seen, or its pieces not the ones the sets on those
+     * colours learned -- so a start position shown once teaches it; null when a learned set
+     * reads it with its orientation and only a passing thing (a piece held, the dots of a
+     * selected piece) keeps the read from being clean.
+     */
+    private fun unreadReason(frame: Mat, geometry: BoardGeometry): String? {
+        val store = cache ?: return null
+        // The two square colours cannot be told apart: not a board to read.
+        val sampled = com.sidecoach.vision.ThemeCache.samplePalette(frame, geometry) ?: return null
+        for ((_, cached) in store.candidates(sampled.first, sampled.second)) {
+            val readings = cached.classifyFrame(frame, geometry, embedder)
+            val told = forcedBottom ?: Coordinates.readBottomSide(frame, geometry, cached.rankLabels)
+            for (side in if (told != null) listOf(told) else listOf(Side.WHITE, Side.BLACK)) {
+                if (adoptPlacement(loosePlacement(readings, side)) != null) {
+                    return if (told != null) null else "orientation"
+                }
+            }
+        }
+        return "unlearned"
     }
 
     private class ColdRead(
@@ -663,14 +872,29 @@ class GamePipeline(
      * board reads cold; the position is adopted once it has read the same, quiet and complete,
      * on [COLD_START_HOLD] tries [COLD_START_EVERY_S] apart, so a board mid-animation or a page
      * passing by is never taken for a game. A start position is left to the bootstrap.
+     *
+     * Pixels that have not changed since the last read, on the same lock with the same side
+     * told, read the same, so that read stands for this try: a board left unread -- a puzzle
+     * of a set not learned -- costs nothing while it sits there. New pixels drop it
+     * ([process]), on a tick that tries or not. A board that stays unread is explained once
+     * ([coldNotice]).
      */
     private fun autoColdStart(frame: Mat, geometry: BoardGeometry, ts: Double): MutableList<Event> {
         if (cache == null) return mutableListOf()
         val tried = coldTried
         if (tried != null && ts - tried < COLD_START_EVERY_S) return mutableListOf()
         coldTried = ts
+        val lock = board ?: return mutableListOf()
+        val seen = Triple(lock.region, Math.round(lock.cellPx * 100.0) / 100.0, forcedBottom)
+        val last = coldLast
+        val read = if (last == null || last.first != seen) {
+            coldRead(frame, geometry, forcedBottom).also { coldLast = seen to it }
+        } else {
+            last.second
+        }
         // Nothing read cleanly this time; the candidate stands until it expires.
-        val read = coldRead(frame, geometry, forcedBottom) ?: return mutableListOf()
+        if (read == null) return coldNotice(frame, geometry, ts)
+        coldSince = null
         val fen = read.placement.boardFen()
         val candidate = coldCandidate
         coldCandidate = if (candidate != null && candidate.first == fen &&
@@ -706,6 +930,8 @@ class GamePipeline(
         // Only now, with a legal position begun, is the pipeline switched onto this theme.
         model = read.model
         bottom = read.bottom
+        coldSince = null
+        coldNoticed = false
         readingsValue = read.readings
         readingsKey = board?.let { it.region to Math.round(it.cellPx * 100.0) / 100.0 }
         this.reconciler = reconciler

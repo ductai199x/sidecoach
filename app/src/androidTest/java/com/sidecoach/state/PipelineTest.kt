@@ -3,6 +3,7 @@ package com.sidecoach.state
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.events.BoardUnread
 import com.sidecoach.events.Event
 import com.sidecoach.events.GameEnded
 import com.sidecoach.events.GameStarted
@@ -16,6 +17,7 @@ import com.sidecoach.vision.CellEmbedder
 import com.sidecoach.vision.ChangeGate
 import com.sidecoach.vision.FramePixels
 import com.sidecoach.vision.Pieces
+import com.sidecoach.vision.ThemeStore
 import org.json.JSONObject
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
@@ -65,8 +67,17 @@ class PipelineTest {
             for (r in 0 until runs.length()) {
                 val run = runs.getJSONObject(r)
                 val name = run.getString("name")
-                val pipeline = GamePipeline(net)
-                val gate = ChangeGate()
+                // A scenario in sessions shares one theme cache between them, as the app's does:
+                // each session a fresh pipeline on it, as a Stop and Start is.
+                val themes = if (run.optBoolean("cache")) {
+                    java.io.File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "pipeline-themes/$name")
+                        .apply { deleteRecursively(); mkdirs() }
+                } else {
+                    null
+                }
+                val store = themes?.let { ThemeStore(it) }
+                var pipeline = GamePipeline(net, store)
+                var gate = ChangeGate()
                 val frames = run.getJSONArray("frames")
                 val decoded = HashMap<String, Mat>()
                 var moves = 0
@@ -76,6 +87,12 @@ class PipelineTest {
                 val began = System.currentTimeMillis()
                 for (f in 0 until frames.length()) {
                     val frame = frames.getJSONObject(f)
+                    if (frame.optBoolean("session")) {
+                        pipeline = GamePipeline(net, store)
+                        gate = ChangeGate()
+                        lastFile = null
+                        lastPixels = null
+                    }
                     val file = frame.getString("file")
                     val mat = decoded.getOrPut(file) { load(file) }
                     val same = sameFrameShortcut && file == lastFile
@@ -116,10 +133,11 @@ class PipelineTest {
                     "$name: ${frames.length()} frames ($shortcuts read again), $moves moves, " +
                         "${pipeline.bootstraps} bootstraps, $took ms — ${rec?.pgn()}",
                 )
-                if (rec?.pgn() != run.getString("pgn")) {
+                // No game at the end is an empty record on both sides.
+                if ((rec?.pgn() ?: "") != run.getString("pgn")) {
                     failures.add("$name: pgn is '${rec?.pgn()}', python's is '${run.getString("pgn")}'")
                 }
-                if (rec?.board?.fen() != run.getString("final_fen")) {
+                if ((rec?.board?.fen() ?: "") != run.getString("final_fen")) {
                     failures.add(
                         "$name: final fen is ${rec?.board?.fen()}, " +
                             "python's is ${run.getString("final_fen")}",
@@ -130,6 +148,13 @@ class PipelineTest {
                         "$name: ${pipeline.bootstraps} bootstraps, " +
                             "python had ${run.getInt("bootstraps")}",
                     )
+                }
+                if (themes != null) {
+                    val learned = themes.listFiles { f -> f.name.startsWith("theme-") }?.size ?: 0
+                    if (learned != run.getInt("themes")) {
+                        failures.add("$name: $learned learned sets cached, python had ${run.getInt("themes")}")
+                    }
+                    themes.deleteRecursively()
                 }
                 if (failures.size >= 8) break
             }
@@ -161,6 +186,7 @@ class PipelineTest {
         is Takeback -> "Takeback ${event.plies} ${event.fen}"
         is Resync -> "Resync ${event.reason} | ${event.fen}"
         is Unexplained -> "Unexplained ${event.reason} | ${event.fen}"
+        is BoardUnread -> "BoardUnread ${event.reason}"
         is GameEnded -> "GameEnded ${event.result} ${event.reason} | ${event.pgn}"
         is ScreenStateChanged -> "ScreenState ${event.state.name.lowercase()}"
         else -> event::class.java.simpleName

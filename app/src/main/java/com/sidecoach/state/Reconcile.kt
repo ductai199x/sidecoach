@@ -89,6 +89,31 @@ private fun turnValid(board: Board, turn: Boolean): Boolean {
     return board.isValid()
 }
 
+/**
+ * A bare placement made into a position: castling rights assumed conservatively from the
+ * king and rook home squares, and the turn from legality. Returns the board and whether
+ * the turn is still unknown (both colours legal to move), or null if neither is. When
+ * both could move, `prefer` is the turn the board shows meanwhile: the side at the
+ * bottom, which on a puzzle is the solver and to move.
+ */
+internal fun adoptPlacement(placement: Board, prefer: Boolean = WHITE): Pair<Board, Boolean>? {
+    val board = placement.copy(withStack = false)
+    var rights: Bitboard = 0uL
+    for ((colour, rank) in listOf(WHITE to 0, BLACK to 7)) {
+        val king = Piece(KING, colour)
+        val rook = Piece(ROOK, colour)
+        if (board.pieceAt(square(4, rank)) == king) {
+            if (board.pieceAt(square(7, rank)) == rook) rights = rights or BB_SQUARES[square(7, rank)]
+            if (board.pieceAt(square(0, rank)) == rook) rights = rights or BB_SQUARES[square(0, rank)]
+        }
+    }
+    board.castlingRights = rights
+    val validTurns = listOf(WHITE, BLACK).filter { turnValid(board, it) }
+    if (validTurns.isEmpty()) return null
+    board.turn = if (prefer in validTurns) prefer else validTurns[0]
+    return board to (validTurns.size > 1)
+}
+
 fun touchedSquares(board: Board, move: Move): MutableSet<Int> {
     val touched = mutableSetOf(move.from, move.to)
     if (board.isCastling(move)) {
@@ -158,7 +183,19 @@ class Reconciler(
     val staleAfter = 5
     val resyncCells = 3
     val resyncAfter = 150
+    /**
+     * A position resync adopts a board held this many frames; or, when at least
+     * [resyncJumpCells] cells disagree (a new position, not a move), at least [resyncMinFrames]
+     * spanning [resyncHoldS]: at seven frames a second, ten frames were a second and a half,
+     * and more when the frames were slow ones (Tai's puzzles on the Pixel, 2026-09-23). A move
+     * is a handful of cells, and one whose squares wear the site's badges waits for the stale
+     * retry to explain it: adopted early, the mating move under the result badges went
+     * unrecorded (the desktop's stress seed 839).
+     */
     val resyncHoldFrames = 10
+    val resyncMinFrames = 3
+    val resyncHoldS = 0.4
+    val resyncJumpCells = 12
     val maxStaleSubsetCells = 4
     val pendingMaxAge = 40
     val maxChainPlies = 8
@@ -185,7 +222,8 @@ class Reconciler(
     private var pendingAge = 0
     private var baseFenValue: String = STARTING_FEN
     private var turnUnknownFlag = false
-    private var resyncCandidate: Pair<String, Int>? = null
+    /** The placement the resync would adopt, how many frames have shown it, and since when. */
+    private var resyncCandidate: Triple<String, Int, Double>? = null
     private var unseen = 0
     private val lastSeen = HashMap<Int, Pair<CellReading, Int>>()
     private val previous = HashMap<Int, StaleKey>()
@@ -877,6 +915,9 @@ class Reconciler(
     /** Whether the last frame disagreed with the position and no story explained it. */
     val unexplained: Boolean get() = unexplainedFrames > 0
 
+    /** For how many frames in a row the board has disagreed and no story explained it. */
+    val unexplainedFor: Int get() = unexplainedFrames
+
     /**
      * Whether the last readable frame shows the latest position, ghosts aside: the record is
      * up to date with the screen.
@@ -947,11 +988,14 @@ class Reconciler(
         val placement = placement(obs).boardFen()
         val candidate = resyncCandidate
         resyncCandidate = if (candidate != null && candidate.first == placement) {
-            placement to candidate.second + 1
+            Triple(placement, candidate.second + 1, candidate.third)
         } else {
-            placement to 1
+            Triple(placement, 1, tsValue)
         }
-        if (resyncCandidate!!.second < resyncHoldFrames) return mutableListOf()
+        val (_, frames, since) = resyncCandidate!!
+        val held = frames >= resyncHoldFrames ||
+            (diff.size >= resyncJumpCells && frames >= resyncMinFrames && tsValue - since >= resyncHoldS)
+        if (!held) return mutableListOf()
 
         val adopted = adoptPlacement(placement(obs), bottomColour())
         if (adopted == null) {
@@ -994,31 +1038,6 @@ class Reconciler(
     }
 
     private fun bottomColour(): Boolean = if (bottom == Side.WHITE) WHITE else BLACK
-
-    /**
-     * A bare placement made into a position: castling rights assumed conservatively from the
-     * king and rook home squares, and the turn from legality. Returns the board and whether
-     * the turn is still unknown (both colours legal to move), or null if neither is. When
-     * both could move, `prefer` is the turn the board shows meanwhile: the side at the
-     * bottom, which on a puzzle is the solver and to move.
-     */
-    private fun adoptPlacement(placement: Board, prefer: Boolean = WHITE): Pair<Board, Boolean>? {
-        val board = placement.copy(withStack = false)
-        var rights: Bitboard = 0uL
-        for ((colour, rank) in listOf(WHITE to 0, BLACK to 7)) {
-            val king = Piece(KING, colour)
-            val rook = Piece(ROOK, colour)
-            if (board.pieceAt(square(4, rank)) == king) {
-                if (board.pieceAt(square(7, rank)) == rook) rights = rights or BB_SQUARES[square(7, rank)]
-                if (board.pieceAt(square(0, rank)) == rook) rights = rights or BB_SQUARES[square(0, rank)]
-            }
-        }
-        board.castlingRights = rights
-        val validTurns = listOf(WHITE, BLACK).filter { turnValid(board, it) }
-        if (validTurns.isEmpty()) return null
-        board.turn = if (prefer in validTurns) prefer else validTurns[0]
-        return board to (validTurns.size > 1)
-    }
 
     /**
      * The side to move settled by the clock that is running. A resync or a cold start leaves

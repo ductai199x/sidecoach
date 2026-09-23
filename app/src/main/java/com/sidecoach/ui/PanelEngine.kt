@@ -16,6 +16,7 @@ import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.Annotation
+import com.sidecoach.events.BoardUnread
 import com.sidecoach.events.ClockObservation
 import com.sidecoach.events.CoachMessage
 import com.sidecoach.events.Event
@@ -48,6 +49,16 @@ import java.util.Locale
  * One engine for the app, since the capture is a foreground service and the page is a
  * window onto it.
  */
+/** What the person is told when a board stays unread ([BoardUnread]), by why: `panel.BOARD_UNREAD`. */
+private val BOARD_UNREAD = mapOf(
+    "unlearned" to "I can't read this board yet: I haven't learned these pieces on it. Show me the " +
+        "starting position with this board and these pieces once -- a new game, or an " +
+        "analysis board at the start -- and I'll know them from then on, puzzles included.",
+    "orientation" to "I can see the pieces, but not which side is at the bottom: the board's " +
+        "coordinates seem to be off. Turn them on in the site's board settings, or press " +
+        "Flip to tell me.",
+)
+
 object PanelEngine {
 
     /** One line of the panel's log, as `ui/log.py` records it. */
@@ -410,6 +421,25 @@ object PanelEngine {
             // A note: cells the game has not explained for a while. The game is kept as it
             // stands; nothing downstream starts again.
             is Unexplained -> emit("vision", "warn", "board unexplained (${event.reason}); the game is kept")
+
+            // A board up and nothing read from it: said in the coach's pane, where the person
+            // looks, as "Press Start first" is -- and, the phone's own, in the caption box,
+            // over the app the board is in, where the person is.
+            is BoardUnread -> {
+                val text = BOARD_UNREAD.getValue(event.reason)
+                emit(
+                    "coach",
+                    "info",
+                    "board · ${event.reason} — $text",
+                    JSONObject().apply {
+                        put("full", text)
+                        put("trigger", "board")
+                        put("ply", JSONObject.NULL)
+                        put("voice", "text")
+                    },
+                )
+                Captions.show(text)
+            }
 
             is GameEnded -> {
                 val text = if (event.result == "*") {

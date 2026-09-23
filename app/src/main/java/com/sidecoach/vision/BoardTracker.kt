@@ -21,6 +21,13 @@ class BoardTracker(
     private val refineEvery: Int = 10,
     private val refineOffsetCells: Double = 1.6,
     private val refitGain: Double = 1.1,
+    /**
+     * A re-fit that moves no edge by more than this is the same lock: a board flush with the
+     * frame's edge re-fitted a pixel or two either way every few seconds, and every cell moved
+     * under it was read again -- a second on the phone (Tai's puzzles on the Pixel,
+     * 2026-09-23). Sub-cell drift that small costs the reading nothing.
+     */
+    private val refitDeadbandPx: Int = 2,
     private val redetectBackoff: Int = 20,
     private val nearBackoff: Int = 3,
 ) {
@@ -108,7 +115,13 @@ class BoardTracker(
                 // a third of a cell.
                 val refined = refit.board
                 if (passes(refined.fit, refined.contrast) &&
-                    (!passes(fit, contrast) || refit.strength > refitGain * refit.reference)
+                    (
+                        !passes(fit, contrast) ||
+                            (
+                                refit.strength > refitGain * refit.reference &&
+                                    edgeShift(atLock.region, refined.region) > refitDeadbandPx
+                                )
+                        )
                 ) {
                     candidate = refined
                     fit = refined.fit
@@ -185,3 +198,11 @@ class BoardTracker(
         return boards
     }
 }
+
+/** The most any edge of region [a] moves to become region [b], in pixels. */
+private fun edgeShift(a: Region, b: Region): Int = maxOf(
+    kotlin.math.abs(a.x - b.x),
+    kotlin.math.abs(a.y - b.y),
+    kotlin.math.abs((a.x + a.w) - (b.x + b.w)),
+    kotlin.math.abs((a.y + a.h) - (b.y + b.h)),
+)

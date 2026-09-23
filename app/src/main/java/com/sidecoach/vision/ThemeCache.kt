@@ -128,7 +128,11 @@ object ThemeCache {
     }
 }
 
-/** A directory of learned themes, one file per palette fingerprint. */
+/**
+ * A directory of learned themes, one file per board-and-piece set: one board's colours can
+ * carry several sets (a set changed, another site with the same colours, a test board), each
+ * learned once and kept beside the others; a set learned again replaces itself.
+ */
 class ThemeStore(private val directory: File) {
 
     /**
@@ -141,9 +145,17 @@ class ThemeStore(private val directory: File) {
 
     private fun stamp(file: File) = "${file.path}:${file.length()}:${file.lastModified()}"
 
-    /** Store a learned model under its own palette fingerprint; the key, or null. */
-    fun save(model: ThemeModel): String? {
-        val key = ThemeCache.paletteKey(model.lightBg, model.darkBg)
+    /**
+     * Store a learned model. [key] names the learned set it replaces -- the same pieces on the
+     * same board learned again (`GamePipeline.learnedSet`); without one it is kept beside any
+     * other set on these board colours. The key, or null.
+     */
+    fun save(model: ThemeModel, key: String? = null): String? {
+        val named = key ?: "${ThemeCache.paletteKey(model.lightBg, model.darkBg)}-${setKey(model)}"
+        return store(model, named)
+    }
+
+    private fun store(model: ThemeModel, key: String): String? {
         directory.mkdirs()
         try {
             DataOutputStream(path(key).outputStream().buffered()).use { write(it, model) }
@@ -154,26 +166,49 @@ class ThemeStore(private val directory: File) {
     }
 
     /**
-     * The learned model whose palette is nearest this one within tolerance, or null. A
-     * nearest-palette match rather than an exact key so a shade of rendering noise between
-     * sessions never causes a miss; a user has only a handful of themes.
+     * Every learned set whose board colours are within tolerance of these, nearest first,
+     * with its key. A nearest-palette match rather than an exact key so a shade of rendering
+     * noise between sessions never causes a miss; a user has only a handful of themes. Each
+     * model is read afresh, so every caller gets one of its own.
      */
-    fun get(lightBg: DoubleArray, darkBg: DoubleArray): ThemeModel? {
+    fun candidates(lightBg: DoubleArray, darkBg: DoubleArray): List<Pair<String, ThemeModel>> {
         val files = directory.listFiles { f -> f.name.startsWith("theme-") && f.name.endsWith(".bin") }
-            ?.sortedBy { it.name } ?: return null
-        var best: File? = null
-        var bestDistance = ThemeCache.MATCH_TOLERANCE
+            ?.sortedBy { it.name } ?: return emptyList()
+        val near = ArrayList<Pair<Double, File>>()
         for (file in files) {
             val palette = palette(file) ?: continue
             val d = distanceTo(lightBg, darkBg, palette)
-            if (d <= bestDistance) { bestDistance = d; best = file }
+            if (d <= ThemeCache.MATCH_TOLERANCE) near.add(d to file)
         }
-        val chosen = best ?: return null
-        return try {
-            DataInputStream(chosen.inputStream().buffered()).use { read(it) }
-        } catch (e: Exception) {
-            null
+        val found = ArrayList<Pair<String, ThemeModel>>()
+        for ((_, file) in near.sortedBy { it.first }) {
+            val model = try {
+                DataInputStream(file.inputStream().buffered()).use { read(it) }
+            } catch (e: Exception) {
+                null
+            } ?: continue
+            found.add(file.name.removePrefix("theme-").removeSuffix(".bin") to model)
         }
+        return found
+    }
+
+    /** The learned model whose palette is nearest this one within tolerance, or null. */
+    fun get(lightBg: DoubleArray, darkBg: DoubleArray): ThemeModel? = candidates(lightBg, darkBg).firstOrNull()?.second
+
+    /**
+     * A name for a learned set among those on the same board colours: from its start cells'
+     * embeddings, or a fresh one when it has none.
+     */
+    private fun setKey(model: ThemeModel): String {
+        if (model.exemplarVectors.isEmpty()) return java.util.UUID.randomUUID().toString().replace("-", "").take(8)
+        val digest = MessageDigest.getInstance("SHA-1")
+        val bytes = java.nio.ByteBuffer.allocate(4 * model.exemplarVectors[0].size).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        for (vector in model.exemplarVectors) {
+            bytes.clear()
+            for (v in vector) bytes.putFloat(v)
+            digest.update(bytes.array(), 0, bytes.position())
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }.take(8)
     }
 
     private fun distanceTo(

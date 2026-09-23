@@ -65,6 +65,9 @@ class ThemeModel(
 
     /** Cells the last frame had to embed: what the reading costs, for the log. */
     var lastFresh: Int = 64
+
+    /** How many of those went through the net: the ones with a piece's worth of ink. */
+    var lastEmbedded: Int = 64
         private set
 
     val symbols: Set<String> get() = exemplars.map { it.symbol }.toSet()
@@ -202,9 +205,15 @@ class ThemeModel(
             }
             lastFresh = fresh.size
             val vectors = HashMap<Int, FloatArray>()
-            if (embedder != null && fresh.isNotEmpty()) {
-                val embedded = embedder.embed(fresh.map { crops[it] })
-                for ((k, i) in fresh.withIndex()) vectors[i] = embedded[k]
+            // The net embeds, in one batch, the cells that changed with a piece's worth of ink:
+            // only those are named by it ([classify]). An empty square or a hint dot is the
+            // silhouette's to read, and embedding it anyway was most of a full read's cost --
+            // a second on the phone for a board that was mostly empty squares.
+            val inked = fresh.filter { sils[it].fraction >= Pieces.PIECE_MIN_FRACTION }
+            lastEmbedded = if (embedder != null) inked.size else 0
+            if (embedder != null && inked.isNotEmpty()) {
+                val embedded = embedder.embed(inked.map { crops[it] })
+                for ((k, i) in inked.withIndex()) vectors[i] = embedded[k]
             }
             val readings = ArrayList<Pieces.CellReading>(64)
             for (i in 0 until 64) {

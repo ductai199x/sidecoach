@@ -70,6 +70,16 @@ class CaptureService : Service() {
     // The frame as pixels we own, reused: the reader's buffer is handed back the moment
     // the image is closed, so nothing may be kept from it.
     private var frame: Bitmap? = null
+
+    /** The vision's copy of the newest frame, drawn over each time; the vision thread's own. */
+    private var spareFrame: Bitmap? = null
+
+    private fun copyOf(full: Bitmap): Bitmap {
+        val held = spareFrame
+        if (held != null && held.width == full.width && held.height == full.height) return held
+        held?.recycle()
+        return Bitmap.createBitmap(full.width, full.height, Bitmap.Config.ARGB_8888).also { spareFrame = it }
+    }
     private var preview: Bitmap? = null
     private var lastPreviewAt = 0L
     // The vision: the board found, its theme learned, the position read, the game
@@ -336,10 +346,18 @@ class CaptureService : Service() {
         handler?.postDelayed(again, TICK_MS)
         val now = SystemClock.elapsedRealtime()
         if (now - lastReadAt < TICK_MS) return
-        // Our own screens are not a game: see SidecoachApp.inFront. The coach still gets
-        // its tick, so a question asked from the panel is answered while it is in front.
+        // Our own screens are not a game: see SidecoachApp.inFront. What is read meanwhile is
+        // the last frame of the game before them, again: a move on it that was still settling
+        // commits while the panel is up, where it waited for the panel to close (Tai,
+        // 2026-09-23: a move checked at once in the bubble showed ten seconds later). The
+        // coach gets its tick with it, so a question asked from the panel is answered.
         if (SidecoachApp.inFront) {
-            visionHandler?.post { vision?.coachTick(now / 1000.0) }
+            synchronized(frameLock) {
+                if (reading) return
+                reading = true
+            }
+            lastReadAt = now
+            visionHandler?.post { readTheBoard(still = true) } ?: run { reading = false }
             return
         }
         synchronized(frameLock) {
@@ -351,9 +369,9 @@ class CaptureService : Service() {
     }
 
     /** The newest frame through the vision, on the vision's own thread. */
-    private fun readTheBoard() {
+    private fun readTheBoard(still: Boolean = false) {
         try {
-            val copy = synchronized(frameLock) {
+            val copy = if (still) null else synchronized(frameLock) {
                 val full = frame ?: return
                 if (frameVersion == readVersion) {
                     null // nothing new from the display: the last frame again
@@ -361,7 +379,12 @@ class CaptureService : Service() {
                     readVersion = frameVersion
                     // A copy, so the capture thread may fill the next frame while this one is
                     // read: the read is the slow part, and it must not hold the capture up.
-                    full.copy(Bitmap.Config.ARGB_8888, false) ?: return
+                    // One bitmap, drawn over each time: a fresh four-megabyte one a frame
+                    // kept the collector busy, and the vision thread waited on it for up to
+                    // a fifth of a second at a time.
+                    val spare = copyOf(full)
+                    android.graphics.Canvas(spare).drawBitmap(full, 0f, 0f, null)
+                    spare
                 }
             }
             val vision = vision ?: return
@@ -369,7 +392,7 @@ class CaptureService : Service() {
             val outcome = runCatching { vision.read(copy, ts) }
                 .onFailure { Log.w(TAG, "the frame could not be read: $it") }
                 .getOrNull()
-            copy?.recycle()
+            // The copy is kept for the next frame.
             vision.coachTick(ts)
             if (outcome == null) return
             // Where the board is on the screen, for the captions to keep clear of: the frame is

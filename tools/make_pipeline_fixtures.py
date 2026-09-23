@@ -22,6 +22,7 @@ import hashlib
 import json
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 DESKTOP = Path("D:/chess-coaching-companion")
@@ -32,6 +33,7 @@ import chess  # noqa: E402
 import cv2  # noqa: E402
 
 from sidecoach.events import (  # noqa: E402
+    BoardUnread,
     GameEnded,
     GameStarted,
     MovePlayed,
@@ -43,6 +45,7 @@ from sidecoach.events import (  # noqa: E402
 )
 from sidecoach.replay.recording import ChangeGate, board_gate  # noqa: E402
 from sidecoach.state.pipeline import GamePipeline  # noqa: E402
+from sidecoach.vision.theme_cache import ThemeCache  # noqa: E402
 from tests import synth  # noqa: E402
 
 OUT = Path("D:/sidecoach-android/app/src/androidTest/assets/pipeline")
@@ -74,6 +77,8 @@ def event_json(event) -> str:
         return f"Resync {event.reason} | {event.fen}"
     if isinstance(event, Unexplained):
         return f"Unexplained {event.reason} | {event.fen}"
+    if isinstance(event, BoardUnread):
+        return f"BoardUnread {event.reason}"
     if isinstance(event, GameEnded):
         return f"GameEnded {event.result} {event.reason} | {event.pgn}"
     if isinstance(event, ScreenStateChanged):
@@ -253,6 +258,70 @@ def an_unexplained_stretch(theme: str, style: str) -> list[dict]:
     return states
 
 
+# The puzzle Tai had up on the Pixel (2026-09-23), just after Black's d5xc4.
+PUZZLE = "6r1/pp3k2/4b2R/2p1b1p1/2p3P1/P5P1/1P2BP2/2K2N2 w - - 0 1"
+PUZZLE_LAST = chess.Move.from_uci("d5c4")
+
+
+def piece_sets(theme: str) -> list[dict]:
+    """Sessions one after another on one theme cache (`_session`: a fresh pipeline, as a
+    Stop and Start is), two piece sets on one board's colours. A set learned from its start
+    position; a puzzle in a set not learned, which is not adopted and is explained once after
+    a few seconds; that set learned beside the first; its puzzle held with a piece selected
+    (not explained), then let go and adopted; the first set's puzzle adopted with its own;
+    and a puzzle without coordinates, explained as its orientation (Tai's Pixel, 2026-09-23:
+    a test board's set under chess.com's green, his puzzle never registered)."""
+
+    def start(style: str) -> dict:
+        return dict(board_kwargs(board=chess.Board(), theme=theme, style=style), _repeat=5)
+
+    def puzzle(style: str, seconds: float, **extra) -> dict:
+        kwargs = board_kwargs(
+            board=chess.Board(PUZZLE), theme=theme, style=style, highlight=PUZZLE_LAST
+        )
+        kwargs.update(extra)
+        return dict(kwargs, _repeat=int(round(seconds * FPS)))
+
+    return [
+        dict(start("cburnett"), _session=True),
+        dict(puzzle("staunty", 8.0), _session=True),
+        dict(start("staunty"), _session=True),
+        dict(puzzle("staunty", 8.0, selected=chess.E2), _session=True),
+        puzzle("staunty", 3.0),
+        dict(puzzle("cburnett", 3.0), _session=True),
+        dict(puzzle("staunty", 8.0, coordinates=False), _session=True),
+    ]
+
+
+def puzzle_flip(theme: str) -> list[dict]:
+    """A set learned from both sides, a puzzle for White followed, then the next one shown
+    from Black's side: turned round from its labels at once, from the readings already
+    taken (Tai's Pixel, 2026-09-23: five to ten seconds a puzzle, and stuck)."""
+
+    def start(bottom) -> dict:
+        return dict(
+            board_kwargs(board=chess.Board(), theme=theme, style="cburnett", bottom=bottom),
+            _repeat=5,
+        )
+
+    second = chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R b KQkq - 0 1")
+    return [
+        dict(start(synth.Side.WHITE), _session=True),
+        dict(start(synth.Side.BLACK), _session=True),
+        dict(
+            board_kwargs(
+                board=chess.Board(PUZZLE), theme=theme, style="cburnett", highlight=PUZZLE_LAST
+            ),
+            _repeat=30,
+            _session=True,
+        ),
+        dict(
+            board_kwargs(board=second, theme=theme, style="cburnett", bottom=synth.Side.BLACK),
+            _repeat=20,
+        ),
+    ]
+
+
 SCENARIOS = {
     "mate-green": lambda: scholars_mate("green", "cburnett"),
     "resign-green": lambda: a_resignation("green", "cburnett"),
@@ -260,18 +329,27 @@ SCENARIOS = {
     "quick-takebacks-green": lambda: quick_takebacks("green", "cburnett", 2, True),
     "takeback-jump-green": lambda: quick_takebacks("green", "cburnett", 0, False),
     "unexplained-green": lambda: an_unexplained_stretch("green", "cburnett"),
+    "piece-sets-green": lambda: piece_sets("green"),
+    "puzzle-flip-green": lambda: puzzle_flip("green"),
 }
 
 
 def run(name: str, states: list[dict]) -> dict:
     folder = OUT / name
     folder.mkdir(parents=True, exist_ok=True)
-    pipeline = GamePipeline()
+    # A scenario in sessions shares one theme cache between them, as the app's does.
+    themes = Path(tempfile.mkdtemp()) if any(s.get("_session") for s in states) else None
+    cache = ThemeCache(themes) if themes is not None else None
+    pipeline = GamePipeline(cache=cache)
     gate = ChangeGate()
     frames: list[dict] = []
     frame_id = 0
     for index, state in enumerate(states):
         repeat = state.pop("_repeat", 1)
+        session = state.pop("_session", False)
+        if session:
+            pipeline = GamePipeline(cache=cache)
+            gate = ChangeGate()
         # A state held for several frames is one file, named several times: what the
         # pipeline sees is the same pixels again, which is what a still board is; and a
         # board seen before is the file it was written to then.
@@ -285,28 +363,34 @@ def run(name: str, states: list[dict]) -> dict:
             stored = cv2.imread(str(path), cv2.IMREAD_COLOR)
             name_of = f"{name}/{index:03d}.png"
             WRITTEN[digest] = (name_of, stored)
-        for _ in range(repeat):
+        for i in range(repeat):
             ts = frame_id / FPS
             gate.region = board_gate(pipeline.board, WIDTH, HEIGHT)
             changed = gate.changed(stored, ts)
             events = pipeline.process(stored, ts, changed=changed, frame_id=frame_id)
-            frames.append(
-                {
-                    "file": name_of,
-                    "ts": ts,
-                    "changed": changed,
-                    "events": [event_json(event) for event in events],
-                }
-            )
+            frame = {
+                "file": name_of,
+                "ts": ts,
+                "changed": changed,
+                "events": [event_json(event) for event in events],
+            }
+            if session and i == 0:
+                frame["session"] = True
+            frames.append(frame)
             frame_id += 1
     rec = pipeline.reconciler
-    return {
+    data = {
         "name": name,
         "frames": frames,
         "pgn": rec.pgn() if rec is not None else "",
         "final_fen": rec.board.fen() if rec is not None else "",
         "bootstraps": pipeline.bootstraps,
     }
+    if themes is not None:
+        data["cache"] = True
+        data["themes"] = len(list(themes.glob("theme-*.pkl")))
+        shutil.rmtree(themes)
+    return data
 
 
 def main() -> None:
@@ -323,6 +407,12 @@ def main() -> None:
         print(f"{name}: {len(data['frames'])} frames, {moves} moves — {data['pgn']}")
         for end in ends:
             print(f"    {end}")
+        for f in data["frames"]:
+            for line in f["events"]:
+                if line.startswith(("BoardUnread", "GameStarted")) and "themes" in data:
+                    print(f"    {f['ts']:.1f}s {line}")
+        if "themes" in data:
+            print(f"    {data['themes']} learned sets in the cache")
         runs.append(data)
     (OUT / "index.json").write_text(json.dumps({"runs": runs}), encoding="utf-8")
     size = sum(p.stat().st_size for p in OUT.rglob("*.png"))

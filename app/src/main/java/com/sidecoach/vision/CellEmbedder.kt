@@ -4,6 +4,7 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
+import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.Size
@@ -35,8 +36,8 @@ class CellEmbedder private constructor(
 
     private var direct: FloatBuffer? = null
     private var directCells = 0
-    private val interleaved = FloatArray(INPUT * INPUT * 3)
-    private val planar = FloatArray(INPUT * INPUT * 3)
+    private val planeFloats = FloatArray(INPUT * INPUT)
+    private val planes = ArrayList<Mat>(3)
 
     /**
      * Where the net runs, in the runtime's words: a CPU session, chosen on purpose
@@ -63,19 +64,20 @@ class CellEmbedder private constructor(
     fun embed(crops: List<Mat>): Array<FloatArray> {
         if (crops.isEmpty()) return emptyArray()
         val n = crops.size
-        val plane = INPUT * INPUT
         val buffer = bufferFor(n)
         buffer.clear()
         for (crop in crops) {
             val sized = prepare(crop)
-            sized.get(0, 0, interleaved)  // BGR, interleaved, row after row
-            // The graph wants planes, not interleaved pixels: (n, 3, h, w).
-            for (p in 0 until plane) {
-                planar[p] = interleaved[p * 3]
-                planar[plane + p] = interleaved[p * 3 + 1]
-                planar[2 * plane + p] = interleaved[p * 3 + 2]
+            // The graph wants planes, not interleaved pixels: (n, 3, h, w), B then G then R.
+            // OpenCV splits them natively; a loop here over every float of the board was a
+            // good part of a full read's time on the phone.
+            planes.clear()
+            Core.split(sized, planes)
+            for (channel in planes) {
+                channel.get(0, 0, planeFloats)
+                buffer.put(planeFloats)  // bulk, straight into native memory
+                channel.release()
             }
-            buffer.put(planar)  // bulk, straight into native memory
             if (sized !== crop) sized.release()
         }
         buffer.rewind()
@@ -147,7 +149,12 @@ class CellEmbedder private constructor(
 
         private const val ASSET = "yolo26n-embed.onnx"
 
-        fun load(context: Context, threads: Int = 2): CellEmbedder {
+        /**
+         * Four threads: the net measured on the Pixel 10 Pro XL (2026-09-23) read a full board
+         * of 64 cells in 488 ms on two and 298 on four; six were no steadier, XNNPACK slower,
+         * and NNAPI no faster than the CPU. Stockfish keeps its own two.
+         */
+        fun load(context: Context, threads: Int = 4): CellEmbedder {
             val bytes = context.assets.open(ASSET).use { it.readBytes() }
             val env = OrtEnvironment.getEnvironment()
             val options = OrtSession.SessionOptions()
