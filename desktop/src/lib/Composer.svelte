@@ -21,8 +21,8 @@
   let awaitingClear = false;
 
   const dictation = $derived(store.state.dictation);
-  // No speech recognition -- the models were not built, the load failed, or this is the
-  // phone, where it is not ported yet -- means no listening button to press.
+  // No speech recognition -- the models were not built or the load failed -- means no
+  // listening button to press.
   const canListen = $derived(store.state.stt_ready !== false);
   const keyHeld = $derived(!!store.state.ptt);
   const talking = $derived(keyHeld || !!dictation?.live);
@@ -39,10 +39,11 @@
     : canListen ? "idle"
     : "quiet",
   );
-  const keyName = $derived(prettyKey(store.state.ptt_key || "ctrl_r"));
+  // The phone has no push-to-talk key (its ptt_key is empty): the button, or Space.
+  const keyName = $derived(store.state.ptt_key === "" ? "" : prettyKey(store.state.ptt_key || "ctrl_r"));
   const sendTitle = $derived(
     sendState === "send" ? (armed ? "Sending in a moment (type to keep it)" : "Send (Enter)")
-    : sendState === "ptt" ? (talking ? "Listening…" : `Hold to talk (or hold Space or ${keyName})`)
+    : sendState === "ptt" ? (talking ? "Listening…" : keyName ? `Hold to talk (or hold Space or ${keyName})` : "Hold to talk (or hold Space)")
     : sendState === "vad" ? "Listening"
     : canListen ? "Type a question, or turn listening on"
     : "Type a question",

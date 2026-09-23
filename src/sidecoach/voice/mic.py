@@ -147,11 +147,17 @@ class Listener:
         on_event: Callable[[str, str], None] | None = None,
         on_partial: Callable[[np.ndarray], None] | None = None,
         partial_every_s: float = 0.4,
+        on_dropped: Callable[[], None] | None = None,
     ) -> None:
         self.mic = mic
         self.gate = gate
         self.endpointer = Endpointer()
         self._on_utterance = on_utterance
+        # An utterance that began (`on_speech_start` was called, or the key went down) and
+        # is not handed over -- a click the endpointer dropped, a tap too short to hold a
+        # word, a mode switch mid-sentence -- is said too, so whoever was told it began is
+        # told it came to nothing (2026-09-23: a cough held a dictation's send for good).
+        self._on_dropped = on_dropped or (lambda: None)
         # While an utterance is being captured, the audio so far every `partial_every_s`,
         # for words on the screen as they are said (Tai, 2026-09-22: streamed, not at the
         # end). Called on the listener thread; the handler must not block it.
@@ -293,17 +299,18 @@ class Listener:
         return np.concatenate(self._buffer)
 
     def _finish(self, *, discard: bool) -> None:
-        """Hand the buffered frames over as one utterance (or drop them) and reset."""
+        """Hand the buffered frames over as one utterance (or drop them) and reset; an
+        utterance that had begun and is dropped is said (`on_dropped`)."""
         buffer, self._buffer = self._buffer, []
         started = self._started_at
         self._started_at = None
         self._pre.clear()
         self.gate.reset()
-        if discard or not buffer:
-            return
-        audio = np.concatenate(buffer)
-        seconds = len(audio) / SAMPLE_RATE
-        if seconds < 0.25:
+        audio = np.concatenate(buffer) if buffer and not discard else None
+        seconds = len(audio) / SAMPLE_RATE if audio is not None else 0.0
+        if audio is None or seconds < 0.25:
+            if started is not None:
+                self._on_dropped()
             return
         self._deliveries.put((audio, time.monotonic() - started if started else seconds))
         if self._deliverer is None or not self._deliverer.is_alive():

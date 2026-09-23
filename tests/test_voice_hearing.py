@@ -126,6 +126,78 @@ def test_a_blip_is_dropped_and_the_coach_talking_raises_the_bar() -> None:
     assert ep.feed(0.9, coach_speaking=True) == "start"
 
 
+class _ScriptedGate:
+    """A voice gate that answers a script of probabilities, one per frame."""
+
+    def __init__(self, probs: list[float]) -> None:
+        self.probs = list(probs)
+
+    def load(self) -> bool:
+        return True
+
+    def healthcheck(self) -> tuple[bool, str]:
+        return True, "scripted"
+
+    def reset(self) -> None:
+        pass
+
+    def probability(self, frame: np.ndarray) -> float:
+        return self.probs.pop(0) if self.probs else 0.0
+
+
+class _FedMic:
+    """A microphone whose frames the test puts in."""
+
+    def __init__(self) -> None:
+        import queue
+
+        self.frames: queue.Queue = queue.Queue()
+        self.detail = "fed by the test"
+
+    def open(self) -> bool:
+        return True
+
+    def close(self) -> None:
+        pass
+
+
+def test_an_utterance_that_comes_to_nothing_is_said() -> None:
+    """Whoever was told an utterance began is told when it comes to nothing: a click the
+    endpointer drops in voice mode, a push-to-talk tap too short to hold a word. Neither was
+    said before (2026-09-23), and the panel's dictation stayed held -- a cough in voice mode
+    kept the words said just before it from ever being sent."""
+    import time
+
+    from sidecoach.voice.mic import HOP, Listener
+
+    starts: list[str] = []
+    dropped: list[str] = []
+    heard: list[float] = []
+    mic = _FedMic()
+    # Two confident frames start speech; the silence after it is a click, not an ask.
+    gate = _ScriptedGate([0.9, 0.9] + [0.1] * 20)
+    listener = Listener(
+        mic,  # type: ignore[arg-type]
+        gate,  # type: ignore[arg-type]
+        on_utterance=lambda audio, seconds: heard.append(seconds),
+        on_speech_start=lambda: starts.append("start"),
+        on_dropped=lambda: dropped.append("dropped"),
+    )
+    listener.set_mode("vad")
+    for _ in range(22):
+        mic.frames.put(np.zeros(HOP, dtype=np.float32))
+    deadline = time.monotonic() + 3
+    while not dropped and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert starts == ["start"] and dropped == ["dropped"] and heard == []
+    # Push-to-talk: a press and a release with nothing kept in between.
+    listener.set_mode("ptt")
+    listener.press()
+    listener.release()
+    assert dropped == ["dropped", "dropped"] and heard == []
+    listener.set_mode("off")
+
+
 # ---- the ear providers -------------------------------------------------------------------------
 
 
@@ -166,6 +238,7 @@ def test_a_spoken_move_reaches_the_coach_as_san(tmp_path: Path) -> None:
     )
     # A position where Nf3 is legal: the start position, as the engine would report it.
     engine._state["fen"] = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+    engine._state["running"] = True  # a session: the ask is queued for its loop
     client = TestClient(build_app(engine))
 
     if not engine._stt.load():
@@ -178,8 +251,9 @@ def test_a_spoken_move_reaches_the_coach_as_san(tmp_path: Path) -> None:
     assert heard[-1]["text"] == "heard: Nf3", heard[-1]
     assert heard[-1]["data"]["moves"] == ["Nf3"]
     assert heard[-1]["data"]["stt_ms"] < 2000
-    # The corrected text was queued for the coach as an ask.
-    name, payload = engine._commands.get_nowait()
+    # The corrected text is in the text box, and asked of the coach after a second of quiet.
+    assert client.get("/api/poll").json()["state"]["dictation"]["text"] == "Nf3"
+    name, payload = engine._commands.get(timeout=3)
     assert (name, payload) == ("ask_spoken", "Nf3")
     # The ear was loaded once and says where.
     ear = engine._stt

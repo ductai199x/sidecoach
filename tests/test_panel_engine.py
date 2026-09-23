@@ -257,6 +257,50 @@ def test_the_engine_and_coach_outlive_a_session(tmp_path: Path) -> None:
     assert engine._assessing is None and engine._coaching is None
 
 
+class _QuietMic:
+    """A microphone that opens and hears nothing."""
+
+    def __init__(self) -> None:
+        import queue
+
+        self.frames: queue.Queue = queue.Queue()
+        self.detail = "a quiet test microphone"
+        self.dropped = 0
+        self.opened = False
+
+    def healthcheck(self) -> tuple[bool, str]:
+        return True, self.detail
+
+    def open(self) -> bool:
+        self.opened = True
+        return True
+
+    def close(self) -> None:
+        self.opened = False
+
+
+def test_listening_outlives_a_session(tmp_path: Path) -> None:
+    """The warm-up opens listening, and Start and Stop only start and stop reading the
+    screen: a session that ends leaves listening as it was. It used to turn the listener
+    off on its way out, and after a Stop push-to-talk did nothing while the page still
+    showed it on (2026-09-23)."""
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
+    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
+    mic = _QuietMic()
+    engine._mic = mic  # type: ignore[assignment]
+    engine._listener.mic = mic  # type: ignore[assignment]
+    engine._listener.set_mode("ptt")  # what set_listen does, without hooking the keyboard
+    engine._set(listen="ptt")
+    engine.start()
+    assert engine._thread is not None
+    engine._thread.join(timeout=30)
+    assert not engine._thread.is_alive()
+    assert engine._listener.mode == "ptt" and mic.opened, "the session closed the ear"
+    assert engine.poll(0)["state"]["listen"] == "ptt"
+    engine.close()
+    assert engine._listener.mode == "off" and not mic.opened
+
+
 def test_a_start_without_a_warm_up_builds_the_stages_once(tmp_path: Path) -> None:
     """The CLI's replay and the tests start without a warm-up: the session builds the
     stages itself, and keeps them for the next one."""
@@ -479,6 +523,38 @@ def test_dictation_streams_into_the_box_and_sends_after_a_second_of_quiet(
     assert not any(
         ln["text"].startswith("heard:") and ln["level"] == "info" for ln in engine.poll(0)["lines"]
     )
+
+
+def test_a_click_after_the_words_does_not_hold_their_send(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Words said, then a click in voice mode before they send: the click starts an
+    utterance (the send waits) and is dropped -- the words go on to send, and the box stops
+    saying it is listening. They used to wait for good (2026-09-23)."""
+    import numpy as np
+
+    from sidecoach.ui import panel as panel_mod
+
+    monkeypatch.setattr(panel_mod, "DICTATION_SEND_DELAY_S", 0.3)
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
+    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
+    engine._stt = _Recogniser()  # type: ignore[assignment]
+    engine._state["running"] = True
+    engine._on_utterance(np.zeros(16000, dtype=np.float32), 1.0)
+    engine._on_speech_start()  # the click begins
+    assert engine.poll(0)["state"]["dictation"] == {
+        "text": "hello hello",
+        "live": True,
+        "sends_at": None,
+    }
+    engine._on_dropped()  # ...and is dropped
+    d = engine.poll(0)["state"]["dictation"]
+    assert d["live"] is False and d["sends_at"] is not None
+    assert engine._commands.get(timeout=2) == ("ask_spoken", "hello hello")
+    # With nothing said before it, the box simply stops listening.
+    engine._on_speech_start()
+    engine._on_dropped()
+    assert engine.poll(0)["state"]["dictation"] == {"text": "", "live": False, "sends_at": None}
 
 
 def test_typing_over_a_dictation_keeps_the_words_and_stops_the_send(tmp_path: Path) -> None:

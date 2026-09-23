@@ -297,6 +297,7 @@ class PanelEngine:
             coach_speaking=lambda: self._tts.busy,
             on_event=lambda level, text: self._emit("voice", level, text),
             on_partial=self._on_partial,
+            on_dropped=self._on_dropped,
         )
         # Held from any window -- the game has the focus mid-game, not the panel.
         self._hotkey = GlobalPushToTalk(
@@ -1193,6 +1194,12 @@ class PanelEngine:
             self._tts.stop()
             self._emit("voice", "debug", "barge-in: the coach was cut off")
 
+    def _on_dropped(self) -> None:
+        """An utterance began and came to nothing (a click, a tap too short to hold a word):
+        a dictation it held goes on to send, or the box stops saying it is listening."""
+        if not self._hear_test_on:
+            self._dictation_settle()
+
     def _on_utterance(self, audio: Any, seconds: float) -> None:
         """Something was said: transcribe it, correct it against the board, ask the coach.
 
@@ -1773,8 +1780,8 @@ class PanelEngine:
         except Exception as exc:  # noqa: BLE001 - report and shut down cleanly
             self._emit("sys", "error", f"engine stopped: {exc!r}")
         finally:
-            with contextlib.suppress(Exception):
-                self._listener.set_mode("off")
+            # Listening is left as it is: the warm-up opened it and `close()` lets it go, as
+            # Start and Stop only start and stop reading the screen.
             # A replay that ran out on its own waits for the engine's backlog, as the
             # terminal replay does, so the review has every verdict; a Stop is prompt.
             patience = 5.0 if self._stop.is_set() else (30.0 if live else 1800.0)
