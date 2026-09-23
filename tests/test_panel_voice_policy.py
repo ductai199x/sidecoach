@@ -41,6 +41,10 @@ def test_a_message_about_a_position_the_board_left_is_not_spoken() -> None:
     # The answer to the user's own question is never stale, however far the board has moved.
     assert act("user_ask", LONG, ply=None, ply_now=40, busy=True) == "supersede"
     assert act("user_ask", LONG, ply=10, ply_now=40, busy=False) == "speak"
+    # Nor is the review: the game is over. After a mate it is written on the last position
+    # with facts, two plies behind the board (the mating move and the one before have none).
+    assert act("review", LONG, ply=12, ply_now=14, busy=False) == "speak"
+    assert act("review", LONG, ply=12, ply_now=14, busy=True, playing=("post_move", 12)) == "speak"
 
 
 def test_short_verdicts_yield_to_a_busy_voice_and_substance_cuts_in() -> None:

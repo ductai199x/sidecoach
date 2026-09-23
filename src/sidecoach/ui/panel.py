@@ -1273,7 +1273,10 @@ class PanelEngine:
         if fast and trigger != "review":
             return "text"  # a fast game: on the page now, aloud if the player slows down
         allowed = STALE_AFTER.get(trigger, STALE_PLIES - 1)
-        if ply is not None and ply_now - ply > allowed:
+        # The review sums up a game that is over: the board has nowhere to leave it for. Its
+        # message carries the latest position with facts, which after a mate is a move or two
+        # behind the board, and must not count as behind.
+        if ply is not None and trigger != "review" and ply_now - ply > allowed:
             return "stale"
         if trigger == "post_move" and len(text) < SHORT_VERDICT:
             return "skip" if busy else "speak"
