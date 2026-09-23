@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 def _extra(**kw: Any) -> dict[str, Any]:
     """The schema extras the settings page reads: applies (now | next | restart), choices
-    and choice_labels, kind (path, input_device, output_device, voice, persona), label (as
+    and choice_labels, kind (path, input_device, output_device, voice, persona, color), label (as
     a person reads it), section (the heading a field sits under on its tab), only_for
     (the AI Coach page: the providers a field is shown for), advanced (shown when asked),
     dev (never shown in the app)."""

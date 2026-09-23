@@ -275,6 +275,11 @@
         <select id="{section}-{key}" onchange={(e) => setValue(section, key, p, e.currentTarget.value)}>
           {#each p.choices ?? [] as c (c)}<option value={c} selected={String(v) === c}>{data!.personas[c] ?? c}</option>{/each}
         </select>
+      {:else if p.kind === "color"}
+        <div class="row">
+          <input id="{section}-{key}" class="color" type="color" value={String(v ?? p.default ?? "#ffffff")} oninput={(e) => setValue(section, key, p, e.currentTarget.value)} />
+          <span class="hex">{String(v ?? p.default ?? "").toUpperCase()}</span>
+        </div>
       {:else if p.choices}
         <select id="{section}-{key}" onchange={(e) => setValue(section, key, p, e.currentTarget.value)}>
           {#each p.choices as c (c)}<option value={c} selected={(v == null ? "" : String(v)) === c}>{choiceLabel(p, c)}</option>{/each}
@@ -422,6 +427,8 @@
   .field { margin: 0 0 14px; max-width: 720px; }
   .field label, .field .lbl { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
   .field.test { margin-top: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+  input.color { width: 56px; height: 34px; padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); cursor: pointer; }
+  .hex { font: 13px/1 ui-monospace, Consolas, monospace; color: var(--muted); }
   .meter { flex: 0 0 160px; height: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
   .meter .bar { height: 100%; background: var(--accent); transition: width 80ms linear; }
   .heard { margin-top: 6px; }
