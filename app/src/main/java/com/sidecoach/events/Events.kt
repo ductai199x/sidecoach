@@ -179,8 +179,60 @@ class ClockObservation(
     val running: Pieces.Side? = null,
 ) : Event()
 
-// The profile stage's events. Only what the coach reads is here; the stage's own
-// structures (the turning points, the phase summaries, the taxonomy cells) come with it.
+// The profile stage's events (`sidecoach/events.py`).
+
+/**
+ * One mistake of the player's, placed on the two axes: why (the cause) and what (the motif),
+ * in which phase, and what it cost.
+ */
+class ProfileEvidence(
+    val gameId: String,
+    val ply: Int,
+    val phase: String,
+    val expectedLoss: Double,
+    val motif: String? = null,
+    val cause: String? = null,
+    val timePressure: Boolean = false,
+) : Event()
+
+/**
+ * A move of the player's that cost real ground, with what was better and why it happened,
+ * for the review.
+ */
+data class TurningPoint(
+    val ply: Int,
+    val san: String,
+    val label: String,
+    val expectedLoss: Double,
+    val segment: Int = 0,
+    val bestSan: String? = null,
+    var cause: String? = null,
+    val motif: String? = null,
+    val phase: String = "middlegame",
+    val fenBefore: String? = null,
+)
+
+data class PhaseSummary(
+    val phase: String,
+    val moves: Int,
+    val expectedLoss: Double,
+    val mistakes: Int,
+)
+
+/**
+ * One cell of the error taxonomy: a Beta-distributed error rate as counts. [errors] mistakes
+ * out of [chances] occasions; the mean rate is (errors + 1) / (chances + 2).
+ */
+data class ProfileCell(
+    val cause: String? = null,
+    val motif: String? = null,
+    val phase: String? = null,
+    val errors: Int = 0,
+    val chances: Int = 0,
+    val expectedLoss: Double = 0.0,
+) {
+    val rate: Double get() = (errors + 1).toDouble() / (chances + 2)
+}
 
 /** A Lichess puzzle recommended: where to open it, how hard, what it trains. */
 data class PuzzleRef(
@@ -204,10 +256,12 @@ class GameReview(
     val moves: Int = 0,
     val accuracy: Double? = null,
     val tallies: Map<String, Int> = emptyMap(),
+    val turningPoints: List<TurningPoint> = emptyList(),
+    val phases: List<PhaseSummary> = emptyList(),
     /** Expected score lost by cause over the game, largest first. */
     val causes: Map<String, Double> = emptyMap(),
     /** The review in sentences, for the coach's summary and the panel's card. */
-    val lines: List<String> = emptyList(),
+    var lines: List<String> = emptyList(),
 ) : Event()
 
 /**
@@ -237,11 +291,12 @@ class PuzzleOutcome(
 ) : Event()
 
 /**
- * The player model as it stands: what the cells add up to in words, and the last session's
- * summary, for the coach's continuity.
+ * The player model as it stands: the cells with evidence, what they add up to in words, and
+ * the last session's summary, for the coach's continuity.
  */
 class ProfileSnapshot(
     val games: Int = 0,
+    val cells: List<ProfileCell> = emptyList(),
     val insights: List<String> = emptyList(),
     val lastSession: String? = null,
 ) : Event()

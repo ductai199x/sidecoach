@@ -1,0 +1,181 @@
+package com.sidecoach.profile
+
+import com.sidecoach.analysis.gameAccuracy
+import com.sidecoach.chess.Board
+import com.sidecoach.chess.Move
+import com.sidecoach.chess.WHITE
+import com.sidecoach.events.GameReview
+import com.sidecoach.events.PhaseSummary
+import com.sidecoach.events.TurningPoint
+import com.sidecoach.vision.Pieces
+
+/**
+ * The post-game review: the game in numbers, from the engine's verdicts on the player's
+ * moves, and in sentences the coach can sum it up from. `sidecoach/profile/review.py`.
+ *
+ * Nothing here is opinion. The tally, the accuracy, where the game turned and what was
+ * better, how each phase went and what the mistakes have in common are all read off the
+ * assessments and the causes, so the coach's summary has something true to say.
+ */
+object Review {
+
+    val ERRORS = setOf("mistake", "blunder")
+    val GOOD = setOf("brilliant", "great", "best", "excellent")
+    const val TURNING_POINTS = 3
+
+    /** A judged move of the player's, as the profiler keeps it. */
+    data class UserMove(
+        val ply: Int,
+        val san: String,
+        val uci: String,
+        val fenBefore: String,
+        val label: String?,
+        val severity: String,
+        val expectedLoss: Double,
+        val bestUci: String?,
+        val accuracy: Double?,
+        val phase: String,
+        val cause: String? = null,
+        val motif: String? = null,
+        val segment: Int = 0,
+    )
+
+    fun numbered(fenBefore: String, san: String): String {
+        val board = Board(fenBefore)
+        val n = board.fullmoveNumber
+        return if (board.turn == WHITE) "$n. $san" else "$n... $san"
+    }
+
+    fun bestSan(fenBefore: String, bestUci: String?): String? {
+        if (bestUci == null) return null
+        val board = Board(fenBefore)
+        val move = Move.fromUciOrNull(bestUci) ?: return null
+        return if (board.isLegal(move)) board.san(move) else null
+    }
+
+    private fun outcome(result: String, userSide: Pieces.Side): String {
+        if (result == "1/2-1/2") return "drew"
+        if (result != "1-0" && result != "0-1") return "played"
+        val won = (result == "1-0") == (userSide == Pieces.Side.WHITE)
+        return if (won) "won" else "lost"
+    }
+
+    /** The review of one game from the player's judged moves. */
+    fun buildReview(
+        gameId: String,
+        userSide: Pieces.Side,
+        result: String,
+        reason: String?,
+        opening: String?,
+        moves: List<UserMove>,
+        fullmoves: Int,
+    ): GameReview {
+        val judged = moves
+        val tallies = LinkedHashMap<String, Int>()
+        for (m in judged) {
+            val key = m.label ?: m.severity
+            tallies[key] = (tallies[key] ?: 0) + 1
+        }
+        val accuracy = gameAccuracy(judged.mapNotNull { it.accuracy })
+        val turning = judged.filter { it.severity in ERRORS }
+            .sortedBy { -it.expectedLoss }
+            .take(TURNING_POINTS)
+        val turningPoints = turning.map { m ->
+            TurningPoint(
+                ply = m.ply,
+                segment = m.segment,
+                san = numbered(m.fenBefore, m.san),
+                label = m.label ?: m.severity,
+                expectedLoss = Insights.round(m.expectedLoss, 3),
+                bestSan = bestSan(m.fenBefore, m.bestUci),
+                cause = m.cause,
+                motif = m.motif,
+                phase = m.phase,
+                fenBefore = m.fenBefore,
+            )
+        }
+        val byPhase = LinkedHashMap<String, MutableList<UserMove>>()
+        for (m in judged) byPhase.getOrPut(m.phase) { ArrayList() }.add(m)
+        val phases = listOf("opening", "middlegame", "endgame").mapNotNull { phase ->
+            val items = byPhase[phase]
+            if (items.isNullOrEmpty()) {
+                null
+            } else {
+                PhaseSummary(
+                    phase = phase,
+                    moves = items.size,
+                    expectedLoss = Insights.round(items.sumOf { it.expectedLoss }, 3),
+                    mistakes = items.count { it.severity in ERRORS },
+                )
+            }
+        }
+        val causes = LinkedHashMap<String, Double>()
+        for (m in judged) {
+            val cause = m.cause
+            if (m.severity in ERRORS && !cause.isNullOrEmpty()) causes[cause] = (causes[cause] ?: 0.0) + m.expectedLoss
+        }
+        val ordered = LinkedHashMap<String, Double>()
+        for ((k, v) in causes.entries.map { it.key to Insights.round(it.value, 3) }.sortedBy { -it.second }) {
+            ordered[k] = v
+        }
+        val review = GameReview(
+            gameId = gameId,
+            userSide = userSide,
+            result = result,
+            reason = reason,
+            opening = opening,
+            moves = judged.size,
+            accuracy = accuracy?.let { Insights.round(it, 1) },
+            tallies = tallies,
+            turningPoints = turningPoints,
+            phases = phases,
+            causes = ordered,
+        )
+        review.lines = linesFor(review, fullmoves)
+        return review
+    }
+
+    private val ORDER = listOf(
+        "brilliant", "great", "best", "excellent", "good", "book", "inaccuracy", "mistake", "miss", "blunder",
+    )
+
+    /** The review in sentences. */
+    fun linesFor(review: GameReview, fullmoves: Int): List<String> {
+        val out = ArrayList<String>()
+        var how = if (!review.reason.isNullOrEmpty() && review.reason != "draw agreed") " by ${review.reason}" else ""
+        if (review.reason == "draw agreed") how = " by agreement"
+        val colour = review.userSide.name.lowercase()
+        val outcome = outcome(review.result, review.userSide)
+        if (review.result != "1-0" && review.result != "0-1" && review.result != "1/2-1/2") {
+            out.add("You played $colour for $fullmoves moves; I did not see how it ended.")
+        } else {
+            out.add("You played $colour and $outcome$how in $fullmoves moves.")
+        }
+        if (!review.opening.isNullOrEmpty()) out.add("The opening was the ${review.opening}.")
+        if (review.moves != 0) {
+            val parts = ORDER.filter { (review.tallies[it] ?: 0) != 0 }.map { "${review.tallies[it]} $it" }
+            val acc = review.accuracy?.let { "Accuracy ${Insights.fixed(it, 1)}. " } ?: ""
+            out.add("${acc}Your ${review.moves} moves: " + parts.joinToString(", ") + ".")
+        }
+        for (tp in review.turningPoints) {
+            val better = if (!tp.bestSan.isNullOrEmpty()) "; ${tp.bestSan} was better" else ""
+            var why = ""
+            if (!tp.cause.isNullOrEmpty()) {
+                why = " (${tp.cause}"
+                if (!tp.motif.isNullOrEmpty()) why += ": ${Insights.motifWords(tp.motif)}"
+                why += ")"
+            }
+            out.add("Ground lost at ${tp.san}, a ${tp.label} costing ${Insights.fixed(tp.expectedLoss, 2)}$better$why.")
+        }
+        if (review.turningPoints.isEmpty() && review.moves != 0) out.add("No move cost you real ground.")
+        if (review.phases.size > 1) {
+            val bits = review.phases.map { "the ${it.phase} ${Insights.fixed(it.expectedLoss, 2)} over ${it.moves} moves" }
+            out.add("Expected score lost by phase: " + bits.joinToString(", ") + ".")
+        }
+        if (review.causes.isNotEmpty()) {
+            val (cause, loss) = review.causes.entries.first().toPair()
+            out.add("Most ground went to $cause (${Insights.fixed(loss, 2)}).")
+        }
+        return out
+    }
+}
