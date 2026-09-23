@@ -221,6 +221,8 @@ class PanelEngine:
     # ply -> the engine's label for the move played to reach it (best, blunder, ...), for
     # the move list's badges.
     _labels: dict[int, str] = field(default_factory=dict, init=False)
+    # The game's last ply as the moves came, so a takeback knows which plies it withdrew.
+    _last_ply: int = field(default=0, init=False)
     _bad_run: int = field(default=0, init=False)  # consecutive frames read as degraded
     # What the voice was last given: the trigger and the ply of that message, so the
     # next one knows whether what is playing is about a position the board has left.
@@ -1934,11 +1936,13 @@ class PanelEngine:
             Resync,
             ScreenStateChanged,
             Takeback,
+            Unexplained,
         )
 
         if isinstance(event, GameStarted):
             self._fen_before.clear()
             self._labels.clear()
+            self._last_ply = 0
             self._promotion_logged = False
             what = (
                 "new game"
@@ -1964,6 +1968,7 @@ class PanelEngine:
             who = "you" if event.by_user else "opponent"
             think = f", {event.think_ms / 1000:.1f}s" if event.think_ms is not None else ""
             self._fen_before[event.ply] = event.fen_before
+            self._last_ply = event.ply
             self._note_move(event.ply)
             assessing.submit(event)
             self._emit(
@@ -1978,9 +1983,28 @@ class PanelEngine:
             )
         elif isinstance(event, Takeback):
             self._emit("game", "warn", f"takeback {event.plies} ply", fen=event.fen)
+            # The engine lets go of the withdrawn moves at once, and their badges leave the
+            # move list: a replacement played at the same ply showed the withdrawn move's.
+            assessing.submit(event)
+            self._last_ply = max(0, self._last_ply - event.plies)
+            for gone in [p for p in self._labels if p > self._last_ply]:
+                del self._labels[gone]
+            for gone in [p for p in self._fen_before if p > self._last_ply]:
+                del self._fen_before[gone]
+            self._set(labels={str(k): v for k, v in self._labels.items()})
         elif isinstance(event, Resync):
             self._emit("game", "warn", f"resync: {event.reason}", fen=event.fen)
             assessing.submit(event)
+            # The numbering starts again from the adopted position: the old plies' badges
+            # would sit on the new moves.
+            self._labels.clear()
+            self._fen_before.clear()
+            self._last_ply = 0
+            self._set(labels={})
+        elif isinstance(event, Unexplained):
+            # A note: cells the game has not explained for a while. The game is kept as it
+            # stands; nothing downstream starts again.
+            self._emit("vision", "warn", f"board unexplained ({event.reason}); the game is kept")
         elif isinstance(event, GameEnded):
             text = f"game over {event.result} ({event.reason})"
             if event.result == "*":

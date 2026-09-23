@@ -481,12 +481,12 @@ def test_takeback_move_legal_only_in_the_earlier_position() -> None:
 
 
 def test_illegal_commit_is_refused_not_fatal() -> None:
-    from sidecoach.events import Resync
+    from sidecoach.events import Unexplained
 
     rec = Reconciler(bottom=Side.WHITE)
     rec.start()
     events = rec._commit(chess.Move.from_uci("d4g4"))
-    assert len(events) == 1 and isinstance(events[0], Resync)
+    assert len(events) == 1 and isinstance(events[0], Unexplained), "a note, not a resync"
     assert rec.board.fen() == chess.Board().fen()
 
 
@@ -497,17 +497,26 @@ def test_colour_only_reading_means_occupied_not_a_colour() -> None:
     assert not cell_agrees(reading, None)
 
 
-def test_resync_needs_several_persistent_cells() -> None:
+def test_cells_unexplained_for_long_are_noted_and_the_game_is_kept() -> None:
+    """Several cells the game cannot explain for a long while: a note (`Unexplained`), and
+    the game goes on as it stands. It was a Resync, which the coach and the engine read as
+    the numbering starting again while the reconciler kept its own (Tai's game, 2026-09-23:
+    the takeback that came after was "10 plies" to one and "the last move" to the other)."""
+    from sidecoach.events import Unexplained
+
     model, rec = _setup()
     rec.stale_after = 2
     rec.resync_after = 4
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
+    _play(model, rec, board, ["e4", "e5"], ts=0.0)
     weird = chess.Board("8/8/8/3k4/8/8/8/3K4 w - - 0 1")
     events = []
     for i in range(6):
-        events += _feed(model, rec, weird, Side.WHITE, 0.1 * i)
-    assert any(isinstance(e, Resync) for e in events)
+        events += _feed(model, rec, weird, Side.WHITE, 1.0 + 0.1 * i)
+    assert any(isinstance(e, Unexplained) for e in events)
+    assert not any(isinstance(e, Resync) for e in events), "the position did not jump"
+    assert rec.pgn() == "1. e4 e5", "the game is kept, its numbering with it"
 
     model2, rec2 = _setup()
     rec2.stale_after = 2
@@ -518,7 +527,7 @@ def test_resync_needs_several_persistent_cells() -> None:
     events = []
     for i in range(12):
         events += _feed(model2, rec2, lifted, Side.WHITE, 0.1 * i)
-    assert not any(isinstance(e, Resync) for e in events)
+    assert not any(isinstance(e, Resync | Unexplained) for e in events)
 
 
 def test_black_at_bottom_user_black() -> None:

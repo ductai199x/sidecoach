@@ -44,6 +44,7 @@ from sidecoach.events import (
     Resync,
     Side,
     Takeback,
+    Unexplained,
 )
 from sidecoach.vision.pieces import CellReading
 from sidecoach.vision.squares import square_at
@@ -1743,7 +1744,10 @@ class Reconciler:
         return subsets
 
     def _maybe_resync(self, diff: set[chess.Square]) -> list[Event]:
-        """Resync only when several cells have stayed unexplained for a long time."""
+        """Say so when several cells have stayed unexplained for a long time. The game is
+        kept as it stands -- a position resync is what adopts a new one -- so this is a
+        note (`Unexplained`), not a Resync, which everything downstream reads as the
+        numbering starting again."""
         if not diff:
             self._unexplained_frames = 0
             return []
@@ -1753,7 +1757,9 @@ class Reconciler:
             return []
         self._unexplained_frames = 0
         names = ", ".join(chess.square_name(sq) for sq in sorted(persistent))
-        return [Resync(game_id=self.game_id, fen=self.board.fen(), reason=f"unexplained: {names}")]
+        return [
+            Unexplained(game_id=self.game_id, fen=self.board.fen(), reason=f"unexplained: {names}")
+        ]
 
     def _advance_stale(self, diff: set[chess.Square], obs: Observation) -> None:
         """Count consecutive frames each cell has disagreed with an unchanged reading.
@@ -1783,7 +1789,7 @@ class Reconciler:
             # corrupt the game. Report it and let the next frames explain the board again.
             self._pending = None
             return [
-                Resync(
+                Unexplained(
                     game_id=self.game_id,
                     fen=self.board.fen(),
                     reason=f"refused illegal commit {move.uci()}",

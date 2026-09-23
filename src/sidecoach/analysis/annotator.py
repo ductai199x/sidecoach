@@ -331,12 +331,15 @@ def _mate_in(before: chess.Board, move: chess.Move, after_lines: Sequence[Line])
     return -mate if mate > 0 else abs(mate) + 1
 
 
-@dataclass(frozen=True)
+@dataclass
 class _Request:
     game_id: str
     ply: int
     board: chess.Board
     move: chess.Move | None
+    # Set when the game takes the move back while it is being measured (`Analyser.withdraw`):
+    # nothing about it is delivered, and the position after it is not measured.
+    withdrawn: bool = field(default=False, compare=False)
 
 
 class Analyser:
@@ -353,6 +356,7 @@ class Analyser:
         self.dropped = 0
         self.failures = 0
         self.skipped = 0  # whole analyses not run for plies the game had already left
+        self.withdrawn = 0  # requests let go because the game took their move back
         self._behind_until = 0.0  # the whole analysis is hurried until then
         self.last_error: str | None = None
         self._requests: queue.Queue[_Request | None] = queue.Queue()
@@ -364,6 +368,8 @@ class Analyser:
         # the last verdict.
         self._outstanding = 0
         self._count_lock = threading.Lock()
+        # The request the worker is on, so a takeback can let go of it.
+        self._current: _Request | None = None
 
     def __enter__(self) -> Analyser:
         self.start()
@@ -410,6 +416,30 @@ class Analyser:
             self._settle()
         self.annotator.reset()
 
+    def withdraw(self, game_id: str, ply: int) -> None:
+        """The game's moves after `ply` taken back: what is queued for them is dropped, and one
+        being measured is let go once its search ends -- nothing about it is delivered, and
+        the position after it is not measured. The engine gets to the replacement move at
+        once, where it used to measure every withdrawn move first (Tai, 2026-09-23:
+        "takebacks make the program lag behind by a lot"; seconds on the phone)."""
+        kept: list[_Request | None] = []
+        while True:
+            try:
+                request = self._requests.get_nowait()
+            except queue.Empty:
+                break
+            if request is not None and request.game_id == game_id and request.ply > ply:
+                self.withdrawn += 1
+                self._settle()
+            else:
+                kept.append(request)
+        for request in kept:
+            self._requests.put(request)
+        current = self._current
+        if current is not None and current.game_id == game_id and current.ply > ply:
+            current.withdrawn = True
+            self.withdrawn += 1
+
     def poll(self) -> list[Event]:
         out: list[Event] = []
         while True:
@@ -442,22 +472,26 @@ class Analyser:
             request = self._requests.get()
             if request is None:
                 return
+            self._current = request
             try:
                 if request.move is None:
-                    self._results.put(
-                        self.annotator.analysis_event(request.game_id, request.board, request.ply)
+                    event = self.annotator.analysis_event(
+                        request.game_id, request.board, request.ply
                     )
+                    if not request.withdrawn:
+                        self._results.put(event)
                 else:
                     # The verdict first, from the best line alone; the position whole after
                     # -- unless newer moves are waiting: then this ply is history, its
                     # verdict is all the coach and the review need, and the whole analysis
                     # (candidates, threats, the decisive-moment call) goes to the position
                     # the player is actually looking at.
-                    self._results.put(
-                        self.annotator.assess_move(
-                            request.game_id, request.board, request.move, request.ply
-                        )
+                    verdict = self.annotator.assess_move(
+                        request.game_id, request.board, request.move, request.ply
                     )
+                    if request.withdrawn:
+                        continue
+                    self._results.put(verdict)
                     after = request.board.copy()
                     after.push(request.move)
                     behind = not self._requests.empty()
@@ -478,6 +512,7 @@ class Analyser:
                 self.failures += 1
                 self.last_error = f"{type(exc).__name__}: {exc}"
             finally:
+                self._current = None
                 self._settle()
 
 

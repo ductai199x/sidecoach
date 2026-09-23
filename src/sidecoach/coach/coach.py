@@ -1688,6 +1688,9 @@ class Coach:
         ply = active[-1].move.ply if active else 0
         for gone in [p for p in self.positions if p > ply]:
             del self.positions[gone]
+        # The withdrawn moves go too: a late word on one was taken for the move that replaced it.
+        for gone in [p for p in self.moves if p > ply]:
+            del self.moves[gone]
         position = self.positions.get(ply)
         if position is None:
             position = _Position(ply=ply, board=self.board.copy())
@@ -1747,8 +1750,10 @@ class Coach:
     def _on_assessment(self, event: MoveAssessment, ts: float) -> None:
         if event.game_id != self.game_id:
             return  # the engine's late word on the game before this one
-        self.conversation.assess(event)
         move = self.moves.get(event.ply)
+        if move is not None and move.uci != event.uci:
+            return  # the verdict on a move taken back since, not on the one played there now
+        self.conversation.assess(event)
         if move is None or not move.by_user:
             return
         before = self.positions.get(event.ply - 1)

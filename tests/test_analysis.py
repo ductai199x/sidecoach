@@ -529,3 +529,108 @@ def test_behind_a_fast_game_the_analyser_keeps_the_verdicts_and_drops_stale_anal
     assert all(len(a.lines) == 1 and not a.threats for a in analyses[:4]), "thin for stale plies"
     assert analyser.skipped == 4
     assert fake.multipvs.count(6) == 1, "one whole measurement: the position the player faces"
+
+
+class _HeldEngine(FakeEngine):
+    """A fake engine whose searches wait to be let go, so a test can act mid-search."""
+
+    def __init__(self) -> None:
+        super().__init__({})
+        import threading
+
+        self.searching = threading.Event()
+        self.go = threading.Event()
+
+    def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
+        self.searching.set()
+        self.go.wait(5)
+        return super().analyse(board, **kwargs)
+
+
+def test_a_takeback_lets_the_engine_go_of_the_withdrawn_moves() -> None:
+    """Tai, 2026-09-23: "takebacks make the program lag behind by a lot". The moves taken
+    back were measured one after another before the replacement was: now what is queued for
+    them is dropped, and the one being measured delivers nothing and is not followed by the
+    whole analysis of the position after it."""
+    engine = _HeldEngine()
+    analyser = Analyser(GameAnnotator(engine=engine, depth=6, with_threats=False))
+    board = chess.Board()
+    moves = []
+    for ply, san in enumerate(["e4", "e5", "Nf3", "Nc6"], start=1):
+        move = board.parse_san(san)
+        moves.append((board.copy(), move, ply))
+        board.push(move)
+    analyser.submit_move("g", *moves[0])
+    analyser.start()
+    assert engine.searching.wait(5), "the worker never started on ply 1"
+    for before, move, ply in moves[1:]:
+        analyser.submit_move("g", before, move, ply)
+    # Plies 3 and 4 taken back while ply 1 is measured and 2 waits.
+    analyser.withdraw("g", 2)
+    assert analyser.withdrawn == 2 and analyser.pending == 2
+    # Ply 1 taken back too, mid-search: its verdict is not delivered.
+    analyser.withdraw("g", 0)
+    assert analyser.withdrawn == 4
+    engine.go.set()
+    got = _drain(analyser, timeout=3)
+    analyser.close()
+    assert [e for e in got if getattr(e, "ply", None) in (1, 3, 4)] == [], got
+    assert analyser.pending == 0
+
+
+def test_what_the_engine_says_of_a_withdrawn_move_is_not_passed_on(tmp_path: Path) -> None:
+    """A verdict on a move taken back came back at its ply and was read as the verdict on
+    the move that replaced it; `_Assessing.drain` holds each result against the game as it
+    stands now."""
+    from sidecoach.cli import _Assessing
+    from sidecoach.config import Settings
+    from sidecoach.events import GameStarted, MovePlayed, Side, Takeback
+
+    assessing = _Assessing(Settings(data_dir=tmp_path), enabled=False)
+    assessing.analyser = Analyser(GameAnnotator(engine=FakeEngine({}), depth=6, with_threats=False))
+
+    def played(board: chess.Board, san: str, ply: int) -> MovePlayed:
+        before = board.fen()
+        move = board.push_san(san)
+        return MovePlayed(
+            game_id="g",
+            ply=ply,
+            san=san,
+            uci=move.uci(),
+            fen_before=before,
+            fen_after=board.fen(),
+            by_user=ply % 2 == 1,
+        )
+
+    assessing.submit(GameStarted(game_id="g", start_fen=chess.STARTING_FEN, user_side=Side.WHITE))
+    board = chess.Board()
+    for ply, san in enumerate(["e4", "e5", "Nf3", "Nc6"], start=1):
+        assessing.submit(played(board, san, ply))
+    # Nothing measured yet (the worker is not started): 3.Nf3 Nc6 taken back, 3.Bc4 played.
+    board.pop()
+    board.pop()
+    assessing.submit(Takeback(game_id="g", plies=2, fen=board.fen()))
+    assessing.submit(played(board, "Bc4", 3))
+    # And a verdict on the withdrawn 3.Nf3, as if the engine had finished it just before.
+    stale = MoveAssessment(
+        game_id="g",
+        ply=3,
+        uci="g1f3",
+        expected_loss=0.0,
+        severity=Severity.NONE,
+        best=[],
+    )
+    assessing.analyser._results.put(stale)
+    assessing.analyser.start()
+    got: list[object] = []
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not any(
+        isinstance(e, MoveAssessment) and e.ply == 3 for e in got
+    ):
+        got += assessing.drain()
+        time.sleep(0.02)
+    assessing.analyser.close()
+    verdicts = [e for e in got if isinstance(e, MoveAssessment)]
+    assert [(e.ply, e.uci) for e in verdicts] == [(1, "e2e4"), (2, "e7e5"), (3, "f1c4")], verdicts
+    analyses = [e for e in got if isinstance(e, Analysis)]
+    assert all(e.ply <= 3 for e in analyses)

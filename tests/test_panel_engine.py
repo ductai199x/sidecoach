@@ -587,3 +587,78 @@ def test_an_ask_before_start_is_answered_at_once_not_kept_for_a_later_session(
     assert any(ln["text"] == "you: what should I play" for ln in lines)
     reply = next(ln for ln in lines if ln["chan"] == "coach" and "Press Start first" in ln["text"])
     assert reply["data"]["full"].startswith("Press Start first")
+
+
+def test_the_move_list_badges_follow_takebacks_and_resyncs(tmp_path: Path) -> None:
+    """A takeback's withdrawn moves take their badges with them -- a replacement played at
+    the same ply showed the withdrawn move's -- and a resync, which numbers the plies again,
+    clears them all; both reach the engine glue (Tai's game, 2026-09-23)."""
+    import chess
+
+    from sidecoach.events import (
+        GameStarted,
+        Label,
+        MoveAssessment,
+        MovePlayed,
+        Resync,
+        Severity,
+        Side,
+        Takeback,
+    )
+
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
+    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+
+    class Glue:
+        def __init__(self) -> None:
+            self.got: list[object] = []
+
+        def submit(self, event: object) -> None:
+            self.got.append(event)
+
+    glue = Glue()
+    engine._dispatch_game(
+        GameStarted(game_id="g", start_fen=chess.STARTING_FEN, user_side=Side.WHITE), glue, chess
+    )
+    board = chess.Board()
+    for ply, san in enumerate(["e4", "e5", "Nf3", "Nc6"], start=1):
+        before = board.fen()
+        move = board.push_san(san)
+        engine._dispatch_game(
+            MovePlayed(
+                game_id="g",
+                ply=ply,
+                san=san,
+                uci=move.uci(),
+                fen_before=before,
+                fen_after=board.fen(),
+                by_user=ply % 2 == 1,
+            ),
+            glue,
+            chess,
+        )
+        engine._dispatch_engine(
+            [
+                MoveAssessment(
+                    game_id="g",
+                    ply=ply,
+                    uci=move.uci(),
+                    expected_loss=0.0,
+                    severity=Severity.NONE,
+                    best=[],
+                    label=Label.BEST,
+                )
+            ],
+            None,
+            chess,
+        )
+    assert set(engine._state["labels"]) == {"1", "2", "3", "4"}
+    board.pop()
+    board.pop()
+    engine._dispatch_game(Takeback(game_id="g", plies=2, fen=board.fen()), glue, chess)
+    assert set(engine._state["labels"]) == {"1", "2"}, "the withdrawn moves' badges went"
+    assert any(isinstance(e, Takeback) for e in glue.got), "the engine glue was told"
+    engine._dispatch_game(
+        Resync(game_id="g", fen=board.fen(), reason="position adopted"), glue, chess
+    )
+    assert engine._state["labels"] == {}, "a resync numbers the plies again"

@@ -422,7 +422,7 @@ def _replay_moves(
     import chess
     import cv2
 
-    from sidecoach.events import GameEnded, GameStarted, MovePlayed, Resync, Takeback
+    from sidecoach.events import GameEnded, GameStarted, MovePlayed, Resync, Takeback, Unexplained
     from sidecoach.state.pipeline import GamePipeline
     from sidecoach.vision.clock import ClockReader
 
@@ -509,6 +509,10 @@ def _replay_moves(
                 if scoring:
                     truth_index = max(0, truth_index - event.plies)
                     del line[max(0, len(line) - event.plies) :]
+            elif isinstance(event, Unexplained):
+                console.print(
+                    f"tick {tick.frame_id:5d} [yellow]Unexplained: {event.reason}[/yellow]"
+                )
             elif isinstance(event, Resync):
                 console.print(f"tick {tick.frame_id:5d} [yellow]Resync: {event.reason}[/yellow]")
                 if scoring and event.reason.startswith("position adopted"):
@@ -827,6 +831,13 @@ class _Assessing:
         # An optional sink for the assessment lines (the panel's debug terminal); when set,
         # lines go to it instead of the console.
         self.sink: Callable[[str], None] | None = None
+        # The game as it stands now: its id, its last ply, and each ply's move and the
+        # position after it -- what a takeback withdraws, and what `drain` holds the engine's
+        # words against.
+        self._game_id: str | None = None
+        self._ply = 0
+        self._line: dict[int, str] = {}
+        self._fens: dict[int, str] = {}
 
     @property
     def on(self) -> bool:
@@ -839,7 +850,7 @@ class _Assessing:
         played, and without it the coach had "not seen enough of this game yet"."""
         import chess
 
-        from sidecoach.events import GameStarted, MovePlayed, Resync
+        from sidecoach.events import GameStarted, MovePlayed, Resync, Takeback
 
         if self.analyser is None:
             return
@@ -850,20 +861,60 @@ class _Assessing:
             self._from[event.ply] = event.fen_before
             before.push(move)
             self._game = before
+            self._game_id = event.game_id
+            self._ply = event.ply
+            self._line[event.ply] = event.uci
+            self._fens[event.ply] = event.fen_after
+        elif isinstance(event, Takeback):
+            # Moves withdrawn: the engine lets go of them at once, and what it still says
+            # about them is not passed on (`drain`).
+            ply = max(0, self._ply - event.plies)
+            self.analyser.withdraw(event.game_id, ply)
+            for gone in [p for p in self._line if p > ply]:
+                self._line.pop(gone, None)
+                self._fens.pop(gone, None)
+                self._from.pop(gone, None)
+            self._ply = ply
+            self._game = self._history_to(event.fen)
         elif isinstance(event, GameStarted):
             # The engine's queue is the last game's: dropped, so this game is measured
             # from its first move (the last game was reviewed from what had come).
             self.analyser.reset()
             self._from.clear()
+            self._forget(event.game_id)
             self._game = chess.Board(event.start_fen)
             if event.start_fen != chess.STARTING_FEN:
                 self.analyser.submit_position(event.game_id, chess.Board(event.start_fen), 0)
         elif isinstance(event, Resync):
             self.analyser.reset()
             self._from.clear()
+            self._forget(event.game_id)
             # A position adopted, not played to: it has no history to look up.
             self._game = chess.Board(event.fen)
             self.analyser.submit_position(event.game_id, chess.Board(event.fen), 0)
+
+    def _forget(self, game_id: str) -> None:
+        """A game begins, or its numbering starts again (a resync): no plies stand yet."""
+        self._game_id = game_id
+        self._ply = 0
+        self._line.clear()
+        self._fens.clear()
+
+    def _stale(self, event: object) -> bool:
+        """The engine's word on a move or a position the game has since taken back: a ply
+        past the game's last, or one whose move or position is no longer the game's. Passed
+        on, a withdrawn move's verdict was taken for the replacement played at its ply."""
+        from sidecoach.events import Analysis, MoveAssessment
+
+        if not isinstance(event, (MoveAssessment, Analysis)) or event.game_id != self._game_id:
+            return False
+        if event.ply > self._ply:
+            return True
+        if isinstance(event, MoveAssessment):
+            played = self._line.get(event.ply)
+            return played is not None and played != event.uci
+        fen = self._fens.get(event.ply)
+        return fen is not None and fen.split(" ")[:4] != event.fen.split(" ")[:4]
 
     def _history_to(self, fen: str) -> Any:
         """The game's board standing on `fen`, with the moves that led there: the next
@@ -896,6 +947,8 @@ class _Assessing:
             return []
         drained: list[Event] = []
         for assessed in self.analyser.poll():
+            if self._stale(assessed):
+                continue
             drained.append(assessed)
             if isinstance(assessed, MoveAssessment):
                 fen = self._from.pop(assessed.ply, None)
@@ -1767,6 +1820,7 @@ def watch(
         MovePlayed,
         Resync,
         Takeback,
+        Unexplained,
     )
     from sidecoach.replay.recording import ChangeGate, Recorder, board_gate
     from sidecoach.state.pipeline import GamePipeline
@@ -1910,9 +1964,12 @@ def watch(
                             console.print()
                     elif isinstance(event, Takeback):
                         console.print(f"[yellow]takeback[/yellow] {event.plies} ply")
+                        assessing.submit(event)
                     elif isinstance(event, Resync):
                         console.print(f"[yellow]resync[/yellow]: {event.reason}")
                         assessing.submit(event)
+                    elif isinstance(event, Unexplained):
+                        console.print(f"[yellow]board[/yellow]: {event.reason}; the game is kept")
                     elif isinstance(event, GameEnded):
                         console.print(f"[bold]game over[/bold] {event.result} ({event.reason})")
                         if event.pgn:

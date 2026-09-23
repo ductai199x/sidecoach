@@ -130,6 +130,19 @@ class Resync(Event):
     reason: str
 
 
+class Unexplained(Event):
+    """Cells that have disagreed with the game for a long while, or a move refused as
+    illegal: a note for the log, the game kept as it stands. Not a resync -- the position
+    did not jump and the numbering goes on. Sent as a Resync, it made the coach and the
+    engine restart their numbering while the reconciler kept its own, and every later ply
+    and takeback disagreed (Tai's game on the Pixel, 2026-09-23: a "takeback of 10 plies"
+    the coach read as the last move)."""
+
+    game_id: str
+    fen: str
+    reason: str
+
+
 class GameEnded(Event):
     game_id: str
     result: str
