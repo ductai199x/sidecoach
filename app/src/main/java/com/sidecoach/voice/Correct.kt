@@ -159,15 +159,26 @@ object Correct {
             for (n in minOf(5, tokens.size - i) downTo 1) {
                 val span = tokens.subList(i, i + n)
                 if (!plausible(span)) continue
+                if (n == 2 && i > 0 && tokens[i - 1] == "on" && span[0].length == 1) {
+                    continue // "the pawn on d five" is a place, not a move there
+                }
                 val phrase = span.joinToString(" ")
                 val exact = forms[phrase]
                 if (exact != null) {
                     best = Triple(1.0, n, exact)
                     break
                 }
+                val spanKeys = keys(span)
                 for ((form, san) in forms) {
                     val ratio = SequenceMatcher(phrase, form).ratio()
-                    if (ratio >= MIN_RATIO && (best == null || ratio > best.first)) best = Triple(ratio, n, san)
+                    // Close is not enough: the piece and the square the person named must be the
+                    // form's. Fuzz may mend how the words around them were heard, never swap them
+                    // for another legal move -- "knight to f three" became Kf3 when only the king
+                    // could go there (Tai, 2026-09-23: what matches no legal move stays as words,
+                    // for the coach to read).
+                    if (ratio >= MIN_RATIO && (best == null || ratio > best.first) && keys(form.split(" ")) == spanKeys) {
+                        best = Triple(ratio, n, san)
+                    }
                 }
             }
             if (best != null && best.first >= MIN_RATIO) {
@@ -193,6 +204,16 @@ object Correct {
         "knight", "bishop", "rook", "queen", "king", "pawn", "takes", "to", "on", "the", "x",
         "check", "checkmate", "promotes", "promote", "equals",
     )
+
+    /**
+     * The words that say which move: the piece, the square, the side castled to, what a pawn
+     * becomes -- and "on", which makes a square a place ("the pawn on e five") rather than where
+     * a move goes. A fuzzy match must keep all of them as they were said.
+     */
+    private val KEY_WORDS: Set<String> = SQUARE_WORDS + "abcdefgh".map { it.toString() } +
+        setOf("knight", "bishop", "rook", "queen", "king", "pawn", "kingside", "queenside", "on")
+
+    private fun keys(words: List<String>): List<String> = words.filter { it in KEY_WORDS }
 
     /** A span worth comparing to the move forms: move words only, naming a square or castling. */
     private fun plausible(span: List<String>): Boolean {
