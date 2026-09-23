@@ -72,7 +72,12 @@ object PanelVoice {
     fun build(context: Context, settings: SettingsStore) {
         val made = KokoroTts(context.applicationContext, modelDir(context), settings.voice(), settings.speed(), settings.lang())
         made.onPlay = { line -> onAudioStarts(line) }
-        tts?.let { old -> runCatching { old.stop() } }
+        // The voice it replaces is cut off and freed (off this thread: a line being
+        // synthesised finishes first).
+        tts?.let { old ->
+            runCatching { old.stop() }
+            kotlin.concurrent.thread(name = "voice-close", isDaemon = true) { old.close() }
+        }
         tts = made
         voice = settings.voice()
         PanelEngine.set(

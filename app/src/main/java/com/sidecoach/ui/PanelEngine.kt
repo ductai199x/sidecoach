@@ -133,7 +133,7 @@ object PanelEngine {
             state["heard"] = null
             state["dictation"] = mapOf("text" to "", "live" to false, "sends_at" to null)
             state["voice_detail"] = "the voice is not built yet"
-            state["stt_detail"] = "nemo-parakeet-tdt-0.6b-v3, cpu (not loaded yet)"
+            state["stt_detail"] = "parakeet-tdt_ctc-110m, cpu (not loaded yet)"
             // Whether the page's listening button has anything behind it. True while the
             // models are still being built, so it does not appear partway through a run; the
             // warm-up replaces it with the recogniser's own answer.

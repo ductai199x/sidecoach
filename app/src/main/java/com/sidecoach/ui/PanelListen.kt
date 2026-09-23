@@ -99,7 +99,7 @@ object PanelListen {
     @Volatile private var asking = false
     @Volatile private var pendingMode: String? = null
 
-    fun modelDir(context: Context): File = File(context.filesDir, "models/parakeet")
+    fun modelDir(context: Context): File = File(context.filesDir, "models/parakeet-tdt_ctc-110m")
     fun gateFile(context: Context): File = File(context.filesDir, "models/silero/${SileroGate.FILE}")
 
     private fun now(): Double = SystemClock.elapsedRealtime() / 1000.0

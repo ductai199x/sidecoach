@@ -107,11 +107,11 @@ class SttParityTest {
 
     @Test
     fun parakeetHearsWhatTheDesktopHears() {
-        val dir = File(app.filesDir, "models/parakeet")
-        assumeTrue("no Parakeet int8 in $dir (tools/test.ps1 pushes it)", Parakeet.FILES.all { File(dir, it).exists() })
+        val dir = com.sidecoach.ui.PanelListen.modelDir(app)
+        assumeTrue("no Parakeet in $dir (tools/test.ps1 pushes it)", Parakeet.FILES.all { File(dir, it).exists() })
         val began = System.currentTimeMillis()
         val parakeet = Parakeet.load(app, dir, 4)
-        Log.i(TAG, "parakeet int8 loaded in ${System.currentTimeMillis() - began} ms")
+        Log.i(TAG, "parakeet loaded in ${System.currentTimeMillis() - began} ms")
         parakeet.use {
             val clips = fixtures.getJSONArray("clips")
             for (i in 0 until clips.length()) {

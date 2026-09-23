@@ -2,8 +2,8 @@
 
 What the player says becomes an ask through a chain the phone ports link by link: Silero's speech
 probability per 32 ms frame (`voice.vad.SileroGate`) and the endpointer on top of it
-(`Endpointer`), Parakeet's transcript (onnx-asr's NeMo TDT path, int8 as the phone runs it,
-on the CPU), and the chess correction against the legal moves (`voice.correct`). This records,
+(`Endpointer`), Parakeet's transcript (onnx-asr's NeMo TDT path, on the model the phone runs --
+Parakeet TDT-CTC 110M int8 -- on the CPU), and the chess correction against the legal moves (`voice.correct`). This records,
 from the desktop's own code:
 
 - speech clips of things a player says, spoken by Kokoro and brought to 16 kHz: their samples,
@@ -74,6 +74,15 @@ TRANSCRIPTS = [
     "   ",
     "O-O",
     "Nf3",
+    # Promotions, and the 110M's own ways of hearing things.
+    "E8 Queen",
+    "e eight, queen",
+    "e eight equals queen",
+    "e eight knight",
+    "pawn to e eight",
+    "e takes d eight queen",
+    "He takes D five.",
+    "He ate queen",
 ]
 
 BOARDS = [
@@ -81,6 +90,8 @@ BOARDS = [
     "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
     "rnbqkb1r/pppp1ppp/5n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
     "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 1 5",
+    "3r4/4P1k1/8/8/8/8/5K2/8 w - - 0 1",
+    "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2",
 ]
 
 
@@ -111,7 +122,8 @@ _kokoro = None
 def main() -> None:
     import onnx_asr
 
-    asr = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", quantization="int8", providers=["CPUExecutionProvider"])
+    # The phone's recogniser: Parakeet TDT-CTC 110M int8 (the desktop's own runs the 0.6B v3).
+    asr = onnx_asr.load_model("OpenVoiceOS/nvidia-parakeet-tdt_ctc-110m-onnx", quantization="int8", providers=["CPUExecutionProvider"])
     timed = asr.with_timestamps()
     gate = SileroGate()
     assert gate.load()

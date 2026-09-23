@@ -13,11 +13,14 @@ import java.nio.IntBuffer
 import java.nio.LongBuffer
 
 /**
- * NVIDIA Parakeet-TDT-0.6B v3 as onnx-asr 0.12 runs it for the desktop (`NemoConformerTdt`):
- * the waveform to 128 mel features (onnx-asr's own `nemo128.onnx`), the encoder, then the TDT
- * decoding -- the joint network asked frame by frame for a token and a duration, the frames it
- * says to skip skipped -- and the tokens joined into text. int8 on the phone, where the desktop
- * runs the full-precision graphs (Tai, 2026-09-23).
+ * A NeMo Parakeet TDT model as onnx-asr 0.12 runs it (`NemoConformerTdt`): the waveform to mel
+ * features (onnx-asr's own `nemo80.onnx` or `nemo128.onnx`, as the model's config says), the
+ * encoder, then the TDT decoding -- the joint network asked frame by frame for a token and a
+ * duration, the frames it says to skip skipped -- and the tokens joined into text.
+ *
+ * The phone runs NVIDIA's Parakeet TDT-CTC 110M, int8, where the desktop runs the 0.6B v3
+ * (Tai, 2026-09-23: a quarter of the memory for nearly the same moves heard); the code is
+ * onnx-asr's for either, and reads every size from the model as onnx-asr does.
  */
 class Parakeet private constructor(
     private val env: OrtEnvironment,
@@ -28,6 +31,18 @@ class Parakeet private constructor(
     private val blank: Int,
     private val maxTokensPerStep: Int,
 ) : AutoCloseable {
+
+    /**
+     * The decoder's state, (layers, 1, hidden) for each of its two inputs, from the graph's own
+     * input shapes: `NemoConformerRnnt._create_state`.
+     */
+    private val stateShape1 = stateShape("input_states_1")
+    private val stateShape2 = stateShape("input_states_2")
+
+    private fun stateShape(name: String): LongArray {
+        val shape = (decoderJoint.inputInfo.getValue(name).info as ai.onnxruntime.TensorInfo).shape
+        return longArrayOf(shape[0], 1, shape[2])
+    }
 
     private val vocabSize = vocab.size
 
@@ -105,9 +120,8 @@ class Parakeet private constructor(
      * to jump; otherwise a blank, or [maxTokensPerStep] tokens in one frame, moves one frame on.
      */
     private fun decode(encodings: FloatArray, length: Int, dim: Int): List<Int> {
-        val stateShape1 = longArrayOf(2, 1, STATE_DIM.toLong())
-        var state1 = FloatArray(2 * STATE_DIM)
-        var state2 = FloatArray(2 * STATE_DIM)
+        var state1 = FloatArray((stateShape1[0] * stateShape1[2]).toInt())
+        var state2 = FloatArray((stateShape2[0] * stateShape2[2]).toInt())
         val tokens = ArrayList<Int>()
         var t = 0
         var emitted = 0
@@ -115,7 +129,7 @@ class Parakeet private constructor(
         while (t < length) {
             System.arraycopy(encodings, t * dim, frame, 0, dim)
             val previous = if (tokens.isEmpty()) blank else tokens.last()
-            val (output, next1, next2) = joint(frame, dim, previous, state1, state2, stateShape1)
+            val (output, next1, next2) = joint(frame, dim, previous, state1, state2)
             var token = 0
             var bestLogit = Float.NEGATIVE_INFINITY
             for (k in 0 until vocabSize) {
@@ -156,15 +170,14 @@ class Parakeet private constructor(
         previous: Int,
         state1: FloatArray,
         state2: FloatArray,
-        stateShape: LongArray,
     ): Triple<FloatArray, FloatArray, FloatArray> {
         val inputs = HashMap<String, OnnxTensor>()
         try {
             inputs["encoder_outputs"] = OnnxTensor.createTensor(env, FloatBuffer.wrap(frame), longArrayOf(1, dim.toLong(), 1))
             inputs["targets"] = OnnxTensor.createTensor(env, IntBuffer.wrap(intArrayOf(previous)), longArrayOf(1, 1))
             inputs["target_length"] = OnnxTensor.createTensor(env, IntBuffer.wrap(intArrayOf(1)), longArrayOf(1))
-            inputs["input_states_1"] = OnnxTensor.createTensor(env, FloatBuffer.wrap(state1), stateShape)
-            inputs["input_states_2"] = OnnxTensor.createTensor(env, FloatBuffer.wrap(state2), stateShape)
+            inputs["input_states_1"] = OnnxTensor.createTensor(env, FloatBuffer.wrap(state1), stateShape1)
+            inputs["input_states_2"] = OnnxTensor.createTensor(env, FloatBuffer.wrap(state2), stateShape2)
             decoderJoint.run(inputs, setOf("outputs", "output_states_1", "output_states_2")).use { result ->
                 val outputs = (result.get("outputs").get() as OnnxTensor).floatBuffer
                 val s1 = (result.get("output_states_1").get() as OnnxTensor).floatBuffer
@@ -194,7 +207,6 @@ class Parakeet private constructor(
 
     companion object {
         private const val TAG = "sidecoach.voice"
-        private const val STATE_DIM = 640
         private val DECODE_SPACE_PATTERN = Regex("""\A\s|\s\B|(\s)\b""")
 
         const val ENCODER = "encoder-model.int8.onnx"
@@ -204,14 +216,17 @@ class Parakeet private constructor(
         val FILES = listOf(ENCODER, DECODER_JOINT, VOCAB, CONFIG)
 
         /**
-         * The model from [dir] (Setup's files), the preprocessor from the app's assets (the one
-         * onnx-asr ships and uses, not the repository's copy).
+         * The model from [dir] (Setup's files), the preprocessor from the app's assets: the one
+         * onnx-asr ships and uses for the config's `features_size` (80 when it says none), not
+         * the model repository's copy.
          */
         fun load(context: Context, dir: File, threads: Int): Parakeet {
             val env = OrtEnvironment.getEnvironment()
             val options = OrtSession.SessionOptions().apply { setIntraOpNumThreads(threads) }
             val began = SystemClock.elapsedRealtime()
-            val preprocessorBytes = context.assets.open("asr/nemo128.onnx").use { it.readBytes() }
+            val config = JSONObject(File(dir, CONFIG).readText(Charsets.UTF_8))
+            // `_NemoConformer._preprocessor_name`: nemo{features_size}.
+            val preprocessorBytes = context.assets.open("asr/nemo${config.optInt("features_size", 80)}.onnx").use { it.readBytes() }
             val preprocessor = env.createSession(preprocessorBytes, options)
             val encoder = env.createSession(File(dir, ENCODER).path, options)
             val decoderJoint = env.createSession(File(dir, DECODER_JOINT).path, options)
@@ -223,7 +238,6 @@ class Parakeet private constructor(
             }
             val blank = vocab.entries.firstOrNull { it.value == "<blk>" }?.key
                 ?: throw IllegalStateException("no <blk> in $VOCAB")
-            val config = JSONObject(File(dir, CONFIG).readText(Charsets.UTF_8))
             Log.i(TAG, "parakeet loaded in ${SystemClock.elapsedRealtime() - began} ms")
             return Parakeet(env, preprocessor, encoder, decoderJoint, vocab, blank, config.optInt("max_tokens_per_step", 10))
         }

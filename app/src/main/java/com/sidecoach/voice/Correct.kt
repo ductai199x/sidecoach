@@ -2,6 +2,7 @@ package com.sidecoach.voice
 
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.PAWN
+import com.sidecoach.chess.QUEEN
 import com.sidecoach.chess.squareName
 
 /**
@@ -115,7 +116,21 @@ object Correct {
                     }
                 }
             }
-            for (v in variants) forms[v] = san
+            val promotion = move.promotion
+            if (promotion != 0) {
+                // What the pawn becomes is said after the square too: "e eight queen", "e eight
+                // equals queen", as well as the notation's "e eight promotes to queen".
+                val name = pieceName(promotion)
+                val head = stem.split(" promotes to ")[0]
+                variants.addAll(listOf("$head $name", "$head equals $name"))
+            }
+            for (v in variants) {
+                // A promotion that does not say to what is a queen's: the forms that name no
+                // piece belong to it alone. The knight's, generated last, used to take them all,
+                // and "e8 queen" came out as e8=N+ (2026-09-23).
+                if (promotion != 0 && promotion != QUEEN && pieceName(promotion) !in v) continue
+                forms[v] = san
+            }
         }
         return forms
     }
@@ -176,7 +191,7 @@ object Correct {
      */
     private val MOVE_VOCAB: Set<String> = SQUARE_WORDS + CASTLE_WORDS + "abcdefgh".map { it.toString() } + setOf(
         "knight", "bishop", "rook", "queen", "king", "pawn", "takes", "to", "on", "the", "x",
-        "check", "checkmate", "promotes", "promote",
+        "check", "checkmate", "promotes", "promote", "equals",
     )
 
     /** A span worth comparing to the move forms: move words only, naming a square or castling. */

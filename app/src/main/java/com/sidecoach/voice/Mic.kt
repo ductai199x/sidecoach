@@ -436,7 +436,8 @@ class Listener(
  */
 class ParakeetStt(private val context: Context, private val dir: java.io.File) : Recogniser {
     val name = "parakeet"
-    val model = "nemo-parakeet-tdt-0.6b-v3"
+    /** NVIDIA's Parakeet TDT-CTC 110M on the phone; the desktop runs the 0.6B v3 (Tai, 2026-09-23). */
+    val model = "parakeet-tdt_ctc-110m"
 
     @Volatile private var asr: Parakeet? = null
     @Volatile private var failed: String? = null

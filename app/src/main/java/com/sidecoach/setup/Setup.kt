@@ -52,16 +52,16 @@ val KOKORO_FILES: Map<String, Pair<String, Long>> = linkedMapOf(
 )
 /**
  * Speech recognition's files, folder -> name -> (url, bytes): what `onnx_asr.load_model` and
- * `load_vad("silero")` fetch through the hub for the desktop, with Parakeet's int8 graphs where
- * the desktop takes the full-precision ones (Tai, 2026-09-23: 670 MB for 2.5 GB).
+ * `load_vad("silero")` fetch through the hub, for the phone's recogniser -- NVIDIA's Parakeet
+ * TDT-CTC 110M, int8, where the desktop runs the 0.6B v3 (Tai, 2026-09-23: 137 MB for 670).
  */
 private const val HF = "https://huggingface.co"
 val STT_FILES: Map<String, Map<String, Pair<String, Long>>> = linkedMapOf(
-    "models/parakeet" to linkedMapOf(
-        "encoder-model.int8.onnx" to ("$HF/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.int8.onnx" to 652_183_999L),
-        "decoder_joint-model.int8.onnx" to ("$HF/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/decoder_joint-model.int8.onnx" to 18_202_004L),
-        "vocab.txt" to ("$HF/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/vocab.txt" to 93_939L),
-        "config.json" to ("$HF/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/config.json" to 97L),
+    "models/parakeet-tdt_ctc-110m" to linkedMapOf(
+        "encoder-model.int8.onnx" to ("$HF/OpenVoiceOS/nvidia-parakeet-tdt_ctc-110m-onnx/resolve/main/encoder-model.int8.onnx" to 131_112_569L),
+        "decoder_joint-model.int8.onnx" to ("$HF/OpenVoiceOS/nvidia-parakeet-tdt_ctc-110m-onnx/resolve/main/decoder_joint-model.int8.onnx" to 5_367_901L),
+        "vocab.txt" to ("$HF/OpenVoiceOS/nvidia-parakeet-tdt_ctc-110m-onnx/resolve/main/vocab.txt" to 9_953L),
+        "config.json" to ("$HF/OpenVoiceOS/nvidia-parakeet-tdt_ctc-110m-onnx/resolve/main/config.json" to 119L),
     ),
     "models/silero" to linkedMapOf(
         "silero_vad.onnx" to ("$HF/istupakov/silero-vad-onnx/resolve/main/silero_vad.onnx" to 2_327_524L),

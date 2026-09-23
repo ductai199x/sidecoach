@@ -74,10 +74,10 @@ foreach ($name in @("kokoro-v1.0.int8.onnx", "voices-v1.0.bin")) {
 # (Silero), from the desktop's Hugging Face cache, where Setup puts them on the phone.
 $hub = Join-Path $env:USERPROFILE ".cache\huggingface\hub"
 $pushes = @(
-    @("models--istupakov--parakeet-tdt-0.6b-v3-onnx", "encoder-model.int8.onnx", "models/parakeet"),
-    @("models--istupakov--parakeet-tdt-0.6b-v3-onnx", "decoder_joint-model.int8.onnx", "models/parakeet"),
-    @("models--istupakov--parakeet-tdt-0.6b-v3-onnx", "vocab.txt", "models/parakeet"),
-    @("models--istupakov--parakeet-tdt-0.6b-v3-onnx", "config.json", "models/parakeet"),
+    @("models--OpenVoiceOS--nvidia-parakeet-tdt_ctc-110m-onnx", "encoder-model.int8.onnx", "models/parakeet-tdt_ctc-110m"),
+    @("models--OpenVoiceOS--nvidia-parakeet-tdt_ctc-110m-onnx", "decoder_joint-model.int8.onnx", "models/parakeet-tdt_ctc-110m"),
+    @("models--OpenVoiceOS--nvidia-parakeet-tdt_ctc-110m-onnx", "vocab.txt", "models/parakeet-tdt_ctc-110m"),
+    @("models--OpenVoiceOS--nvidia-parakeet-tdt_ctc-110m-onnx", "config.json", "models/parakeet-tdt_ctc-110m"),
     @("models--istupakov--silero-vad-onnx", "silero_vad.onnx", "models/silero")
 )
 foreach ($push in $pushes) {

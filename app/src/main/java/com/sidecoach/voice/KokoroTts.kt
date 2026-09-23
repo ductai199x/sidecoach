@@ -62,6 +62,9 @@ class KokoroTts(
 
     private var track: AudioTrack? = null
 
+    /** Synthesis holds it shared; [close] alone, so the model is never freed under a line. */
+    private val using = java.util.concurrent.locks.ReentrantReadWriteLock()
+
     val loaded: Boolean get() = kokoro != null
 
     /**
@@ -107,7 +110,13 @@ class KokoroTts(
     fun prime(): Double? {
         if (!load()) return null
         val began = SystemClock.elapsedRealtime()
-        runCatching { kokoro?.create("Ready.", voice, speed, lang) }
+        val shared = using.readLock()
+        shared.lock()
+        try {
+            runCatching { kokoro?.create("Ready.", voice, speed, lang) }
+        } finally {
+            shared.unlock()
+        }
         return (SystemClock.elapsedRealtime() - began) / 1000.0
     }
 
@@ -139,14 +148,27 @@ class KokoroTts(
         }
     }
 
-    /** Release the output. */
+    /**
+     * Let go of everything: the lines queued, the worker, the output and the model (a rebuilt
+     * voice replaces this one; its native memory is no collector's). Waits for a line being
+     * synthesised; nothing speaks or loads afterwards.
+     */
     fun close() {
-        val t = track
-        track = null
-        runCatching { t?.release() }
-        synchronized(loadLock) {
-            kokoro?.close()
-            kokoro = null
+        failed = true
+        stop()
+        synchronized(lock) { worker?.interrupt() }
+        val alone = using.writeLock()
+        alone.lock()
+        try {
+            val t = track
+            track = null
+            runCatching { t?.release() }
+            synchronized(loadLock) {
+                runCatching { kokoro?.close() }
+                kokoro = null
+            }
+        } finally {
+            alone.unlock()
         }
     }
 
@@ -182,11 +204,16 @@ class KokoroTts(
         if (!load()) return // degraded to silence
         val model = kokoro ?: return
         val mine = synchronized(lock) { generation }
+        val shared = using.readLock()
+        shared.lock()
         val samples = try {
+            if (kokoro == null) return // closed meanwhile
             model.create(line.spoken, line.voice ?: voice, speed, lang)
         } catch (exc: Exception) { // a bad line must not kill the voice
             Log.w(TAG, "Kokoro synthesis failed for \"${line.spoken}\": $exc")
             return
+        } finally {
+            shared.unlock()
         }
         // A stop between synthesis and playback means this line was cancelled.
         if (synchronized(lock) { generation } != mine) return
