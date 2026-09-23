@@ -298,6 +298,9 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
 
     @app.get("/settings")
     @app.get("/setup")
+    # The shell loads the splash from its own bundle; served here too, it runs outside the
+    # shell as it does on the phone (and `/splash?demo` shows the design in a browser).
+    @app.get("/splash")
     def spa_page() -> Any:
         return FileResponse(WEB / "index.html")
 

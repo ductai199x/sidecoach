@@ -7,6 +7,10 @@
   import { store } from "./panel.svelte";
   import { inShell, openWindow } from "./shell.svelte";
   import { voiceLabel } from "./voices";
+  import Drawer from "./Drawer.svelte";
+
+  // A narrow window's controls: a drawer the menu button opens (the wide bar needs none).
+  let drawer = $state<ReturnType<typeof Drawer> | null>(null);
 
   // What the app still needs (models, Stockfish): a banner until the setup is done.
   let missing = $state<string[]>([]);
@@ -54,9 +58,14 @@
 
 <header id="bar">
   <div class="group">
+    <button class="menu-toggle" aria-label="Menu" title="Menu" onclick={() => drawer?.show()}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+      {#if missing.length}<span class="badge" aria-label="setup unfinished"></span>{/if}
+    </button>
+    <img class="brand-mark" src="/logo.svg" alt="" draggable="false" />
     <span class="brand">sidecoach</span>
     <button class="primary" class:running={store.running} onclick={() => store.toggleRunning()}>{store.running ? "Stop" : "Start"}</button>
-    <span class="status">{store.state.status || ""}</span>
+    <span class="status" class:live={store.running}>{store.state.status || ""}</span>
     {#if missing.length}
       <a class="setup-banner" href="/setup" target="_blank" rel="noopener" title={missing.join(", ")} onclick={openSetup}>Set up: {missing.length} item{missing.length === 1 ? "" : "s"} missing →</a>
     {/if}
@@ -111,6 +120,48 @@
   </div>
 </header>
 
+<Drawer bind:this={drawer} {missing} />
+
 <style>
   .settings-link { display: inline-flex; align-items: center; gap: 6px; }
+
+  /* The narrow window's bar: one row -- the menu, the knight and the name, the status,
+     Start -- with the controls in the drawer. The wide bar shows none of this. */
+  .menu-toggle, .brand-mark { display: none; }
+  :global(html.stacked) #bar {
+    flex-wrap: nowrap; min-height: 56px; box-sizing: border-box;
+    padding: 6px 12px 6px 6px;
+  }
+  :global(html.stacked) #bar > .group:first-child { flex: 1 1 auto; flex-wrap: nowrap; gap: 8px; min-width: 0; }
+  :global(html.stacked) #bar .controls,
+  :global(html.stacked) #bar .setup-banner { display: none; }
+  :global(html.stacked) .menu-toggle {
+    position: relative; display: inline-flex; align-items: center; justify-content: center;
+    flex: 0 0 auto; width: 44px; height: 44px; padding: 0;
+    border: 0; border-radius: 50%; background: transparent; color: var(--ink); cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  :global(html.stacked) .menu-toggle:hover, :global(html.stacked) .menu-toggle:active { background: var(--panel2); }
+  .menu-toggle svg { width: 24px; height: 24px; fill: currentColor; }
+  .badge {
+    position: absolute; top: 9px; right: 9px; width: 9px; height: 9px; border-radius: 50%;
+    background: #f2b441; box-shadow: 0 0 0 2px var(--panel);
+  }
+  :global(html.stacked) .brand-mark {
+    display: block; width: 26px; height: 26px; flex: 0 0 26px;
+    filter: drop-shadow(0 0 8px rgba(242, 180, 65, 0.3));
+  }
+  :global(html.stacked) #bar .brand { font-size: 17px; margin-right: 2px; }
+  :global(html.stacked) #bar .status {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  :global(html.stacked) #bar .status::before {
+    content: ""; flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--muted); opacity: 0.6;
+  }
+  :global(html.stacked) #bar .status.live::before {
+    background: var(--accent); opacity: 1; box-shadow: 0 0 0 3px rgba(129, 182, 76, 0.2);
+  }
+  :global(html.stacked) #bar button.primary { order: 9; margin-left: auto; flex: 0 0 auto; padding: 8px 18px; }
 </style>

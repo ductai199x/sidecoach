@@ -51,6 +51,16 @@ body {
 }
 #bar, main, footer { min-width: 0; }
 
+/* The phone draws the page under its status and navigation bars and says how tall they
+   are (--inset-top, --inset-bottom on <html>, set by the app): the content keeps clear of
+   both, and a veil the header's colour sits under the status bar, beneath the drawer and
+   its scrim. Unset -- a desktop window, a browser -- all of it is nothing. */
+body { padding-top: var(--inset-top, 0px); padding-bottom: var(--inset-bottom, 0px); }
+body::before {
+  content: ""; position: fixed; top: 0; left: 0; right: 0; z-index: 40;
+  height: var(--inset-top, 0px); background: var(--panel); pointer-events: none;
+}
+
 /* Thin, quiet scrollbars wherever something scrolls. */
 .moves-wrap, .coach, .terminal, .conversation {
   scrollbar-width: thin; scrollbar-color: #5a5654 transparent;

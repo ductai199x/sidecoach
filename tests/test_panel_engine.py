@@ -274,6 +274,47 @@ def test_a_start_without_a_warm_up_builds_the_stages_once(tmp_path: Path) -> Non
     engine.close()
 
 
+def test_an_engine_installed_after_the_warm_up_is_built_at_the_next_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A first run warms up before Setup has fetched Stockfish; the stage built then has
+    no engine. Once Setup has put one in place, the next Start builds the engine -- and
+    the coach, which was built knowing there was none -- rather than waiting for a
+    restart."""
+    import sidecoach.cli as cli_mod
+    import sidecoach.config as config_mod
+
+    built: list[bool] = []
+
+    class _Stage:
+        def __init__(self, _settings: Settings, enabled: bool, **_: object) -> None:
+            found = config_mod.find_stockfish(_settings) is not None
+            self.on = enabled and found
+            self.analyser = object() if self.on else None
+            self.detail = "Stockfish, depth 18" if self.on else "no Stockfish found"
+            self.closed = False
+            built.append(self.on)
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(cli_mod, "_Assessing", _Stage)
+    monkeypatch.setattr(config_mod, "find_stockfish", lambda _s: None)
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
+    engine = PanelEngine(settings, coach=False, record=False, frame_source=iter(()))
+    first, coaching = engine._prepare_stages()
+    assert not first.on
+    assert engine._prepare_stages()[0] is first, "nothing new to find: kept"
+
+    monkeypatch.setattr(config_mod, "find_stockfish", lambda _s: tmp_path / "stockfish")
+    second, recoached = engine._prepare_stages()
+    assert second is not first and second.on, "the engine Setup installed is built"
+    assert first.closed
+    assert recoached is not coaching, "the coach is built again with the engine"
+    assert engine._prepare_stages()[0] is second, "and kept from then on"
+    assert built == [False, True]
+
+
 def test_the_panel_starts_with_the_settings_voice(tmp_path: Path) -> None:
     """The saved voice is the one the panel speaks with from the start (Tai, 2026-09-21:
     the settings said bm_george, the panel came up with af_sarah -- the field's old

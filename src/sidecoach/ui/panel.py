@@ -517,7 +517,17 @@ class PanelEngine:
         """Stockfish and the coach, built once and kept; rebuilt only when a save changed
         what they were built from. Returns them."""
         from sidecoach.cli import _Assessing, _Coaching
+        from sidecoach.config import find_stockfish
 
+        # Built before there was an engine, and there is one now (Setup fetched it after
+        # the warm-up): built again, and not only at the next launch.
+        if (
+            self._assessing is not None
+            and not self._assessing.on
+            and self.analysis
+            and find_stockfish(self.settings) is not None
+        ):
+            self._engine_stale = True
         if self._engine_stale:
             # The coach too: its second engine runs the same binary, and it was built
             # knowing whether there was an engine at all.

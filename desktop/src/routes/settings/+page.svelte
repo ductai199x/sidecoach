@@ -401,7 +401,12 @@
 </div>
 
 <style>
-  .settings { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
+  /* The screen, less the phone's bars when the page is drawn under them (the variables
+     are nothing on a desktop), so the footer with Save stays on it. */
+  .settings {
+    display: grid; grid-template-rows: auto 1fr auto;
+    height: 100vh; height: calc(100dvh - var(--inset-top, 0px) - var(--inset-bottom, 0px));
+  }
   /* The tabs wrap: six of them side by side would be a floor of 600px, and a phone is
      412. `.adv` keeps to the end of whatever row it lands on. */
   .secnav { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 14px; border-bottom: 1px solid var(--line); align-items: center; }

@@ -5,7 +5,7 @@
   // until `splash_done` (desktop/src-tauri/src/lib.rs). The progress is a rank of the
   // board: eight squares, one per warm-up stage, lit as each finishes.
   import { onDestroy, onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke, isTauri } from "@tauri-apps/api/core";
 
   type Stage = { name: string; label: string; state: "pending" | "loading" | "done" | "off"; detail?: string; seconds?: number };
   type Warm = { done: boolean; seconds: number; stages: Stage[] };
@@ -41,6 +41,7 @@
   // `?demo` (a browser, no shell): the stages advance on a timer, one every 900 ms, and
   // the card stays -- to look at the design without launching the app.
   const demo = typeof location !== "undefined" && location.search.includes("demo");
+  const shell = isTauri();
   let demoStep = 0;
 
   async function tick() {
@@ -57,13 +58,19 @@
       return;
     }
     if (!port) {
+      // Outside the shell (the phone, a browser) the sidecar serves this page: its port is
+      // the page's own.
+      if (!shell) {
+        port = Number(location.port) || (location.protocol === "https:" ? 443 : 80);
+        return;
+      }
       const status = await invoke<Status>("sidecar_status").catch(() => null);
       if (status?.error) error = status.error;
       if (status?.port) port = status.port;
       return;
     }
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/api/health`);
+      const res = await fetch(shell ? `http://127.0.0.1:${port}/api/health` : "/api/health");
       const health = (await res.json()) as { warm?: Warm };
       if (health.warm) warm = health.warm;
     } catch {
@@ -78,7 +85,10 @@
   function done() {
     if (timer) clearInterval(timer);
     timer = null;
-    void invoke("splash_done").catch(() => {});
+    // The shell closes this window and shows the main one; without a shell the panel
+    // takes this page's place, and Back does not come back to it.
+    if (shell) void invoke("splash_done").catch(() => {});
+    else if (!demo) location.replace("/");
   }
 
   function onKey(e: KeyboardEvent) {
@@ -97,7 +107,19 @@
   function waves(canvasEl: HTMLCanvasElement): () => void {
     const got = canvasEl.getContext("2d");
     if (!got) return () => {};
-    const W = canvasEl.width, H = canvasEl.height;
+    // The composition is in CSS pixels, whatever the card's size; the canvas holds the
+    // display's pixels (up to 2x: the warm-up is running beside it) so the light is sharp.
+    const W = canvasEl.clientWidth || 720, H = canvasEl.clientHeight || 480;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvasEl.width = Math.round(W * dpr);
+    canvasEl.height = Math.round(H * dpr);
+    got.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // A tall screen (a phone) stacks the card: the column above, the piece below it,
+    // centred; the wide card keeps it to the right of the column.
+    const portrait = H > W;
+    // The pulse spreads from the rank, wherever the layout put it.
+    const rankEl = canvasEl.closest(".card")?.querySelector(".rank") as HTMLElement | null;
+    const pulseY = rankEl ? rankEl.offsetTop + rankEl.offsetHeight / 2 : H * 0.62;
     const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
     type Ribbon = { rgb: string; base: number; amp: number; speed: number; k1: number; k2: number; phase: number; width: number };
     const ribbons: Ribbon[] = [
@@ -108,8 +130,9 @@
     ];
     const t0 = performance.now();
     const buf = document.createElement("canvas");
-    buf.width = W; buf.height = H;
+    buf.width = canvasEl.width; buf.height = canvasEl.height;
     const bctx = buf.getContext("2d") as CanvasRenderingContext2D;
+    bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // The chess in it: pieces made of light. Some two thousand points form a piece --
     // a lathe profile (radius by height) turned around its axis, with the notches a rook's
@@ -175,7 +198,9 @@
     const vel: Pt[] = targets[0].map(() => ({ x: 0, y: 0, z: 0 }));
     const FORM_S = 2.2, HOLD_S = 1.8, SCATTER_S = 0.9; // about five seconds a piece: two in a warm-up
     const cycle = { shape: 0, phase: "hold" as "form" | "hold" | "scatter", since: 0 };
-    const PIECE = { cx: W * 0.76, base: H * 0.9, height: 390 };
+    const PIECE = portrait
+      ? { cx: W * 0.5, base: H * 0.93, height: Math.min(360, H * 0.38) }
+      : { cx: W * 0.76, base: H * 0.9, height: 390 };
     const ease = (p: number) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
 
     function pieces(ctx: CanvasRenderingContext2D, t: number) {
@@ -294,7 +319,7 @@
       for (const p of live) {
         const age = (now - p) / 1400;
         const radius = age * W * 0.75;
-        const g = ctx.createRadialGradient(W / 2, H * 0.62, Math.max(0, radius - 60), W / 2, H * 0.62, radius + 40);
+        const g = ctx.createRadialGradient(W / 2, pulseY, Math.max(0, radius - 60), W / 2, pulseY, radius + 40);
         g.addColorStop(0, "rgba(242, 180, 65, 0)");
         g.addColorStop(0.6, `rgba(242, 180, 65, ${(0.22 * (1 - age)).toFixed(3)})`);
         g.addColorStop(1, "rgba(242, 180, 65, 0)");
@@ -303,8 +328,11 @@
       }
       ctx.globalCompositeOperation = "source-over";
       const out = got as CanvasRenderingContext2D;
-      out.clearRect(0, 0, W, H);
+      // The buffer is already at the display's pixels: copied one for one.
+      out.setTransform(1, 0, 0, 1, 0, 0);
+      out.clearRect(0, 0, canvasEl.width, canvasEl.height);
       out.drawImage(buf, 0, 0);
+      out.setTransform(dpr, 0, 0, dpr, 0, 0);
       if (!reduced || live.length) raf = requestAnimationFrame(frame);
       else raf = 0;
     }
@@ -337,7 +365,7 @@
 
 <div class="card" class:ready={warm?.done} class:failed={!!error}>
   <div class="scene" aria-hidden="true">
-    <canvas bind:this={canvas} width="720" height="480"></canvas>
+    <canvas bind:this={canvas}></canvas>
   </div>
   <div class="veil" aria-hidden="true"></div>
   <img class="logo" src="/logo.svg" alt="" draggable="false" />
@@ -362,6 +390,10 @@
 
 <style>
   :global(html), :global(body) { background: #1c1a18 !important; margin: 0; overflow: hidden; }
+  /* One full-bleed card, under the phone's bars too: the page's inset padding and the
+     header's veil are the panel's, not the splash's. */
+  :global(body) { padding: 0 !important; }
+  :global(body)::before { display: none; }
   .card {
     box-sizing: border-box;
     width: 720px; height: 480px;
@@ -380,7 +412,7 @@
   .card > :not(.scene):not(.veil) { position: relative; z-index: 2; }
   /* The ribbons of light behind everything, edge to edge. */
   .scene { position: absolute; inset: 0; z-index: 0; overflow: hidden; background: radial-gradient(ellipse 90% 80% at 50% 60%, #221f1b 0%, #1c1a18 100%); }
-  .scene canvas { position: absolute; left: 0; top: 0; width: 720px; height: 480px; }
+  .scene canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
   /* The veil: a little shade behind the text, the edges left alone. */
   .veil {
     position: absolute; inset: 0; z-index: 1;
@@ -399,7 +431,7 @@
      the stage is done; the piece lands when it is. */
   .rank { display: flex; gap: 0; margin-top: 38px; border: 2px solid #2a2724; border-radius: 4px; overflow: hidden; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); }
   .sq {
-    width: 52px; height: 52px; position: relative;
+    width: var(--sq, 52px); height: var(--sq, 52px); position: relative;
     background: #4f6a3d; filter: saturate(0.35) brightness(0.55);
     transition: filter 350ms ease;
   }
@@ -409,7 +441,7 @@
   .sq.loading { animation: pulse 1.1s ease-in-out infinite; }
   @keyframes pulse { 0%, 100% { filter: saturate(0.35) brightness(0.55); } 50% { filter: saturate(0.9) brightness(1.05); } }
   .sq img {
-    position: absolute; inset: 4px; width: 44px; height: 44px;
+    position: absolute; inset: 4px; width: calc(var(--sq, 52px) - 8px); height: calc(var(--sq, 52px) - 8px);
     animation: land 320ms cubic-bezier(0.2, 1.4, 0.4, 1);
     filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.4));
   }
@@ -418,7 +450,20 @@
   .failed .sq { opacity: 0.4; }
 
   .line { margin: 24px 0 0; font-size: 17px; color: #e6e5e3; min-height: 20px; display: flex; gap: 10px; align-items: baseline; }
-  .secs { color: #6f6d6a; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .secs { color: #6f6d6a; font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  /* A tall, narrow screen (the phone): the card is the whole screen, the column in its
+     upper half, and the piece of light (drawn by the script) centred beneath it. The rank's
+     eight squares share the width, never wider than the desktop's. */
+  @media (max-aspect-ratio: 1/1) {
+    .card {
+      width: 100vw; height: 100vh; height: 100dvh;
+      padding: 17vh 24px 24px;
+      --sq: min(52px, calc((100vw - 52px) / 8));
+    }
+    /* A long "Ready, without ..." wraps as one centred paragraph, the seconds after it. */
+    .line { font-size: 16px; display: block; text-align: center; max-width: 100%; }
+    .line .secs { margin-left: 8px; }
+  }
   button {
     margin-top: 18px; padding: 8px 20px;
     background: #f2b441; color: #1b1608; border: 0; border-radius: 6px;
