@@ -290,7 +290,9 @@ def test_an_engine_installed_after_the_warm_up_is_built_at_the_next_start(
         def __init__(self, _settings: Settings, enabled: bool, **_: object) -> None:
             found = config_mod.find_stockfish(_settings) is not None
             self.on = enabled and found
-            self.analyser = object() if self.on else None
+            # A real analyser carries its annotator, and a built one here has its book.
+            annotator = type("Annotator", (), {"book": object()})()
+            self.analyser = type("Analyser", (), {"annotator": annotator})() if self.on else None
             self.detail = "Stockfish, depth 18" if self.on else "no Stockfish found"
             self.closed = False
             built.append(self.on)
@@ -313,6 +315,40 @@ def test_an_engine_installed_after_the_warm_up_is_built_at_the_next_start(
     assert recoached is not coaching, "the coach is built again with the engine"
     assert engine._prepare_stages()[0] is second, "and kept from then on"
     assert built == [False, True]
+
+
+def test_opening_tables_fetched_after_the_warm_up_reach_the_kept_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine is built at the warm-up; Setup may fetch the opening tables after it. The
+    next Start gives the kept annotator the book, without building anything again."""
+    import shutil
+
+    import sidecoach.cli as cli_mod
+    from sidecoach.analysis.annotator import GameAnnotator
+    from tests.test_analysis import FakeEngine
+
+    class _Stage:
+        def __init__(self, _settings: Settings, enabled: bool, **_: object) -> None:
+            self.on = enabled
+            self.analyser = type("A", (), {"annotator": GameAnnotator(engine=FakeEngine({}))})()
+            self.detail = "Stockfish, depth 18"
+
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(cli_mod, "_Assessing", _Stage)
+    settings = Settings(data_dir=tmp_path, voice=_SILENT)
+    engine = PanelEngine(settings, coach=False, record=False, frame_source=iter(()))
+    first, _ = engine._prepare_stages()
+    assert first.analyser.annotator.book is None, "no tables yet"
+
+    folder = tmp_path / "openings"
+    folder.mkdir()
+    shutil.copy(Path(__file__).parent / "openings_sample.tsv", folder / "c.tsv")
+    again, _ = engine._prepare_stages()
+    assert again is first, "the engine is kept, not built again"
+    assert again.analyser.annotator.book is not None, "the book the tables make"
 
 
 def test_the_panel_starts_with_the_settings_voice(tmp_path: Path) -> None:

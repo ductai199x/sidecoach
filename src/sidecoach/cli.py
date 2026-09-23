@@ -821,6 +821,9 @@ class _Assessing:
         # Where each move was played from, so a better move can be named in the notation a
         # person reads; dropped as soon as that assessment is printed.
         self._from: dict[int, str] = {}
+        # The game's board with the moves that led to it, for the opening book: the
+        # opening is a fact about the moves, and the annotator asks with them.
+        self._game: Any = None
         # An optional sink for the assessment lines (the panel's debug terminal); when set,
         # lines go to it instead of the console.
         self.sink: Callable[[str], None] | None = None
@@ -841,22 +844,42 @@ class _Assessing:
         if self.analyser is None:
             return
         if isinstance(event, MovePlayed):
-            before = chess.Board(event.fen_before)
-            self.analyser.submit_move(
-                event.game_id, before, chess.Move.from_uci(event.uci), event.ply
-            )
+            before = self._history_to(event.fen_before)
+            move = chess.Move.from_uci(event.uci)
+            self.analyser.submit_move(event.game_id, before, move, event.ply)
             self._from[event.ply] = event.fen_before
+            before.push(move)
+            self._game = before
         elif isinstance(event, GameStarted):
             # The engine's queue is the last game's: dropped, so this game is measured
             # from its first move (the last game was reviewed from what had come).
             self.analyser.reset()
             self._from.clear()
+            self._game = chess.Board(event.start_fen)
             if event.start_fen != chess.STARTING_FEN:
                 self.analyser.submit_position(event.game_id, chess.Board(event.start_fen), 0)
         elif isinstance(event, Resync):
             self.analyser.reset()
             self._from.clear()
+            # A position adopted, not played to: it has no history to look up.
+            self._game = chess.Board(event.fen)
             self.analyser.submit_position(event.game_id, chess.Board(event.fen), 0)
+
+    def _history_to(self, fen: str) -> Any:
+        """The game's board standing on `fen`, with the moves that led there: the next
+        move, or a takeback's position further back along them. A position the game never
+        stood on starts again from itself, with no history -- as a resync does."""
+        import chess
+
+        target = chess.Board(fen)
+        walked = self._game.copy() if self._game is not None else None
+        while walked is not None:
+            if walked.epd() == target.epd():
+                return walked
+            if not walked.move_stack:
+                break
+            walked.pop()
+        return target
 
     def reset(self) -> None:
         if self.analyser is not None:

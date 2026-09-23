@@ -537,6 +537,13 @@ class PanelEngine:
                         stage.close()
             self._assessing = self._coaching = None
             self._engine_stale = False
+        # The opening tables fetched after the engine was built (Setup, on a first run):
+        # the kept annotator takes the book now rather than at the next launch.
+        analyser = getattr(self._assessing, "analyser", None)
+        if analyser is not None and analyser.annotator.book is None:
+            from sidecoach.cli import _load_book
+
+            analyser.annotator.book = _load_book(self.settings)
         if self._assessing is None:
             assessing = _Assessing(self.settings, self.analysis)
             assessing.sink = lambda _line: None

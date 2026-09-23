@@ -98,6 +98,71 @@ class RecordingTagger:
         return [MotifTag(name="hangingPiece", squares=["d1"])]
 
 
+def test_a_live_game_stays_in_the_book_past_its_first_move(tmp_path: Path) -> None:
+    """The live path hands the analyser each move's board; the book needs the moves that
+    led to it. An Italian Game submitted the way the panel submits it -- a takeback in the
+    middle -- is book to its last move and named as the whole line names it, not as its
+    first move does."""
+    import shutil
+    import time
+
+    from sidecoach.analysis.openings import OpeningBook
+    from sidecoach.cli import _Assessing
+    from sidecoach.config import Settings
+    from sidecoach.events import GameStarted, Label, MovePlayed, Side, Takeback
+
+    folder = tmp_path / "openings"
+    folder.mkdir()
+    shutil.copy(Path(__file__).parent / "openings_sample.tsv", folder / "c.tsv")
+    book = OpeningBook.load(folder)
+    assert book is not None
+    assessing = _Assessing(Settings(data_dir=tmp_path), enabled=False)
+    assessing.analyser = Analyser(GameAnnotator(engine=FakeEngine({}), book=book))
+    assessing.analyser.start()
+
+    def play(board: chess.Board, san: str, ply: int) -> None:
+        before = board.fen()
+        move = board.push_san(san)
+        assessing.submit(
+            MovePlayed(
+                game_id="g",
+                ply=ply,
+                san=san,
+                uci=move.uci(),
+                fen_before=before,
+                fen_after=board.fen(),
+                by_user=ply % 2 == 1,
+            )
+        )
+
+    assessing.submit(GameStarted(game_id="g", start_fen=chess.STARTING_FEN, user_side=Side.WHITE))
+    board = chess.Board()
+    for ply, san in enumerate(["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "d4"], start=1):
+        play(board, san, ply)
+    # A takeback of 3.d4: the next move is played from the position before it.
+    board.pop()
+    assessing.submit(Takeback(game_id="g", plies=1, fen=board.fen()))
+    play(board, "d3", 7)
+
+    labels: dict[int, object] = {}
+    openings: dict[int, object] = {}
+    deadline = time.monotonic() + 10
+    # Ply 7 comes twice, d4 then d3: waited for until d3's own name arrives.
+    while time.monotonic() < deadline and openings.get(7) != "C50 Italian Game: Giuoco Pianissimo":
+        for event in assessing.analyser.poll():
+            if isinstance(event, MoveAssessment):
+                labels[event.ply] = event.label
+            elif isinstance(event, Analysis):
+                openings[event.ply] = event.opening
+        time.sleep(0.02)
+    assessing.analyser.close()
+    assert [labels[p] for p in range(1, 7)] == [Label.BOOK] * 6, labels
+    assert labels[7] == Label.BOOK, "the move after a takeback is still in the book"
+    assert openings[1] == "B00 King's Pawn Game"
+    assert openings[5] == "C50 Italian Game"
+    assert openings[7] == "C50 Italian Game: Giuoco Pianissimo", openings
+
+
 # Expected score and the arithmetic over it
 
 

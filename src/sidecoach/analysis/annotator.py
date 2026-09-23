@@ -391,7 +391,9 @@ class Analyser:
         self.annotator.engine.close()
 
     def submit_move(self, game_id: str, before: chess.Board, move: chess.Move, ply: int) -> None:
-        self._submit(_Request(game_id, ply, before.copy(stack=False), move))
+        # With its moves: the book is asked with the moves that led here (`_in_book`,
+        # `_opening`), and a copy without them was in the book on the first move alone.
+        self._submit(_Request(game_id, ply, before.copy(), move))
 
     def submit_position(self, game_id: str, board: chess.Board, ply: int) -> None:
         self._submit(_Request(game_id, ply, board.copy(stack=False), None))
