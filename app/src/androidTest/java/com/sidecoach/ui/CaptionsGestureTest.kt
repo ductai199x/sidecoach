@@ -1,0 +1,166 @@
+package com.sidecoach.ui
+
+import android.graphics.Bitmap
+import android.graphics.Rect
+import android.os.SystemClock
+import android.util.Log
+import android.view.InputDevice
+import android.view.MotionEvent
+import android.view.ViewConfiguration
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import java.io.File
+
+/**
+ * The caption box under a finger: its touches injected as the screen would send them, the
+ * overlay window real. A double-tap shows more lines and a second one fewer; a tap shows the
+ * buttons; touch, hold and drag moves the box, and dropping it on the cross turns captions off.
+ * Each state is screenshotted into the app's files (`captions/`) for a person to look at.
+ */
+@RunWith(AndroidJUnit4::class)
+class CaptionsGestureTest {
+
+    private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    private val app = instrumentation.targetContext
+    private val automation = instrumentation.uiAutomation
+    private val shots = File(app.getExternalFilesDir(null), "captions").apply { mkdirs() }
+
+    private fun touch(action: Int, x: Int, y: Int, down: Long) {
+        val event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x.toFloat(), y.toFloat(), 0)
+        event.source = InputDevice.SOURCE_TOUCHSCREEN
+        automation.injectInputEvent(event, true)
+        event.recycle()
+    }
+
+    private fun tap(x: Int, y: Int) {
+        val down = SystemClock.uptimeMillis()
+        touch(MotionEvent.ACTION_DOWN, x, y, down)
+        touch(MotionEvent.ACTION_UP, x, y, down)
+    }
+
+    private fun shot(name: String) {
+        val image = automation.takeScreenshot() ?: return
+        File(shots, "$name.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        Log.i(TAG, "screenshot $name")
+    }
+
+    private fun box(): Rect? {
+        var at: Rect? = null
+        instrumentation.runOnMainSync { at = Captions.shownAt() }
+        return at
+    }
+
+    private fun waitFor(ms: Long = 3000, what: () -> Boolean): Boolean {
+        val until = SystemClock.uptimeMillis() + ms
+        while (SystemClock.uptimeMillis() < until) {
+            if (what()) return true
+            Thread.sleep(50)
+        }
+        return what()
+    }
+
+    /** Hold at [from], then drag in steps to [to]; [before] runs with the finger still down. */
+    private fun holdAndDrag(from: Pair<Int, Int>, to: Pair<Int, Int>, before: () -> Unit = {}) {
+        val down = SystemClock.uptimeMillis()
+        touch(MotionEvent.ACTION_DOWN, from.first, from.second, down)
+        Thread.sleep(ViewConfiguration.getLongPressTimeout() + 300L)
+        val steps = 20
+        for (i in 1..steps) {
+            val x = from.first + (to.first - from.first) * i / steps
+            val y = from.second + (to.second - from.second) * i / steps
+            touch(MotionEvent.ACTION_MOVE, x, y, down)
+            Thread.sleep(16)
+        }
+        Thread.sleep(300)
+        before()
+        touch(MotionEvent.ACTION_UP, to.first, to.second, down)
+    }
+
+    @Test
+    fun theBoxAnswersTapsDoubleTapsAndADragToTheCross() {
+        automation.executeShellCommand("appops set ${app.packageName} SYSTEM_ALERT_WINDOW allow").close()
+        automation.executeShellCommand("input keyevent KEYCODE_HOME").close()
+        Thread.sleep(1500)
+        app.getSharedPreferences("captions", 0).edit().clear().commit()
+        Captions.board = null
+        Captions.configure(app, true)
+        Captions.show(
+            "Spot on -- rooks belong on open files. Your rook now looks straight down the file at " +
+                "their queen. Now, what is your opponent's most dangerous idea, and which of your " +
+                "pieces is doing the least?",
+        )
+        assertTrue("no caption box", waitFor { box() != null })
+        Thread.sleep(400)
+        val first = box()!!
+        shot("1_shown")
+
+        // Double-tap: more lines, growing upward from the foot of the screen.
+        val (cx, cy) = first.centerX() to first.centerY()
+        tap(cx, cy)
+        Thread.sleep(80)
+        tap(cx, cy)
+        assertTrue("a double-tap showed no more lines", waitFor { (box()?.height() ?: 0) > first.height() })
+        Thread.sleep(300)
+        val tall = box()!!
+        assertTrue("it grew downward: $first -> $tall", tall.bottom <= first.bottom + 2)
+        shot("2_expanded")
+        tap(tall.centerX(), tall.centerY())
+        Thread.sleep(80)
+        tap(tall.centerX(), tall.centerY())
+        assertTrue("a second double-tap kept the lines", waitFor { (box()?.height() ?: 0) == first.height() })
+
+        // A tap: the buttons.
+        Thread.sleep(400)
+        tap(cx, cy)
+        assertTrue("a tap showed no buttons", waitFor { (box()?.height() ?: 0) > first.height() })
+        Thread.sleep(300)
+        shot("3_buttons")
+        Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
+        val withButtons = box()!!
+        tap(withButtons.left + withButtons.width() * 3 / 4, withButtons.bottom - 40)
+        assertTrue("a second tap kept the buttons", waitFor { (box()?.height() ?: 0) == first.height() })
+
+        // Touch, hold and drag: the box goes where it is let go, and stays there.
+        Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
+        val here = box()!!
+        val screen = app.resources.displayMetrics
+        holdAndDrag(here.centerX() to here.centerY(), screen.widthPixels / 2 to screen.heightPixels / 3) {
+            shot("4_dragging")
+        }
+        assertTrue("the box did not move", waitFor { (box()?.centerY() ?: Int.MAX_VALUE) < screen.heightPixels / 2 })
+        Thread.sleep(300)
+        shot("5_moved")
+        val moved = box()!!
+        val saved = app.getSharedPreferences("captions", 0)
+        assertTrue("the place was not kept", saved.getInt("y", -1) == moved.top)
+
+        // Onto the cross at the foot of the screen: captions off.
+        holdAndDrag(moved.centerX() to moved.centerY(), screen.widthPixels / 2 to screen.heightPixels - 250) {
+            shot("6_over_the_cross")
+        }
+        assertTrue("the box is still up", waitFor { box() == null })
+        assertFalse("captions are still on", Captions.enabled)
+        assertTrue(
+            "the setting did not follow",
+            waitFor { !SettingsStore(app).captions() },
+        )
+        assertNull(box())
+        Thread.sleep(300)
+        shot("7_off")
+
+        // The settings page's switch puts them back.
+        Captions.configure(app, true)
+        assertTrue(Captions.enabled)
+        assertNotNull(Captions)
+    }
+
+    companion object {
+        private const val TAG = "sidecoach.captions"
+    }
+}

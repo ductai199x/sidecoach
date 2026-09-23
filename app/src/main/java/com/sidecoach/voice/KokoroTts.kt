@@ -66,6 +66,12 @@ class KokoroTts(
      */
     @Volatile var onSynthesis: ((Boolean) -> Unit)? = null
 
+    /**
+     * Called with the line as given to [say] and about how long it speaks, in milliseconds, the
+     * moment its audio starts: for the captions, which show its words as they are said.
+     */
+    @Volatile var onCaption: ((String, Long) -> Unit)? = null
+
     private data class Line(
         val spoken: String,
         val given: String,
@@ -80,7 +86,14 @@ class KokoroTts(
      * A piece of a line's audio on its way to the output: the line with its first piece (whose
      * playing waits for [startAt]), and with its last the latch the worker waits on.
      */
-    private class Chunk(val samples: FloatArray, val mine: Int, val first: Line?, val done: CountDownLatch?)
+    private class Chunk(
+        val samples: FloatArray,
+        val mine: Int,
+        val first: Line?,
+        val done: CountDownLatch?,
+        /** With the first piece: the line's speech, what is made and the rest's estimate. */
+        val speechMs: Long = 0,
+    )
 
     private val chunks = LinkedBlockingQueue<Chunk>()
     private var player: Thread? = null
@@ -298,7 +311,8 @@ class KokoroTts(
                     ahead += expected[j]
                 }
                 val out = if (last) samples.copyOf(samples.size + (Kokoro.SAMPLE_RATE * TAIL_SILENCE_S).toInt()) else samples
-                chunks.put(Chunk(out, mine, if (i == 0) line else null, if (last) done else null))
+                val speechMs = if (i == 0) (made + expected.drop(1).sum()).toLong() else 0L
+                chunks.put(Chunk(out, mine, if (i == 0) line else null, if (last) done else null, speechMs))
                 handed = last
                 synchronized(lock) {
                     startAt = SystemClock.elapsedRealtime() + hold.toLong()
@@ -363,6 +377,7 @@ class KokoroTts(
                     underruns = out.underrunCount
                     Log.i(TAG, "line: first sound ${SystemClock.elapsedRealtime() - line.queuedAt} ms after it was queued")
                     runCatching { onPlay?.invoke(line.given.ifEmpty { line.spoken }) }
+                    runCatching { onCaption?.invoke(line.given.ifEmpty { line.spoken }, chunk.speechMs) }
                 }
                 out.write(chunk.samples, 0, chunk.samples.size, AudioTrack.WRITE_BLOCKING)
                 if (chunk.done != null) Log.i(TAG, "line: played with ${out.underrunCount - underruns} gaps")

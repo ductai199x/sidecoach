@@ -117,6 +117,7 @@ object PanelWarm {
                 // The voice built, not loaded (`panel._build_tts` at construction): the page
                 // knows the voices at once, and the voice stage below loads the model.
                 PanelVoice.build(appContext, SettingsStore(appContext))
+                Captions.configure(appContext, SettingsStore(appContext).captions())
                 PanelListen.build(appContext)
                 stage("pieces", "loading")
                 // OpenCV's native library first: the net's prime and the vision's pass both
@@ -405,6 +406,7 @@ object PanelWarm {
         attempt(listOf("voice.voice")) { PanelVoice.setVoice(store.voice()) }
         attempt(listOf("voice.listen")) { PanelListen.setListen(store.listen()) }
         attempt(listOf("voice.speed")) { PanelVoice.tts?.speed = store.speed() }
+        attempt(listOf("voice.captions")) { Captions.configure(appContext, store.captions(), ask = true) }
         if (changed.any { it in VOICE_RELOAD }) {
             // A new language, folder or device: the old voice is cut off, the new one built
             // and loaded off the caller's thread. `_reload_voice`.

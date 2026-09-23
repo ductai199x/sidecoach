@@ -79,6 +79,7 @@ object PanelVoice {
         val made = KokoroTts(context.applicationContext, modelDir(context), settings.voice(), settings.speed(), settings.lang())
         made.onPlay = { line -> onAudioStarts(line) }
         made.onSynthesis = { synthesising -> juggle(synthesising) }
+        made.onCaption = { line, speechMs -> Captions.say(line, speechMs) }
         // The voice it replaces is cut off and freed (off this thread: a line being
         // synthesised finishes first).
         tts?.let { old ->
@@ -191,8 +192,9 @@ object PanelVoice {
 
     /** Apply [voiceAction] and speak accordingly; what was done, for the log. `_speak`. */
     fun speak(trigger: String, text: String, ply: Int?): String {
-        if (muted) return "muted"
-        val speaker = tts ?: return "muted"
+        // A line the voice will not say is still captioned, whole.
+        if (muted) return "muted".also { Captions.show(text) }
+        val speaker = tts ?: return "muted".also { Captions.show(text) }
         val action = voiceAction(trigger, text, ply, plyNow(), speaker.busy, voicing, coachFast())
         if (action == "supersede") speaker.stop()
         if (action == "speak" || action == "supersede") {
@@ -202,6 +204,7 @@ object PanelVoice {
             PanelEngine.emit("voice", "debug", "speaking ($voice): ${PanelEngine.elide(text, 60)}")
         } else if (action == "text") {
             heldWord = Held(trigger, text, ply, SystemClock.elapsedRealtime() / 1000.0)
+            Captions.show(text)
         }
         return action
     }

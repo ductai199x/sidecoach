@@ -28,6 +28,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.sidecoach.capture.CaptureService
+import com.sidecoach.ui.Captions
 import com.sidecoach.ui.LocalServer
 import com.sidecoach.ui.PanelApi
 import com.sidecoach.ui.PanelEngine
@@ -250,10 +251,12 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         PanelListen.visible(true)
+        Captions.panelInFront(true)
     }
 
     override fun onStop() {
         PanelListen.visible(false)
+        Captions.panelInFront(false)
         super.onStop()
     }
 

@@ -163,6 +163,9 @@ class SettingsStore(private val context: Context) {
     /** The voice the coach speaks in, how fast, in which language: `settings.voice`. */
     fun voice(): String = section("voice").optString("voice", "af_sarah")
 
+    /** The coach's words over other apps ([Captions]); the phone's own setting. */
+    fun captions(): Boolean = section("voice").optBoolean("captions", false)
+
     fun speed(): Float = (number(section("voice"), "speed") ?: 1.0).toFloat()
 
     fun lang(): String = section("voice").optString("lang", "en-us")

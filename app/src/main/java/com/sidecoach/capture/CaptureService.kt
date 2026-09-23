@@ -30,6 +30,7 @@ import androidx.core.app.ServiceCompat
 import com.sidecoach.MainActivity
 import com.sidecoach.SidecoachApp
 import com.sidecoach.R
+import com.sidecoach.ui.Captions
 import com.sidecoach.ui.PanelEngine
 import com.sidecoach.ui.PanelListen
 import com.sidecoach.ui.PanelWarm
@@ -371,6 +372,11 @@ class CaptureService : Service() {
             copy?.recycle()
             vision.coachTick(ts)
             if (outcome == null) return
+            // Where the board is on the screen, for the captions to keep clear of: the frame is
+            // the whole display at 1/SCALE.
+            Captions.board = outcome.region?.let {
+                android.graphics.Rect(it.x * SCALE, it.y * SCALE, (it.x + it.w) * SCALE, (it.y + it.h) * SCALE)
+            }
             state.value = state.value.copy(reading = outcome)
             PanelEngine.watched(
                 boardFound = outcome.boardFound,

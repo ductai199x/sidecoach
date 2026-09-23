@@ -44,6 +44,24 @@ def main() -> None:
     # the desktop's `_make_analyser` builds it, so they are the phone's defaults to change.
     defaults["engine"]["threads"] = 2
     defaults["engine"]["hash_mb"] = 64
+    # The phone's own setting: the coach's words in a box over other apps, the way Live Caption
+    # shows speech (Tai, 2026-09-23). The desktop has no such box, so the field is added here,
+    # to the phone's schema alone, and the desktop's page never shows it.
+    voice = schema["$defs"]["VoiceSettings"]["properties"]
+    voice["captions"] = {
+        "default": False,
+        "description": "Shows what the coach says in a small box over other apps, like Live "
+        "Caption, so you can read it while you play. Touch and hold the box to move it; "
+        "double-tap it to see more; tap it for its buttons; drag it onto the cross at the "
+        "bottom of the screen to turn captions off. The first time, Android asks you to let "
+        "Sidecoach display over other apps.",
+        "title": "Captions",
+        "type": "boolean",
+        "applies": "now",
+        "label": "Captions over other apps",
+        "section": "The coach's voice",
+    }
+    defaults["voice"]["captions"] = False
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
     (OUT / "defaults.json").write_text(json.dumps(defaults), encoding="utf-8")
