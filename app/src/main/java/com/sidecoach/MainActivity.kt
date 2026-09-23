@@ -33,6 +33,7 @@ import com.sidecoach.ui.PanelApi
 import com.sidecoach.ui.PanelEngine
 import com.sidecoach.ui.PanelWarm
 import com.sidecoach.ui.SettingsApi
+import com.sidecoach.ui.PuzzleRooms
 import com.sidecoach.ui.SettingsStore
 import com.sidecoach.ui.SetupApi
 import java.io.File
@@ -102,6 +103,7 @@ class MainActivity : ComponentActivity() {
                 SetupApi(this),
                 SettingsApi(store),
                 files = filesDir,
+                rooms = { PuzzleRooms.shared(applicationContext) },
             ),
         ).also { server = it }.start(preferred = ports.getInt(PORT_KEY, 0))
         // The same port next time, so the page's origin -- and its saved sizes and switches

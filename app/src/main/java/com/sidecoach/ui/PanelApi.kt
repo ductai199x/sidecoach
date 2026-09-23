@@ -1,6 +1,8 @@
 package com.sidecoach.ui
 
+import android.net.Uri
 import android.util.Log
+import com.sidecoach.profile.Puzzles
 import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
@@ -9,9 +11,8 @@ import org.json.JSONObject
  * The control surface the page calls, route for route with `sidecoach/ui/server.py`.
  *
  * Thin over [PanelEngine]. What the phone does not have yet answers honestly -- the voice
- * says it has no voices, the microphone says it is not listening, the puzzle room says it
- * is not here -- rather than pretending, so the page shows them off instead of
- * hanging on a promise.
+ * says it has no voices, the microphone says it is not listening -- rather than pretending,
+ * so the page shows them off instead of hanging on a promise.
  */
 class PanelApi(
     private val version: String,
@@ -19,6 +20,8 @@ class PanelApi(
     private val settings: SettingsApi,
     /** The app's files: the profile `Reset profile` empties, the caches `Clear caches` removes. */
     private val files: File,
+    /** The puzzle rooms (`server._rooms_for`), made on the first call that needs them. */
+    private val rooms: () -> PuzzleRooms,
 ) : LocalServer.Api {
 
     override fun handle(
@@ -129,9 +132,16 @@ class PanelApi(
                 }
             )
 
-            path == "/api/clear_caches" -> ok(
-                JSONObject().put("ok", true).put("done", JSONArray(PanelEngine.clearCaches(files)))
-            )
+            path == "/api/clear_caches" -> {
+                // The rooms let go of the puzzle store first (a file held open cannot go), and
+                // open it again after -- rebuilt from the CSVs by the session, or at the open.
+                val rooms = rooms()
+                rooms.puzzles?.let { runCatching { it.close() } }
+                rooms.puzzles = null
+                val done = PanelEngine.clearCaches(files)
+                rooms.puzzles = runCatching { Puzzles.openStore(files) }.getOrNull()
+                ok(JSONObject().put("ok", true).put("done", JSONArray(done)))
+            }
 
             path == "/api/reset_profile" -> ok(
                 JSONObject().put("ok", true).put("path", PanelEngine.resetProfile(files))
@@ -149,9 +159,7 @@ class PanelApi(
                 )
             }
 
-            path.startsWith("/api/puzzle/") -> ok(
-                JSONObject().apply { put("ok", false); put("error", "no puzzle room on the phone yet") }
-            )
+            path.startsWith("/api/puzzle/") -> puzzle(path.removePrefix("/api/puzzle/"), query, json)
 
             path == "/api/setup/status" -> ok(setup.status())
             path == "/api/setup/start" -> ok(setup.start(json))
@@ -185,6 +193,60 @@ class PanelApi(
     }
 
     private fun done(): JSONObject = JSONObject().put("ok", true)
+
+    /**
+     * A puzzle on a page of its own (ui/puzzle_room.py): `/api/puzzle/<id>/<action>`, as
+     * `server.py` routes them.
+     */
+    private fun puzzle(rest: String, query: Map<String, String>, json: JSONObject): LocalServer.Reply? {
+        val slash = rest.lastIndexOf('/')
+        if (slash <= 0) return null
+        val id = Uri.decode(rest.substring(0, slash))
+        val rooms = rooms()
+        return when (rest.substring(slash + 1)) {
+            "open" -> {
+                val room = rooms.open(id)
+                    ?: return ok(JSONObject().put("ok", false).put("error", "no puzzle $id in the store"))
+                val following = PanelEngine.practiceIds.filter { it != id }
+                ok(
+                    JSONObject()
+                        .put("ok", true)
+                        .put("next", JSONArray(following))
+                        .put("state", room.poll(0).getJSONObject("state"))
+                )
+            }
+            "poll" -> {
+                val room = rooms.get(id) ?: return ok(JSONObject().put("ok", false).put("closed", true))
+                val polled = room.poll(query["since"]?.toIntOrNull() ?: 0)
+                val out = JSONObject().put("ok", true)
+                for (key in polled.keys()) out.put(key, polled.get(key))
+                ok(out)
+            }
+            "targets" -> {
+                if (!json.has("square")) return unprocessable()
+                val room = rooms.get(id)
+                ok(
+                    JSONObject()
+                        .put("ok", room != null)
+                        .put("targets", JSONArray(room?.targets(json.getString("square")) ?: emptyList<String>()))
+                )
+            }
+            "move" -> if (json.has("uci")) roomCommand(rooms, id, "move", json.getString("uci")) else unprocessable()
+            "retract" -> roomCommand(rooms, id, "retract")
+            "giveup" -> roomCommand(rooms, id, "giveup")
+            "ask" -> if (json.has("text")) roomCommand(rooms, id, "ask", json.getString("text")) else unprocessable()
+            "voice" -> if (json.has("on")) roomCommand(rooms, id, "voice", json.getBoolean("on")) else unprocessable()
+            "close" -> roomCommand(rooms, id, "close")
+            else -> null
+        }
+    }
+
+    /** `server._room_command`. */
+    private fun roomCommand(rooms: PuzzleRooms, id: String, name: String, payload: Any? = null): LocalServer.Reply {
+        val room = rooms.get(id) ?: return ok(JSONObject().put("ok", false))
+        room.command(name, payload)
+        return ok(JSONObject().put("ok", true))
+    }
 
     /** What FastAPI answers a body that does not fit the route's model. */
     private fun unprocessable() = LocalServer.Reply(

@@ -1,6 +1,7 @@
 package com.sidecoach.coach
 
 import android.util.Log
+import com.sidecoach.events.CoachMessage
 import com.sidecoach.events.Event
 import com.sidecoach.llm.KeyStore
 import com.sidecoach.llm.LLMProvider
@@ -169,9 +170,20 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
         drain()
     }
 
+    /**
+     * Where the coach's messages go when set (a puzzle room's log): `_Coaching.sink`. Left
+     * null, they go onto the panel.
+     */
+    @Volatile var sink: ((CoachMessage) -> Unit)? = null
+
     /** Whatever the coach has finished saying, onto the panel, with what the checks found. */
     fun drain() {
         val coach = coach ?: return
+        val sink = sink
+        if (sink != null) {
+            for (message in coach.poll()) sink(message)
+            return
+        }
         coach.poll() // records each reply as a turn of the conversation
         // What the coach looked up in the record for a question about the player, before
         // the reply it went into, as `_coach_meta` logs it.

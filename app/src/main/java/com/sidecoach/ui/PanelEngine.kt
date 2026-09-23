@@ -14,6 +14,7 @@ import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
 import com.sidecoach.events.Analysis
+import com.sidecoach.events.Annotation
 import com.sidecoach.events.ClockObservation
 import com.sidecoach.events.CoachMessage
 import com.sidecoach.events.Event
@@ -463,9 +464,10 @@ object PanelEngine {
         )
     }
 
-    fun said(message: CoachMessage, problems: List<String>, attempts: Int) {
+    /** A message's marks as the page reads them: `Annotation.model_dump` each. */
+    fun marks(annotations: List<Annotation>): JSONArray {
         val marks = JSONArray()
-        for (mark in message.annotations) {
+        for (mark in annotations) {
             marks.put(
                 JSONObject().apply {
                     put("kind", mark.kind)
@@ -476,6 +478,11 @@ object PanelEngine {
                 }
             )
         }
+        return marks
+    }
+
+    fun said(message: CoachMessage, problems: List<String>, attempts: Int) {
+        val marks = marks(message.annotations)
         val trigger = message.trigger.slug
         emit(
             "coach",

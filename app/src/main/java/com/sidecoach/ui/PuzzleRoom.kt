@@ -1,0 +1,428 @@
+package com.sidecoach.ui
+
+import android.content.Context
+import android.os.SystemClock
+import com.sidecoach.analysis.Assessing
+import com.sidecoach.coach.CoachRunner
+import com.sidecoach.events.CoachMessage
+import com.sidecoach.events.MovePlayed
+import com.sidecoach.events.Trigger
+import com.sidecoach.llm.OpenAICompatProvider
+import com.sidecoach.llm.Usage
+import com.sidecoach.llm.pricesFor
+import com.sidecoach.profile.Puzzle
+import com.sidecoach.profile.PuzzleStore
+import com.sidecoach.profile.Puzzles
+import com.sidecoach.profile.Store
+import java.io.File
+import java.math.BigDecimal
+import java.math.RoundingMode
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * A puzzle on a page of its own (`/puzzle/<id>`), apart from the screen the panel watches.
+ * `sidecoach/ui/puzzle_room.py`.
+ *
+ * Tai, 2026-09-20: puzzle mode "should open in a new tab with a new UI and not interfere with
+ * the current window where the game capture is going on". So a puzzle room has its own coach
+ * (quiet unless asked), its own engine, its own log and its own little loop thread; the
+ * session goes on following the screen. The room drives a [PuzzleSession] -- the board, the
+ * line, the outcome -- and the page polls it the way the panel polls the engine. The outcome
+ * goes to the profile store beside the puzzle's motif (`Puzzles.recordAttempt`). The coach
+ * speaks through the voice the panel was given, when the page has it on; the phone has no
+ * voice yet, so the room has none.
+ *
+ * Its engine is a second Stockfish, as on the desktop. It searches only while a puzzle is
+ * worked, and the app reads no screen while its own page is in front, so the game's engine is
+ * idle meanwhile: the two take turns rather than compete.
+ */
+class PuzzleRoom(
+    context: Context,
+    val settings: SettingsStore,
+    puzzle: Puzzle,
+    motif: String?,
+    storePath: File?,
+    private val speak: ((String) -> Unit)? = null,
+    private val stopSpeaking: (() -> Unit)? = null,
+    analysis: Boolean = true,
+    coach: Boolean = true,
+    /**
+     * The parent panel's log, when there is one: every line of this room goes there too, under
+     * a "puzzle" channel, so the puzzle page itself shows no terminal (Tai, 2026-09-21: the
+     * debugging stays in the parent window).
+     */
+    private val mirror: ((String, String, String, JSONObject?) -> Unit)? = null,
+) {
+    val session = PuzzleSession(puzzle, motif)
+    val store = Store(storePath)
+    private val log = DebugLog()
+    private val id = puzzle.id
+    private val lock = Any()
+    private val commands = ArrayList<Pair<String, Any?>>()
+    private val stop = CountDownLatch(1)
+
+    @Volatile var voice: Boolean = speak != null
+        private set
+
+    @Volatile var touched: Long = SystemClock.elapsedRealtime()
+        private set
+
+    @Volatile var closed = false
+        private set
+
+    /** Told to close; the loop thread finishes it within a tick. */
+    @Volatile var closing = false
+        private set
+
+    // The engine and the coach of this room alone; the coach is told the position as a game
+    // of kind "puzzle" and kept quiet: it speaks when asked.
+    private val assessing = Assessing.fromSettings(context, settings, analysis)
+    private val coaching = CoachRunner(settings, coach && assessing.on)
+    private val thread: Thread
+
+    init {
+        assessing.sink = { line -> emit("engine", "debug", line) }
+        coaching.sink = { message -> onMessage(message) }
+        coaching.coach?.quiet = true
+        emit("sys", "info", "engine: ${assessing.detail}")
+        emit("sys", "info", "coach: ${coaching.detail}")
+        emit(
+            "sys",
+            "info",
+            "puzzle ${puzzle.id}: ${motif ?: "practice"}, rated ${puzzle.rating}, " +
+                "${session.side.name.lowercase()} to move; level ${Puzzles.puzzleLevel(store)}",
+        )
+        val started = session.started()
+        assessing.submit(started)
+        coaching.events(listOf(started), now())
+        thread = Thread({ run() }, "puzzle-${puzzle.id}").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    // ---- the page's side -----------------------------------------------------------------
+
+    fun poll(since: Int = 0): JSONObject {
+        touched = SystemClock.elapsedRealtime()
+        val state = synchronized(lock) { session.state() }
+        state["voice"] = voice
+        state["voice_ready"] = speak != null
+        state["closed"] = closed
+        val usage = usage()
+        if (usage != null) {
+            val model = (coaching.coach?.speaker?.provider as? OpenAICompatProvider)?.model
+            state["llm"] = usage.summary(pricesFor(settings.llm(), model))
+        }
+        return JSONObject().apply {
+            put("state", jsonOf(state))
+            put("lines", log.since(since))
+            put("cursor", log.cursor)
+        }
+    }
+
+    fun targets(square: String): List<String> = synchronized(lock) { session.targets(square) }
+
+    /** A command for the loop thread: move <uci> | retract | giveup | ask <text> | voice <bool> | close. */
+    fun command(name: String, payload: Any? = null) {
+        touched = SystemClock.elapsedRealtime()
+        if (name == "close") {
+            // Said at once, so a page reloading (its old page's close, then its open) gets a
+            // fresh room rather than this one on its way out.
+            closing = true
+        }
+        synchronized(lock) { commands.add(name to payload) }
+    }
+
+    // ---- the loop ------------------------------------------------------------------------
+
+    private fun run() {
+        try {
+            while (stop.count > 0) {
+                val ts = now()
+                drainCommands(ts)
+                val engineEvents = assessing.drain()
+                coaching.events(engineEvents, ts)
+                coaching.tick(ts)
+                coaching.drain()
+                if (SystemClock.elapsedRealtime() - touched > IDLE_CLOSE_MS) {
+                    emit("sys", "info", "room idle; closing")
+                    break
+                }
+                stop.await(TICK_MS, TimeUnit.MILLISECONDS)
+            }
+        } finally {
+            finish()
+        }
+    }
+
+    private fun drainCommands(ts: Double) {
+        val taken = synchronized(lock) { ArrayList(commands).also { commands.clear() } }
+        for ((name, payload) in taken) {
+            when (name) {
+                "move" -> {
+                    val (events, state) = synchronized(lock) {
+                        session.move(payload.toString()) to session.state()
+                    }
+                    dispatch(events, ts)
+                    if (events.isEmpty()) {
+                        if (state["wrong"] != null) emit("game", "info", "$payload: not the move")
+                    } else if (session.done && session.status == "solved") {
+                        record(solved = !session.failed)
+                    }
+                }
+                "retract" -> synchronized(lock) { session.retract() }
+                "giveup" -> {
+                    val events = synchronized(lock) { session.giveUp() }
+                    dispatch(events, ts)
+                    record(solved = false)
+                }
+                "ask" -> {
+                    val text = payload.toString()
+                    emit("user", "info", "you: $text")
+                    coaching.ask(text, ts)
+                }
+                "voice" -> {
+                    voice = payload == true && speak != null
+                    if (!voice) stopSpeaking?.invoke()
+                }
+                "close" -> {
+                    if (!session.done) record(solved = false)
+                    stop.countDown()
+                }
+            }
+        }
+    }
+
+    private fun dispatch(events: List<MovePlayed>, ts: Double) {
+        for (event in events) {
+            val who = if (event.byUser) "you" else "the line"
+            emit(
+                "game",
+                "info",
+                "${event.san}  ($who)",
+                JSONObject().put("uci", event.uci).put("ply", event.ply),
+            )
+            assessing.submit(event)
+        }
+        coaching.events(events, ts)
+    }
+
+    private fun record(solved: Boolean) {
+        if (session.recorded) return
+        session.recorded = true
+        val outcome = try {
+            Puzzles.recordAttempt(
+                store,
+                session.puzzle.id,
+                session.motif,
+                solved,
+                session.sans.toList(),
+                System.currentTimeMillis() / 1000.0,
+            )
+        } catch (exc: Exception) { // the record must not break the puzzle
+            emit("sys", "error", "profile error: $exc")
+            return
+        }
+        emit(
+            "game",
+            "info",
+            "puzzle ${outcome.puzzleId} ${if (outcome.solved) "solved" else "failed"}" +
+                (if (outcome.motif != null) " (${outcome.motif})" else "") +
+                "; puzzle level ${outcome.level}",
+            JSONObject().put("solved", outcome.solved).put("puzzle_level", outcome.level),
+        )
+    }
+
+    /**
+     * A coach message: logged for the page, spoken when the voice is on. Only what the player
+     * asked for comes (the coach is quiet), so nothing is stale.
+     */
+    private fun onMessage(message: CoachMessage) {
+        val trigger = message.trigger.slug
+        emit(
+            "coach",
+            "info",
+            "$trigger — ${PanelEngine.elide(message.text, 80)}",
+            JSONObject().apply {
+                put("full", message.text)
+                put("trigger", trigger)
+                put("annotations", PanelEngine.marks(message.annotations))
+                put("fen", message.fen ?: JSONObject.NULL)
+            },
+        )
+        val speak = speak
+        if (voice && speak != null && message.trigger == Trigger.USER_ASK) {
+            try {
+                speak(message.text)
+            } catch (exc: Exception) {
+                emit("voice", "warn", "voice failed: $exc")
+            }
+        }
+    }
+
+    private fun emit(chan: String, level: String, text: String, data: JSONObject? = null) {
+        log.emit(chan, level, text, data)
+        val mirror = mirror ?: return
+        runCatching { mirror("puzzle", level, "$id $chan: $text", data) }
+    }
+
+    /** The room's model calls, for the parent panel's strip. */
+    fun usage(): Usage? = (coaching.coach?.speaker?.provider as? OpenAICompatProvider)?.usage
+
+    private fun finish() {
+        closed = true
+        runCatching { assessing.close() }
+        runCatching { coaching.close() }
+        store.close()
+    }
+
+    fun close() = command("close")
+
+    fun join(timeoutMs: Long = 5000) = thread.join(timeoutMs)
+
+    /** The session's state as the page reads it: `json.dumps` of the dict. */
+    private fun jsonOf(map: Map<String, Any?>): JSONObject {
+        val out = JSONObject()
+        for ((key, value) in map) out.put(key, wrap(value))
+        return out
+    }
+
+    private fun wrap(value: Any?): Any = when (value) {
+        null -> JSONObject.NULL
+        is Map<*, *> -> JSONObject().apply { for ((k, v) in value) put(k.toString(), wrap(v)) }
+        is List<*> -> JSONArray().apply { for (one in value) put(wrap(one)) }
+        else -> value
+    }
+
+    private fun now(): Double = SystemClock.elapsedRealtime() / 1000.0
+
+    companion object {
+        /** The loop's pace, and how long an untouched room lives. */
+        const val TICK_MS = 250L
+        const val IDLE_CLOSE_MS = 20 * 60 * 1000L
+    }
+}
+
+/**
+ * The open rooms by puzzle id, made on demand from the puzzle store. `puzzle_room.PuzzleRooms`.
+ */
+class PuzzleRooms(
+    private val context: Context,
+    val settings: SettingsStore,
+    val storePath: File?,
+    @Volatile var puzzles: PuzzleStore?,
+    /**
+     * Where the puzzle store is opened when there was none: puzzles Setup fetches after the
+     * rooms were made are then found at the next open, as the session finds them at its next
+     * Start.
+     */
+    val dataDir: File? = null,
+    private val speak: ((String) -> Unit)? = null,
+    private val stopSpeaking: (() -> Unit)? = null,
+    val analysis: Boolean = true,
+    val coach: Boolean = true,
+    private val mirror: ((String, String, String, JSONObject?) -> Unit)? = null,
+) {
+    private val rooms = LinkedHashMap<String, PuzzleRoom>()
+    private val lock = Any()
+
+    /** The motif each puzzle was recommended for, told by the session's profiler. */
+    var motifs: Map<String, String> = emptyMap()
+
+    fun open(puzzleId: String): PuzzleRoom? = synchronized(lock) {
+        val room = rooms[puzzleId]
+        if (room != null && !room.closed && !room.closing) return room
+        val files = dataDir
+        if (puzzles == null && files != null) {
+            puzzles = runCatching { Puzzles.openStore(files) }.getOrNull()
+        }
+        val puzzle = puzzles?.get(puzzleId) ?: return null
+        PuzzleRoom(
+            context,
+            settings,
+            puzzle,
+            motifs[puzzleId],
+            storePath = storePath,
+            speak = speak,
+            stopSpeaking = stopSpeaking,
+            analysis = analysis,
+            coach = coach,
+            mirror = mirror,
+        ).also { rooms[puzzleId] = it }
+    }
+
+    /** The model-call ledgers of the rooms, open or closed, for the panel's strip. */
+    fun usages(): List<Usage> = synchronized(lock) { rooms.values.mapNotNull { it.usage() } }
+
+    fun get(puzzleId: String): PuzzleRoom? {
+        val room = synchronized(lock) { rooms[puzzleId] }
+        return if (room != null && !room.closed && !room.closing) room else null
+    }
+
+    fun closeAll() {
+        val all = synchronized(lock) { rooms.values.toList() }
+        for (room in all) room.close()
+    }
+
+    companion object {
+        @Volatile private var shared: PuzzleRooms? = null
+
+        /**
+         * The app's rooms (`server._rooms_for`): the puzzle store in the app's files, the
+         * profile store beside it for the outcomes, the motifs the session's recommendations
+         * name, and every line mirrored into the panel's log. One per process, so a puzzle
+         * worked on outlives the window being rebuilt (a turn of the phone); made on the first
+         * call, which is the local server's thread, never the main one.
+         */
+        fun shared(context: Context): PuzzleRooms = shared ?: synchronized(this) {
+            shared ?: run {
+                val app = context.applicationContext
+                val files = app.filesDir
+                PuzzleRooms(
+                    app,
+                    SettingsStore(app),
+                    storePath = File(files, "profile.sqlite"),
+                    puzzles = runCatching { Puzzles.openStore(files) }.getOrNull(),
+                    dataDir = files,
+                    mirror = { chan, level, text, data -> PanelEngine.emit(chan, level, text, data) },
+                ).also {
+                    it.motifs = PanelEngine.puzzleMotifs
+                    shared = it
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A log of records for a page that polls it: `ui/log.py`'s `DebugLog` without the file (a
+ * room's log is never written down). Thread-safe; the oldest records fall off past [maxlen].
+ */
+class DebugLog(private val maxlen: Int = 3000) {
+    private val records = ArrayDeque<PanelEngine.Record>()
+    private var seq = 0
+    private val t0 = SystemClock.elapsedRealtime()
+    private val lock = Any()
+
+    val cursor: Int get() = synchronized(lock) { seq }
+
+    fun emit(chan: String, level: String, text: String, data: JSONObject? = null): PanelEngine.Record =
+        synchronized(lock) {
+            seq += 1
+            val t = BigDecimal((SystemClock.elapsedRealtime() - t0) / 1000.0)
+                .setScale(3, RoundingMode.HALF_EVEN)
+                .toDouble()
+            PanelEngine.Record(seq, t, chan, level, text, data ?: JSONObject()).also {
+                records.addLast(it)
+                while (records.size > maxlen) records.removeFirst()
+            }
+        }
+
+    fun since(from: Int): JSONArray = synchronized(lock) {
+        JSONArray().apply { for (record in records) if (record.seq > from) put(record.json()) }
+    }
+}

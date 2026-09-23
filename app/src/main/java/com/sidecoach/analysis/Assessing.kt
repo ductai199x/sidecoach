@@ -40,6 +40,12 @@ class Assessing(
 
     val on: Boolean get() = analyser != null
 
+    /**
+     * Where the assessment lines go when set (a puzzle room's log): `_Assessing.sink`. Left
+     * null, they go to logcat as before.
+     */
+    @Volatile var sink: ((String) -> Unit)? = null
+
     /** The engine process's CPU time in milliseconds; 0 when there is no engine. */
     fun engineCpuMs(): Long = analyser?.annotator?.engine?.cpuMs() ?: 0
 
@@ -118,7 +124,12 @@ class Assessing(
         for (event in drained) {
             if (event is MoveAssessment) {
                 val fen = from.remove(event.ply)
-                Log.i(TAG, text(event, fen))
+                val sink = sink
+                if (sink == null) {
+                    Log.i(TAG, text(event, fen))
+                } else if (fen != null) {
+                    sink("ply ${event.ply} ${assessmentText(event, Board(fen))}")
+                }
             }
         }
         return drained
@@ -142,6 +153,28 @@ class Assessing(
 
     companion object {
         private const val TAG = "sidecoach.analysis"
+
+        /**
+         * One line about a played move: what it cost, what was better, what it did.
+         * `cli._assessment_text`, as the room's log has it (`_plain`: no console markup).
+         * The best move is named only for a move already played, which is what the
+         * disclosure rules allow.
+         */
+        fun assessmentText(assessment: MoveAssessment, before: Board): String {
+            val parts = arrayListOf("loss ${fixed2(assessment.expectedLoss)}")
+            val severity = assessment.severity.name.lowercase()
+            if (severity != "none") {
+                parts.add(severity)
+                val best = sanLine(before, assessment.best, 4)
+                if (best.isNotEmpty()) parts.add("better: $best")
+            }
+            val tags = assessment.tags.map { it.name }.distinct().joinToString(", ")
+            if (tags.isNotEmpty()) parts.add(tags)
+            return parts.joinToString("  ")
+        }
+
+        private fun fixed2(value: Double): String =
+            java.math.BigDecimal(value).setScale(2, java.math.RoundingMode.HALF_EVEN).toPlainString()
 
         /**
          * `cli._Assessing(settings, enabled)` with `cli._make_analyser`: the engine running
