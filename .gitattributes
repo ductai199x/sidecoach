@@ -2,3 +2,6 @@
 
 # The panel page is the desktop build, byte for byte: no line-ending translation.
 app/src/main/assets/web/** -text
+
+# Fixture data is what the Python read, byte for byte: no line-ending translation.
+app/src/androidTest/assets/** -text
