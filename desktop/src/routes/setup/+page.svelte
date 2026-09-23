@@ -80,7 +80,7 @@
   {#if !status}
     <p class="muted">Loading…</p>
   {:else}
-    <p class="muted">Into <code>{status.data_dir}</code>{#if status.free_bytes != null} · {gb(status.free_bytes)} free{/if}</p>
+    <p class="muted">Into <code>{status.data_dir}</code>{#if status.free_bytes != null}{` · ${gb(status.free_bytes)} free`}{/if}</p>
     <ul class="items">
       {#each status.items as item (item.id)}
         <li class:present={item.present} class:err={!!status.run?.errors?.[item.id]}>
