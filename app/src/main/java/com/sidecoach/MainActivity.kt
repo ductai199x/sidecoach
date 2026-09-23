@@ -92,6 +92,7 @@ class MainActivity : ComponentActivity() {
         PanelEngine.onStop = { runOnUiThread { CaptureService.stop(this) } }
 
         val store = SettingsStore(this)
+        val ports = getSharedPreferences("panel", MODE_PRIVATE)
         val port = LocalServer(
             assets,
             api = PanelApi(
@@ -100,7 +101,10 @@ class MainActivity : ComponentActivity() {
                 SettingsApi(store),
                 themes = File(filesDir, "themes"),
             ),
-        ).also { server = it }.start()
+        ).also { server = it }.start(preferred = ports.getInt(PORT_KEY, 0))
+        // The same port next time, so the page's origin -- and its saved sizes and switches
+        // with it -- stays the same from one launch to the next.
+        ports.edit().putInt(PORT_KEY, port).apply()
 
         val view = WebView(this)
         web = view
@@ -240,5 +244,8 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "sidecoach.panel"
+
+        /** Where the panel's port is kept between launches. */
+        private const val PORT_KEY = "port"
     }
 }

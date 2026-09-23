@@ -54,10 +54,16 @@ class LocalServer(
     var port: Int = 0
         private set
 
-    /** Bind and serve; the port the system gave us. */
-    fun start(): Int {
+    /**
+     * Bind and serve; the port it is served on. [preferred] first, when given and free: the
+     * page keeps its preferences in localStorage, which belongs to an origin -- a port -- so
+     * a new port each launch forgot every one of them. The system's choice otherwise.
+     */
+    fun start(preferred: Int = 0): Int {
         if (running) return port
-        val socket = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
+        val host = InetAddress.getByName("127.0.0.1")
+        val socket = (if (preferred > 0) runCatching { ServerSocket(preferred, 16, host) }.getOrNull() else null)
+            ?: ServerSocket(0, 16, host)
         server = socket
         port = socket.localPort
         running = true
