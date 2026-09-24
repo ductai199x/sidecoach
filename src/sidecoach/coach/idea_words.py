@@ -12,7 +12,9 @@ from __future__ import annotations
 import chess
 
 from sidecoach.analysis.engine import san_line
+from sidecoach.coach import idea as idea_of
 from sidecoach.coach.idea import Idea, origin
+from sidecoach.events import Analysis
 
 PIECE_NAMES = {
     chess.PAWN: "pawn",
@@ -27,6 +29,8 @@ _NUMBER = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "s
 # The longest mate whose line the move rung reads out whole; past it, its first moves.
 MATE_READ = 5
 MATE_SHOWN = 5  # the plies of a longer mate read out, the first move with them
+# The furthest ply of a win read out move by move: the player's third move.
+LATER_READ = 4
 
 # The pattern's name, as the coach names it.
 PATTERN_NAMES: dict[str, str] = {
@@ -251,7 +255,7 @@ def goal(idea: Idea) -> str | None:
             else "you have a strong attack on their king"
         )
     if idea.goal == "convert":
-        return f"you can trade into a won {idea.ending or 'simpler'} ending"
+        return f"you can trade into {_ending(idea)}"
     if idea.goal == "king":
         return "you are winning, and your king leads the way"
     if idea.goal == "breakthrough":
@@ -675,6 +679,10 @@ def _why(idea: Idea, board: chess.Board, describe) -> str | None:  # noqa: ANN00
             blow = idea.blow_board.san(idea.blow_move)
             text = f"{first}, and after {_line(after, between)}, {blow}"
             return text + (f", and {sentence}" if sentence else "") + f"; {won}"
+        if sentence is None and idea.goal == "win" and idea.gain_ply > LATER_READ:
+            # Past two moves the line is not read out: "h4 -- after d5 g4 Nxh4 Bg5 Be7 Bxh4
+            # Bxh4 g5 Nc6 Rxh4 Rxh4, Nxh4" was twelve plies (Tai's game g01, 2026-09-24).
+            return f"{first}: {won}, a few moves on"
         if sentence is None and idea.goal == "win" and 0 < idea.gain_ply < len(idea.line):
             # No tactic, and the first move does not win it: the moves up to the one that does.
             after = board.copy(stack=False)
@@ -722,7 +730,8 @@ def _why(idea: Idea, board: chess.Board, describe) -> str | None:  # noqa: ANN00
         return f"{first} stops {passed.san(idea.threat)}"
     if idea.goal == "convert":
         shown = [m.uci() for m in idea.line[:4]]
-        return f"{first} starts it: {_line(board, shown)}, and the {idea.ending} ending is won"
+        ending = _ending(idea).replace("a won ", "the ")
+        return f"{first} starts it: {_line(board, shown)}, and {ending} is won"
     if idea.goal == "king":
         if idea.opposition:
             return f"{first} takes the opposition: their king has to give way"
@@ -735,7 +744,7 @@ def _why(idea: Idea, board: chess.Board, describe) -> str | None:  # noqa: ANN00
         how = {"perpetual": "perpetual check", "stalemate": "stalemate"}.get(
             idea.draw or "", "a repetition"
         )
-        return f"{first} holds it: {_line(board, shown)}, and it is a draw by {how}"
+        return f"{first} holds the game: {_line(board, shown)}, and it is a draw by {how}"
     if idea.goal == "attack":
         shown = [m.uci() for m in idea.line[:7]]
         return f"{first} starts it: {_line(board, shown)}, and their king is in the open"
@@ -793,3 +802,51 @@ def _now(idea: Idea, board: chess.Board, square: chess.Square) -> str:
 def _line(board: chess.Board, plies: list[str]) -> str:
     text = san_line(board, plies, limit=len(plies))
     return " ".join(t for t in text.split() if not t.endswith(".") and not t.endswith("..."))
+
+
+def _ending(idea: Idea) -> str:
+    """The won ending by its kind: "a won rook ending"; one of no single kind is "a won
+    ending" ("a won mixed ending" said nothing, Tai's game g05, 2026-09-24)."""
+    kind = idea.ending
+    if kind in (None, "mixed", "minor-piece"):
+        return "a won ending"
+    return f"a won {kind} ending"
+
+
+def _yours(won: str) -> str:
+    """What they win, said to the player: "their queen" from their side is "your queen"."""
+    return won.replace("their ", "your ")
+
+
+def allowed(board: chess.Board, analysis: Analysis, played: str) -> str | None:
+    """What the move just played lets the opponent do: the engine's best line in the position
+    it left (theirs to move), read by the same idea reader -- mate, material, a won ending,
+    a winning attack, a pawn through. The half a lesson after a mistake was missing: "Rxa6
+    was better" and nothing on Rxa1+ taking a rook (Tai's game g02, 13.Qxd5, 2026-09-24).
+    None when the line takes nothing of the kind."""
+    if not analysis.lines:
+        return None
+    idea = idea_of.read(board, analysis)
+    if idea.first is None or idea.first not in board.legal_moves:
+        return None
+    first = board.san(idea.first)
+    after = f"after {played}, "
+    if idea.goal == "mate" and idea.mate_in:
+        if idea.mate_in == 1:
+            return after + f"{first.rstrip('#')} is mate"
+        n = _NUMBER.get(idea.mate_in, str(idea.mate_in))
+        return after + f"they have mate in {n}, starting with {first}"
+    if idea.goal == "win" and idea.won and not idea.level:
+        won = _yours(idea.won)
+        if idea.gain_ply == 0:
+            return after + f"{first} wins {won}"
+        if idea.gain_ply > LATER_READ:
+            return after + f"they win {won} a few moves on, starting with {first}"
+        return after + f"they win {won}, starting with {first}"
+    if idea.goal == "convert" and idea.ending:
+        return after + f"{first} trades them into {_ending(idea)}"
+    if idea.goal == "promote":
+        return after + f"their pawn goes through to queen, starting with {first}"
+    if idea.goal == "attack" and idea.winning:
+        return after + f"they have a winning attack on your king, starting with {first}"
+    return None

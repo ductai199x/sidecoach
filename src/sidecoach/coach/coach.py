@@ -29,6 +29,7 @@ from typing import Any
 
 import chess
 
+from sidecoach.coach import idea_words
 from sidecoach.coach.annotations import annotations_for, mentions_in
 from sidecoach.coach.conversation import Conversation, PlyRecord
 from sidecoach.coach.disclosure import (
@@ -197,12 +198,11 @@ def focus_template(facts: PositionFacts) -> str:
     """The focus rung, without a model: the target on the board and the piece, and the
     question from the target to the move."""
     parts: list[str] = []
+    # The target only: a static feature of the board pointed away from the move as often
+    # as at it ("your king can still castle" before a3, when castling was the inaccuracy,
+    # Tai's game g06; "their isolated d-pawn" beside "push your passed pawn").
     if facts.target:
         parts.append(_sentence(f"look at {facts.target}"))
-    elif facts.ideas and not facts.plan:
-        # A static feature of the board only where there is no plan to point at: "their
-        # isolated d-pawn is a target" beside "push your passed pawn" pointed elsewhere.
-        parts.append(_sentence(facts.ideas[0]))
     if facts.piece:
         parts.append(_sentence(f"use {facts.piece}"))
     if facts.nudge:
@@ -261,6 +261,10 @@ _WHY_VERBS = (
 )
 
 
+# A "why" that names its move a sacrifice first: "a queen sacrifice, and after Qxf7, ...".
+_SACRIFICE = re.compile(r"(an? [a-z]+ sacrifice), (.+)", re.S)
+
+
 def _recapture(board: chess.Board | None, best: str, played: str | None) -> str | None:
     """When the player made the right capture with the other piece: "take back with the
     rook on e1, not the one on a1" (13.Raxd1 for Rexd1 was told "you win their queen",
@@ -302,15 +306,19 @@ def lesson_template(
     *,
     board: chess.Board | None = None,
     played: str | None = None,
+    allowed: str | None = None,
 ) -> str:
-    """After a move that cost something: the better move, what it does, and the pattern to
-    keep. `opener` is the rotated "That one cost you: {best} was better"; `board` and
-    `played` (UCI) are the position the player faced and the move made, when known."""
+    """After a move that cost something: the better move, what it does, what the move made
+    allowed, and the pattern to keep. `opener` is the rotated "That one cost you: {best} was
+    better"; `board` and `played` (UCI) are the position the player faced and the move made,
+    and `allowed` what it let the opponent do (`idea_words.allowed`), when known."""
     text = opener
     why = facts.why or ""
     other_piece = _recapture(board, best, played)
     if other_piece is not None:
         text += f" -- {other_piece}"
+        if allowed:
+            text = _sentence(text) + " " + allowed
         return (
             _sentence(text)
             + " "
@@ -324,11 +332,21 @@ def lesson_template(
             rest = why  # "Rfc8 and Qc6 double your rooks": the plan, said whole
         else:
             rest = rest[4:] if rest.startswith("and ") else rest
-            if rest.startswith(_WHY_VERBS):
+            sacrifice = _SACRIFICE.match(rest)
+            if sacrifice is not None:
+                # "axb3, a knight sacrifice, stops bxc2": "-- it is a knight sacrifice, and
+                # it stops bxc2" (the master games, Sokolov-Dreev, 2026-09-24).
+                named, tail = sacrifice.group(1), sacrifice.group(2)
+                if tail.startswith(_WHY_VERBS):
+                    tail = "it " + tail
+                rest = f"it is {named}, " + (tail if tail.startswith("and ") else f"and {tail}")
+            elif rest.startswith(_WHY_VERBS):
                 rest = "it " + rest  # "Nf2# was better -- it is mate", "-- it stops Nxd3"
         if rest:
             text += f" -- {rest}"
     text = _sentence(text)
+    if allowed:
+        text += " " + _sentence(allowed)
     theme = facts.theme or ""
     keep = PATTERN_LESSONS.get(theme)
     if keep is None and any(word in theme for word in _MATES):
@@ -2393,12 +2411,21 @@ class Coach:
             if trigger is Trigger.POST_MISTAKE:
                 # The better move played out, and the pattern to keep: never "the idea was
                 # a mating attack" and nothing more.
+                # What the move let them do, from the position it left, when that has
+                # been analysed: the grounded half of "what their move allowed".
+                left = self.positions.get(played.ply)
+                allowed = (
+                    idea_words.allowed(left.board, left.analysis, played.san)
+                    if left is not None and left.analysis is not None
+                    else None
+                )
                 fallback = lesson_template(
                     facts,
                     best,
                     self._rotate("cost", COST_YOU).format(best=best),
                     board=position.board,
                     played=played.uci,
+                    allowed=allowed,
                 )
                 instruction = (
                     f"The player just played {played.san}, which was a {label}: it cost "
@@ -2409,6 +2436,8 @@ class Coach:
                     "most, then ask one question that checks they see it. "
                     f"{NOT_THE_MOVE} {NO_NUMBERS}"
                 )
+                if allowed:
+                    instruction += f" What {played.san} allowed, from the engine's line: {allowed}."
                 if elicit:
                     # Sparingly: what they saw at that moment, for the profile's record
                     # (causes.from_words reads "I thought it would..." as a line

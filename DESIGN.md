@@ -177,6 +177,8 @@ Where the line wins nothing -- the quiet positions a grandmaster's notes are mos
 
 A tactic counts only when it wins: the capture that cashes it in must leave the player up on the material before the tactic's move, the exchange on that square played out to its end (a loose bishop taken after theirs took one of the player's is a trade), a loose piece won whole, give or take a pawn, and a discovered attack's target worth a minor piece. The threat to meet is read one move deeper too: when the opponent's best reply to a pass is a quiet move that would itself threaten mate or a piece, it is a threat the player must meet -- but only when the best move takes that same threat away; where the best move lets it come and strikes first, the point is the counter, and the coach does not call it a defence.
 
+A lesson after a mistake says what the move allowed, not only what was better: the engine's line in the position the move left, read by the same idea reader from the opponent's side -- a piece or more won, mate, a won ending, a winning attack, a pawn through ("after Qxd5, Rxa1+ wins a rook") -- and the model gets the same sentence as a fact. The right capture made with the other piece is taught as that. A win that lands more than two moves on, and a mate longer than five, are not read out move by move. The focus rung points at the target alone, never at a static feature of the board the best move may have nothing to do with.
+
 Interjection policy. Unprompted triggers, decided 2026-09-14:
 
 1. Answer explicit user input, always.

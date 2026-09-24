@@ -34,7 +34,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from sidecoach.analysis import motifs  # noqa: E402
 from sidecoach.coach import idea as idea_of  # noqa: E402
-from sidecoach.coach import plans  # noqa: E402
+from sidecoach.coach import idea_words, plans  # noqa: E402
 from sidecoach.coach.coach import COST_YOU, idea_template, lesson_template  # noqa: E402
 from sidecoach.coach.facts import facts_from_analysis  # noqa: E402
 from sidecoach.coach.verdicts import verdict  # noqa: E402
@@ -209,7 +209,22 @@ def readings(facts_path: Path, master_path: Path) -> list[dict]:
             best = f.candidates[0] if f.candidates else None
             lesson = ""
             if label in ("inaccuracy", "mistake", "blunder", "miss") and best:
-                lesson = lesson_template(f, best, COST_YOU[0].format(best=best))
+                left = chess.Board(step["fen_after"])
+                after_analysis = Analysis.model_validate(step["analysis"])
+                allowed = (
+                    idea_words.allowed(left, after_analysis, step["san"])
+                    if after_analysis.lines
+                    and after_analysis.fen.split()[:4] == left.fen().split()[:4]
+                    else None
+                )
+                lesson = lesson_template(
+                    f,
+                    best,
+                    COST_YOU[0].format(best=best),
+                    board=board,
+                    played=step["uci"],
+                    allowed=allowed,
+                )
             said = idea_template(f)
             texts = [said, word, lesson]
             out.append(
