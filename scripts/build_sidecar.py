@@ -21,6 +21,7 @@ own test suite and pip. Size printed at the end (target: under 300 MB).
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import re
 import shutil
@@ -234,6 +235,10 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=OUT)
     ap.add_argument("--check", action="store_true", help="only run the built interpreter's doctor")
     args = ap.parse_args()
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        # The doctor's box characters, printed to a log file: the console's code page
+        # (cp1252) cannot encode them, and the finished build reported a failure (0.1.4).
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if args.check:
         check(args.out)
         return
