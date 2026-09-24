@@ -47,6 +47,13 @@ _PLAN_THEME: dict[str, str] = {
 # to safety, a piece to save, their threat to stop, a piece still at home. Anything else
 # gives way to the plan of the player's next moves (`coach/plans.py`).
 _BEFORE_THE_PLAN = frozenset({"castle", "rescue", "prophylaxis", "develop"})
+# The best move's own ideas that belong beside a threat to meet: the rest (a rook to an open
+# file, a knight to the centre) are what the move also does, and "stop it before it comes.
+# The key is taking the open file" named the wrong reason (the master games, 2026-09-24).
+_DEFENDING = frozenset({"castle", "rescue", "prophylaxis"})
+# A threat to win less than this, in pawns, gives way to the move's own idea: "d4 goes after
+# their pawn on e5" is the fight for the centre, not the initiative.
+THREAT_MIN = 2
 # In a pawn ending there is no king to storm and no space to take: a pawn move there is
 # about the passed pawn it makes ("storming the pawns in front of their King" was said of
 # h5 in a king-and-pawn ending, Lichess Yb1jJ).
@@ -537,6 +544,8 @@ def facts_from_analysis(
                 kind = _PAWN_ENDING_PLAN.get(kind, kind)
             plan = _PLAN_THEME.get(kind)
             plan_kind = kind if plan else None
+            if idea.goal == "defend" and plan_kind not in _DEFENDING:
+                plan, plan_kind = None, None
     # The plan the best line carries out over the player's next moves: a king attack, rooks
     # doubled on a file, a knight's route to an outpost. What a grandmaster's note says of a
     # quiet position, where the best move alone reads as "a rook to an open file".
@@ -548,6 +557,13 @@ def facts_from_analysis(
         pv = [m for m in (_to_move(u) for u in lines[0].moves) if m is not None]
         line_plan = plans.read(board, pv, lines[0].expected_score)
         move_threat = plans.threat(board, best, pv, lines[0].expected_score)
+        if (
+            move_threat is not None
+            and move_threat.kind == "win"
+            and move_threat.gain < THREAT_MIN
+            and plan_kind is not None
+        ):
+            move_threat = None  # a pawn attacked is not the point when the move has its own
         if move_threat is not None and (move_threat.kind == "mate" or line_plan is None):
             line_plan = None
             plan, plan_kind = plans.THREAT_NAME[move_threat.kind], None
@@ -576,6 +592,20 @@ def facts_from_analysis(
         target = plans.threat_target(move_threat, board) or target
         nudge = plans.THREAT_NUDGE[move_threat.kind]
         why = plans.threat_why(move_threat, board, best)
+    # A forcing capture with nothing else to point at: its focus is what it takes.
+    if (
+        target is None
+        and best is not None
+        and idea.goal == "plan"
+        and move_threat is None
+        and line_plan is None
+        and board.is_capture(best)
+    ):
+        taken = board.piece_at(best.to_square)
+        if taken is not None and taken.color != us:
+            target = (
+                f"their {chess.piece_name(taken.piece_type)} on {chess.square_name(best.to_square)}"
+            )
     if line_plan is not None:
         mechanism = plans.mechanism(line_plan)
         question = plans.PLAN_QUESTION[line_plan.kind]

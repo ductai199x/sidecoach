@@ -1031,14 +1031,19 @@ def features(
 
 
 def _is_central_break(board: chess.Board, move: chess.Move, us: chess.Color) -> bool:
-    """A pawn move that strikes at or occupies the centre."""
+    """A pawn move that strikes at or occupies the centre. A capture counts when it takes
+    toward the centre: fxe5 does, exf5 goes away from it ("the fight is for the centre, and
+    you joined it" was said of 2.exf5, Tai's game, 2026-09-24)."""
     if board.piece_type_at(move.from_square) != chess.PAWN:
         return False
     to_file = chess.square_file(move.to_square)
     to_rank = chess.square_rank(move.to_square)
     central_file = 2 <= to_file <= 5
     central_rank = 3 <= to_rank <= 4
-    return central_file and (central_rank or board.is_capture(move))
+    if board.is_capture(move):
+        toward = abs(2 * to_file - 7) < abs(2 * chess.square_file(move.from_square) - 7)
+        return central_file and toward
+    return central_file and central_rank
 
 
 def _rook_to_file_is_open(board: chess.Board, move: chess.Move, us: chess.Color) -> str | None:
@@ -1191,7 +1196,8 @@ def best_move_idea(
     can be recognised without recomputing it.
     """
     piece_type = board.piece_type_at(move.from_square)
-    if piece_type is None:
+    if piece_type is None or move.promotion is not None:
+        # A new queen needs no idea read into it ("prophylaxis" was said of c8=Q).
         return None
     after = board.copy(stack=False)
     after.push(move)
@@ -1213,6 +1219,11 @@ def best_move_idea(
         return PositionalFact(
             "rescue", f"your {name} was in danger; moving to {to} brings it to safety", (to,)
         )
+
+    # A passed pawn that runs is the move's point, before whatever it also stops.
+    if piece_type == chess.PAWN and is_passed(board, move.from_square):
+        file_ = _FILES[chess.square_file(move.from_square)]
+        return PositionalFact("pushPasser", f"push your passed {file_}-pawn toward {to}", (to,))
 
     if (
         threat is not None
@@ -1297,10 +1308,6 @@ def best_move_idea(
 
     if _is_central_break(board, move, us):
         return PositionalFact("centre", f"strike in the centre with the pawn to {to}", (to,))
-
-    if piece_type == chess.PAWN and is_passed(board, move.from_square):
-        file_ = _FILES[chess.square_file(move.from_square)]
-        return PositionalFact("pushPasser", f"push your passed {file_}-pawn toward {to}", (to,))
 
     if quiet and worst is not None and move.from_square == worst:
         name = PIECE_NAMES[piece_type]

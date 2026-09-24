@@ -24,6 +24,9 @@ PIECE_NAMES = {
 }
 _ORDINAL = {1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth"}
 _NUMBER = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}
+# The longest mate whose line the move rung reads out whole; past it, its first moves.
+MATE_READ = 5
+MATE_SHOWN = 5  # the plies of a longer mate read out, the first move with them
 
 # The pattern's name, as the coach names it.
 PATTERN_NAMES: dict[str, str] = {
@@ -475,6 +478,8 @@ def nudge(idea: Idea) -> str | None:
         return "Which move stops it and keeps your pieces working?"
     if name in NUDGE:
         return NUDGE[name]
+    if idea.goal == "win" and idea.gain_ply > 0:
+        return "What has to happen first, before you can take it?"
     if idea.goal == "win":
         return "Which move wins it?"
     return None
@@ -647,6 +652,11 @@ def _why(idea: Idea, board: chess.Board, describe) -> str | None:  # noqa: ANN00
             reply = after.san(idea.line[1])
             after.push(idea.line[1])
             return f"{first}, and after {reply}, {after.san(idea.line[2]).rstrip('#')} is mate"
+        if idea.mate_in > MATE_READ:
+            # A mate in nine read out whole is sixteen moves no one follows by ear, and
+            # stopped short of the mate besides (Tai's game, 2026-09-24).
+            shown = plies[1:MATE_SHOWN]
+            return f"{first} forces mate: {first} {_line(after, shown)}, and mate follows"
         return f"{first} forces mate: {first} {_line(after, plies[1:])}"
     if idea.goal in ("win", "combination"):
         sentence = None
@@ -665,6 +675,17 @@ def _why(idea: Idea, board: chess.Board, describe) -> str | None:  # noqa: ANN00
             blow = idea.blow_board.san(idea.blow_move)
             text = f"{first}, and after {_line(after, between)}, {blow}"
             return text + (f", and {sentence}" if sentence else "") + f"; {won}"
+        if sentence is None and idea.goal == "win" and 0 < idea.gain_ply < len(idea.line):
+            # No tactic, and the first move does not win it: the moves up to the one that does.
+            after = board.copy(stack=False)
+            after.push(idea.first)
+            between = [m.uci() for m in idea.line[1 : idea.gain_ply]]
+            for uci in between:
+                after.push(chess.Move.from_uci(uci))
+            taker = after.san(idea.line[idea.gain_ply])
+            after = board.copy(stack=False)
+            after.push(idea.first)
+            return f"{first}, and after {_line(after, between)}, {taker}; {won}"
         return f"{first}: " + (f"{sentence}; {won}" if sentence else won)
     if idea.goal == "promote":
         pawn = _queening_pawn(idea, board)

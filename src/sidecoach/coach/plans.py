@@ -387,7 +387,7 @@ PLAN_REASON = {
     "can bring to defend it",
     "storm": "with the kings on opposite wings, your pawns can roll at theirs without "
     "exposing your own, and they pry open lines for your pieces",
-    "double": "two heavy pieces on one open file hit twice as hard and break into their position",
+    "double": "two heavy pieces on the same file hit twice as hard and break into their position",
     "outpost": "a knight on a square no pawn of theirs can ever attack stays there for good",
     "passer": "a passed pawn ties their pieces down, and every step makes it stronger",
     "break": "with your pieces trained on it, the pawn break opens the centre on your terms",
@@ -397,7 +397,8 @@ PLAN_QUESTION = {
     "attack": "Which of your pieces is not yet helping against their king, and how does it "
     "get there?",
     "storm": "Which pawn starts the storm, and which file does it open?",
-    "double": "Which file is open, and how do two of your heavy pieces get onto it?",
+    "double": "Which file has none of your pawns on it, and how do two of your heavy pieces "
+    "get onto it?",
     "outpost": "Which square could no pawn of theirs ever drive a knight from, and how does "
     "one of yours get there?",
     "passer": "What stops your passed pawn, and how do you get it moving?",
@@ -470,16 +471,23 @@ def why(plan: LinePlan, board: chess.Board) -> str:
         for sq in plan.pieces
         if (p := board.piece_at(sq)) is not None and p.color == board.turn
     ]
-    what = _listed(list(dict.fromkeys(kinds))) if kinds else "pieces"
+    # "your knights" for two knights, "your queen and rook" for one of each.
+    unique = list(dict.fromkeys(kinds))
+    what = (
+        f"{unique[0]}s"
+        if len(unique) == 1 and len(kinds) > 1
+        else _listed(unique)
+        if unique
+        else "pieces"
+    )
     sq = chess.square_name(plan.square) if plan.square is not None else ""
     if plan.kind == "attack":
         return f"{moves} {verb('bring', 'brings')} your {what} against their king"
     if plan.kind == "storm":
         return f"{moves} {verb('roll', 'rolls')} your pawns at their king on the {plan.where}"
     if plan.kind == "double":
-        both = f"{kinds[0]}s" if kinds and len(set(kinds)) == 1 else what
         return (
-            f"{moves} {verb('double', 'doubles')} your {both} on the {plan.detail or 'open'} "
+            f"{moves} {verb('double', 'doubles')} your {what} on the {plan.detail or 'open'} "
             f"{plan.where}-file"
         )
     if plan.kind == "outpost":
@@ -620,7 +628,7 @@ THREAT_REASON = {
 TRADE_REASON = {
     "ahead": "when you are ahead, every trade brings the win closer",
     "queens": "with the queens off, their attack loses its sting",
-    "plain": "every trade changes the position, and this one leaves you the better pieces",
+    "plain": "every trade changes the fight, and here it is the best way on",
 }
 THREAT_QUESTION = {
     "mate": "Which move would leave you threatening mate next move?",

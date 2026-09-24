@@ -130,6 +130,9 @@ class Idea:
     blow_move: chess.Move | None = None
     blow_board: chess.Board | None = None
     blow_at: int = 1  # which of the player's moves carries the blow: 1 is the first
+    # "win": the ply of the player's move that first wins it (0 is the first move): O-O and
+    # then Nxd4 wins the pawn with the second move, not the first (Tai's game, 2026-09-24).
+    gain_ply: int = 0
     preparation: tuple[str, ...] = ()  # PREPARATION tags of the moves before the blow
     starts_with: str = "quiet"  # "check", "capture", "sacrifice", "promotion", "quiet"
     target: chess.Square | None = None  # their king (mate), or what falls, on the board now
@@ -292,11 +295,14 @@ def _read(board: chess.Board, analysis: Analysis) -> Idea:
             end = end.copy(stack=False)
             end.remove_piece_at(pv[at - 1].to_square)
         won, target = _won(board, end, us, pv[:at], boards)
+        # The player's move that first wins it: the last of theirs within `at` plies.
+        gain_ply = max(0, at - 1 if (at - 1) % 2 == 0 else at - 2)
         return Idea(
             goal="win",
             first=first,
             line=tuple(pv),
             gain=gain,
+            gain_ply=gain_ply,
             won=won,
             blow=blow[1] if blow else None,
             blow_move=pv[blow[0]] if blow else None,

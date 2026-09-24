@@ -199,7 +199,9 @@ def focus_template(facts: PositionFacts) -> str:
     parts: list[str] = []
     if facts.target:
         parts.append(_sentence(f"look at {facts.target}"))
-    elif facts.ideas:
+    elif facts.ideas and not facts.plan:
+        # A static feature of the board only where there is no plan to point at: "their
+        # isolated d-pawn is a target" beside "push your passed pawn" pointed elsewhere.
         parts.append(_sentence(facts.ideas[0]))
     if facts.piece:
         parts.append(_sentence(f"use {facts.piece}"))
@@ -239,16 +241,91 @@ def hint_template(facts: PositionFacts, level: DisclosureLevel) -> str:
     return idea_template(facts)
 
 
-def lesson_template(facts: PositionFacts, best: str, opener: str) -> str:
+# The verbs a move's "why" goes on with after its move: said of the move, they take "it".
+_WHY_VERBS = (
+    "is ",
+    "forces ",
+    "stops ",
+    "starts ",
+    "holds ",
+    "takes ",
+    "goes ",
+    "meets ",
+    "puts ",
+    "threatens ",
+    "doubles ",
+    "brings ",
+    "rolls ",
+    "pushes ",
+    "gains ",
+)
+
+
+def _recapture(board: chess.Board | None, best: str, played: str | None) -> str | None:
+    """When the player made the right capture with the other piece: "take back with the
+    rook on e1, not the one on a1" (13.Raxd1 for Rexd1 was told "you win their queen",
+    which the player had just done, Tai's game, 2026-09-24)."""
+    if board is None or played is None:
+        return None
+    try:
+        good = board.parse_san(best)
+        done = chess.Move.from_uci(played)
+    except ValueError:
+        return None
+    if (
+        good.to_square != done.to_square
+        or good.from_square == done.from_square
+        or not board.is_capture(good)
+        or not board.is_capture(done)
+    ):
+        return None
+    piece = board.piece_at(good.from_square)
+    other = board.piece_at(done.from_square)
+    if piece is None or other is None:
+        return None
+    mine = chess.piece_name(piece.piece_type)
+    theirs = (
+        "the one"
+        if other.piece_type == piece.piece_type
+        else f"the {chess.piece_name(other.piece_type)}"
+    )
+    return (
+        f"take with the {mine} on {chess.square_name(good.from_square)}, not {theirs} on "
+        f"{chess.square_name(done.from_square)}"
+    )
+
+
+def lesson_template(
+    facts: PositionFacts,
+    best: str,
+    opener: str,
+    *,
+    board: chess.Board | None = None,
+    played: str | None = None,
+) -> str:
     """After a move that cost something: the better move, what it does, and the pattern to
-    keep. `opener` is the rotated "That one cost you: {best} was better"."""
+    keep. `opener` is the rotated "That one cost you: {best} was better"; `board` and
+    `played` (UCI) are the position the player faced and the move made, when known."""
     text = opener
     why = facts.why or ""
+    other_piece = _recapture(board, best, played)
+    if other_piece is not None:
+        text += f" -- {other_piece}"
+        return (
+            _sentence(text)
+            + " "
+            + _sentence(
+                "keep this one: when two pieces can take, ask which you want to keep where it is"
+            )
+        )
     if why.startswith(best):
         rest = why[len(best) :].lstrip(" ,:;")
-        rest = rest[4:] if rest.startswith("and ") else rest
-        if rest.startswith(("is ", "forces ", "stops ", "starts ", "holds ", "takes ")):
-            rest = "it " + rest  # "Nf2# was better -- it is mate", "-- it stops Nxd3"
+        if rest.startswith("and ") and not rest.startswith("and after"):
+            rest = why  # "Rfc8 and Qc6 double your rooks": the plan, said whole
+        else:
+            rest = rest[4:] if rest.startswith("and ") else rest
+            if rest.startswith(_WHY_VERBS):
+                rest = "it " + rest  # "Nf2# was better -- it is mate", "-- it stops Nxd3"
         if rest:
             text += f" -- {rest}"
     text = _sentence(text)
@@ -2317,7 +2394,11 @@ class Coach:
                 # The better move played out, and the pattern to keep: never "the idea was
                 # a mating attack" and nothing more.
                 fallback = lesson_template(
-                    facts, best, self._rotate("cost", COST_YOU).format(best=best)
+                    facts,
+                    best,
+                    self._rotate("cost", COST_YOU).format(best=best),
+                    board=position.board,
+                    played=played.uci,
                 )
                 instruction = (
                     f"The player just played {played.san}, which was a {label}: it cost "
