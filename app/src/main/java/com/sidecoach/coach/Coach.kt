@@ -4,6 +4,7 @@ import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.chess.WHITE
+import com.sidecoach.chess.squareName
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.Annotation
 import com.sidecoach.events.ClockObservation
@@ -204,7 +205,9 @@ fun focusTemplate(facts: PositionFacts): String {
     val parts = ArrayList<String>()
     if (!facts.target.isNullOrEmpty()) {
         parts.add(templateSentence("look at ${facts.target}"))
-    } else if (facts.ideas.isNotEmpty()) {
+    } else if (facts.ideas.isNotEmpty() && facts.plan.isNullOrEmpty()) {
+        // A static feature of the board only where there is no plan to point at: "their
+        // isolated d-pawn is a target" beside "push your passed pawn" pointed elsewhere.
         parts.add(templateSentence(facts.ideas[0]))
     }
     if (!facts.piece.isNullOrEmpty()) parts.add(templateSentence("use ${facts.piece}"))
@@ -238,18 +241,77 @@ fun hintTemplate(facts: PositionFacts, level: DisclosureLevel): String {
     return ideaTemplate(facts)
 }
 
+/** The verbs a move's "why" goes on with after its move: said of the move, they take "it". */
+private val WHY_VERBS = listOf(
+    "is ",
+    "forces ",
+    "stops ",
+    "starts ",
+    "holds ",
+    "takes ",
+    "goes ",
+    "meets ",
+    "puts ",
+    "threatens ",
+    "doubles ",
+    "brings ",
+    "rolls ",
+    "pushes ",
+    "gains ",
+)
+
+/**
+ * When the player made the right capture with the other piece: "take back with the rook on e1,
+ * not the one on a1" (13.Raxd1 for Rexd1 was told "you win their queen", which the player had
+ * just done, Tai's game, 2026-09-24). `coach._recapture`.
+ */
+private fun recapture(board: Board?, best: String, played: String?): String? {
+    if (board == null || played == null) return null
+    val good = board.parseSan(best) ?: return null
+    val done = Move.fromUciOrNull(played) ?: return null
+    if (good.to != done.to ||
+        good.from == done.from ||
+        !board.isCapture(good) ||
+        !board.isCapture(done)
+    ) {
+        return null
+    }
+    val piece = board.pieceAt(good.from) ?: return null
+    val other = board.pieceAt(done.from) ?: return null
+    val mine = COACH_PIECE_NAMES[piece.pieceType]
+    val theirs = if (other.pieceType == piece.pieceType) "the one" else "the ${COACH_PIECE_NAMES[other.pieceType]}"
+    return "take with the $mine on ${squareName(good.from)}, not $theirs on ${squareName(done.from)}"
+}
+
 /**
  * After a move that cost something: the better move, what it does, and the pattern to keep.
- * `opener` is the rotated "That one cost you: {best} was better".
+ * `opener` is the rotated "That one cost you: {best} was better"; `board` and `played` (UCI)
+ * are the position the player faced and the move made, when known.
  */
-fun lessonTemplate(facts: PositionFacts, best: String, opener: String): String {
+fun lessonTemplate(
+    facts: PositionFacts,
+    best: String,
+    opener: String,
+    board: Board? = null,
+    played: String? = null,
+): String {
     var text = opener
     val why = facts.why ?: ""
+    val otherPiece = recapture(board, best, played)
+    if (otherPiece != null) {
+        text += " -- $otherPiece"
+        return templateSentence(text) + " " +
+            templateSentence("keep this one: when two pieces can take, ask which you want to keep where it is")
+    }
     if (why.startsWith(best)) {
         var rest = why.substring(best.length).trimStart(' ', ',', ':', ';')
-        rest = if (rest.startsWith("and ")) rest.substring(4) else rest
-        if (listOf("is ", "forces ", "stops ", "starts ", "holds ", "takes ").any { rest.startsWith(it) }) {
-            rest = "it $rest"  // "Nf2# was better -- it is mate", "-- it stops Nxd3"
+        if (rest.startsWith("and ") && !rest.startsWith("and after")) {
+            rest = why  // "Rfc8 and Qc6 double your rooks": the plan, said whole
+        } else {
+            rest = if (rest.startsWith("and ")) rest.substring(4) else rest
+            if (WHY_VERBS.any { rest.startsWith(it) }) {
+                rest = "it $rest"  // "Nf2# was better -- it is mate", "-- it stops Nxd3"
+            }
         }
         if (rest.isNotEmpty()) text += " -- $rest"
     }

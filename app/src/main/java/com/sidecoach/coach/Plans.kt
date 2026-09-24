@@ -400,7 +400,7 @@ object Plans {
             "can bring to defend it",
         "storm" to "with the kings on opposite wings, your pawns can roll at theirs without " +
             "exposing your own, and they pry open lines for your pieces",
-        "double" to "two heavy pieces on one open file hit twice as hard and break into their position",
+        "double" to "two heavy pieces on the same file hit twice as hard and break into their position",
         "outpost" to "a knight on a square no pawn of theirs can ever attack stays there for good",
         "passer" to "a passed pawn ties their pieces down, and every step makes it stronger",
         "break" to "with your pieces trained on it, the pawn break opens the centre on your terms",
@@ -410,7 +410,8 @@ object Plans {
         "attack" to "Which of your pieces is not yet helping against their king, and how does it " +
             "get there?",
         "storm" to "Which pawn starts the storm, and which file does it open?",
-        "double" to "Which file is open, and how do two of your heavy pieces get onto it?",
+        "double" to "Which file has none of your pawns on it, and how do two of your heavy pieces " +
+            "get onto it?",
         "outpost" to "Which square could no pawn of theirs ever drive a knight from, and how does " +
             "one of yours get there?",
         "passer" to "What stops your passed pawn, and how do you get it moving?",
@@ -475,15 +476,22 @@ object Plans {
             val p = board.pieceAt(sq)
             if (p != null && p.colour == board.turn) NAMES.getValue(p.pieceType) else null
         }
-        val what = if (kinds.isNotEmpty()) listed(kinds.distinct()) else "pieces"
+        // "your knights" for two knights, "your queen and rook" for one of each.
+        val unique = kinds.distinct()
+        val what = if (unique.size == 1 && kinds.size > 1) {
+            "${unique[0]}s"
+        } else if (unique.isNotEmpty()) {
+            listed(unique)
+        } else {
+            "pieces"
+        }
         val sq = plan.square?.let { squareName(it) } ?: ""
         if (plan.kind == "attack") return "$moves ${verb("bring", "brings")} your $what against their king"
         if (plan.kind == "storm") {
             return "$moves ${verb("roll", "rolls")} your pawns at their king on the ${plan.where}"
         }
         if (plan.kind == "double") {
-            val both = if (kinds.isNotEmpty() && kinds.toSet().size == 1) "${kinds[0]}s" else what
-            return "$moves ${verb("double", "doubles")} your $both on the ${detailOrOpen(plan)} " +
+            return "$moves ${verb("double", "doubles")} your $what on the ${detailOrOpen(plan)} " +
                 "${plan.where}-file"
         }
         if (plan.kind == "outpost") return "$moves take your knight to $sq, an outpost no pawn of theirs can attack"
@@ -595,7 +603,7 @@ object Plans {
     val TRADE_REASON: Map<String, String> = linkedMapOf(
         "ahead" to "when you are ahead, every trade brings the win closer",
         "queens" to "with the queens off, their attack loses its sting",
-        "plain" to "every trade changes the position, and this one leaves you the better pieces",
+        "plain" to "every trade changes the fight, and here it is the best way on",
     )
     val THREAT_QUESTION: Map<String, String> = linkedMapOf(
         "mate" to "Which move would leave you threatening mate next move?",

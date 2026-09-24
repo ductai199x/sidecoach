@@ -28,7 +28,15 @@ fixture as it was fed, so the Kotlin reads exactly the same one:
   mate, a piece to win, a trade and what it is for -- up to MASTERS_PER_KIND, and a stride of
   the rest; and the threats the opponent prepares (`idea._threat`, desktop 6637098: a quiet
   reply to a pass that would threaten mate or a piece next, met by the best move), up to
-  MASTERS_PREPARED of each.
+  MASTERS_PREPARED of each; and what the rungs read since desktop 268990e: a win that comes a
+  move later (`idea.gain_ply`), a mate too long to read out whole (past `MATE_READ`), a forcing
+  capture's target, and a pawn threat that gives way to the move's own idea, up to
+  MASTERS_RUNGS of each.
+
+Every case's lessons are also said as the move-by-move lesson says them, with the position and
+the move played (`lesson_template(..., board=, played=)`): every legal capture onto the better
+move's square by another piece (the right capture with the other piece), and the first legal
+move.
 
     cd D:/chess-coaching-companion
     PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python D:/sidecoach-android/tools/make_coach_fixtures.py
@@ -88,6 +96,9 @@ MASTERS_PER_KIND = 24
 MASTERS_STRIDE = 150
 # Master positions kept per prepared threat to meet (mate, a piece).
 MASTERS_PREPARED = 40
+# Master positions kept per rung reading of desktop 268990e (a later win, a long mate, a
+# forcing capture's target, a pawn threat that yields).
+MASTERS_RUNGS = 30
 
 # Sentences written for the side to move as "you", the way the facts and ideas read.
 PERSON_TEXTS = [
@@ -223,6 +234,36 @@ IDEA_TESTS = [
         ["f1d1"],
         False,
     ),
+    # `tests/test_rungs.py` (desktop 268990e): Tai's games g02-g04 -- a pawn that falls a move
+    # later, the right capture with the other rook, a lesson said of the better move, a mate in
+    # twelve, a forcing capture, and a pawn threat that gives way to the pawn ending's idea.
+    (
+        "r1bq1rk1/2pnbppp/p2p4/1p1P4/3pP3/1B3P2/PPP1N1PP/R1BQK2R w KQ - 1 12",
+        "O-O Nc5 Nxd4 Bd7 c3 Nxb3 axb3 a5",
+        0.67,
+        None,
+        [],
+        False,
+    ),
+    ("r3k2r/p1p1bppp/2p5/4p3/2b1P3/2N1B2P/PPP2PP1/R2qR1K1 w kq - 0 13", "Rexd1 Bb4 Na4 Be2", 0.54, None, [], False),
+    ("r2qk2r/p1p1bppp/2p5/4p3/2b1P3/2N4P/PPP2PP1/R1BQR1K1 w kq - 0 12", "Qg4 g6 b3 Be6", 0.6, None, [], False),
+    (
+        "8/k6n/2K3NP/8/1P4P1/2P5/8/8 w - - 1 53",
+        "b5 Ka8 Ne5 Nf8 b6 Ne6 b7+ Ka7 b8=Q+ Kxb8 h7 Nd8+ Kb6 Nf7 Nxf7 Kc8",
+        1.0,
+        12,
+        [],
+        False,
+    ),
+    (
+        "r1bqk2r/2p1bppp/p1np1n2/1p2p3/3PP3/1BN2N2/PPP2PPP/R1BQK2R w KQkq - 0 8",
+        "dxe5 dxe5 Qxd8+ Bxd8",
+        0.53,
+        None,
+        [],
+        False,
+    ),
+    ("4k3/8/8/4p3/8/8/3P4/4K3 w - - 0 1", "d4 Kd7", 0.5, None, [], False),
     # Two draws no cached line reaches: a stalemate on the board, and a position that comes
     # round again (no perpetual: two checks are not three).
     ("7k/4Q3/6K1/8/8/8/8/8 w - - 0 1", "Qf7", 0.5, None, [], False),
@@ -371,6 +412,7 @@ def idea_json(idea: IDEA.Idea) -> dict:
         "blow_move": None if idea.blow_move is None else idea.blow_move.uci(),
         "blow_board": None if idea.blow_board is None else idea.blow_board.fen(),
         "blow_at": idea.blow_at,
+        "gain_ply": idea.gain_ply,
         "preparation": list(idea.preparation),
         "starts_with": idea.starts_with,
         "target": square_or_none(idea.target),
@@ -408,11 +450,32 @@ def words_json(idea: IDEA.Idea, board: chess.Board) -> dict:
     }
 
 
-def templates_json(facts: D.PositionFacts) -> dict:
+def played_moves(board: chess.Board, best: str) -> list[str]:
+    """The moves a lesson is said after, as UCI: every legal capture onto the better move's
+    square by another piece -- the right capture with the other piece -- and the first legal
+    move."""
+    out: list[str] = []
+    try:
+        good = board.parse_san(best)
+    except ValueError:
+        good = None
+    if good is not None:
+        for move in board.legal_moves:
+            if move.to_square == good.to_square and move.from_square != good.from_square:
+                if board.is_capture(move) and move.uci() not in out:
+                    out.append(move.uci())
+    first = next(iter(board.legal_moves), None)
+    if first is not None and first.uci() not in out:
+        out.append(first.uci())
+    return out
+
+
+def templates_json(facts: D.PositionFacts, board: chess.Board) -> dict:
     """The offline coach's words at each rung, and the lesson after a costly move."""
     levels = list(DisclosureLevel.__members__.values())
     levels = sorted(set(levels), key=int)
     best = facts.candidates[0] if facts.candidates else (facts.line[0] if facts.line else "e4")
+    opener = COST_YOU[0].format(best=best)
     return {
         "idea": idea_template(facts),
         "focus": focus_template(facts),
@@ -429,6 +492,16 @@ def templates_json(facts: D.PositionFacts) -> dict:
                 FINE_TIGHTER[1].format(best=best),
                 f"{best} was better",
             )
+        ],
+        # The lesson after the move played, with the position it was played from (desktop
+        # 268990e): the right capture with the other piece is taught as that.
+        "lessons_played": [
+            {
+                "opener": opener,
+                "played": played,
+                "text": lesson_template(facts, best, opener, board=board, played=played),
+            }
+            for played in played_moves(board, best)
         ],
         # Each rung's words checked at every level: the scrubbing of the visible facts and the
         # piece-word rule see every sentence the templates can say.
@@ -629,7 +702,7 @@ def case_for(
         "facts": facts_json(facts),
         "idea": idea_json(idea),
         "words": words_json(idea, board),
-        "templates": templates_json(facts),
+        "templates": templates_json(facts, board),
         "material_us": F.material_text(board, us),
         "material_them": F.material_text(board, not us),
         "position_text": F.position_text(board),
@@ -783,6 +856,38 @@ def masters_positions() -> list[tuple[str, int, Analysis]]:
     return out
 
 
+def rung_category(board: chess.Board, analysis: Analysis, facts: D.PositionFacts) -> str | None:
+    """What the rungs of desktop 268990e read here, if anything: a win that comes a move
+    later, a mate too long to read out whole, a forcing capture's target, or a pawn threat of
+    the best move that gives way to its own idea."""
+    idea = IDEA.read(board, analysis)
+    if idea.goal == "mate" and idea.mate_in and idea.mate_in > W.MATE_READ:
+        return "rung:long mate"
+    if idea.goal == "win" and idea.gain_ply > 0:
+        return "rung:win later"
+    top = analysis.lines[0]
+    pv = [m for m in (F._to_move(u) for u in top.moves) if m is not None]
+    best = pv[0] if pv and pv[0] in board.legal_moves else None
+    if best is None or idea.goal != "plan":
+        return None
+    if board.is_capture(best):
+        taken = board.piece_at(best.to_square)
+        if taken is not None and facts.target == (
+            f"their {chess.piece_name(taken.piece_type)} on {chess.square_name(best.to_square)}"
+        ):
+            return "rung:capture target"
+    threat = PL.threat(board, best, pv, top.expected_score)
+    if (
+        threat is not None
+        and threat.kind == "win"
+        and threat.gain < F.THREAT_MIN
+        and facts.plan is not None
+        and facts.plan not in PL.THREAT_NAME.values()
+    ):
+        return "rung:pawn threat yields"
+    return None
+
+
 def plan_category(facts: D.PositionFacts) -> str:
     """Which plan the facts carry, read off their goal and mechanism: a threat the opponent
     prepares, a line plan's kind, a threat's kind (and what a trade is for), or the best
@@ -912,12 +1017,17 @@ def main() -> None:
             PL.read(board, pv, top.expected_score) is not None
             or PL.threat(board, best, pv, top.expected_score) is not None
             or IDEA._threat(board, analysis.threats, best)[2] is not None
+            or board.is_capture(best)
+            or (top.mate is not None and top.mate > W.MATE_READ)
+            or F._line_gain(board, top.moves) >= 1
         )
         if not could and index % MASTERS_STRIDE:
             continue
         facts = F.facts_from_analysis(board, analysis, last_move="e4", in_book=False, user=board.turn)
-        kind = plan_category(facts)
-        if kind.startswith("prepared:"):
+        kind = rung_category(board, analysis, facts) or plan_category(facts)
+        if kind.startswith("rung:"):
+            quota = MASTERS_RUNGS
+        elif kind.startswith("prepared:"):
             quota = MASTERS_PREPARED
         elif kind.startswith(("plan:", "threat:")):
             quota = MASTERS_PER_KIND
@@ -1010,6 +1120,20 @@ def main() -> None:
     )
     print("goals:", dict(sorted(goals.items(), key=lambda kv: -kv[1])))
     print("master positions by plan:", dict(sorted(by_plan.items())))
+    rungs: dict[str, int] = {}
+    for case in cases:
+        idea = case["idea"]
+        if idea["goal"] == "win" and idea["gain_ply"] > 0:
+            rungs["win later"] = rungs.get("win later", 0) + 1
+        if idea["goal"] == "mate" and (idea["mate_in"] or 0) > W.MATE_READ:
+            rungs["long mate"] = rungs.get("long mate", 0) + 1
+        for lesson in case["templates"]["lessons_played"]:
+            if " -- take with the " in lesson["text"]:
+                rungs["recapture lesson"] = rungs.get("recapture lesson", 0) + 1
+        rungs["lessons played"] = rungs.get("lessons played", 0) + len(
+            case["templates"]["lessons_played"]
+        )
+    print("rungs:", dict(sorted(rungs.items())))
 
 
 if __name__ == "__main__":

@@ -36,6 +36,12 @@ object IdeaWords {
         KING to "king",
     )
     private val ORDINAL = mapOf(1 to "first", 2 to "second", 3 to "third", 4 to "fourth", 5 to "fifth")
+
+    /** The longest mate whose line the move rung reads out whole; past it, its first moves. */
+    const val MATE_READ = 5
+
+    /** The plies of a longer mate read out, the first move with them. */
+    const val MATE_SHOWN = 5
     private val NUMBER = mapOf(
         1 to "one", 2 to "two", 3 to "three", 4 to "four", 5 to "five", 6 to "six", 7 to "seven",
     )
@@ -487,6 +493,7 @@ object IdeaWords {
         if (idea.goal == "promote") return "Which move clears its way?"
         if (idea.goal == "defend") return "Which move stops it and keeps your pieces working?"
         if (name != null && name in NUDGE) return NUDGE.getValue(name)
+        if (idea.goal == "win" && idea.gainPly > 0) return "What has to happen first, before you can take it?"
         if (idea.goal == "win") return "Which move wins it?"
         return null
     }
@@ -663,6 +670,12 @@ object IdeaWords {
                 after.push(idea.line[1])
                 return "$first, and after $reply, ${after.san(idea.line[2]).trimEnd('#')} is mate"
             }
+            if (idea.mateIn > MATE_READ) {
+                // A mate in nine read out whole is sixteen moves no one follows by ear, and
+                // stopped short of the mate besides (Tai's game, 2026-09-24).
+                val shown = slice(plies, 1, MATE_SHOWN)
+                return "$first forces mate: $first ${line(after, shown)}, and mate follows"
+            }
             return "$first forces mate: $first ${line(after, plies.drop(1))}"
         }
         if (idea.goal == "win" || idea.goal == "combination") {
@@ -683,6 +696,17 @@ object IdeaWords {
                 val blow = idea.blowBoard.san(idea.blowMove)
                 val text = "$first, and after ${line(after, between)}, $blow"
                 return text + (if (!sentence.isNullOrEmpty()) ", and $sentence" else "") + "; $won"
+            }
+            if (sentence == null && idea.goal == "win" && idea.gainPly > 0 && idea.gainPly < idea.line.size) {
+                // No tactic, and the first move does not win it: the moves up to the one that does.
+                var after = board.copy(withStack = false)
+                after.push(firstMove)
+                val between = slice(idea.line, 1, idea.gainPly).map { it.uci() }
+                for (uci in between) after.push(Move.fromUci(uci))
+                val taker = after.san(idea.line[idea.gainPly])
+                after = board.copy(withStack = false)
+                after.push(firstMove)
+                return "$first, and after ${line(after, between)}, $taker; $won"
             }
             return "$first: " + if (!sentence.isNullOrEmpty()) "$sentence; $won" else won
         }

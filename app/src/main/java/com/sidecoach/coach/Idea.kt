@@ -61,6 +61,11 @@ data class Idea(
     val blowBoard: Board? = null,
     /** Which of the player's moves carries the blow: 1 is the first. */
     val blowAt: Int = 1,
+    /**
+     * "win": the ply of the player's move that first wins it (0 is the first move): O-O and then
+     * Nxd4 wins the pawn with the second move, not the first (Tai's game, 2026-09-24).
+     */
+    val gainPly: Int = 0,
     /** PREPARATION tags of the moves before the blow. */
     val preparation: List<String> = emptyList(),
     /** "check", "capture", "sacrifice", "promotion", "quiet". */
@@ -386,11 +391,14 @@ object IdeaReader {
                 end.removePieceAt(pv[at - 1].to)
             }
             val (won, target) = wonBy(board, end, us, pv.subList(0, at), boards)
+            // The player's move that first wins it: the last of theirs within `at` plies.
+            val gainPly = maxOf(0, if ((at - 1) % 2 == 0) at - 1 else at - 2)
             return Idea(
                 goal = "win",
                 first = first,
                 line = pv,
                 gain = gain,
+                gainPly = gainPly,
                 won = won,
                 blow = blow?.second,
                 blowMove = if (blow != null) pv[blow.first] else null,

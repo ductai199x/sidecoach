@@ -1350,7 +1350,11 @@ class Coach(
                 // The better move played out, and the pattern to keep: never "the idea was a
                 // mating attack" and nothing more.
                 fallback = lessonTemplate(
-                    facts, best, rotate("cost", COST_YOU).replace("{best}", best)
+                    facts,
+                    best,
+                    rotate("cost", COST_YOU).replace("{best}", best),
+                    board = position.board,
+                    played = played.uci,
                 )
                 instructionText =
                     "The player just played ${played.san}, which was a $label: it cost " +

@@ -131,7 +131,7 @@ class CoachPrimitivesTest {
             goals[idea.goal] = (goals[idea.goal] ?: 0) + 1
             checkIdea(case.getString("fen"), idea, case.getJSONObject("idea"))
             checkWords(case.getString("fen"), idea, board, case.getJSONObject("words"))
-            checkTemplates(case.getString("fen"), facts, case.getJSONObject("templates"))
+            checkTemplates(case.getString("fen"), facts, board, case.getJSONObject("templates"))
 
             check("${case.getString("fen")} phase", phaseOf(board, false), case.getString("phase"))
             check("material us", materialText(board, us), case.getString("material_us"))
@@ -259,6 +259,7 @@ class CoachPrimitivesTest {
             "blow_move" to idea.blowMove?.uci(),
             "blow_board" to idea.blowBoard?.fen(),
             "blow_at" to idea.blowAt,
+            "gain_ply" to idea.gainPly,
             "preparation" to idea.preparation,
             "starts_with" to idea.startsWith,
             "target" to sq(idea.target),
@@ -298,6 +299,7 @@ class CoachPrimitivesTest {
             "blow_move" to opt("blow_move"),
             "blow_board" to opt("blow_board"),
             "blow_at" to want.getInt("blow_at"),
+            "gain_ply" to want.getInt("gain_ply"),
             "preparation" to strings(want.getJSONArray("preparation")),
             "starts_with" to want.getString("starts_with"),
             "target" to opt("target"),
@@ -338,7 +340,7 @@ class CoachPrimitivesTest {
     }
 
     /** The offline coach's words at each rung, the lessons, and each rung leak-checked. */
-    private fun checkTemplates(fen: String, facts: PositionFacts, want: JSONObject) {
+    private fun checkTemplates(fen: String, facts: PositionFacts, board: Board, want: JSONObject) {
         check("$fen ideaTemplate", ideaTemplate(facts), want.getString("idea"))
         check("$fen focusTemplate", focusTemplate(facts), want.getString("focus"))
         check("$fen moveTemplate", moveTemplate(facts), want.getString("move"))
@@ -352,6 +354,16 @@ class CoachPrimitivesTest {
         for (k in 0 until lessons.length()) {
             val o = lessons.getJSONObject(k)
             check("$fen lessonTemplate ${o.getString("opener")}", lessonTemplate(facts, best, o.getString("opener")), o.getString("text"))
+        }
+        // The lesson after the move played, with the position it was played from.
+        val played = want.getJSONArray("lessons_played")
+        for (k in 0 until played.length()) {
+            val o = played.getJSONObject(k)
+            check(
+                "$fen lessonTemplate after ${o.getString("played")}",
+                lessonTemplate(facts, best, o.getString("opener"), board = board, played = o.getString("played")),
+                o.getString("text"),
+            )
         }
         val leaks = want.getJSONArray("leaks")
         for (k in 0 until leaks.length()) {

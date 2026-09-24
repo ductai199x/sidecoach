@@ -67,6 +67,19 @@ private val PLAN_THEME = mapOf(
 private val BEFORE_THE_PLAN = setOf("castle", "rescue", "prophylaxis", "develop")
 
 /**
+ * The best move's own ideas that belong beside a threat to meet: the rest (a rook to an open
+ * file, a knight to the centre) are what the move also does, and "stop it before it comes. The
+ * key is taking the open file" named the wrong reason (the master games, 2026-09-24).
+ */
+private val DEFENDING = setOf("castle", "rescue", "prophylaxis")
+
+/**
+ * A threat to win less than this, in pawns, gives way to the move's own idea: "d4 goes after
+ * their pawn on e5" is the fight for the centre, not the initiative.
+ */
+const val THREAT_MIN = 2
+
+/**
  * In a pawn ending there is no king to storm and no space to take: a pawn move there is about
  * the passed pawn it makes ("storming the pawns in front of their King" was said of h5 in a
  * king-and-pawn ending, Lichess Yb1jJ).
@@ -535,6 +548,10 @@ fun factsFromAnalysis(
             if (pawnEnding) kind = PAWN_ENDING_PLAN[kind] ?: kind
             plan = PLAN_THEME[kind]
             planKind = if (plan != null) kind else null
+            if (idea.goal == "defend" && (planKind == null || planKind !in DEFENDING)) {
+                plan = null
+                planKind = null
+            }
         }
     }
     // The plan the best line carries out over the player's next moves: a king attack, rooks
@@ -548,6 +565,13 @@ fun factsFromAnalysis(
         val pv = lines[0].moves.mapNotNull { toMove(it) }
         linePlan = Plans.read(board, pv, lines[0].expectedScore)
         moveThreat = Plans.threat(board, best, pv, lines[0].expectedScore)
+        if (moveThreat != null &&
+            moveThreat.kind == "win" &&
+            moveThreat.gain < THREAT_MIN &&
+            planKind != null
+        ) {
+            moveThreat = null  // a pawn attacked is not the point when the move has its own
+        }
         if (moveThreat != null && (moveThreat.kind == "mate" || linePlan == null)) {
             linePlan = null
             plan = Plans.THREAT_NAME.getValue(moveThreat.kind)
@@ -582,6 +606,19 @@ fun factsFromAnalysis(
         target = Plans.threatTarget(moveThreat, board) ?: target
         nudge = Plans.THREAT_NUDGE.getValue(moveThreat.kind)
         why = Plans.threatWhy(moveThreat, board, best)
+    }
+    // A forcing capture with nothing else to point at: its focus is what it takes.
+    if (target == null &&
+        best != null &&
+        idea.goal == "plan" &&
+        moveThreat == null &&
+        linePlan == null &&
+        board.isCapture(best)
+    ) {
+        val taken = board.pieceAt(best.to)
+        if (taken != null && taken.colour != us) {
+            target = "their ${COACH_PIECE_NAMES[taken.pieceType]} on ${squareName(best.to)}"
+        }
     }
     if (linePlan != null) {
         mechanism = Plans.mechanism(linePlan)

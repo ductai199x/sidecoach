@@ -958,14 +958,22 @@ fun features(board: Board, us: Boolean, phase: String = "middlegame"): List<Posi
 
 // --- the idea behind the best move ----------------------------------------------------
 
-/** A pawn move that strikes at or occupies the centre. */
-private fun isCentralBreak(board: Board, move: Move): Boolean {
+/**
+ * A pawn move that strikes at or occupies the centre. A capture counts when it takes toward the
+ * centre: fxe5 does, exf5 goes away from it ("the fight is for the centre, and you joined it"
+ * was said of 2.exf5, Tai's game, 2026-09-24).
+ */
+internal fun isCentralBreak(board: Board, move: Move): Boolean {
     if (board.pieceTypeAt(move.from) != PAWN) return false
     val toFile = squareFile(move.to)
     val toRank = squareRank(move.to)
     val centralFile = toFile in 2..5
     val centralRank = toRank in 3..4
-    return centralFile && (centralRank || board.isCapture(move))
+    if (board.isCapture(move)) {
+        val toward = abs(2 * toFile - 7) < abs(2 * squareFile(move.from) - 7)
+        return centralFile && toward
+    }
+    return centralFile && centralRank
 }
 
 /** If a rook moves onto a file with no friendly pawns, the file letter, else null. */
@@ -1092,7 +1100,8 @@ fun bestMoveIdea(
     threat: Move? = null,
 ): PositionalFact? {
     val pieceType = board.pieceTypeAt(move.from)
-    if (pieceType == 0) return null
+    // A new queen needs no idea read into it ("prophylaxis" was said of c8=Q).
+    if (pieceType == 0 || move.promotion != 0) return null
     val after = board.copy(withStack = false)
     after.push(move)
     val to = name(move.to)
@@ -1111,6 +1120,12 @@ fun bestMoveIdea(
         return PositionalFact(
             "rescue", "your $pieceName was in danger; moving to $to brings it to safety", listOf(to),
         )
+    }
+
+    // A passed pawn that runs is the move's point, before whatever it also stops.
+    if (pieceType == PAWN && isPassed(board, move.from)) {
+        val file = FILES[squareFile(move.from)]
+        return PositionalFact("pushPasser", "push your passed $file-pawn toward $to", listOf(to))
     }
 
     if (threat != null && !board.isCapture(move) && !after.isCheck() &&
@@ -1191,11 +1206,6 @@ fun bestMoveIdea(
 
     if (isCentralBreak(board, move)) {
         return PositionalFact("centre", "strike in the centre with the pawn to $to", listOf(to))
-    }
-
-    if (pieceType == PAWN && isPassed(board, move.from)) {
-        val file = FILES[squareFile(move.from)]
-        return PositionalFact("pushPasser", "push your passed $file-pawn toward $to", listOf(to))
     }
 
     if (quiet && worst != null && move.from == worst) {
