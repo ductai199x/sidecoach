@@ -119,6 +119,7 @@ object PanelWarm {
                 PanelVoice.build(appContext, SettingsStore(appContext))
                 Captions.configure(appContext, SettingsStore(appContext).captions())
                 Captions.style(SettingsStore(appContext).captionStyle())
+                Captions.keep(SettingsStore(appContext).captionsKeep())
                 PanelListen.build(appContext)
                 stage("pieces", "loading")
                 // OpenCV's native library first: the net's prime and the vision's pass both
@@ -409,6 +410,7 @@ object PanelWarm {
         attempt(listOf("voice.speed")) { PanelVoice.tts?.speed = store.speed() }
         attempt(listOf("voice.captions")) { Captions.configure(appContext, store.captions(), ask = true) }
         attempt(CAPTION_LOOK) { Captions.style(store.captionStyle()) }
+        attempt(listOf("voice.captions_keep")) { Captions.keep(store.captionsKeep()) }
         // Saved, and seen at once: a sample line in the new look over the settings page.
         if (changed.any { it == "voice.captions" || it in CAPTION_LOOK }) Captions.preview()
         if (changed.any { it in VOICE_RELOAD }) {

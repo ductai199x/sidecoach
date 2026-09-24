@@ -45,7 +45,8 @@ import kotlin.math.roundToInt
  *
  * The box comes up when the coach starts to speak and its words appear as they are said,
  * newest at the bottom, the earlier ones scrolling up; it fades a few seconds after the voice
- * stops. A line the voice does not say (muted, or a fast game) appears whole. Touch and hold
+ * stops, or stays up with the last words when the setting keeps it on screen. A line the voice
+ * does not say (muted, or a fast game) appears whole. Touch and hold
  * to move it anywhere; double-tap to see more lines; drag the bar at its foot for more or
  * fewer; tap for its buttons -- mute, and the panel's three quick pills -- and the game's
  * moves; drag it onto the cross at the bottom of the screen to turn captions off. Taps
@@ -71,6 +72,10 @@ object Captions {
 
     @Volatile private var on = false
     @Volatile private var front = false
+    @Volatile private var keep = false
+
+    /** The box up now is the settings' sample line, which fades whatever [keep] says. */
+    private var previewing = false
 
     /**
      * How the box looks, from the settings (Tai, 2026-09-23: the user tunes the text colour,
@@ -128,10 +133,33 @@ object Captions {
         }
     }
 
+    /**
+     * The setting: the box stays on screen between the coach's lines, with the last words in it
+     * (Tai, 2026-09-24: "the caption box is always on screen if true and if false then fade away
+     * after some time"). Off, it fades [HIDE_AFTER_MS] after the voice stops.
+     */
+    fun keep(stay: Boolean) {
+        keep = stay
+        main.post {
+            if (stay) {
+                main.removeCallbacks(hideLater)
+                restore()
+            } else if (box != null && saying.isEmpty()) {
+                hideSoon()
+            }
+        }
+    }
+
     /** Sidecoach's own panel in front (true) or not: its page shows the words already. */
     fun panelInFront(inFront: Boolean) {
         front = inFront
-        if (inFront) main.post { drop() }
+        main.post { if (inFront) drop() else restore() }
+    }
+
+    /** A box kept on screen, back with the words said so far once the panel is not in front. */
+    private fun restore() {
+        if (!keep || !on || front || box != null || said.isEmpty()) return
+        if (ensureBox()) box?.setText(said.toString())
     }
 
     /** A line the voice starts to say now, and about how long it speaks for. */
@@ -166,6 +194,7 @@ object Captions {
 
     private fun begin(text: String, speechMs: Long, force: Boolean = false) {
         if (!on || (front && !force)) return
+        previewing = force
         val fresh = box == null
         finish()
         if (said.isNotEmpty()) said.append(if (fresh) "\n" else " ")
@@ -226,6 +255,7 @@ object Captions {
 
     private fun hideSoon() {
         main.removeCallbacks(hideLater)
+        if (keep && !previewing) return
         main.postDelayed(hideLater, HIDE_AFTER_MS)
     }
 
@@ -273,6 +303,9 @@ object Captions {
         main.removeCallbacks(tick)
         main.removeCallbacks(hideLater)
         finish()
+        // The sample line is no word of the coach's: a box kept on screen does not bring it back.
+        if (previewing) said.setLength(0)
+        previewing = false
         box?.detach()
         box = null
         target?.detach()

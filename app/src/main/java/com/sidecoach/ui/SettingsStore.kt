@@ -166,6 +166,9 @@ class SettingsStore(private val context: Context) {
     /** The coach's words over other apps ([Captions]); the phone's own setting. */
     fun captions(): Boolean = section("voice").optBoolean("captions", false)
 
+    /** Whether the captions' box stays on screen between lines ([Captions.keep]). */
+    fun captionsKeep(): Boolean = section("voice").optBoolean("captions_keep", false)
+
     /** How the captions' box looks; a colour that does not read keeps the default. */
     fun captionStyle(): Captions.Style {
         val voice = section("voice")

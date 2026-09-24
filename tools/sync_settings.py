@@ -61,6 +61,19 @@ def main() -> None:
         "label": "Captions over other apps",
         "section": "Captions",
     }
+    # Whether the box stays up between lines (Tai, 2026-09-24: "the caption box is always
+    # on screen if true and if false then fade away after some time").
+    voice["captions_keep"] = {
+        "default": False,
+        "description": "Keeps the caption box on screen all the time, with the coach's last "
+        "words in it. Off, the box fades a few seconds after the coach stops talking and comes "
+        "back when it speaks again. Either way it steps aside while Sidecoach itself is open.",
+        "title": "Captions Keep",
+        "type": "boolean",
+        "applies": "now",
+        "label": "Keep captions on screen",
+        "section": "Captions",
+    }
     # How the box looks (Tai, 2026-09-23: "the user can tune things like text color, bg
     # color, opacity, and text size").
     voice["captions_text_color"] = {
@@ -108,6 +121,7 @@ def main() -> None:
     }
     defaults["voice"].update(
         captions=False,
+        captions_keep=False,
         captions_text_color="#FFFFFF",
         captions_background="#1F1F1F",
         captions_opacity=92,
