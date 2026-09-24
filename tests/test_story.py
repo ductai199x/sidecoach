@@ -119,3 +119,19 @@ def test_where_only_one_move_holds_the_move_says_what_it_does() -> None:
     assert "takes their pawn on h5" in texts["move"]
     assert "?" in texts["focus"]
     assert told
+
+
+def test_a_piece_with_no_safe_square_is_taught_as_trapped() -> None:
+    # Tai's chess.com puzzle: Bg4 against a queen on h5 with nowhere to go; the hint said only
+    # "the first move attacks their queen on h5".
+    texts, told = _hints(
+        "r1bq1k1r/1p2bp2/p2p3p/2p1n2Q/P3P3/1BN5/1PP2PPP/R1B2RK1 b - - 1 15",
+        [
+            (["c8g4", "b3f7", "g4h5", "f7h5", "b7b5", "c3d5", "b5b4", "f2f4"], 0.797),
+            (["c5c4", "h2h3", "c4b3", "c2b3", "e7e6", "a1a3", "a8c8", "c1e3"], 0.63),
+        ],
+    )
+    assert "their queen on h5, and it has no safe square to go to" in texts["idea"]
+    assert "A trapped piece" in texts["idea"]
+    assert "no safe square" in texts["focus"]
+    assert told

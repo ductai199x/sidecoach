@@ -27,6 +27,7 @@ import chess
 
 from sidecoach.analysis import exchange, positional
 from sidecoach.coach import idea as idea_of
+from sidecoach.coach import idea_words
 from sidecoach.coach.idea import Idea
 
 _NAMES = {
@@ -241,12 +242,39 @@ def _named_any_won(board: chess.Board, idea: Idea, said: str) -> bool:
     return f"{_NAMES[top]} on {_sq(idea.target)}" in said if idea.target is not None else False
 
 
+def trapped(board: chess.Board, square: chess.Square) -> bool:
+    """The piece on `square`, its side to move, is a trapped piece: attacked for profit where
+    it stands, and every move of it lands where it is won too, or takes something for less
+    than itself. Tai's chess.com puzzle, 2026-09-24: Bg4 against a queen on h5 that had
+    nowhere to go was hinted as "the first move attacks their queen", not as the trapped
+    piece the puzzle teaches."""
+    piece = board.piece_at(square)
+    if piece is None or piece.piece_type in (chess.KING, chess.PAWN):
+        return False
+    if not exchange.can_be_won(board, square):
+        return False
+    for move in board.legal_moves:
+        if move.from_square != square:
+            continue
+        if board.is_capture(move):
+            if exchange.exchange(board, move) >= 0:
+                return False  # it escapes by taking something worth it
+            continue
+        after = board.copy(stack=False)
+        after.push(move)
+        if not exchange.can_be_won(after, move.to_square):
+            return False
+    return True
+
+
 @dataclass(frozen=True)
 class Effect:
-    """What a move does, in words for the third hint and a question for the second."""
+    """What a move does, in words for the third hint and a question for the second, and the
+    pattern's lesson when the move carries one."""
 
     said: str  # "gives check", "takes their pawn on h5", "stops Nd6+"
     ask: str  # "Which check is it?"
+    lesson: str | None = None
 
 
 def effects(board: chess.Board, move: chess.Move, threat: chess.Move | None) -> list[Effect]:
@@ -273,6 +301,16 @@ def effects(board: chess.Board, move: chess.Move, threat: chess.Move | None) -> 
         if piece is None or piece.color == us or piece.piece_type == chess.KING:
             continue
         loose = not exchange.defenders(after, piece.color, square)
+        if trapped(after, square):
+            out.append(
+                Effect(
+                    f"attacks their {_named(after, square)}, and it has no safe square to go to",
+                    "Which of their pieces has no safe square left?",
+                    f"{idea_words.PATTERN_NAMES['trappedPiece']}: "
+                    f"{idea_words.PATTERN_WHY['trappedPiece']}",
+                )
+            )
+            break
         if piece.piece_type in (chess.QUEEN, chess.ROOK) or (
             loose and piece.piece_type != chess.PAWN
         ):
@@ -353,7 +391,7 @@ def reason(
     return f"{san}: {holds}", "Which move keeps everything you have?"
 
 
-def how(board: chess.Board, idea: Idea, threat: chess.Move | None) -> str | None:
+def how(board: chess.Board, idea: Idea, threat: chess.Move | None) -> Effect | None:
     """How a win with no named pattern comes about, for the first hint: what the first move
     does, never the move. "Their pawn on h5 is the target" alone left the player to find the
     king walk that wins it (Lichess jlCZP, a zugzwang); "the first move attacks their rook on
@@ -363,10 +401,10 @@ def how(board: chess.Board, idea: Idea, threat: chess.Move | None) -> str | None
     if idea.gain_ply == 0 and board.is_capture(idea.first):
         return None  # the capture is the how
     if idea.intermezzo:
-        return "A check comes first, before anything is taken"
+        return Effect("A check comes first, before anything is taken", "")
     if idea.sacrifices and idea.sacrifices[0][0] == 0:
         given = idea.sacrifices[0][1]
-        return f"It starts by giving up {'the' if given == 'exchange' else 'a'} {given}"
+        return Effect(f"It starts by giving up {'the' if given == 'exchange' else 'a'} {given}", "")
     found = effects(board, idea.first, threat)
     # Taking a piece is the point when it is a piece, or the one giving check; a pawn taken on
     # the way is not, and what else the move does comes first.
@@ -381,7 +419,8 @@ def how(board: chess.Board, idea: Idea, threat: chess.Move | None) -> str | None
     found = [e for e in found if not e.said.startswith("pushes")]
     if not found:
         return None
-    return f"The first move {found[0].said}"
+    first_effect = found[0]
+    return Effect(f"The first move {first_effect.said}", first_effect.ask, first_effect.lesson)
 
 
 def move_why(board: chess.Board, idea: Idea, threat: chess.Move | None) -> str | None:

@@ -825,11 +825,16 @@ def facts_from_analysis(
     prize_last = plain is not None
     # How a win with no named pattern comes about: what the first move does, and at the move
     # rung the line to it, never the result alone.
-    how = (
+    told_how = (
         story.how(board, idea, threat_move)
         if tactical_goal and not forced and plain is None
         else None
     )
+    how = told_how.said if told_how is not None else None
+    if told_how is not None and told_how.lesson:
+        # The pattern the move carries, taught after it: "A trapped piece: ..."
+        how = f"{how}. {told_how.lesson[0].upper()}{told_how.lesson[1:]}"
+        nudge = told_how.ask or nudge
     if (
         tactical_goal
         and best is not None
