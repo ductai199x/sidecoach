@@ -361,15 +361,9 @@ object PanelEngine {
                 fenBefore[event.ply] = event.fenBefore
                 lastPly = event.ply
                 PanelVoice.noteMove(event.ply)
-                synchronized(lock) {
-                    @Suppress("UNCHECKED_CAST")
-                    state["moves"] = (state["moves"] as List<String>) + event.san
-                    @Suppress("UNCHECKED_CAST")
-                    state["fens"] = (state["fens"] as List<String>) + event.fenAfter
-                    @Suppress("UNCHECKED_CAST")
-                    state["ucis"] = (state["ucis"] as List<String>) + event.uci
-                    state["last_move"] = event.uci
-                }
+                // The move list itself comes from the game's moves each tick
+                // (`GameWatcher.refreshState`, as `panel._refresh_state`), so a takeback or an
+                // adopted position leaves nothing of the old moves behind.
                 emit(
                     "game",
                     "info",

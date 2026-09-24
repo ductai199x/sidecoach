@@ -249,12 +249,40 @@ object Story {
         return "${NAMES.getValue(top)} on ${sq(target)}" in said
     }
 
-    /** What a move does, in words for the third hint and a question for the second. */
+    /**
+     * `story.trapped`: the piece on [square], its side to move, is a trapped piece -- attacked
+     * for profit where it stands, and every move of it lands where it is won too, or takes
+     * something for less than itself. Tai's chess.com puzzle, 2026-09-24: Bg4 against a queen on
+     * h5 that had nowhere to go was hinted as "the first move attacks their queen", not as the
+     * trapped piece the puzzle teaches.
+     */
+    fun trapped(board: Board, square: Int): Boolean {
+        val piece = board.pieceAt(square) ?: return false
+        if (piece.pieceType == KING || piece.pieceType == PAWN) return false
+        if (!Exchange.canBeWon(board, square)) return false
+        for (move in board.legalMoves()) {
+            if (move.from != square) continue
+            if (board.isCapture(move)) {
+                if (Exchange.exchange(board, move) >= 0) return false  // it escapes by taking something worth it
+                continue
+            }
+            val after = board.copy(withStack = false)
+            after.push(move)
+            if (!Exchange.canBeWon(after, move.to)) return false
+        }
+        return true
+    }
+
+    /**
+     * What a move does, in words for the third hint and a question for the second, and the
+     * pattern's lesson when the move carries one.
+     */
     data class Effect(
         /** "gives check", "takes their pawn on h5", "stops Nd6+". */
         val said: String,
         /** "Which check is it?". */
         val ask: String,
+        val lesson: String? = null,
     )
 
     /**
@@ -278,6 +306,17 @@ object Story {
             val piece = after.pieceAt(square) ?: continue
             if (piece.colour == us || piece.pieceType == KING) continue
             val loose = Exchange.defenders(after, piece.colour, square).isEmpty()
+            if (trapped(after, square)) {
+                out.add(
+                    Effect(
+                        "attacks their ${named(after, square)}, and it has no safe square to go to",
+                        "Which of their pieces has no safe square left?",
+                        "${IdeaWords.PATTERN_NAMES.getValue("trappedPiece")}: " +
+                            IdeaWords.PATTERN_WHY.getValue("trappedPiece"),
+                    ),
+                )
+                break
+            }
             if (piece.pieceType == QUEEN || piece.pieceType == ROOK || (loose && piece.pieceType != PAWN)) {
                 out.add(Effect("attacks their ${named(after, square)}", "What can it attack?"))
                 break
@@ -362,14 +401,14 @@ object Story {
      * walk that wins it (Lichess jlCZP, a zugzwang); "the first move attacks their rook on d8"
      * says how.
      */
-    fun how(board: Board, idea: Idea, threat: Move?): String? {
+    fun how(board: Board, idea: Idea, threat: Move?): Effect? {
         if ((idea.goal != "win" && idea.goal != "combination") || idea.blow != null) return null
         val first = idea.first ?: return null
         if (idea.gainPly == 0 && board.isCapture(first)) return null  // the capture is the how
-        if (idea.intermezzo) return "A check comes first, before anything is taken"
+        if (idea.intermezzo) return Effect("A check comes first, before anything is taken", "")
         if (idea.sacrifices.isNotEmpty() && idea.sacrifices[0].first == 0) {
             val given = idea.sacrifices[0].second
-            return "It starts by giving up ${if (given == "exchange") "the" else "a"} $given"
+            return Effect("It starts by giving up ${if (given == "exchange") "the" else "a"} $given", "")
         }
         var found = effects(board, first, threat)
         // Taking a piece is the point when it is a piece, or the one giving check; a pawn taken
@@ -382,7 +421,8 @@ object Story {
         // "pushes your passed pawn" is the move itself, not how it wins.
         found = found.filter { !it.said.startsWith("pushes") }
         if (found.isEmpty()) return null
-        return "The first move ${found[0].said}"
+        val firstEffect = found[0]
+        return Effect("The first move ${firstEffect.said}", firstEffect.ask, firstEffect.lesson)
     }
 
     /**

@@ -101,6 +101,7 @@ class Profiler(
     private var attempt: Attempt? = null
     private var attemptGame: String? = null
     private val recommendedFor = HashMap<String, String>()
+    private var side = Pieces.Side.WHITE  // the player's side in the position last started
 
     init {
         store.startSession(this.sessionId, ts)
@@ -124,6 +125,7 @@ class Profiler(
         val game = game
         if (game == null) {
             if (event is MovePlayed && event.gameId == attemptGame) return puzzleMove(event, ts)
+            if (event is Resync && event.gameId == attemptGame) return anotherPosition(event, ts)
             return emptyList()
         }
         if (game.ended && (event is MovePlayed || event is Takeback || event is Resync || event is GameEnded)) {
@@ -137,6 +139,7 @@ class Profiler(
             is MoveAssessment -> assessment(game, event) + maybeReview(game, ts)
             is Takeback -> takeback(game, event)
             is Resync -> {
+                if (game.provisional) return anotherPosition(event, ts)
                 game.segment += 1
                 game.lastFen = event.fen
                 emptyList()
@@ -163,6 +166,7 @@ class Profiler(
 
     private fun start(event: GameStarted, ts: Double): List<Event> {
         dropIfProvisional()
+        side = event.userSide
         if (event.kind != "game") {
             // A puzzle, an analysis board, or a game joined from the middle. A puzzle of the
             // store is followed for its outcome, not as a game; anything else is followed as
@@ -183,6 +187,24 @@ class Profiler(
         }
         store.startGame(event.gameId, ts, event.userSide.name.lowercase(), event.startFen, sessionId)
         return emptyList()
+    }
+
+    /**
+     * A position adopted over one that is not a game of the record: most often the next puzzle
+     * of a run, which the site puts up with no start the reconciler could see, so it keeps the
+     * game it had. It is followed as a position of its own, as a start would be: the plies of a
+     * run of puzzles never add up to PROVISIONAL_PLIES (Tai's Pixel, 2026-09-24: after a few
+     * puzzles a mate in three was reviewed as "won by checkmate in 3 moves ... over 5 games",
+     * its misses kept as his habits), and a puzzle of the store is recognised on every one of
+     * them, not only the first. A game joined late that needs a resync before it qualifies
+     * starts its count again there.
+     */
+    private fun anotherPosition(event: Resync, ts: Double): List<Event> {
+        val game = game
+        if (game != null && game.plies.isEmpty() && game.startFen == event.fen) {
+            return emptyList()  // the position just begun, announced again
+        }
+        return start(GameStarted(event.gameId, side, event.fen, kind = "position"), ts)
     }
 
     /** A game of the record that has ended and still waits for its review. */

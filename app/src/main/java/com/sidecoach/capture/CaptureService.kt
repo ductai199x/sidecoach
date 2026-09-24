@@ -542,8 +542,13 @@ class CaptureService : Service() {
         /** Half the screen in each direction (a quarter of the pixels). */
         private const val SCALE = 2
 
-        /** The rate the pipeline needs: a board changes when a piece moves, not faster. */
-        const val TARGET_FPS = 2
+        /**
+         * The desktop's rate. Two a second missed what chess.com shows between frames: a
+         * puzzle's instant reply, a move's 0.2 s slide, a premove -- and a puzzle read mid-slide
+         * lost its record (Tai, 2026-09-24; the fast-puzzle sweep at 2, 3, 4 and 10 frames a
+         * second). The change gate keeps a still board cheap.
+         */
+        const val TARGET_FPS = 10
         private const val MIN_INTERVAL_MS = 1000L / TARGET_FPS
         private const val BUFFERS = 3
         private const val PREVIEW_WIDTH = 360

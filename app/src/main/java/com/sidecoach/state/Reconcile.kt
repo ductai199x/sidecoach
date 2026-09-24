@@ -84,6 +84,69 @@ private data class StaleKey(
     val highlighted: Boolean,
 )
 
+/** `reconcile.highlighted_squares`: the squares the site marks as its last move (or a
+ * selection): tinted, not red. */
+fun highlightedSquares(obs: Observation): Set<Int> =
+    obs.filter { (_, r) -> r.highlighted && r.tint != "red" }.keys
+
+/**
+ * `reconcile._came_from`: whether the piece on [to] could have come from the empty [start] in
+ * one move -- its own geometry on the board as it stands, the pawn's pushes and captures,
+ * castling's king.
+ */
+private fun cameFrom(board: Board, start: Int, to: Int): Boolean {
+    val piece = board.pieceAt(to) ?: return false
+    if (board.pieceAt(start) != null) return false
+    if (piece.pieceType == PAWN) {
+        val step = if (piece.colour == WHITE) 8 else -8
+        if (start == to - step) return true
+        if (start == to - 2 * step && board.pieceAt(to - step) == null) {
+            return squareRank(to) == (if (piece.colour == WHITE) 3 else 4)
+        }
+        return (start == to - step - 1 || start == to - step + 1) && squareDistance(start, to) == 1
+    }
+    if (piece.pieceType == KING && squareRank(start) == squareRank(to) &&
+        kotlin.math.abs(squareFile(start) - squareFile(to)) == 2
+    ) {
+        return true  // castling
+    }
+    val back = board.copy(withStack = false)
+    back.removePieceAt(to)
+    back.setPieceAt(start, piece)
+    return back.attacksMask(start) and BB_SQUARES[to] != 0uL
+}
+
+/**
+ * `reconcile.LastMoveSeen`: what the site's last-move highlight tells a position read from
+ * pixels -- who moved, and the en-passant square when the move was a pawn's two-square advance.
+ */
+data class LastMoveSeen(val mover: Boolean, val epSquare: Int? = null)
+
+/**
+ * `reconcile.last_move_seen`: the last move as the site highlights it -- an empty marked square
+ * and a marked square whose piece could have come from it. Every such pair must name the same
+ * mover, or nothing is known. The highlight is the history a position read from pixels lacks:
+ * the side to move (a puzzle adopted with it open could not tell the solver's move and the
+ * instant reply from the same two moves in the other order, and the record stayed empty), and
+ * a pawn's two-square advance taken in passing (after c2-c4 the coach did not see bxc3 e.p.;
+ * Tai's chess.com puzzles, 2026-09-24).
+ */
+fun lastMoveSeen(board: Board, highlighted: Set<Int>): LastMoveSeen? {
+    val movers = HashSet<Boolean>()
+    var ep: Int? = null
+    for (to in highlighted) {
+        val piece = board.pieceAt(to) ?: continue
+        for (start in highlighted) {
+            if (start == to || !cameFrom(board, start, to)) continue
+            movers.add(piece.colour)
+            val step = if (piece.colour == WHITE) 8 else -8
+            if (piece.pieceType == PAWN && start == to - 2 * step) ep = to - step
+        }
+    }
+    if (movers.size != 1) return null
+    return LastMoveSeen(movers.first(), ep)
+}
+
 private fun turnValid(board: Board, turn: Boolean): Boolean {
     board.turn = turn
     return board.isValid()
@@ -96,7 +159,11 @@ private fun turnValid(board: Board, turn: Boolean): Boolean {
  * both could move, `prefer` is the turn the board shows meanwhile: the side at the
  * bottom, which on a puzzle is the solver and to move.
  */
-internal fun adoptPlacement(placement: Board, prefer: Boolean = WHITE): Pair<Board, Boolean>? {
+internal fun adoptPlacement(
+    placement: Board,
+    prefer: Boolean = WHITE,
+    highlighted: Set<Int> = emptySet(),
+): Pair<Board, Boolean>? {
     val board = placement.copy(withStack = false)
     var rights: Bitboard = 0uL
     for ((colour, rank) in listOf(WHITE to 0, BLACK to 7)) {
@@ -110,6 +177,14 @@ internal fun adoptPlacement(placement: Board, prefer: Boolean = WHITE): Pair<Boa
     board.castlingRights = rights
     val validTurns = listOf(WHITE, BLACK).filter { turnValid(board, it) }
     if (validTurns.isEmpty()) return null
+    // The site's last-move highlight: the other side is to move, and may take a pawn that has
+    // just advanced two squares in passing (`lastMoveSeen`).
+    val seen = lastMoveSeen(board, highlighted)
+    if (seen != null && !seen.mover in validTurns) {
+        board.turn = !seen.mover
+        board.epSquare = seen.epSquare
+        return board to false
+    }
     board.turn = if (prefer in validTurns) prefer else validTurns[0]
     return board to (validTurns.size > 1)
 }
@@ -997,7 +1072,7 @@ class Reconciler(
             (diff.size >= resyncJumpCells && frames >= resyncMinFrames && tsValue - since >= resyncHoldS)
         if (!held) return mutableListOf()
 
-        val adopted = adoptPlacement(placement(obs), bottomColour())
+        val adopted = adoptPlacement(placement(obs), bottomColour(), highlightedSquares(obs))
         if (adopted == null) {
             resyncCandidate = null
             return mutableListOf()
@@ -1075,8 +1150,12 @@ class Reconciler(
      * cold from the theme cache -- rather than from the start. `ts` is when the position was
      * read, so the first move's think time counts from it.
      */
-    fun startFrom(placement: Board, ts: Double? = null): MutableList<Event> {
-        val adopted = adoptPlacement(placement, bottomColour()) ?: return mutableListOf()
+    fun startFrom(
+        placement: Board,
+        ts: Double? = null,
+        highlighted: Set<Int> = emptySet(),
+    ): MutableList<Event> {
+        val adopted = adoptPlacement(placement, bottomColour(), highlighted) ?: return mutableListOf()
         if (ts != null) tsValue = ts
         val (adoptedBoard, unknownTurn) = adopted
         turnUnknownFlag = unknownTurn

@@ -322,6 +322,61 @@ def puzzle_flip(theme: str) -> list[dict]:
     ]
 
 
+def fast_reply(theme: str) -> list[dict]:
+    """Lichess 000rO as chess.com plays it: the setup move a6-a5 highlighted, then the
+    solver's Bc7 and the instant reply Kb4 seen together. Adopted with the side to move open,
+    the two moves fit either order and nothing was recorded; the highlight says who moved
+    (desktop 6c571dd, `reconcile.last_move_seen`)."""
+    board = chess.Board("3R4/8/K7/pB2b3/1p6/1P2k3/3p4/8 w - - 4 58")
+    black = synth.Side.BLACK
+    states = [
+        dict(board_kwargs(board=chess.Board(), theme=theme, style="cburnett"), _repeat=5, _session=True),
+        dict(board_kwargs(board=board.copy(), theme=theme, style="cburnett", bottom=black), _repeat=2),
+    ]
+    setup = board.push_uci("a6a5")
+    states.append(
+        dict(board_kwargs(board=board.copy(), theme=theme, style="cburnett", bottom=black, highlight=setup), _repeat=6)
+    )
+    board.push_uci("e5c7")
+    reply = board.push_uci("a5b4")
+    states.append(
+        dict(board_kwargs(board=board.copy(), theme=theme, style="cburnett", bottom=black, highlight=reply), _repeat=6)
+    )
+    return states
+
+
+def flip_slide(theme: str) -> list[dict]:
+    """The next puzzle shown from Black's side while its setup move Bb2 still slides in, the
+    frame held as a capture at two a second holds it: the sliding bishop read as two empty
+    squares, and the board adopted without it lost every move after. A turned board is now
+    adopted only when it reads the same twice (desktop 6c571dd)."""
+    board = chess.Board("4rrk1/ppp2pp1/7p/3n4/3P3q/1P2p2P/P5P1/R1BQRBK1 w - - 2 23")
+    black = synth.Side.BLACK
+    setup = chess.Move.from_uci("c1b2")
+    states = [
+        dict(board_kwargs(board=chess.Board(), theme=theme, style="cburnett"), _repeat=5, _session=True),
+        dict(
+            board_kwargs(
+                board=board.copy(),
+                theme=theme,
+                style="cburnett",
+                bottom=black,
+                animating=(setup.from_square, setup.to_square, 0.5),
+            ),
+            _repeat=4,
+        ),
+    ]
+    board.push(setup)
+    states.append(
+        dict(board_kwargs(board=board.copy(), theme=theme, style="cburnett", bottom=black, highlight=setup), _repeat=10)
+    )
+    move = board.push_uci("h4f2")
+    states.append(
+        dict(board_kwargs(board=board.copy(), theme=theme, style="cburnett", bottom=black, highlight=move), _repeat=6)
+    )
+    return states
+
+
 SCENARIOS = {
     "mate-green": lambda: scholars_mate("green", "cburnett"),
     "resign-green": lambda: a_resignation("green", "cburnett"),
@@ -331,6 +386,8 @@ SCENARIOS = {
     "unexplained-green": lambda: an_unexplained_stretch("green", "cburnett"),
     "piece-sets-green": lambda: piece_sets("green"),
     "puzzle-flip-green": lambda: puzzle_flip("green"),
+    "fast-reply-green": lambda: fast_reply("green"),
+    "flip-slide-green": lambda: flip_slide("green"),
 }
 
 

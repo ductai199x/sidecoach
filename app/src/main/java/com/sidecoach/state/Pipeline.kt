@@ -161,7 +161,8 @@ class GamePipeline(
     private var startChecked: Pair<Region, Double>? = null
 
     /** The other side the labels last said was at the bottom of an unexplained board, and when. */
-    private var flipSeen: Pair<Side, Double>? = null
+    // The side the labels say, when, and the position then read that way round.
+    private var flipSeen: Triple<Side, Double, String?>? = null
     private var screenState: ScreenState = ScreenState.UNKNOWN
     private var dialogSince: Double? = null
     private var covered = false
@@ -606,11 +607,21 @@ class GamePipeline(
             return mutableListOf()
         }
         if (seen == null || seen.first != labelled) {
-            flipSeen = labelled to ts
+            flipSeen = Triple(labelled, ts, null)
+            return mutableListOf()
+        }
+        // The position must read the same twice too: a piece still sliding in reads as two
+        // empty squares, and a board adopted then lacks it for good -- the next puzzle's setup
+        // move caught mid-slide at two frames a second, and nothing after it was recorded
+        // (Tai, 2026-09-24: "sometimes there is no move list whatsoever").
+        val read = reread(labelled) ?: coldRead(frame, geometry, labelled)
+        val placed = read?.placement?.boardFen()
+        if (placed == null || placed != seen.third) {
+            flipSeen = Triple(labelled, ts, placed)
             return mutableListOf()
         }
         flipSeen = null
-        return reorient(frame, geometry, labelled, ts)
+        return reorientRead(read!!, ts)
     }
 
     /**
@@ -638,6 +649,11 @@ class GamePipeline(
     ): MutableList<Event> {
         // The frame's own readings serve when they can; a cold read from the theme cache otherwise.
         val read = reread(bottom) ?: coldRead(frame, geometry, bottom) ?: return mutableListOf()
+        return reorientRead(read, ts, endPrevious)
+    }
+
+    /** `reorient` with its read already taken (the desktop's `read=`): [ColdRead] is private. */
+    private fun reorientRead(read: ColdRead, ts: Double, endPrevious: Boolean = true): MutableList<Event> {
         val events = if (endPrevious) endInProgress("board reoriented") else mutableListOf()
         events.addAll(adoptCold(read, ts))
         return events
@@ -925,7 +941,16 @@ class GamePipeline(
 
     private fun adoptCold(read: ColdRead, ts: Double?): MutableList<Event> {
         val reconciler = Reconciler(bottom = read.bottom, userSide = read.bottom)
-        val events = reconciler.startFrom(read.placement, ts)
+        // The site's last-move highlight, for what a cold read cannot know: a pawn that has
+        // just advanced two squares (`doubleStepSeen`).
+        val highlighted = HashSet<Int>()
+        for (row in 0 until 8) for (col in 0 until 8) {
+            val r = read.readings[row * 8 + col]
+            if (r.highlighted && r.tint != "red") {
+                highlighted.add(Squares.squareAt(row, col, read.bottom == Side.WHITE))
+            }
+        }
+        val events = reconciler.startFrom(read.placement, ts, highlighted)
         if (events.isEmpty()) return mutableListOf()  // not a legal position; adopt nothing
         // Only now, with a legal position begun, is the pipeline switched onto this theme.
         model = read.model

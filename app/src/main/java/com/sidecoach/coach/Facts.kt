@@ -840,7 +840,13 @@ fun factsFromAnalysis(
     val prizeLast = plain != null
     // How a win with no named pattern comes about: what the first move does, and at the move
     // rung the line to it, never the result alone.
-    val how = if (tacticalGoal && !forced && plain == null) Story.how(board, idea, threatMove) else null
+    val toldHow = if (tacticalGoal && !forced && plain == null) Story.how(board, idea, threatMove) else null
+    var how = toldHow?.said
+    if (toldHow != null && !toldHow.lesson.isNullOrEmpty()) {
+        // The pattern the move carries, taught after it: "A trapped piece: ..."
+        how = "$how. ${toldHow.lesson.replaceFirstChar { it.uppercase() }}"
+        nudge = toldHow.ask.ifEmpty { null } ?: nudge
+    }
     if (tacticalGoal &&
         best != null &&
         idea.blow == null &&

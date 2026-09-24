@@ -17,7 +17,11 @@ feeds it -- a clock before each move, the move, its verdict, the analysis of whe
 - Legal's mate, the player Black: the queen taken, a mate in two missed;
 - a Ruy Lopez, the player White, with a blunder taken back and another move played, ended
   by resignation;
-- a puzzle from the store, joined on the screen and solved move by move.
+- a puzzle from the store, joined on the screen and solved move by move;
+- a run of puzzles the site puts up one after another, each adopted by a resync over the
+  last in the same game: two that are not in the store, played a few moves each, a second
+  puzzle of the store solved between them, and a last one ended by mate -- none of it a
+  game (Tai's Pixel, 2026-09-24: such a run was reviewed as "won by checkmate in 3 moves").
 
 Then the session ends (its summary), a second session reads the first's summary back, and
 the ask side is recorded against the database the games left: the system message, SQL found
@@ -62,6 +66,7 @@ from sidecoach.events import (  # noqa: E402
     GameEnded,
     GameStarted,
     MovePlayed,
+    Resync,
     Side,
     Takeback,
     Trigger,
@@ -183,6 +188,55 @@ def puzzle_solved(run: Run, store: PuzzleStore) -> dict:
     return {"id": puzzle.id}
 
 
+def _moves_on(run: Run, game_id: str, board: chess.Board, user: Side, plies: int) -> None:
+    """`plies` moves on a puzzle's position, the first legal one each time."""
+    for i in range(1, plies + 1):
+        move = next(iter(board.legal_moves))
+        before = board.fen()
+        san = board.san(move)
+        by_user = (board.turn == chess.WHITE) == (user is Side.WHITE)
+        board.push(move)
+        run.feed(MovePlayed(game_id=game_id, ply=i, san=san, uci=move.uci(), fen_before=before,
+                            fen_after=board.fen(), by_user=by_user))
+
+
+def puzzle_run(run: Run, store: PuzzleStore, solved: str) -> dict:
+    """Puzzles one after another in one game of the reconciler's, each next one adopted by
+    a resync: every one a position of its own, a puzzle of the store scored in the middle."""
+    found = [p for p in store.pick("fork", 1100, count=5, rng=_Fixed()) if p.id != solved]
+    found += [p for p in store.pick("pin", 1100, count=5, rng=_Fixed()) if p.id != solved]
+    assert found, "no second puzzle in the sample"
+    second = found[0]
+    user = Side.WHITE
+    first = chess.Board("r1bq1k1r/1p2bp2/p2p3p/2p1n2Q/P3P3/1BN5/1PP2PPP/R1B2RK1 w - - 1 15")
+    run.feed(GameStarted(game_id="puzzle-run", user_side=user, start_fen=first.fen(), kind="position"))
+    run.feed(Resync(game_id="puzzle-run", fen=first.fen(), reason="the position announced again"))
+    _moves_on(run, "puzzle-run", first, user, 4)
+    other = chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R w KQkq - 0 1")
+    run.feed(Resync(game_id="puzzle-run", fen=other.fen(), reason="position adopted after 24 cells"))
+    _moves_on(run, "puzzle-run", other, user, 4)
+    board = chess.Board(second.fen)
+    board.push_uci(second.moves[0])
+    shown = chess.Board(None)
+    for sq, piece in board.piece_map().items():
+        shown.set_piece_at(sq, piece)
+    shown.turn = board.turn
+    run.feed(Resync(game_id="puzzle-run", fen=shown.fen(), reason="position adopted after 30 cells"))
+    for i, uci in enumerate(second.moves[1:], start=1):
+        before = shown.fen()
+        move = chess.Move.from_uci(uci)
+        san = shown.san(move)
+        shown.push(move)
+        run.feed(MovePlayed(game_id="puzzle-run", ply=i, san=san, uci=uci, fen_before=before,
+                            fen_after=shown.fen(), by_user=i % 2 == 1))
+    last = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
+    run.feed(Resync(game_id="puzzle-run", fen=last.fen(), reason="position adopted after 26 cells"))
+    _moves_on(run, "puzzle-run", last, Side.WHITE, 3)
+    run.feed(GameEnded(game_id="puzzle-run", result="1-0", reason="game over on board", pgn=None,
+                       final_fen=last.fen()))
+    return {"id": second.id}
+
+
 class _Fixed(random.Random):
     """No shuffle: the draw among a recommendation's puzzles, fixed for the comparison."""
 
@@ -301,6 +355,7 @@ def main() -> None:
         run.feed(GameEnded(game_id="ruy", result="0-1", reason="user resigned or lost on time",
                            pgn=None, final_fen=board.fen()))
     puzzle = puzzle_solved(run, puzzles)
+    run_of = puzzle_run(run, puzzles, puzzle["id"])
     run.call("tick")
     summary = profiler.end_session(run.ts + 5.0)
     second = Profiler(store, session_id="session-two", ts=run.ts + 10.0, puzzles=puzzles)
@@ -354,6 +409,7 @@ def main() -> None:
         "first_snapshot": first_snapshot,
         "steps": run.steps,
         "puzzle": puzzle,
+        "puzzle_run": run_of,
         "summary": summary,
         "second_snapshot": second_snapshot,
         "tables": tables(store),

@@ -157,4 +157,32 @@ class StoryTest {
         }
         assertTrue("the wrong piece to take back with is said", wrongPiece > 0)
     }
+
+    @Test
+    fun aPieceWithNoSafeSquareIsTaughtAsTrapped() {
+        // Desktop 6bea675 (`tests/test_story.py`): Tai's chess.com puzzle, Bg4 against a queen on
+        // h5 with nowhere to go; the hint said only "the first move attacks their queen on h5".
+        val fen = "r1bq1k1r/1p2bp2/p2p3p/2p1n2Q/P3P3/1BN5/1PP2PPP/R1B2RK1 b - - 1 15"
+        val board = Board(fen)
+        val analysis = Analysis(
+            gameId = "",
+            fen = fen,
+            ply = 0,
+            lines = listOf(
+                Line(moves = listOf("c8g4", "b3f7", "g4h5", "f7h5", "b7b5", "c3d5", "b5b4", "f2f4"), depth = 18, expectedScore = 0.797),
+                Line(moves = listOf("c5c4", "h2h3", "c4b3", "c2b3", "e7e6", "a1a3", "a8c8", "c1e3"), depth = 18, expectedScore = 0.63),
+            ),
+            decisive = false,
+            onlyMove = false,
+        )
+        val facts = factsFromAnalysis(board, analysis, user = board.turn)
+        assertEquals(
+            "You can win a queen for a bishop and a pawn. Their queen on h5 is the target. The first move attacks " +
+                "their queen on h5, and it has no safe square to go to. A trapped piece: one of their pieces has no " +
+                "safe square left, so an attack on it wins it.",
+            ideaTemplate(facts),
+        )
+        assertEquals("Use your bishop on c8. Which of their pieces has no safe square left?", focusTemplate(facts))
+        assertEquals("Bg4, and after Bxf7, Bxh5; you win a queen for a bishop and a pawn.", moveTemplate(facts))
+    }
 }

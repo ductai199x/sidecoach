@@ -21,6 +21,7 @@ import com.sidecoach.events.ProfileEvidence
 import com.sidecoach.events.ProfileSnapshot
 import com.sidecoach.events.PuzzleOutcome
 import com.sidecoach.events.Recommendation
+import com.sidecoach.events.Resync
 import com.sidecoach.events.Severity
 import com.sidecoach.events.Takeback
 import com.sidecoach.events.Trigger
@@ -234,6 +235,7 @@ class ProfileTest {
         )
         "UserUtterance" -> UserUtterance(e.getString("text"), e.getString("source"))
         "Takeback" -> Takeback(e.getString("game_id"), e.getInt("plies"), e.getString("fen"))
+        "Resync" -> Resync(e.getString("game_id"), e.getString("fen"), e.getString("reason"))
         "GameEnded" -> GameEnded(
             gameId = e.getString("game_id"),
             result = e.getString("result"),

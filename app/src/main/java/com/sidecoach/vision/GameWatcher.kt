@@ -458,7 +458,33 @@ class GameWatcher(
             aGame -> "following a game"
             else -> "following a position"
         }
-        PanelEngine.set("status" to status)
+        // The move list and the last move's highlight, from the game's own moves as the
+        // desktop reads them every tick: a position adopted without a new game (a puzzle
+        // after an unfinished one) or a takeback shows only what the game now holds (Tai,
+        // 2026-09-24: the last puzzle's moves and its gxh3 highlight stayed on the next).
+        val ucis = rec?.board?.moveStack?.map { it.uci() } ?: emptyList()
+        val (sans, fens) = if (rec != null) sansOf(rec.baseFen, rec.board.moveStack) else Pair(emptyList(), emptyList())
+        PanelEngine.set(
+            "status" to status,
+            "moves" to sans,
+            "fens" to fens,
+            "ucis" to ucis,
+            "last_move" to ucis.lastOrNull(),
+        )
+    }
+
+    /** `panel._sans`: the game's moves as SAN, and the FEN after each, from its base. */
+    private fun sansOf(baseFen: String, moves: List<com.sidecoach.chess.Move>): Pair<List<String>, List<String>> {
+        val board = com.sidecoach.chess.Board(baseFen)
+        val out = ArrayList<String>()
+        val fens = ArrayList<String>()
+        for (move in moves) {
+            // A resync base can make SAN ambiguous: show the UCI then, as the desktop does.
+            out.add(runCatching { board.san(move) }.getOrElse { move.uci() })
+            board.push(move)
+            fens.add(board.fen())
+        }
+        return Pair(out, fens)
     }
 
     /** The engine process's CPU time in milliseconds; 0 when there is no engine. */
