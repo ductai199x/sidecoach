@@ -18,7 +18,7 @@ from sidecoach.analysis import exchange, positional
 from sidecoach.analysis.engine import san_line
 from sidecoach.analysis.phase import phase_of
 from sidecoach.coach import idea as idea_of
-from sidecoach.coach import idea_words, plans
+from sidecoach.coach import idea_words, plans, situation
 from sidecoach.coach.disclosure import PositionFacts
 from sidecoach.events import Analysis, MotifTag
 
@@ -553,7 +553,14 @@ def facts_from_analysis(
     # a threat of mate comes before any plan, a threat to win material after the line's plan.
     line_plan: plans.LinePlan | None = None
     move_threat: plans.MoveThreat | None = None
-    if best is not None and idea.goal == "plan" and plan_kind not in _BEFORE_THE_PLAN:
+    # A move out of check is not a plan or a threat: it is the way out (20.Ke2 was "you can
+    # take the initiative").
+    if (
+        best is not None
+        and idea.goal == "plan"
+        and plan_kind not in _BEFORE_THE_PLAN
+        and not board.is_check()
+    ):
         pv = [m for m in (_to_move(u) for u in lines[0].moves) if m is not None]
         line_plan = plans.read(board, pv, lines[0].expected_score)
         move_threat = plans.threat(board, best, pv, lines[0].expected_score)
@@ -614,6 +621,163 @@ def facts_from_analysis(
         nudge = plans.PLAN_NUDGE[line_plan.kind]
         why = plans.why(line_plan, board)
 
+    # The first hint (`coach/situation.py`): the stakes, the key fact named on the board, the
+    # principle behind it, the trap -- a short lesson on the position, never the move.
+    stakes = situation.read_stakes(board, analysis)
+    stakes_text = situation.stakes_words(board, stakes, analysis.opening) if stakes else None
+    choices = list(stakes.choices) if stakes and stakes.kind in ("many", "book") else []
+    pv = [m for m in (_to_move(u) for u in lines[0].moves) if m is not None] if lines else []
+    key: str | None = None
+    principle: str | None = None
+    tactical_goal = idea.goal in (
+        "mate",
+        "win",
+        "promote",
+        "attack",
+        "combination",
+        "draw",
+        "convert",
+        "king",
+        "breakthrough",
+    )
+    if idea.goal == "defend":
+        key = situation.defend_key(board, idea)
+    elif idea.goal in ("mate", "attack"):
+        key = situation.mate_key(board, idea)
+        principle = idea_words.mechanism(idea)
+    elif tactical_goal:
+        key = idea_words.target(idea, board)
+        if key is not None and ":" not in key and " is " not in key and "," not in key:
+            key = f"{key} is the target"  # "their rook on a8" alone said nothing
+        elif key is not None and idea.goal == "promote" and ", " in key:
+            key = key.replace(", ", " is ", 1)  # "your pawn on b6 is two squares from queening"
+        if key is None and idea.goal == "win":
+            key = situation.win_key(board, idea)
+            if key is None and idea_of.ending_of(board):
+                key = situation.king_key(board, idea)  # the pawn falls to a king's march
+        elif key is None and idea.goal == "convert":
+            key = situation.convert_key(board, idea)
+        elif key is None and idea.goal == "king":
+            key = situation.king_key(board, idea)
+        # The principle is the pattern's: a sacrifice on the way, with no pattern, is not
+        # what a winning capture teaches (17.hxg4 was "a sacrifice").
+        principle = (
+            idea_words.mechanism(idea)
+            if idea.blow is not None
+            or idea.goal
+            in (
+                "mate",
+                "combination",
+                "attack",
+                "promote",
+            )
+            else None
+        )
+    elif move_threat is not None:
+        key = situation.threat_key(board, move_threat)
+        principle = (
+            plans.TRADE_REASON[move_threat.why]
+            if move_threat.kind == "trade"
+            else plans.THREAT_REASON[move_threat.kind]
+        )
+    elif line_plan is not None:
+        key = situation.plan_key(board, line_plan)
+        principle = plans.PLAN_REASON[line_plan.kind]
+    elif plan_kind is not None and best is not None:
+        key = situation.positional_key(board, best, plan_kind, threat_move, phase)
+        # The second hint's question follows from the fact the first named: without it, "which
+        # pawn move lets it out?" asked of a position where nothing is shut in.
+        if nudge is None and key is not None:
+            nudge = situation.positional_nudge(board, plan_kind, key)
+        elif plan_kind in ("centralise", "activate") and key is None and why is None:
+            why = situation.reach_why(board, best)
+        elif plan_kind == "centre" and key is None:
+            said = situation.centre_move(board, best)
+            if said is not None:
+                nudge = nudge or said[0]
+                why = why or said[1]
+    # The key the move itself answers, and so its reason at the move rung; the fallbacks
+    # below (a static feature, their idea) are context, not the move's reason.
+    move_reason = key
+    in_check = board.is_check()
+    book = stakes is not None and stakes.kind == "book"
+    if (
+        key is None
+        and best is not None
+        and not tactical_goal
+        and idea.goal != "defend"
+        and not in_check
+        and not book
+    ):
+        key = situation.passer_key(board, best) or situation.kings_key(board, best)
+        if key is None:
+            features = positional.top_features(board, us, phase=phase, limit=4)
+            key = situation.relevant_feature(board, features, pv)
+    if in_check and key is None:
+        key = situation.check_key(board)
+    if key is None and not tactical_goal and not book:
+        # Nothing else named: what they would do if you let them -- the prophylactic question,
+        # answered on the board.
+        sharp = stakes is not None and stakes.kind in ("only", "few", "lost")
+        key = situation.their_idea_key(board, threat_move, sharp=sharp)
+    if in_check:
+        nudge = "Which way out keeps you safest -- a king move, a block, or taking the checker?"
+        if why is None and best is not None:
+            why = situation.evasion_why(board, best)
+    recapture = idea.goal == "win" and idea.down and best is not None and board.is_capture(best)
+    trap = (
+        situation.trap_words(
+            board, analysis.traps[0], idea.target, lines[0].expected_score if lines else None
+        )
+        if analysis.traps and idea.goal != "mate" and not recapture
+        else None
+    )
+    if trap is not None and idea.target is not None and trap.startswith("Not yet"):
+        key = None  # the trap says it: the target can be won, but not at once
+    parts: list[str] = []
+    forced = board.is_check() and board.legal_moves.count() == 1
+    calm = stakes is not None and stakes.kind in ("many", "open")
+    if stakes_text and idea.goal == "defend" and calm:
+        stakes_text = None  # "nothing is urgent" beside their threat said the opposite
+    if stakes_text and (not tactical_goal or (stakes and stakes.kind in ("check", "book"))):
+        parts.append(stakes_text)
+    if forced:
+        # One legal move: the rest of the reading is the move's, not a hint.
+        tactical_goal, key, principle, trap = False, None, None, None
+        move_threat = None
+        nudge = None
+    lost = stakes is not None and stakes.kind == "lost"
+    if (
+        tactical_goal
+        or (move_threat is not None and not lost)
+        or (idea.winning and not stakes_text)
+    ):
+        lead = goal
+        if idea.goal == "plan" and idea.winning and move_threat is None:
+            lead = "you are winning"
+        if lead:
+            parts.append(lead)
+    if key:
+        parts.append(key)
+    if principle and key:
+        parts.append(principle if tactical_goal else principle)
+    if trap:
+        parts.append(trap)
+    situation_text = " ".join(situation.sentence(part) for part in parts) or None
+    # A tactic's first hint ends on the question that sets the player looking the right way
+    # ("which check leaves their king no square at all?"); never one that fits any position.
+    if (
+        situation_text
+        and tactical_goal
+        and question
+        and not forced
+        and question not in situation.ANY_POSITION
+    ):
+        situation_text += " " + question
+    # A quiet move's own reason, said at the move rung: the key fact it answers.
+    if why is None and move_reason and best is not None:
+        why = f"{board.san(best)}: {move_reason[0].lower() + move_reason[1:]}"
+
     candidates: list[str] = []
     if lines:
         top = lines[0].expected_score
@@ -653,4 +817,9 @@ def facts_from_analysis(
         candidates=candidates,
         threats=threats,
         line=line,
+        stakes=stakes_text,
+        key=key,
+        trap=trap,
+        choices=choices,
+        situation=situation_text,
     )

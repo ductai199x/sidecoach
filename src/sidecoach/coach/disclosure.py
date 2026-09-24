@@ -9,9 +9,14 @@ Levels, from DESIGN.md section 5.5 -- two hints, then the answer (Tai, 2026-09-2
 rungs before the move left each saying a sliver, and the slivers came out generic):
 
     0 SILENT  nothing yet
-    1 IDEA    the goal (a mate, what can be won, a threat to meet, the plan), the pattern
-              that does it and why it works -- square-free
-    2 FOCUS   the target on the board and the piece that does it; the autonomous ceiling
+    1 IDEA    the situation, as a short lesson on the position: what is at stake (only one
+              move holds, a few keep the edge, nothing is urgent), the key fact named on the
+              board (their threat, the target, the plan and its pieces), the principle behind
+              it, the trap -- pieces, squares and their moves, never the player's move
+              (Tai, 2026-09-24: a square-free first hint could only say "fight for the
+              centre", and in a middlegame that teaches nothing)
+    2 FOCUS   the piece that does it and the question that leads to the move; the
+              autonomous ceiling
     3 MOVE    the move, with a correct explanation; the third hint, or asked, named or played
     4 LINE    the full line; asked for, or after the move
 """
@@ -104,6 +109,16 @@ class PositionFacts(BaseModel):
     threats: list[str] = Field(default_factory=list)
     line: list[str] = Field(default_factory=list)
     user_claims: list[dict[str, Any]] = Field(default_factory=list)
+    # The first hint's parts (`coach/situation.py`), named on the board: what is at stake
+    # ("only one move holds here: even the next best move loses a knight"), the key fact
+    # ("they threaten Nxe5, winning your pawn on e5"), the trap ("hxg4 looks like it wins a
+    # knight, but it is a trap: ..."), the good moves when several are fine or the position
+    # is opening theory, and the whole of it as the first hint says it.
+    stakes: str | None = None
+    key: str | None = None
+    trap: str | None = None
+    choices: list[str] = Field(default_factory=list)
+    situation: str | None = None
 
 
 _ALWAYS: tuple[str, ...] = (
@@ -117,7 +132,19 @@ _ALWAYS: tuple[str, ...] = (
     "only_move",
     "user_claims",
 )
-_IDEA = ("nature", "goal", "theme", "mechanism", "question", "plan")
+_IDEA = (
+    "nature",
+    "goal",
+    "theme",
+    "mechanism",
+    "question",
+    "plan",
+    "stakes",
+    "key",
+    "trap",
+    "choices",
+    "situation",
+)
 _FOCUS = (*_IDEA, "target", "piece", "nudge", "region", "ideas")
 _MOVE = (*_FOCUS, "why", "tactic", "focus", "candidates", "threats")
 _BY_LEVEL: dict[DisclosureLevel, tuple[str, ...]] = {
@@ -233,6 +260,16 @@ def leak_check(
         else set()
     )
     allowed_squares |= said_squares
+    # The moves the visible facts name -- their threat, the trap, the moves that are all as
+    # good -- are said in the open; never the one the player is to find.
+    allowed_moves: set[str] = set()
+    for key, value in visible.items():
+        if key == "fen" or not value:
+            continue
+        parts = value if isinstance(value, list) else [value]
+        for token in _TOKEN_SPLIT.split(" ".join(str(part) for part in parts)):
+            if _SQUARE_TOKEN.fullmatch(token):
+                allowed_moves.add(_TRAILING_MARKS.sub("", token))
 
     leaks: list[str] = []
 
@@ -248,7 +285,7 @@ def leak_check(
             square = match.group(1)
             core = _TRAILING_MARKS.sub("", token)
             if core != square:
-                if core.lower() not in said_words:
+                if core.lower() not in said_words and core not in allowed_moves:
                     add(f"move {core}")
             elif square not in allowed_squares:
                 add(f"square {square}")
@@ -270,7 +307,20 @@ def leak_check(
         # for a bishop"), not said of a move already played -- the caller's `said` carries
         # those.
         scrubbed = text.lower()
-        for key in ("goal", "theme", "mechanism", "question", "plan", "nature"):
+        # The whole first hint first: once a part of it is taken out, the whole no longer
+        # matches, and its words were read as the coach's own.
+        for key in (
+            "situation",
+            "goal",
+            "theme",
+            "mechanism",
+            "question",
+            "plan",
+            "nature",
+            "stakes",
+            "key",
+            "trap",
+        ):
             value = visible.get(key)
             if isinstance(value, str) and value:
                 scrubbed = scrubbed.replace(value.lower(), " ")

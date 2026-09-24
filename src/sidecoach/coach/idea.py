@@ -36,6 +36,9 @@ LEVEL = 0.62
 # A line that nets this much (pawns' worth) within its first HORIZON plies wins material;
 # a pawn is a win too when the position is won (a pawn up into a won ending is the point).
 WIN_GAIN = 2
+# Below this expected score, material the opponent hands over is theirs to give, not the
+# player's win (`_first_gift`).
+GIFT_SCORE = 0.3
 HORIZON = 16
 # A won position whose line checks this often in the player's first four moves, winning no
 # material in sight, is an attack on the king: "no tactic here" was said of a rook
@@ -166,6 +169,7 @@ class Idea:
     # "rook", "exchange", "bishop", "knight", "pawn" -- material the reply keeps.
     sacrifices: tuple[tuple[int, str], ...] = ()
     winning: bool = False  # the engine calls the position won
+    score: float | None = None  # the best line's expected score, for the player
 
 
 def read(board: chess.Board, analysis: Analysis) -> Idea:
@@ -201,6 +205,7 @@ def read(board: chess.Board, analysis: Analysis) -> Idea:
         winning=winning,
         level=top.expected_score < LEVEL and not (top.mate is not None and top.mate > 0),
         down=_balance(board, board.turn) < 0,
+        score=top.expected_score,
     )
 
 
@@ -255,7 +260,14 @@ def _read(board: chess.Board, analysis: Analysis) -> Idea:
     queened = next(
         (j + 1 for j, move in enumerate(pv[:horizon]) if j % 2 == 0 and move.promotion), None
     )
-    gain, at = line_gain(boards, pv, queened - 1 if queened else horizon)
+    reach = queened - 1 if queened else horizon
+    # In a position the engine calls lost, what they give up on the way is given for their
+    # attack, not won: counted only up to their first piece left to be taken ("you can win
+    # back a knight and a pawn" at 29.exf4 in Johner-Nimzowitsch, the knight Ng4+ given to
+    # open the king).
+    if analysis.lines[0].expected_score < GIFT_SCORE:
+        reach = min(reach, _first_gift(boards, pv, reach))
+    gain, at = line_gain(boards, pv, reach)
     # The blow is what wins it: looked for up to where the line first wins that much, not
     # where it has picked up the most (a fork five moves after the queen fell was named).
     first_at = _first_reaching(boards, pv, at, min(gain, WIN_GAIN)) if gain > 0 else 0
@@ -285,7 +297,17 @@ def _read(board: chess.Board, analysis: Analysis) -> Idea:
     )
     # A pawn is a win when the game is better for it; two pawns' worth always.
     better_for_it = analysis.lines[0].expected_score >= LEVEL
-    if gain >= WIN_GAIN or (gain >= 1 and better_for_it and not queens):
+    # A win the score denies: the engine calls the game level, the player is not behind,
+    # and the material comes only down the line -- "you can win a knight and two pawns for a
+    # bishop" was said at move 6 of the Ruy Lopez (Capablanca-Marshall, 2026-09-24).
+    first_win = max(0, at - 1 if (at - 1) % 2 == 0 else at - 2) if gain > 0 else 0
+    phantom = (
+        not better_for_it
+        and _balance(board, us) >= 0
+        and first_win > 0
+        and not (analysis.lines[0].mate is not None and analysis.lines[0].mate > 0)
+    )
+    if not phantom and (gain >= WIN_GAIN or (gain >= 1 and better_for_it and not queens)):
         # A pawn is a win too when the position turns on it and a real tactic takes it: a
         # discovered check that nets a pawn into a won ending is still the point.
         # A line that stops on the player's capture: what takes back is counted as given,
@@ -398,6 +420,23 @@ def _read(board: chess.Board, analysis: Analysis) -> Idea:
             checks=checks,
         )
     return Idea(goal="plan", first=first, line=tuple(pv), starts_with=starts_with, checks=checks)
+
+
+def _ignores(board: chess.Board, best: chess.Move, threat: chess.Move) -> bool:
+    """The best move lets their direct threat come: it gives check (the attack goes on, and
+    the capture waits), or after it the capture is still there and still wins. Black's
+    14...Bh2+ in Capablanca-Marshall, with hxg4 hanging over the knight, was "your opponent
+    threatens to win material: meet it first"."""
+    if board.gives_check(best):
+        return True
+    after = board.copy(stack=False)
+    after.push(best)
+    return threat in after.legal_moves and exchange.exchange(after, threat) > 0
+
+
+def ending_of(board: chess.Board) -> bool:
+    """An ending: four pieces or fewer left besides kings and pawns."""
+    return _pieces_left(board) <= 4
 
 
 def _pieces_left(board: chess.Board) -> int:
@@ -603,6 +642,20 @@ def _sacrifices(
         else:
             out.append((i, _NAMES[given.piece_type]))
     return tuple(out)
+
+
+def _first_gift(boards: Sequence[chess.Board], pv: Sequence[chess.Move], reach: int) -> int:
+    """The plies of the line before the player takes a piece the opponent just put where it
+    could be taken, worth more than what it took on the way there; `reach` if none."""
+    for k in range(1, min(reach, len(pv) - 1), 2):
+        move, answer = pv[k], pv[k + 1]
+        if answer.to_square != move.to_square or not boards[k + 1].is_capture(answer):
+            continue
+        piece = boards[k].piece_type_at(move.from_square)
+        took = boards[k].piece_type_at(move.to_square) if boards[k].is_capture(move) else None
+        if VALUES.get(piece or chess.KING, 0) > VALUES.get(took or chess.KING, 0):
+            return k + 1
+    return reach
 
 
 def line_gain(
@@ -908,6 +961,8 @@ def _threat(
         # A capture that wins material by the exchange, legal recaptures and all: a knight
         # left to a rook with only a pinned piece to take back is a threat (2026-09-23).
         if taken is not None and taken.color == board.turn and exchange.exchange(passed, move) > 0:
+            if best is not None and best in board.legal_moves and _ignores(board, best, move):
+                continue  # the best move lets it come: the point is elsewhere
             return move, f"your {_NAMES[taken.piece_type]}", None
     # The engine's first reply to a pass, when quiet: what it would threaten next.
     for uci in threats[:1]:

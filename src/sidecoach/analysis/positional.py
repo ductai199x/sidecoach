@@ -38,6 +38,8 @@ _HOME_MINORS = {
     chess.WHITE: (chess.B1, chess.C1, chess.F1, chess.G1),
     chess.BLACK: (chess.B8, chess.C8, chess.F8, chess.G8),
 }
+# Which minor piece starts on each of those files.
+_HOME_TYPE = {1: chess.KNIGHT, 2: chess.BISHOP, 5: chess.BISHOP, 6: chess.KNIGHT}
 
 
 @dataclass(frozen=True)
@@ -871,21 +873,33 @@ def bad_bishop(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
 DEVELOPMENT_MOVES = 20
 
 
+def at_home(board: chess.Board, us: chess.Color) -> list[chess.Square]:
+    """The player's knights on b and g, and bishops on c and f, of the home rank: a knight
+    back on f1 is not at home (39.Ne3 in Johner-Nimzowitsch)."""
+    return [
+        sq
+        for sq in _HOME_MINORS[us]
+        if board.color_at(sq) == us and board.piece_type_at(sq) == _HOME_TYPE[chess.square_file(sq)]
+    ]
+
+
 def development(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     """Minor pieces still on their home squares, and whether the king has castled."""
-    home = [sq for sq in _HOME_MINORS[us] if board.piece_at(sq) and board.color_at(sq) == us]
-    home = [sq for sq in home if board.piece_type_at(sq) in (chess.KNIGHT, chess.BISHOP)]
+    home = at_home(board, us)
     facts: list[PositionalFact] = []
     if home:
-        names = ", ".join(_name(sq) for sq in home)
-        count = "a piece" if len(home) == 1 else f"{len(home)} pieces"
+        names = " and ".join(
+            f"{chess.piece_name(board.piece_type_at(sq) or chess.PAWN)} on {_name(sq)}"
+            for sq in home
+        )
+        verb = "is" if len(home) == 1 else "are"
         if board.fullmove_number <= DEVELOPMENT_MOVES:
             kind = "undeveloped"
-            text = f"you still have {count} at home ({names}), not yet in the game"
+            text = f"your {names} {verb} still at home, not yet in the game"
         else:
             kind = "homeSquare"
             where = "its home square" if len(home) == 1 else "their home squares"
-            text = f"you have {count} on {where} ({names})"
+            text = f"your {names} {verb} on {where}"
         facts.append(PositionalFact(kind, text, tuple(_name(sq) for sq in home)))
     return facts
 

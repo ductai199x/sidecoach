@@ -103,6 +103,9 @@ _ALIASES = {"absolutePin": "pin"}
 _STOCK = re.compile(
     r"whole board|most dangerous idea|doing the least|still reading|\bNone\b|  ", re.I
 )
+_CONCRETE = re.compile(
+    r"\b[a-h][1-8]\b|\b[a-h]-file\b|[KQRBN]?[a-h]?x?[a-h][1-8]|opening theory|legal move"
+)
 _PIECE_ON = re.compile(r"\b(their|your) (king|queen|rook|bishop|knight|pawn) on ([a-h][1-8])")
 _THE_PIECE_ON = re.compile(r"\bthe (king|queen|rook|bishop|knight|pawn) on ([a-h][1-8])")
 _TYPES = {
@@ -643,7 +646,13 @@ def score_board(
     bare = first_san.rstrip("+#")
     pawn_move = re.fullmatch(r"[a-h][1-8](=[QRBN])?", bare) is not None
     rungs = ("idea",) if pawn_move else ("idea", "focus")
-    named = [t for t in rungs if re.search(rf"(?<![\w]){re.escape(bare)}", texts[t])]
+    # The moves the first hint names when several are as good (or in opening theory) are
+    # said in the open; the answer is never named otherwise.
+    named = [
+        t
+        for t in rungs
+        if re.search(rf"(?<![\w]){re.escape(bare)}", texts[t]) and first_san not in facts.choices
+    ]
     checks["leak"] = not leaks and not named
     if not checks["leak"]:
         notes["leak"] = "; ".join(leaks + [f"{t} names {bare}" for t in named])
@@ -672,6 +681,12 @@ def score_board(
     checks["claims"] = not false
     if false:
         notes["claims"] = "; ".join(false)
+
+    # The first hint names the board: a square, a file, a move, opening theory -- never a
+    # principle alone (Tai, 2026-09-24: "fight for the centre" teaches nothing mid-game).
+    checks["concrete"] = bool(_CONCRETE.search(texts["idea"]))
+    if not checks["concrete"]:
+        notes["concrete"] = texts["idea"][:160]
 
     # Every rung says something of this position.
     stock = [t for t in ("idea", "focus", "move") if not texts[t] or _STOCK.search(texts[t])]

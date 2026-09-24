@@ -241,8 +241,12 @@ def goal(idea: Idea) -> str | None:
     if idea.goal == "win" and idea.level:
         # Winning it back, not winning: the engine calls the game level after it.
         what = idea.won or "material"
+        if idea.down and idea.score is not None and idea.score < 0.4:
+            return f"you can win back {what}, though you stay worse"
         if idea.down:
             return f"you can win back {what}, and that levels the game"
+        if idea.score is not None and idea.score < 0.4:
+            return f"you can win {what}, though you stay worse"
         return f"you can win {what}, and that holds the game level"
     if idea.goal == "win":
         return f"you can win {idea.won}" if idea.won else "you can win material by force"

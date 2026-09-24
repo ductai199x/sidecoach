@@ -27,6 +27,7 @@ import chess
 
 from sidecoach.analysis import exchange, positional
 from sidecoach.coach.facts import describe_tactic
+from sidecoach.coach.situation import shut_in
 from sidecoach.events import MotifTag
 
 # The praise, by the move's label. What the move teaches, when the board gives something,
@@ -173,6 +174,15 @@ def lesson(
     )
     if idea is None or idea.kind not in PRINCIPLES or idea.kind in taught:
         return None
+    if idea.kind in ("centre", "space", "centralise"):
+        # A principle with nothing on the board behind it is no lesson ("the fight is for
+        # the centre" after every pawn move, Tai, 2026-09-24): only what the move opens.
+        opened = shut_in(board, move)
+        if opened is None:
+            return None
+        home, _ = opened
+        name = chess.piece_name(board.piece_type_at(home) or chess.PAWN)
+        return idea.kind, [f"that lets your {name} out"]
     return idea.kind, list(PRINCIPLES[idea.kind])
 
 

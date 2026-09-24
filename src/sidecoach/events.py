@@ -191,8 +191,14 @@ class Analysis(Event):
     decisive: bool
     only_move: bool
     threats: list[str] = Field(default_factory=list)
+    # The captures that look free and are not (`analysis/traps.py`): each the capture, then
+    # the engine's best play after it, scored from the side to move's view.
+    traps: list[Line] = Field(default_factory=list)
     tags: list[MotifTag] = Field(default_factory=list)
     opening: str | None = None
+    # The game is still in the opening book at this position (`opening` is the deepest line
+    # it passed through, and stays after the game leaves the book).
+    in_book: bool = False
 
 
 class Severity(StrEnum):

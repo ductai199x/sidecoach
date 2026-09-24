@@ -37,8 +37,14 @@ def test_the_lesson_is_what_the_board_teaches_not_what_the_move_did() -> None:
     assert lesson(board, castle, phase="opening") == ("castle", list(PRINCIPLES["castle"]))
     board, rook = _uci("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1", "a1d1")
     assert lesson(board, rook, phase="endgame") == ("takeFile", list(PRINCIPLES["takeFile"]))
+    # A pawn to the centre is a lesson only with what it opens: e4 lets the bishop out; a
+    # bare "the fight is for the centre" after every pawn move taught nothing (Tai,
+    # 2026-09-24).
     board, e4 = _uci(chess.STARTING_FEN, "e2e4")
-    assert lesson(board, e4, phase="opening") == ("centre", list(PRINCIPLES["centre"]))
+    assert lesson(board, e4, phase="opening") == ("centre", ["that lets your bishop out"])
+    board, c4 = _uci("rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2", "c2c4")
+    said = lesson(board, c4, phase="opening")
+    assert said is None or said[0] != "centre"
     # A tag's tactic, described only when the squares bear it out after the move.
     board, fork = _uci("6k1/5ppp/8/r7/3r4/8/5PPP/2N3K1 w - - 0 1", "c1b3")
     tag = MotifTag(name="fork", squares=["b3", "a5", "d4"])

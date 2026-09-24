@@ -29,7 +29,7 @@ from typing import Any
 
 import chess
 
-from sidecoach.coach import idea_words
+from sidecoach.coach import idea_words, situation
 from sidecoach.coach.annotations import annotations_for, mentions_in
 from sidecoach.coach.conversation import Conversation, PlyRecord
 from sidecoach.coach.disclosure import (
@@ -167,47 +167,38 @@ def _sentence(text: str) -> str:
 
 
 def idea_template(facts: PositionFacts) -> str:
-    """The idea rung, without a model: the goal, the pattern and why it works, and the
-    question that sets the player looking."""
+    """The first hint, without a model: the situation as a short lesson on the position --
+    what is at stake, the key fact named on the board, the principle behind it, the trap
+    (`coach/situation.py`). Never the move."""
+    if facts.situation:
+        return facts.situation
     parts: list[str] = []
     if facts.goal:
         parts.append(_sentence(facts.goal))
-        if facts.mechanism and facts.plan and not facts.theme:
-            parts.append(_sentence(f"the key is {facts.mechanism}"))
-        elif facts.mechanism:
-            parts.append(_sentence(f"it's {facts.mechanism}"))
-    elif facts.plan and facts.mechanism:
-        # At a critical moment there is one move, and "no tactic here" would say otherwise.
-        critical = facts.decisive or facts.only_move
-        lead = "the key here is" if critical else "no tactic here -- this is about"
-        parts.append(_sentence(f"{lead} {facts.mechanism}"))
-    elif facts.nature:
-        # Never a bare question: the one square-free thing the idea rung knows beyond the
-        # goal -- whether the answer is forcing or quiet (the board's features name squares,
-        # which wait for the focus rung).
-        if facts.nature.startswith("quiet"):
-            parts.append("A quiet move is wanted here: no check, no capture.")
-        else:
-            parts.append("The answer is forcing: a check, a capture or a direct threat.")
     if facts.question:
         parts.append(facts.question)
     return " ".join(parts) if parts else STILL_READING
 
 
 def focus_template(facts: PositionFacts) -> str:
-    """The focus rung, without a model: the target on the board and the piece, and the
-    question from the target to the move."""
+    """The second hint, without a model: the piece that does it, and the question that leads
+    from there to the move. The target was the first hint's."""
     parts: list[str] = []
-    # The target only: a static feature of the board pointed away from the move as often
-    # as at it ("your king can still castle" before a3, when castling was the inaccuracy,
-    # Tai's game g06; "their isolated d-pawn" beside "push your passed pawn").
-    if facts.target:
+    if (
+        facts.target
+        and facts.target.startswith("their king on")
+        and facts.goal
+        and ("mate" in facts.goal or "attack" in facts.goal)
+    ):
+        # A mate's or an attack's squares, held back from the first hint: one may be where
+        # the check lands.
         parts.append(_sentence(f"look at {facts.target}"))
     if facts.piece:
         parts.append(_sentence(f"use {facts.piece}"))
     if facts.nudge:
         parts.append(facts.nudge)
-    elif facts.question and parts:
+    elif facts.question and parts and facts.question not in situation.ANY_POSITION:
+        # Questions that fit any position narrow nothing: never the second hint's.
         parts.append(facts.question)
     return " ".join(parts) if parts else idea_template(facts)
 
@@ -353,9 +344,16 @@ def lesson_template(
         keep = PATTERN_LESSONS["a mating attack"]
     if keep is None and facts.plan and facts.mechanism:
         keep = facts.mechanism.split(": ", 1)[-1]
-    if keep:
+    if keep and not _said(keep, text):
         text += " " + _sentence(f"keep this one: {keep}")
     return text
+
+
+def _said(keep: str, text: str) -> bool:
+    """Whether `text` already says `keep`: four of its words in a row."""
+    words = re.findall(r"[a-z']+", keep.lower())
+    said = " ".join(re.findall(r"[a-z']+", text.lower()))
+    return any(" ".join(words[j : j + 4]) in said for j in range(len(words) - 3))
 
 
 # Verbalized sampling: how many candidate replies to ask for, and the room and warmth to
@@ -396,16 +394,17 @@ NOT_THE_MOVE = (
 # to elevate good to great"): the same facts, in its own words, sharper for this position,
 # and tied to the player's game where that helps.
 IDEA_DIRECTIVE = (
-    "Give the idea, from the fact sheet: what the position offers (its goal) and the pattern, "
-    "with one sentence on why that pattern works in this position; then the one question "
-    "that sets them looking the right way -- sharper and more specific than the sheet's "
-    "question. Where it helps, tie it to something from earlier in this game. Name no "
-    "square and no move, and not which of their own pieces does it. Two or three sentences."
+    "Give the first hint as a short lesson on this position, from the fact sheet: what is at "
+    "stake (its stakes: how many moves hold, and what even the next best one costs), then "
+    "the key fact on the board, named as the sheet names it -- the pieces, the squares, their "
+    "threat, the target, the plan -- and the principle behind it in a clause, and the trap if "
+    "the sheet gives one. Precise, never a principle on its own: every sentence says "
+    "something about this board. Never name the player's move or the square it goes to, and "
+    "not which of their own pieces moves -- that is the next hint. Two or three sentences."
 )
 FOCUS_DIRECTIVE = (
-    "Point them at the target the fact sheet names and the piece to use, say what makes that "
-    "target vulnerable, from the sheet, and ask the one question that leads from there to "
-    "the move. Do not name the move. Two sentences."
+    "Name the piece to use, from the fact sheet, and ask the one question that leads from the "
+    "first hint's key fact to the move. Do not name the move. One or two sentences."
 )
 MOVE_DIRECTIVE = (
     "The next hint is the answer: give the move and explain it correctly from the fact "

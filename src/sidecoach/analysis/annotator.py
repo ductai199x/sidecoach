@@ -35,6 +35,7 @@ from sidecoach.analysis.score import (
     severity,
 )
 from sidecoach.analysis.threats import threat_moves
+from sidecoach.analysis.traps import trap_lines
 from sidecoach.events import Analysis, Event, Line, MotifTag, MoveAssessment
 
 # A whole measurement while the analyser is behind a fast game, or was within
@@ -82,6 +83,7 @@ class Measured:
     decisive: bool
     only_move: bool
     threats: list[str] = field(default_factory=list)
+    traps: list[Line] = field(default_factory=list)
 
     @property
     def depth(self) -> int:
@@ -169,6 +171,9 @@ class GameAnnotator:
                 if self.with_threats and not hurry
                 else []
             ),
+            # The captures that look free and are not, beside the threats: what the first
+            # hint warns of ("the knight on g4 is bait"), searched only when not hurried.
+            traps=trap_lines(self.engine, board, lines) if self.with_threats and not hurry else [],
         )
         self._cache[key] = measured
         return measured
@@ -189,8 +194,10 @@ class GameAnnotator:
             decisive=measured.decisive,
             only_move=measured.only_move,
             threats=measured.threats,
+            traps=measured.traps,
             tags=self._position_tags(board, measured),
             opening=self._opening(board),
+            in_book=self._in_book(board),
         )
 
     def assess(

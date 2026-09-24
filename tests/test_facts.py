@@ -147,7 +147,9 @@ def test_the_nature_of_the_best_move_is_forcing_or_quiet() -> None:
     assert mate.nature is not None and mate.nature.startswith("forcing")
     shown = visible_facts(mate, DisclosureLevel.QUESTION)
     assert shown["nature"] == "forcing -- the answer is a check, a capture or a promotion"
-    assert not any("f7" in str(v) or "queen" in str(v) for v in shown.values())
+    # The first hint names the board -- the target may be named -- but never the move or
+    # the piece that makes it (Tai, 2026-09-24).
+    assert not any("Qxf7" in str(v) or "queen" in str(v) for v in shown.values())
     # The trial game's endgame: a rook up, a pawn on d7, dxe8=Q+ leads to mate.
     fen = "1q2r2k/3P4/p6p/1pRQ2p1/8/5P2/PP4PP/5R1K w - - 1 34"
     promote = facts_from_analysis(chess.Board(fen), analysed(fen, "d7e8q"))
