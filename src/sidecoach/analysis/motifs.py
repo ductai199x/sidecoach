@@ -203,6 +203,123 @@ def _as_side(board: chess.Board, color: chess.Color) -> chess.Board:
     return view
 
 
+# away, was the headline of a promotion (Tai's puzzles, 2026-09-23).
+TARGETED = (
+    "fork",
+    "skewer",
+    "discoveredAttack",
+    "absolutePin",
+    "pin",
+    "trappedPiece",
+    "hangingPiece",
+    "capturingDefender",
+)
+# A fork or a skewer is the point only when what it wins is worth a minor piece: the king
+# and a pawn on a2 forked five moves after the queen was won was named as the idea.
+MIN_TARGET_VALUE = 3
+# How far on the line takes it: three of the player's moves.
+PAYOFF_PLIES = 6
+
+
+def pays_off(
+    boards: Sequence[chess.Board], pv: Sequence[chess.Move], i: int, tag: MotifTag
+) -> bool:
+    """Whether the line cashes in the tactic at ply `i` within `PAYOFF_PLIES`: takes a
+    piece it goes after -- by the piece that does it, where the pattern says so -- with
+    every piece followed as it moves. The squares are the tagger's, per pattern: a fork's
+    forker then its targets; a skewer's and a pin's slider, front, back; a discovered
+    attack's mover, slider, target; a trapped piece then its hunters; a loose piece; a
+    captured defender then what it guarded."""
+    us = boards[i].turn
+    sq = [chess.parse_square(s) for s in tag.squares]
+    if not sq:
+        return False
+    name = tag.name
+    after = boards[i + 1]
+
+    def theirs(square: chess.Square) -> bool:
+        piece = after.piece_at(square)
+        return piece is not None and piece.color != us and piece.piece_type != chess.KING
+
+    def worth(square: chess.Square) -> int:
+        return exchange.VALUE.get(after.piece_type_at(square) or chess.PAWN, 0)
+
+    actors: set[chess.Square] | None = None  # None: any of the player's pieces
+    # The piece the pattern stands on: a pin is gone once its pinner is taken (a rook
+    # that pins as it takes the queen, and is taken back at once, pinned nothing).
+    holder: chess.Square | None = None
+    # A fork's piece taken by anything but one of its targets refutes it: "Nf3+ forks the
+    # king, queen and rook" was said of a knight gxf3 simply took (Lichess 026RF).
+    forker: chess.Square | None = None
+    if name == "fork":
+        # Whoever collects it: the queen that takes back on e6 after Bxe6+ Qxe6 cashed in
+        # the bishop's fork (Lichess 0BD4O).
+        aimed = [s for s in sq[1:] if theirs(s) and worth(s) >= MIN_TARGET_VALUE]
+        forker = sq[0]
+        # A bystander that can take the forking piece for profit where it lands refutes
+        # the fork, whatever the line then does (Nf2+ with the rook on f1 able to take it:
+        # the discovered attack behind it was the point, Lichess 01q4A). A pinned piece
+        # cannot take; a target that takes and is taken back is the fork working.
+        for capture in exchange.captures_on(after, not us, forker):
+            if capture.from_square not in sq[1:] and exchange.exchange(after, capture) > 0:
+                return False
+    elif name == "skewer":
+        aimed = [s for s in sq[2:3] if theirs(s) and worth(s) >= MIN_TARGET_VALUE]
+        actors = {sq[0]}
+    elif name == "discoveredAttack" and len(sq) >= 3:
+        king = after.piece_at(sq[2])
+        if king is not None and king.piece_type == chess.KING:
+            # A discovered check: the point is what the piece that moved goes on to take.
+            aimed = [s for s in chess.SQUARES if theirs(s)]
+            actors = {sq[0]}
+        else:
+            aimed = [sq[2]] if theirs(sq[2]) else []
+            actors = {sq[0], sq[1]}
+    elif name in ("pin", "absolutePin"):
+        aimed = [s for s in sq[1:3] if theirs(s)]
+        holder = sq[0]
+    elif name in ("trappedPiece", "hangingPiece"):
+        aimed = [sq[0]] if theirs(sq[0]) else []
+    elif name == "capturingDefender":
+        # Taking their queen is its own point, not the removal of the pawn's guard: what
+        # was guarded must be worth what was taken.
+        taken = boards[i].piece_at(sq[0])
+        taken_worth = exchange.VALUE.get(taken.piece_type, 0) if taken is not None else 0
+        aimed = [s for s in sq[1:2] if theirs(s) and worth(s) >= taken_worth]
+    else:
+        return True
+    if pv[i].to_square in aimed and boards[i].is_capture(pv[i]):
+        return True  # the move itself takes it
+    watched = set(aimed)
+    for j in range(i + 1, min(len(pv), i + 1 + PAYOFF_PLIES)):
+        move = pv[j]
+        if boards[j].turn == us:
+            if (
+                move.to_square in watched
+                and boards[j].is_capture(move)
+                and (actors is None or move.from_square in actors)
+            ):
+                return True
+            if actors is not None and move.from_square in actors:
+                actors = (actors - {move.from_square}) | {move.to_square}
+            if holder is not None and move.from_square == holder:
+                holder = move.to_square
+            if forker is not None and move.from_square == forker:
+                forker = move.to_square
+        else:
+            if forker is not None and move.to_square == forker:
+                if move.from_square not in watched:
+                    return False  # the fork's piece taken by a bystander: refuted
+                forker = None
+            if move.from_square in watched:
+                watched = (watched - {move.from_square}) | {move.to_square}
+            if actors is not None:
+                actors.discard(move.to_square)  # a piece of the player's taken
+            if holder is not None and move.to_square == holder:
+                return False  # the pinner taken: the pin is gone
+    return False
+
+
 def _capture_gain(
     board: chess.Board, color: chess.Color, frm: chess.Square, to: chess.Square
 ) -> int | None:

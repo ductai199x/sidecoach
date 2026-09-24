@@ -40,6 +40,8 @@ HORIZON = 16
 # material in sight, is an attack on the king: "no tactic here" was said of a rook
 # sacrifice that opened one (Lichess 0199s, 2026-09-23).
 ATTACK_CHECKS = 2
+# The furthest of the player's moves a named pattern may land on and still be the idea.
+FAR_BLOW = 3
 
 # The named mating patterns, which say more than "a mating attack".
 MATE_PATTERNS = (
@@ -83,26 +85,10 @@ BLOW_RANK: tuple[str, ...] = (
 _BLOW_INDEX = {name: i for i, name in enumerate(BLOW_RANK)}
 # The tactics aimed at a piece: the blow only when the line then takes that piece. A
 # discovered attack on a pawn the line never touches, a fork of two pieces that both get
-# away, was the headline of a promotion (Tai's puzzles, 2026-09-23).
-TARGETED = (
-    "fork",
-    "skewer",
-    "discoveredAttack",
-    "absolutePin",
-    "pin",
-    "trappedPiece",
-    "hangingPiece",
-    "capturingDefender",
-)
 # What a mate is named by: its pattern, or two checks at once. A pin or a skewer that
 # happens to be on the board as the mate lands is not its point ("It's a pin" was said of
 # Qh7+ Kf6 Qxh6#, Lichess 01xbu).
 MATE_BLOWS = (*MATE_PATTERNS, "doubleCheck")
-# A fork or a skewer is the point only when what it wins is worth a minor piece: the king
-# and a pawn on a2 forked five moves after the queen was won was named as the idea.
-MIN_TARGET_VALUE = 3
-# How far on the line takes it: three of the player's moves.
-PAYOFF_PLIES = 6
 # What can clear a pawn's way or hold the defence off, for a promotion.
 PROMOTION_BLOWS = (
     "discoveredAttack",
@@ -243,7 +229,8 @@ def _read(board: chess.Board, analysis: Analysis) -> Idea:
             flight=_flight(board, not us),
             checks=checks,
         )
-    draw = _drawn(boards, pv, analysis.lines[0].expected_score)
+    second = analysis.lines[1].expected_score if len(analysis.lines) > 1 else None
+    draw = _drawn(boards, pv, analysis.lines[0].expected_score, second)
     if draw is not None:
         return Idea(
             goal="draw",
@@ -266,13 +253,23 @@ def _read(board: chess.Board, analysis: Analysis) -> Idea:
     first_at = _first_reaching(boards, pv, at, min(gain, WIN_GAIN)) if gain > 0 else 0
     at = first_at or at
     blow, blow_at, preparation = _blow(boards, pv, at or min(len(pv), 6), None)
+    if blow is not None and blow_at > FAR_BLOW:
+        # A loose rook picked up on the fifth move is not the idea a player can see from
+        # here; the start of the line is (Tai's game g06, 2026-09-24).
+        blow, blow_at, preparation = None, 1, ()
     winning = analysis.lines[0].expected_score >= WON
     # A pawn of the player's reaching the seventh, or queening, anywhere in the line.
     seventh = 6 if us == chess.WHITE else 1
+    # A pawn of the player's queening in the line; one reaching the seventh only in an
+    # ending, where it is on its way: in a middlegame a pawn on the seventh is a capture
+    # on f7 in an attack ("you can push a pawn through to promotion" was said of exf7 in
+    # Gligoric-Fischer, move 17).
+    ending = _pieces_left(board) <= 4
     queens = any(
         move.promotion
         or (
-            boards[j].piece_type_at(move.from_square) == chess.PAWN
+            ending
+            and boards[j].piece_type_at(move.from_square) == chess.PAWN
             and chess.square_rank(move.to_square) == seventh
         )
         for j, move in enumerate(pv[:horizon])
@@ -327,7 +324,12 @@ def _read(board: chess.Board, analysis: Analysis) -> Idea:
     # Won, or clearly better with material given for the checks: a sacrificial attack at
     # 0.78 was "which of your pieces has no job right now?" (Lichess PZm0M).
     better = analysis.lines[0].expected_score >= 0.65
-    opened = better and bool(_sacrifices(boards, pv, 6)) and checks_given >= 1
+    their_king = board.king(not us)
+    near_king = their_king is not None and any(
+        chess.square_distance(pv[j].to_square, their_king) <= 2
+        for j in range(0, min(len(pv), 8), 2)
+    )
+    opened = better and bool(_sacrifices(boards, pv, 6)) and (checks_given >= 1 or near_king)
     if (winning and checks_given >= ATTACK_CHECKS) or opened:
         # The king is the target: what the checks open up is the point.
         return Idea(
@@ -467,7 +469,7 @@ def _also(idea: Idea, boards: Sequence[chess.Board], pv: Sequence[chess.Move]) -
             break
         for tag in motifs.tags_for_move(boards[i], pv[i], pv=list(pv[i + 1 :])):
             name = "pin" if tag.name == "absolutePin" else tag.name
-            if name in ALSO and name != main and _pays_off(boards, pv, i, tag):
+            if name in ALSO and name != main and motifs.pays_off(boards, pv, i, tag):
                 return tag.name
     return None
 
@@ -520,11 +522,26 @@ def _retaken(board: chess.Board, square: chess.Square) -> bool:
     return any(m.to_square == square for m in board.legal_moves)
 
 
-def _drawn(boards: Sequence[chess.Board], pv: Sequence[chess.Move], score: float) -> str | None:
+# How much worse the next-best move must be for a draw to be the point: the draw saves the game.
+RESCUE = 0.15
+
+
+def _drawn(
+    boards: Sequence[chess.Board],
+    pv: Sequence[chess.Move],
+    score: float,
+    second: float | None = None,
+) -> str | None:
     """How the line saves the game, when it is a draw the player forces: stalemate on the
     board, check after check with the game level (a perpetual), or a position that comes
-    round again. None when the line is not that."""
+    round again. None when the line is not that -- or when the draw saves nothing: the
+    next-best move (`second`, its expected score) does as well, and a level line that goes
+    round in a circle is the engine marking time, not a rescue ("you can hold the game" was
+    said at 80 of the master games' 93 such moves, all level whatever was played,
+    2026-09-24)."""
     if not 0.35 <= score <= 0.65:
+        return None
+    if second is not None and second > score - RESCUE:
         return None
     if any(b.is_stalemate() for b in boards[1:]):
         return "stalemate"
@@ -663,7 +680,8 @@ def _blow(
             rank = _BLOW_INDEX.get(tag.name)
             if rank is None or (allowed is not None and tag.name not in allowed):
                 continue
-            if mate is None and tag.name in TARGETED and not _pays_off(boards, pv, i, tag):
+            targeted = tag.name in motifs.TARGETED
+            if mate is None and targeted and not motifs.pays_off(boards, pv, i, tag):
                 continue
             if mate is None and tag.name in PREPARATION and i + 2 >= upto:
                 # A decoy or a deflection prepares what a later move cashes in: on the last
@@ -682,105 +700,6 @@ def _blow(
             if other.name in PREPARATION and other.name not in preparation:
                 preparation.append(other.name)
     return (ply, tag), ply // 2 + 1, tuple(preparation)
-
-
-def _pays_off(
-    boards: Sequence[chess.Board], pv: Sequence[chess.Move], i: int, tag: MotifTag
-) -> bool:
-    """Whether the line cashes in the tactic at ply `i` within `PAYOFF_PLIES`: takes a
-    piece it goes after -- by the piece that does it, where the pattern says so -- with
-    every piece followed as it moves. The squares are the tagger's, per pattern: a fork's
-    forker then its targets; a skewer's and a pin's slider, front, back; a discovered
-    attack's mover, slider, target; a trapped piece then its hunters; a loose piece; a
-    captured defender then what it guarded."""
-    us = boards[i].turn
-    sq = [chess.parse_square(s) for s in tag.squares]
-    if not sq:
-        return False
-    name = tag.name
-    after = boards[i + 1]
-
-    def theirs(square: chess.Square) -> bool:
-        piece = after.piece_at(square)
-        return piece is not None and piece.color != us and piece.piece_type != chess.KING
-
-    def worth(square: chess.Square) -> int:
-        return VALUES.get(after.piece_type_at(square) or chess.PAWN, 0)
-
-    actors: set[chess.Square] | None = None  # None: any of the player's pieces
-    # The piece the pattern stands on: a pin is gone once its pinner is taken (a rook
-    # that pins as it takes the queen, and is taken back at once, pinned nothing).
-    holder: chess.Square | None = None
-    # A fork's piece taken by anything but one of its targets refutes it: "Nf3+ forks the
-    # king, queen and rook" was said of a knight gxf3 simply took (Lichess 026RF).
-    forker: chess.Square | None = None
-    if name == "fork":
-        # Whoever collects it: the queen that takes back on e6 after Bxe6+ Qxe6 cashed in
-        # the bishop's fork (Lichess 0BD4O).
-        aimed = [s for s in sq[1:] if theirs(s) and worth(s) >= MIN_TARGET_VALUE]
-        forker = sq[0]
-        # A bystander that can take the forking piece for profit where it lands refutes
-        # the fork, whatever the line then does (Nf2+ with the rook on f1 able to take it:
-        # the discovered attack behind it was the point, Lichess 01q4A). A pinned piece
-        # cannot take; a target that takes and is taken back is the fork working.
-        for capture in exchange.captures_on(after, not us, forker):
-            if capture.from_square not in sq[1:] and exchange.exchange(after, capture) > 0:
-                return False
-    elif name == "skewer":
-        aimed = [s for s in sq[2:3] if theirs(s) and worth(s) >= MIN_TARGET_VALUE]
-        actors = {sq[0]}
-    elif name == "discoveredAttack" and len(sq) >= 3:
-        king = after.piece_at(sq[2])
-        if king is not None and king.piece_type == chess.KING:
-            # A discovered check: the point is what the piece that moved goes on to take.
-            aimed = [s for s in chess.SQUARES if theirs(s)]
-            actors = {sq[0]}
-        else:
-            aimed = [sq[2]] if theirs(sq[2]) else []
-            actors = {sq[0], sq[1]}
-    elif name in ("pin", "absolutePin"):
-        aimed = [s for s in sq[1:3] if theirs(s)]
-        holder = sq[0]
-    elif name in ("trappedPiece", "hangingPiece"):
-        aimed = [sq[0]] if theirs(sq[0]) else []
-    elif name == "capturingDefender":
-        # Taking their queen is its own point, not the removal of the pawn's guard: what
-        # was guarded must be worth what was taken.
-        taken = boards[i].piece_at(sq[0])
-        taken_worth = VALUES.get(taken.piece_type, 0) if taken is not None else 0
-        aimed = [s for s in sq[1:2] if theirs(s) and worth(s) >= taken_worth]
-    else:
-        return True
-    if pv[i].to_square in aimed and boards[i].is_capture(pv[i]):
-        return True  # the move itself takes it
-    watched = set(aimed)
-    for j in range(i + 1, min(len(pv), i + 1 + PAYOFF_PLIES)):
-        move = pv[j]
-        if boards[j].turn == us:
-            if (
-                move.to_square in watched
-                and boards[j].is_capture(move)
-                and (actors is None or move.from_square in actors)
-            ):
-                return True
-            if actors is not None and move.from_square in actors:
-                actors = (actors - {move.from_square}) | {move.to_square}
-            if holder is not None and move.from_square == holder:
-                holder = move.to_square
-            if forker is not None and move.from_square == forker:
-                forker = move.to_square
-        else:
-            if forker is not None and move.to_square == forker:
-                if move.from_square not in watched:
-                    return False  # the fork's piece taken by a bystander: refuted
-                forker = None
-            if move.from_square in watched:
-                watched = (watched - {move.from_square}) | {move.to_square}
-            if actors is not None:
-                actors.discard(move.to_square)  # a piece of the player's taken
-            if holder is not None and move.to_square == holder:
-                return False  # the pinner taken: the pin is gone
-    return False
 
 
 def _first_reaching(

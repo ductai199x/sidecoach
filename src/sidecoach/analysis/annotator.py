@@ -22,7 +22,7 @@ from typing import Protocol
 
 import chess
 
-from sidecoach.analysis import exchange
+from sidecoach.analysis import exchange, motifs
 from sidecoach.analysis.engine import Engine
 from sidecoach.analysis.score import (
     Thresholds,
@@ -279,9 +279,24 @@ class GameAnnotator:
         if self.tagger is None:
             return []
         pv = _moves(after.lines[0]) if after.lines else []
-        return self.tagger.tags_for_move(
+        tags = self.tagger.tags_for_move(
             before, move, pv=pv, mate_in=_mate_in(before, move, after.lines)
         )
+        # A tactic the move makes is only its point when the line after it cashes it in:
+        # "the queen on e7 is loose" was said of a queen that simply steps away, 98 times
+        # in the master games at moves whose note names no tactic (2026-09-24).
+        line = [move, *pv]
+        boards = [before.copy(stack=False)]
+        for m in line:
+            if m not in boards[-1].legal_moves:
+                break
+            nxt = boards[-1].copy(stack=False)
+            nxt.push(m)
+            boards.append(nxt)
+        line = line[: len(boards) - 1]
+        return [
+            t for t in tags if t.name not in motifs.TARGETED or motifs.pays_off(boards, line, 0, t)
+        ]
 
     def _in_book(self, board: chess.Board) -> bool:
         """Whether the game is still in theory after this move; needs the moves that got here."""

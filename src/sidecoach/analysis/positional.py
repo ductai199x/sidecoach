@@ -1069,21 +1069,39 @@ def _is_central_strong(board: chess.Board, square: chess.Square, us: chess.Color
     )
 
 
+def _wing(file_: int) -> str | None:
+    """The wing a file belongs to: a to c the queenside, f to h the kingside, else None."""
+    return "queenside" if file_ <= 2 else "kingside" if file_ >= 5 else None
+
+
+def _relative_rank(square: chess.Square, us: chess.Color) -> int:
+    """The square's rank counted from your side of the board, 1 to 8."""
+    rank = chess.square_rank(square)
+    return rank + 1 if us == chess.WHITE else 8 - rank
+
+
 def _pawn_storm_side(board: chess.Board, move: chess.Move, us: chess.Color) -> str | None:
     """The wing being stormed if the move pushes a pawn at the enemy King, else None.
 
     A pawn advance -- not a capture -- toward an enemy King that has castled to a wing, on the
-    files around it: the classic way to prise open a castled position.
+    files around it: the classic way to prise open a castled position. Only with your own King
+    off that wing, and only a pawn that reaches its fourth rank: with both Kings behind the same
+    pawns, h3 or g6 is a flight square or a guard, not a storm (the master games' notes, where
+    "storming the pawns in front of their King" was said of h3 at move 15, 2026-09-24).
     """
     if board.piece_type_at(move.from_square) != chess.PAWN or board.is_capture(move):
         return None
-    enemy_king = board.king(not us)
+    enemy_king, own_king = board.king(not us), board.king(us)
     if enemy_king is None:
         return None
     king_file = chess.square_file(enemy_king)
     if not (king_file <= 2 or king_file >= 5):
         return None  # a King in the centre is not a wing to storm
+    if own_king is not None and _wing(chess.square_file(own_king)) == _wing(king_file):
+        return None  # storming your own King's cover
     if abs(chess.square_file(move.to_square) - king_file) > 2:
+        return None
+    if _relative_rank(move.to_square, us) < 4:
         return None
     advancing = (
         chess.square_rank(move.to_square) - chess.square_rank(move.from_square)
@@ -1234,20 +1252,28 @@ def best_move_idea(
                 "develop", f"finish developing: the {name} comes into the game on {to}", (to,)
             )
 
-    if piece_type == chess.KNIGHT and _is_outpost(after, move.to_square, us):
+    # What a piece move is for, when it takes nothing: a capture's point is the exchange, and
+    # "centralise the knight" was said of Nxe5 winning a pawn (the master games, 2026-09-24).
+    quiet = not board.is_capture(move)
+
+    if quiet and piece_type == chess.KNIGHT and _is_outpost(after, move.to_square, us):
         return PositionalFact(
             "outpostMove",
             f"the knight lands on {to}, an outpost no enemy pawn can chase it from",
             (to,),
         )
 
-    if piece_type in (chess.KNIGHT, chess.BISHOP) and _is_central_strong(after, move.to_square, us):
+    if (
+        quiet
+        and piece_type in (chess.KNIGHT, chess.BISHOP)
+        and _is_central_strong(after, move.to_square, us)
+    ):
         name = PIECE_NAMES[piece_type]
         return PositionalFact(
             "centralise", f"centralise the {name} on {to}, a strong square in the middle", (to,)
         )
 
-    file_letter = _rook_to_file_is_open(board, move, us)
+    file_letter = _rook_to_file_is_open(board, move, us) if quiet else None
     if file_letter is not None:
         return PositionalFact(
             "takeFile", f"your rook takes the {file_letter}-file, where it has room to work", (to,)
@@ -1276,7 +1302,7 @@ def best_move_idea(
         file_ = _FILES[chess.square_file(move.from_square)]
         return PositionalFact("pushPasser", f"push your passed {file_}-pawn toward {to}", (to,))
 
-    if worst is not None and move.from_square == worst:
+    if quiet and worst is not None and move.from_square == worst:
         name = PIECE_NAMES[piece_type]
         return PositionalFact(
             "activate", f"this brings your most passive piece, the {name}, to life on {to}", (to,)
@@ -1290,7 +1316,14 @@ def best_move_idea(
             (to,),
         )
 
-    if phase != "opening" and piece_type == chess.PAWN:
+    # Space is a pawn that goes forward and stays: not a capture, and past its third rank (a3
+    # and h3 make room for the King or keep a piece out; they take no space).
+    if (
+        phase != "opening"
+        and piece_type == chess.PAWN
+        and quiet
+        and _relative_rank(move.to_square, us) >= 4
+    ):
         file_ = chess.square_file(move.to_square)
         if file_ <= 1 or file_ >= 6:
             side = "queenside" if file_ <= 1 else "kingside"

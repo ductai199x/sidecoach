@@ -25,7 +25,7 @@ from collections.abc import Sequence
 
 import chess
 
-from sidecoach.analysis import positional
+from sidecoach.analysis import exchange, positional
 from sidecoach.coach.facts import describe_tactic
 from sidecoach.events import MotifTag
 
@@ -130,6 +130,14 @@ def _threat(board: chess.Board, threats: Sequence[str]) -> chess.Move | None:
         return None
 
 
+def _pin_wins(after: chess.Board, tag: MotifTag) -> bool:
+    """The pinned piece can be won as the board stands: a pin worth a word after the move.
+    A pawn pinned to its king with nothing to take it is true and teaches nothing."""
+    if len(tag.squares) < 2:
+        return False
+    return exchange.can_be_won(after, chess.parse_square(tag.squares[1]))
+
+
 def lesson(
     board: chess.Board,
     move: chess.Move,
@@ -149,6 +157,8 @@ def lesson(
         return "mate", ["checkmate"]
     for tag in tags:
         if tag.name in TACTICS and tag.squares and tag.name not in taught:
+            if tag.name in ("pin", "absolutePin") and not _pin_wins(after, tag):
+                continue
             said = describe_tactic(after, tag.name, tag.squares)
             if said is not None:
                 return tag.name, [said]

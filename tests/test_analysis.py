@@ -85,7 +85,12 @@ class RecordingTagger:
         mate_in: int | None = None,
     ) -> list[MotifTag]:
         self.move_calls.append((move.uci(), mate_in))
-        return [MotifTag(name="fork", squares=["e5"], move=move.uci())]
+        # A fork the line never cashes in, and a sacrifice the payoff rule does not judge:
+        # the annotator keeps a move's tactic only when the line after it wins with it.
+        return [
+            MotifTag(name="fork", squares=["a3", "b4", "c4"], move=move.uci()),
+            MotifTag(name="sacrifice", squares=["a3"], move=move.uci()),
+        ]
 
     def tags_for_position(
         self,
@@ -389,7 +394,7 @@ def test_assessment_carries_the_loss_the_best_line_and_the_tags() -> None:
     assert assessment.expected_loss == pytest.approx(0.15)
     assert assessment.severity is Severity.MISTAKE
     assert assessment.best == ["e2e4", "e7e5"]
-    assert [tag.name for tag in assessment.tags] == ["fork"]
+    assert [tag.name for tag in assessment.tags] == ["sacrifice"], "the unpaid fork is dropped"
     assert tagger.move_calls == [("a2a3", 4)], "mated in three more moves, four counting this"
     assert analysis.ply == 1 and analysis.fen == after.fen()
     assert [tag.name for tag in analysis.tags] == ["hangingPiece"]

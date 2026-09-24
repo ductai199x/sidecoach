@@ -18,7 +18,7 @@ from sidecoach.analysis import exchange, positional
 from sidecoach.analysis.engine import san_line
 from sidecoach.analysis.phase import phase_of
 from sidecoach.coach import idea as idea_of
-from sidecoach.coach import idea_words
+from sidecoach.coach import idea_words, plans
 from sidecoach.coach.disclosure import PositionFacts
 from sidecoach.events import Analysis, MotifTag
 
@@ -43,6 +43,10 @@ _PLAN_THEME: dict[str, str] = {
     "simplify": "trading down to convert your material",
     "passerPawnEnding": "making a passed pawn",
 }
+# The best move's own idea that comes before the plan its line carries out: a king to get
+# to safety, a piece to save, their threat to stop, a piece still at home. Anything else
+# gives way to the plan of the player's next moves (`coach/plans.py`).
+_BEFORE_THE_PLAN = frozenset({"castle", "rescue", "prophylaxis", "develop"})
 # In a pawn ending there is no king to storm and no space to take: a pawn move there is
 # about the passed pawn it makes ("storming the pawns in front of their King" was said of
 # h5 in a king-and-pawn ending, Lichess Yb1jJ).
@@ -533,6 +537,23 @@ def facts_from_analysis(
                 kind = _PAWN_ENDING_PLAN.get(kind, kind)
             plan = _PLAN_THEME.get(kind)
             plan_kind = kind if plan else None
+    # The plan the best line carries out over the player's next moves: a king attack, rooks
+    # doubled on a file, a knight's route to an outpost. What a grandmaster's note says of a
+    # quiet position, where the best move alone reads as "a rook to an open file".
+    # And the threat the best move makes, where the line wins nothing because they answer it:
+    # a threat of mate comes before any plan, a threat to win material after the line's plan.
+    line_plan: plans.LinePlan | None = None
+    move_threat: plans.MoveThreat | None = None
+    if best is not None and idea.goal == "plan" and plan_kind not in _BEFORE_THE_PLAN:
+        pv = [m for m in (_to_move(u) for u in lines[0].moves) if m is not None]
+        line_plan = plans.read(board, pv, lines[0].expected_score)
+        move_threat = plans.threat(board, best, pv, lines[0].expected_score)
+        if move_threat is not None and (move_threat.kind == "mate" or line_plan is None):
+            line_plan = None
+            plan, plan_kind = plans.THREAT_NAME[move_threat.kind], None
+        elif line_plan is not None:
+            move_threat = None
+            plan, plan_kind = plans.name(line_plan), None
     ideas = [fact.text for fact in positional.top_features(board, us, phase=phase, limit=2)]
 
     piece: str | None = idea_words.piece(idea, board)
@@ -542,6 +563,26 @@ def facts_from_analysis(
     mechanism = idea_words.mechanism(idea)
     if mechanism is None and plan_kind in idea_words.PLAN_WHY:
         mechanism = f"{plan}: {idea_words.PLAN_WHY[plan_kind]}"
+    question = idea_words.question(idea, plan_kind)
+    target = idea_words.target(idea, board)
+    nudge = idea_words.nudge(idea)
+    why = idea_words.why(idea, board, describe_tactic)
+    goal = idea_words.goal(idea)
+    if move_threat is not None and best is not None:
+        won = plans.THREAT_GOAL_WON if idea.winning else plans.THREAT_GOAL
+        goal = won[move_threat.kind]
+        mechanism = plans.threat_mechanism(move_threat)
+        question = plans.THREAT_QUESTION[move_threat.kind]
+        target = plans.threat_target(move_threat, board) or target
+        nudge = plans.THREAT_NUDGE[move_threat.kind]
+        why = plans.threat_why(move_threat, board, best)
+    if line_plan is not None:
+        mechanism = plans.mechanism(line_plan)
+        question = plans.PLAN_QUESTION[line_plan.kind]
+        target = plans.target(line_plan) or target
+        piece = plans.pieces(line_plan, board) or piece
+        nudge = plans.PLAN_NUDGE[line_plan.kind]
+        why = plans.why(line_plan, board)
 
     candidates: list[str] = []
     if lines:
@@ -566,15 +607,15 @@ def facts_from_analysis(
         decisive=analysis.decisive,
         only_move=analysis.only_move,
         nature=nature,
-        goal=idea_words.goal(idea),
+        goal=goal,
         theme=theme_text,
         mechanism=mechanism,
-        question=idea_words.question(idea, plan_kind),
+        question=question,
         region=region,
-        target=idea_words.target(idea, board),
+        target=target,
         piece=piece,
-        why=idea_words.why(idea, board, describe_tactic),
-        nudge=idea_words.nudge(idea),
+        why=why,
+        nudge=nudge,
         focus=focus,
         tactic=tactic,
         plan=plan,

@@ -247,8 +247,8 @@ def lesson_template(facts: PositionFacts, best: str, opener: str) -> str:
     if why.startswith(best):
         rest = why[len(best) :].lstrip(" ,:;")
         rest = rest[4:] if rest.startswith("and ") else rest
-        if rest.startswith(("is ", "forces ")):
-            rest = "it " + rest  # "Nf2# was better -- it is mate"
+        if rest.startswith(("is ", "forces ", "stops ", "starts ", "holds ", "takes ")):
+            rest = "it " + rest  # "Nf2# was better -- it is mate", "-- it stops Nxd3"
         if rest:
             text += f" -- {rest}"
     text = _sentence(text)
@@ -2575,7 +2575,9 @@ class Coach:
             else:
                 fallback = f"It cost you {loss:.0%} of the game."
                 if best:
-                    fallback += f" {best} was better" + (f"; the idea was {idea}." if idea else ".")
+                    # The better move played out and the pattern to keep, as the lesson says
+                    # it -- not "the idea was a pin" and nothing more.
+                    fallback += " " + lesson_template(facts, best, f"{best} was better")
                 directive = (
                     f"They ask about the move they already played, {san}. Its verdict is in its "
                     f"move message and is theirs in full: it was a {label} that cost {loss:.0%} "
