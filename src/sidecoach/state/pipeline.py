@@ -904,7 +904,15 @@ class GamePipeline:
         ts: float | None = None,
     ) -> list[Event]:
         reconciler = Reconciler(bottom=bottom, user_side=bottom)
-        events = reconciler.start_from(placement, ts)
+        # The site's last-move highlight, for what a cold read cannot know: a pawn that has
+        # just advanced two squares (`reconcile.double_step_seen`).
+        highlighted = frozenset(
+            square_at(row, col, bottom)
+            for row in range(8)
+            for col in range(8)
+            if readings[row][col].highlighted and readings[row][col].tint != "red"
+        )
+        events = reconciler.start_from(placement, ts, highlighted)
         if not events:
             return []  # the placement is not a legal position; adopt nothing
         # Only now, with a legal position begun, is the pipeline switched onto this theme.

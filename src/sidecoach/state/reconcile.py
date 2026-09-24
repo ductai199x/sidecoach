@@ -59,6 +59,39 @@ Readings = list[list[CellReading]]
 Observation = dict[chess.Square, CellReading]
 
 
+def highlighted_squares(obs: Observation) -> frozenset[chess.Square]:
+    """The squares the site marks as its last move (or a selection): tinted, not red."""
+    return frozenset(sq for sq, r in obs.items() if r.highlighted and r.tint != "red")
+
+
+def double_step_seen(
+    board: chess.Board, highlighted: frozenset[chess.Square]
+) -> tuple[chess.Square, chess.Color] | None:
+    """A pawn's two-square advance, as the site's last-move highlight shows it: the pawn two
+    ranks from its start, its start square and the square it passed empty, both ends marked.
+    Returns the square it passed (the en-passant square) and the pawn's colour.
+
+    A position read from pixels has no history, so it knew no en-passant square: a puzzle
+    that starts after f2-f4 with a black pawn on g4 was coached as if gxf3 e.p. did not
+    exist, and Bd7 was recommended (Tai, 2026-09-24). The highlight is the history."""
+    for to in highlighted:
+        piece = board.piece_at(to)
+        if piece is None or piece.piece_type != chess.PAWN:
+            continue
+        white = piece.color == chess.WHITE
+        if chess.square_rank(to) != (3 if white else 4):
+            continue
+        step = 8 if white else -8
+        start, passed = to - 2 * step, to - step
+        if (
+            start in highlighted
+            and board.piece_at(start) is None
+            and board.piece_at(passed) is None
+        ):
+            return passed, piece.color
+    return None
+
+
 @dataclass(frozen=True)
 class _QueueWay:
     """One way a premove ghost could have been queued: from `origin`, landing on the red
@@ -1043,7 +1076,11 @@ class Reconciler:
         if not held:
             return []
 
-        adopted = self._adopt_placement(self._placement(obs), prefer=self._bottom_colour())
+        adopted = self._adopt_placement(
+            self._placement(obs),
+            prefer=self._bottom_colour(),
+            highlighted=highlighted_squares(obs),
+        )
         if adopted is None:
             self._resync_candidate = None
             return []
@@ -1089,7 +1126,9 @@ class Reconciler:
 
     @staticmethod
     def _adopt_placement(
-        placement: chess.Board, prefer: chess.Color = chess.WHITE
+        placement: chess.Board,
+        prefer: chess.Color = chess.WHITE,
+        highlighted: frozenset[chess.Square] = frozenset(),
     ) -> tuple[chess.Board, bool] | None:
         """A bare placement made into a position: castling rights assumed conservatively from
         the king and rook home squares, and the turn from legality. Returns the board and
@@ -1113,6 +1152,13 @@ class Reconciler:
         valid_turns = [turn for turn in (chess.WHITE, chess.BLACK) if _turn_valid(board, turn)]
         if not valid_turns:
             return None
+        # The site's last-move highlight showing a pawn's two-square advance: the other side
+        # is to move, and may take it in passing (`double_step_seen`).
+        seen = double_step_seen(board, highlighted)
+        if seen is not None and (not seen[1]) in valid_turns:
+            board.turn = not seen[1]
+            board.ep_square = seen[0]
+            return board, False
         board.turn = prefer if prefer in valid_turns else valid_turns[0]
         return board, len(valid_turns) > 1
 
@@ -1155,13 +1201,20 @@ class Reconciler:
             events.append(self._ended(self.board.result(), "game over on board"))
         return events
 
-    def start_from(self, placement: chess.Board, ts: float | None = None) -> list[Event]:
+    def start_from(
+        self,
+        placement: chess.Board,
+        ts: float | None = None,
+        highlighted: frozenset[chess.Square] = frozenset(),
+    ) -> list[Event]:
         """Begin a game from an arbitrary observed position -- a puzzle or a mid-game board read
         cold from the theme cache -- rather than from the start. Rights and turn are assumed the
         same way a position resync assumes them; the game continues normally from here. `ts`
         is when the position was read, so the first move's think time counts from it (it
         counted from zero: a first move that "took 412630 seconds")."""
-        adopted = self._adopt_placement(placement, prefer=self._bottom_colour())
+        adopted = self._adopt_placement(
+            placement, prefer=self._bottom_colour(), highlighted=highlighted
+        )
         if adopted is None:
             return []
         if ts is not None:
