@@ -1,6 +1,8 @@
 package com.sidecoach.coach
 
+import com.sidecoach.analysis.Exchange
 import com.sidecoach.analysis.isPassed
+import com.sidecoach.chess.BB_ALL
 import com.sidecoach.chess.BB_EMPTY
 import com.sidecoach.chess.BB_SQUARES
 import com.sidecoach.chess.BISHOP
@@ -16,7 +18,6 @@ import com.sidecoach.chess.SanFailure
 import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.parseSquare
 import com.sidecoach.chess.square
-import com.sidecoach.chess.squareDistance
 import com.sidecoach.chess.squareFile
 import com.sidecoach.chess.squareName
 import com.sidecoach.chess.squareRank
@@ -37,7 +38,9 @@ import org.json.JSONTokener
  * tested against the board before the coach agrees with anything. Only the extraction uses
  * the LLM. Resolving "my knight" to a square, counting attackers and defenders, trying the
  * null move and comparing with the engine's candidates all happen here, on the board, where
- * nothing can be made up.
+ * nothing can be made up. Attackers and defenders are counted by legal moves ([Exchange]): a
+ * piece pinned to its king takes nothing and takes nothing back, and a king takes back only
+ * where it may.
  *
  * Direction two: the coach's own draft is checked before it is shown. Every piece it places
  * on a square must be there, and every move it names must be playable, by the side to move
@@ -477,6 +480,88 @@ private fun afterMove(pos: Pos, reason: String): String {
 private fun Board.attacksSquare(from: Int, to: Int): Boolean =
     attacksMask(from) and BB_SQUARES[to] != BB_EMPTY
 
+/** `board` with `colour` to move: the same position, handed over by a pass if need be. */
+private fun toMove(board: Board, colour: Boolean): Board {
+    if (board.turn == colour) return board
+    val view = board.copy(withStack = false)
+    view.push(Move.NULL)
+    return view
+}
+
+/** The pieces that can legally take back after `capture`, a move of the side to move. */
+private fun takesBack(board: Board, capture: Move): List<Int> {
+    val after = board.copy(withStack = false)
+    after.push(capture)
+    val onto = sortedSetOf<Int>()
+    after.generateLegalMoves(BB_ALL, BB_SQUARES[capture.to]) { onto.add(it.from) }
+    return onto.toList()
+}
+
+/**
+ * Each enemy piece that can legally take the piece on `square`, with the pieces that can legally
+ * take back once it has. Read after the capture itself, so the e8 king takes back after Bxf7+
+ * but not after Qxf7 with the bishop still on c4.
+ */
+private fun capturesOf(board: Board, square: Int): Map<Int, List<Int>> {
+    val piece = board.pieceAt(square) ?: return emptyMap()
+    val view = toMove(board, !piece.colour)
+    val found = java.util.TreeMap<Int, java.util.TreeSet<Int>>()
+    for (capture in Exchange.capturesOn(board, !piece.colour, square)) {
+        found.getOrPut(capture.from) { java.util.TreeSet() }.addAll(takesBack(view, capture))
+    }
+    val out = LinkedHashMap<Int, List<Int>>()
+    for ((attacker, backs) in found) out[attacker] = backs.toList()
+    return out
+}
+
+/**
+ * The pieces that can legally take back for the piece on `square`: after any capture of it, or,
+ * when nothing can take it, were something to ([Exchange.defenders]).
+ */
+private fun guards(board: Board, square: Int): List<Int> {
+    val piece = board.pieceAt(square) ?: return emptyList()
+    val captures = capturesOf(board, square)
+    if (captures.isEmpty()) return Exchange.defenders(board, piece.colour, square)
+    return captures.values.flatten().toSortedSet().toList()
+}
+
+/**
+ * The pieces of `colour` that reach `square` but are not among `active`, the ones that can
+ * legally move there.
+ */
+private fun idle(board: Board, colour: Boolean, square: Int, active: Iterable<Int>): List<Int> {
+    val moving = active.toSet()
+    return board.attackers(colour, square).filter { it !in moving }
+}
+
+/**
+ * "is pinned and cannot take it": why pieces of `colour` that reach a square cannot move there,
+ * said as a pin when every one of them is pinned to its king.
+ */
+private fun cannot(board: Board, colour: Boolean, squares: List<Int>, action: String): String {
+    if (squares.isNotEmpty() && squares.all { board.isPinned(colour, it) }) {
+        return "${if (squares.size == 1) "is" else "are"} pinned and cannot $action"
+    }
+    return "cannot $action"
+}
+
+/**
+ * "the d8 queen behind the d7 rook joins in": a piece of `colour` lined up behind one of
+ * `fronts` that reaches `square` once the front one has taken there, an x-ray.
+ */
+private fun joinsIn(pos: Pos, colour: Boolean, square: Int, fronts: Iterable<Int>): String? {
+    val board = pos.board
+    val reach = board.attackers(colour, square)
+    for (front in fronts) {
+        val probe = board.copy(withStack = false)
+        probe.removePieceAt(front)
+        for (backer in probe.attackers(colour, square)) {
+            if (backer !in reach) return "${pos.short(backer)} behind ${pos.short(front)} joins in"
+        }
+    }
+    return null
+}
+
 private fun checkAttacks(pos: Pos, claim: Claim): Pair<ClaimResult, String> {
     val board = pos.board
     val subjects = subjects(pos, claim, pos.us)
@@ -492,12 +577,23 @@ private fun checkAttacks(pos: Pos, claim: Claim): Pair<ClaimResult, String> {
             if (!board.attacksSquare(subject, target)) continue
             var reason = "${pos.name(subject)} attacks ${pos.name(target)}"
             val hit = board.pieceAt(target)
-            if (hit != null && hit.colour != board.colourAt(subject)) {
-                val defenders = board.attackers(hit.colour, target)
-                reason += if (defenders.isNotEmpty()) {
-                    ", though it is defended by ${pos.listed(defenders)}"
+            if (hit != null && hit.colour != board.colourAt(subject) && hit.pieceType != KING) {
+                // Attacking is the geometry; taking is a legal move. A pinned piece still
+                // attacks, but it cannot take, and then who defends does not arise.
+                val mover = !hit.colour
+                val own = Exchange.capturesOn(board, mover, target).filter { it.from == subject }
+                if (own.isEmpty()) {
+                    reason += ", but it ${cannot(board, mover, listOf(subject), "take it")}"
                 } else {
-                    ", and nothing defends it"
+                    val guards = takesBack(toMove(board, mover), own[0])
+                    val idle = idle(board, hit.colour, target, guards)
+                    reason += if (guards.isNotEmpty()) {
+                        ", though it is defended by ${pos.listed(guards)}"
+                    } else if (idle.isNotEmpty()) {
+                        ", and ${pos.listed(idle)} ${cannot(board, hit.colour, idle, "take back")}"
+                    } else {
+                        ", and nothing defends it"
+                    }
                 }
             }
             return ClaimResult.TRUE to sentence(afterMove(pos, reason))
@@ -543,7 +639,15 @@ private fun checkDefends(pos: Pos, claim: Claim): Pair<ClaimResult, String> {
                 return ClaimResult.TRUE to sentence(afterMove(pos, reason))
             }
             if (held.colour == board.colourAt(subject)) {
-                val others = board.attackers(held.colour, target).filter { it != subject }
+                // Defending is taking back: a piece pinned to its king reaches the square and
+                // still cannot.
+                val guards = guards(board, target)
+                if (subject !in guards) {
+                    val square = squareName(target)
+                    val cannot = cannot(board, held.colour, listOf(subject), "take back on $square")
+                    return ClaimResult.FALSE to sentence(afterMove(pos, "${pos.name(subject)} $cannot"))
+                }
+                val others = guards.filter { it != subject }
                 var reason = "${pos.name(subject)} defends ${pos.name(target)}"
                 if (others.isNotEmpty()) reason += ", together with ${pos.listed(others)}"
                 return ClaimResult.TRUE to sentence(afterMove(pos, reason))
@@ -580,25 +684,47 @@ private fun checkHanging(pos: Pos, claim: Claim): Pair<ClaimResult, String> {
             }
             continue
         }
-        val attackers = board.attackers(!piece.colour, target)
-        val defenders = board.attackers(piece.colour, target)
-        if (attackers.isNotEmpty() && defenders.isEmpty()) {
-            val reason = "${pos.name(target)} is attacked by ${pos.listed(attackers)} " +
-                "and nothing defends it"
+        val captures = capturesOf(board, target)
+        val attackers = captures.keys.toList()
+        if (Exchange.hanging(board, target)) {
+            val guards = guards(board, target)
+            val idle = idle(board, piece.colour, target, guards)
+            var reason = "${pos.name(target)} is attacked by ${pos.listed(attackers)}"
+            if (guards.isNotEmpty()) {
+                // Taken back after one capture, but not after another.
+                val free = captures.entries.firstOrNull { it.value.isEmpty() }?.key ?: attackers[0]
+                reason += ", and after ${pos.short(free)} takes, nothing can take back"
+            } else if (idle.isNotEmpty()) {
+                reason += ", and ${pos.listed(idle)} ${cannot(board, piece.colour, idle, "take back")}"
+            } else {
+                reason += " and nothing defends it"
+            }
             return ClaimResult.TRUE to sentence(afterMove(pos, reason))
         }
         var reason: String
         if (attackers.isEmpty()) {
-            reason = "${pos.name(target)} is not attacked at all"
+            val idle = idle(board, !piece.colour, target, emptyList())
+            reason = if (idle.isNotEmpty()) {
+                val only = pos.listed(idle)
+                val cannot = cannot(board, !piece.colour, idle, "take it")
+                "${pos.name(target)} is attacked only by $only, which $cannot"
+            } else {
+                "${pos.name(target)} is not attacked at all"
+            }
         } else {
             reason = "${pos.name(target)} is attacked by ${pos.listed(attackers)} but " +
-                "defended by ${pos.listed(defenders)}, so it is not hanging outright"
+                "defended by ${pos.listed(guards(board, target))}, so it is not hanging outright"
+            val where = squareName(target)
             val cheapest = attackers.minByOrNull { VALUE[board.pieceTypeAt(it)] }!!
-            reason += if (VALUE[board.pieceTypeAt(cheapest)] < VALUE[piece.pieceType]) {
-                ", though ${pos.short(cheapest)} taking a " +
+            if (VALUE[board.pieceTypeAt(cheapest)] < VALUE[piece.pieceType]) {
+                reason += ", though ${pos.short(cheapest)} taking a " +
                     "${COACH_PIECE_NAMES[piece.pieceType]} still wins material"
+            } else if (Exchange.canBeWon(board, target)) {
+                reason += ", though the exchange on $where still wins it"
+                val joined = joinsIn(pos, !piece.colour, target, attackers)
+                if (joined != null) reason += ": $joined"
             } else {
-                "; I have not counted the whole exchange"
+                reason += ", and the exchange on $where does not win it"
             }
         }
         // An attacked piece is the interesting one to explain when several fit the words.
@@ -632,35 +758,65 @@ private fun checkSafe(pos: Pos, claim: Claim): Pair<ClaimResult, String> {
         sentence(afterMove(pos, reason))
 }
 
-/** Whether the piece on `target` (or the empty square) can be taken, with the counts. */
+/**
+ * Whether the piece on `target` can be taken for profit, or a piece of yours on the empty square
+ * taken at all, with the counts. Only legal captures count, and the verdict is the exchange
+ * played out by legal moves ([Exchange.canBeWon]), x-rays included; a king's safety is whether
+ * it is in check.
+ */
 private fun safety(pos: Pos, target: Int): Pair<Boolean, String> {
     val board = pos.board
     val square = squareName(target)
     val piece = board.pieceAt(target)
     if (piece == null) {
-        val attackers = board.attackers(pos.them, target)
-        if (attackers.isEmpty()) return true to "$square is not attacked by any of their pieces"
-        return false to "$square is attacked by ${pos.listed(attackers)}"
+        // Who of theirs could take a piece of yours standing there.
+        val takers = Exchange.defenders(board, pos.them, target)
+        if (takers.isNotEmpty()) return false to "$square is attacked by ${pos.listed(takers)}"
+        val idle = idle(board, pos.them, target, emptyList())
+        if (idle.isNotEmpty()) {
+            val cannot = cannot(board, pos.them, idle, "take there")
+            return true to "$square is attacked only by ${pos.listed(idle)}, which $cannot"
+        }
+        return true to "$square is not attacked by any of their pieces"
     }
-    val attackers = board.attackers(!piece.colour, target)
-    val defenders = board.attackers(piece.colour, target)
     if (piece.pieceType == KING) {
-        if (attackers.isEmpty()) return true to "${pos.name(target)} is not in check"
-        return false to "${pos.name(target)} is in check from ${pos.listed(attackers)}"
+        val checkers = board.attackers(!piece.colour, target)
+        if (checkers.isEmpty()) return true to "${pos.name(target)} is not in check"
+        return false to "${pos.name(target)} is in check from ${pos.listed(checkers)}"
     }
-    if (attackers.isEmpty()) return true to "${pos.name(target)} is not attacked"
+    val attackers = capturesOf(board, target).keys.toList()
+    if (attackers.isEmpty()) {
+        val idle = idle(board, !piece.colour, target, emptyList())
+        if (idle.isNotEmpty()) {
+            val only = pos.listed(idle)
+            val cannot = cannot(board, !piece.colour, idle, "take it")
+            return true to "${pos.name(target)} is attacked only by $only, which $cannot"
+        }
+        return true to "${pos.name(target)} is not attacked"
+    }
+    val guards = guards(board, target)
     var counts = "${pos.name(target)} is attacked ${times(attackers.size)} " +
-        "(${pos.listed(attackers)}) and defended ${times(defenders.size)}"
-    if (defenders.isNotEmpty()) counts += " (${pos.listed(defenders)})"
-    if (defenders.size < attackers.size) return false to "$counts, so it can be taken"
+        "(${pos.listed(attackers)}) and defended ${times(guards.size)}"
+    if (guards.isNotEmpty()) counts += " (${pos.listed(guards)})"
+    if (!Exchange.canBeWon(board, target)) return true to "$counts, so it holds"
     val cheapest = attackers.minByOrNull { VALUE[board.pieceTypeAt(it)] }!!
+    var reason: String
     if (VALUE[board.pieceTypeAt(cheapest)] < VALUE[piece.pieceType]) {
-        return false to (
-            "$counts, but ${pos.short(cheapest)} is worth less than a " +
-                "${COACH_PIECE_NAMES[piece.pieceType]}, so it can still be taken profitably"
-            )
+        reason = "$counts, but ${pos.short(cheapest)} is worth less than a " +
+            "${COACH_PIECE_NAMES[piece.pieceType]}, so it can still be taken profitably"
+    } else if (guards.size < attackers.size) {
+        reason = "$counts, so it can be taken"
+    } else {
+        // As many defenders, and still lost: a piece lined up behind an attacker joins in.
+        reason = "$counts, but the exchange on $square still wins it"
+        val joined = joinsIn(pos, !piece.colour, target, attackers)
+        if (joined != null) reason += ": $joined"
     }
-    return true to "$counts, so it holds"
+    val idle = idle(board, piece.colour, target, guards)
+    if (idle.isNotEmpty()) {
+        reason += "; ${pos.listed(idle)} ${cannot(board, piece.colour, idle, "take back")}"
+    }
+    return false to reason
 }
 
 private fun checkThreatens(
@@ -760,7 +916,12 @@ private fun engineThreats(position: Board, facts: PositionFacts?): List<Move> {
     return moves
 }
 
-/** "their bishop on c4 takes your pawn on f7, and your king on e8 can take back". */
+/**
+ * "their bishop on c4 takes your pawn on f7, and your king on e8 can take back".
+ *
+ * Who can take back is read by legal moves after the capture itself: after Qxf7# nothing can,
+ * and after Bxf7+ with the queen still on h5 the e8 king cannot either.
+ */
 private fun describeThreat(pos: Pos, position: Board, move: Move): String {
     val actor = pos.name(move.from)
     val victim = position.pieceAt(move.to)
@@ -771,8 +932,9 @@ private fun describeThreat(pos: Pos, position: Board, move: Move): String {
         return what
     }
     val what = "$actor takes ${pos.name(move.to)} with $san"
-    val recapturers = position.attackers(victim.colour, move.to)
+    val recapturers = takesBack(position, move)
     if (recapturers.isNotEmpty()) return "$what, and ${pos.listed(recapturers)} can take back"
+    if (san.endsWith("#")) return "$what, and it is checkmate"
     return "$what for free"
 }
 
@@ -887,38 +1049,32 @@ private val TACTIC = Regex(
     RegexOption.IGNORE_CASE,
 )
 
+private val SLIDERS = intArrayOf(BISHOP, ROOK, QUEEN)
+
 /**
  * The friendly piece a piece on `square` shields, or null if it shields nothing.
  *
- * A pin, absolute or relative: an enemy slider attacks `square` along a line, and the next
- * piece past it on that line is a friendly piece worth more (the king counts as most). This
- * is the tagger's own test, so a true pin to the queen is not called false.
+ * A pin, absolute or relative, by the inventory's rule ([pinTarget]), so a pin the coach was
+ * told about is not called false: an enemy slider that can legally take the piece on `square`
+ * attacks it along a line, and the next piece past it on that line is a friendly piece worth
+ * more that the slider would win once the front one moved -- the king, or a piece the capture
+ * wins (worth more than the slider, or undefended). A knight in front of a defended rook pins
+ * nothing.
  */
 private fun pinLine(board: Board, square: Int): Int? {
     val piece = board.pieceAt(square) ?: return null
-    for (attacker in board.attackers(!piece.colour, square)) {
-        val slider = board.pieceAt(attacker) ?: continue
-        if (slider.pieceType != BISHOP && slider.pieceType != ROOK && slider.pieceType != QUEEN) {
-            continue
-        }
-        if (squareDistance(attacker, square) == 0) continue
-        val df = sign(squareFile(square) - squareFile(attacker))
-        val dr = sign(squareRank(square) - squareRank(attacker))
-        var file = squareFile(square) + df
-        var rank = squareRank(square) + dr
-        while (file in 0..7 && rank in 0..7) {
-            val behind = square(file, rank)
-            val occupant = board.pieceAt(behind)
-            if (occupant != null) {
-                if (occupant.colour == piece.colour &&
-                    VALUE[occupant.pieceType] > VALUE[piece.pieceType]
-                ) {
-                    return behind
-                }
-                break
-            }
-            file += df
-            rank += dr
+    if (piece.pieceType == KING) return null
+    for (attacker in Exchange.capturers(board, !piece.colour, square)) {
+        if (board.pieceTypeAt(attacker) !in SLIDERS) continue
+        val behind = beyond(board, attacker, square)
+        val occupant = if (behind != null) board.pieceAt(behind) else null
+        if (behind != null &&
+            occupant != null &&
+            occupant.colour == piece.colour &&
+            VALUE[occupant.pieceType] > VALUE[piece.pieceType] &&
+            wins(board, attacker, behind, without = square)
+        ) {
+            return behind
         }
     }
     return null
@@ -926,85 +1082,138 @@ private fun pinLine(board: Board, square: Int): Int? {
 
 private fun sign(n: Int): Int = if (n > 0) 1 else if (n < 0) -1 else 0
 
-/** Enemy pieces a fork on `square` would win: worth as much as the forker, or the king. */
+/** The first occupied square past `through` on the line from `frm`, or null. */
+private fun beyond(board: Board, frm: Int, through: Int): Int? {
+    val df = sign(squareFile(through) - squareFile(frm))
+    val dr = sign(squareRank(through) - squareRank(frm))
+    if (df == 0 && dr == 0) return null
+    var file = squareFile(through) + df
+    var rank = squareRank(through) + dr
+    while (file in 0..7 && rank in 0..7) {
+        val sq = square(file, rank)
+        if (board.pieceAt(sq) != null) return sq
+        file += df
+        rank += dr
+    }
+    return null
+}
+
+/**
+ * Whether the piece on `frm` wins the piece on `target` by taking it, with the piece on
+ * `without` stepped off the line: the target is the king, or the capture is legal and nets
+ * material once the recaptures are played out ([Exchange.exchange]).
+ */
+private fun wins(board: Board, frm: Int, target: Int, without: Int? = null): Boolean {
+    if (board.pieceTypeAt(target) == KING) return true
+    val colour = board.colourAt(frm) ?: return false
+    var probe = board.copy(withStack = false)
+    if (without != null) probe.removePieceAt(without)
+    probe = toMove(probe, colour)
+    var capture: Move? = null
+    probe.generateLegalMoves(BB_SQUARES[frm], BB_SQUARES[target]) { if (capture == null) capture = it }
+    val found = capture ?: return false
+    return Exchange.exchange(probe, found) > 0
+}
+
+/**
+ * Enemy pieces a fork on `square` would win, by the inventory's rule ([forksInPlace]): the king
+ * it checks, or a piece it can legally take that can be won -- worth more than the forker, or
+ * not defended well enough. A pinned knight takes nothing, so it forks nothing.
+ */
 private fun forkTargets(board: Board, square: Int): List<Int> {
     val piece = board.pieceAt(square) ?: return emptyList()
-    val ownValue = VALUE[piece.pieceType]
     val targets = ArrayList<Int>()
     for (target in board.attacks(square)) {
         val other = board.pieceAt(target)
         if (other == null || other.colour == piece.colour) continue
-        if (other.pieceType == KING || VALUE[other.pieceType] >= ownValue) {
+        if (other.pieceType == KING ||
+            (square in Exchange.capturers(board, piece.colour, target) && Exchange.canBeWon(board, target))
+        ) {
             targets.add(target)
-        } else if (board.attackers(other.colour, target).isEmpty()) {
-            targets.add(target) // an undefended lesser piece is still worth the fork
         }
     }
     return targets
 }
 
 /**
+ * Whether the slider on `square` skewers, by the inventory's rule ([skewerTarget]): it attacks
+ * an enemy piece that must step aside -- the king, or one it can legally take and win (worth
+ * more than the slider, or undefended) -- and past it on the same line stands a less valuable
+ * enemy piece the slider then wins.
+ */
+private fun skewers(board: Board, square: Int): Boolean {
+    val piece = board.pieceAt(square) ?: return false
+    if (piece.pieceType !in SLIDERS) return false
+    for (front in board.attacks(square)) {
+        val target = board.pieceAt(front)
+        if (target == null || target.colour == piece.colour || !wins(board, square, front)) continue
+        val behind = beyond(board, square, front)
+        val occupant = if (behind != null) board.pieceAt(behind) else null
+        if (behind != null &&
+            occupant != null &&
+            occupant.colour != piece.colour &&
+            VALUE[occupant.pieceType] < VALUE[target.pieceType] &&
+            wins(board, square, behind, without = front)
+        ) {
+            return true
+        }
+    }
+    return false
+}
+
+/**
  * Whether the board bears out a tactic claimed of a piece; null when it does or might.
  *
- * Only plainly false claims are faulted: a pin that is not there (to any piece, not only
- * the king), a piece called loose that is defended, a piece called safe that hangs, a fork
- * or skewer the piece does not make. The exchange is not evaluated, so "safe" is faulted
- * only when the piece is attacked and not defended at all.
+ * Only plainly false claims are faulted: a pin that is not there (to any piece, not only the
+ * king), a piece called loose that is defended, a piece called safe that can be won, a fork or
+ * skewer the piece does not make. Attack and defence are legal moves: a piece pinned to its
+ * king neither takes nor takes back, and a king takes back only where it may.
  */
 private fun tacticProblem(board: Board, squareName: String, rawState: String): String? {
     val square = parseSquare(squareName.lowercase())
     val piece = board.pieceAt(square) ?: return "$squareName is empty"
     val name = COACH_PIECE_NAMES[piece.pieceType]
     val state = rawState.lowercase().replace(" ", "").trimEnd('s')
-    val attackers = board.attackers(!piece.colour, square)
-    val defenders = board.attackers(piece.colour, square)
     when {
         state == "pinned" ->
             if (pinLine(board, square) == null) return "the $name on $squareName is not pinned"
         state == "hanging" || state == "enprise" -> {
-            if (attackers.isEmpty()) return "nothing attacks the $name on $squareName"
-            if (defenders.isNotEmpty()) return "the $name on $squareName is defended"
+            if (Exchange.capturers(board, !piece.colour, square).isEmpty()) {
+                if (board.attackers(!piece.colour, square).isNotEmpty()) {
+                    return "nothing can take the $name on $squareName"
+                }
+                return "nothing attacks the $name on $squareName"
+            }
+            if (!Exchange.hanging(board, square)) return "the $name on $squareName is defended"
         }
         state == "undefended" || state == "unprotected" || state == "loose" ->
             // A piece with no defender is undefended whether or not anything attacks it yet.
-            if (defenders.isNotEmpty()) return "the $name on $squareName is defended"
-        state == "safe" ->
-            if (attackers.isNotEmpty() && defenders.isEmpty()) {
+            if (guards(board, square).isNotEmpty()) return "the $name on $squareName is defended"
+        state == "safe" -> {
+            if (Exchange.hanging(board, square)) {
                 return "the $name on $squareName is attacked and undefended"
             }
-        state == "trapped" && attackers.isEmpty() ->
+            if (Exchange.canBeWon(board, square)) {
+                return "the $name on $squareName can be taken for profit"
+            }
+        }
+        state == "trapped" && board.attackers(!piece.colour, square).isEmpty() ->
             return "nothing is attacking the $name on $squareName"
-        state == "fork" || state == "forking" ->
+        state == "fork" || state == "forking" -> {
             if (forkTargets(board, square).size < 2) {
+                if (board.isPinned(piece.colour, square)) {
+                    return "the $name on $squareName is pinned, so it forks nothing"
+                }
                 return "the $name on $squareName does not fork two pieces"
             }
-        state == "skewer" || state == "skewering" -> {
-            // A skewer is a pin the other way round: the enemy piece behind is worth less.
-            val hits = board.attacks(square).filter {
-                behindIsEnemy(board, square, it, piece.colour)
+            if (Exchange.canBeWon(board, square)) {
+                return "the $name on $squareName can be taken for profit, so it forks nothing"
             }
-            if (hits.isEmpty()) return "the $name on $squareName does not skewer anything"
         }
+        (state == "skewer" || state == "skewering") && !skewers(board, square) ->
+            return "the $name on $squareName does not skewer anything"
     }
     return null
-}
-
-/** Whether, past an enemy piece on `through`, the same line holds another enemy piece. */
-private fun behindIsEnemy(board: Board, frm: Int, through: Int, mover: Boolean): Boolean {
-    val occupant = board.pieceAt(through)
-    if (occupant == null || occupant.colour == mover) return false
-    val df = sign(squareFile(through) - squareFile(frm))
-    val dr = sign(squareRank(through) - squareRank(frm))
-    if (df == 0 && dr == 0) return false
-    var file = squareFile(through) + df
-    var rank = squareRank(through) + dr
-    while (file in 0..7 && rank in 0..7) {
-        val behind = board.pieceAt(square(file, rank))
-        if (behind != null) return behind.colour != mover
-        file += df
-        rank += dr
-    }
-    return false
 }
 
 /**

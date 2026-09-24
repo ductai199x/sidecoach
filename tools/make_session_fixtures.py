@@ -504,18 +504,29 @@ def run(annotator: GameAnnotator, with_verifier: bool) -> dict[str, Any]:
         asks,
     )
 
-    # A long think: the stuck hint.
-    ts += 200.0
-    coach.tick(ts)
-    script.record({"op": "tick", "ts": ts})
+    # A long think: the stuck hint, and a second one a full stuck spell later -- the idea,
+    # then the focus, and never more unasked -- with hints asked between: the rungs up to
+    # the move.
+    for op in ("tick", "hint", "tick", "tick", "another hint"):
+        if op == "tick":
+            ts += 200.0
+            coach.tick(ts)
+            script.record({"op": "tick", "ts": ts})
+        else:
+            ts += 1.0
+            coach.ask(op, ts)
+            script.record({"op": "ask", "ts": ts, "text": op})
 
     # A takeback of the last two plies, and two replacements.
     back = chess.Board(coach.conversation.active_records()[-3].move.fen_after)
     ts += 5.0
     coach.on_event(Takeback(game_id=GAME_ID, plies=2, fen=back.fen()), ts)
     script.record({"op": "takeback", "ts": ts, "plies": 2, "fen": back.fen()})
+    # The replacements are numbered from the position the board is back at, as the pipeline
+    # numbers them: the lesson on the first one, a mistake, is spoken from the position
+    # before it.
     board, ply, ts = play_game(
-        annotator, coach, script, ["Nxd4", "Nxd4"], back, ply, ts, {}
+        annotator, coach, script, ["Nxd4", "Nxd4"], back, ply - 2, ts, {}
     )
 
     ts += 1.0

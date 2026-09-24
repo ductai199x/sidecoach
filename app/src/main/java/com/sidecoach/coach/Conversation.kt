@@ -34,10 +34,10 @@ import java.util.Locale
  * Once the model has seen a move's line it is frozen and never edited; facts that arrive
  * later go in a note of their own. `# Position now` is the last ply in full at the
  * disclosure level in force for the position the player faces: the board, the last move,
- * the standing, the engine's lines (withheld on the player's own turn below CANDIDATE), the
- * facts in the third person per side, the disclosure line, the complete inventory of what
- * stands on the board, the player's record so far, and what was already said here. The
- * coach appends its task and answers as the assistant.
+ * the standing, the engine's lines (withheld on the player's own turn below MOVE), the facts
+ * in the third person per side, the disclosure line, the complete inventory of what stands on
+ * the board, the player's record so far, and what was already said here. The coach appends
+ * its task and answers as the assistant.
  *
  * Two levers keep a long game's harness small. The dialogue older than the last N plies can
  * be folded by a summariser into one "Earlier dialogue, summarised" line ([foldable],
@@ -101,7 +101,7 @@ class Conversation {
      * The disclosure level to render the position the user faces with, set by the coach
      * before each request from the current position's disclosure state.
      */
-    var level: DisclosureLevel = DisclosureLevel.QUESTION
+    var level: DisclosureLevel = DisclosureLevel.IDEA
 
     /** The earlier dialogue, summarised; empty until the first fold. */
     var summary: String = ""
@@ -449,7 +449,7 @@ class Conversation {
         lines.add(
             positionText(
                 boardAfter,
-                legal = !(userToMove && level.value < DisclosureLevel.CANDIDATE.value),
+                legal = !(userToMove && level.value < DisclosureLevel.MOVE.value),
             )
         )
         val turn = turnText(boardAfter)
@@ -499,12 +499,14 @@ class Conversation {
         if (facts.isNotEmpty()) {
             out.add("Facts (${factsOwner(userToMove)})" to facts.joinToString("\n"))
         }
-        if (userToMove && level.value < DisclosureLevel.CANDIDATE.value) {
+        if (userToMove && level.value < DisclosureLevel.MOVE.value) {
             out.add(
                 "Disclosure" to "Level ${level.name.lowercase()}: ${levelWords(level)}."
             )
         }
-        if (!(userToMove && level.value < DisclosureLevel.PIECE.value)) {
+        // The inventory lists the checks and captures on offer, the answer among them: on the
+        // player's turn it comes with the move (at the focus rung it named Qxf7#).
+        if (!(userToMove && level.value < DisclosureLevel.MOVE.value)) {
             out.add(
                 "On the board (complete lists)" to inventoryLines(board, colour).joinToString("\n")
             )
@@ -647,7 +649,7 @@ class Conversation {
         if (analysis == null || analysis.lines.isEmpty()) return "" to listOf("not in yet.")
         val toMove = board.turn
         val userToMove = toMove == colour
-        if (userToMove && level.value < DisclosureLevel.CANDIDATE.value) {
+        if (userToMove && level.value < DisclosureLevel.MOVE.value) {
             return "" to listOf("withheld at this disclosure level.")
         }
         val whose = if (userToMove) "the player's" else "the opponent's"
@@ -767,7 +769,7 @@ class Conversation {
             ) {
                 continue
             }
-            val name = key.replace("_", " ")
+            val name = FACT_NAMES[key] ?: key.replace("_", " ")
             if (value == true) {
                 out.add("$name: yes")
             } else if (key == "ideas") {
@@ -785,6 +787,8 @@ class Conversation {
                 )
             } else if (value is List<*>) {
                 out.add("$name: " + value.joinToString(", ") { it.toString() })
+            } else if (key in TO_THE_PLAYER) {
+                out.add("$name: $value")
             } else {
                 out.add("$name: " + Person.thirdPerson(value.toString(), side = side))
             }
@@ -913,12 +917,11 @@ class Conversation {
 
     private fun levelWords(level: DisclosureLevel): String = when (level) {
         DisclosureLevel.SILENT -> "say nothing about the position"
-        DisclosureLevel.QUESTION ->
-            "an orienting question only; no theme, square, piece or move"
-        DisclosureLevel.THEME -> "the theme may be named; no square, piece or move"
-        DisclosureLevel.REGION -> "the theme and the region; no piece or move"
-        DisclosureLevel.PIECE -> "the theme, the region and the piece; no move"
-        DisclosureLevel.CANDIDATE -> "the candidate moves may be named"
+        DisclosureLevel.IDEA ->
+            "the idea: the goal, the pattern and why it works; no square, no move, and " +
+                "not which of the player's own pieces does it"
+        DisclosureLevel.FOCUS -> "the idea, the target and the piece; not the move"
+        DisclosureLevel.MOVE -> "the move and why it works may be named"
         DisclosureLevel.LINE -> "everything, the line included"
     }
 
@@ -997,21 +1000,42 @@ class Conversation {
         "blunder",
     )
 
-        /** The facts in the order a coach reads them: what kind of moment, then the idea. */
+        /**
+         * The facts in the order a coach reads them: what kind of moment, the goal and the
+         * pattern, where to look, then the move.
+         */
         val FACT_KEYS = listOf(
             "phase",
             "decisive",
             "only_move",
             "nature",
+            "goal",
             "theme",
+            "mechanism",
             "plan",
-            "region",
+            "question",
+            "target",
             "piece",
+            "nudge",
+            "region",
+            "why",
             "tactic",
             "threats",
             "ideas",
             "focus",
         )
+
+        /** What a fact is called on the sheet, where its key would not say it. */
+        val FACT_NAMES = mapOf(
+            "theme" to "pattern",
+            "mechanism" to "how it works",
+            "question" to "a question that sets them looking (to the player, as it stands)",
+            "nudge" to "a question from the target to the move (to the player, as it stands)",
+            "why" to "the move and what it does",
+        )
+
+        /** The facts addressed to the player, kept in the second person. */
+        val TO_THE_PLAYER = listOf("question", "nudge")
 
         /**
          * `f"{value:.2f}"`: the exact binary value, rounded half to even.

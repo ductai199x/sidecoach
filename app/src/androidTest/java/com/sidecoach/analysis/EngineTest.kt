@@ -122,6 +122,33 @@ class EngineTest {
     }
 
     @Test
+    fun theBestLineIsCarriedOnForTheCoach() {
+        val engine = engine()
+        assumeTrue("the engine or its network is missing", engine != null)
+        engine!!.use { sf ->
+            // `carry_best`: the best line kept to MIN_BEST_PLIES, searched on from its end when
+            // Stockfish's own stops short; the other lines cut as always; a verdict's search
+            // (no `carry_best`) cut like the rest.
+            val board = Board("r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
+            val carried = sf.analyse(board, depth = 10, pvPlies = 4, carryBest = true)
+            val plain = sf.analyse(board, depth = 10, pvPlies = 4)
+            assertTrue("no lines", carried.isNotEmpty() && plain.isNotEmpty())
+            val best = carried[0].moves
+            Log.i(TAG, "carried best line: ${sanLine(board, best)} (${best.size} plies); plain ${plain[0].moves.size}")
+            // Every move of the carried line is legal where it stands.
+            assertEquals("an illegal move in the carried line", best.size, sanLine(board, best, numbered = false).split(" ").size)
+            val end = board.copy(withStack = false)
+            for (uci in best) end.push(com.sidecoach.chess.Move.fromUci(uci))
+            assertTrue(
+                "the best line stopped at ${best.size} plies",
+                best.size == Engine.MIN_BEST_PLIES || end.isGameOver(claimDraw = true),
+            )
+            for (line in carried.drop(1)) assertTrue("another line was carried on", line.moves.size <= 4)
+            assertTrue("a verdict's line was carried on", plain[0].moves.size <= 4)
+        }
+    }
+
+    @Test
     fun aFinishedPositionHasNoLines() {
         val engine = engine()
         assumeTrue("the engine or its network is missing", engine != null)

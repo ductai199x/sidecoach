@@ -10,20 +10,24 @@ import com.sidecoach.events.DisclosureLevel
  * coach needs it to ask sensible questions; [leakCheck] is the second line of defence over the
  * coach's draft text for anything it might work out on its own.
  *
- * Levels, from DESIGN.md section 5.5:
+ * Levels, from DESIGN.md section 5.5 -- two hints, then the answer (Tai, 2026-09-23: four
+ * rungs before the move left each saying a sliver, and the slivers came out generic):
  * ```
- * 0 SILENT     nothing yet
- * 1 QUESTION   an orienting question
- * 2 THEME      the theme category
- * 3 REGION     a board region; autonomous ceiling
- * 4 PIECE      the piece carrying the idea; only on a hint request
- * 5 CANDIDATE  the move or near-equal set; user named it, played it, or asked
- * 6 LINE       the full line; user asked for it, or after the move
+ * 0 SILENT  nothing yet
+ * 1 IDEA    the goal (a mate, what can be won, a threat to meet, the plan), the pattern
+ *           that does it and why it works -- square-free
+ * 2 FOCUS   the target on the board and the piece that does it; the autonomous ceiling
+ * 3 MOVE    the move, with a correct explanation; the third hint, or asked, named or played
+ * 4 LINE    the full line; asked for, or after the move
  * ```
  */
 
-val AUTONOMOUS_CEILING = DisclosureLevel.REGION
-val HINT_CEILING = DisclosureLevel.PIECE
+/**
+ * Unprompted, the coach gives the idea and, if the player is still stuck, the focus; never
+ * the move (Tai, 2026-09-23). Asked for hints, the third is the move.
+ */
+val AUTONOMOUS_CEILING = DisclosureLevel.FOCUS
+val HINT_CEILING = DisclosureLevel.MOVE
 
 enum class Unlock(val slug: String) {
     STUCK("stuck"),
@@ -55,9 +59,37 @@ data class PositionFacts(
      * thing a coach asks a stuck player, and it points at no square, piece or move.
      */
     val nature: String? = null,
+    /**
+     * What the best line is for, from the side to move: "you can force mate in two", "you can
+     * win their queen", "your opponent has a threat to meet first". The first thing a puzzle
+     * book says and the one the coach never did: without it the first word on a mate in one
+     * was "what is your opponent's most dangerous idea?" (Tai, 2026-09-23). Given at the idea
+     * level; it names no square, piece or move.
+     */
+    val goal: String? = null,
     val theme: String? = null,
+    /**
+     * The pattern at work and why it works here, square-free: "a sacrifice first drags their
+     * king out, then a rook and a knight mate it on the edge". The idea level.
+     */
+    val mechanism: String? = null,
     val region: String? = null,
+    /**
+     * The target on the board, grounded: "their king on h8, with no free square", "their king
+     * on c1 and their rook on e1: one check can hit both". The focus level.
+     */
+    val target: String? = null,
     val piece: String? = null,
+    /** Why the move works, played out: "after Kxh7, Rh5 is mate". The move level. */
+    val why: String? = null,
+    /**
+     * The question that sets the player looking the right way for this goal and pattern:
+     * "Which two of their pieces could one of yours hit at once, and from where?". The idea
+     * rung's question, for the templates and as the model's starting point.
+     */
+    val question: String? = null,
+    /** The focus rung's question, from the target to the move: "Which square hits both?". */
+    val nudge: String? = null,
     /**
      * The squares that carry the theme: the pinner, the pinned piece and what it shields; the
      * forking piece and its targets. Given only at the piece level and above.
@@ -92,9 +124,15 @@ data class PositionFacts(
         out["decisive"] = decisive
         out["only_move"] = onlyMove
         out["nature"] = nature
+        out["goal"] = goal
         out["theme"] = theme
+        out["mechanism"] = mechanism
         out["region"] = region
+        out["target"] = target
         out["piece"] = piece
+        out["why"] = why
+        out["question"] = question
+        out["nudge"] = nudge
         out["focus"] = focus
         out["tactic"] = tactic
         out["plan"] = plan
@@ -112,22 +150,15 @@ private val ALWAYS = listOf(
     "only_move", "user_claims",
 )
 
+private val IDEA_KEYS = listOf("nature", "goal", "theme", "mechanism", "question", "plan")
+private val FOCUS_KEYS = IDEA_KEYS + listOf("target", "piece", "nudge", "region", "ideas")
+private val MOVE_KEYS = FOCUS_KEYS + listOf("why", "tactic", "focus", "candidates", "threats")
 private val BY_LEVEL: Map<DisclosureLevel, List<String>> = mapOf(
     DisclosureLevel.SILENT to emptyList(),
-    DisclosureLevel.QUESTION to listOf("nature"),
-    DisclosureLevel.THEME to listOf("nature", "theme", "plan"),
-    DisclosureLevel.REGION to listOf("nature", "theme", "plan", "ideas", "region"),
-    DisclosureLevel.PIECE to listOf(
-        "nature", "theme", "plan", "ideas", "region", "piece", "focus", "tactic",
-    ),
-    DisclosureLevel.CANDIDATE to listOf(
-        "nature", "theme", "plan", "ideas", "region", "piece", "focus", "tactic",
-        "candidates", "threats",
-    ),
-    DisclosureLevel.LINE to listOf(
-        "nature", "theme", "plan", "ideas", "region", "piece", "focus", "tactic",
-        "candidates", "threats", "line",
-    ),
+    DisclosureLevel.IDEA to IDEA_KEYS,
+    DisclosureLevel.FOCUS to FOCUS_KEYS,
+    DisclosureLevel.MOVE to MOVE_KEYS,
+    DisclosureLevel.LINE to MOVE_KEYS + listOf("line"),
 )
 
 /** The fact bundle the LLM may see at `level`. */
@@ -148,20 +179,22 @@ class Disclosure(var level: DisclosureLevel = DisclosureLevel.SILENT) {
         val before = level
         when (unlock) {
             Unlock.STUCK ->
-                // A player stuck for a while gets the theme at once, the region next.
-                if (level.value < AUTONOMOUS_CEILING.value) {
-                    level = DisclosureLevel.of(maxOf(level.value + 1, DisclosureLevel.THEME.value))
-                }
-            Unlock.DECISIVE ->
+                // A player stuck for a while gets the idea at once, the focus next.
                 if (level.value < AUTONOMOUS_CEILING.value) {
                     level = DisclosureLevel.of(level.value + 1)
                 }
+            Unlock.DECISIVE ->
+                // The critical moment's first word is the idea.
+                if (level.value < DisclosureLevel.IDEA.value) {
+                    level = DisclosureLevel.IDEA
+                }
             Unlock.HINT ->
+                // Two hints, then the move.
                 if (level.value < HINT_CEILING.value) {
                     level = DisclosureLevel.of(level.value + 1)
                 }
             Unlock.ASK_MOVE, Unlock.USER_NAMED_MOVE ->
-                level = DisclosureLevel.of(maxOf(level.value, DisclosureLevel.CANDIDATE.value))
+                level = DisclosureLevel.of(maxOf(level.value, DisclosureLevel.MOVE.value))
             Unlock.ASK_LINE, Unlock.MOVE_PLAYED ->
                 level = DisclosureLevel.LINE
         }
@@ -183,6 +216,9 @@ private val PIECE_WORD_CONTEXTS = Regex(
         "(?:indian|gambit|pawn|opening|attack|defen[cs]e)" +
         "|(?:up|down|ahead|behind|level|even|for|against|exchange)(?: a| an| two| three| the)? " +
         "(?:$PIECE_RE|piece)s?(?: (?:and|for) (?:a |an |two |three |the )?(?:$PIECE_RE|piece)s?)*" +
+        "|(?:their|opponent's|the opponent's|enemy) ${PIECE_RE}s?" +
+        "|(?:wins?|winning|won|trap|traps|trapped|lose|loses|losing) (?:a |an |the |their |two )?" +
+        "${PIECE_RE}s?" +
         "|(?:checks?|attacks?|takes|took|captures?d?|removes?d?|hits?) (?:your|their|the|my) " +
         "$PIECE_RE on [a-h][1-8]" +
         "|(?:your|their|my|the) $PIECE_RE on [a-h][1-8] (?:is|was|remains|stays) (?:in )?" +
@@ -211,11 +247,11 @@ fun squaresIn(text: String): Set<String> {
 /**
  * Withheld items that `text` mentions. An empty list means the draft is clean.
  *
- * Below CANDIDATE the coach may not name any move at all, and may mention only squares that
- * occur in visible facts other than the FEN, such as a region anchor. The model will
- * volunteer moves on its own even when told not to, so this is not limited to the withheld
- * facts. From CANDIDATE up only the withheld line is checked. Below PIECE the piece word from
- * the facts is checked as well.
+ * Below MOVE the coach may not name any move at all, and may mention only squares that occur
+ * in visible facts other than the FEN, such as the target's. The model will volunteer moves
+ * on its own even when told not to, so this is not limited to the withheld facts. From MOVE
+ * up only the withheld line is checked. Below FOCUS the word for the player's own piece is
+ * checked as well -- their pieces, and what a line wins, are not it.
  *
  * `said` is what the user asked this turn: a square, piece word or move they named is theirs
  * already, so confirming it back is not a leak and never faulted.
@@ -253,7 +289,7 @@ fun leakCheck(
         if (item !in leaks) leaks.add(item)
     }
 
-    if (level.value < DisclosureLevel.CANDIDATE.value) {
+    if (level.value < DisclosureLevel.MOVE.value) {
         for (token in TOKEN_SPLIT.split(text)) {
             val match = SQUARE_TOKEN.matchEntire(token) ?: continue
             val square = match.groupValues[1]
@@ -276,16 +312,29 @@ fun leakCheck(
         }
     }
 
-    if (level.value < DisclosureLevel.PIECE.value && !facts.piece.isNullOrEmpty()) {
-        val pieceWord = facts.piece.lowercase().split(" ").last()
-        // The word is a hint only where it could point at the piece to move: not in an
-        // opening's name, not in the material balance, not said of a move already played.
-        val scrubbed = PIECE_WORD_CONTEXTS.replace(text.lowercase(), " ")
-        if (pieceWord !in saidWords &&
-            Regex("\\b${Regex.escape(pieceWord)}\\b").containsMatchIn(scrubbed)
-        ) {
-            add("piece $pieceWord")
+    if (level.value < DisclosureLevel.FOCUS.value && !facts.piece.isNullOrEmpty()) {
+        // The words for the player's own pieces ("your queen on h5", "your rook first, then
+        // your knight") are a hint only where they could point at the piece to move: not in an
+        // opening's name ("Queen's Gambit"), not in the material balance ("down a pawn"), not
+        // in what a line wins or a fact the level shows ("you can win a queen and a pawn for
+        // a bishop"), not said of a move already played -- the caller's `said` carries those.
+        var scrubbed = text.lowercase()
+        for (key in listOf("goal", "theme", "mechanism", "question", "plan", "nature")) {
+            val value = visible[key]
+            if (value is String && value.isNotEmpty()) scrubbed = scrubbed.replace(value.lowercase(), " ")
+        }
+        scrubbed = PIECE_WORD_CONTEXTS.replace(scrubbed, " ")
+        for (pieceWord in LinkedHashSet(PIECE_WORD.findAll(facts.piece.lowercase()).map { it.value }.toList())) {
+            // "The king behind it", "their king runs out of squares": the word is in every
+            // explanation of a pin or a mate, and says nothing about which piece to move.
+            if (pieceWord in saidWords || pieceWord == "king") continue
+            if (Regex("\\b${Regex.escape(pieceWord)}\\b").containsMatchIn(scrubbed)) {
+                add("piece $pieceWord")
+            }
         }
     }
     return leaks
 }
+
+/** `re.findall(_PIECE, ...)`: every piece word, wherever it stands in the text. */
+private val PIECE_WORD = Regex(PIECE_RE)

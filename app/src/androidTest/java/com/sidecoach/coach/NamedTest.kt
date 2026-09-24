@@ -25,10 +25,12 @@ import org.junit.runner.RunWith
 class NamedTest {
 
     private val failures = ArrayList<String>()
+    private var mismatches = 0
 
     private fun check(what: String, mine: Any?, theirs: Any?) {
-        if (mine != theirs && failures.size < 8) {
-            failures.add("$what:\n  kotlin: $mine\n  python: $theirs")
+        if (mine != theirs) {
+            mismatches += 1
+            if (failures.size < 8) failures.add("$what:\n  kotlin: $mine\n  python: $theirs")
         }
     }
 
@@ -42,6 +44,7 @@ class NamedTest {
         for (i in 0 until cases.length()) {
             val case = cases.getJSONObject(i)
             val board = Board(case.getString("fen"))
+            val fenLabel = case.getString("fen")
             val us = board.turn
             val engine = recorded(case.getJSONObject("engine"))
             val list = case.getJSONArray("asks")
@@ -111,6 +114,17 @@ class NamedTest {
                 }
             }
 
+            // Every square of the board as a piece or square probe: attack and defence by legal
+            // moves, a controller pinned off the line marked so.
+            val squares = case.optJSONArray("squares") ?: JSONArray()
+            for (sq in 0 until squares.length()) {
+                check(
+                    "$fenLabel examinePiece ${squareName(sq)}",
+                    examinePiece(Probe(label = squareName(sq), moves = emptyList(), square = sq), board, us),
+                    squares.getString(sq),
+                )
+            }
+
             // The probes a planner would hand over, including the ones that go illegal
             // partway: what the words alone never reach.
             val planned = case.getJSONObject("planned")
@@ -141,7 +155,7 @@ class NamedTest {
         }
         val took = System.currentTimeMillis() - began
         Log.i(TAG, "${cases.length()} positions, $asks asks, $took ms")
-        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+        assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
     }
 
     /** The stub the generator used: the same lines for the same position, read from the file. */

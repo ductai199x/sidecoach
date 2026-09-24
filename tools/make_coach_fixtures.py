@@ -1,17 +1,29 @@
 """Record what the desktop's coach primitives say, for the Kotlin port to be held to.
 
 Everything under `sidecoach/coach/` that is a pure function of the board and the analysis:
-who "you" is, the disclosure filter and the leak check, the fact bundle, what a move does,
-what stands on the board, where a line leads, the word on a sound move, when the coach may
-speak, and the marks that go on the board. The coach reads these out; a port that differs
-anywhere says something different.
+who "you" is, the disclosure filter and the leak check, the fact bundle, the idea of the best
+line (`coach/idea.py`) and its words (`coach/idea_words.py`), the offline coach's templates,
+what a move does, what stands on the board, where a line leads, the word on a sound move,
+when the coach may speak, and the marks that go on the board. The coach reads these out; a
+port that differs anywhere says something different.
 
-The positions are the Lichess puzzle sample and random games, with the analysis synthesised
-from the puzzle's own solution line so the fact bundle has candidates, threats, a line and
-tags to work from -- the same shapes the engine hands it in a real game.
+The positions come four ways, and every Analysis fed to the desktop is written into the
+fixture as it was fed, so the Kotlin reads exactly the same one:
+
+- the Lichess puzzle sample and random games, with the analysis synthesised from the
+  puzzle's own solution line (candidates, threats, a line and tags, the shapes the engine
+  hands over in a real game);
+- per theme of `data/puzzles/themes-7-120.csv` (mates by pattern, forks, pins, equality,
+  pawn endgames, zugzwang, quiet moves, sacrifices...), the engine's real analysis from the
+  puzzle bench's cache (`data/puzzles/analysis/`), so every goal of the idea reader is met;
+- the desktop's own idea tests (`tests/test_idea.py`), their lines written out, and two
+  hand-made draws (a stalemate, a repetition);
+- positions from the same cache whose idea reaches the rarer goals and fields (RARE: a trade
+  into a won ending, the king leading, an attack, a combination, a threat to meet, a
+  perpetual, a pinned guard, an in-between move...).
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_coach_fixtures.py
+    PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python D:/sidecoach-android/tools/make_coach_fixtures.py
 """
 
 from __future__ import annotations
@@ -35,15 +47,31 @@ from sidecoach.coach import annotations as A  # noqa: E402
 from sidecoach.coach import disclosure as D  # noqa: E402
 from sidecoach.coach import effects as E  # noqa: E402
 from sidecoach.coach import facts as F  # noqa: E402
+from sidecoach.coach import idea as IDEA  # noqa: E402
+from sidecoach.coach import idea_words as W  # noqa: E402
 from sidecoach.coach import inventory as I  # noqa: E402
 from sidecoach.coach import outcome as O  # noqa: E402
 from sidecoach.coach import policy as P  # noqa: E402
 from sidecoach.coach import verdicts as V  # noqa: E402
+from sidecoach.coach.coach import (  # noqa: E402
+    COST_YOU,
+    FINE_TIGHTER,
+    focus_template,
+    hint_template,
+    idea_template,
+    lesson_template,
+    line_template,
+    move_template,
+)
 from sidecoach.coach.person import third_person  # noqa: E402
-from sidecoach.events import Analysis, DisclosureLevel, Line, Trigger  # noqa: E402
+from sidecoach.events import Analysis, DisclosureLevel, Line, MotifTag, Trigger  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "chess"
 PUZZLES = DESKTOP / "data" / "puzzles" / "sample.csv"
+THEMES = DESKTOP / "data" / "puzzles" / "themes-7-120.csv"
+CACHE = DESKTOP / "data" / "puzzles" / "analysis" / "d18-pv6-13cdf1d231.jsonl"
+# Puzzles per theme with the engine's real analysis; a puzzle counts for every theme it has.
+PER_THEME = 5
 
 # Sentences written for the side to move as "you", the way the facts and ideas read.
 PERSON_TEXTS = [
@@ -85,6 +113,167 @@ LEAK_TEXTS = [
     "Your king on g1 is safe.",
     "That takes the pawn on d5 and opens the file.",
     "Nothing to say.",
+    # The piece-word rule of 2026-09-23: their pieces, what a line wins, and the king are
+    # never the player's own piece.
+    "You can win their queen here.",
+    "Their rook is loose, and your bishop is the one to use.",
+    "Their king runs out of squares.",
+    "You could trap a knight, or win two pawns.",
+    "Your queen and your rook work together.",
+    "The enemy bishop is pinned.",
+]
+
+# The desktop's idea tests (`tests/test_idea.py`): (fen, SAN line, score, mate, threats,
+# decisive), each a puzzle the coach misread before the reader was rebuilt.
+IDEA_TESTS = [
+    ("3r4/3r2k1/p7/3p2p1/3RP1Pp/1P3K2/P2R4/8 b - - 0 38", "dxe4+ Ke3 Rxd4", 0.95, None, [], True),
+    (
+        "1bK5/pP3p2/B7/1P4p1/6k1/8/7p/8 w - - 0 44",
+        "Kxb8 h1=Q Kxa7 Kh3 b8=Q Qa1 Qc8+ g4 b6",
+        0.95,
+        None,
+        [],
+        True,
+    ),
+    (
+        "2r2r2/2b1qpk1/p1n1p2p/1pPp2pn/1P1P4/P2Q3P/2BB1PP1/R3R1K1 w - - 0 24",
+        "Qh7+ Kf6 Qxh6#",
+        0.95,
+        2,
+        [],
+        True,
+    ),
+    (
+        "r3qr1k/1p2b1p1/4p1Qp/2ppP3/p4P2/2P1P1P1/PP4P1/1K1R3R w - - 1 21",
+        "Rxh6+ gxh6 Qxh6+ Kg8 Rh1 Bh4 Rxh4 Qd7 Rg4+ Kf7 Rg7+ Ke8",
+        0.95,
+        None,
+        [],
+        True,
+    ),
+    (
+        "rbb2rk1/1p3ppp/p1n2n2/3p4/3Pp3/P1N1B2P/1qP1BPPN/R2QK2R w KQ - 0 14",
+        "Na4 Qxa1 Qxa1",
+        0.95,
+        None,
+        [],
+        True,
+    ),
+    (
+        "rn1Q2rk/1bp1n2p/4p3/pp6/2N1P3/2q5/P1P2P1P/1K1R2R1 w - - 2 27",
+        "Rxg8+ Nxg8 Rg1 Qg7 Rxg7 Kxg7 Qxc7+ Nd7 Qxd7+",
+        0.95,
+        None,
+        [],
+        True,
+    ),
+    ("r5k1/1p4bp/p1n1p1p1/3q4/3P3r/1Q2P2B/PP3P1P/3RK2R w K - 0 22", "Bxe6+ Qxe6 Qxe6+", 0.95, None, [], True),
+    (
+        "8/6kp/2Qq1pp1/p7/3r4/1P5P/P4PP1/2R3K1 b - - 0 32",
+        "Rd1+ Rxd1 Qxc6 Re1 Qc2 Re7+ Kh6 g4 Qb1+ Kg2 Qxa2",
+        0.95,
+        None,
+        [],
+        True,
+    ),
+    ("5rk1/5p2/P7/8/8/8/5R2/5RK1 w - - 0 1", "Rxf7 Rxf7 Rxf7 Kxf7 a7", 0.95, None, [], True),
+    ("r3nr1k/4N1pp/p2p1p2/4nR2/1p2P3/2q4Q/P3B1PP/4R2K w - - 4 24", "Qxh7+ Kxh7 Rh5#", 0.95, 2, [], True),
+    ("6R1/8/4r3/5P1p/7P/k5PK/8/1q6 w - - 0 54", "Ra8+ Kb4 Rb8+ Kc5 Rxb1", 0.95, None, [], True),
+    (
+        "r2r1bk1/1b5p/p4Pp1/1p2N1P1/4P2Q/1PPpq2P/6K1/R4R2 w - - 1 31",
+        "f7+ Kh8 Nxg6+ Kg7 Qh6#",
+        0.95,
+        3,
+        [],
+        True,
+    ),
+    ("r3k3/p1pb4/2p2p2/2q1p1p1/2B3p1/2P4r/P1P2PQP/3RR1K1 w q - 4 21", "Qe4", 0.55, None, ["c5c4"], False),
+    ("1k2r3/1p3ppp/3p4/2n5/1rPN4/1P3P2/P5PP/2KRR3 b - - 2 23", "Rxe1 Rxe1 Nd3+ Kd2 Nxe1", 0.95, None, [], True),
+    # Two draws no cached line reaches: a stalemate on the board, and a position that comes
+    # round again (no perpetual: two checks are not three).
+    ("7k/4Q3/6K1/8/8/8/8/8 w - - 0 1", "Qf7", 0.5, None, [], False),
+    ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Nf3 Nf6 Ng1 Ng8", 0.5, None, [], False),
+]
+
+# Positions whose engine analysis (in the bench's cache) reaches the rarer goals and fields of
+# the idea reader, found by reading the whole cache once (2026-09-24): a trade into a won
+# ending, the king leading (with the opposition), an attack on the king, a combination, a
+# threat to meet, a draw by perpetual, a pawn won back to level, a pinned guard, an
+# in-between move, a second tactic, two sacrifices, a won position with nothing to take. No
+# cached line reaches "breakthrough": the pawn that runs to the seventh makes the line a
+# promotion first (`idea._read`), on the desktop as on the phone.
+RARE = [
+    ("convert", "5r2/3P1k2/1b6/1P1R4/7P/3K4/8/8 w - - 5 48"),
+    ("convert", "6k1/6p1/8/p7/P7/2P4r/2R1K3/8 b - - 1 39"),
+    ("convert", "8/8/p6p/1p2kp2/1P2b2P/P3K1P1/2B5/8 w - - 4 53"),
+    ("convert", "7r/p5k1/6p1/1p1p2p1/3P1pP1/P7/1P1K1P2/7R w - - 1 32"),
+    ("convert", "8/5p2/4p3/1k1pP1pp/r2P4/R1PK4/6PP/8 w - - 0 30"),
+    ("convert", "8/8/p2r3p/P2k1p2/5P2/4K3/2R3P1/8 w - - 1 42"),
+    ("convert", "1rr2k2/5p2/7p/2bP1Pq1/3BR3/pP5R/P4Q2/7K b - - 2 41"),
+    ("convert", "8/7k/p5pp/1p6/3b4/P1B4P/1P4PK/8 b - - 1 40"),
+    ("king", "8/1R6/6pk/1P3p1p/5P1P/P4K2/1r3p2/8 w - - 0 41"),
+    ("king", "8/7p/3k4/p6P/1p2K3/8/PP6/8 w - - 0 43"),
+    ("king", "8/7k/5pp1/4p1p1/6P1/4PK1P/5P2/8 w - - 0 47"),
+    ("king", "4k3/8/5PKp/2p3pP/p7/8/PP6/8 b - - 4 40"),
+    ("king", "8/8/7p/p1k3p1/5pP1/1P1K1P1P/8/8 b - - 7 49"),
+    ("king", "7K/8/4kp2/p1p5/P1P2pP1/5P2/8/8 w - - 1 44"),
+    ("king", "8/8/3k4/1p2p1p1/1P2K2p/5P1P/6P1/8 b - - 3 41"),
+    ("king", "8/8/5p2/1ppk3p/5p1P/P1P2P2/1K4P1/8 b - - 2 70"),
+    ("attack", "3rkb1r/p3pppp/5q2/3b4/8/3Q1P2/PPP3PP/2KR1B1R w k - 0 14"),
+    ("attack", "r1bqkr2/1pp3pN/p1np4/4pp2/2B1n3/P1NPK2P/1PP3P1/R1BQ3R b q - 1 11"),
+    ("attack", "r1b1kb1r/1pqpnppp/p1n1p3/8/2BNP3/P1N5/1PP2PPP/R1BQK2R w KQkq - 1 8"),
+    ("attack", "r2r4/pp3k2/2p1p2Q/4qp1R/2P5/5BPP/1P3P2/6K1 w - - 2 27"),
+    ("attack", "1r2r1k1/Q1p3pp/6q1/2nb4/8/5P2/PPP3PP/RNB2RK1 b - - 0 19"),
+    ("attack", "2r5/pp3kpQ/2p2r1p/8/3P2bq/2P5/PPBB2P1/5RK1 w - - 2 27"),
+    ("attack", "3r4/p4R2/1pb2Pp1/n1p1Qqkp/8/P7/1P4PP/6RK w - - 3 33"),
+    ("attack", "2b5/8/3p1Pk1/2p1p1P1/2q1P2K/2P5/6Q1/8 w - - 0 43"),
+    ("combination", "r4rk1/1p4pn/p1b1q1Np/2p5/2P5/4P3/PPQB1PPP/3R1RK1 b - - 0 19"),
+    ("defend", "r3kb1r/1p1b1p2/p2ppp1p/2q2P1B/2nNP3/2N3R1/P1PQ2PP/1R4K1 w kq - 1 20"),
+    ("defend", "r4rk1/3b2pp/8/p3QB2/1pqP4/8/PP4PP/4RRK1 b - - 0 22"),
+    ("defend", "8/pQ3pkp/4r3/2BNb1p1/8/1R4q1/P5P1/5K2 b - - 2 34"),
+    ("defend", "8/1k4p1/1p2pp1p/1K1P4/4P3/8/5PPP/8 b - - 0 31"),
+    ("defend", "8/8/2n2k2/P3pP2/4K2P/8/8/8 w - - 2 49"),
+    ("defend", "8/pb6/1p6/PP3k2/2P1p3/4K2p/5P2/7B w - - 2 42"),
+    ("defend", "8/8/3R2p1/6K1/1p4P1/k2b4/8/8 b - - 1 46"),
+    ("defend", "2r5/p2r1kp1/1p1P2p1/2P2p2/1P1R1P2/6N1/P4KP1/8 w - - 1 33"),
+    ("draw", "rqb1k2r/3p2p1/p3pp2/1p3P1p/4P1P1/P1N5/BP2Q1P1/2R2R1K b kq - 0 20"),
+    ("draw", "3r1rk1/ppp2pp1/1b6/7p/4P1R1/2Pq3P/P5P1/R1Q1B2K w - - 0 24"),
+    ("draw", "7R/bP4k1/3q2p1/1Q1p1p2/4p3/7P/6P1/r4N1K w - - 3 40"),
+    ("draw", "r5k1/p4p1p/6p1/3P4/4q3/4R3/PP2K3/R2Q4 b - - 1 27"),
+    ("draw", "8/5p1k/5Ppb/2p3P1/qp6/8/KB5Q/8 w - - 5 59"),
+    ("draw", "rk5r/1p2b1p1/4Bn1p/p7/7q/1P3P2/P1Q4P/2R4K w - - 0 33"),
+    ("draw", "r1b4r/ppp3k1/4P2p/7p/3PQ3/b7/Pq3PPP/n2KR3 w - - 0 23"),
+    ("draw", "8/5k1p/p3p2r/1p1pPp2/5P2/P1P1P2R/6P1/6K1 b - - 0 42"),
+    ("promote", "1bK5/pP3p2/B7/1P4p1/6k1/8/7p/8 w - - 0 44"),
+    ("promote", "3r3Q/Pk2b3/6p1/2p2p2/1p6/3q4/1PnP1PPP/R1B3K1 w - - 0 25"),
+    ("promote", "1Rb5/p4p1k/3q1Pp1/2p5/3p1p1P/5P2/PQ4P1/6K1 b - - 1 48"),
+    ("promote", "6k1/8/2P3rp/1p1pp3/1P1N4/2P2Pn1/1P4P1/1K3n2 w - - 0 36"),
+    ("level_win", "1r5r/pp1qppk1/6pp/2p1P3/2B3n1/3P4/P1P1NPQ1/1R4K1 w - - 1 22"),
+    ("level_win", "1Q2n1kr/B4ppp/q7/bb6/4p3/2P1P3/P3NPPP/RN2K2R b KQ - 0 21"),
+    ("level_win", "r2qr1k1/p1p1bpBp/2pp1n2/8/4P1bP/6Q1/PPP2PP1/RN2K2R w KQ - 2 13"),
+    ("level_win", "r3kbnr/ppp1qppp/2n5/1B1pP3/5B2/4PQ2/PPP2PPP/RN2K2R b KQkq - 2 7"),
+    ("pinned_guard", "2kr3r/ppp3pp/6q1/3Pnp2/1PPQp3/7P/P3NPP1/R4RK1 b - - 2 17"),
+    ("pinned_guard", "r4rk1/1p1n1pp1/p3p2p/3PPn2/4pP1q/8/PP2B1PP/R2Q1RBK b - - 0 18"),
+    ("pinned_guard", "2k3rr/ppp2p1p/2b5/4Nn2/3pPQ2/1P4Pq/P1PP1P1P/RN3RK1 b - - 0 18"),
+    ("pinned_guard", "4Q3/6bk/6pp/pp6/8/P2qBP1P/1P6/K1R5 b - - 0 37"),
+    ("intermezzo", "r4rk1/pp3ppp/4bq2/3p4/1P1Nn3/P5P1/4PPBP/R2Q1RK1 b - - 0 16"),
+    ("intermezzo", "3r1b1R/1pq3p1/p1k3P1/3p4/1P1Q4/4PP2/P1P5/2K5 w - - 0 27"),
+    ("intermezzo", "r1b2r2/pp1n2k1/2p3pp/4Np2/2BP4/8/PP4PP/2KRR3 w - - 1 19"),
+    ("intermezzo", "8/pp5p/8/3N4/2P5/1P1bR2P/P2r1k1K/8 b - - 2 43"),
+    ("also", "6k1/5pb1/p6p/1p4P1/8/5BQ1/PP1q1PP1/6K1 b - - 0 36"),
+    ("also", "5rk1/1p5p/p2Ppq2/4n1p1/1P1QP1N1/P6P/5Pp1/3R2K1 b - - 1 33"),
+    ("also", "r1r3k1/3n1ppp/p2bpnb1/8/P1pN3P/2N1P3/3PBPq1/B1RQK2R w K - 0 17"),
+    ("also", "r3k2r/ppp1bpp1/3pp2p/8/2PPN2q/7P/PP2QPP1/R3K2R w KQkq - 1 14"),
+    ("opposition", "8/5p1p/1p6/2k1pP2/4K2P/5PP1/8/8 b - - 2 41"),
+    ("opposition", "8/5p2/8/3k4/5KPP/Pb6/8/8 w - - 1 56"),
+    ("sacrifices", "2r4r/pp2q1k1/2pp1bp1/5p2/2P2N2/1P4PP/P1Q3K1/3R1R2 w - - 1 27"),
+    ("sacrifices", "3rk3/1p1n1p2/4p2p/p1Bb2p1/6PP/1P1BRP2/r7/4R1K1 w - - 2 30"),
+    ("sacrifices", "3r1rk1/pbp1qppp/1p2pb2/8/2PB2Q1/5P1N/PP2KP1P/3R2R1 w - - 7 20"),
+    ("sacrifices", "r3brk1/1pqnb2p/p3ppp1/2ppN2Q/5P2/1P1PP1R1/PBPN2PP/R5K1 w - - 0 16"),
+    ("winning_plan", "8/2k4p/p3P3/1p3p2/1P1Kp3/P7/6PP/8 w - - 0 37"),
+    ("winning_plan", "8/p7/6pp/2kp1p2/5P2/1P1K3P/P5P1/8 w - - 0 36"),
+    ("winning_plan", "8/1p6/p3p3/4k2p/P1Pr2pP/1P2R1P1/4K3/8 b - - 3 43"),
+    ("winning_plan", "8/1pp5/p2k1p2/1P6/P1KPP3/8/8/8 w - - 0 42"),
 ]
 
 
@@ -99,6 +288,117 @@ def annotation_json(mark) -> dict:
         "color": mark.color,
         "opacity": mark.opacity,
         "label": mark.label,
+    }
+
+
+def analysis_json(analysis: Analysis) -> dict:
+    """The Analysis exactly as the desktop was fed it, for the Kotlin to rebuild."""
+    return {
+        "lines": [
+            {
+                "moves": list(line.moves),
+                "depth": line.depth,
+                "expected_score": line.expected_score,
+                "score_cp": line.score_cp,
+                "mate": line.mate,
+            }
+            for line in analysis.lines
+        ],
+        "decisive": analysis.decisive,
+        "only_move": analysis.only_move,
+        "threats": list(analysis.threats),
+        "tags": [
+            {"name": tag.name, "squares": list(tag.squares), "move": tag.move}
+            for tag in analysis.tags
+        ],
+    }
+
+
+def square_or_none(square: chess.Square | None) -> str | None:
+    return None if square is None else chess.square_name(square)
+
+
+def tag_json(tag: MotifTag | None) -> dict | None:
+    if tag is None:
+        return None
+    return {"name": tag.name, "squares": list(tag.squares), "move": tag.move}
+
+
+def idea_json(idea: IDEA.Idea) -> dict:
+    """Every field of the idea, squares by name and moves in UCI."""
+    return {
+        "goal": idea.goal,
+        "first": None if idea.first is None else idea.first.uci(),
+        "line": [m.uci() for m in idea.line],
+        "mate_in": idea.mate_in,
+        "gain": idea.gain,
+        "won": idea.won,
+        "blow": tag_json(idea.blow),
+        "blow_move": None if idea.blow_move is None else idea.blow_move.uci(),
+        "blow_board": None if idea.blow_board is None else idea.blow_board.fen(),
+        "blow_at": idea.blow_at,
+        "preparation": list(idea.preparation),
+        "starts_with": idea.starts_with,
+        "target": square_or_none(idea.target),
+        "threat": None if idea.threat is None else idea.threat.uci(),
+        "threatened": idea.threatened,
+        "flight": [chess.square_name(s) for s in idea.flight],
+        "checks": idea.checks,
+        "level": idea.level,
+        "down": idea.down,
+        "draw": idea.draw,
+        "ending": idea.ending,
+        "opposition": idea.opposition,
+        "runner": square_or_none(idea.runner),
+        "pinned_guard": square_or_none(idea.pinned_guard),
+        "intermezzo": idea.intermezzo,
+        "also": idea.also,
+        "sacrifices": [[ply, kind] for ply, kind in idea.sacrifices],
+        "winning": idea.winning,
+    }
+
+
+def words_json(idea: IDEA.Idea, board: chess.Board) -> dict:
+    """The idea in the coach's words, straight from `idea_words` (the facts add the plan)."""
+    return {
+        "pattern": W.pattern(idea),
+        "goal": W.goal(idea),
+        "mechanism": W.mechanism(idea),
+        "question": W.question(idea, None),
+        "nudge": W.nudge(idea),
+        "target": W.target(idea, board),
+        "piece": W.piece(idea, board),
+        "why": W.why(idea, board, F.describe_tactic),
+    }
+
+
+def templates_json(facts: D.PositionFacts) -> dict:
+    """The offline coach's words at each rung, and the lesson after a costly move."""
+    levels = list(DisclosureLevel.__members__.values())
+    levels = sorted(set(levels), key=int)
+    best = facts.candidates[0] if facts.candidates else (facts.line[0] if facts.line else "e4")
+    return {
+        "idea": idea_template(facts),
+        "focus": focus_template(facts),
+        "move": move_template(facts),
+        "line": line_template(facts),
+        "hints": {str(int(level)): hint_template(facts, level) for level in levels},
+        "best": best,
+        "lessons": [
+            {"opener": opener, "text": lesson_template(facts, best, opener)}
+            for opener in (COST_YOU[0].format(best=best), FINE_TIGHTER[1].format(best=best))
+        ],
+        # Each rung's words checked at every level: the scrubbing of the visible facts and the
+        # piece-word rule see every sentence the templates can say.
+        "leaks": [
+            {
+                "rung": int(rung),
+                "level": int(level),
+                "leaks": D.leak_check(hint_template(facts, rung), facts, level),
+            }
+            for rung in levels
+            for level in levels
+        ],
     }
 
 
@@ -147,19 +447,43 @@ def analysis_for(board: chess.Board, line_ucis: list[str], decisive: bool, only:
     )
 
 
-def case_for(board: chess.Board, line_ucis: list[str], rng: random.Random, deep: bool = True) -> dict:
+def test_analysis(fen: str, line: str, score: float, mate: int | None, threats, decisive) -> Analysis:
+    """`tests/test_idea.py`'s `analysis`: the SAN line written out as UCI."""
+    board = chess.Board(fen)
+    moves = []
+    for san in line.split():
+        move = board.parse_san(san)
+        moves.append(move.uci())
+        board.push(move)
+    return Analysis(
+        game_id="g",
+        fen=fen,
+        ply=0,
+        lines=[Line(moves=moves, depth=20, expected_score=score, mate=mate)],
+        decisive=decisive,
+        only_move=False,
+        threats=list(threats),
+    )
+
+
+def case_for(
+    board: chess.Board,
+    analysis: Analysis,
+    *,
+    deep: bool = True,
+    source: str = "synth",
+    marks_deep: bool | None = None,
+) -> dict:
     us = board.turn
     phase = phase_of(board, False)
-    decisive = rng.random() < 0.5
-    only = rng.random() < 0.3
-    analysis = analysis_for(board, line_ucis, decisive, only)
     facts = F.facts_from_analysis(board, analysis, last_move="e4", in_book=False, user=us)
+    idea = IDEA.read(board, analysis)
 
     moves = list(board.legal_moves)
     sample = moves[:8]
     best = moves[0] if moves else None
 
-    levels = list(DisclosureLevel)
+    levels = sorted(set(DisclosureLevel.__members__.values()), key=int)
     leaks = []
     for text in (LEAK_TEXTS if deep else []):
         for level in levels:
@@ -174,16 +498,26 @@ def case_for(board: chess.Board, line_ucis: list[str], rng: random.Random, deep:
         leaks.append(
             {
                 "text": text,
-                "level": int(DisclosureLevel.THEME),
+                "level": int(DisclosureLevel.IDEA),
                 "said": "what about Nxf7 and the knight?",
                 "leaks": D.leak_check(
-                    text, facts, DisclosureLevel.THEME, said="what about Nxf7 and the knight?"
+                    text, facts, DisclosureLevel.IDEA, said="what about Nxf7 and the knight?"
                 ),
             }
         )
+    # The facts' own sentences at each level: a goal or a mechanism that names what a line
+    # wins is scrubbed, the player's own piece is not.
+    for key in ("goal", "mechanism", "question", "target", "piece", "why", "nudge"):
+        text = getattr(facts, key)
+        if not text:
+            continue
+        for level in levels:
+            leaks.append(
+                {"text": text, "level": int(level), "said": None, "leaks": D.leak_check(text, facts, level)}
+            )
 
     marks = []
-    for level in (levels if deep else []):
+    for level in (levels if (deep if marks_deep is None else marks_deep) else []):
         for trigger in (Trigger.STUCK, Trigger.POST_MOVE):
             played = board.san(best) if best is not None and trigger is Trigger.POST_MOVE else None
             marks.append(
@@ -246,19 +580,23 @@ def case_for(board: chess.Board, line_ucis: list[str], rng: random.Random, deep:
             )
 
     return {
+        "source": source,
         "fen": board.fen(),
         "phase": phase,
-        "line": line_ucis,
-        "decisive": decisive,
-        "only_move": only,
+        "analysis": analysis_json(analysis),
         "facts": facts_json(facts),
+        "idea": idea_json(idea),
+        "words": words_json(idea, board),
+        "templates": templates_json(facts),
         "material_us": F.material_text(board, us),
         "material_them": F.material_text(board, not us),
         "position_text": F.position_text(board),
         "ascii": F.ascii_board(board),
         "inventory_lines": I.inventory_lines(board, us),
         "inventory_text": I.inventory_text(board, us),
-        "line_outcome": O.line_outcome(board, [m for m in analysis.lines[0].moves], us),
+        "line_outcome": O.line_outcome(board, list(analysis.lines[0].moves), us)
+        if analysis.lines
+        else None,
         "effects": [
             {
                 "move": m.uci(),
@@ -283,7 +621,8 @@ def case_for(board: chess.Board, line_ucis: list[str], rng: random.Random, deep:
 
 
 def policy_cases() -> list[dict]:
-    """Scripted runs of the interjection policy, so the whole state machine is compared."""
+    """Scripted runs of the interjection policy, so the whole state machine is compared: two
+    unprompted words per position, each after its own stuck spell."""
     from sidecoach.events import Label, MoveAssessment, Severity
 
     def assessment(severity: Severity, label: Label | None) -> MoveAssessment:
@@ -317,10 +656,20 @@ def policy_cases() -> list[dict]:
             note("tick 60", policy.tick(60.0))
             note("analysed quiet", policy.on_position_analysed(2, decisive=False))
             note("analysed decisive", policy.on_position_analysed(2, decisive=True))
-            policy.said(2)
+            policy.said(2, 60.0)
+            note("analysed after said", policy.on_position_analysed(2, decisive=True))
+            note("tick soon after said", policy.tick(80.0))
             note("tick after said", policy.tick(120.0))
+            policy.said(2, 120.0)
+            note("tick after two", policy.tick(300.0))
+            policy.new_position(2, 300.0, user_to_move=True)
+            note("same ply again", policy.tick(400.0))
             policy.new_position(4, 100.0, user_to_move=True)
             note("analysed decisive again", policy.on_position_analysed(4, decisive=True))
+            policy.said(4)
+            note("tick after said without a time", policy.tick(150.0))
+            policy.said(3, 150.0)
+            note("said of another ply", policy.tick(151.0))
             policy.new_position(12, 200.0, user_to_move=True)
             note("analysed decisive later", policy.on_position_analysed(12, decisive=True))
             policy.set_remaining(20_000)
@@ -340,6 +689,45 @@ def policy_cases() -> list[dict]:
     return runs
 
 
+def cached_analyses(fens: set[str]) -> dict[str, Analysis]:
+    """The puzzle bench's engine analyses of `fens`, read from its cache (never written)."""
+    out: dict[str, Analysis] = {}
+    if not CACHE.exists():
+        return out
+    with CACHE.open(encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # a line the running bench is still writing
+            if row.get("fen") in fens:
+                out[row["fen"]] = Analysis.model_validate(row["analysis"])
+    return out
+
+
+def theme_positions() -> list[tuple[str, str, chess.Board]]:
+    """(puzzle id, theme, board) for up to PER_THEME puzzles of every theme: the puzzle's
+    position after the opponent's first move, and the one after the player's first reply."""
+    if not THEMES.exists():
+        return []
+    with THEMES.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    wanted: list[tuple[str, str, chess.Board]] = []
+    for row in rows:
+        board = chess.Board(row["FEN"])
+        moves = row["Moves"].split()
+        for index, uci in enumerate(moves[:3]):
+            move = chess.Move.from_uci(uci)
+            if move not in board.legal_moves:
+                break
+            board.push(move)
+            if index in (0, 2):
+                wanted.append((row["PuzzleId"], row["Themes"], board.copy(stack=False)))
+    return wanted
+
+
 def main() -> None:
     rng = random.Random(20260922)
     cases: list[dict] = []
@@ -356,7 +744,10 @@ def main() -> None:
                         # The whole sweep -- every leak text at every level, every mark, every
                         # verdict -- on the first forty positions; the rest carry the facts,
                         # the inventory and the effects, which is where the variety is.
-                        cases.append(case_for(board, moves[index:], rng, deep=len(cases) < 40))
+                        decisive = rng.random() < 0.5
+                        only = rng.random() < 0.3
+                        analysis = analysis_for(board, moves[index:], decisive, only)
+                        cases.append(case_for(board, analysis, deep=len(cases) < 40))
                     board.push(move)
     for _ in range(25):
         board = chess.Board()
@@ -367,7 +758,62 @@ def main() -> None:
             board.push(rng.choice(legal))
             if ply % 7 == 0:
                 rest = [m.uci() for m in list(board.legal_moves)[:4]]
-                cases.append(case_for(board, rest, rng, deep=len(cases) % 37 == 0))
+                decisive = rng.random() < 0.5
+                only = rng.random() < 0.3
+                analysis = analysis_for(board, rest, decisive, only)
+                cases.append(case_for(board, analysis, deep=len(cases) % 37 == 0))
+    synthesised = len(cases)
+
+    # The desktop's idea tests, their lines written out.
+    for fen, line, score, mate, threats, decisive in IDEA_TESTS:
+        board = chess.Board(fen)
+        analysis = test_analysis(fen, line, score, mate, threats, decisive)
+        cases.append(case_for(board, analysis, deep=True, source="test_idea"))
+
+    # Every theme's puzzles, with the engine's own analysis.
+    positions = theme_positions()
+    analyses = cached_analyses({board.fen() for _, _, board in positions} | {fen for _, fen in RARE})
+    per_theme: dict[str, int] = {}
+    seen: set[str] = set()
+    themed = 0
+    for puzzle, themes, board in positions:
+        fen = board.fen()
+        if fen in seen or fen not in analyses:
+            continue
+        names = themes.split()
+        if all(per_theme.get(name, 0) >= PER_THEME for name in names):
+            continue
+        for name in names:
+            per_theme[name] = per_theme.get(name, 0) + 1
+        seen.add(fen)
+        # The marks at every level on one in four: the target and the piece at the focus rung.
+        cases.append(
+            case_for(
+                board,
+                analyses[fen],
+                deep=themed % 8 == 0,
+                marks_deep=themed % 4 == 0,
+                source=f"lichess {puzzle}: {themes}",
+            )
+        )
+        themed += 1
+
+    # The rarer goals, from the whole cache.
+    rare = 0
+    for label, fen in RARE:
+        if fen in seen or fen not in analyses:
+            continue
+        seen.add(fen)
+        cases.append(
+            case_for(
+                chess.Board(fen),
+                analyses[fen],
+                deep=rare % 6 == 0,
+                marks_deep=rare % 2 == 0,
+                source=f"cache: {label}",
+            )
+        )
+        rare += 1
 
     persons = [
         {"text": text, "side": side, "out": third_person(text, side=side)}
@@ -375,7 +821,7 @@ def main() -> None:
         for side in ("player", "opponent")
     ]
     unlocks = []
-    for start in list(DisclosureLevel):
+    for start in sorted(set(DisclosureLevel.__members__.values()), key=int):
         for unlock in D.Unlock:
             state = D.Disclosure(level=start)
             result = state.apply(unlock)
@@ -406,6 +852,15 @@ def main() -> None:
             list(Trigger),
         ]
     ]
+    standings = [
+        {"score": score, "you": F.standing_words(score), "third": F.standing_words(score, third_person=True)}
+        for score in (0.0, 0.1, 0.15, 0.2, 0.2000001, 0.3, 0.38, 0.3800001, 0.5, 0.62, 0.7, 0.79,
+                      0.7999999, 0.8, 0.85, 0.9, 1.0)
+    ]
+
+    goals: dict[str, int] = {}
+    for case in cases:
+        goals[case["idea"]["goal"]] = goals.get(case["idea"]["goal"], 0) + 1
 
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "coach.json").write_text(
@@ -416,13 +871,20 @@ def main() -> None:
                 "unlocks": unlocks,
                 "controls": controls,
                 "priorities": priorities,
+                "standings": standings,
                 "policy": policy_cases(),
             }
         ),
         encoding="utf-8",
     )
     size = (OUT / "coach.json").stat().st_size
-    print(f"{len(cases)} positions, {len(persons)} rewrites -> {OUT / 'coach.json'} ({size/1e6:.1f} MB)")
+    print(
+        f"{len(cases)} positions ({synthesised} synthesised, {len(IDEA_TESTS)} idea tests, "
+        f"{themed} Lichess by theme over {len(per_theme)} themes, {rare} rarer goals), "
+        f"{len(persons)} rewrites "
+        f"-> {OUT / 'coach.json'} ({size / 1e6:.1f} MB)"
+    )
+    print("goals:", dict(sorted(goals.items(), key=lambda kv: -kv[1])))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 package com.sidecoach.coach
 
+import com.sidecoach.analysis.Exchange
 import com.sidecoach.analysis.PositionalFact
 import com.sidecoach.analysis.bestMoveIdea
 import com.sidecoach.analysis.phaseOf
@@ -55,6 +56,19 @@ private val PLAN_THEME = mapOf(
     "activate" to "activating your worst-placed piece",
     "space" to "gaining space on the flank",
     "simplify" to "trading down to convert your material",
+    "passerPawnEnding" to "making a passed pawn",
+)
+
+/**
+ * In a pawn ending there is no king to storm and no space to take: a pawn move there is about
+ * the passed pawn it makes ("storming the pawns in front of their King" was said of h5 in a
+ * king-and-pawn ending, Lichess Yb1jJ).
+ */
+private val PAWN_ENDING_PLAN = mapOf(
+    "break" to "passerPawnEnding",
+    "space" to "passerPawnEnding",
+    "pawnStorm" to "passerPawnEnding",
+    "centre" to "passerPawnEnding",
 )
 
 /**
@@ -109,10 +123,12 @@ const val CANDIDATE_MARGIN = 0.02
  */
 fun standingWords(score: Double, thirdPerson: Boolean = false): String {
     val who = if (thirdPerson) "the player is" else "you are"
-    if (score >= 0.85) return "$who winning"
+    // Won at 0.8, as the idea reader counts a won position (`IdeaReader.WON`): "better" of a
+    // position four pawns up read wrong against ChessQA's bands (93% -> 96% at one line).
+    if (score >= 0.8) return "$who winning"
     if (score >= 0.62) return "$who better"
     if (score > 0.38) return "it is about equal"
-    if (score > 0.15) return "$who worse"
+    if (score > 0.2) return "$who worse"
     return "$who losing"
 }
 
@@ -282,8 +298,19 @@ private fun tacticOn(board: Board, name: String, squares: List<String>): String?
         pieces[i] != null && pieces[j] != null && pieces[i]!!.colour != pieces[j]!!.colour
 
     if (name == "fork" && sqs.size >= 3 && pieces[0] != null && pieces.drop(1).all { it != null }) {
-        // The forking piece must bear on every target, and every target must be the enemy's.
-        if ((1 until sqs.size).all { enemyOf(0, it) && sqs[it] in board.attacks(sqs[0]) }) {
+        // The forking piece must bear on every target, and every target must be the enemy's:
+        // a fork read off a board that has moved on is otherwise built from the wrong pieces.
+        val forkerColour = pieces[0]!!.colour
+        val takes = HashSet<Int>()
+        for (t in sqs.drop(1)) {
+            val piece = pieces[sqs.indexOf(t)]
+            if (piece != null &&
+                (piece.pieceType == KING || sqs[0] in Exchange.capturers(board, forkerColour, t))
+            ) {
+                takes.add(t)
+            }
+        }
+        if ((1 until sqs.size).all { enemyOf(0, it) && sqs[it] in board.attacks(sqs[0]) && sqs[it] in takes }) {
             // The king first, then the most valuable, at most three.
             fun worth(i: Int): Int {
                 val kind = pieces[i]!!.pieceType
@@ -400,33 +427,30 @@ fun natureOf(board: Board, best: Move, line: List<String> = emptyList()): String
     if (board.isCapture(best) || board.givesCheck(best) || best.promotion != 0) {
         return "forcing -- the answer is a check, a capture or a promotion"
     }
-    if (line.isNotEmpty() && lineGain(board, line) >= TACTIC_GAIN) {
+    if (line.isNotEmpty() && lineGain(board, line) >= TACTIC_GAIN) {  // counted as the idea counts it
         return "a tactic -- the best move is quiet, but the line after it wins material"
     }
     return "quiet -- no tactic to find; the move improves your position"
 }
 
 /**
- * Material gained by the side to move over `line` (UCI), in pawns' worth; the line stops at
- * the first illegal move.
+ * Material gained by the side to move over `line` (UCI), in pawns' worth, counted as the idea
+ * reader counts its line ([IdeaReader.lineGain]): after the opponent's replies, a line that
+ * stops mid-trade not counting what can still be taken back ("a3 Kd7 Nxe5" was a knight won,
+ * with dxe5 to come). The line stops at the first illegal move.
  */
 private fun lineGain(board: Board, line: List<String>): Int {
-    val us = board.turn
-    val after = board.copy(withStack = false)
+    val moves = ArrayList<Move>()
+    val boards = arrayListOf(board.copy(withStack = false))
     for (uci in line) {
         val move = toMove(uci) ?: break
-        if (!after.isLegal(move)) break
+        if (!boards.last().isLegal(move)) break
+        val after = boards.last().copy(withStack = false)
         after.push(move)
+        moves.add(move)
+        boards.add(after)
     }
-    fun balance(b: Board): Int {
-        var total = 0
-        for (piece in b.pieceMap().values) {
-            val value = FACT_VALUES[piece.pieceType]
-            total += if (piece.colour == us) value else -value
-        }
-        return total
-    }
-    return balance(after) - balance(board)
+    return if (moves.isNotEmpty()) IdeaReader.lineGain(boards, moves, moves.size).first else 0
 }
 
 /**
@@ -450,21 +474,30 @@ fun factsFromAnalysis(
     val phase = phaseOf(board, inBook)
     val us = board.turn
 
-    // A tactic is the headline only when it is the point: a decisive or forced position, or
-    // one where the best move plays into the very squares the tactic is on.
-    val theme = themeOf(analysis.tags)
-    val bestSquares = if (best != null) setOf(best.from, best.to) else emptySet()
-    val tacticSquares = theme?.squares?.map { parseSquare(it) }?.toSet() ?: emptySet()
-    val tacticRelevant = theme != null &&
-        (analysis.decisive || analysis.onlyMove || bestSquares.intersect(tacticSquares).isNotEmpty())
-    val region = if (tacticRelevant && theme != null) regionOf(theme.squares) else null
-    val focus = if (tacticRelevant && theme != null) theme.squares else emptyList()
-    val tactic = if (tacticRelevant && theme != null) {
-        describeTactic(board, theme.name, theme.squares, best)
+    // What the best line is for, read through the player's own moves ([IdeaReader]): the goal,
+    // the blow that delivers it on whichever move it comes, the target. The pattern is the
+    // blow's, never a static feature elsewhere on the board: a static pin took the headline from
+    // the fork on the player's second move, and a mate in one went out as "getting a piece out
+    // of danger" (Tai's puzzles, 2026-09-23).
+    val idea = IdeaReader.read(board, analysis)
+    val tactical = idea.goal in listOf("mate", "win", "promote", "attack", "combination")
+    val blow = if (tactical) idea.blow else null
+    val themeText = if (tactical) IdeaWords.pattern(idea) else null
+    // The squares the pattern turns on, as they stand now: the blow's when it is the first
+    // move, else what it goes after.
+    val focus = if (blow != null && idea.blowAt == 1) {
+        blow.squares.toList()
+    } else if (idea.target != null && tactical) {
+        listOf(squareName(idea.target))
+    } else {
+        emptyList()
+    }
+    val region = if (focus.isNotEmpty()) regionOf(focus) else null
+    val tactic = if (blow != null && idea.blowBoard != null) {
+        describeTactic(idea.blowBoard, blow.name, blow.squares, idea.blowMove)
     } else {
         null
     }
-    val themeText = if (tacticRelevant && theme != null) THEMES.toMap()[theme.name] else null
 
     // The opponent's threat, as the coach would name it, and the move behind it: the engine's
     // best reply after a pass.
@@ -481,22 +514,32 @@ fun factsFromAnalysis(
         }
     }
 
-    // The idea half: the strategic point of the best move, and the few most instructive static
-    // features. The plan only competes for the theme slot when no tactic leads.
+    // The idea half: the strategic point of the best move (a square-free theme), and the few
+    // most instructive static features. The plan only competes for the theme slot when no
+    // tactic leads, so the coach is never handed two headlines at once.
     var plan: String? = null
-    if (best != null) {
+    var planKind: String? = null
+    if (best != null && (idea.goal == "plan" || idea.goal == "defend")) {
         val worst = worstPieceSquare(board, us)
-        val idea: PositionalFact? = bestMoveIdea(board, best, us, phase, worst, threatMove)
-        if (idea != null && !tacticRelevant) plan = PLAN_THEME[idea.kind]
+        val planIdea: PositionalFact? = bestMoveIdea(board, best, us, phase, worst, threatMove)
+        if (planIdea != null) {
+            var kind = planIdea.kind
+            val pawnEnding = board.pieceMap().values.all { it.pieceType == KING || it.pieceType == PAWN }
+            if (pawnEnding) kind = PAWN_ENDING_PLAN[kind] ?: kind
+            plan = PLAN_THEME[kind]
+            planKind = if (plan != null) kind else null
+        }
     }
     val ideas = topFeatures(board, us, phase, limit = 2).map { it.text }
 
-    var piece: String? = null
+    val piece: String? = IdeaWords.piece(idea, board)
     var nature: String? = null
     if (best != null) {
-        val moving = board.pieceAt(best.from)
-        if (moving != null) piece = "your ${COACH_PIECE_NAMES[moving.pieceType]}"
         nature = natureOf(board, best, if (lines.isNotEmpty()) lines[0].moves else emptyList())
+    }
+    var mechanism = IdeaWords.mechanism(idea)
+    if (mechanism == null && planKind != null && planKind in IdeaWords.PLAN_WHY) {
+        mechanism = "$plan: ${IdeaWords.PLAN_WHY.getValue(planKind)}"
     }
 
     val candidates = ArrayList<String>()
@@ -526,9 +569,15 @@ fun factsFromAnalysis(
         decisive = analysis.decisive,
         onlyMove = analysis.onlyMove,
         nature = nature,
+        goal = IdeaWords.goal(idea),
         theme = themeText,
+        mechanism = mechanism,
+        question = IdeaWords.question(idea, planKind),
         region = region,
+        target = IdeaWords.target(idea, board),
         piece = piece,
+        why = IdeaWords.why(idea, board, IdeaWords.Describe(::describeTactic)),
+        nudge = IdeaWords.nudge(idea),
         focus = focus,
         tactic = tactic,
         plan = plan,

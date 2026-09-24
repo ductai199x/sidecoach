@@ -6,8 +6,14 @@
 functions of text, board, facts and engine lines -- so the engine here is a recorded stub
 whose lines go into the fixture, and the model replies are written out verbatim.
 
+Attack and defence are counted by legal moves (`analysis/exchange.py`): a piece pinned to its
+king takes nothing and takes nothing back, a king takes back only where it may, a piece lined
+up behind an attacker joins in. So beside the fixed claims and drafts, every position is asked
+about each of its pieces -- hanging, safe, what attacks and defends it, whether it is pinned,
+loose, trapped, forks or skewers -- and the positions include puzzles of the tactical themes.
+
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_claims_fixtures.py
+    PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python D:/sidecoach-android/tools/make_claims_fixtures.py
 """
 
 from __future__ import annotations
@@ -30,6 +36,26 @@ from sidecoach.events import Line  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "chess"
 PUZZLES = DESKTOP / "data" / "puzzles" / "sample.csv"
+THEMES = DESKTOP / "data" / "puzzles" / "themes-7-120.csv"
+# The tactical themes, and how many puzzles of each.
+TACTICAL = (
+    "pin",
+    "skewer",
+    "fork",
+    "discoveredAttack",
+    "xRayAttack",
+    "hangingPiece",
+    "trappedPiece",
+    "capturingDefender",
+    "doubleCheck",
+    "deflection",
+    "attraction",
+    "defensiveMove",
+)
+PER_THEME = 3
+# The pieces of a position asked about, most first (by square), and the states claimed.
+PIECES_ASKED = 10
+STATES = ("pinned", "hanging", "undefended", "safe", "trapped", "forks", "skewers", "en prise")
 
 
 # --- the model replies `parse_claims` has to survive -----------------------------------------
@@ -269,6 +295,50 @@ def claims_for(board: chess.Board) -> list[C.Claim]:
                 text=f"{kind}: {subject} / {target} / {move}",
             )
         )
+    # Each piece of the position by its square: hanging, safe, and what reaches it -- by
+    # geometry, so a pinned attacker or a king that may not take back is asked about too.
+    for square in asked_squares(board):
+        name = chess.square_name(square)
+        for kind in ("hanging", "safe"):
+            out.append(C.Claim(kind=C.ClaimKind(kind), subject=None, target=name, move=None,
+                               text=f"{kind}: {name}"))
+        for colour in (chess.WHITE, chess.BLACK):
+            for reach in sorted(board.attackers(colour, square))[:2]:
+                by = chess.square_name(reach)
+                for kind in ("attacks", "defends"):
+                    out.append(C.Claim(kind=C.ClaimKind(kind), subject=by, target=name, move=None,
+                                       text=f"{kind}: {by} / {name}"))
+    # Empty squares, for "safe" there: who of theirs could take a piece put there.
+    empties = [sq for sq in chess.SQUARES if board.piece_at(sq) is None]
+    for square in empties[:: max(1, len(empties) // 6)][:6]:
+        name = chess.square_name(square)
+        out.append(C.Claim(kind=C.ClaimKind("safe"), subject=None, target=name, move=None,
+                           text=f"safe: {name}"))
+    return out
+
+
+def asked_squares(board: chess.Board) -> list[chess.Square]:
+    """The pieces asked about: every piece but the kings, up to PIECES_ASKED, the attacked
+    ones first."""
+    pieces = [
+        sq for sq in chess.SQUARES
+        if (p := board.piece_at(sq)) is not None and p.piece_type != chess.KING
+    ]
+    pieces.sort(key=lambda sq: (not board.is_attacked_by(not board.color_at(sq), sq), sq))
+    return pieces[:PIECES_ASKED]
+
+
+def drafts_for(board: chess.Board) -> list[str]:
+    """The fixed drafts, and a tactic claimed of each piece asked about."""
+    out = list(DRAFTS)
+    for square in asked_squares(board):
+        piece = board.piece_at(square)
+        assert piece is not None
+        word = chess.piece_name(piece.piece_type)
+        where = chess.square_name(square)
+        for state in STATES:
+            out.append(f"The {word} on {where} is {state}." if not state.endswith("s")
+                       or state == "pinned" else f"The {word} on {where} {state}.")
     return out
 
 
@@ -335,7 +405,7 @@ def case_for(board: chess.Board) -> dict:
                     for p in C.check_draft(text, board, after=frames)
                 ],
             }
-            for text in DRAFTS
+            for text in drafts_for(board)
         ],
         "engine": engine.seen,
     }
@@ -369,6 +439,25 @@ def main() -> None:
                         boards.append(board.copy(stack=False))
                     board.push(move)
 
+    if THEMES.exists():
+        taken: dict[str, int] = {}
+        with THEMES.open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                names = [t for t in row["Themes"].split() if t in TACTICAL]
+                if not names or all(taken.get(t, 0) >= PER_THEME for t in names):
+                    continue
+                for t in names:
+                    taken[t] = taken.get(t, 0) + 1
+                board = chess.Board(row["FEN"])
+                moves = row["Moves"].split()
+                for index, uci in enumerate(moves[:4]):
+                    move = chess.Move.from_uci(uci)
+                    if move not in board.legal_moves:
+                        break
+                    board.push(move)
+                    if index in (0, 1, 2):
+                        boards.append(board.copy(stack=False))
+
     cases = [case_for(board) for board in boards]
     replies = [{"text": text, "claims": [claim_json(c) for c in C.parse_claims(text)]}
                for text in REPLIES]
@@ -378,7 +467,7 @@ def main() -> None:
     (OUT / "claims.json").write_text(json.dumps(payload), encoding="utf-8")
     size = (OUT / "claims.json").stat().st_size
     print(
-        f"{len(cases)} positions x {len(TEMPLATES)} claims + {len(DRAFTS)} drafts, "
+        f"{len(cases)} positions x {len(TEMPLATES)}+ claims + {len(DRAFTS)}+ drafts, "
         f"{len(replies)} replies -> {OUT / 'claims.json'} ({size / 1e6:.1f} MB)"
     )
 

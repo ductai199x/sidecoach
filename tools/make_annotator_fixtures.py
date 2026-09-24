@@ -6,10 +6,12 @@ position holds (the motif tags), and the opening the game is in. The phone's ann
 ported with neither collaborator; this holds it, now with both, to the Python.
 
 The engine is taken out of the comparison: every call the desktop's annotator makes is
-answered by the real Stockfish and recorded -- position, number of lines, and the lines it
-gave, per game and in the order asked, since a warm engine can answer the same position
-differently the second time -- and the Kotlin test answers the same calls from the
-recording, in the same order. What is compared is everything the annotator does with them.
+answered by the real Stockfish and recorded -- position, number of lines, whether the best
+line is carried on to MIN_BEST_PLIES (`carry_best`, asked for the whole measurement only),
+and the lines it gave, per game and in the order asked, since a warm engine can answer the
+same position differently the second time -- and the Kotlin test answers the same calls from
+the recording, in the same order. What is compared is everything the annotator does with
+them, and a call the phone makes with another `carry_best` finds no answer.
 
 The games: the thirty plies the emulator plays (the Italian with the h7 sacrifice), Legal's
 mate (a queen given up for mate), a Queen's Gambit reached by transposition, and knights
@@ -79,7 +81,8 @@ class Recording(Engine):
 
     def analyse(self, board: chess.Board, **kwargs: object) -> list:
         lines = self.real.analyse(board, **kwargs)  # type: ignore[arg-type]
-        key = f"{board.fen()}|{kwargs.get('multipv')}"
+        carry = str(bool(kwargs.get("carry_best", False))).lower()
+        key = f"{board.fen()}|{kwargs.get('multipv')}|{carry}"
         self.answers.setdefault(key, []).append([line_json(x) for x in lines])
         return lines
 

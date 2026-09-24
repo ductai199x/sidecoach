@@ -133,15 +133,22 @@ class MoveAssessment(
 /**
  * How much of what the analysis knows may reach the model, from DESIGN.md section 5.5.
  * Hiding is by construction: the level decides which facts are shown at all.
+ *
+ * Two hints, then the answer (Tai, 2026-09-23: "2 is probably the right number with the
+ * third giving the answer with a good and correct explanation"). IDEA: the goal and the
+ * pattern, and why it works. FOCUS: the target on the board and the piece that does it.
+ * MOVE: the move, explained. LINE: the whole line.
+ *
+ * The desktop keeps the old seven-rung names as aliases (QUESTION = THEME = IDEA, REGION =
+ * PIECE = FOCUS, CANDIDATE = MOVE) for its evaluation tools, which the phone does not have; a
+ * Kotlin enum has no aliases, so only the five names are here.
  */
 enum class DisclosureLevel(val value: Int) {
     SILENT(0),
-    QUESTION(1),
-    THEME(2),
-    REGION(3),
-    PIECE(4),
-    CANDIDATE(5),
-    LINE(6),
+    IDEA(1),
+    FOCUS(2),
+    MOVE(3),
+    LINE(4),
     ;
 
     operator fun compareTo(other: Int): Int = value.compareTo(other)

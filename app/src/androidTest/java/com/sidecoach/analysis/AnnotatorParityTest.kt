@@ -4,6 +4,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
+import com.sidecoach.events.Label
 import com.sidecoach.events.Line
 import com.sidecoach.events.MotifTag
 import org.json.JSONArray
@@ -29,7 +30,9 @@ class AnnotatorParityTest {
 
     /**
      * Answers the calls the desktop's annotator made, from its recording of them: per game,
-     * and a position asked twice gets the answers in the order the engine gave them.
+     * and a position asked twice gets the answers in the order the engine gave them. A call is
+     * keyed by its position, its number of lines and whether the best line is carried on
+     * (`carry_best`), so a call the desktop did not make the same way finds no answer.
      */
     private class ScriptedEngine : Engine(File("scripted"), null) {
         val missed = ArrayList<String>()
@@ -41,8 +44,8 @@ class AnnotatorParityTest {
             asked.clear()
         }
 
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?): List<Line> {
-            val key = "${board.fen()}|$multipv"
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> {
+            val key = "${board.fen()}|$multipv|$carryBest"
             val calls = answers.optJSONArray(key)
             val n = asked.getOrDefault(key, 0)
             if (calls == null || n >= calls.length()) {
@@ -136,6 +139,43 @@ class AnnotatorParityTest {
         }
         assertEquals("every engine call was one the desktop made", emptyList<String>(), engine.missed)
         assertEquals(64, plies)
+    }
+
+    /** The desktop test's `FakeEngine`: scripted lines, a quiet move for anything else. */
+    private class FakeEngine(private val answers: Map<String, List<Line>>) : Engine(File("fake"), null) {
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> {
+            if (board.isGameOver(claimDraw = true)) return emptyList()
+            return answers[board.fen()] ?: listOf(Line(moves = listOf("a2a3"), depth = 1, expectedScore = 0.5))
+        }
+
+        override fun close() = Unit
+    }
+
+    /**
+     * `test_a_capture_guarded_only_by_a_pinned_piece_is_a_free_grab`: a capture nobody can take
+     * back is obvious, never great, and taking back is read by the rules -- the c3 knight
+     * guarding e4 is pinned to its king by the b4 bishop, so ...Nxe4 is a grab. With the knight
+     * free to take back, the one move that holds is great.
+     */
+    @Test
+    fun aCaptureGuardedOnlyByAPinnedPieceIsAFreeGrab() {
+        fun label(fen: String): Label? {
+            val board = Board(fen)
+            val fake = FakeEngine(
+                mapOf(
+                    board.fen() to listOf(
+                        Line(moves = listOf("f6e4"), depth = 6, expectedScore = 0.80),
+                        Line(moves = listOf("e8d7"), depth = 6, expectedScore = 0.40),
+                    ),
+                ),
+            )
+            val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
+            annotator.measure(board)  // measured whole, so the only-move call is made
+            return annotator.assessMove("g", board, Move.fromUci("f6e4"), 1).label
+        }
+
+        assertEquals(Label.BEST, label("4k3/8/5n2/8/1b2B3/2N5/8/4K3 b - - 0 1"))
+        assertEquals(Label.GREAT, label("4k3/8/5n2/8/4B3/2N5/8/4K3 b - - 0 1"))
     }
 
     private companion object {

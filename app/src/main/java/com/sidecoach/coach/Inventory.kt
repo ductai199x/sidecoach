@@ -1,5 +1,7 @@
 package com.sidecoach.coach
 
+import com.sidecoach.analysis.Exchange
+import com.sidecoach.analysis.Motifs
 import com.sidecoach.chess.BISHOP
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.KING
@@ -40,7 +42,11 @@ private fun sign(n: Int): Int = (if (n > 0) 1 else 0) - (if (n < 0) 1 else 0)
 
 /**
  * (pinner, shielded) when the piece on `square` is pinned: an enemy slider attacks it along a
- * line and the next piece past it is a friendly piece worth more (the king most).
+ * line and the next piece past it is a friendly piece worth more -- the king, or a piece the
+ * slider could win once the front one moves: worth more than the slider, or undefended. A
+ * knight in front of a defended rook, with a queen behind it, pins nothing (Tai, 2026-09-23: a
+ * pin is tactical, "if that piece is defended then there is no winning that piece hence it's
+ * not a valid pin").
  */
 fun pinTarget(board: Board, sq: Int): Pair<Int, Int>? {
     val piece = board.pieceAt(sq) ?: return null
@@ -56,8 +62,14 @@ fun pinTarget(board: Board, sq: Int): Pair<Int, Int>? {
             val behind = square(file, rank)
             val occupant = board.pieceAt(behind)
             if (occupant != null) {
+                // A pin to the king holds whatever the pinner: a pinned piece still gives check.
+                // A pin to anything else needs a pinner that can legally take.
+                val toKing = occupant.pieceType == KING
+                val takes = toKing || attacker in Exchange.capturers(board, !piece.colour, sq)
                 if (occupant.colour == piece.colour &&
-                    INV_VALUE[occupant.pieceType] > INV_VALUE[piece.pieceType]
+                    INV_VALUE[occupant.pieceType] > INV_VALUE[piece.pieceType] &&
+                    takes &&
+                    Motifs.winnable(board, behind, INV_VALUE[slider.pieceType], ignore = sq)
                 ) {
                     return attacker to behind
                 }
@@ -72,7 +84,9 @@ fun pinTarget(board: Board, sq: Int): Pair<Int, Int>? {
 
 /**
  * (front, back) when the slider on `square` skewers: it attacks an enemy piece and, past it on
- * the same line, a less valuable enemy piece.
+ * the same line, a less valuable enemy piece the slider could win once the front one steps
+ * aside -- worth more than the slider, or undefended (the same rule as a pin: a defended piece
+ * behind is not won).
  */
 fun skewerTarget(board: Board, sq: Int): Pair<Int, Int>? {
     val piece = board.pieceAt(sq) ?: return null
@@ -88,8 +102,16 @@ fun skewerTarget(board: Board, sq: Int): Pair<Int, Int>? {
             val behind = square(file, rank)
             val occupant = board.pieceAt(behind)
             if (occupant != null) {
+                // The front piece has to move: the king, something worth more than the slider, or
+                // something it can win; and the slider must be able to take.
+                val mustMove = target.pieceType == KING ||
+                    INV_VALUE[target.pieceType] > INV_VALUE[piece.pieceType] ||
+                    Exchange.defenders(board, target.colour, front).isEmpty()
                 if (occupant.colour != piece.colour &&
-                    INV_VALUE[occupant.pieceType] < INV_VALUE[target.pieceType]
+                    INV_VALUE[occupant.pieceType] < INV_VALUE[target.pieceType] &&
+                    mustMove &&
+                    sq in Exchange.capturers(board, piece.colour, front) &&
+                    Motifs.winnable(board, behind, INV_VALUE[piece.pieceType], ignore = front)
                 ) {
                     return front to behind
                 }
@@ -149,19 +171,30 @@ fun batteries(board: Board, colour: Boolean): List<List<Int>> {
 }
 
 /**
- * Each piece of `colour` that attacks two or more enemy units right now, the most valuable
- * targets first; the double attacks worth most first.
+ * Each piece of `colour` that forks right now: it attacks two or more enemy units it could win
+ * -- the king, a piece worth more than itself, or one nothing defends -- and it cannot be taken
+ * for profit where it stands. A knight touching two defended pawns, or a bishop hitting a queen
+ * and a rook while a pawn can take it, forks nothing (Tai, 2026-09-23: forks, like pins, are
+ * tactical). The most valuable targets first; the forks worth most first.
  */
 fun forksInPlace(board: Board, colour: Boolean): List<Pair<Int, List<Int>>> {
     val out = ArrayList<Pair<Int, List<Int>>>()
     for (sq in 0 until 64) {
         val piece = board.pieceAt(sq) ?: continue
         if (piece.colour != colour) continue
+        val mine = INV_VALUE[piece.pieceType]
         val hits = board.attacks(sq).filter { t ->
             val o = board.pieceAt(t)
-            o != null && o.colour != colour
+            o != null && o.colour != colour &&
+                (o.pieceType == KING || sq in Exchange.capturers(board, colour, t)) &&
+                (
+                    o.pieceType == KING ||
+                        INV_VALUE[o.pieceType] > mine ||
+                        Exchange.defenders(board, !colour, t).isEmpty()
+                    )
         }
-        if (hits.size >= 2) {
+        val safe = Motifs.isSafe(board, sq)
+        if (hits.size >= 2 && safe) {
             out.add(sq to hits.sortedByDescending { INV_VALUE[typeOrPawn(board, it)] })
         }
     }
@@ -181,29 +214,37 @@ private fun piecesOf(board: Board, colour: Boolean): List<Int> =
         }
         .sortedByDescending { INV_VALUE[typeOrPawn(board, it)] }
 
+/**
+ * The pieces of `colour` that can legally take on `square`, cheapest first: never one pinned to
+ * its own king, nor a king onto a guarded square ([Exchange]).
+ */
 private fun hitsBy(board: Board, sq: Int, colour: Boolean): List<Int> =
-    board.attackers(colour, sq).sortedBy { INV_VALUE[typeOrPawn(board, it)] }
+    Exchange.capturers(board, colour, sq).sortedBy { INV_VALUE[typeOrPawn(board, it)] }
 
 /**
- * The state of `colour`'s pieces: hanging (attacked, undefended), attacked by a lesser piece,
- * pinned; and `colour`'s batteries and forks in place. `own`/`their` are the possessives from
- * the reader's side ("your"/"their").
+ * The state of `colour`'s pieces: hanging (a legal capturer, nothing to take back), attacked by
+ * a lesser piece, lost to the exchange (attacked more often than defended), pinned; and
+ * `colour`'s batteries and forks in place. Every capture is a legal one: a piece pinned to its
+ * own king neither attacks nor defends here. `own`/`their` are the possessives from the
+ * reader's side ("your"/"their").
  */
 fun sideLines(board: Board, colour: Boolean, own: String, their: String): List<String> {
     val out = ArrayList<String>()
     val hanging = ArrayList<String>()
     val attacked = ArrayList<String>()
+    val outnumbered = ArrayList<String>()
     val pinned = ArrayList<String>()
     for (s in piecesOf(board, colour)) {
         val piece = board.pieceAt(s)!!
         val attackers = hitsBy(board, s, !colour)
-        val defenders = board.attackers(colour, s)
-        if (attackers.isNotEmpty() && defenders.isEmpty()) {
+        if (attackers.isNotEmpty() && Exchange.hanging(board, s)) {
             hanging.add("${nameOf(board, s)} (attacked by the ${nameOf(board, attackers[0])})")
         } else if (attackers.isNotEmpty() &&
             INV_VALUE[typeOrPawn(board, attackers[0])] < INV_VALUE[piece.pieceType]
         ) {
             attacked.add("${nameOf(board, s)} by the ${nameOf(board, attackers[0])}")
+        } else if (attackers.isNotEmpty() && Exchange.canBeWon(board, s)) {
+            outnumbered.add(nameOf(board, s))
         }
         val pin = pinTarget(board, s)
         if (pin != null) {
@@ -219,13 +260,19 @@ fun sideLines(board: Board, colour: Boolean, own: String, their: String): List<S
     if (attacked.isNotEmpty()) {
         out.add("$own attacked by a lesser piece: " + attacked.take(INVENTORY_LIMIT).joinToString("; "))
     }
+    if (outnumbered.isNotEmpty()) {
+        out.add(
+            "$own attacked more often than defended (lost to the exchange): " +
+                outnumbered.take(INVENTORY_LIMIT).joinToString("; "),
+        )
+    }
     if (pinned.isNotEmpty()) {
         out.add("$own pinned: " + pinned.take(INVENTORY_LIMIT).joinToString("; "))
     }
     val forks = forksInPlace(board, colour)
     if (forks.isNotEmpty()) {
         out.add(
-            "$own double attacks: " + forks.take(4).joinToString("; ") { (s, hits) ->
+            "$own forks: " + forks.take(4).joinToString("; ") { (s, hits) ->
                 "${nameOf(board, s)} hits the " +
                     hits.take(3).joinToString(" and the ") { nameOf(board, it) }
             },
@@ -280,11 +327,13 @@ fun toMoveLines(board: Board, own: String): List<String> {
             continue
         }
         if (victim == null) continue
-        val defended = board.attackers(!board.turn, m.to)
+        // Taken back by a legal move on the board after the capture: the king cannot take a
+        // piece its square is still covered by, nor a pinned piece recapture.
+        val defended = Exchange.canRetake(board, m)
         caps.add(
             INV_VALUE[victim.pieceType] to
                 "${board.san(m)} (the ${COACH_PIECE_NAMES[victim.pieceType]}, " +
-                "${if (defended.isNotEmpty()) "defended" else "undefended"})",
+                "${if (defended) "defended" else "undefended"})",
         )
     }
     if (caps.isNotEmpty()) {

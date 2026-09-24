@@ -9,7 +9,10 @@ Everything here is pure, so it is compared exactly. The positions come from thre
 the Lichess puzzle sample (middlegames and endgames with something going on), random games
 (openings, development, uncastled kings), and a handful of built endings for the textbook
 detectors that a random game almost never reaches. The move ideas are taken over every legal
-move of a position, which covers the idea table densely without an engine.
+move of a position, which covers the idea table densely without an engine. Two threats are
+tried for the prophylaxis idea: the opponent's first legal move after a pass, and the first
+capture of one of our pieces that wins it by the rules (`exchange.exchange` > 0), over every
+legal move -- the capture is where "a guard that still loses the piece stops nothing" lives.
 
     cd D:/chess-coaching-companion
     uv run --no-sync python D:/sidecoach-android/tools/make_positional_fixtures.py
@@ -29,7 +32,7 @@ sys.path.insert(0, str(DESKTOP / "src"))
 
 import chess  # noqa: E402
 
-from sidecoach.analysis import positional  # noqa: E402
+from sidecoach.analysis import exchange, positional  # noqa: E402
 from sidecoach.analysis.phase import phase_of  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "chess"
@@ -62,14 +65,39 @@ BUILT = [
     "8/3k4/3p4/3P4/3K4/8/8/8 w - - 0 40",         # closed, pawn pointing shapes
     "rnbqk2r/pp2ppbp/3p1np1/2pP4/4P3/2N2N2/PP2BPPP/R1BQK2R b KQkq - 0 7",  # King's Indian
     "rnbqkbnr/pp3ppp/4p3/2ppP3/3P4/8/PPP2PPP/RNBQKBNR w KQkq - 0 4",       # French advance
+    # The desktop's rescue tests: a knight guarded beside the enemy king, one attacked only by
+    # a pinned knight, one a pawn attacks with a pawn-guarded square to run to.
+    "8/8/5k2/4N3/3P4/8/8/4K3 w - - 0 1",
+    "4k3/8/2n5/1B6/3N4/8/8/4K3 w - - 0 1",
+    "4k3/p7/8/3p4/2N5/8/8/4K3 w - - 0 1",
 ]
+
+# The desktop's prophylaxis tests, with the threat each is asked about: a guard that still
+# loses the knight to the pawn, and a guard pinned to its own king.
+BUILT_THREATS = {
+    "4k3/8/8/8/1p6/2N5/8/2B1K3 w - - 0 1": "b4c3",
+    "4k3/8/8/3b4/5n2/P6B/6P1/7K w - - 0 1": "f4h3",
+}
 
 
 def feature_json(fact) -> dict:
     return {"kind": fact.kind, "text": fact.text, "squares": list(fact.squares)}
 
 
-def case_for(board: chess.Board, phase: str) -> dict:
+def capture_threat(board: chess.Board) -> chess.Move | None:
+    """The opponent's first capture, after a pass, that wins one of our pieces by the rules."""
+    if board.is_check():
+        return None
+    passed = board.copy(stack=False)
+    passed.push(chess.Move.null())
+    for move in passed.legal_moves:
+        victim = passed.piece_at(move.to_square)
+        if victim is not None and victim.color == board.turn and exchange.exchange(passed, move) > 0:
+            return move
+    return None
+
+
+def case_for(board: chess.Board, phase: str, threat_uci: str | None = None) -> dict:
     us = board.turn
     them = not us
     worst = positional.worst_piece_square(board, us)
@@ -83,6 +111,17 @@ def case_for(board: chess.Board, phase: str) -> dict:
         passed = board.copy(stack=False)
         passed.push(chess.Move.null())
         threat = next(iter(passed.legal_moves), None)
+    # And a threat that wins something, tried against every legal move.
+    capture = chess.Move.from_uci(threat_uci) if threat_uci else capture_threat(board)
+    capture_ideas = []
+    if capture is not None:
+        for move in board.legal_moves:
+            idea = positional.best_move_idea(
+                board, move, us, phase=phase, worst=worst, threat=capture
+            )
+            capture_ideas.append(
+                {"move": move.uci(), "idea": None if idea is None else feature_json(idea)}
+            )
     threat_ideas = []
     if threat is not None:
         for move in list(board.legal_moves)[:12]:
@@ -103,6 +142,8 @@ def case_for(board: chess.Board, phase: str) -> dict:
         "ideas": ideas,
         "threat": None if threat is None else threat.uci(),
         "threat_ideas": threat_ideas,
+        "capture_threat": None if capture is None else capture.uci(),
+        "capture_threat_ideas": capture_ideas,
     }
 
 
@@ -111,7 +152,11 @@ QUOTA = 25
 
 def kinds_of(case: dict) -> set[str]:
     out = {f["kind"] for f in case["features_us"] + case["features_them"]}
-    out |= {i["idea"]["kind"] for i in case["ideas"] + case["threat_ideas"] if i["idea"]}
+    out |= {
+        i["idea"]["kind"]
+        for i in case["ideas"] + case["threat_ideas"] + case["capture_threat_ideas"]
+        if i["idea"]
+    }
     return out or {"(none)"}
 
 
@@ -135,6 +180,10 @@ def main() -> None:
         board = chess.Board(fen)
         for phase in ("opening", "middlegame", "endgame"):
             cases.append(case_for(board, phase))
+    for fen, threat in BUILT_THREATS.items():
+        board = chess.Board(fen)
+        for phase in ("opening", "middlegame", "endgame"):
+            cases.append(case_for(board, phase, threat))
 
     # Random games: openings and middlegames, where development and the king's safety live.
     for _ in range(80):

@@ -3,11 +3,10 @@ package com.sidecoach.coach
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.sidecoach.analysis.Motifs
-import com.sidecoach.analysis.humanExpectedScore
 import com.sidecoach.analysis.phaseOf
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
+import com.sidecoach.chess.squareName
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.DisclosureLevel
 import com.sidecoach.events.Label
@@ -27,10 +26,11 @@ import kotlin.math.abs
  * The coach's primitives held to the desktop's, sentence for sentence and mark for mark.
  *
  * Everything under `coach/` that is a pure function of the board and the analysis: who "you"
- * is, the disclosure filter and the leak check, the fact bundle, what a move does, what
- * stands on the board, where a line leads, the word on a sound move, when the coach may
- * speak, and the marks that go with a message. The coach reads these out, so a port that
- * differs anywhere says something different.
+ * is, the disclosure filter and the leak check, the fact bundle, the idea of the best line
+ * and its words, the offline coach's templates, what a move does, what stands on the board,
+ * where a line leads, the word on a sound move, when the coach may speak, and the marks that
+ * go with a message. The coach reads these out, so a port that differs anywhere says
+ * something different. Every Analysis is the one the desktop was fed, read from the fixture.
  */
 @RunWith(AndroidJUnit4::class)
 class CoachPrimitivesTest {
@@ -42,10 +42,12 @@ class CoachPrimitivesTest {
     }
 
     private val failures = ArrayList<String>()
+    private var mismatches = 0
 
     private fun check(what: String, mine: Any?, theirs: Any?) {
-        if (mine != theirs && failures.size < 8) {
-            failures.add("$what:\n  kotlin: $mine\n  python: $theirs")
+        if (mine != theirs) {
+            mismatches += 1
+            if (failures.size < 8) failures.add("$what:\n  kotlin: $mine\n  python: $theirs")
         }
     }
 
@@ -104,21 +106,32 @@ class CoachPrimitivesTest {
 
         checkPolicy(data.getJSONArray("policy"))
 
+        // The standing in words, at the bands' edges.
+        val standings = data.getJSONArray("standings")
+        for (i in 0 until standings.length()) {
+            val o = standings.getJSONObject(i)
+            val score = o.getDouble("score")
+            check("standingWords($score)", standingWords(score), o.getString("you"))
+            check("standingWords($score, third)", standingWords(score, thirdPerson = true), o.getString("third"))
+        }
+
         // The positions.
         val cases = data.getJSONArray("cases")
         var deepCases = 0
+        val goals = HashMap<String, Int>()
         for (i in 0 until cases.length()) {
             val case = cases.getJSONObject(i)
             val board = Board(case.getString("fen"))
             val us = board.turn
-            val analysis = analysisFor(
-                board,
-                case.getJSONArray("line").let { a -> List(a.length()) { a.getString(it) } },
-                case.getBoolean("decisive"),
-                case.getBoolean("only_move"),
-            )
+            val analysis = analysisFrom(case.getString("fen"), case.getJSONObject("analysis"))
             val facts = factsFromAnalysis(board, analysis, lastMove = "e4", inBook = false, user = us)
             checkFacts(case.getString("fen"), facts, case.getJSONObject("facts"))
+
+            val idea = IdeaReader.read(board, analysis)
+            goals[idea.goal] = (goals[idea.goal] ?: 0) + 1
+            checkIdea(case.getString("fen"), idea, case.getJSONObject("idea"))
+            checkWords(case.getString("fen"), idea, board, case.getJSONObject("words"))
+            checkTemplates(case.getString("fen"), facts, case.getJSONObject("templates"))
 
             check("${case.getString("fen")} phase", phaseOf(board, false), case.getString("phase"))
             check("material us", materialText(board, us), case.getString("material_us"))
@@ -129,8 +142,8 @@ class CoachPrimitivesTest {
             check("inventory text", inventoryText(board, us), case.getString("inventory_text"))
             check(
                 "line outcome",
-                lineOutcome(board, analysis.lines[0].moves, us),
-                case.getString("line_outcome"),
+                if (analysis.lines.isNotEmpty()) lineOutcome(board, analysis.lines[0].moves, us) else null,
+                if (case.isNull("line_outcome")) null else case.getString("line_outcome"),
             )
 
             val effects = case.getJSONArray("effects")
@@ -152,7 +165,7 @@ class CoachPrimitivesTest {
             }
 
             val leaks = case.getJSONArray("leaks")
-            if (leaks.length() > 0) deepCases += 1
+            if (case.getJSONArray("verdicts").length() > 0) deepCases += 1
             for (k in 0 until leaks.length()) {
                 val o = leaks.getJSONObject(k)
                 val said = if (o.isNull("said")) null else o.getString("said")
@@ -225,10 +238,132 @@ class CoachPrimitivesTest {
         Log.i(
             TAG,
             "${cases.length()} positions ($deepCases with the whole sweep), " +
-                "${persons.length()} rewrites, ${took} ms",
+                "${persons.length()} rewrites, goals $goals, ${took} ms",
         )
-        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+        assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
     }
+
+    /** Every field of the idea, squares by name and moves in UCI, as the generator wrote it. */
+    private fun checkIdea(fen: String, idea: Idea, want: JSONObject) {
+        fun sq(square: Int?): String? = square?.let { squareName(it) }
+        fun opt(key: String): String? = if (want.isNull(key)) null else want.getString(key)
+        fun optInt(key: String): Int? = if (want.isNull(key)) null else want.getInt(key)
+        val mine = linkedMapOf<String, Any?>(
+            "goal" to idea.goal,
+            "first" to idea.first?.uci(),
+            "line" to idea.line.map { it.uci() },
+            "mate_in" to idea.mateIn,
+            "gain" to idea.gain,
+            "won" to idea.won,
+            "blow" to idea.blow?.let { showTag(it.name, it.squares, it.move) },
+            "blow_move" to idea.blowMove?.uci(),
+            "blow_board" to idea.blowBoard?.fen(),
+            "blow_at" to idea.blowAt,
+            "preparation" to idea.preparation,
+            "starts_with" to idea.startsWith,
+            "target" to sq(idea.target),
+            "threat" to idea.threat?.uci(),
+            "threatened" to idea.threatened,
+            "flight" to idea.flight.map { squareName(it) },
+            "checks" to idea.checks,
+            "level" to idea.level,
+            "down" to idea.down,
+            "draw" to idea.draw,
+            "ending" to idea.ending,
+            "opposition" to idea.opposition,
+            "runner" to sq(idea.runner),
+            "pinned_guard" to sq(idea.pinnedGuard),
+            "intermezzo" to idea.intermezzo,
+            "also" to idea.also,
+            "sacrifices" to idea.sacrifices.map { "${it.first}:${it.second}" },
+            "winning" to idea.winning,
+        )
+        val blow = if (want.isNull("blow")) {
+            null
+        } else {
+            want.getJSONObject("blow").let { b ->
+                showTag(b.getString("name"), strings(b.getJSONArray("squares")), if (b.isNull("move")) null else b.getString("move"))
+            }
+        }
+        val theirs = linkedMapOf<String, Any?>(
+            "goal" to want.getString("goal"),
+            "first" to opt("first"),
+            "line" to strings(want.getJSONArray("line")),
+            "mate_in" to optInt("mate_in"),
+            "gain" to want.getInt("gain"),
+            "won" to opt("won"),
+            "blow" to blow,
+            "blow_move" to opt("blow_move"),
+            "blow_board" to opt("blow_board"),
+            "blow_at" to want.getInt("blow_at"),
+            "preparation" to strings(want.getJSONArray("preparation")),
+            "starts_with" to want.getString("starts_with"),
+            "target" to opt("target"),
+            "threat" to opt("threat"),
+            "threatened" to opt("threatened"),
+            "flight" to strings(want.getJSONArray("flight")),
+            "checks" to want.getInt("checks"),
+            "level" to want.getBoolean("level"),
+            "down" to want.getBoolean("down"),
+            "draw" to opt("draw"),
+            "ending" to opt("ending"),
+            "opposition" to want.getBoolean("opposition"),
+            "runner" to opt("runner"),
+            "pinned_guard" to opt("pinned_guard"),
+            "intermezzo" to want.getBoolean("intermezzo"),
+            "also" to opt("also"),
+            "sacrifices" to want.getJSONArray("sacrifices").let { a ->
+                List(a.length()) { k -> a.getJSONArray(k).let { "${it.getInt(0)}:${it.getString(1)}" } }
+            },
+            "winning" to want.getBoolean("winning"),
+        )
+        for ((key, value) in mine) check("$fen idea.$key", value, theirs[key])
+    }
+
+    /** The idea in the coach's words, straight from [IdeaWords]. */
+    private fun checkWords(fen: String, idea: Idea, board: Board, want: JSONObject) {
+        fun opt(key: String): String? = if (want.isNull(key)) null else want.getString(key)
+        check("$fen words.pattern", IdeaWords.pattern(idea), opt("pattern"))
+        check("$fen words.goal", IdeaWords.goal(idea), opt("goal"))
+        check("$fen words.mechanism", IdeaWords.mechanism(idea), opt("mechanism"))
+        check("$fen words.question", IdeaWords.question(idea, null), opt("question"))
+        check("$fen words.nudge", IdeaWords.nudge(idea), opt("nudge"))
+        check("$fen words.target", IdeaWords.target(idea, board), opt("target"))
+        check("$fen words.piece", IdeaWords.piece(idea, board), opt("piece"))
+        check("$fen words.why", IdeaWords.why(idea, board, IdeaWords.Describe(::describeTactic)), opt("why"))
+    }
+
+    /** The offline coach's words at each rung, the lessons, and each rung leak-checked. */
+    private fun checkTemplates(fen: String, facts: PositionFacts, want: JSONObject) {
+        check("$fen ideaTemplate", ideaTemplate(facts), want.getString("idea"))
+        check("$fen focusTemplate", focusTemplate(facts), want.getString("focus"))
+        check("$fen moveTemplate", moveTemplate(facts), want.getString("move"))
+        check("$fen lineTemplate", lineTemplate(facts), want.getString("line"))
+        val hints = want.getJSONObject("hints")
+        for (key in hints.keys()) {
+            check("$fen hintTemplate at $key", hintTemplate(facts, DisclosureLevel.of(key.toInt())), hints.getString(key))
+        }
+        val best = want.getString("best")
+        val lessons = want.getJSONArray("lessons")
+        for (k in 0 until lessons.length()) {
+            val o = lessons.getJSONObject(k)
+            check("$fen lessonTemplate ${o.getString("opener")}", lessonTemplate(facts, best, o.getString("opener")), o.getString("text"))
+        }
+        val leaks = want.getJSONArray("leaks")
+        for (k in 0 until leaks.length()) {
+            val o = leaks.getJSONObject(k)
+            val rung = DisclosureLevel.of(o.getInt("rung"))
+            val level = DisclosureLevel.of(o.getInt("level"))
+            check(
+                "$fen leaks of the ${rung.name} template at ${level.name}",
+                leakCheck(hintTemplate(facts, rung), facts, level),
+                strings(o.getJSONArray("leaks")),
+            )
+        }
+    }
+
+    private fun showTag(name: String, squares: List<String>, move: String?): String =
+        "$name ${squares.joinToString(",")} ${move ?: "-"}"
 
     private fun checkPolicy(runs: JSONArray) {
         for (i in 0 until runs.length()) {
@@ -263,10 +398,20 @@ class CoachPrimitivesTest {
             note("tick 60", policy.tick(60.0))
             note("analysed quiet", policy.onPositionAnalysed(2, decisive = false))
             note("analysed decisive", policy.onPositionAnalysed(2, decisive = true))
-            policy.said(2)
+            policy.said(2, 60.0)
+            note("analysed after said", policy.onPositionAnalysed(2, decisive = true))
+            note("tick soon after said", policy.tick(80.0))
             note("tick after said", policy.tick(120.0))
+            policy.said(2, 120.0)
+            note("tick after two", policy.tick(300.0))
+            policy.newPosition(2, 300.0, userToMove = true)
+            note("same ply again", policy.tick(400.0))
             policy.newPosition(4, 100.0, userToMove = true)
             note("analysed decisive again", policy.onPositionAnalysed(4, decisive = true))
+            policy.said(4)
+            note("tick after said without a time", policy.tick(150.0))
+            policy.said(3, 150.0)
+            note("said of another ply", policy.tick(151.0))
             policy.newPosition(12, 200.0, userToMove = true)
             note("analysed decisive later", policy.onPositionAnalysed(12, decisive = true))
             policy.setRemaining(20_000)
@@ -283,7 +428,8 @@ class CoachPrimitivesTest {
             note("fine move", policy.onUserMoveAssessed(assessment(Severity.NONE, Label.BEST)))
             note("miss", policy.onUserMoveAssessed(assessment(Severity.NONE, Label.MISS)))
 
-            for (k in 0 until steps.length()) {
+            check("${run.getString("control")} steps", seen.size, steps.length())
+            for (k in 0 until minOf(steps.length(), seen.size)) {
                 val want = steps.getJSONObject(k)
                 val got = seen[k]
                 val label = "${run.getString("control")} quiet=${run.getBoolean("quiet")} " +
@@ -312,42 +458,39 @@ class CoachPrimitivesTest {
         }
     }
 
-    /** An analysis of the shape the generator built, so both sides start from the same one. */
-    private fun analysisFor(
-        board: Board,
-        lineUcis: List<String>,
-        decisive: Boolean,
-        only: Boolean,
-    ): Analysis {
-        val moves = ArrayList<String>()
-        val work = board.copy(withStack = false)
-        for (uci in lineUcis) {
-            val move = Move.fromUci(uci)
-            if (!work.isLegal(move)) break
-            moves.add(uci)
-            work.push(move)
+    /** The Analysis the desktop was fed, exactly: its lines, flags, threats and tags. */
+    private fun analysisFrom(fen: String, o: JSONObject): Analysis {
+        val lines = o.getJSONArray("lines").let { a ->
+            List(a.length()) { k ->
+                val l = a.getJSONObject(k)
+                Line(
+                    moves = strings(l.getJSONArray("moves")),
+                    depth = l.getInt("depth"),
+                    expectedScore = l.getDouble("expected_score"),
+                    scoreCp = if (l.isNull("score_cp")) null else l.getInt("score_cp"),
+                    mate = if (l.isNull("mate")) null else l.getInt("mate"),
+                )
+            }
         }
-        val lines = ArrayList<Line>()
-        lines.add(Line(moves, 18, humanExpectedScore(120, null), 120))
-        val others = board.legalMoves().filter { moves.isEmpty() || it.uci() != moves[0] }
-        if (others.isNotEmpty()) {
-            lines.add(Line(listOf(others[0].uci()), 18, humanExpectedScore(115, null), 115))
+        val tags = o.getJSONArray("tags").let { a ->
+            List(a.length()) { k ->
+                val t = a.getJSONObject(k)
+                MotifTag(
+                    name = t.getString("name"),
+                    squares = strings(t.getJSONArray("squares")),
+                    move = if (t.isNull("move")) null else t.getString("move"),
+                )
+            }
         }
-        val threats = ArrayList<String>()
-        if (!board.isCheck()) {
-            val passed = nullMoved(board)
-            passed.legalMoves().firstOrNull()?.let { threats.add(it.uci()) }
-        }
-        val pv = moves.map { Move.fromUci(it) }
         return Analysis(
             gameId = "g",
-            fen = board.fen(),
+            fen = fen,
             ply = 0,
             lines = lines,
-            decisive = decisive,
-            onlyMove = only,
-            threats = threats,
-            tags = Motifs.tagsForPosition(board, pv),
+            decisive = o.getBoolean("decisive"),
+            onlyMove = o.getBoolean("only_move"),
+            threats = strings(o.getJSONArray("threats")),
+            tags = tags,
         )
     }
 

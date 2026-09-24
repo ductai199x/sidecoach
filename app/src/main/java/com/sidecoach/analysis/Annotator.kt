@@ -128,7 +128,11 @@ class GameAnnotator(
         val key = board.fen()
         cache[key]?.let { return it }
         val lines = engine.analyse(
-            board, depth = depth, multipv = multipv, timeS = if (hurry) HURRY_S else null,
+            board,
+            depth = depth,
+            multipv = multipv,
+            timeS = if (hurry) HURRY_S else null,
+            carryBest = !hurry,
         )
         val measured = Measured(
             fen = key,
@@ -204,7 +208,9 @@ class GameAnnotator(
         val captures = before.isCapture(move)
         val recapture = last != null && last.captured && captures && move.to == last.to
         // A capture nobody can take back is a grab, not a find; a king's capture always is.
-        val freeGrab = captures && !after.isAttackedBy(after.turn, move.to)
+        // Taking back is read by the rules: a piece guarded only by one pinned to its own king
+        // is taken for nothing.
+        val freeGrab = captures && !Exchange.canRetake(before, move)
         val obvious = recapture || freeGrab || before.legalMoves().size == 1
         val label = labelMove(
             loss,

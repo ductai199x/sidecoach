@@ -54,7 +54,7 @@ class TakebackTest {
 
     /** Every position answered with the same quiet line, as the desktop's FakeEngine. */
     private open class QuietEngine : Engine(File("quiet"), null) {
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?): List<Line> =
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> =
             if (board.isGameOver(claimDraw = true)) emptyList()
             else listOf(Line(moves = listOf("a2a3"), depth = 1, expectedScore = 0.5))
 
@@ -66,18 +66,18 @@ class TakebackTest {
         val searching = CountDownLatch(1)
         val go = CountDownLatch(1)
 
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?): List<Line> {
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> {
             searching.countDown()
             go.await(5, TimeUnit.SECONDS)
-            return super.analyse(board, depth, timeS, multipv, pvPlies)
+            return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest)
         }
     }
 
     /** A moment per search, as a real engine takes. */
     private class SlowEngine(private val ms: Long) : QuietEngine() {
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?): List<Line> {
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> {
             Thread.sleep(ms)
-            return super.analyse(board, depth, timeS, multipv, pvPlies)
+            return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest)
         }
     }
 

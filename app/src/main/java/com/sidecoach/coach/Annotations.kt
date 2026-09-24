@@ -11,11 +11,11 @@ import com.sidecoach.events.Trigger
  * Board marks that go with a coach message: `sidecoach/coach/annotations.py`.
  *
  * The marks come from the same disclosure-filtered fact bundle the message was written from,
- * never from the prose alone, so an arrow cannot give away more than the words do: at the
- * question level there is nothing to draw; at the region level a tint on the region; at the
- * piece level the focus squares and a ring on the piece; at the candidate level an arrow for
- * the move; at the line level the line. A message about a move already played gets the played
- * move coloured by how it scored and a green arrow for the better one -- two arrows, no more.
+ * never from the prose alone, so an arrow cannot give away more than the words do: at the idea
+ * level there is nothing to draw; at the focus level a tint on the region, the target and a
+ * ring on the piece; at the move level the focus squares and an arrow for the move; at the line
+ * level the line. A message about a move already played gets the played move coloured by how
+ * it scored and a green arrow for the better one -- two arrows, no more.
  *
  * A second, smaller source is the finished text: the squares and moves the coach actually
  * named. Those passed the leak check, so drawing them reveals nothing new.
@@ -122,7 +122,14 @@ fun annotationsFor(
         return marks
     }
 
-    // A hint about the live position: exactly what the level lets the words say.
+    // A hint about the live position: exactly what the level lets the words say. The target
+    // first: a square the region also tints is marked as the target.
+    val target = visible["target"] as? String
+    if (!target.isNullOrEmpty()) {
+        for (square in squaresIn(target).sorted()) {
+            add(Annotation(kind = "square", squares = listOf(square), color = "focus"))
+        }
+    }
     val region = visible["region"] as? String
     if (!region.isNullOrEmpty()) {
         for (square in regionSquares(region)) {

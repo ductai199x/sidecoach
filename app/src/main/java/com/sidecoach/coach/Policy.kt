@@ -10,8 +10,10 @@ import com.sidecoach.events.Trigger
  * DESIGN.md section 5.5, in priority order: an explicit ask is always answered; a lesson
  * after a mistake; brief feedback after every move the user plays; an orienting question at a
  * decisive moment; a hint once the user has been stuck for a while. Higher numbers yield to
- * lower ones when they collide. While the user is thinking, at most one unprompted message
- * per position, so the coach never nags. A quiet toggle silences everything but explicit asks.
+ * lower ones when they collide. While the user is thinking, at most two unprompted messages per
+ * position -- the idea, then, if they are still stuck, the focus -- each after its own wait, so
+ * the coach never nags and never gives the move unasked. A quiet toggle silences everything but
+ * explicit asks.
  *
  * Time control scales all of it: rapid and slower get every trigger, with the stuck threshold
  * shrinking as the clock runs down; blitz gets the brief post-move feedback only; bullet gets
@@ -43,6 +45,12 @@ fun timeControlOf(initialMs: Int?, incrementMs: Int = 0): TimeControl {
  */
 const val DECISIVE_EVERY = 8
 
+/**
+ * Unprompted messages in one position while the user thinks: the idea, then the focus (Tai,
+ * 2026-09-23). The move itself only when asked.
+ */
+const val UNPROMPTED_PER_POSITION = 2
+
 data class PolicySettings(
     val stuckSeconds: Double = 45.0,
     val quiet: Boolean = false,
@@ -67,9 +75,12 @@ class InterjectionPolicy(
     var timeControl: TimeControl = TimeControl.UNTIMED,
 ) {
 
+    // The position the user is thinking in: its ply, when it appeared, how many times the coach
+    // has spoken unprompted while they think in it, and when it last did.
     private var plyValue: Int? = null
     private var since: Double? = null
-    private val spokenAt = HashSet<Int>()
+    private val spoken = HashMap<Int, Int>()
+    private var saidTs: Double? = null
     private var userToMoveValue = false
     private var remainingMs: Int? = null
 
@@ -89,6 +100,7 @@ class InterjectionPolicy(
 
     /** The board reached `ply`; the user is (or is not) the one to move. */
     fun newPosition(ply: Int, ts: Double, userToMove: Boolean) {
+        if (ply != plyValue) saidTs = null
         plyValue = ply
         since = ts
         userToMoveValue = userToMove
@@ -128,6 +140,7 @@ class InterjectionPolicy(
      */
     fun onPositionAnalysed(ply: Int, decisive: Boolean): Trigger? {
         if (!maySpeakNow(ply)) return null
+        if ((spoken[ply] ?: 0) != 0) return silent("already spoke in this position")
         if (!decisive) {
             lastDecisivePly = null
             return silent("position not decisive")
@@ -141,7 +154,10 @@ class InterjectionPolicy(
         return Trigger.DECISIVE_QUESTION
     }
 
-    /** Time passing while the user thinks; a hint once they have been stuck long enough. */
+    /**
+     * Time passing while the user thinks; a hint once they have been stuck long enough, counted
+     * from the position or from the last thing said in it.
+     */
     fun tick(ts: Double): Trigger? {
         val ply = plyValue
         val began = since
@@ -149,7 +165,9 @@ class InterjectionPolicy(
         if (!maySpeakNow(ply)) return null
         if (inScramble) return silent("time scramble: no stuck hints")
         val threshold = stuckThreshold()
-        if (ts - began < threshold) {
+        val said = saidTs
+        val from = if (said != null) maxOf(began, said) else began
+        if (ts - from < threshold) {
             return silent("waiting for a stuck hint at ${"%.0f".format(threshold)}s")
         }
         lastReason = null
@@ -168,9 +186,13 @@ class InterjectionPolicy(
         return null
     }
 
-    /** One unprompted message went out for the position at `ply`; no more while it lasts. */
-    fun said(ply: Int) {
-        spokenAt.add(ply)
+    /**
+     * One unprompted message went out for the position at `ply`, at `ts`: the next one waits a
+     * full stuck spell from it, and none comes after the second.
+     */
+    fun said(ply: Int, ts: Double? = null) {
+        spoken[ply] = (spoken[ply] ?: 0) + 1
+        if (ply == plyValue && ts != null) saidTs = ts
     }
 
     /** Seconds on the move before a hint, shorter as the clock runs down. */
@@ -192,7 +214,8 @@ class InterjectionPolicy(
             ply != plyValue -> "position moved on"
             timeControl == TimeControl.BLITZ || timeControl == TimeControl.BULLET ->
                 "${timeControl.slug}: no unprompted hints"
-            ply in spokenAt -> "already spoke in this position"
+            (spoken[ply] ?: 0) >= UNPROMPTED_PER_POSITION ->
+                "gave the idea and the focus here; the move only when asked"
             else -> null
         }
         if (reason != null) {

@@ -5,16 +5,20 @@ about a tactic, so a port that disagrees anywhere changes what the coach teaches
 -- board, move, principal variation in, tags out -- so it can be compared exactly.
 
 The positions are the Lichess puzzle sample the desktop validates against
-(`data/puzzles/sample.csv`): real tactics, which is where a tagger does its work. Each
-puzzle's solution is walked and every position where the solver is to move is recorded, with
-the move, the continuation and the mate distance -- the same thing the live pipeline tags as
-a game unfolds.
+(`data/puzzles/sample.csv`) and the per-theme set (`data/puzzles/themes-7-120.csv`, a hundred
+and twenty puzzles of each Lichess theme, so every mating pattern and every line motif is
+there many times): real tactics, which is where a tagger does its work. Each puzzle's
+solution is walked and every position where the solver is to move is recorded, with the move,
+the continuation and the mate distance -- the same thing the live pipeline tags as a game
+unfolds.
 
-The whole sample gives ten thousand positions and nine megabytes, most of it the same half
-dozen tags over and over. What is kept is chosen for coverage: every case that carries a tag
-still short of its quota, so the rare patterns -- the under-promotion, the two castlings, the
-kill-box mate -- are all in, and the common ones stop at a few dozen. That is a tenth of the
-size and tests strictly more per byte.
+The two sets give some thirty thousand positions, most of it the same half dozen tags over
+and over. What is kept is chosen for coverage: every case that carries a tag still short of
+its quota, so the rare patterns -- the under-promotion, the two castlings, the balestra mate --
+are all in, and the common ones stop at a few dozen; and every STRIDE-th case whatever it
+carries, because since 2026-09-23 most detectors reject what the geometry alone would name (a
+pin that wins nothing, a fork the enemy takes), and those rejections are in the cases no quota
+picks.
 
     cd D:/chess-coaching-companion
     uv run --no-sync python D:/sidecoach-android/tools/make_motif_fixtures.py [puzzles]
@@ -38,6 +42,7 @@ from sidecoach.analysis.phase import phase_of  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "chess"
 PUZZLES = DESKTOP / "data" / "puzzles" / "sample.csv"
+THEMES = DESKTOP / "data" / "puzzles" / "themes-7-120.csv"
 
 
 def tag_json(tag) -> dict:
@@ -62,17 +67,20 @@ def mate_distance(board: chess.Board, moves: list[chess.Move]) -> int | None:
 # Cases kept per tag name. Enough that a detector's branches are exercised, few enough
 # that `capture` does not fill the file.
 QUOTA = 40
+# And one case in this many whatever it carries: the rejections no quota picks.
+STRIDE = 16
 
 
 def choose(cases: list[dict]) -> list[dict]:
-    """The cases worth keeping: each one that carries a tag still under its quota."""
+    """The cases worth keeping: each one that carries a tag still under its quota, and
+    every STRIDE-th."""
     counts: dict[str, int] = {}
     kept: list[dict] = []
-    for case in cases:
+    for index, case in enumerate(cases):
         names = {tag["name"] for tag in case["for_move"] + case["for_position"]}
         if not names:
             names = {"(none)"}
-        if any(counts.get(name, 0) < QUOTA for name in names):
+        if any(counts.get(name, 0) < QUOTA for name in names) or index % STRIDE == 0:
             kept.append(case)
             for name in names:
                 counts[name] = counts.get(name, 0) + 1
@@ -80,49 +88,53 @@ def choose(cases: list[dict]) -> list[dict]:
 
 
 def main() -> None:
-    limit = int(sys.argv[1]) if len(sys.argv) > 1 else 4571
-    if not PUZZLES.exists():
-        raise SystemExit(f"no puzzle sample at {PUZZLES}")
+    limit = int(sys.argv[1]) if len(sys.argv) > 1 else 100_000
+    for path in (PUZZLES, THEMES):
+        if not path.exists():
+            raise SystemExit(f"no puzzles at {path}")
     cases: list[dict] = []
     phases: list[dict] = []
-    with PUZZLES.open(newline="", encoding="utf-8") as handle:
-        for row in list(csv.DictReader(handle))[:limit]:
-            board = chess.Board(row["FEN"])
-            moves = [chess.Move.from_uci(u) for u in row["Moves"].split()]
-            # The first move is the opponent's, played to reach the position the solver faces.
-            for index, move in enumerate(moves):
-                if move not in board.legal_moves:
-                    break
-                if index % 2 == 1:  # the solver is to move here
-                    pv = moves[index + 1 :]
-                    mate_in = mate_distance(board, moves[index:])
-                    cases.append(
-                        {
-                            "puzzle": row["PuzzleId"],
-                            "fen": board.fen(),
-                            "move": move.uci(),
-                            "pv": [m.uci() for m in pv],
-                            "mate_in": mate_in,
-                            "for_move": [
-                                tag_json(t)
-                                for t in tags_for_move(board, move, pv=pv, mate_in=mate_in)
-                            ],
-                            "for_position": [
-                                tag_json(t)
-                                for t in tags_for_position(
-                                    board, pv=[move, *pv], mate_in=mate_in
-                                )
-                            ],
-                        }
-                    )
-                    phases.append(
-                        {
-                            "fen": board.fen(),
-                            "in_book": False,
-                            "phase": phase_of(board, False),
-                        }
-                    )
-                board.push(move)
+    rows: list[dict] = []
+    for path in (PUZZLES, THEMES):
+        with path.open(newline="", encoding="utf-8") as handle:
+            rows.extend(list(csv.DictReader(handle))[:limit])
+    for row in rows:
+        board = chess.Board(row["FEN"])
+        moves = [chess.Move.from_uci(u) for u in row["Moves"].split()]
+        # The first move is the opponent's, played to reach the position the solver faces.
+        for index, move in enumerate(moves):
+            if move not in board.legal_moves:
+                break
+            if index % 2 == 1:  # the solver is to move here
+                pv = moves[index + 1 :]
+                mate_in = mate_distance(board, moves[index:])
+                cases.append(
+                    {
+                        "puzzle": row["PuzzleId"],
+                        "fen": board.fen(),
+                        "move": move.uci(),
+                        "pv": [m.uci() for m in pv],
+                        "mate_in": mate_in,
+                        "for_move": [
+                            tag_json(t)
+                            for t in tags_for_move(board, move, pv=pv, mate_in=mate_in)
+                        ],
+                        "for_position": [
+                            tag_json(t)
+                            for t in tags_for_position(
+                                board, pv=[move, *pv], mate_in=mate_in
+                            )
+                        ],
+                    }
+                )
+                phases.append(
+                    {
+                        "fen": board.fen(),
+                        "in_book": False,
+                        "phase": phase_of(board, False),
+                    }
+                )
+            board.push(move)
 
     # A few opening positions too, for the phase table's book branch.
     opening = chess.Board()
@@ -143,7 +155,7 @@ def main() -> None:
     for case in cases:
         for tag in case["for_move"] + case["for_position"]:
             names[tag["name"]] = names.get(tag["name"], 0) + 1
-    print(f"{len(cases)} of {seen_all} positions from {limit} puzzles -> {OUT / 'motifs.json'}")
+    print(f"{len(cases)} of {seen_all} positions from {len(rows)} puzzles -> {OUT / 'motifs.json'}")
     print("tags seen: " + ", ".join(f"{n}x{c}" for n, c in sorted(names.items())))
 
 

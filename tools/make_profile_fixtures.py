@@ -26,6 +26,11 @@ with a scripted model -- one answered, one that never writes prose.
 
 The puzzle draw is fixed (no shuffle) and the session id given, so nothing random is left.
 
+Beside the games, `causes.wins_material` on its own -- every legal capture of the first
+positions of the puzzle sample and of the desktop test's positions, where a guard pinned to
+its own king takes nothing back (`exchange.can_retake`) -- and `causes.classify` on the
+desktop test's pinned-guard blunder.
+
     cd D:/chess-coaching-companion
     uv run --no-sync python D:/sidecoach-android/tools/make_profile_fixtures.py
 """
@@ -63,7 +68,7 @@ from sidecoach.events import (  # noqa: E402
     UserUtterance,
 )
 from sidecoach.llm.base import Completion  # noqa: E402
-from sidecoach.profile import ask  # noqa: E402
+from sidecoach.profile import ask, causes  # noqa: E402
 from sidecoach.profile.profiler import Profiler  # noqa: E402
 from sidecoach.profile.puzzles import PuzzleStore  # noqa: E402
 from sidecoach.profile.store import QueryRefused, Store  # noqa: E402
@@ -202,6 +207,41 @@ class Scripted:
         return Completion(text=self.replies.pop(0) if self.replies else "```sql\nSELECT 1\n```")
 
 
+# The desktop test's positions for `wins_material`: a guard pinned to its own king, the same
+# guard free, the king that cannot take back onto a guarded square.
+CAUSES_BUILT = [
+    "4k3/8/5n2/8/1b2B3/2N5/8/4K3 b - - 0 1",
+    "4k3/8/5n2/8/4B3/2N5/8/4K3 b - - 0 1",
+    "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+    "4k3/8/8/8/1b2n3/2N5/8/4K3 w - - 0 1",
+]
+
+
+def causes_cases(sample: Path) -> dict:
+    """`wins_material` for every capture of some positions, and one `classify`."""
+    boards = [chess.Board(fen) for fen in CAUSES_BUILT]
+    with sample.open(encoding="utf-8", newline="") as handle:
+        for row in list(csv.DictReader(handle))[:60]:
+            board = chess.Board(row["FEN"])
+            for uci in row["Moves"].split():
+                move = chess.Move.from_uci(uci)
+                if move not in board.legal_moves:
+                    break
+                board.push(move)
+                boards.append(board.copy(stack=False))
+    wins = []
+    for board in boards:
+        for move in board.legal_moves:
+            if board.is_capture(move):
+                wins.append({"fen": board.fen(), "reply": move.uci(),
+                             "wins": causes.wins_material(board, move)})
+    # Be4?? beside the f6 knight, the c3 knight that guards e4 pinned by the b4 bishop.
+    board = chess.Board("4k3/8/5n2/8/1b6/2N2B2/8/4K3 w - - 0 1")
+    cause, motif = causes.classify(board, chess.Move.from_uci("f3e4"), reply="f6e4")
+    classified = [{"fen": board.fen(), "move": "f3e4", "reply": "f6e4", "cause": cause, "motif": motif}]
+    return {"wins_material": wins, "classify": classified}
+
+
 def tables(store: Store) -> dict:
     out = {}
     for table in ("games", "moves", "evidence", "dialogue", "sessions", "recommendations",
@@ -323,6 +363,7 @@ def main() -> None:
         "extracts": extracts,
         "conversations": conversations,
         "cells": [c.__dict__ for c in store.cells()],
+        "causes": causes_cases(sample),
     }
     (OUT / "profile.json").write_text(json.dumps(fixture), encoding="utf-8")
     emitted = [e["type"] for s in run.steps for e in s["out"]]

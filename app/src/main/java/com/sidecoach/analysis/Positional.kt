@@ -1025,27 +1025,38 @@ private fun rookBehindPasser(after: Board, rookSquare: Int, us: Boolean): String
     return null
 }
 
-/** Whether an enemy piece attacks `square` and it is worth more than the cheapest attacker. */
+/**
+ * Whether your piece on `square` is in danger: the opponent can win it, taking with a legal
+ * capture and coming out ahead once the recaptures are played out.
+ *
+ * Read by the rules ([Exchange.canBeWon]), not off `board.attackers()`, which called a knight
+ * guarded by a pawn "in danger" from the enemy king beside it (the king was worth nothing,
+ * and it cannot take a guarded piece anyway), and a knight attacked only by a piece pinned to
+ * its own king.
+ */
 private fun pieceIsAttacked(board: Board, sq: Int, us: Boolean): Boolean {
-    val attackers = board.attackers(!us, sq)
-    if (attackers.isEmpty()) return false
-    val mine = POS_VALUE[board.pieceTypeAt(sq).let { if (it == 0) PAWN else it }]
-    val cheapest = attackers.minOf { POS_VALUE[board.pieceTypeAt(it).let { p -> if (p == 0) PAWN else p }] }
-    val defended = board.attackers(us, sq).isNotEmpty()
-    return cheapest < mine || !defended
+    val piece = board.pieceAt(sq)
+    return piece != null && piece.colour == us && Exchange.canBeWon(board, sq)
 }
 
-/** Whether the move that led to `after` stops the opponent's threatened move. */
-private fun preventsThreat(after: Board, threat: Move, us: Boolean): Boolean {
+/**
+ * Whether the move that led to `after` stops the opponent's threatened move.
+ *
+ * Stopped when the threat is no longer a legal move at all, or when it was a capture of one
+ * of your pieces that won material and no longer does: played out by the rules, recaptures
+ * included, it now nets nothing ([Exchange.exchange]). A guard alone is not enough -- a bishop
+ * guarding a knight a pawn attacks leaves the pawn winning it, and a guard pinned to its own
+ * king takes nothing back.
+ */
+private fun preventsThreat(board: Board, after: Board, threat: Move, us: Boolean): Boolean {
     if (!after.isLegal(threat)) return true
-    if (after.isCapture(threat)) {
-        val target = threat.to
-        val victim = after.pieceAt(target)
-        if (victim != null && victim.colour == us && after.attackers(us, target).isNotEmpty()) {
-            return true
-        }
-    }
-    return false
+    val victim = after.pieceAt(threat.to)
+    if (victim == null || victim.colour != us) return false
+    val passed = board.copy(withStack = false)
+    passed.push(Move.NULL)  // the position before the move, the opponent to move
+    return passed.isLegal(threat) &&
+        Exchange.exchange(passed, threat) > 0 &&
+        Exchange.exchange(after, threat) <= 0
 }
 
 /**
@@ -1070,7 +1081,12 @@ fun bestMoveIdea(
         return PositionalFact("castle", "castle to tuck your king away and connect the rooks", listOf(to))
     }
 
-    if (pieceIsAttacked(board, move.from, us) && !board.isCapture(move)) {
+    // A rescue needs the square the piece goes to to be safe as well: a knight that runs from
+    // one pawn onto a square another pawn takes is not brought to safety.
+    if (pieceIsAttacked(board, move.from, us) &&
+        !board.isCapture(move) &&
+        !pieceIsAttacked(after, move.to, us)
+    ) {
         val pieceName = PIECE_NAMES[pieceType]
         return PositionalFact(
             "rescue", "your $pieceName was in danger; moving to $to brings it to safety", listOf(to),
@@ -1078,7 +1094,7 @@ fun bestMoveIdea(
     }
 
     if (threat != null && !board.isCapture(move) && !after.isCheck() &&
-        preventsThreat(after, threat, us)
+        preventsThreat(board, after, threat, us)
     ) {
         return PositionalFact(
             "prophylaxis",

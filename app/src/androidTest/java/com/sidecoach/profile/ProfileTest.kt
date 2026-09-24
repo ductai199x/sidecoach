@@ -354,6 +354,38 @@ class ProfileTest {
         else -> c.getString(i)
     }
 
+    /**
+     * `causes.wins_material` for every capture of the puzzle sample's first positions and the
+     * desktop test's own -- taking back read by the rules (`exchange.can_retake`), so a guard
+     * pinned to its own king takes nothing back -- and `causes.classify` on the pinned-guard
+     * blunder of the desktop test.
+     */
+    @Test
+    fun winsMaterialAndTheCauseMatchThePython() {
+        val causes = fixture().getJSONObject("causes")
+        val wins = causes.getJSONArray("wins_material")
+        val failures = ArrayList<String>()
+        for (i in 0 until wins.length()) {
+            val o = wins.getJSONObject(i)
+            val board = com.sidecoach.chess.Board(o.getString("fen"))
+            val mine = Causes.winsMaterial(board, com.sidecoach.chess.Move.fromUci(o.getString("reply")))
+            if (mine != o.getBoolean("wins") && failures.size < 8) {
+                failures.add("${o.getString("fen")} ${o.getString("reply")}: kotlin $mine, python ${o.getBoolean("wins")}")
+            }
+        }
+        val classified = causes.getJSONArray("classify")
+        for (i in 0 until classified.length()) {
+            val o = classified.getJSONObject(i)
+            val board = com.sidecoach.chess.Board(o.getString("fen"))
+            val (cause, motif) = Causes.classify(
+                board, com.sidecoach.chess.Move.fromUci(o.getString("move")), reply = o.getString("reply"),
+            )
+            val want = o.getString("cause") to (if (o.isNull("motif")) null else o.getString("motif"))
+            if ((cause to motif) != want) failures.add("${o.getString("fen")}: kotlin ${cause to motif}, python $want")
+        }
+        assertTrue("${wins.length()} captures: " + failures.joinToString("\n"), failures.isEmpty())
+    }
+
     private class Scripted(replies: List<String>) : LLMProvider {
         override val name = "scripted"
         private val replies = ArrayDeque(replies)

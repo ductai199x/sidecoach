@@ -1,11 +1,11 @@
 package com.sidecoach.analysis
 
+import com.sidecoach.chess.BB_ALL
 import com.sidecoach.chess.BB_EMPTY
 import com.sidecoach.chess.BB_KING_ATTACKS
 import com.sidecoach.chess.BB_SQUARES
 import com.sidecoach.chess.BISHOP
 import com.sidecoach.chess.BLACK
-import com.sidecoach.chess.Bitboard
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.KING
 import com.sidecoach.chess.KNIGHT
@@ -15,10 +15,9 @@ import com.sidecoach.chess.QUEEN
 import com.sidecoach.chess.ROOK
 import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.between
+import com.sidecoach.chess.ray
 import com.sidecoach.chess.square
-import com.sidecoach.chess.squareDistance
 import com.sidecoach.chess.squareFile
-import com.sidecoach.chess.squareKnightDistance
 import com.sidecoach.chess.squareName
 import com.sidecoach.chess.squareRank
 import com.sidecoach.chess.squaresOf
@@ -42,11 +41,18 @@ import kotlin.math.abs
  * The theme names are Lichess's, and so are the definitions: a motif is what Lichess would
  * tag, not a stricter thing of our own. Two rules keep the tags honest:
  *
- * 1. A tag that claims material has to gain material once defenders are counted: a knight
- *    forking two rooks while a pawn can take it is not a fork, and a loose piece must really
- *    be undefended. But a pin, a skewer's front piece, or a discovered attack is a
- *    restriction or a revealed line, not a material claim, so those follow the geometry the
- *    way Lichess does.
+ * 1. A tactic is named only when it is tactically real: it wins something, never as geometry
+ *    alone (Tai, 2026-09-23). A tag that claims material has to gain it once defenders are
+ *    counted: a knight forking two rooks while a pawn can take it is not a fork, and a loose
+ *    piece must really be undefended. A pin is a claim too: a piece is pinned when leaving
+ *    the line would lose what stands behind it -- the king, or a piece the pinner could take
+ *    for profit -- and a pinner the enemy simply wins pins nothing. A queen "pinning" a knight
+ *    to a defended rook pins nothing, whatever the geometry; Lichess tags it, the coach must
+ *    not teach it. The same goes for the rest: a discovered attack reveals something the
+ *    slider can win (or the king), a skewer still wins the piece behind whatever the front
+ *    piece does, and the line motifs (deflection, attraction, removing the defender,
+ *    interference, clearance) end in material won or mate. "Can take" and "defends" are read
+ *    off legal moves ([Exchange]): a piece pinned to its own king takes nothing.
  * 2. [tagsForMove] reports only what the move brought about. A pin the bishop was already
  *    making before the move is not something the move did, so castling does not inherit it.
  *    Those features still show up in [tagsForPosition], where they belong.
@@ -54,6 +60,10 @@ import kotlin.math.abs
  * `mateIn` counts the mover's own moves including the one being judged: 1 means this move is
  * checkmate, 3 means this move plus two more, and a negative value means the mover gets
  * mated. A negative `mateIn` never produces a `mateIn*` tag.
+ *
+ * Output order is fixed by [TAG_ORDER]: what the move is, then what it creates, then what the
+ * line does, then the mating pattern ([Mates]). Tags are deduplicated by name and a repeated
+ * name merges its evidence squares in first-seen order.
  */
 object Motifs : Tagger {
 
@@ -104,6 +114,15 @@ object Motifs : Tagger {
         "bodenMate",
         "doubleBishopMate",
         "dovetailMate",
+        "swallowstailMate",
+        "epauletteMate",
+        "triangleMate",
+        "blindSwineMate",
+        "cornerMate",
+        "operaMate",
+        "pillsburysMate",
+        "morphysMate",
+        "balestraMate",
     )
 
     private val ORDER_INDEX = TAG_ORDER.withIndex().associate { (i, name) -> name to i }
@@ -115,8 +134,6 @@ object Motifs : Tagger {
 
     /** A sacrifice must give up at least this much: a pawn gambit is not a sacrifice. */
     private const val SACRIFICE_THRESHOLD = 2
-
-    private val CORNERS = intArrayOf(0, 56, 7, 63)
 
     // --- small helpers -----------------------------------------------------------------
 
@@ -163,6 +180,62 @@ object Motifs : Tagger {
     }
 
     /**
+     * `board` with `colour` to move, the way [Exchange] reads a threat: a null move hands the
+     * turn over, so no en passant right is carried across.
+     */
+    private fun asSide(board: Board, colour: Boolean): Board {
+        if (board.turn == colour) return board
+        val view = board.copy(withStack = false)
+        view.push(Move.NULL)
+        return view
+    }
+
+    /**
+     * What the piece of `colour` on `frm` nets by taking on `to`, the recaptures played out
+     * with legal moves ([Exchange.exchange]); null when it cannot legally take there at all --
+     * pinned to its own king, blocked, gone, or the king in check with the capture no answer.
+     */
+    private fun captureGain(board: Board, colour: Boolean, frm: Int, to: Int): Int? {
+        val view = asSide(board, colour)
+        var best: Int? = null
+        for (m in Exchange.capturesOn(view, colour, to)) {
+            if (m.from != frm) continue
+            val gain = Exchange.exchange(view, m)
+            if (best == null || gain > best) best = gain
+        }
+        return best
+    }
+
+    /** The line ends with the mover's opponent checkmated. */
+    private fun mates(boards: List<Board>, mover: Boolean): Boolean =
+        boards.last().isCheckmate() && boards.last().turn != mover
+
+    /**
+     * Whether one of the mover's later captures (from its second move on) leaves it ahead of
+     * where it stood before the first move: the balance before that capture plus what the
+     * capture nets by static exchange. Counting the exchange rather than the bare balance at
+     * the end of the line means a line cut off mid-trade neither gains nor loses a piece.
+     * `square` keeps to captures on that square; `upto` stops at that ply.
+     */
+    private fun winsMaterial(
+        boards: List<Board>,
+        played: List<Move>,
+        mover: Boolean,
+        square: Int? = null,
+        upto: Int? = null,
+    ): Boolean {
+        val start = balance(boards[0], mover)
+        val last = if (upto == null) played.size else minOf(played.size, upto + 1)
+        for (k in 2 until last step 2) {
+            val later = played[k]
+            if (square != null && later.to != square) continue
+            if (!boards[k].isCapture(later)) continue
+            if (balance(boards[k], mover) + Exchange.exchange(boards[k], later) > start) return true
+        }
+        return false
+    }
+
+    /**
      * Walk the line, stopping at the first move that is not legal. `boards[i]` is the
      * position before `played[i]`; `boards[last]` is the end of the line.
      */
@@ -204,9 +277,14 @@ object Motifs : Tagger {
 
     /**
      * A quiet move that saves material: it runs from an attack, or it defends an attacked
-     * man. Running away means the piece could have been taken for profit where it stood and
-     * its new square is not attacked at all. Defending means the move newly covers a friendly
-     * piece the opponent could have won before the move and is still attacking after it.
+     * man.
+     *
+     * Running away means the piece could have been taken for profit where it stood and cannot
+     * be on its new square. Defending means the move newly covers a friendly piece the
+     * opponent could have won before the move, is still attacking after it, and can no longer
+     * win. A guard that does not stop the loss is no rescue: a knight covering a rook that a
+     * knight attacks still loses the exchange. Nor is one that is itself lost where it lands,
+     * and adding a second guard to a piece that was already holding does not count either.
      */
     private fun defensiveEvidence(
         before: Board,
@@ -215,14 +293,15 @@ object Motifs : Tagger {
         mover: Boolean,
     ): List<Int>? {
         val enemy = !mover
-        val ran = !isSafe(before, move.from) && !after.isAttackedBy(enemy, move.to)
-        if (ran) return listOf(move.from, move.to)
-        val coveredBefore = before.attacks(move.from)
+        if (!isSafe(after, move.to)) return null
+        if (!isSafe(before, move.from)) return listOf(move.from, move.to)
+        val coveredBefore = before.attacksMask(move.from)
         for (sq in after.attacks(move.to)) {
-            if (sq in coveredBefore) continue
+            if (coveredBefore and BB_SQUARES[sq] != BB_EMPTY) continue
             val piece = after.pieceAt(sq) ?: continue
             if (piece.colour != mover) continue
-            if (isSafe(before, sq) || !after.isAttackedBy(enemy, sq)) continue
+            if (isSafe(before, sq) || Exchange.capturers(after, enemy, sq).isEmpty()) continue
+            if (!isSafe(after, sq)) continue
             return listOf(move.to, sq)
         }
         return null
@@ -266,6 +345,10 @@ object Motifs : Tagger {
             if (checkers.size >= 2) tags.add(tag("doubleCheck", squares, move))
         }
         if (!isCapture && !givesCheck && move.promotion == 0) {
+            // Bookkeeping, not a teaching claim: the move is not a capture, a check or a
+            // promotion, and that is all. Lichess's quietMove is narrower (a quiet move that
+            // makes no threat and still wins); the coach never names this one as a theme and
+            // the panel hides it. It gates `defensiveMove` and records what kind of move it was.
             tags.add(tag("quietMove", listOf(frm, to), move))
             val evidence = defensiveEvidence(before, after, move, mover)
             if (evidence != null) tags.add(tag("defensiveMove", evidence, move))
@@ -276,33 +359,41 @@ object Motifs : Tagger {
     // --- group B: what the move creates ------------------------------------------------
 
     /**
-     * Would taking the piece on `square` with a `cost`-valued piece gain material? True when
-     * the piece is worth more than what takes it, or when nothing defends it. `ignore` drops
-     * one defender, which is how a skewered piece stops counting as the guard of the piece
-     * behind it.
+     * Would taking the piece on `square` with a `cost`-valued piece gain material?
+     *
+     * True when the piece is worth more than what takes it, or when nothing can legally take
+     * back ([Exchange.defenders]: a defender pinned to its own king does not count, nor a king
+     * that would step onto a guarded square). `ignore` drops one piece from the board first,
+     * which is how a pinned or skewered piece stops counting as the guard of the piece behind
+     * it: it is the one being driven off the line.
      */
-    private fun winnable(view: Board, sq: Int, cost: Int, ignore: Int? = null): Boolean {
+    fun winnable(view: Board, sq: Int, cost: Int, ignore: Int? = null): Boolean {
         val piece = view.pieceAt(sq) ?: return false
         if (piece.pieceType == KING || value(piece.pieceType) > cost) return true
-        val defenders = view.attackers(piece.colour, sq).toMutableList()
-        if (ignore != null) defenders.remove(ignore)
-        return defenders.isEmpty()
-    }
-
-    /** Can the piece on `square` be taken for profit? Safe means no, so it can stay. */
-    private fun isSafe(view: Board, sq: Int): Boolean {
-        val piece = view.pieceAt(sq) ?: return true
-        val mine = value(piece.pieceType)
-        val attackers = view.attackers(!piece.colour, sq)
-        if (attackers.isEmpty()) return true
-        if (attackers.any { value(view.pieceTypeAt(it)) < mine }) return false
-        return view.attackers(piece.colour, sq).isNotEmpty()
+        var probe = view
+        if (ignore != null) {
+            probe = view.copy(withStack = false)
+            probe.removePieceAt(ignore)
+        }
+        return Exchange.defenders(probe, piece.colour, sq).isEmpty()
     }
 
     /**
+     * Can the piece on `square` be taken for profit? Safe means no, so it can stay. Read off
+     * the static exchange with legal moves ([Exchange.canBeWon]): an attacker pinned to its own
+     * king cannot take -- the knight forking king and queen is safe from the pawn that is
+     * pinned (the "pin" of Lichess's fork puzzles) -- and an x-ray piece behind the first
+     * attacker counts.
+     */
+    fun isSafe(view: Board, sq: Int): Boolean = !Exchange.canBeWon(view, sq)
+
+    /**
      * Squares the mover captures an enemy piece on early in the line the engine expects.
-     * This lets a fork that wins its piece a move or two later be recognised on the board
-     * where the double attack is set up, using the engine's own continuation.
+     *
+     * This lets a fork that wins its piece a move or two later (once a check has been
+     * answered) be recognised on the board where the double attack is set up, using the
+     * engine's own continuation rather than a guess -- the same line the multi-move motifs
+     * already read.
      */
     private fun moverCaptures(
         boards: List<Board>,
@@ -325,8 +416,19 @@ object Motifs : Tagger {
      *
      * A target is the enemy king, an enemy piece worth more than the moved piece, or an enemy
      * piece worth at least as much and undefended. Equal value plus a defender is a trade,
-     * not a fork. Unless the enemy king is one of the targets, the forking piece must also be
-     * safe where it stands.
+     * not a fork, which is what keeps pawn pushes out of this. The forker has to be able to
+     * take a target by the rules: a piece pinned to its own king bears on the pieces around it
+     * but may take none of them. And the forking piece must be safe where it stands, a check
+     * included: a knight forking two rooks while a pawn can take it wins nothing, and a knight
+     * checking king and queen that the g-pawn simply takes wins nothing either -- taking the
+     * checker is a legal answer to the check, which the exchange with legal moves counts.
+     *
+     * A check is the exception to value: when the move gives check, a loose enemy piece the
+     * forker also hits counts however cheap it is, because the enemy must answer the check
+     * and cannot save the piece too. That single case is verified move by move
+     * ([checkForkWins]) so a check that the enemy can meet while rescuing the piece is not
+     * called a fork. This is the common queen-check-and-grab that plain value comparison
+     * misses.
      */
     private fun fork(
         after: Board,
@@ -340,26 +442,28 @@ object Motifs : Tagger {
         val mine = value(piece.pieceType)
         val givesCheck = after.isCheck()
         val targets = ArrayList<Int>()
-        var forksKing = false
         for (sq in after.attacks(move.to)) {
             val victim = after.pieceAt(sq) ?: continue
             if (victim.colour != enemy) continue
-            if (victim.pieceType == KING) {
-                forksKing = true
-                targets.add(sq)
-            } else if (forkTarget(after, move.to, sq, mine, mover, givesCheck, wonInLine)) {
+            val king = victim.pieceType == KING
+            if (king || forkTarget(after, move.to, sq, mine, mover, givesCheck, wonInLine)) {
                 targets.add(sq)
             }
         }
         if (targets.size < 2) return null
-        if (!forksKing && !isSafe(after, move.to)) return null
+        if (!isSafe(after, move.to)) return null
         return tag("fork", listOf(move.to) + targets, move)
     }
 
     /**
-     * Whether the enemy piece on `square` is one a fork from `forker` would win. A cheap
-     * loose piece counts when the move gives check and either the piece cannot be saved
-     * against any reply or the engine's own line actually captures it.
+     * Whether the enemy piece on `square` is one a fork from `forker` would win.
+     *
+     * Only a piece the forker can legally take ([Exchange.capturers]), and "undefended" means
+     * nothing can legally take back ([Exchange.defenders]). A cheap loose piece counts when
+     * the move gives check and either the piece cannot be saved against any reply
+     * ([checkForkWins]) or the engine's own line actually captures it -- the latter settles
+     * the cases where the enemy has a defence that only fails to deeper calculation, which is
+     * the engine's job, not the geometry's.
      */
     private fun forkTarget(
         after: Board,
@@ -370,37 +474,46 @@ object Motifs : Tagger {
         givesCheck: Boolean,
         wonInLine: Set<Int>,
     ): Boolean {
+        if (forker !in Exchange.capturers(after, mover, sq)) return false
         val enemy = !mover
         val theirs = value(after.pieceTypeAt(sq))
-        if (theirs > mine || (theirs >= mine && after.attackers(enemy, sq).isEmpty())) return true
-        return givesCheck &&
-            after.attackers(enemy, sq).isEmpty() &&
-            (sq in wonInLine || checkForkWins(after, forker, sq, mover))
+        val loose = Exchange.defenders(after, enemy, sq).isEmpty()
+        if (theirs > mine || (theirs >= mine && loose)) return true
+        return givesCheck && loose && (sq in wonInLine || checkForkWins(after, forker, sq, mover))
     }
 
     /**
-     * After a checking move, is the loose enemy piece on `target` truly won? True only when
-     * no legal reply to the check rescues it.
+     * After a checking move, is the loose enemy piece on `target` truly won?
+     *
+     * True only when no legal reply to the check rescues it: for every reply the piece is
+     * still there, the forker can still legally take it, and taking it still gains material.
+     * A reply that captures the forker, guards the piece, moves it to safety, or blocks with a
+     * piece that pins the forker to its own king means the check-fork does not win it.
      */
     private fun checkForkWins(after: Board, forker: Int, target: Int, mover: Boolean): Boolean {
         val replies = after.legalMoves()
         if (replies.isEmpty()) return false  // checkmate: the mate tags cover this
         val enemy = !mover
-        val cost = value(after.pieceTypeAt(forker))
         for (reply in replies) {
             val next = after.copy(withStack = false)
             next.push(reply)
             val victim = next.pieceAt(target)
-            if (victim == null || victim.colour != enemy) return false
-            if (forker !in next.attackers(mover, target)) return false
-            if (!winnable(next, target, cost)) return false
+            if (victim == null || victim.colour != enemy) return false  // moved, traded, taken
+            val gain = captureGain(next, mover, forker, target)
+                ?: return false  // the forker cannot take it now (captured, pinned, blocked)
+            if (gain <= 0) return false  // it is defended now
         }
         return true
     }
 
     /**
-     * Enemy pieces attacked by the mover with no defender at all, one tag per piece. Pawns
-     * are excluded: loose pawns are everywhere and a coach calling one "hanging" is noise.
+     * Enemy pieces the mover can take with nothing to take back, one tag per piece.
+     *
+     * Read off legal moves ([Exchange.hanging]): a piece attacked only by a piece pinned to its
+     * own king is not hanging, nor is one the mover cannot take because it has a check to
+     * answer first. Pawns are excluded: loose pawns are everywhere and a coach calling one
+     * "hanging" is noise. One tag per piece so that a piece that was already loose before a
+     * move can be told apart from one the move just left en prise.
      */
     private fun hangingTags(view: Board, mover: Boolean): List<MotifTag> {
         val enemy = !mover
@@ -409,22 +522,38 @@ object Motifs : Tagger {
             val piece = view.pieceAt(sq) ?: continue
             if (piece.colour != enemy) continue
             if (piece.pieceType == PAWN || piece.pieceType == KING) continue
-            if (view.attackers(mover, sq).isNotEmpty() && view.attackers(enemy, sq).isEmpty()) {
-                tags.add(tag("hangingPiece", listOf(sq)))
-            }
+            if (Exchange.hanging(view, sq)) tags.add(tag("hangingPiece", listOf(sq)))
         }
         return tags
     }
 
     /**
-     * Pins and skewers: one mover slider, one enemy piece, one enemy piece behind it. A pin
-     * is geometric, the way Lichess tags it. A skewer names a piece to go after, so it still
-     * requires the piece behind to be winnable.
+     * Pins and skewers: one mover slider, one enemy piece, one enemy piece behind it.
+     *
+     * A pin is tactical, not only geometric: an enemy piece with a more valuable enemy piece
+     * behind it on the slider's line is pinned when leaving the line would lose that piece --
+     * the king always, another piece when the slider could legally take it for profit once
+     * the front piece has gone. A pin against a defended piece worth no more than the pinner
+     * wins nothing, and the coach said such pins made no sense (Tai, 2026-09-23). A pin also
+     * has to hold something back: a pawn on the file whose only move is straight ahead is not
+     * stopped from anything ([leavesLine]).
+     *
+     * Neither holds when the enemy simply wins the slider ([isSafe]): a rook "pinning" a rook
+     * that takes it with check, or a bishop pinning a knight while a pawn takes the bishop. A
+     * slider pinned to its own king can never take what is behind, so it pins nothing but the
+     * king: a pin to the king stays, because the front piece still cannot move by the rules,
+     * but a relative pin needs the slider to be able to cash it in.
+     *
+     * A skewer names a piece to go after, so it requires the piece behind to be winnable, and
+     * it must still be winnable whatever the front piece does ([skewerHolds]): a queen that
+     * steps off the line to guard the rook behind has answered it. The x-ray is a line motif,
+     * not a static one, and lives in [xray].
      */
     private fun rayMotifs(view: Board, mover: Boolean): List<MotifTag> {
         val enemy = !mover
         val tags = ArrayList<MotifTag>()
         for (slider in sliders(view, mover)) {
+            if (!isSafe(view, slider)) continue
             val cost = value(view.pieceTypeAt(slider))
             for (frontSq in view.attacks(slider)) {
                 val front = view.pieceAt(frontSq) ?: continue
@@ -436,15 +565,24 @@ object Motifs : Tagger {
                 val frontValue = value(front.pieceType)
                 val backValue = value(back.pieceType)
                 if (backValue > frontValue) {
-                    tags.add(tag("pin", squares))
-                    if (back.pieceType == KING) tags.add(tag("absolutePin", squares))
+                    if (!leavesLine(view, slider, frontSq, backSq)) continue
+                    if (back.pieceType == KING) {
+                        tags.add(tag("pin", squares))
+                        tags.add(tag("absolutePin", squares))
+                        continue
+                    }
+                    val probe = view.copy(withStack = false)
+                    probe.removePieceAt(frontSq)
+                    val gain = captureGain(probe, mover, slider, backSq)
+                    if (gain != null && gain > 0) tags.add(tag("pin", squares))
                     continue
                 }
-                if (slider in view.attacks(frontSq) && winnable(view, slider, frontValue)) continue
                 if (frontValue > backValue) {
                     val mustMove = winnable(view, frontSq, cost)
                     val behindIsLoose = winnable(view, backSq, cost, ignore = frontSq)
-                    if (mustMove && behindIsLoose) tags.add(tag("skewer", squares))
+                    if (mustMove && behindIsLoose && skewerHolds(view, mover, slider, frontSq, backSq)) {
+                        tags.add(tag("skewer", squares))
+                    }
                 }
             }
         }
@@ -452,26 +590,84 @@ object Motifs : Tagger {
     }
 
     /**
-     * The move steps off a line and a friendly slider now bears on something it did not. The
-     * proof is geometric, the way Lichess tags a discovery: the vacated square lies strictly
-     * between the slider and an enemy piece it now attacks and did not before.
+     * Whether the piece on `frontSq` has a move off the slider's line, the pin ignored.
+     *
+     * A pin restricts only a piece that had somewhere else to go: the pawn in front of the
+     * queen on a file whose only move is a step down that file is held back from nothing.
+     * Pseudo-legal moves are what the piece could do were it not pinned.
      */
-    private fun discoveredAttack(
-        before: Board,
-        after: Board,
-        move: Move,
-        mover: Boolean,
-    ): MotifTag? {
+    private fun leavesLine(view: Board, slider: Int, frontSq: Int, backSq: Int): Boolean {
+        val front = view.pieceAt(frontSq) ?: return false
+        val line = ray(slider, backSq)
+        val side = asSide(view, front.colour)
+        var off = false
+        side.generatePseudoLegalMoves(BB_SQUARES[frontSq], BB_ALL) { m ->
+            if (BB_SQUARES[m.to] and line == BB_EMPTY) off = true
+        }
+        return off
+    }
+
+    /**
+     * Whether every way the front piece can step off the line still loses the piece behind.
+     *
+     * For each legal move of the front piece off the line, the slider must still be able to
+     * take the piece behind for a gain ([Exchange.exchange] > 0). A queen that answers a rook
+     * skewer by stepping to a square that guards the rook behind has met it: Rxb8 Qxb8 is only
+     * a trade. A front piece with no way off the line is not skewered but simply lost, which
+     * the loose and trapped pieces cover.
+     */
+    private fun skewerHolds(view: Board, mover: Boolean, slider: Int, frontSq: Int, backSq: Int): Boolean {
+        val front = view.pieceAt(frontSq) ?: return false
+        val line = ray(slider, backSq)
+        val side = asSide(view, front.colour)
+        val escapes = ArrayList<Move>()
+        // The front piece's legal moves, in the order the whole list has them.
+        side.generateLegalMoves(BB_SQUARES[frontSq], BB_ALL) { m ->
+            if (BB_SQUARES[m.to] and line == BB_EMPTY) escapes.add(m)
+        }
+        if (escapes.isEmpty()) return false
+        for (escape in escapes) {
+            val next = side.copy(withStack = false)
+            next.push(escape)
+            val gain = captureGain(next, mover, slider, backSq)
+            if (gain == null || gain <= 0) return false
+        }
+        return true
+    }
+
+    /**
+     * The move steps off a line and a friendly slider now bears on something it can win.
+     *
+     * The geometry first: the vacated square lies strictly between the slider and an enemy
+     * piece it now attacks and did not before. Then the claim: the revealed piece is the king
+     * (a discovered check), or the slider could take it for a gain ([Exchange.exchange] > 0),
+     * or the slider does take it later in the line -- Lichess tags a discovery only when that
+     * capture happens. Revealing a bishop onto a pawn the g-pawn guards, as 2.d4 does to h6,
+     * is a line opening, not a discovered attack.
+     */
+    private fun discoveredAttack(boards: List<Board>, played: List<Move>, mover: Boolean): MotifTag? {
+        val before = boards[0]
+        val after = boards[1]
+        val move = played[0]
         val enemy = !mover
+        // The mover's later captures, as (from, to) packed into one number.
+        val later = HashSet<Int>()
+        for (k in 2 until played.size step 2) {
+            if (boards[k].isCapture(played[k])) later.add(played[k].from * 64 + played[k].to)
+        }
         val squares = ArrayList<Int>()
         for (slider in sliders(after, mover)) {
             if (slider == move.to || before.pieceAt(slider) != after.pieceAt(slider)) continue
-            val was = before.attacks(slider)
+            val was = before.attacksMask(slider)
             for (target in after.attacks(slider)) {
-                if (target in was) continue
+                if (was and BB_SQUARES[target] != BB_EMPTY) continue
                 val piece = after.pieceAt(target) ?: continue
                 if (piece.colour != enemy) continue
                 if (BB_SQUARES[move.from] and between(slider, target) == BB_EMPTY) continue
+                if (piece.pieceType != KING && (slider * 64 + target) !in later) {
+                    val gain = captureGain(after, mover, slider, target)
+                    if (gain == null || gain <= 0) continue
+                }
                 if (slider !in squares) squares.add(slider)
                 squares.add(target)
             }
@@ -481,24 +677,33 @@ object Motifs : Tagger {
     }
 
     /**
-     * Cutting a line of defence, read over the line and by either side. Two shapes: the mover
-     * interposes between an enemy slider and a piece it was defending, or the mover forces
-     * the enemy to answer with a move that blocks one of their own sliders.
+     * Cutting a line of defence, the way Lichess tags it, read over the line and by either side.
+     *
+     * Two shapes. The mover interposes between an enemy slider and a piece it was defending,
+     * cutting the guard and winning that piece ([moverInterference]). Or the mover forces the
+     * enemy -- with a check, or by taking so that the reply is the recapture -- to answer with
+     * a move that blocks one of the enemy's own sliders off a square it was guarding, a square
+     * the mover takes or mates on with its very next move ([selfInterference]). The forced
+     * self-block is the common case; the mover's own interposition is the textbook one.
      */
-    private fun interference(
-        boards: List<Board>,
-        played: List<Move>,
-        mover: Boolean,
-    ): MotifTag? {
-        val exploited = HashSet<Int>()
-        var k = 0
-        while (k < played.size) { exploited.add(played[k].to); k += 2 }
+    private fun interference(boards: List<Board>, played: List<Move>, mover: Boolean): MotifTag? {
         for ((i, move) in played.withIndex()) {
             val before = boards[i]
             val after = boards[i + 1]
             val found = if (i % 2 == 0) {
-                moverInterference(before, after, move, mover)
+                val taken = HashSet<Int>()
+                for (k in i + 2 until played.size step 2) {
+                    if (boards[k].isCapture(played[k])) taken.add(played[k].to)
+                }
+                moverInterference(before, after, move, mover, taken)
             } else {
+                val recapture = before.isCapture(move) && move.to == played[i - 1].to
+                if (!before.isCheck() && !recapture) continue  // a free reply interfered under no force
+                val exploited = HashSet<Int>()
+                if (i + 1 < played.size) {
+                    val next = played[i + 1]
+                    if (boards[i + 1].isCapture(next) || boards[i + 2].isCheckmate()) exploited.add(next.to)
+                }
                 selfInterference(before, after, move, !mover, exploited)
             }
             if (found != null) return found
@@ -506,14 +711,25 @@ object Motifs : Tagger {
         return null
     }
 
-    /** The mover lands on the line between an enemy slider and the piece it was defending. */
+    /**
+     * The mover lands on the line between an enemy slider and the piece it was defending.
+     *
+     * Geometric plus a before/after test with legal moves: the defended piece loses its last
+     * defender ([Exchange.defenders]) and the mover can now take it for a gain -- which a piece
+     * pinned to its own king cannot, even standing on the line. And the interposer must hold
+     * its square ([isSafe]), or the line must go on to take the piece it cut off (`taken`, the
+     * squares the mover captures on later): a knight dropped between rook and pawn that the
+     * rook simply takes has cut nothing.
+     */
     private fun moverInterference(
         before: Board,
         after: Board,
         move: Move,
         mover: Boolean,
+        taken: Set<Int>,
     ): MotifTag? {
         val enemy = !mover
+        val holds = isSafe(after, move.to)
         for (slider in sliders(before, enemy)) {
             if (slider == move.to || before.pieceAt(slider) != after.pieceAt(slider)) continue
             for (guarded in before.attacks(slider)) {
@@ -521,8 +737,13 @@ object Motifs : Tagger {
                 val piece = before.pieceAt(guarded) ?: continue
                 if (piece.colour != enemy || piece.pieceType == KING) continue
                 if (BB_SQUARES[move.to] and between(slider, guarded) == BB_EMPTY) continue
-                if (guarded in after.attacks(slider) || after.attackers(enemy, guarded).isNotEmpty()) continue
-                if (after.attackers(mover, guarded).isEmpty()) continue
+                if (after.attacksMask(slider) and BB_SQUARES[guarded] != BB_EMPTY ||
+                    Exchange.defenders(after, enemy, guarded).isNotEmpty()
+                ) {
+                    continue
+                }
+                if (Exchange.bestCapture(after, mover, guarded) <= 0) continue
+                if (!holds && guarded !in taken) continue
                 return tag("interference", listOf(move.to, slider, guarded), move)
             }
         }
@@ -530,8 +751,13 @@ object Motifs : Tagger {
     }
 
     /**
-     * A forced reply that blocks one of the replier's own sliders off a square it was
-     * guarding, a square the mover later lands on.
+     * A forced reply that blocks one of the replier's own sliders off a square it was guarding.
+     *
+     * The block lands on `reply.to`; a `defender` slider that reached that square cleanly and
+     * guarded a square the mover takes or mates on next (`exploited`) no longer guards it
+     * afterwards. That is the enemy interfering with its own defence. [interference] hands in
+     * only forced replies -- a check evasion or a recapture -- and only the next move's square:
+     * a knight that retreats of its own accord in front of its queen interferes with nothing.
      */
     private fun selfInterference(
         before: Board,
@@ -543,12 +769,12 @@ object Motifs : Tagger {
         val block = reply.to
         for (slider in sliders(before, defender)) {
             if (slider == block || !sliderReaches(before.pieceTypeAt(slider), slider, block)) continue
-            if (squaresOf(between(slider, block)).any { before.pieceAt(it) != null }) continue
+            if (before.occupied and between(slider, block) != BB_EMPTY) continue
             for (target in beyond(slider, block)) {
                 if (before.pieceAt(target) != null && target !in exploited) break
                 if (target in exploited &&
-                    slider in before.attackers(defender, target) &&
-                    slider !in after.attackers(defender, target)
+                    slider in Exchange.defenders(before, defender, target) &&
+                    after.attackersMask(defender, target) and BB_SQUARES[slider] == BB_EMPTY
                 ) {
                     return tag("interference", listOf(target, block, slider), reply)
                 }
@@ -574,59 +800,107 @@ object Motifs : Tagger {
     }
 
     /**
-     * An enemy piece attacked by something cheaper with nowhere safe to go. Needs the enemy
-     * to move, so it is skipped whenever either king is in check.
+     * An enemy piece the mover can win that no move of the enemy's saves.
+     *
+     * The piece can be taken for profit now ([Exchange.canBeWon], legal moves: a hunter pinned
+     * to its own king hunts nothing), and after every legal enemy move it still can
+     * ([rescues]): not by fleeing, not by guarding it, not by taking the hunter with something
+     * else, not by a check. A flight square that is attacked but held is a flight square: the
+     * knight on h6 hit by a pawn is not trapped while f5 and g4 are guarded. Minor pieces
+     * count, not only rooks and queens. Needs the enemy to move, so it is skipped whenever
+     * either king is in check: check evasions would make every piece look trapped. One tag per
+     * piece, so a piece that was already trapped before a move can be told apart from one the
+     * move just shut in.
      */
     private fun trappedTags(view: Board, mover: Boolean): List<MotifTag> {
         val enemy = !mover
         val enemyKing = view.king(enemy) ?: return emptyList()
         val moverKing = view.king(mover) ?: return emptyList()
-        if (view.attackers(mover, enemyKing).isNotEmpty()) return emptyList()
-        if (view.attackers(enemy, moverKing).isNotEmpty()) return emptyList()
-        val escapes = HashMap<Int, MutableList<Move>>()
-        for (move in view.legalMoves()) escapes.getOrPut(move.from) { ArrayList() }.add(move)
+        if (view.attackersMask(mover, enemyKing) != BB_EMPTY) return emptyList()
+        if (view.attackersMask(enemy, moverKing) != BB_EMPTY) return emptyList()
+        val replies = view.legalMoves()
         val trapped = ArrayList<MotifTag>()
         for (sq in view.occupiedSquares()) {
             val piece = view.pieceAt(sq) ?: continue
             if (piece.colour != enemy || value(piece.pieceType) < MINOR) continue
-            val mine = value(piece.pieceType)
-            val hunters = view.attackers(mover, sq)
-            if (hunters.none { value(view.pieceTypeAt(it)) < mine }) continue
-            var safe = false
-            for (move in escapes[sq] ?: emptyList<Move>()) {
-                val victim = view.pieceAt(move.to)
-                if (victim != null && value(victim.pieceType) >= mine) { safe = true; break }
-                if (!view.isAttackedBy(mover, move.to)) { safe = true; break }
+            if (!Exchange.canBeWon(view, sq)) continue
+            // The piece's own moves first: fleeing is the usual rescue, and the search stops
+            // there. The rest keep their order, as the desktop's stable sort keeps it.
+            var saved = false
+            for (reply in replies) {
+                if (reply.from == sq && rescues(view, reply, sq, mover)) { saved = true; break }
             }
-            if (!safe) trapped.add(tag("trappedPiece", listOf(sq) + hunters))
+            if (!saved) {
+                for (reply in replies) {
+                    if (reply.from != sq && rescues(view, reply, sq, mover)) { saved = true; break }
+                }
+            }
+            if (saved) continue
+            val hunters = Exchange.capturers(view, mover, sq)
+            trapped.add(tag("trappedPiece", listOf(sq) + hunters))
         }
         return trapped
     }
 
-    /** The move takes aim at the beginner's square: f7 as white, f2 as black. */
+    /**
+     * Whether the enemy `reply` saves the piece on `square` from being won.
+     *
+     * It does when, after the reply, the mover can no longer take the piece (wherever it went)
+     * for more than the reply itself took: a piece that flees to a held square, a hunter taken,
+     * a check to answer first, or a capture worth at least what is lost -- the old rule that a
+     * trapped piece taking something as valuable on its way out is not trapped, and a queen
+     * that wins a rook elsewhere has not lost her knight for nothing. A queen taking a rook on
+     * a1 that the bishop takes back has still lost herself.
+     */
+    private fun rescues(view: Board, reply: Move, sq: Int, mover: Boolean): Boolean {
+        val next = view.copy(withStack = false)
+        next.push(reply)
+        val where = if (reply.from == sq) reply.to else sq
+        val taken = if (view.isEnPassant(reply)) PAWN else view.pieceTypeAt(reply.to)
+        var gained = value(taken)
+        if (reply.promotion != 0) gained += value(reply.promotion) - value(PAWN)
+        return Exchange.bestCapture(next, mover, where) <= gained
+    }
+
+    /**
+     * The move takes aim at the beginner's weak pawn: f7 as white, f2 as black.
+     *
+     * The pawn itself, not whatever stands on the square: a rook checking a king that has
+     * walked to f7 in the endgame is a check, not this. And the aim must be real: the pawn can
+     * be won ([Exchange.bestCapture] > 0) or the engine's line takes it (`wonInLine`). A bishop
+     * eyeing f7 in a book Italian, with the king and queen holding it, only looks.
+     */
     private fun attackingF2F7(
         before: Board,
         after: Board,
         move: Move,
         mover: Boolean,
+        wonInLine: Set<Int> = emptySet(),
     ): MotifTag? {
         val target = if (mover == WHITE) 53 else 13  // f7, f2
         val piece = after.pieceAt(target) ?: return null
-        if (piece.colour == mover) return null
-        if (piece.pieceType != PAWN && piece.pieceType != KING) return null
-        if (target !in after.attacks(move.to)) return null
-        if (target in before.attacks(move.from)) return null
+        if (piece.colour == mover || piece.pieceType != PAWN) return null
+        if (after.attacksMask(move.to) and BB_SQUARES[target] == BB_EMPTY) return null
+        if (before.attacksMask(move.from) and BB_SQUARES[target] != BB_EMPTY) return null
+        if (Exchange.bestCapture(after, mover, target) <= 0 && target !in wonInLine) return null
         return tag("attackingF2F7", listOf(move.to, target), move)
     }
 
     /**
      * The enemy king has lost its pawn shelter and the mover has force bearing on it.
-     * Counting pieces on the ring rather than pieces on the board is what keeps an opening
-     * king that just pushed a pawn from looking besieged.
+     *
+     * Shelter is counted one pawn per file over the three files around the king, one or two
+     * ranks in front. At most one such pawn, at least two of the mover's pieces actually
+     * attacking the king's ring (one of them a queen or rook), and at least two ring squares
+     * under fire. Counting pieces on the ring rather than pieces on the board is what keeps an
+     * opening king that just pushed a pawn from looking besieged. Without a queen of the
+     * mover's there is no attack to speak of: a king walking up the board in a rook and knight
+     * ending is active, not exposed.
      */
     private fun exposedKing(view: Board, mover: Boolean): MotifTag? {
         val enemy = !mover
         val king = view.king(enemy) ?: return null
+        if (view.piecesMask(QUEEN, mover) == BB_EMPTY) return null
         val kingFile = squareFile(king)
         val kingRank = squareRank(king)
         val step = if (enemy == WHITE) 1 else -1
@@ -648,6 +922,8 @@ object Motifs : Tagger {
         val ring = squaresOf(BB_KING_ATTACKS[king])
         val hit = ring.filter { view.isAttackedBy(mover, it) }
         if (hit.size < 2) return null
+        // The force has to be bearing on the king's ring, not merely present on the board: an
+        // opening king that has just lost a pawn is not exposed while every piece is at home.
         val ringAttackers = HashSet<Int>()
         var hasHeavy = false
         for (sq in ring) {
@@ -688,7 +964,8 @@ object Motifs : Tagger {
     /**
      * Identity of a static feature, so the same feature before and after a move matches. A
      * pin is which piece is shielding which, not which of my pieces happens to be doing the
-     * pinning.
+     * pinning; the king being out in the open is the feature, not which ring squares are hit
+     * this ply; and a trapped piece is the piece with nowhere to go, not its hunters.
      */
     private fun staticKey(item: MotifTag): Pair<String, List<String>> = when {
         item.name in RAY_NAMES -> item.name to item.squares.drop(1)
@@ -696,7 +973,11 @@ object Motifs : Tagger {
         else -> item.name to item.squares
     }
 
-    /** Static features the move brought about, and only those. */
+    /**
+     * Static features the move brought about, and only those. A pin the bishop was already
+     * making before the move is not something the move did; it is still reported by
+     * [tagsForPosition].
+     */
     private fun newStaticTags(before: Board, after: Board, mover: Boolean): List<MotifTag> {
         val prior = staticTags(enemyToMove(before, mover), mover).map { staticKey(it) }.toSet()
         return staticTags(after, mover).filter { staticKey(it) !in prior }
@@ -707,7 +988,9 @@ object Motifs : Tagger {
     /**
      * This move gives up at least two points to the opponent's reply, and the line still
      * wins. The judgement is about the move played, not about the line it leads to: the
-     * balance is read after the move and the opponent's answer to it.
+     * balance is read after the move and the opponent's answer to it. Two points, so a pawn
+     * gambit does not count; the deficit must survive the mover's own next move as well; and
+     * "still wins" is a mate for the mover, or the material back by the end of the line.
      */
     private fun sacrifice(
         boards: List<Board>,
@@ -726,79 +1009,137 @@ object Motifs : Tagger {
     }
 
     /**
-     * The move vacates a square with tempo and a later move of the mover's uses that square.
-     * Tempo means the move is a capture or a check.
+     * The move vacates a square with tempo and another piece soon uses that square with force.
+     *
+     * Tempo means the move is a capture or a check, which is what separates a clearance from a
+     * piece that merely happened to be in the way. The square is cleared for another piece: a
+     * queen that grabs a pawn and comes back to where it stood cleared nothing. Soon means one
+     * of the mover's next two moves, and the use must itself be a capture, a check or mate, or
+     * set up what the line goes on to win or mate with (Bxe5 Bxe5 Qd5, the queen's fork that
+     * takes e5 a move later) -- a rook strolling down a file the knight left long ago is not
+     * what the knight's move was for.
      */
     private fun clearance(boards: List<Board>, played: List<Move>): MotifTag? {
+        val mover = boards[0].turn
         if (played.size < 3) return null
         val first = played[0]
         if (!boards[0].isCapture(first) && !boards[1].isCheck()) return null
         val vacated = first.from
-        var i = 2
-        while (i < played.size) {
+        var clearedPiece = first.to
+        for (i in 2 until minOf(played.size, 5) step 2) {
             val later = played[i]
-            if (later.to == vacated) {
+            if (later.from == clearedPiece) {
+                clearedPiece = later.to  // the piece that cleared the square, moving on
+                continue
+            }
+            val uses = later.to == vacated ||
+                BB_SQUARES[vacated] and between(later.from, later.to) != BB_EMPTY
+            if (!uses) continue
+            val forcing = boards[i].isCapture(later) || boards[i + 1].isCheck()
+            if (forcing || mates(boards, mover) || winsMaterial(boards, played, mover)) {
                 return tag("clearance", listOf(vacated, later.from, later.to), first)
             }
-            if (BB_SQUARES[vacated] and between(later.from, later.to) != BB_EMPTY) {
-                return tag("clearance", listOf(vacated, later.from, later.to), first)
-            }
-            i += 2
         }
         return null
     }
 
-    /** The move captures a piece and a later move of the mover's lands on a square it guarded. */
-    private fun capturingDefender(boards: List<Board>, played: List<Move>): MotifTag? {
+    /**
+     * The move captures a defender, and a later move of the mover's wins what it defended.
+     *
+     * The captured piece must have been a legal defender of the later square at the start
+     * ([Exchange.defenders]), and the piece there must be one the mover could not win before
+     * ([Exchange.bestCapture] is 0) but wins at that point ([Exchange.exchange] > 0), with the
+     * line ahead of where it started once that capture is counted: removing a knight that
+     * guarded f6 when the g-pawn guards it too wins nothing, and giving a rook for the knight
+     * that guarded a pawn loses more than the pawn. A move onto a square the defender guarded
+     * counts without material only when it is a check and the line ends in mate.
+     */
+    private fun capturingDefender(boards: List<Board>, played: List<Move>, mover: Boolean): MotifTag? {
         if (played.isEmpty()) return null
         val first = played[0]
         if (!boards[0].isCapture(first)) return null
+        val enemy = !mover
         val victimSquare = if (boards[0].isEnPassant(first)) epVictim(first) else first.to
-        val guarded = boards[0].attacks(victimSquare)
-        var i = 2
-        while (i < played.size) {
+        val start = balance(boards[0], mover)
+        val mating = mates(boards, mover)
+        for (i in 2 until played.size step 2) {
             val later = played[i]
-            if (later.to in guarded) {
-                val position = boards[i]
-                if (position.isCapture(later) || position.givesCheck(later)) {
-                    return tag("capturingDefender", listOf(victimSquare, later.to), first)
-                }
+            val sq = later.to
+            if (victimSquare !in Exchange.defenders(boards[0], enemy, sq)) continue
+            val position = boards[i]
+            if (mating && boards[i + 1].isCheck()) {
+                return tag("capturingDefender", listOf(victimSquare, sq), first)
             }
-            i += 2
+            if (!position.isCapture(later)) continue
+            if (Exchange.bestCapture(boards[0], mover, sq) > 0) continue  // it could be won before
+            val gain = Exchange.exchange(position, later)
+            if (gain <= 0 || balance(position, mover) + gain <= start) continue
+            return tag("capturingDefender", listOf(victimSquare, sq), first)
         }
         return null
     }
 
-    /** A forcing move pulls the only defender of a square away, and the mover takes the square. */
+    /**
+     * A forcing move pulls the only defender of a square away, and the mover wins there.
+     *
+     * Forcing means the move is a capture or a check, and the reply is what it forces: the
+     * recapture on the move's square, or an answer to the check. A queen that walks away of
+     * her own accord was not deflected. "Only defender" is checked on the position after the
+     * move, by legal moves ([Exchange.defenders]). And the follow-up must win: a capture that
+     * nets material ([Exchange.exchange] > 0) with the line ahead of where it started, or
+     * mate. A rook check on the square the queen left, answered by a king step, wins nothing.
+     */
     private fun deflection(boards: List<Board>, played: List<Move>, mover: Boolean): MotifTag? {
         if (played.size < 3) return null
         val first = played[0]
         val reply = played[1]
         val follow = played[2]
         if (!boards[0].isCapture(first) && !boards[1].isCheck()) return null
+        val recapture = boards[1].isCapture(reply) && reply.to == first.to
+        if (!recapture && !boards[1].isCheck()) return null
         val defender = reply.from
-        val guards = boards[1].attackers(!mover, follow.to)
+        val guards = Exchange.defenders(boards[1], !mover, follow.to)
         if (guards.size != 1 || defender !in guards) return null
-        if (follow.to !in boards[1].attacks(defender)) return null
-        if (follow.to in boards[2].attacks(reply.to)) return null
-        if (!boards[2].isCapture(follow) && !boards[2].givesCheck(follow)) return null
+        if (boards[1].attacksMask(defender) and BB_SQUARES[follow.to] == BB_EMPTY) return null
+        if (boards[2].attacksMask(reply.to) and BB_SQUARES[follow.to] != BB_EMPTY) return null
+        if (!boards[3].isCheckmate() && !mates(boards, mover)) {
+            val gain = Exchange.exchange(boards[2], follow)
+            if (gain <= 0 || balance(boards[2], mover) + gain <= balance(boards[0], mover)) return null
+        }
         return tag("deflection", listOf(defender, reply.to, follow.to), first)
     }
 
-    /** A forcing move drags an enemy piece onto a square where the next move hits it. */
+    /**
+     * A forcing move drags an enemy piece onto a square where the next move hits it.
+     *
+     * The enemy is dragged by taking the piece the move put there, so the reply must capture
+     * on the move's square; the piece pulled is the king, a queen or a rook, as Lichess has it
+     * (a knight taking back a knight is a trade, not a lure); and the mover's follow-up must
+     * land on that square or attack it while capturing or checking. Then the lure has to pay:
+     * the line ends in mate, or wins material -- by taking the lured queen or rook on its
+     * square within the mover's next two moves, or, for a king, anywhere in the line. Material
+     * is counted from before the first move, so the piece given as bait is paid back first.
+     */
     private fun attraction(boards: List<Board>, played: List<Move>, mover: Boolean): MotifTag? {
         if (played.size < 3) return null
         val first = played[0]
         val reply = played[1]
         val follow = played[2]
         if (!boards[0].isCapture(first) && !boards[1].isCheck()) return null
-        if (!boards[1].isCapture(reply)) return null
+        if (!boards[1].isCapture(reply) || reply.to != first.to) return null
         val landed = reply.to
         val attracted = boards[2].pieceAt(landed) ?: return null
-        if (attracted.colour == mover || value(attracted.pieceType) < MINOR) return null
+        if (attracted.colour == mover) return null
+        if (attracted.pieceType != KING && attracted.pieceType != QUEEN && attracted.pieceType != ROOK) return null
         if (!boards[2].isCapture(follow) && !boards[2].givesCheck(follow)) return null
-        val hits = follow.to == landed || landed in boards[3].attacks(follow.to)
+        val hits = follow.to == landed || boards[3].attacksMask(follow.to) and BB_SQUARES[landed] != BB_EMPTY
         if (!hits) return null
+        val pays = if (attracted.pieceType == KING) {
+            winsMaterial(boards, played, mover)
+        } else {
+            winsMaterial(boards, played, mover, square = landed, upto = 4)
+        }
+        if (!pays && !mates(boards, mover)) return null
         return tag("attraction", listOf(reply.from, landed, follow.to), first)
     }
 
@@ -821,144 +1162,7 @@ object Motifs : Tagger {
         return tags
     }
 
-    // --- group D: mating patterns ------------------------------------------------------
-
-    private fun diagonalKind(a: Int, b: Int): String? {
-        val fa = squareFile(a)
-        val ra = squareRank(a)
-        val fb = squareFile(b)
-        val rb = squareRank(b)
-        if (fa - ra == fb - rb) return "main"
-        if (fa + ra == fb + rb) return "anti"
-        return null
-    }
-
-    private fun defenders(position: Board, colour: Boolean, sq: Int): List<Int> =
-        position.attackers(colour, sq)
-
-    /** Each pattern is emitted only when its shape matches exactly. */
-    private fun matingPatternTags(position: Board): List<MotifTag> {
-        val loser = position.turn
-        val winner = !loser
-        val king = position.king(loser) ?: return emptyList()
-        val checkers = squaresOf(position.checkersMask())
-        val ring = squaresOf(BB_KING_ATTACKS[king])
-        val ownRing = ring.filter { position.pieceAt(it)?.colour == loser }
-        val kingFile = squareFile(king)
-        val kingRank = squareRank(king)
-        val tags = ArrayList<MotifTag>()
-
-        val backRank = if (loser == WHITE) 0 else 7
-        if (kingRank == backRank) {
-            val forward = backRank + (if (loser == WHITE) 1 else -1)
-            val front = intArrayOf(kingFile - 1, kingFile, kingFile + 1)
-                .filter { it in 0..7 }
-                .map { square(it, forward) }
-            val blocked = front.all { position.pieceAt(it)?.colour == loser }
-            val heavy = checkers.filter {
-                (position.pieceTypeAt(it) == ROOK || position.pieceTypeAt(it) == QUEEN) &&
-                    squareRank(it) == backRank
-            }
-            if (blocked && heavy.isNotEmpty()) {
-                tags.add(tag("backRankMate", listOf(king) + heavy + front))
-            }
-        }
-
-        if (checkers.size == 1) {
-            val checker = checkers[0]
-            val kind = position.pieceTypeAt(checker)
-            val adjacent = squareDistance(checker, king) == 1
-            val knights = defenders(position, winner, checker)
-                .filter { position.pieceTypeAt(it) == KNIGHT }
-
-            if (kind == KNIGHT && ownRing.size == ring.size) {
-                tags.add(tag("smotheredMate", listOf(king, checker) + ownRing))
-            }
-
-            if (kind == ROOK && adjacent && knights.isNotEmpty() && king in CORNERS) {
-                tags.add(tag("arabianMate", listOf(king, checker, knights[0])))
-            }
-
-            if (kind == ROOK && adjacent && knights.isNotEmpty()) {
-                val pawns = defenders(position, winner, knights[0])
-                    .filter { position.pieceTypeAt(it) == PAWN }
-                if (pawns.isNotEmpty()) {
-                    tags.add(tag("hookMate", listOf(king, checker, knights[0], pawns[0])))
-                }
-            }
-
-            if (kind == ROOK && adjacent) {
-                val queens = defenders(position, winner, checker)
-                    .filter { position.pieceTypeAt(it) == QUEEN }
-                val box = queens.filter { squareKnightDistance(it, king) == 1 }
-                if (box.isNotEmpty()) {
-                    tags.add(tag("killBoxMate", listOf(king, checker, box[0])))
-                }
-            }
-
-            val onEdge = kingFile == 0 || kingFile == 7 || kingRank == 0 || kingRank == 7
-            if (kind == ROOK && adjacent && onEdge) {
-                val others = defenders(position, winner, checker)
-                    .filter { position.pieceTypeAt(it) != KNIGHT }
-                val covers = ring.filter { s ->
-                    position.pieceAt(s) == null &&
-                        position.pieces(KNIGHT, winner).any { s in position.attacks(it) }
-                }
-                if (others.isNotEmpty() && covers.isNotEmpty()) {
-                    tags.add(tag("vukovicMate", listOf(king, checker, others[0]) + covers))
-                }
-            }
-
-            if (kind == ROOK && (kingFile == 0 || kingFile == 7) && squareFile(checker) == kingFile) {
-                val inner = if (kingFile == 0) 1 else 6
-                val above = kingRank + 1
-                val below = kingRank - 1
-                if (below >= 0 && above <= 7) {
-                    val beside = square(inner, kingRank)
-                    val blocker = position.pieceAt(beside)
-                    val flights = intArrayOf(square(inner, above), square(inner, below))
-                    val covered = position.pieces(KNIGHT, winner).any { n ->
-                        flights.all { it in position.attacks(n) }
-                    }
-                    if (blocker != null && blocker.colour == loser && covered) {
-                        tags.add(tag("anastasiaMate", listOf(king, checker, beside) + flights.toList()))
-                    }
-                }
-            }
-
-            if (kind == BISHOP) {
-                val checkKind = diagonalKind(checker, king)
-                for (other in position.pieces(BISHOP, winner)) {
-                    if (other == checker) continue
-                    for (sq in ring) {
-                        if (sq !in position.attacks(other)) continue
-                        val otherKind = diagonalKind(other, sq)
-                        if (otherKind == null || checkKind == null) continue
-                        val evidence = listOf(king, checker, other, sq)
-                        if (otherKind == checkKind && onEdge) {
-                            tags.add(tag("doubleBishopMate", evidence))
-                        } else if (otherKind != checkKind && ownRing.size >= 2) {
-                            tags.add(tag("bodenMate", evidence))
-                        }
-                        break
-                    }
-                }
-            }
-
-            if (kind == QUEEN && ring.size == 8 && defenders(position, winner, checker).isNotEmpty()) {
-                var diagonal = abs(squareFile(checker) - kingFile) == 1
-                diagonal = diagonal && abs(squareRank(checker) - kingRank) == 1
-                val orthogonal = ownRing.filter {
-                    squareFile(it) == kingFile || squareRank(it) == kingRank
-                }
-                if (diagonal && ownRing.size == 2 && orthogonal.size == 2) {
-                    tags.add(tag("dovetailMate", listOf(king, checker) + ownRing))
-                }
-            }
-        }
-
-        return tags
-    }
+    // --- x-rays ------------------------------------------------------------------------
 
     /** Whether a slider of this type on `frm` moves along the straight line to `to`. */
     private fun sliderReaches(pieceType: Int, frm: Int, to: Int): Boolean {
@@ -977,8 +1181,7 @@ object Motifs : Tagger {
     private fun xrayTo(board: Board, mover: Boolean, target: Int): Pair<Int, Int>? {
         for (slider in sliders(board, mover)) {
             if (!sliderReaches(board.pieceTypeAt(slider), slider, target)) continue
-            val betweenSquares = squaresOf(between(slider, target))
-            val blockers = betweenSquares.filter { board.pieceAt(it) != null }
+            val blockers = squaresOf(between(slider, target) and board.occupied)
             if (blockers.size != 1) continue
             val blocker = blockers[0]
             if (board.pieceAt(blocker)!!.colour != mover) return slider to blocker
@@ -987,30 +1190,33 @@ object Motifs : Tagger {
     }
 
     /**
-     * Lichess's x-ray: a piece attacks a square through an enemy piece, read over the line.
-     * The blocker clearing is what turns a latent x-ray into a real one.
+     * Lichess's x-ray: a piece attacks a square through an enemy piece.
+     *
+     * Read over the line, the way the sacrifice and clearance motifs are: a square the mover
+     * captures or mates on was, at some earlier point in the line, borne on by a mover slider
+     * through exactly one enemy piece, and by the time the square is taken the slider is still
+     * there with its ray to the square open, and either makes the capture itself or stands
+     * behind the piece that does, guarding it. The ray opening is what turns a latent x-ray
+     * into a real one, so a slider that merely looks through a piece that never moves is not
+     * called one -- nor a rook whose own knight took the blocker's place on the file.
      */
     private fun xray(boards: List<Board>, played: List<Move>, mover: Boolean): MotifTag? {
-        var k = 0
-        while (k < played.size) {
+        for (k in 0 until played.size step 2) {  // the mover's own moves
             val move = played[k]
             val boardK = boards[k]
-            val afterK = if (k + 1 < boards.size) boards[k + 1] else null
-            if (!(boardK.isCapture(move) || (afterK != null && afterK.isCheckmate()))) { k += 2; continue }
+            val afterK = boards[k + 1]
+            if (!(boardK.isCapture(move) || afterK.isCheckmate())) continue
             val target = move.to
-            var j = 0
-            while (j <= k) {
-                val found = xrayTo(boards[j], mover, target)
-                if (found != null) {
-                    val (slider, blocker) = found
-                    val occupant = boardK.pieceAt(blocker)
-                    if (occupant == null || occupant.colour == mover) {
-                        return tag("xRayAttack", listOf(target, blocker, slider), move)
-                    }
+            for (j in 0..k step 2) {  // a mover position at or before this move
+                val found = xrayTo(boards[j], mover, target) ?: continue
+                val (slider, blocker) = found
+                if (boardK.pieceAt(slider) != boards[j].pieceAt(slider)) continue  // moved or taken
+                val takes = move.from == slider
+                if (!takes && afterK.attacksMask(slider) and BB_SQUARES[target] == BB_EMPTY) {
+                    continue  // the ray is still shut, by the blocker or by a piece of ours
                 }
-                j += 2
+                return tag("xRayAttack", listOf(target, blocker, slider), move)
             }
-            k += 2
         }
         return null
     }
@@ -1036,17 +1242,18 @@ object Motifs : Tagger {
         val (boards, played) = lineBoards(before, listOf(move) + pv)
         val after = boards[1]
 
+        val wonInLine = moverCaptures(boards, played, mover)
         val tags = ArrayList(groupA(before, after, move, mover))
         tags.addAll(newStaticTags(before, after, mover))
         for (found in listOf(
-            fork(after, move, mover, wonInLine = moverCaptures(boards, played, mover)),
-            discoveredAttack(before, after, move, mover),
+            fork(after, move, mover, wonInLine = wonInLine),
+            discoveredAttack(boards, played, mover),
             xray(boards, played, mover),
             interference(boards, played, mover),
-            attackingF2F7(before, after, move, mover),
+            attackingF2F7(before, after, move, mover, wonInLine = wonInLine),
             sacrifice(boards, played, mover, mateIn),
             clearance(boards, played),
-            capturingDefender(boards, played),
+            capturingDefender(boards, played, mover),
             deflection(boards, played, mover),
             attraction(boards, played, mover),
         )) {
@@ -1055,9 +1262,9 @@ object Motifs : Tagger {
         tags.addAll(mateTags(after, boards.last(), mover, mateIn))
 
         if (after.isCheckmate()) {
-            tags.addAll(matingPatternTags(after))
+            tags.addAll(Mates.matingPatternTags(after, move))
         } else if (boards.last().isCheckmate() && boards.last().turn != mover) {
-            tags.addAll(matingPatternTags(boards.last()))
+            tags.addAll(Mates.matingPatternTags(boards.last(), played.last()))
         }
         return finish(tags)
     }

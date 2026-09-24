@@ -238,21 +238,19 @@ def run(annotator: GameAnnotator, compact: bool) -> dict[str, Any]:
             convo.coach_said("Good.", nod=True)
             script.record({"op": "coach_said", "text": "Good.", "nod": True})
 
-    # The disclosure level rises as the coach lets more through.
+    # The disclosure level rises as the coach lets more through: two hints, then the answer.
     for level in (
         DisclosureLevel.SILENT,
-        DisclosureLevel.QUESTION,
-        DisclosureLevel.THEME,
-        DisclosureLevel.REGION,
-        DisclosureLevel.PIECE,
-        DisclosureLevel.CANDIDATE,
+        DisclosureLevel.IDEA,
+        DisclosureLevel.FOCUS,
+        DisclosureLevel.MOVE,
         DisclosureLevel.LINE,
     ):
         convo.level = level
         script.record({"op": "level", "level": int(level)})
 
-    convo.level = DisclosureLevel.QUESTION
-    script.record({"op": "level", "level": int(DisclosureLevel.QUESTION)})
+    convo.level = DisclosureLevel.IDEA
+    script.record({"op": "level", "level": int(DisclosureLevel.IDEA)})
 
     convo.note("The player switched to the analysis board and came back.")
     script.record({"op": "note", "text": "The player switched to the analysis board and came "

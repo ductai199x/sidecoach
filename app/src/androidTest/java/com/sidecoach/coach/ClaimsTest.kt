@@ -25,10 +25,12 @@ import org.junit.runner.RunWith
 class ClaimsTest {
 
     private val failures = ArrayList<String>()
+    private var mismatches = 0
 
     private fun check(what: String, mine: Any?, theirs: Any?) {
-        if (mine != theirs && failures.size < 8) {
-            failures.add("$what:\n  kotlin: $mine\n  python: $theirs")
+        if (mine != theirs) {
+            mismatches += 1
+            if (failures.size < 8) failures.add("$what:\n  kotlin: $mine\n  python: $theirs")
         }
     }
 
@@ -111,7 +113,7 @@ class ClaimsTest {
         }
         val took = System.currentTimeMillis() - began
         Log.i(TAG, "${cases.length()} positions, $verified verdicts, $drafted drafts, $took ms")
-        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+        assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
     }
 
     /** The stub the generator used: the same lines for the same position, read from the file. */

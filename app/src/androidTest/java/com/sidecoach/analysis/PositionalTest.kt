@@ -73,6 +73,20 @@ class PositionalTest {
                     moves += 1
                 }
             }
+            // A threat that wins one of our pieces, tried against every legal move: where a
+            // guard that still loses the piece stops nothing.
+            if (case.has("capture_threat") && !case.isNull("capture_threat")) {
+                val threat = Move.fromUci(case.getString("capture_threat"))
+                val captureIdeas = case.getJSONArray("capture_threat_ideas")
+                for (k in 0 until captureIdeas.length()) {
+                    val o = captureIdeas.getJSONObject(k)
+                    val mine = bestMoveIdea(
+                        board, Move.fromUci(o.getString("move")), us, phase, worst, threat,
+                    )
+                    checkIdea(case, o, mine, failures, kinds)
+                    moves += 1
+                }
+            }
         }
         val took = System.currentTimeMillis() - began
         Log.i(

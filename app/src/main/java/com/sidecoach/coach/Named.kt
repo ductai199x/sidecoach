@@ -1,6 +1,9 @@
 package com.sidecoach.coach
 
+import com.sidecoach.analysis.Exchange
 import com.sidecoach.analysis.sanLine
+import com.sidecoach.chess.BB_EMPTY
+import com.sidecoach.chess.BB_SQUARES
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.KING
 import com.sidecoach.chess.Move
@@ -150,27 +153,42 @@ fun piecesByWords(text: String, board: Board): List<Probe> {
 }
 
 /**
+ * The piece on `at` as it controls `square`: marked pinned when it is pinned to its king off the
+ * line through `square` -- it still keeps the enemy king off, but takes nothing that lands there.
+ */
+private fun controller(board: Board, at: Int, square: Int): String {
+    val colour = board.colourAt(at)
+    if (colour != null && board.pinMask(colour, at) and BB_SQUARES[square] == BB_EMPTY) {
+        return "${nameOf(board, at)} (pinned)"
+    }
+    return nameOf(board, at)
+}
+
+/**
  * The board on one piece or square: what stands there, where it can go, what it attacks and
- * defends, what attacks and defends it, whether it is pinned. Static facts, no search.
+ * defends, what attacks and defends it, whether it is pinned. Static facts of the position, no
+ * search. Attack and defence are legal captures and recaptures ([Exchange]): a piece pinned to
+ * its king attacks and defends nothing off its line, and a king does not take back where the
+ * other side still guards.
  */
 fun examinePiece(probe: Probe, board: Board, userColour: Boolean): String {
     val square = probe.square!!
     val head = "Engine on ${probe.label}, which the player asked about:"
     val piece = board.pieceAt(square)
     if (piece == null) {
-        val holders = board.attackers(userColour, square)
-        val theirs = board.attackers(!userColour, square)
+        val holders = board.attackers(userColour, square).sorted()
+        val theirs = board.attackers(!userColour, square).sorted()
         val parts = arrayListOf("${squareName(square)} is empty")
         if (holders.isNotEmpty()) {
             parts.add(
                 "the player controls it with the " +
-                    holders.take(3).joinToString(" and the ") { nameOf(board, it) },
+                    holders.take(3).joinToString(" and the ") { controller(board, it, square) },
             )
         }
         if (theirs.isNotEmpty()) {
             parts.add(
                 "the opponent controls it with the " +
-                    theirs.take(3).joinToString(" and the ") { nameOf(board, it) },
+                    theirs.take(3).joinToString(" and the ") { controller(board, it, square) },
             )
         }
         if (holders.isEmpty() && theirs.isEmpty()) parts.add("nobody controls it")
@@ -179,22 +197,26 @@ fun examinePiece(probe: Probe, board: Board, userColour: Boolean): String {
     val whose = if (piece.colour == userColour) "the player's" else "the opponent's"
     val pieceName = "$whose ${COACH_PIECE_NAMES[piece.pieceType]} on ${squareName(square)}"
     val parts = arrayListOf("$pieceName stands there")
-    // Where it can go, on the board as it stands, with its own side to move.
+    // Where it can go, on the board as it stands, with its own side to move. Never onto the
+    // enemy king: with the turn handed to the side giving check, the generator offers it.
     val view = board.copy(withStack = false)
     view.turn = piece.colour
-    val moves = view.legalMoves().filter { it.from == square }
+    val moves = view.legalMoves().filter { it.from == square && view.pieceTypeAt(it.to) != KING }
     if (moves.isNotEmpty()) {
         parts.add("it can go to " + moves.map { squareName(it.to) }.toSortedSet().joinToString(", "))
     } else {
         parts.add("it has no legal move")
     }
+    // It attacks what it could take among those moves, and the enemy king when it gives check
+    // (a pinned piece still does); it defends the pieces it could legally take back on.
     val attacks = board.attacks(square).filter { t ->
         val o = board.pieceAt(t)
-        o != null && o.colour != piece.colour
+        o != null && o.colour != piece.colour && (o.pieceType == KING || moves.any { m -> m.to == t })
     }
     val defends = board.attacks(square).filter { t ->
         val o = board.pieceAt(t)
-        o != null && o.colour == piece.colour && o.pieceType != KING
+        o != null && o.colour == piece.colour && o.pieceType != KING &&
+            square in Exchange.defenders(board, piece.colour, t)
     }
     if (attacks.isNotEmpty()) {
         parts.add("it attacks the " + attacks.take(4).joinToString(" and the ") { nameOf(board, it) })
@@ -202,8 +224,14 @@ fun examinePiece(probe: Probe, board: Board, userColour: Boolean): String {
     if (defends.isNotEmpty()) {
         parts.add("it defends the " + defends.take(4).joinToString(" and the ") { nameOf(board, it) })
     }
-    val attackers = board.attackers(!piece.colour, square)
-    val defenders = board.attackers(piece.colour, square)
+    // A king is attacked by what gives it check, pinned or not; any other piece by what can
+    // legally take it.
+    val attackers = if (piece.pieceType == KING) {
+        board.attackers(!piece.colour, square).sorted()
+    } else {
+        Exchange.capturers(board, !piece.colour, square)
+    }
+    val defenders = Exchange.defenders(board, piece.colour, square)
     if (attackers.isNotEmpty()) {
         parts.add(
             "it is attacked by the " + attackers.take(3).joinToString(" and the ") { nameOf(board, it) },

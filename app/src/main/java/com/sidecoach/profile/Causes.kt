@@ -1,5 +1,6 @@
 package com.sidecoach.profile
 
+import com.sidecoach.analysis.Exchange
 import com.sidecoach.analysis.Motifs
 import com.sidecoach.chess.BISHOP
 import com.sidecoach.chess.Board
@@ -55,7 +56,8 @@ object Causes {
 
     /**
      * Whether the reply takes something for less than it gives: a bigger piece, or one nobody
-     * can take back.
+     * can take back -- by the rules, so a guard pinned to its own king, or a king that would
+     * step into check, takes nothing back ([Exchange.canRetake]).
      */
     fun winsMaterial(board: Board, reply: Move): Boolean {
         if (!board.isCapture(reply) || !board.isLegal(reply)) return false
@@ -63,9 +65,7 @@ object Causes {
         val attacker = board.pieceAt(reply.from) ?: return false
         val taken = if (victim != null) VALUE[victim.pieceType] ?: 1 else 1  // en passant
         if (taken > (VALUE[attacker.pieceType] ?: 0)) return true
-        val after = board.copy(withStack = false)
-        after.push(reply)
-        return !after.isAttackedBy(after.turn, reply.to)
+        return !Exchange.canRetake(board, reply)
     }
 
     /**

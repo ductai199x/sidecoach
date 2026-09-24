@@ -253,6 +253,9 @@ open class Engine(
     /**
      * The best lines for `board`, best first, from the side to move's point of view. A
      * finished position has no lines: there is nothing to play.
+     *
+     * `carryBest`: a best line shorter than [MIN_BEST_PLIES] is carried on to it -- for the
+     * coach, who reads the line for its point; a verdict needs only the score.
      */
     open fun analyse(
         board: Board,
@@ -260,6 +263,7 @@ open class Engine(
         timeS: Double? = null,
         multipv: Int? = null,
         pvPlies: Int? = null,
+        carryBest: Boolean = false,
     ): List<Line> {
         // Over, a claimable draw included, as python-chess's `is_game_over(claim_draw=True)`:
         // with the game's moves on the board, a threefold repetition can be claimed.
@@ -272,7 +276,35 @@ open class Engine(
         wanted = maxOf(1, minOf(wanted, board.legalMoves().size))
         val infos = lock.withLock { analyseWithRestart(board, depth, capped, wanted) }
         val plies = pvPlies ?: this.pvPlies
-        return infos.map { line(it, plies) }.filter { it.moves.isNotEmpty() }
+        val lines = infos
+            .mapIndexed { i, info -> line(info, if (carryBest && i == 0) maxOf(plies, MIN_BEST_PLIES) else plies) }
+            .filter { it.moves.isNotEmpty() }
+            .toMutableList()
+        if (carryBest && lines.isNotEmpty() && lines[0].moves.size < MIN_BEST_PLIES) {
+            lines[0] = carriedOn(board, lines[0], MIN_BEST_PLIES)
+        }
+        return lines
+    }
+
+    /**
+     * `line` carried on by searches from its end until it is `plies` long or the game is over
+     * there; its score and depth stay the first search's.
+     */
+    private fun carriedOn(board: Board, line: Line, plies: Int): Line {
+        val moves = ArrayList(line.moves)
+        val end = board.copy(withStack = false)
+        for (uci in moves) end.push(Move.fromUci(uci))
+        repeat(EXTEND_TRIES) {
+            if (moves.size >= plies || end.isGameOver(claimDraw = true)) return line.copy(moves = moves)
+            val infos = lock.withLock { analyseWithRestart(end, EXTEND_DEPTH, EXTEND_SECONDS, 1) }
+            val more = infos.firstOrNull()?.pv ?: emptyList()
+            if (more.isEmpty()) return line.copy(moves = moves)
+            for (uci in more.take(plies - moves.size)) {
+                moves.add(uci)
+                end.push(Move.fromUci(uci))
+            }
+        }
+        return line.copy(moves = moves)
     }
 
     private fun analyseWithRestart(
@@ -404,6 +436,24 @@ open class Engine(
 
         /** A principal variation can run thirty plies; nobody reads that far. */
         const val DEFAULT_PV_PLIES = 12
+
+        /**
+         * The best line is read for what it is for -- the mate, the piece won, the pawn queened
+         * -- and a puzzle's point can come seven moves in (a queen won on ply 11, a pawn
+         * queening on ply 15, in a sample of Lichess puzzles). Stockfish's own line often stops
+         * short (a hash hit cuts it to three plies), so the best line is kept to this length,
+         * and a shorter one carried on by searching from its end, whatever the other lines are
+         * cut to (Tai, 2026-09-23: "at least 8 to 10 ply since some puzzles and hard positions
+         * are really deep").
+         */
+        const val MIN_BEST_PLIES = 16
+
+        /** How deep, and for how long at most, each search that carries the line on looks. */
+        const val EXTEND_DEPTH = 14
+        const val EXTEND_SECONDS = 0.5
+
+        /** How many searches may carry one line on. */
+        const val EXTEND_TRIES = 3
         const val DEFAULT_SCORE_MODEL = "human"
 
         /** The engine as the packager leaves it: an executable in the library directory. */

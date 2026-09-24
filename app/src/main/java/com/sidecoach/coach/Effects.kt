@@ -1,10 +1,11 @@
 package com.sidecoach.coach
 
-import com.sidecoach.chess.BISHOP
+import com.sidecoach.analysis.Exchange
+import com.sidecoach.chess.BB_EMPTY
+import com.sidecoach.chess.BB_SQUARES
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.FILE_NAMES
 import com.sidecoach.chess.KING
-import com.sidecoach.chess.KNIGHT
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.PAWN
 import com.sidecoach.chess.Piece
@@ -23,9 +24,16 @@ import com.sidecoach.chess.squareName
  * better move and a plan word, never what the move does. This module states that, from the
  * board alone. Every phrase is checked against the position the move leads to, so a coach
  * that repeats it is right.
+ *
+ * Attack and defence are read off legal moves ([Exchange]), not off the lines the pieces
+ * cover: a knight pinned to its king attacks and defends nothing, a king takes nothing the
+ * other side still guards. An audit on 2026-09-23 found "attacks the knight on e4" said of a
+ * pinned knight and of a king that could not take, "defends the knight, which was attacked"
+ * when a pawn still won it, and "forks" two knights that pawns defended. The king alone is
+ * attacked by the lines: a pinned piece still gives check.
  */
 
-private val EFFECT_VALUE = intArrayOf(0, 1, 3, 3, 5, 9, 100)
+private val EFFECT_VALUE = Exchange.VALUE
 
 private fun nameAt(board: Board, sq: Int): String {
     val piece = board.pieceAt(sq)
@@ -33,26 +41,59 @@ private fun nameAt(board: Board, sq: Int): String {
     return "the $word on ${squareName(sq)}"
 }
 
-/** The enemy pieces `colour` attacks, as squares. */
+/**
+ * `colour`'s pieces that attack the enemy piece on `square`: those that could take it by a legal
+ * move (were it `colour`'s move); on the king, those that give it check.
+ *
+ * A check `colour` is in is set aside: it limits the move that answers it, not what stands
+ * attacked. Read through legal moves, a side in check attacked nothing but the checker, and
+ * every attack it had came back after the answer as new ("uncovers an attack on the bishop by
+ * the knight" after taking the checking queen). So then a piece attacks what it could take once
+ * the check is gone: a pinned one only along its line, the king only onto a square nothing
+ * guards once it has stepped off its own.
+ */
+private fun hitters(board: Board, colour: Boolean, square: Int): List<Int> {
+    if (board.pieceTypeAt(square) == KING) return board.attackers(colour, square).sorted()
+    if (board.turn != colour || !board.isCheck()) return Exchange.capturers(board, colour, square)
+    val out = ArrayList<Int>()
+    for (a in board.attackers(colour, square)) {
+        if (board.pieceTypeAt(a) == KING) {
+            val stepped = board.copy(withStack = false)
+            stepped.removePieceAt(a)
+            if (!stepped.isAttackedBy(!colour, square)) out.add(a)
+        } else if (board.pinMask(colour, a) and BB_SQUARES[square] != BB_EMPTY) {
+            out.add(a)
+        }
+    }
+    return out.sorted()
+}
+
+/**
+ * The enemy pieces `colour` attacks, as squares. The lines are read first, the legal moves only
+ * where a piece bears on the square: nothing takes where nothing bears.
+ */
 private fun attackedBy(board: Board, colour: Boolean): Set<Int> {
     val out = HashSet<Int>()
     for (sq in 0 until 64) {
         val piece = board.pieceAt(sq) ?: continue
-        if (piece.colour != colour) {
-            if (board.isAttackedBy(colour, sq)) out.add(sq)
+        if (piece.colour != colour &&
+            board.isAttackedBy(colour, sq) &&
+            hitters(board, colour, sq).isNotEmpty()
+        ) {
+            out.add(sq)
         }
     }
     return out
 }
 
-/** `colour`'s pieces (not the king, not pawns) with no defender. */
+/** `colour`'s pieces (not the king, not pawns) with no legal defender. */
 private fun undefended(board: Board, colour: Boolean): Set<Int> {
     val out = HashSet<Int>()
     for (sq in 0 until 64) {
         val piece = board.pieceAt(sq) ?: continue
         if (piece.colour == colour &&
             piece.pieceType != KING && piece.pieceType != PAWN &&
-            !board.isAttackedBy(colour, sq)
+            Exchange.defenders(board, colour, sq).isEmpty()
         ) {
             out.add(sq)
         }
@@ -101,7 +142,8 @@ fun describeEffects(board: Board, move: Move, limit: Int = 3, hazards: Boolean =
     if (after.isCheck()) out.add("gives check")
 
     // What the moved piece attacks from its new square, and what the move uncovers for the
-    // rest of the army.
+    // rest of the army: enemy pieces attacked after that were not attacked before. Attacked
+    // means takeable by a legal move, as though it were the mover's turn again.
     val beforeAttacked = attackedBy(board, us)
     val afterAttacked = attackedBy(after, us)
 
@@ -114,17 +156,22 @@ fun describeEffects(board: Board, move: Move, limit: Int = 3, hazards: Boolean =
     // sets and equal-valued pieces came out in CPython's hash order.
     val new = (afterAttacked - beforeAttacked)
         .sortedWith(compareByDescending<Int> { valueAt(it) }.thenBy { it })
-    val byMover = new.filter { move.to in after.attackers(us, it) }
+    val byMover = new.filter { move.to in hitters(after, us, it) }
     val byOthers = new.filter { it !in byMover }
     val worth = byMover.filter { valueAt(it) >= 3 }
-    if (worth.size >= 2) {
-        out.add("forks " + worth.take(2).joinToString(" and ") { nameAt(after, it) })
+    // A fork wins something: two targets it can win -- the king, or a piece that can be taken
+    // for profit (worth more than the forker, or not defended enough) -- from a square where the
+    // forker cannot be taken for profit. A queen touching two knights that pawns guard forks
+    // nothing; it attacks one.
+    val targets = worth.filter { valueAt(it) == Exchange.VALUE[KING] || Exchange.canBeWon(after, it) }
+    if (targets.size >= 2 && !Exchange.canBeWon(after, move.to)) {
+        out.add("forks " + targets.take(2).joinToString(" and ") { nameAt(after, it) })
     } else if (byMover.isNotEmpty()) {
         out.add("attacks " + nameAt(after, byMover[0]))
     }
     if (byOthers.isNotEmpty()) {
         val s = byOthers[0]
-        val attacker = after.attackers(us, s).firstOrNull { it != move.to }
+        val attacker = hitters(after, us, s).firstOrNull { it != move.to }
         if (attacker != null) {
             out.add("uncovers an attack on ${nameAt(after, s)} by ${nameAt(after, attacker)}")
         }
@@ -132,31 +179,41 @@ fun describeEffects(board: Board, move: Move, limit: Int = 3, hazards: Boolean =
 
     val pins = pinnedEnemies(after, us) - pinnedEnemies(board, us)
     for (s in pins.sorted()) {
+        // A pinned piece that takes its pinner for profit is not held: its only captures run
+        // along the line, onto the pinner (Re1 against a rook on e7, with e1 unguarded).
+        if (after.legalMoves().any { m -> m.from == s && after.isCapture(m) && Exchange.exchange(after, m) > 0 }) {
+            continue
+        }
         out.add("pins ${nameAt(after, s)} to the king")
         break
     }
 
-    // The moved piece: was it attacked, and is it now?
+    // The moved piece: was it attacked, and is it now? Attacked is a legal capture onto its
+    // square, defended a legal recapture: a pinned piece neither threatens nor guards it.
     if (mover != null && mover.pieceType != KING) {
-        val wasAttacked = board.isAttackedBy(them, move.from)
-        val isAttacked = after.isAttackedBy(them, move.to)
+        val wasAttacked = Exchange.capturers(board, them, move.from).isNotEmpty()
+        val isAttacked = Exchange.capturers(after, them, move.to).isNotEmpty()
         if (wasAttacked && !isAttacked) {
             out.add("gets the $moverWord out of attack")
-        } else if (hazards && isAttacked && !after.isAttackedBy(us, move.to)) {
+        } else if (hazards && isAttacked && Exchange.defenders(after, us, move.to).isEmpty()) {
             out.add("puts the $moverWord where it is attacked and undefended")
         }
     }
 
-    // Own pieces left undefended by the move, and attacked ones newly defended.
+    // Own pieces left undefended by the move, and attacked ones newly defended -- only when the
+    // defence saves the piece: still attacked, and no longer to be won by the exchange (a
+    // bishop guarding a knight that a pawn attacks saves nothing).
     val beforeLoose = undefended(board, us)
     val afterLoose = undefended(after, us)
     val left = if (hazards) (afterLoose - beforeLoose).filter { it != move.to } else emptyList()
     for (s in left.sortedWith(compareByDescending<Int> { valueAt(it) }.thenBy { it })) {
-        val tail = if (after.isAttackedBy(them, s)) ", and it is attacked" else ""
+        val tail = if (Exchange.capturers(after, them, s).isNotEmpty()) ", and it is attacked" else ""
         out.add("leaves ${nameAt(after, s)} undefended$tail")
         break
     }
-    val covered = (beforeLoose - afterLoose).filter { it != move.from && after.isAttackedBy(them, it) }
+    val covered = (beforeLoose - afterLoose).filter {
+        it != move.from && Exchange.capturers(after, them, it).isNotEmpty() && !Exchange.canBeWon(after, it)
+    }
     for (s in covered.sortedWith(compareByDescending<Int> { valueAt(it) }.thenBy { it })) {
         out.add("defends ${nameAt(after, s)}, which was attacked")
         break

@@ -379,7 +379,7 @@ class Coach(
         val position = current ?: return
         if (position.facts == null) return
         val level = position.disclosure.apply(Unlock.STUCK) ?: position.disclosure.level
-        policy.said(position.ply)
+        policy.said(position.ply, ts)
         speak(trigger, position, level, ts)
     }
 
@@ -412,7 +412,7 @@ class Coach(
         }
         val unlock = unlockFor(text, position.board, position.facts!!.candidates)
         if (unlock != null) position.disclosure.apply(unlock)
-        var level = maxOf(position.disclosure.level, DisclosureLevel.QUESTION)
+        var level = maxOf(position.disclosure.level, DisclosureLevel.IDEA)
         if (finished || position.board.isGameOver()) {
             // Nothing is withheld from a game that is over.
             level = DisclosureLevel.LINE
@@ -811,7 +811,7 @@ class Coach(
             val trigger = policy.onPositionAnalysed(event.ply, decisive = decisive)
             if (trigger != null) {
                 val level = position.disclosure.apply(Unlock.DECISIVE) ?: position.disclosure.level
-                policy.said(position.ply)
+                policy.said(position.ply, ts)
                 speak(trigger, position, level, ts)
             }
         }
@@ -991,12 +991,6 @@ class Coach(
         lastSaid[key] = chosen
         return chosen
     }
-
-    /** What the nature of the answer allows: forcing, or quiet. */
-    private fun natureHint(forcing: Boolean): String = rotate(
-        if (forcing) "forcing" else "quiet",
-        if (forcing) FORCING_HINTS else QUIET_HINTS,
-    )
 
     /** The opening the game was in: the last name the book gave. */
     private fun openingSoFar(): String? {
@@ -1241,12 +1235,11 @@ class Coach(
         if (position.board.isGameOver()) return ""
         val words = when (level) {
             DisclosureLevel.SILENT -> "nothing about the position"
-            DisclosureLevel.QUESTION ->
-                "an orienting question only; no theme, square, piece or move"
-            DisclosureLevel.THEME -> "the theme; no square, piece or move"
-            DisclosureLevel.REGION -> "the theme and the region; no piece or move"
-            DisclosureLevel.PIECE -> "the theme, the region and the piece; no move"
-            DisclosureLevel.CANDIDATE -> "the candidate moves; not the line"
+            DisclosureLevel.IDEA ->
+                "the idea: the goal, the pattern and why it works; no square, no move, and " +
+                    "not which of the player's own pieces does it"
+            DisclosureLevel.FOCUS -> "the idea, the target and the piece; not the move"
+            DisclosureLevel.MOVE -> "the move and why it works; not the whole line"
             DisclosureLevel.LINE -> "everything, the line included"
         }
         return "Disclosure for the position the player faces: $words.\n\n"
@@ -1309,21 +1302,6 @@ class Coach(
         elicit: Boolean = false,
     ): Pair<String, String> {
         val facts = position.facts!!
-        val theme = facts.theme ?: facts.plan ?: "the position"
-        val region = facts.region ?: "the whole board"
-        val forcing = facts.nature?.startsWith("forcing") == true
-
-        /**
-         * The theme-level template: the idea when there is one; when the sheet names none,
-         * what the nature says ("The idea here is the position" was said, once). Drawn when
-         * it is used, so a draw is never spent on a turn that says nothing.
-         */
-        fun themeHint(): String {
-            if (!facts.theme.isNullOrEmpty() || !facts.plan.isNullOrEmpty()) {
-                return rotate("theme", THEME_HINTS).replace("{theme}", theme)
-            }
-            return natureHint(forcing)
-        }
 
         if (trigger == Trigger.REVIEW) {
             return (
@@ -1336,26 +1314,16 @@ class Coach(
                 ) to reviewLines.take(4).joinToString(" ")
         }
         if (trigger == Trigger.DECISIVE_QUESTION) {
-            return (
-                "The player is to move and this is a critical moment. Ask one orienting " +
-                    "question that makes them look for the right thing without pointing at " +
-                    "any square, piece or move. Do not evaluate the position out loud."
-                ) to rotate("decisive", DECISIVE_QUESTIONS)
+            return IDEA_DIRECTIVE to ideaTemplate(facts)
         }
         if (trigger == Trigger.STUCK) {
-            val fallback = when {
-                level.value >= DisclosureLevel.REGION.value ->
-                    "Look at $region. Something is going on there."
-
-                level.value >= DisclosureLevel.THEME.value -> themeHint()
-                else -> rotate("stuck", STUCK_GENERIC)
-            }
+            val directive =
+                if (level.value >= DisclosureLevel.FOCUS.value) FOCUS_DIRECTIVE else IDEA_DIRECTIVE
             return (
-                "The player has been thinking for a while and is stuck. Give one hint, at the " +
-                    "level of what the fact sheet allows, in one or two sentences, ending with " +
-                    "a question. Do not name a move. Take a different angle from every hint you " +
-                    "have already given in this game; never repeat one."
-                ) to fallback
+                "The player has been thinking for a while and is stuck. " +
+                    directive +
+                    " Take a different angle from anything already said about this position."
+                ) to hintTemplate(facts, level)
         }
         if ((trigger == Trigger.POST_MOVE || trigger == Trigger.POST_MISTAKE) &&
             assessment != null && played != null
@@ -1379,17 +1347,19 @@ class Coach(
             var fallback: String
             var instructionText: String
             if (trigger == Trigger.POST_MISTAKE) {
-                // With a theme or a plan the lesson names the idea; without one it stops at
-                // the better move ("the idea was the position" was said, offline).
-                val idea = facts.theme ?: facts.plan
-                fallback = rotate("cost", COST_YOU).replace("{best}", best) +
-                    (if (!idea.isNullOrEmpty()) "; the idea was $idea." else ".")
+                // The better move played out, and the pattern to keep: never "the idea was a
+                // mating attack" and nothing more.
+                fallback = lessonTemplate(
+                    facts, best, rotate("cost", COST_YOU).replace("{best}", best)
+                )
                 instructionText =
                     "The player just played ${played.san}, which was a $label: it cost " +
                         "${percent(loss)} of the game. The better move was $best ($betterWords). " +
-                        "Explain the difference as a pattern to remember, in three sentences at " +
-                        "most, then ask one question that checks they see it. $NOT_THE_MOVE " +
-                        NO_NUMBERS
+                        "Teach the difference from the fact sheet of the position they faced -- " +
+                        "its goal, its pattern, why the better move works, and what their move " +
+                        "missed or allowed -- as a pattern to remember, in three sentences at " +
+                        "most, then ask one question that checks they see it. " +
+                        "$NOT_THE_MOVE $NO_NUMBERS"
                 if (elicit) {
                     // Sparingly: what they saw at that moment, for the profile's record
                     // (causes.from_words reads "I thought it would..." as a line misjudged,
@@ -1400,10 +1370,11 @@ class Coach(
                     instructionText =
                         "The player just played ${played.san}, which was a $label: it cost " +
                             "${percent(loss)} of the game. The better move was $best " +
-                            "($betterWords). Explain the difference as a pattern to remember, in " +
-                            "three sentences at most, then -- instead of a check question -- ask, " +
-                            "in one short question of your own, what they expected their move to " +
-                            "do. $NOT_THE_MOVE $NO_NUMBERS"
+                            "($betterWords). Teach the difference from the fact sheet of the " +
+                            "position they faced -- its goal, its pattern, why the better move " +
+                            "works -- as a pattern to remember, in three sentences at most, then " +
+                            "-- instead of a check question -- ask, in one short question of your " +
+                            "own, what they expected their move to do. $NOT_THE_MOVE $NO_NUMBERS"
                 }
             } else if (isExciting(assessment.label)) {
                 // Rare and worth it: the board's own sentence stands in, the model says what
@@ -1460,10 +1431,10 @@ class Coach(
                         "($betterWords) was better. It is a fast game: one or two sentences, no " +
                         "lesson, no question. $NOT_THE_MOVE $NO_NUMBERS"
             } else {
-                // The better move's idea, when the sheet has one, is the lesson in it.
-                val idea = facts.theme ?: facts.plan
-                fallback = rotate("fine", FINE_TIGHTER).replace("{best}", best) +
-                    (if (!idea.isNullOrEmpty()) ": the idea was $idea." else ".")
+                // The better move and what it does, when the sheet has it, is the lesson.
+                fallback = lessonTemplate(
+                    facts, best, rotate("fine", FINE_TIGHTER).replace("{best}", best)
+                )
                 instructionText =
                     "The player just played ${played.san}, which was fine but not the " +
                         "strongest: $best ($betterWords) was better, by a little. One or two " +
@@ -1487,32 +1458,8 @@ class Coach(
             // said out loud as the coach's last turn when `quick`.
             checks += engineWords.joinToString("\n") + "\n\n"
         }
-        var fallback = when {
-            level.value >= DisclosureLevel.LINE.value ->
-                if (facts.line.isNotEmpty()) {
-                    "The line is ${facts.line.joinToString(" ")}."
-                } else {
-                    "I have no line for this yet."
-                }
-
-            level.value >= DisclosureLevel.CANDIDATE.value ->
-                if (facts.candidates.isNotEmpty()) {
-                    "The move is ${facts.candidates[0]}."
-                } else {
-                    "I have no move for this yet."
-                }
-
-            level.value >= DisclosureLevel.PIECE.value && !facts.piece.isNullOrEmpty() ->
-                "It is about ${facts.piece}. Where does it want to go?"
-
-            level.value >= DisclosureLevel.REGION.value -> "Look at $region."
-            level.value >= DisclosureLevel.THEME.value -> themeHint()
-            // The one fact the QUESTION level allows: whether the answer is forcing. The
-            // generic "opponent's idea" question pointed the wrong way in a position where
-            // the player had a capture to find.
-            forcing -> natureHint(forcing)
-            else -> rotate("ask", ASK_GENERIC)
-        }
+        // The rung's template: two hints, then the answer; the line when asked for it.
+        var fallback = hintTemplate(facts, level)
         // The position answered about is not the one on the board (its analysis has not
         // landed): say so, or the template speaks of a past position as the present -- "the
         // line is Bb3 ..." right after Bb3 was played (the offline pass, 2026-09-21).
@@ -1530,7 +1477,7 @@ class Coach(
                     level.value >= DisclosureLevel.LINE.value && rest.isNotEmpty() ->
                         "It's their move. After your move, the line runs ${rest.joinToString(" ")}."
 
-                    level.value >= DisclosureLevel.CANDIDATE.value && facts.candidates.isNotEmpty() -> {
+                    level.value >= DisclosureLevel.MOVE.value && facts.candidates.isNotEmpty() -> {
                         val choice = facts.candidates[0]
                         "It's their move now. " + if (choice == san) {
                             "Yours was the engine's choice too."
@@ -1579,11 +1526,14 @@ class Coach(
             fallback = reviewTemplate()
         } else if (ASK_HINT.matchesAt(said, 0)) {
             // A bare "hint" carries no claim to be honest about; treated as one, the model
-            // answered its own last message as if the player had said it.
-            directive =
-                "They asked for a hint. Give one, at the level of what the fact sheet allows, " +
-                    "in one or two sentences, ending with a question. Do not name a move, and " +
-                    "do not comment on anything said earlier." + (if (quick) shown else "")
+            // answered its own last message as if the player had said it. Two hints, then the
+            // answer: the rung decides what the hint may give.
+            directive = when {
+                level.value >= DisclosureLevel.MOVE.value -> MOVE_DIRECTIVE
+                level.value >= DisclosureLevel.FOCUS.value ->
+                    "They asked for another hint. $FOCUS_DIRECTIVE"
+                else -> "They asked for a hint. $IDEA_DIRECTIVE"
+            } + " Do not comment on anything said earlier." + (if (quick) shown else "")
         } else if (level.value >= DisclosureLevel.LINE.value &&
             ASK_LINE.containsMatchIn(said) && facts.line.isNotEmpty()
         ) {
@@ -1596,16 +1546,18 @@ class Coach(
                     "plainly, then one short sentence on the idea behind it. Do not answer " +
                     "with a question."
             }
-        } else if (level.value >= DisclosureLevel.CANDIDATE.value &&
+        } else if (level.value >= DisclosureLevel.MOVE.value &&
             ASK_MOVE.containsMatchIn(said) && facts.candidates.isNotEmpty()
         ) {
             directive = if (quick) {
                 "They asked what to play and have just been shown that it is " +
-                    "${facts.candidates[0]}. Give one or two short sentences on why. Do not " +
-                    "answer with a question this time."
+                    "${facts.candidates[0]}, with what it does. Build on it in one or two " +
+                    "sentences: why it works, from the fact sheet's why and pattern, and the " +
+                    "idea to keep. Do not answer with a question this time."
             } else {
                 "They asked what to play: tell them plainly it is ${facts.candidates[0]}, " +
-                    "then one short sentence on why. Do not answer with a question this time."
+                    "then why it works, from the fact sheet's why and pattern, correctly. Do " +
+                    "not answer with a question this time."
             }
         } else if (engineWords.isNotEmpty() && quick) {
             // The examination is out already; the coach adds the lesson in it, not the

@@ -6,8 +6,13 @@ All of it is a pure function of the board, the words and the engine's lines -- s
 here is a recorded one: a deterministic stub whose lines are written into the fixture, and
 which the Kotlin reads back, so `examine` is compared exactly without a search.
 
+The positions are the opening, the puzzle sample, and puzzles of the tactical themes (pins,
+skewers, forks, discovered attacks...) where attack and defence turn on legal moves: a piece
+pinned to its king neither attacks nor defends off its line. On each, `examine_piece` is read
+for every square of the board.
+
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_named_fixtures.py
+    PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python D:/sidecoach-android/tools/make_named_fixtures.py
 """
 
 from __future__ import annotations
@@ -29,6 +34,23 @@ from sidecoach.events import DisclosureLevel, Line  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "chess"
 PUZZLES = DESKTOP / "data" / "puzzles" / "sample.csv"
+THEMES = DESKTOP / "data" / "puzzles" / "themes-7-120.csv"
+# The tactical themes, and how many puzzles of each.
+TACTICAL = (
+    "pin",
+    "skewer",
+    "fork",
+    "discoveredAttack",
+    "xRayAttack",
+    "hangingPiece",
+    "trappedPiece",
+    "capturingDefender",
+    "doubleCheck",
+    "deflection",
+)
+PER_THEME = 3
+# The levels examined: the named move's reply is two plies below LINE, the whole line at it.
+LEVELS = (DisclosureLevel.IDEA, DisclosureLevel.MOVE, DisclosureLevel.LINE)
 
 ASKS = [
     "what about Nf3?",
@@ -132,7 +154,7 @@ def case_for(board: chess.Board) -> dict:
         }
         before = engine.analyse(board)
         best = before[0] if before else None
-        for level in (DisclosureLevel.THEME, DisclosureLevel.CANDIDATE, DisclosureLevel.LINE):
+        for level in LEVELS:
             examined = [
                 N.examine(p, board, engine, best, user_colour=us, level=level, depth=14)
                 if p.square is None
@@ -172,10 +194,24 @@ def case_for(board: chess.Board) -> dict:
                     for p in planned
                 ],
             }
-            for level in (DisclosureLevel.THEME, DisclosureLevel.CANDIDATE, DisclosureLevel.LINE)
+            for level in LEVELS
         },
     }
-    return {"fen": board.fen(), "asks": asks, "planned": planned_out, "engine": engine.seen}
+    # Every square of the board, read as a piece or square probe: controllers pinned off the
+    # line, what a piece attacks and defends by legal moves, what attacks and defends it.
+    squares = [
+        N.examine_piece(
+            N.Probe(label=chess.square_name(sq), moves=[], square=sq), board, user_colour=us
+        )
+        for sq in chess.SQUARES
+    ]
+    return {
+        "fen": board.fen(),
+        "asks": asks,
+        "planned": planned_out,
+        "squares": squares,
+        "engine": engine.seen,
+    }
 
 
 def main() -> None:
@@ -197,6 +233,24 @@ def main() -> None:
                     if index % 2 == 1:
                         boards.append(board.copy(stack=False))
                     board.push(move)
+    if THEMES.exists():
+        taken: dict[str, int] = {}
+        with THEMES.open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                names = [t for t in row["Themes"].split() if t in TACTICAL]
+                if not names or all(taken.get(t, 0) >= PER_THEME for t in names):
+                    continue
+                for t in names:
+                    taken[t] = taken.get(t, 0) + 1
+                board = chess.Board(row["FEN"])
+                moves = row["Moves"].split()
+                for index, uci in enumerate(moves[:4]):
+                    move = chess.Move.from_uci(uci)
+                    if move not in board.legal_moves:
+                        break
+                    board.push(move)
+                    if index in (0, 2):
+                        boards.append(board.copy(stack=False))
     for board in boards:
         cases.append(case_for(board))
 
