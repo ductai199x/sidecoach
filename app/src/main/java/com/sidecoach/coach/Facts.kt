@@ -561,7 +561,13 @@ fun factsFromAnalysis(
     // of mate comes before any plan, a threat to win material after the line's plan.
     var linePlan: LinePlan? = null
     var moveThreat: MoveThreat? = null
-    if (best != null && idea.goal == "plan" && (planKind == null || planKind !in BEFORE_THE_PLAN)) {
+    // A move out of check is not a plan or a threat: it is the way out (20.Ke2 was "you can
+    // take the initiative").
+    if (best != null &&
+        idea.goal == "plan" &&
+        (planKind == null || planKind !in BEFORE_THE_PLAN) &&
+        !board.isCheck()
+    ) {
         val pv = lines[0].moves.mapNotNull { toMove(it) }
         linePlan = Plans.read(board, pv, lines[0].expectedScore)
         moveThreat = Plans.threat(board, best, pv, lines[0].expectedScore)
@@ -629,6 +635,166 @@ fun factsFromAnalysis(
         why = Plans.why(linePlan, board)
     }
 
+    // The first hint ([Situation]): the stakes, the key fact named on the board, the principle
+    // behind it, the trap -- a short lesson on the position, never the move.
+    val stakes = Situation.readStakes(board, analysis)
+    var stakesText = if (stakes != null) Situation.stakesWords(board, stakes, analysis.opening) else null
+    val choices = if (stakes != null && (stakes.kind == "many" || stakes.kind == "book")) stakes.choices.toList() else emptyList()
+    val pv = if (lines.isNotEmpty()) lines[0].moves.mapNotNull { toMove(it) } else emptyList()
+    var key: String? = null
+    var principle: String? = null
+    var tacticalGoal = idea.goal in listOf(
+        "mate",
+        "win",
+        "promote",
+        "attack",
+        "combination",
+        "draw",
+        "convert",
+        "king",
+        "breakthrough",
+    )
+    if (idea.goal == "defend") {
+        key = Situation.defendKey(board, idea, best)
+    } else if (idea.goal == "mate" || idea.goal == "attack") {
+        key = Situation.mateKey(board, idea)
+        principle = IdeaWords.mechanism(idea)
+    } else if (tacticalGoal) {
+        key = IdeaWords.target(idea, board)
+        if (key != null && ":" !in key && " is " !in key && "," !in key) {
+            key = "$key is the target"  // "their rook on a8" alone said nothing
+        } else if (key != null && idea.goal == "promote" && ", " in key) {
+            key = key.replaceFirst(", ", " is ")  // "your pawn on b6 is two squares from queening"
+        }
+        if (key == null && idea.goal == "win") {
+            key = Situation.winKey(board, idea)
+            if (key == null && IdeaReader.endingOf(board)) key = Situation.kingKey(board, idea)  // the pawn falls to a king's march
+        } else if (key == null && idea.goal == "convert") {
+            key = Situation.convertKey(board, idea)
+        } else if (key == null && idea.goal == "king") {
+            key = Situation.kingKey(board, idea)
+        }
+        // The principle is the pattern's: a sacrifice on the way, with no pattern, is not what a
+        // winning capture teaches (17.hxg4 was "a sacrifice").
+        principle = if (idea.blow != null || idea.goal in listOf("mate", "combination", "attack", "promote")) {
+            IdeaWords.mechanism(idea)
+        } else {
+            null
+        }
+    } else if (moveThreat != null) {
+        key = Situation.threatKey(board, moveThreat)
+        principle = if (moveThreat.kind == "trade") {
+            Plans.TRADE_REASON.getValue(moveThreat.why)
+        } else {
+            Plans.THREAT_REASON.getValue(moveThreat.kind)
+        }
+    } else if (linePlan != null) {
+        key = Situation.planKey(board, linePlan)
+        principle = Plans.PLAN_REASON.getValue(linePlan.kind)
+    } else if (planKind != null && best != null) {
+        key = Situation.positionalKey(board, best, planKind, threatMove, phase)
+        // The second hint's question follows from the fact the first named: without it, "which
+        // pawn move lets it out?" asked of a position where nothing is shut in.
+        if (nudge == null && key != null) {
+            nudge = Situation.positionalNudge(board, planKind, key)
+        } else if ((planKind == "centralise" || planKind == "activate") && key == null && why == null) {
+            why = Situation.reachWhy(board, best)
+        } else if (planKind == "centre" && key == null) {
+            val said = Situation.centreMove(board, best)
+            if (said != null) {
+                nudge = if (!nudge.isNullOrEmpty()) nudge else said.first
+                why = if (!why.isNullOrEmpty()) why else said.second
+            }
+        }
+    }
+    // The key the move itself answers, and so its reason at the move rung; the fallbacks below
+    // (a static feature, their idea) are context, not the move's reason.
+    val moveReason = key
+    val inCheck = board.isCheck()
+    val book = stakes != null && stakes.kind == "book"
+    if (key == null &&
+        best != null &&
+        !tacticalGoal &&
+        idea.goal != "defend" &&
+        !inCheck &&
+        !book
+    ) {
+        key = Situation.passerKey(board, best) ?: Situation.kingsKey(board, best)
+        if (key == null) {
+            val features = topFeatures(board, us, phase, limit = 4)
+            key = Situation.relevantFeature(board, features, pv)
+        }
+    }
+    if (inCheck && key == null) key = Situation.checkKey(board)
+    if (key == null && !tacticalGoal && !book) {
+        // Nothing else named: what they would do if you let them -- the prophylactic question,
+        // answered on the board.
+        val sharp = stakes != null && (stakes.kind == "only" || stakes.kind == "few" || stakes.kind == "lost")
+        key = Situation.theirIdeaKey(board, threatMove, sharp = sharp)
+    }
+    if (inCheck) {
+        nudge = "Which way out keeps you safest -- a king move, a block, or taking the checker?"
+        if (why == null && best != null) why = Situation.evasionWhy(board, best)
+    }
+    val recapture = idea.goal == "win" && idea.down && best != null && board.isCapture(best)
+    var trap = if (analysis.traps.isNotEmpty() && idea.goal != "mate" && !recapture) {
+        Situation.trapWords(
+            board, analysis.traps[0], idea.target, if (lines.isNotEmpty()) lines[0].expectedScore else null,
+        )
+    } else {
+        null
+    }
+    if (trap != null && idea.target != null && trap.startsWith("Not yet")) {
+        key = null  // the trap says it: the target can be won, but not at once
+    }
+    val parts = ArrayList<String>()
+    val forced = board.isCheck() && board.legalMoves().size == 1
+    val calm = stakes != null && (stakes.kind == "many" || stakes.kind == "open")
+    if (!stakesText.isNullOrEmpty() && idea.goal == "defend" && calm) {
+        stakesText = null  // "nothing is urgent" beside their threat said the opposite
+    }
+    if (!stakesText.isNullOrEmpty() &&
+        (!tacticalGoal || (stakes != null && (stakes.kind == "check" || stakes.kind == "book")))
+    ) {
+        parts.add(stakesText)
+    }
+    if (forced) {
+        // One legal move: the rest of the reading is the move's, not a hint.
+        tacticalGoal = false
+        key = null
+        principle = null
+        trap = null
+        moveThreat = null
+        nudge = null
+    }
+    val lost = stakes != null && stakes.kind == "lost"
+    if (tacticalGoal ||
+        (moveThreat != null && !lost) ||
+        (idea.winning && stakesText.isNullOrEmpty())
+    ) {
+        var lead = goal
+        if (idea.goal == "plan" && idea.winning && moveThreat == null) lead = "you are winning"
+        if (!lead.isNullOrEmpty()) parts.add(lead)
+    }
+    if (!key.isNullOrEmpty()) parts.add(key)
+    if (!principle.isNullOrEmpty() && !key.isNullOrEmpty()) parts.add(principle)
+    if (!trap.isNullOrEmpty()) parts.add(trap)
+    var situationText: String? = parts.joinToString(" ") { Situation.sentence(it) }.ifEmpty { null }
+    // A tactic's first hint ends on the question that sets the player looking the right way
+    // ("which check leaves their king no square at all?"); never one that fits any position.
+    if (!situationText.isNullOrEmpty() &&
+        tacticalGoal &&
+        !question.isNullOrEmpty() &&
+        !forced &&
+        question !in Situation.ANY_POSITION
+    ) {
+        situationText += " $question"
+    }
+    // A quiet move's own reason, said at the move rung: the key fact it answers.
+    if (why == null && !moveReason.isNullOrEmpty() && best != null) {
+        why = "${board.san(best)}: ${moveReason[0].lowercaseChar() + moveReason.substring(1)}"
+    }
+
     val candidates = ArrayList<String>()
     if (lines.isNotEmpty()) {
         val top = lines[0].expectedScore
@@ -672,6 +838,11 @@ fun factsFromAnalysis(
         candidates = candidates,
         threats = threats,
         line = line,
+        stakes = stakesText,
+        key = key,
+        trap = trap,
+        choices = choices,
+        situation = situationText,
     )
 }
 

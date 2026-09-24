@@ -94,8 +94,18 @@ class Analysis(
     val decisive: Boolean,
     val onlyMove: Boolean,
     val threats: List<String> = emptyList(),
+    /**
+     * The captures that look free and are not ([com.sidecoach.analysis.Traps]): each the
+     * capture, then the engine's best play after it, scored from the side to move's view.
+     */
+    val traps: List<Line> = emptyList(),
     val tags: List<MotifTag> = emptyList(),
     val opening: String? = null,
+    /**
+     * The game is still in the opening book at this position ([opening] is the deepest line it
+     * passed through, and stays after the game leaves the book).
+     */
+    val inBook: Boolean = false,
 ) : Event()
 
 enum class Severity { NONE, INACCURACY, MISTAKE, BLUNDER }

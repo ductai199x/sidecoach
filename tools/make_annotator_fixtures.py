@@ -126,6 +126,10 @@ def main() -> None:
                     "decisive": analysis.decisive,
                     "only_move": analysis.only_move,
                     "threats": list(analysis.threats),
+                    # The captures that look free and are not (desktop fc30fa7), and whether the
+                    # game is still in the book there.
+                    "traps": [line_json(t) for t in analysis.traps],
+                    "in_book": analysis.in_book,
                 })
             games.append({"name": name, "plies": plies, "answers": recording.answers})
     OUT.mkdir(parents=True, exist_ok=True)
@@ -136,8 +140,10 @@ def main() -> None:
     labels = sorted({p["label"] for g in games for p in g["plies"] if p["label"]})
     tags = sorted({t["name"] for g in games for p in g["plies"] for t in p["move_tags"]})
     calls = sum(len(a) for g in games for a in g["answers"].values())
+    traps = sum(len(p["traps"]) for g in games for p in g["plies"])
+    booked = sum(1 for g in games for p in g["plies"] if p["in_book"])
     print(f"{sum(len(g['plies']) for g in games)} plies, {calls} engine answers; "
-          f"labels {labels}; move tags {tags}")
+          f"labels {labels}; move tags {tags}; {traps} traps, {booked} plies in book")
     for g in games:
         print(g["name"], [p["opening"] for p in g["plies"]][-1], [p["label"] for p in g["plies"]])
 

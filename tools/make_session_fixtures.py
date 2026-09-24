@@ -330,26 +330,30 @@ def play_game(
     return board, ply, ts
 
 
+def line_json(one: Any) -> dict[str, Any]:
+    return {
+        "moves": list(one.moves),
+        "depth": one.depth,
+        "expected_score": one.expected_score,
+        "score_cp": one.score_cp,
+        "mate": one.mate,
+        "wdl": list(one.wdl) if one.wdl else None,
+    }
+
+
 def analysis_json(a: Any) -> dict[str, Any]:
     return {
         "fen": a.fen,
         "ply": a.ply,
-        "lines": [
-            {
-                "moves": list(one.moves),
-                "depth": one.depth,
-                "expected_score": one.expected_score,
-                "score_cp": one.score_cp,
-                "mate": one.mate,
-                "wdl": list(one.wdl) if one.wdl else None,
-            }
-            for one in a.lines
-        ],
+        "lines": [line_json(one) for one in a.lines],
         "decisive": a.decisive,
         "only_move": a.only_move,
         "threats": list(a.threats),
+        # The captures that look free and are not, and the book (desktop fc30fa7).
+        "traps": [line_json(one) for one in a.traps],
         "tags": [{"name": t.name, "squares": list(t.squares), "move": t.move} for t in a.tags],
         "opening": a.opening,
+        "in_book": a.in_book,
     }
 
 

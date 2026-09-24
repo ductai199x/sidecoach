@@ -98,6 +98,7 @@ class AnnotatorParityTest {
         val book = book()
         val games = data.getJSONArray("games")
         var plies = 0
+        var traps = 0
         for (g in 0 until games.length()) {
             val game = games.getJSONObject(g)
             val name = game.getString("name")
@@ -134,11 +135,28 @@ class AnnotatorParityTest {
                 assertEquals("$where decisive", want.getBoolean("decisive"), analysis.decisive)
                 assertEquals("$where only move", want.getBoolean("only_move"), analysis.onlyMove)
                 assertEquals("$where threats", strings(want.getJSONArray("threats")), analysis.threats)
+                assertEquals("$where traps", recordedLines(want.getJSONArray("traps")), analysis.traps)
+                assertEquals("$where in book", want.getBoolean("in_book"), analysis.inBook)
+                traps += analysis.traps.size
                 plies++
             }
         }
         assertEquals("every engine call was one the desktop made", emptyList<String>(), engine.missed)
         assertEquals(64, plies)
+        android.util.Log.i("sidecoach.analysis", "annotator parity: $plies plies, $traps traps")
+    }
+
+    private fun recordedLines(array: JSONArray): List<Line> = (0 until array.length()).map { i ->
+        val line = array.getJSONObject(i)
+        val wdl = line.optJSONArray("wdl")
+        Line(
+            moves = strings(line.getJSONArray("moves")),
+            depth = line.getInt("depth"),
+            expectedScore = line.getDouble("expected_score"),
+            scoreCp = if (line.isNull("score_cp")) null else line.getInt("score_cp"),
+            mate = if (line.isNull("mate")) null else line.getInt("mate"),
+            wdl = if (wdl == null) null else Triple(wdl.getInt(0), wdl.getInt(1), wdl.getInt(2)),
+        )
     }
 
     /** The desktop test's `FakeEngine`: scripted lines, a quiet move for anything else. */

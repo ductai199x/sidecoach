@@ -119,6 +119,8 @@ data class Idea(
     val sacrifices: List<Pair<Int, String>> = emptyList(),
     /** The engine calls the position won. */
     val winning: Boolean = false,
+    /** The best line's expected score, for the player. */
+    val score: Double? = null,
 )
 
 object IdeaReader {
@@ -138,6 +140,12 @@ object IdeaReader {
      */
     const val WIN_GAIN = 2
     const val HORIZON = 16
+
+    /**
+     * Below this expected score, material the opponent hands over is theirs to give, not the
+     * player's win ([firstGift]).
+     */
+    const val GIFT_SCORE = 0.3
 
     /**
      * A won position whose line checks this often in the player's first four moves, winning no
@@ -290,6 +298,7 @@ object IdeaReader {
             winning = winning,
             level = top.expectedScore < LEVEL && !mated,
             down = balance(board, board.turn) < 0,
+            score = top.expectedScore,
         )
     }
 
@@ -346,7 +355,13 @@ object IdeaReader {
                 break
             }
         }
-        var (gain, at) = lineGain(boards, pv, if (queened != null && queened != 0) queened - 1 else horizon)
+        var reach = if (queened != null && queened != 0) queened - 1 else horizon
+        // In a position the engine calls lost, what they give up on the way is given for their
+        // attack, not won: counted only up to their first piece left to be taken ("you can win
+        // back a knight and a pawn" at 29.exf4 in Johner-Nimzowitsch, the knight Ng4+ given to
+        // open the king).
+        if (analysis.lines[0].expectedScore < GIFT_SCORE) reach = minOf(reach, firstGift(boards, pv, reach))
+        var (gain, at) = lineGain(boards, pv, reach)
         // The blow is what wins it: looked for up to where the line first wins that much, not
         // where it has picked up the most (a fork five moves after the queen fell was named).
         val firstAt = if (gain > 0) firstReaching(boards, pv, at, minOf(gain, WIN_GAIN)) else 0
@@ -380,7 +395,16 @@ object IdeaReader {
         }
         // A pawn is a win when the game is better for it; two pawns' worth always.
         val betterForIt = analysis.lines[0].expectedScore >= LEVEL
-        if (gain >= WIN_GAIN || (gain >= 1 && betterForIt && !queens)) {
+        // A win the score denies: the engine calls the game level, the player is not behind,
+        // and the material comes only down the line -- "you can win a knight and two pawns for
+        // a bishop" was said at move 6 of the Ruy Lopez (Capablanca-Marshall, 2026-09-24).
+        val firstWin = if (gain > 0) maxOf(0, if ((at - 1) % 2 == 0) at - 1 else at - 2) else 0
+        val topMate = analysis.lines[0].mate
+        val phantom = !betterForIt &&
+            balance(board, us) >= 0 &&
+            firstWin > 0 &&
+            !(topMate != null && topMate > 0)
+        if (!phantom && (gain >= WIN_GAIN || (gain >= 1 && betterForIt && !queens))) {
             // A pawn is a win too when the position turns on it and a real tactic takes it: a
             // discovered check that nets a pawn into a won ending is still the point. A line
             // that stops on the player's capture: what takes back is counted as given, as
@@ -502,6 +526,22 @@ object IdeaReader {
         }
         return Idea(goal = "plan", first = first, line = pv, startsWith = startsWith, checks = checks)
     }
+
+    /**
+     * The best move lets their direct threat come: it gives check (the attack goes on, and the
+     * capture waits), or after it the capture is still there and still wins. Black's 14...Bh2+
+     * in Capablanca-Marshall, with hxg4 hanging over the knight, was "your opponent threatens to
+     * win material: meet it first".
+     */
+    private fun ignores(board: Board, best: Move, threat: Move): Boolean {
+        if (board.givesCheck(best)) return true
+        val after = board.copy(withStack = false)
+        after.push(best)
+        return after.isLegal(threat) && Exchange.exchange(after, threat) > 0
+    }
+
+    /** An ending: four pieces or fewer left besides kings and pawns. `idea.ending_of`. */
+    fun endingOf(board: Board): Boolean = piecesLeft(board) <= 4
 
     /** Pieces other than kings and pawns, both sides. */
     private fun piecesLeft(board: Board): Int =
@@ -701,6 +741,22 @@ object IdeaReader {
             }
         }
         return out
+    }
+
+    /**
+     * The plies of the line before the player takes a piece the opponent just put where it
+     * could be taken, worth more than what it took on the way there; `reach` if none.
+     */
+    private fun firstGift(boards: List<Board>, pv: List<Move>, reach: Int): Int {
+        for (k in 1 until minOf(reach, pv.size - 1) step 2) {
+            val move = pv[k]
+            val answer = pv[k + 1]
+            if (answer.to != move.to || !boards[k + 1].isCapture(answer)) continue
+            val piece = boards[k].pieceTypeAt(move.from)
+            val took = if (boards[k].isCapture(move)) boards[k].pieceTypeAt(move.to) else 0
+            if (value(piece) > value(took)) return k + 1
+        }
+        return reach
     }
 
     /**
@@ -1003,6 +1059,9 @@ object IdeaReader {
             // A capture that wins material by the exchange, legal recaptures and all: a knight
             // left to a rook with only a pinned piece to take back is a threat (2026-09-23).
             if (taken != null && taken.colour == board.turn && Exchange.exchange(passed, move) > 0) {
+                if (best != null && board.isLegal(best) && ignores(board, best, move)) {
+                    continue  // the best move lets it come: the point is elsewhere
+                }
                 return Triple(move, "your ${NAMES.getValue(taken.pieceType)}", null)
             }
         }

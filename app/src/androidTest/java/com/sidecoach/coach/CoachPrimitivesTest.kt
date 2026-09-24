@@ -134,6 +134,11 @@ class CoachPrimitivesTest {
             checkTemplates(case.getString("fen"), facts, board, case.getJSONObject("templates"))
 
             check("${case.getString("fen")} phase", phaseOf(board, false), case.getString("phase"))
+            check(
+                "${case.getString("fen")} allowed",
+                IdeaWords.allowed(board, analysis, "e4"),
+                if (case.isNull("allowed")) null else case.getString("allowed"),
+            )
             check("material us", materialText(board, us), case.getString("material_us"))
             check("material them", materialText(board, !us), case.getString("material_them"))
             check("position text", positionText(board), case.getString("position_text"))
@@ -359,9 +364,12 @@ class CoachPrimitivesTest {
         val played = want.getJSONArray("lessons_played")
         for (k in 0 until played.length()) {
             val o = played.getJSONObject(k)
+            val allowed = if (o.isNull("allowed")) null else o.getString("allowed")
             check(
-                "$fen lessonTemplate after ${o.getString("played")}",
-                lessonTemplate(facts, best, o.getString("opener"), board = board, played = o.getString("played")),
+                "$fen lessonTemplate after ${o.getString("played")} allowing $allowed",
+                lessonTemplate(
+                    facts, best, o.getString("opener"), board = board, played = o.getString("played"), allowed = allowed,
+                ),
                 o.getString("text"),
             )
         }
@@ -475,19 +483,19 @@ class CoachPrimitivesTest {
     }
 
     /** The Analysis the desktop was fed, exactly: its lines, flags, threats and tags. */
+    private fun linesFrom(a: JSONArray): List<Line> = List(a.length()) { k ->
+        val l = a.getJSONObject(k)
+        Line(
+            moves = strings(l.getJSONArray("moves")),
+            depth = l.getInt("depth"),
+            expectedScore = l.getDouble("expected_score"),
+            scoreCp = if (l.isNull("score_cp")) null else l.getInt("score_cp"),
+            mate = if (l.isNull("mate")) null else l.getInt("mate"),
+        )
+    }
+
     private fun analysisFrom(fen: String, o: JSONObject): Analysis {
-        val lines = o.getJSONArray("lines").let { a ->
-            List(a.length()) { k ->
-                val l = a.getJSONObject(k)
-                Line(
-                    moves = strings(l.getJSONArray("moves")),
-                    depth = l.getInt("depth"),
-                    expectedScore = l.getDouble("expected_score"),
-                    scoreCp = if (l.isNull("score_cp")) null else l.getInt("score_cp"),
-                    mate = if (l.isNull("mate")) null else l.getInt("mate"),
-                )
-            }
-        }
+        val lines = linesFrom(o.getJSONArray("lines"))
         val tags = o.getJSONArray("tags").let { a ->
             List(a.length()) { k ->
                 val t = a.getJSONObject(k)
@@ -506,7 +514,10 @@ class CoachPrimitivesTest {
             decisive = o.getBoolean("decisive"),
             onlyMove = o.getBoolean("only_move"),
             threats = strings(o.getJSONArray("threats")),
+            traps = linesFrom(o.getJSONArray("traps")),
             tags = tags,
+            opening = if (o.isNull("opening")) null else o.getString("opening"),
+            inBook = o.getBoolean("in_book"),
         )
     }
 

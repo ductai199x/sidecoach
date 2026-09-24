@@ -1349,12 +1349,22 @@ class Coach(
             if (trigger == Trigger.POST_MISTAKE) {
                 // The better move played out, and the pattern to keep: never "the idea was a
                 // mating attack" and nothing more.
+                // What the move let them do, from the position it left, when that has been
+                // analysed: the grounded half of "what their move allowed".
+                val left = positions[played.ply]
+                val leftAnalysis = left?.analysis
+                val allowed = if (left != null && leftAnalysis != null) {
+                    IdeaWords.allowed(left.board, leftAnalysis, played.san)
+                } else {
+                    null
+                }
                 fallback = lessonTemplate(
                     facts,
                     best,
                     rotate("cost", COST_YOU).replace("{best}", best),
                     board = position.board,
                     played = played.uci,
+                    allowed = allowed,
                 )
                 instructionText =
                     "The player just played ${played.san}, which was a $label: it cost " +
@@ -1364,6 +1374,9 @@ class Coach(
                         "missed or allowed -- as a pattern to remember, in three sentences at " +
                         "most, then ask one question that checks they see it. " +
                         "$NOT_THE_MOVE $NO_NUMBERS"
+                if (!allowed.isNullOrEmpty()) {
+                    instructionText += " What ${played.san} allowed, from the engine's line: $allowed."
+                }
                 if (elicit) {
                     // Sparingly: what they saw at that moment, for the profile's record
                     // (causes.from_words reads "I thought it would..." as a line misjudged,

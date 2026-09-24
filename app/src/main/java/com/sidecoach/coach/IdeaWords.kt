@@ -13,6 +13,7 @@ import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.parseSquare
 import com.sidecoach.chess.squareName
 import com.sidecoach.chess.squareRank
+import com.sidecoach.events.Analysis
 
 /**
  * The idea of the best line ([Idea]) in the coach's words, one field per rung. A port of
@@ -42,6 +43,9 @@ object IdeaWords {
 
     /** The plies of a longer mate read out, the first move with them. */
     const val MATE_SHOWN = 5
+
+    /** The furthest ply of a win read out move by move: the player's third move. */
+    const val LATER_READ = 4
     private val NUMBER = mapOf(
         1 to "one", 2 to "two", 3 to "three", 4 to "four", 5 to "five", 6 to "six", 7 to "seven",
     )
@@ -272,7 +276,11 @@ object IdeaWords {
         if (idea.goal == "win" && idea.level) {
             // Winning it back, not winning: the engine calls the game level after it.
             val what = idea.won ?: "material"
+            if (idea.down && idea.score != null && idea.score < 0.4) {
+                return "you can win back $what, though you stay worse"
+            }
             if (idea.down) return "you can win back $what, and that levels the game"
+            if (idea.score != null && idea.score < 0.4) return "you can win $what, though you stay worse"
             return "you can win $what, and that holds the game level"
         }
         if (idea.goal == "win") {
@@ -286,9 +294,7 @@ object IdeaWords {
                 "you have a strong attack on their king"
             }
         }
-        if (idea.goal == "convert") {
-            return "you can trade into a won ${if (!idea.ending.isNullOrEmpty()) idea.ending else "simpler"} ending"
-        }
+        if (idea.goal == "convert") return "you can trade into ${ending(idea)}"
         if (idea.goal == "king") return "you are winning, and your king leads the way"
         if (idea.goal == "breakthrough") return "you can break through and make a pawn that runs"
         if (idea.goal == "combination") return "you can give up material and win it back with a tactic"
@@ -697,6 +703,11 @@ object IdeaWords {
                 val text = "$first, and after ${line(after, between)}, $blow"
                 return text + (if (!sentence.isNullOrEmpty()) ", and $sentence" else "") + "; $won"
             }
+            if (sentence == null && idea.goal == "win" && idea.gainPly > LATER_READ) {
+                // Past two moves the line is not read out: "h4 -- after d5 g4 Nxh4 Bg5 Be7 Bxh4
+                // Bxh4 g5 Nc6 Rxh4 Rxh4, Nxh4" was twelve plies (Tai's game g01, 2026-09-24).
+                return "$first: $won, a few moves on"
+            }
             if (sentence == null && idea.goal == "win" && idea.gainPly > 0 && idea.gainPly < idea.line.size) {
                 // No tactic, and the first move does not win it: the moves up to the one that does.
                 var after = board.copy(withStack = false)
@@ -748,7 +759,8 @@ object IdeaWords {
         }
         if (idea.goal == "convert") {
             val shown = idea.line.take(4).map { it.uci() }
-            return "$first starts it: ${line(board, shown)}, and the ${idea.ending} ending is won"
+            val ending = ending(idea).replace("a won ", "the ")
+            return "$first starts it: ${line(board, shown)}, and $ending is won"
         }
         if (idea.goal == "king") {
             if (idea.opposition) return "$first takes the opposition: their king has to give way"
@@ -765,7 +777,7 @@ object IdeaWords {
                 "stalemate" -> "stalemate"
                 else -> "a repetition"
             }
-            return "$first holds it: ${line(board, shown)}, and it is a draw by $how"
+            return "$first holds the game: ${line(board, shown)}, and it is a draw by $how"
         }
         if (idea.goal == "attack") {
             val shown = idea.line.take(7).map { it.uci() }
@@ -838,5 +850,53 @@ object IdeaWords {
         val text = sanLine(board, plies, limit = plies.size)
         return text.split(Regex("\\s+")).filter { it.isNotEmpty() && !it.endsWith(".") && !it.endsWith("...") }
             .joinToString(" ")
+    }
+
+    /**
+     * The won ending by its kind: "a won rook ending"; one of no single kind is "a won ending"
+     * ("a won mixed ending" said nothing, Tai's game g05, 2026-09-24). `idea_words._ending`.
+     */
+    fun ending(idea: Idea): String {
+        val kind = idea.ending
+        if (kind == null || kind == "mixed" || kind == "minor-piece") return "a won ending"
+        return "a won $kind ending"
+    }
+
+    /** What they win, said to the player: "their queen" from their side is "your queen". */
+    fun yours(won: String): String = won.replace("their ", "your ")
+
+    /**
+     * What the move just played lets the opponent do: the engine's best line in the position it
+     * left (theirs to move), read by the same idea reader -- mate, material, a won ending, a
+     * winning attack, a pawn through. The half a lesson after a mistake was missing: "Rxa6 was
+     * better" and nothing on Rxa1+ taking a rook (Tai's game g02, 13.Qxd5, 2026-09-24). Null
+     * when the line takes nothing of the kind.
+     */
+    fun allowed(board: Board, analysis: Analysis, played: String): String? {
+        if (analysis.lines.isEmpty()) return null
+        val idea = IdeaReader.read(board, analysis)
+        val firstMove = idea.first ?: return null
+        if (!board.isLegal(firstMove)) return null
+        val first = board.san(firstMove)
+        val after = "after $played, "
+        if (idea.goal == "mate" && idea.mateIn != null && idea.mateIn != 0) {
+            if (idea.mateIn == 1) return after + "${first.trimEnd('#')} is mate"
+            val n = NUMBER[idea.mateIn] ?: idea.mateIn.toString()
+            return after + "they have mate in $n, starting with $first"
+        }
+        if (idea.goal == "win" && !idea.won.isNullOrEmpty() && !idea.level) {
+            val won = yours(idea.won)
+            if (idea.gainPly == 0) return after + "$first wins $won"
+            if (idea.gainPly > LATER_READ) return after + "they win $won a few moves on, starting with $first"
+            return after + "they win $won, starting with $first"
+        }
+        if (idea.goal == "convert" && !idea.ending.isNullOrEmpty()) {
+            return after + "$first trades them into ${ending(idea)}"
+        }
+        if (idea.goal == "promote") return after + "their pawn goes through to queen, starting with $first"
+        if (idea.goal == "attack" && idea.winning) {
+            return after + "they have a winning attack on your king, starting with $first"
+        }
+        return null
     }
 }

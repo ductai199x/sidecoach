@@ -45,6 +45,9 @@ private val HOME_MINORS_BLACK = intArrayOf(57, 58, 61, 62)  // b8, c8, f8, g8
 
 private fun homeMinors(colour: Boolean) = if (colour == WHITE) HOME_MINORS_WHITE else HOME_MINORS_BLACK
 
+/** Which minor piece starts on each of those files. */
+private val HOME_TYPE = mapOf(1 to KNIGHT, 2 to BISHOP, 5 to BISHOP, 6 to KNIGHT)
+
 /**
  * One strategic truth about the position, in a coach's words, with its evidence squares.
  * `kind` is a stable slug (used to rank and to verify); `text` is the sentence a coach would
@@ -799,20 +802,28 @@ fun badBishop(board: Board, us: Boolean): List<PositionalFact> {
  */
 const val DEVELOPMENT_MOVES = 20
 
+/**
+ * The player's knights on b and g, and bishops on c and f, of the home rank: a knight back on
+ * f1 is not at home (39.Ne3 in Johner-Nimzowitsch).
+ */
+fun atHome(board: Board, us: Boolean): List<Int> =
+    homeMinors(us).filter { board.colourAt(it) == us && board.pieceTypeAt(it) == HOME_TYPE.getValue(squareFile(it)) }
+
 /** Minor pieces still on their home squares, and whether the king has castled. */
 fun development(board: Board, us: Boolean): List<PositionalFact> {
-    val home = homeMinors(us)
-        .filter { board.pieceAt(it) != null && board.colourAt(it) == us }
-        .filter { board.pieceTypeAt(it) == KNIGHT || board.pieceTypeAt(it) == BISHOP }
+    val home = atHome(board, us)
     val facts = ArrayList<PositionalFact>()
     if (home.isNotEmpty()) {
-        val names = home.joinToString(", ") { name(it) }
-        val count = if (home.size == 1) "a piece" else "${home.size} pieces"
+        val names = home.joinToString(" and ") {
+            val kind = board.pieceTypeAt(it)
+            "${PIECE_NAMES[if (kind == 0) PAWN else kind]} on ${name(it)}"
+        }
+        val verb = if (home.size == 1) "is" else "are"
         if (board.fullmoveNumber <= DEVELOPMENT_MOVES) {
             facts.add(
                 PositionalFact(
                     "undeveloped",
-                    "you still have $count at home ($names), not yet in the game",
+                    "your $names $verb still at home, not yet in the game",
                     home.map { name(it) },
                 ),
             )
@@ -821,7 +832,7 @@ fun development(board: Board, us: Boolean): List<PositionalFact> {
             facts.add(
                 PositionalFact(
                     "homeSquare",
-                    "you have $count on $where ($names)",
+                    "your $names $verb on $where",
                     home.map { name(it) },
                 ),
             )

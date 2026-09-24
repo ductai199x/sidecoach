@@ -5,6 +5,7 @@ import com.sidecoach.analysis.bestMoveIdea
 import com.sidecoach.analysis.worstPieceSquare
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
+import com.sidecoach.chess.PAWN
 import com.sidecoach.chess.parseSquare
 import com.sidecoach.events.MotifTag
 import kotlin.random.Random
@@ -174,6 +175,15 @@ fun lesson(
         threat = threatOf(board, threats),
     )
     if (idea == null || idea.kind !in PRINCIPLES || idea.kind in taught) return null
+    if (idea.kind == "centre" || idea.kind == "space" || idea.kind == "centralise") {
+        // A principle with nothing on the board behind it is no lesson ("the fight is for the
+        // centre" after every pawn move, Tai, 2026-09-24): only what the move opens.
+        val opened = Situation.shutIn(board, move) ?: return null
+        val home = opened.first
+        val kind = board.pieceTypeAt(home)
+        val name = COACH_PIECE_NAMES[if (kind == 0) PAWN else kind]
+        return idea.kind to listOf("that lets your $name out")
+    }
     return idea.kind to PRINCIPLES.getValue(idea.kind)
 }
 

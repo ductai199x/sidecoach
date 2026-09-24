@@ -31,7 +31,16 @@ fixture as it was fed, so the Kotlin reads exactly the same one:
   MASTERS_PREPARED of each; and what the rungs read since desktop 268990e: a win that comes a
   move later (`idea.gain_ply`), a mate too long to read out whole (past `MATE_READ`), a forcing
   capture's target, and a pawn threat that gives way to the move's own idea, up to
-  MASTERS_RUNGS of each.
+  MASTERS_RUNGS of each; and, since desktop fc30fa7, the first hint's trap (a capture that
+  looks free and is not), up to MASTERS_TRAPS.
+
+The first hint (desktop fc30fa7) reads the Analysis's traps -- the captures that look free and
+are not, searched by the annotator -- and whether the game is in the book. The cached analyses
+predate them, so the traps are searched here with the desktop's Stockfish (`trap_lines`, one
+thread, so the same every run) for every Lichess and cache position, and for master positions
+while MASTERS_TRAPS is not met; opening games played out move by move carry the book's
+`in_book` and name. Every case also says what the move that left it allowed
+(`idea_words.allowed`, desktop 25a3333).
 
 Every case's lessons are also said as the move-by-move lesson says them, with the position and
 the move played (`lesson_template(..., board=, played=)`): every legal capture onto the better
@@ -56,7 +65,10 @@ sys.path.insert(0, str(DESKTOP / "src"))
 
 import chess  # noqa: E402
 
+from sidecoach.analysis.engine import Engine  # noqa: E402
 from sidecoach.analysis.motifs import tags_for_position  # noqa: E402
+from sidecoach.analysis.openings import OpeningBook  # noqa: E402
+from sidecoach.analysis.traps import tempting, trap_lines  # noqa: E402
 from sidecoach.analysis.phase import phase_of  # noqa: E402
 from sidecoach.analysis.score import human_expected_score  # noqa: E402
 from sidecoach.coach import annotations as A  # noqa: E402
@@ -81,6 +93,7 @@ from sidecoach.coach.coach import (  # noqa: E402
     move_template,
 )
 from sidecoach.coach.person import third_person  # noqa: E402
+from sidecoach.config import find_stockfish, load_settings  # noqa: E402
 from sidecoach.events import Analysis, DisclosureLevel, Line, MotifTag, Trigger  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "chess"
@@ -99,6 +112,17 @@ MASTERS_PREPARED = 40
 # Master positions kept per rung reading of desktop 268990e (a later win, a long mate, a
 # forcing capture's target, a pawn threat that yields).
 MASTERS_RUNGS = 30
+# Master positions kept whose first hint names a trap.
+MASTERS_TRAPS = 40
+# Opening games played out move by move, each position in the book (desktop fc30fa7's
+# "this is opening theory -- the X; the main moves here are ...").
+OPENING_GAMES = [
+    "e4 e5 Nf3 Nc6 Bb5 a6 Ba4 Nf6 O-O Be7 Re1 b5 Bb3 d6",
+    "d4 Nf6 c4 e6 Nc3 Bb4 e3 O-O Bd3 d5",
+    "e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 a6",
+]
+# What a move allowed is said as "after {played}, ...": the played move's words only.
+PLAYED = "e4"
 
 # Sentences written for the side to move as "you", the way the facts and ideas read.
 PERSON_TEXTS = [
@@ -216,6 +240,27 @@ IDEA_TESTS = [
     ),
     ("r3k3/p1pb4/2p2p2/2q1p1p1/2B3p1/2P4r/P1P2PQP/3RR1K1 w q - 4 21", "Qe4", 0.55, None, ["c5c4"], False),
     ("1k2r3/1p3ppp/3p4/2n5/1rPN4/1P3P2/P5PP/2KRR3 b - - 2 23", "Rxe1 Rxe1 Nd3+ Kd2 Nxe1", 0.95, None, [], True),
+    # `tests/test_allowed.py` (desktop 25a3333): a blunder that drops a rook, a move that lets
+    # them trade into a won ending, a quiet line, a win far down the line, and g06's a3.
+    (
+        "1n1qk2r/2pp1pp1/r7/3Qp2p/8/2B2P2/1PP3PP/R3K1NR b KQk - 0 13",
+        "Rxa1+ Kf2 Qf6 Bxe5 Qf5 Qe4 Qxe4 fxe4",
+        0.92,
+        None,
+        [],
+        False,
+    ),
+    ("r1b3k1/ppp2ppp/3b4/8/3Qq3/P4N2/1BP2PPP/R5K1 b - - 1 18", "Qxd4 Bxd4 Bf5 c3 b6 Be5 Rd8 Rd1", 0.82, None, [], False),
+    ("4k3/8/8/8/8/8/4P3/4K3 b - - 0 1", "Kd7 Kd2 Kd6 Kd3", 0.5, None, [], False),
+    (
+        "rnbqkb1r/pppp4/4p1p1/5n2/3P4/2N2N2/PPP2PPP/R1BQKB1R w KQkq - 0 7",
+        "h4 d5 g4 Nxh4 Bg5 Be7 Bxh4 Bxh4 g5 Nc6 Rxh4 Rxh4 Nxh4 Qxg5",
+        0.9,
+        None,
+        [],
+        False,
+    ),
+    ("rnbqkb1r/pppp4/4p1p1/5n2/3P4/2N2N2/PPP2PPP/R1BQKB1R w KQkq - 0 7", "a3 d5", 0.5, None, [], False),
     # `tests/test_threats_to_meet.py`: Short-Timman before 11...Nd4, where Rd1 would come and
     # then Rxd8 -- met by Nd4, and not by Kh8 (desktop 6637098).
     (
@@ -349,6 +394,19 @@ RARE = [
     ("winning_plan", "8/p7/6pp/2kp1p2/5P2/1P1K3P/P5P1/8 w - - 0 36"),
     ("winning_plan", "8/1p6/p3p3/4k2p/P1Pr2pP/1P2R1P1/4K3/8 b - - 3 43"),
     ("winning_plan", "8/1pp5/p2k1p2/1P6/P1KPP3/8/8/8 w - - 0 42"),
+    # Desktop 3895242: their threat goes to the square the best move takes first, said by their
+    # piece ("they are preparing e6" named the answer, e6).
+    ("vgdbX", "1rbqkb1r/3npppp/2B5/p2QP3/8/5N2/PPP2nPP/R1B1K2R w KQk - 0 12"),
+]
+
+# `tests/test_situation.py` (desktop fc30fa7): 29.exf4 in Johner-Nimzowitsch, material given
+# for their attack in a lost game (the line as UCI, the score as the test reads it).
+UCI_TESTS = [
+    (
+        "6rk/3b1prq/1p1p1n2/p1pP1n1p/P1P1pp2/2P1P1PP/R6K/2BQ1NRB w - - 0 29",
+        "e3f4 f6g4 h3g4 h5h4 h1e4 h4g3 h2g2 f5h4 g2h3 d7g4",
+        0.055,
+    ),
 ]
 
 
@@ -382,10 +440,22 @@ def analysis_json(analysis: Analysis) -> dict:
         "decisive": analysis.decisive,
         "only_move": analysis.only_move,
         "threats": list(analysis.threats),
+        "traps": [
+            {
+                "moves": list(line.moves),
+                "depth": line.depth,
+                "expected_score": line.expected_score,
+                "score_cp": line.score_cp,
+                "mate": line.mate,
+            }
+            for line in analysis.traps
+        ],
         "tags": [
             {"name": tag.name, "squares": list(tag.squares), "move": tag.move}
             for tag in analysis.tags
         ],
+        "opening": analysis.opening,
+        "in_book": analysis.in_book,
     }
 
 
@@ -470,7 +540,9 @@ def played_moves(board: chess.Board, best: str) -> list[str]:
     return out
 
 
-def templates_json(facts: D.PositionFacts, board: chess.Board) -> dict:
+def templates_json(
+    facts: D.PositionFacts, board: chess.Board, allowed: str | None = None
+) -> dict:
     """The offline coach's words at each rung, and the lesson after a costly move."""
     levels = list(DisclosureLevel.__members__.values())
     levels = sorted(set(levels), key=int)
@@ -499,9 +571,13 @@ def templates_json(facts: D.PositionFacts, board: chess.Board) -> dict:
             {
                 "opener": opener,
                 "played": played,
-                "text": lesson_template(facts, best, opener, board=board, played=played),
+                "allowed": said,
+                "text": lesson_template(
+                    facts, best, opener, board=board, played=played, allowed=said
+                ),
             }
             for played in played_moves(board, best)
+            for said in ((None, allowed) if allowed else (None,))
         ],
         # Each rung's words checked at every level: the scrubbing of the visible facts and the
         # piece-word rule see every sentence the templates can say.
@@ -702,7 +778,9 @@ def case_for(
         "facts": facts_json(facts),
         "idea": idea_json(idea),
         "words": words_json(idea, board),
-        "templates": templates_json(facts, board),
+        "templates": templates_json(facts, board, W.allowed(board, analysis, PLAYED)),
+        # What the move that left this position allowed, read by the same idea reader.
+        "allowed": W.allowed(board, analysis, PLAYED),
         "material_us": F.material_text(board, us),
         "material_them": F.material_text(board, not us),
         "position_text": F.position_text(board),
@@ -910,8 +988,48 @@ def plan_category(facts: D.PositionFacts) -> str:
     return "move" if facts.plan else "none"
 
 
+def with_traps(engine: Engine | None, board: chess.Board, analysis: Analysis) -> Analysis:
+    """The analysis with the traps the annotator would search for it."""
+    if engine is None:
+        return analysis
+    return analysis.model_copy(update={"traps": trap_lines(engine, board, analysis.lines)})
+
+
+def opening_cases(book: OpeningBook | None) -> list[tuple[chess.Board, Analysis]]:
+    """Every position of OPENING_GAMES, with the book's `in_book` and the opening's name as
+    the annotator gives them, the line the game's own next moves."""
+    if book is None:
+        return []
+    out: list[tuple[chess.Board, Analysis]] = []
+    for game in OPENING_GAMES:
+        board = chess.Board()
+        sans = game.split()
+        for index, san in enumerate(sans):
+            rest = []
+            work = board.copy()
+            for later in sans[index:]:
+                move = work.parse_san(later)
+                rest.append(move.uci())
+                work.push(move)
+            analysis = analysis_for(board.copy(stack=False), rest, False, False)
+            found = book.identify(list(board.move_stack)) if board.move_stack else None
+            name = getattr(found, "name", None) if found is not None else None
+            eco = getattr(found, "eco", None) if found is not None else None
+            opening = (f"{eco} {name}" if eco else str(name)) if name is not None else None
+            in_book = bool(board.move_stack) and book.in_book(list(board.move_stack))
+            analysis = analysis.model_copy(update={"opening": opening, "in_book": in_book})
+            out.append((board.copy(stack=False), analysis))
+            board.push_san(san)
+    return out
+
+
 def main() -> None:
     rng = random.Random(20260922)
+    path = find_stockfish(load_settings())
+    assert path is not None, "no Stockfish for the desktop"
+    engine = Engine(path=path, threads=1, hash_mb=64, multipv=6)
+    engine.open()
+    book = OpeningBook.load(DESKTOP / "data" / "openings")
     cases: list[dict] = []
     if PUZZLES.exists():
         with PUZZLES.open(newline="", encoding="utf-8") as handle:
@@ -946,6 +1064,25 @@ def main() -> None:
                 cases.append(case_for(board, analysis, deep=len(cases) % 37 == 0))
     synthesised = len(cases)
 
+    # Opening theory, from the book.
+    booked = 0
+    for board, analysis in opening_cases(book):
+        cases.append(case_for(board, analysis, deep=booked % 6 == 0, source="opening"))
+        booked += 1
+
+    # `tests/test_situation.py`'s lines written as UCI.
+    for fen, line, score in UCI_TESTS:
+        board = chess.Board(fen)
+        analysis = Analysis(
+            game_id="",
+            fen=fen,
+            ply=0,
+            lines=[Line(moves=line.split(), depth=18, expected_score=score)],
+            decisive=False,
+            only_move=False,
+        )
+        cases.append(case_for(board, analysis, deep=True, source="test_situation"))
+
     # The desktop's idea tests, their lines written out.
     for fen, line, score, mate, threats, decisive in IDEA_TESTS:
         board = chess.Board(fen)
@@ -972,7 +1109,7 @@ def main() -> None:
         cases.append(
             case_for(
                 board,
-                analyses[fen],
+                with_traps(engine, board, analyses[fen]),
                 deep=themed % 8 == 0,
                 marks_deep=themed % 4 == 0,
                 source=f"lichess {puzzle}: {themes}",
@@ -989,7 +1126,7 @@ def main() -> None:
         cases.append(
             case_for(
                 chess.Board(fen),
-                analyses[fen],
+                with_traps(engine, chess.Board(fen), analyses[fen]),
                 deep=rare % 6 == 0,
                 marks_deep=rare % 2 == 0,
                 source=f"cache: {label}",
@@ -1021,11 +1158,20 @@ def main() -> None:
             or (top.mate is not None and top.mate > W.MATE_READ)
             or F._line_gain(board, top.moves) >= 1
         )
-        if not could and index % MASTERS_STRIDE:
+        tempted = bool(tempting(board, analysis.lines))
+        if not could and not tempted and index % MASTERS_STRIDE:
             continue
+        if tempted and by_plan.get("trap", 0) < MASTERS_TRAPS:
+            analysis = with_traps(engine, board, analysis)
         facts = F.facts_from_analysis(board, analysis, last_move="e4", in_book=False, user=board.turn)
-        kind = rung_category(board, analysis, facts) or plan_category(facts)
-        if kind.startswith("rung:"):
+        kind = (
+            "trap"
+            if facts.trap
+            else rung_category(board, analysis, facts) or plan_category(facts)
+        )
+        if kind == "trap":
+            quota = MASTERS_TRAPS
+        elif kind.startswith("rung:"):
             quota = MASTERS_RUNGS
         elif kind.startswith("prepared:"):
             quota = MASTERS_PREPARED
@@ -1047,6 +1193,7 @@ def main() -> None:
             )
         )
         mastered += 1
+    engine.close()
 
     persons = [
         {"text": text, "side": side, "out": third_person(text, side=side)}
@@ -1134,6 +1281,21 @@ def main() -> None:
             case["templates"]["lessons_played"]
         )
     print("rungs:", dict(sorted(rungs.items())))
+    first: dict[str, int] = {}
+    for case in cases:
+        f = case["facts"]
+        for key in ("stakes", "key", "trap", "situation"):
+            if f.get(key):
+                first[key] = first.get(key, 0) + 1
+        if f.get("choices"):
+            first["choices"] = first.get("choices", 0) + 1
+        if case["analysis"]["traps"]:
+            first["analysis traps"] = first.get("analysis traps", 0) + 1
+        if case["analysis"]["in_book"]:
+            first["in book"] = first.get("in book", 0) + 1
+        if case["allowed"]:
+            first["allowed"] = first.get("allowed", 0) + 1
+    print("first hint:", dict(sorted(first.items())), f"({booked} opening positions)")
 
 
 if __name__ == "__main__":

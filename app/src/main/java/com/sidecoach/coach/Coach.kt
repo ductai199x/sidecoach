@@ -166,54 +166,38 @@ private fun templateSentence(raw: String): String {
 }
 
 /**
- * The idea rung, without a model: the goal, the pattern and why it works, and the question that
- * sets the player looking.
+ * The first hint, without a model: the situation as a short lesson on the position -- what is
+ * at stake, the key fact named on the board, the principle behind it, the trap ([Situation]).
+ * Never the move.
  */
 fun ideaTemplate(facts: PositionFacts): String {
+    if (!facts.situation.isNullOrEmpty()) return facts.situation
     val parts = ArrayList<String>()
-    if (!facts.goal.isNullOrEmpty()) {
-        parts.add(templateSentence(facts.goal))
-        if (!facts.mechanism.isNullOrEmpty() && !facts.plan.isNullOrEmpty() && facts.theme.isNullOrEmpty()) {
-            parts.add(templateSentence("the key is ${facts.mechanism}"))
-        } else if (!facts.mechanism.isNullOrEmpty()) {
-            parts.add(templateSentence("it's ${facts.mechanism}"))
-        }
-    } else if (!facts.plan.isNullOrEmpty() && !facts.mechanism.isNullOrEmpty()) {
-        // At a critical moment there is one move, and "no tactic here" would say otherwise.
-        val critical = facts.decisive || facts.onlyMove
-        val lead = if (critical) "the key here is" else "no tactic here -- this is about"
-        parts.add(templateSentence("$lead ${facts.mechanism}"))
-    } else if (!facts.nature.isNullOrEmpty()) {
-        // Never a bare question: the one square-free thing the idea rung knows beyond the goal
-        // -- whether the answer is forcing or quiet (the board's features name squares, which
-        // wait for the focus rung).
-        if (facts.nature.startsWith("quiet")) {
-            parts.add("A quiet move is wanted here: no check, no capture.")
-        } else {
-            parts.add("The answer is forcing: a check, a capture or a direct threat.")
-        }
-    }
+    if (!facts.goal.isNullOrEmpty()) parts.add(templateSentence(facts.goal))
     if (!facts.question.isNullOrEmpty()) parts.add(facts.question)
     return if (parts.isNotEmpty()) parts.joinToString(" ") else STILL_READING
 }
 
 /**
- * The focus rung, without a model: the target on the board and the piece, and the question from
- * the target to the move.
+ * The second hint, without a model: the piece that does it, and the question that leads from
+ * there to the move. The target was the first hint's.
  */
 fun focusTemplate(facts: PositionFacts): String {
     val parts = ArrayList<String>()
-    if (!facts.target.isNullOrEmpty()) {
+    if (!facts.target.isNullOrEmpty() &&
+        facts.target.startsWith("their king on") &&
+        !facts.goal.isNullOrEmpty() &&
+        ("mate" in facts.goal || "attack" in facts.goal)
+    ) {
+        // A mate's or an attack's squares, held back from the first hint: one may be where the
+        // check lands.
         parts.add(templateSentence("look at ${facts.target}"))
-    } else if (facts.ideas.isNotEmpty() && facts.plan.isNullOrEmpty()) {
-        // A static feature of the board only where there is no plan to point at: "their
-        // isolated d-pawn is a target" beside "push your passed pawn" pointed elsewhere.
-        parts.add(templateSentence(facts.ideas[0]))
     }
     if (!facts.piece.isNullOrEmpty()) parts.add(templateSentence("use ${facts.piece}"))
     if (!facts.nudge.isNullOrEmpty()) {
         parts.add(facts.nudge)
-    } else if (!facts.question.isNullOrEmpty() && parts.isNotEmpty()) {
+    } else if (!facts.question.isNullOrEmpty() && parts.isNotEmpty() && facts.question !in Situation.ANY_POSITION) {
+        // Questions that fit any position narrow nothing: never the second hint's.
         parts.add(facts.question)
     }
     return if (parts.isNotEmpty()) parts.joinToString(" ") else ideaTemplate(facts)
@@ -260,6 +244,9 @@ private val WHY_VERBS = listOf(
     "gains ",
 )
 
+/** A "why" that names its move a sacrifice first: "a queen sacrifice, and after Qxf7, ...". */
+private val SACRIFICE = Regex("^(an? [a-z]+ sacrifice), (.+)", RegexOption.DOT_MATCHES_ALL)
+
 /**
  * When the player made the right capture with the other piece: "take back with the rook on e1,
  * not the one on a1" (13.Raxd1 for Rexd1 was told "you win their queen", which the player had
@@ -284,9 +271,10 @@ private fun recapture(board: Board?, best: String, played: String?): String? {
 }
 
 /**
- * After a move that cost something: the better move, what it does, and the pattern to keep.
- * `opener` is the rotated "That one cost you: {best} was better"; `board` and `played` (UCI)
- * are the position the player faced and the move made, when known.
+ * After a move that cost something: the better move, what it does, what the move made allowed,
+ * and the pattern to keep. `opener` is the rotated "That one cost you: {best} was better";
+ * `board` and `played` (UCI) are the position the player faced and the move made, and
+ * `allowed` what it let the opponent do ([IdeaWords.allowed]), when known.
  */
 fun lessonTemplate(
     facts: PositionFacts,
@@ -294,12 +282,14 @@ fun lessonTemplate(
     opener: String,
     board: Board? = null,
     played: String? = null,
+    allowed: String? = null,
 ): String {
     var text = opener
     val why = facts.why ?: ""
     val otherPiece = recapture(board, best, played)
     if (otherPiece != null) {
         text += " -- $otherPiece"
+        if (!allowed.isNullOrEmpty()) text = templateSentence(text) + " " + allowed
         return templateSentence(text) + " " +
             templateSentence("keep this one: when two pieces can take, ask which you want to keep where it is")
     }
@@ -309,21 +299,39 @@ fun lessonTemplate(
             rest = why  // "Rfc8 and Qc6 double your rooks": the plan, said whole
         } else {
             rest = if (rest.startsWith("and ")) rest.substring(4) else rest
-            if (WHY_VERBS.any { rest.startsWith(it) }) {
+            val sacrifice = SACRIFICE.find(rest)
+            if (sacrifice != null) {
+                // "axb3, a knight sacrifice, stops bxc2": "-- it is a knight sacrifice, and it
+                // stops bxc2" (the master games, Sokolov-Dreev, 2026-09-24).
+                val named = sacrifice.groupValues[1]
+                var tail = sacrifice.groupValues[2]
+                if (WHY_VERBS.any { tail.startsWith(it) }) tail = "it $tail"
+                rest = "it is $named, " + if (tail.startsWith("and ")) tail else "and $tail"
+            } else if (WHY_VERBS.any { rest.startsWith(it) }) {
                 rest = "it $rest"  // "Nf2# was better -- it is mate", "-- it stops Nxd3"
             }
         }
         if (rest.isNotEmpty()) text += " -- $rest"
     }
     text = templateSentence(text)
+    if (!allowed.isNullOrEmpty()) text += " " + templateSentence(allowed)
     val theme = facts.theme ?: ""
     var keep = PATTERN_LESSONS[theme]
     if (keep == null && MATES.any { it in theme }) keep = PATTERN_LESSONS.getValue("a mating attack")
     if (keep == null && !facts.plan.isNullOrEmpty() && !facts.mechanism.isNullOrEmpty()) {
         keep = facts.mechanism.split(": ", limit = 2).last()
     }
-    if (!keep.isNullOrEmpty()) text += " " + templateSentence("keep this one: $keep")
+    if (!keep.isNullOrEmpty() && !said(keep, text)) text += " " + templateSentence("keep this one: $keep")
     return text
+}
+
+private val WORDS = Regex("[a-z']+")
+
+/** Whether `text` already says `keep`: four of its words in a row. `coach._said`. */
+fun said(keep: String, text: String): Boolean {
+    val words = WORDS.findAll(keep.lowercase()).map { it.value }.toList()
+    val said = WORDS.findAll(text.lowercase()).joinToString(" ") { it.value }
+    return (0 until words.size - 3).any { j -> words.subList(j, j + 4).joinToString(" ") in said }
 }
 
 /**
@@ -379,15 +387,16 @@ const val NOT_THE_MOVE =
  * tied to the player's game where that helps.
  */
 const val IDEA_DIRECTIVE =
-    "Give the idea, from the fact sheet: what the position offers (its goal) and the pattern, " +
-        "with one sentence on why that pattern works in this position; then the one question " +
-        "that sets them looking the right way -- sharper and more specific than the sheet's " +
-        "question. Where it helps, tie it to something from earlier in this game. Name no " +
-        "square and no move, and not which of their own pieces does it. Two or three sentences."
+    "Give the first hint as a short lesson on this position, from the fact sheet: what is at " +
+        "stake (its stakes: how many moves hold, and what even the next best one costs), then " +
+        "the key fact on the board, named as the sheet names it -- the pieces, the squares, their " +
+        "threat, the target, the plan -- and the principle behind it in a clause, and the trap if " +
+        "the sheet gives one. Precise, never a principle on its own: every sentence says " +
+        "something about this board. Never name the player's move or the square it goes to, and " +
+        "not which of their own pieces moves -- that is the next hint. Two or three sentences."
 const val FOCUS_DIRECTIVE =
-    "Point them at the target the fact sheet names and the piece to use, say what makes that " +
-        "target vulnerable, from the sheet, and ask the one question that leads from there to " +
-        "the move. Do not name the move. Two sentences."
+    "Name the piece to use, from the fact sheet, and ask the one question that leads from the " +
+        "first hint's key fact to the move. Do not name the move. One or two sentences."
 const val MOVE_DIRECTIVE =
     "The next hint is the answer: give the move and explain it correctly from the fact " +
         "sheet's why -- what it does and what it leads to -- and the pattern to keep. One or two " +

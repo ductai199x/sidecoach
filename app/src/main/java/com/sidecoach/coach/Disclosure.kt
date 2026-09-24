@@ -14,9 +14,14 @@ import com.sidecoach.events.DisclosureLevel
  * rungs before the move left each saying a sliver, and the slivers came out generic):
  * ```
  * 0 SILENT  nothing yet
- * 1 IDEA    the goal (a mate, what can be won, a threat to meet, the plan), the pattern
- *           that does it and why it works -- square-free
- * 2 FOCUS   the target on the board and the piece that does it; the autonomous ceiling
+ * 1 IDEA    the situation, as a short lesson on the position: what is at stake (only one
+ *           move holds, a few keep the edge, nothing is urgent), the key fact named on the
+ *           board (their threat, the target, the plan and its pieces), the principle behind
+ *           it, the trap -- pieces, squares and their moves, never the player's move
+ *           (Tai, 2026-09-24: a square-free first hint could only say "fight for the
+ *           centre", and in a middlegame that teaches nothing)
+ * 2 FOCUS   the piece that does it and the question that leads to the move; the
+ *           autonomous ceiling
  * 3 MOVE    the move, with a correct explanation; the third hint, or asked, named or played
  * 4 LINE    the full line; asked for, or after the move
  * ```
@@ -111,6 +116,18 @@ data class PositionFacts(
     val threats: List<String> = emptyList(),
     val line: List<String> = emptyList(),
     val userClaims: List<Map<String, Any?>> = emptyList(),
+    /**
+     * The first hint's parts ([Situation]), named on the board: what is at stake ("only one
+     * move holds here: even the next best move loses a knight"), the key fact ("they threaten
+     * Nxe5, winning your pawn on e5"), the trap ("hxg4 looks like it wins a knight, but it is a
+     * trap: ..."), the good moves when several are fine or the position is opening theory, and
+     * the whole of it as the first hint says it.
+     */
+    val stakes: String? = null,
+    val key: String? = null,
+    val trap: String? = null,
+    val choices: List<String> = emptyList(),
+    val situation: String? = null,
 ) {
     /** The fields by the names the Python bundle uses, in declaration order. */
     fun asMap(): LinkedHashMap<String, Any?> {
@@ -141,6 +158,11 @@ data class PositionFacts(
         out["threats"] = threats
         out["line"] = line
         out["user_claims"] = userClaims
+        out["stakes"] = stakes
+        out["key"] = key
+        out["trap"] = trap
+        out["choices"] = choices
+        out["situation"] = situation
         return out
     }
 }
@@ -150,7 +172,19 @@ private val ALWAYS = listOf(
     "only_move", "user_claims",
 )
 
-private val IDEA_KEYS = listOf("nature", "goal", "theme", "mechanism", "question", "plan")
+private val IDEA_KEYS = listOf(
+    "nature",
+    "goal",
+    "theme",
+    "mechanism",
+    "question",
+    "plan",
+    "stakes",
+    "key",
+    "trap",
+    "choices",
+    "situation",
+)
 private val FOCUS_KEYS = IDEA_KEYS + listOf("target", "piece", "nudge", "region", "ideas")
 private val MOVE_KEYS = FOCUS_KEYS + listOf("why", "tactic", "focus", "candidates", "threats")
 private val BY_LEVEL: Map<DisclosureLevel, List<String>> = mapOf(
@@ -283,6 +317,20 @@ fun leakCheck(
         }
     }
     allowedSquares.addAll(saidSquares)
+    // The moves the visible facts name -- their threat, the trap, the moves that are all as good
+    // -- are said in the open; never the one the player is to find.
+    val allowedMoves = HashSet<String>()
+    for ((key, value) in visible) {
+        if (key == "fen") continue
+        if (value == null) continue
+        if (value is Boolean && !value) continue
+        if (value is String && value.isEmpty()) continue
+        if (value is List<*> && value.isEmpty()) continue
+        val parts = if (value is List<*>) value else listOf(value)
+        for (token in TOKEN_SPLIT.split(parts.joinToString(" ") { it.toString() })) {
+            if (SQUARE_TOKEN.matches(token)) allowedMoves.add(TRAILING_MARKS.replace(token, ""))
+        }
+    }
 
     val leaks = ArrayList<String>()
     fun add(item: String) {
@@ -295,7 +343,7 @@ fun leakCheck(
             val square = match.groupValues[1]
             val core = TRAILING_MARKS.replace(token, "")
             if (core != square) {
-                if (core.lowercase() !in saidWords) add("move $core")
+                if (core.lowercase() !in saidWords && core !in allowedMoves) add("move $core")
             } else if (square !in allowedSquares) {
                 add("square $square")
             }
@@ -319,7 +367,20 @@ fun leakCheck(
         // in what a line wins or a fact the level shows ("you can win a queen and a pawn for
         // a bishop"), not said of a move already played -- the caller's `said` carries those.
         var scrubbed = text.lowercase()
-        for (key in listOf("goal", "theme", "mechanism", "question", "plan", "nature")) {
+        // The whole first hint first: once a part of it is taken out, the whole no longer
+        // matches, and its words were read as the coach's own.
+        for (key in listOf(
+            "situation",
+            "goal",
+            "theme",
+            "mechanism",
+            "question",
+            "plan",
+            "nature",
+            "stakes",
+            "key",
+            "trap",
+        )) {
             val value = visible[key]
             if (value is String && value.isNotEmpty()) scrubbed = scrubbed.replace(value.lowercase(), " ")
         }

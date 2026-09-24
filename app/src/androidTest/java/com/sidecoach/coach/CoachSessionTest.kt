@@ -319,8 +319,10 @@ class CoachSessionTest {
                         decisive = a.getBoolean("decisive"),
                         onlyMove = a.getBoolean("only_move"),
                         threats = strings(a.getJSONArray("threats")),
+                        traps = lines(a.getJSONArray("traps")),
                         tags = tags(a.getJSONArray("tags")),
                         opening = if (a.isNull("opening")) null else a.getString("opening"),
+                        inBook = a.getBoolean("in_book"),
                     ),
                     ts,
                 )
