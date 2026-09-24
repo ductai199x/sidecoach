@@ -1,15 +1,15 @@
-//! The Sidecoach desktop shell: a window, a menu bar and a tray around the Python
+//! The Sidecoach desktop shell: a window and a tray around the Python
 //! pipeline, which runs as a sidecar behind its own HTTP API (docs/app-plan.md).
 //!
 //! The shell knows nothing about chess. It spawns the sidecar (`sidecoach panel --port 0
 //! --announce --parent-pid <us> --no-persist --no-record`), reads the one JSON line the
 //! sidecar prints with its port, waits for `/api/health`, hands the port and a bearer
 //! token to the page, and kills the sidecar on exit; the sidecar also exits by itself when
-//! this process is gone. The menu bar and the tray are built from the page with the JS
-//! API (desktop/src/lib/shell.svelte.ts), so they stay one implementation with the
-//! browser's header. Closing the main window hides it to the tray or quits, as the
-//! shell's own setting says (Tai, 2026-09-21); the puzzle and settings pages open in
-//! windows of their own.
+//! this process is gone. The window has no menu bar: the page's drawer is the way in, on
+//! the desktop as on the phone (Tai, 2026-09-24), and the tray is built from the page with
+//! the JS API (desktop/src/lib/shell.svelte.ts). Closing the main window hides it to the
+//! tray or quits, as the shell's own setting says (Tai, 2026-09-21); the puzzle and
+//! settings pages open in windows of their own.
 //!
 //! Development (`tauri dev`, or a debug build): the sidecar is `uv run --no-sync sidecoach
 //! panel ...` in the repository root, found by walking up to `pyproject.toml`; extra

@@ -16,7 +16,7 @@
   import { fitBoard, layoutMode, mobileBoard as sizeMobileBoard, splitter, stacked } from "$lib/layout";
   import { prefs, store } from "$lib/panel.svelte";
   import { perf } from "$lib/perf.svelte";
-  import { buildShell, buildTray, checkForUpdates, inShell, panes } from "$lib/shell.svelte";
+  import { buildTray, checkForUpdates, inShell, panes, terminal, toggleTerminal } from "$lib/shell.svelte";
 
   let mainEl = $state<HTMLElement | null>(null);
   let footer = $state<HTMLElement | null>(null);
@@ -32,13 +32,8 @@
   // coach takes the room it gives up. Never so big the coach has no room, never tiny.
   const mobileBoard = (wanted: number | null) => sizeMobileBoard(mainEl, wanted);
 
-  // The debug area folds to its status strip. It starts folded (Tai, 2026-09-21: the
-  // terminal is off by default; View > Terminal opens it) and the choice is remembered.
-  let folded = $state(true);
-  function toggleFold() {
-    folded = !folded;
-    prefs.setStr("fold", folded ? "1" : "0");
-  }
+  // The debug area folds to its status strip (the drawer's Terminal, the strip's button).
+  const folded = $derived(!terminal.open);
 
   const shown = $derived(store.shown);
   const following = $derived(!store.state.following ? "waiting for a start" : store.state.kind === "position" ? "a position (puzzle or analysis)" : "a game");
@@ -70,8 +65,6 @@
 
   onMount(() => {
     layoutMode();
-    const saved = prefs.getStr("fold");
-    folded = saved === null ? true : saved === "1";
     document.documentElement.classList.toggle("noboard", !panes.board);
     refit();
     const onResize = () => { refit(); mobileBoard(prefs.get("mboard")); };
@@ -157,9 +150,8 @@
     const label = new URLSearchParams(location.search).get("perf");
     if (label) perf.start(label);
     if (inShell()) {
-      buildShell({ shown: () => !folded, toggle: toggleFold });
       buildTray();
-      // Once a day, quietly; Help > Check for updates asks out loud.
+      // Once a day, quietly; the drawer's Check for updates asks out loud.
       const last = Number(prefs.getStr("updateCheck") || 0);
       if (Date.now() - last > 24 * 3600 * 1000) {
         prefs.setStr("updateCheck", String(Date.now()));
@@ -216,6 +208,6 @@
 
 <footer bind:this={footer} class:folded>
   <div class="tsplit" bind:this={splitTerm} title="Drag to resize the terminal; double-click to reset"></div>
-  {#if panes.strip}<Strip {folded} onfold={toggleFold} />{/if}
+  {#if panes.strip}<Strip {folded} onfold={toggleTerminal} />{/if}
   <Terminal />
 </footer>

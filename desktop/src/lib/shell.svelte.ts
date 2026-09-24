@@ -1,11 +1,12 @@
-// The desktop shell's native menu bar and tray, built from the page with Tauri's JS API
-// when the page runs inside the shell. In a browser this module does nothing: the
-// header's own controls stay the way in. The menus drive the same store and API the
-// header does, so the shell adds a menu bar and takes nothing away.
+// What the page needs from the desktop shell, with Tauri's JS API when it runs inside it:
+// the tray, the windows of their own, the updater, and the few things only the shell can do
+// (always on top, the data folder, quitting), which the drawer offers. The shell has no
+// menu bar: the drawer is the one way in, on the desktop as on the phone (Tai, 2026-09-24:
+// "replace the ugly top bar with the collapsible nav bar on the left too"). In a browser
+// the shell's own calls do nothing.
 
 import { isTauri, invoke } from "@tauri-apps/api/core";
-import { panel } from "./api";
-import { prefs, store } from "./panel.svelte";
+import { prefs } from "./panel.svelte";
 
 export type ShellSettings = { close: "quit" | "tray"; autostart: boolean };
 
@@ -54,138 +55,56 @@ export function resetLayout(): void {
   location.reload();
 }
 
-type MenuHandles = {
-  refresh: () => Promise<void>;
-};
+/** The terminal under the status strip, open or folded: the drawer's Terminal and the strip's
+ * own button. It starts folded (Tai, 2026-09-21: the terminal is off by default) and the
+ * choice is remembered. */
+export const terminal = $state({ open: prefs.getStr("fold") === "0" });
 
-/** Build the menu bar and the tray. `terminal` reads/toggles the terminal fold, owned by the page. */
-export async function buildShell(terminal: { shown: () => boolean; toggle: () => void }): Promise<MenuHandles | null> {
-  if (!isTauri()) return null;
-  const { Menu, Submenu, MenuItem, CheckMenuItem, PredefinedMenuItem } = await import("@tauri-apps/api/menu");
+export function toggleTerminal(): void {
+  terminal.open = !terminal.open;
+  prefs.setStr("fold", terminal.open ? "0" : "1");
+}
+
+// What only the shell has, for the drawer's rows (they were the menu bar's).
+
+export async function alwaysOnTop(): Promise<boolean> {
+  if (!isTauri()) return false;
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  const win = getCurrentWindow();
+  return getCurrentWindow().isAlwaysOnTop().catch(() => false);
+}
+
+export async function setAlwaysOnTop(on: boolean): Promise<void> {
+  if (!isTauri()) return;
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().setAlwaysOnTop(on);
+}
+
+export async function openInBrowser(): Promise<void> {
+  const url = (await import("./api")).apiBase() + "/";
+  const opener = isTauri() ? await import("@tauri-apps/plugin-opener").catch(() => null) : null;
+  if (opener) await opener.openUrl(url);
+  else window.open(url);
+}
+
+export async function openDataFolder(): Promise<void> {
+  if (!isTauri()) return;
+  const path = await invoke<string>("data_dir").catch(() => "");
   const opener = await import("@tauri-apps/plugin-opener").catch(() => null);
+  if (path && opener) await opener.openPath(path);
+}
 
-  const item = (text: string, action: () => void, id?: string) => MenuItem.new({ text, action, id });
-  const check = (text: string, checked: boolean, action: () => void, id?: string) => CheckMenuItem.new({ text, checked, action, id });
-  const sep = () => PredefinedMenuItem.new({ item: "Separator" });
+/** Quit the app, whatever closing the window is set to do: the shell kills the sidecar on
+ * its way out. */
+export async function quitApp(): Promise<void> {
+  if (!isTauri()) return;
+  const { exit } = await import("@tauri-apps/plugin-process");
+  await exit(0);
+}
 
-  const startItem = await item("Start watching", () => store.toggleRunning(), "start");
-  const file = await Submenu.new({
-    text: "File",
-    items: [
-      startItem,
-      await sep(),
-      await item("Dump the last frames and the log", () => panel.dump()),
-      await item("Settings…", () => openWindow("settings")),
-      await sep(),
-      await PredefinedMenuItem.new({ item: "Quit", text: "Quit Sidecoach" }),
-    ],
-  });
-  const game = await Submenu.new({
-    text: "Game",
-    items: [
-      await item("I resigned / lost on time", () => panel.end("resigned")),
-      await item("Opponent resigned / flagged", () => panel.end("won")),
-      await item("Draw agreed", () => panel.end("draw")),
-      await sep(),
-      await item("Forget this game", () => panel.end("forget")),
-      await sep(),
-      await item("Re-read the screen", () => panel.analyze()),
-      await item("Flip the board", () => panel.flip()),
-    ],
-  });
-  const boardItem = await check("Board", panes.board, () => togglePane("board"), "view-board");
-  const movesItem = await check("Move list", panes.moves, () => togglePane("moves"), "view-moves");
-  const stripItem = await check("Status strip", panes.strip, () => togglePane("strip"), "view-strip");
-  const termItem = await check("Terminal", terminal.shown(), () => terminal.toggle(), "view-terminal");
-  const topItem = await check("Always on top", false, async () => { await win.setAlwaysOnTop(!(await win.isAlwaysOnTop())); }, "view-top");
-  const view = await Submenu.new({
-    text: "View",
-    items: [
-      boardItem, movesItem, stripItem, termItem,
-      await sep(),
-      topItem,
-      await sep(),
-      await item("Reset layout", () => resetLayout()),
-    ],
-  });
-  const muteItem = await check("Mute", !!store.state.muted, () => store.setMuted(!store.state.muted), "voice-mute");
-  const listen: Record<string, Awaited<ReturnType<typeof check>>> = {};
-  for (const [mode, text] of [["off", "Not listening"], ["ptt", "Push to talk"], ["vad", "Voice activity"]] as const) {
-    listen[mode] = await check(text, store.listenMode === mode, () => { store.listenMode = mode; panel.setListen(mode); }, "listen-" + mode);
-  }
-  const voice = await Submenu.new({ text: "Voice", items: [muteItem, await sep(), listen.off, listen.ptt, listen.vad] });
-  const data = await Submenu.new({
-    text: "Data",
-    items: [
-      await item("Clear caches", () => panel.clearCaches()),
-      await sep(),
-      await item("Reset profile…", async () => {
-        if (window.confirm("Reset the profile? Every game, verdict, puzzle attempt and insight the player model holds is deleted. This cannot be undone.")) await store.resetProfile();
-      }),
-    ],
-  });
-  const verboseItem = await check("Verbose terminal", store.filters.verbose, () => (store.filters.verbose = !store.filters.verbose), "debug-verbose");
-  // The saved opt-in (Settings > Screen > Record sessions): the frames, the events and
-  // the log of every session go to the data folder's recordings/, to show a bug. Starts
-  // and stops within a second of a running session; before Start it applies from Start.
-  const recordItem = await check("Record sessions (to show a bug)", !!store.state.record_wanted, async () => {
-    const on = !store.state.record_wanted;
-    const r = await panel.setRecord(on);
-    store.state.record_wanted = r.on;
-  }, "debug-record");
-  const debug = await Submenu.new({
-    text: "Debug",
-    items: [
-      recordItem,
-      verboseItem,
-      await item("Open the panel in the browser", async () => {
-        const url = (await import("./api")).apiBase() + "/";
-        if (opener) await opener.openUrl(url); else window.open(url);
-      }),
-      await item("Open the data folder", async () => {
-        const path = await invoke<string>("data_dir").catch(() => "");
-        if (path && opener) await opener.openPath(path);
-      }),
-    ],
-  });
-  const help = await Submenu.new({
-    text: "Help",
-    items: [
-      await item("Set up (models, Stockfish, GPU)…", () => openWindow("setup")),
-      await item("Check for updates…", () => checkForUpdates(true)),
-      await sep(),
-      await item("Sidecoach on GitHub", async () => { if (opener) await opener.openUrl("https://github.com/ductai199x/sidecoach"); }),
-      await PredefinedMenuItem.new({ item: { About: { name: "Sidecoach", comments: "Vision-first chess coaching companion" } }, text: "About Sidecoach" }),
-    ],
-  });
-  // Settings is its own entry in the bar (Tai, 2026-09-21): one click, not a submenu.
-  const settingsItem = await item("Settings", () => openWindow("settings"), "settings");
-  const menu = await Menu.new({ items: [file, game, view, voice, data, settingsItem, debug, help] });
-  // The panel's window only: an app-wide menu would sit on the puzzle and settings windows
-  // too, which carry nothing of the panel's (Tai, 2026-09-21: those stay in the parent).
-  // macOS has no per-window menu; there the app menu is the one there is.
-  if (navigator.userAgent.includes("Mac")) await menu.setAsAppMenu();
-  else await menu.setAsWindowMenu(win);
-
-  // Keep the check items honest against the page's state.
-  const refresh = async () => {
-    try {
-      await startItem.setText(store.running ? "Stop watching" : "Start watching");
-      await boardItem.setChecked(panes.board);
-      await movesItem.setChecked(panes.moves);
-      await stripItem.setChecked(panes.strip);
-      await termItem.setChecked(terminal.shown());
-      await muteItem.setChecked(!!store.state.muted);
-      await recordItem.setChecked(!!store.state.record_wanted);
-      await verboseItem.setChecked(!!store.filters.verbose);
-      for (const [mode, it] of Object.entries(listen)) await it.setChecked(store.listenMode === mode);
-      await topItem.setChecked(await win.isAlwaysOnTop());
-    } catch { /* the menu may be gone while the window closes */ }
-  };
-  setInterval(refresh, 1000);
-  return { refresh };
+export async function appVersion(): Promise<string> {
+  if (!isTauri()) return "";
+  const { getVersion } = await import("@tauri-apps/api/app");
+  return getVersion().catch(() => "");
 }
 
 /** The tray icon by the clock: Show, and Quit. The shell decides what closing does. */

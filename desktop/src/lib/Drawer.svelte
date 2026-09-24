@@ -1,17 +1,22 @@
 <script lang="ts">
-  // The header's controls, on a narrow window (the phone, a narrow desktop window): a
-  // drawer from the left instead of three rows of buttons. The same controls as the
-  // wide bar -- the board's side and a re-read, ending or forgetting the game, the caches
-  // and the profile, the voice when there is one, the settings and the setup -- each a row
-  // with room for a thumb.
+  // Every control but Start, in a drawer from the left: the board's side and a re-read,
+  // ending or forgetting the game, the panes, the caches and the profile, the voice when
+  // there is one, the settings and the setup -- each a row with room for a thumb. The phone
+  // had it first; on the desktop it took the menu bar's place (Tai, 2026-09-24), and there
+  // it carries what only the shell has too: the terminal, always on top, the debug tools
+  // (the dump that shows a problem first), updates, quitting and the version.
   //
   // It is a history entry (SvelteKit's shallow routing), so the phone's Back closes it,
   // as it closes a drawer in any app; a tap outside it, Esc, or any of its rows too.
+  import { onMount } from "svelte";
   import { pushState } from "$app/navigation";
   import { page } from "$app/state";
   import { panel } from "./api";
   import { store } from "./panel.svelte";
-  import { inShell, openWindow, PANES, panes, resetLayout, togglePane } from "./shell.svelte";
+  import {
+    alwaysOnTop, appVersion, checkForUpdates, inShell, openDataFolder, openInBrowser, openWindow,
+    PANES, panes, quitApp, resetLayout, setAlwaysOnTop, terminal, togglePane, toggleTerminal,
+  } from "./shell.svelte";
   import { voiceLabel } from "./voices";
 
   let { missing = [] }: { missing?: string[] } = $props();
@@ -21,6 +26,36 @@
   const voices = $derived(store.state.voices || []);
   const side = $derived(store.state.user_side as string | null | undefined);
   let closeButton = $state<HTMLButtonElement | null>(null);
+  const shell = inShell();
+  let onTop = $state(false);
+  let version = $state("");
+  let dumped = $state("");
+
+  onMount(() => {
+    if (shell) void appVersion().then((v) => (version = v));
+  });
+
+  async function toggleOnTop(): Promise<void> {
+    onTop = !onTop;
+    await setAlwaysOnTop(onTop);
+    onTop = await alwaysOnTop();
+  }
+
+  async function toggleRecord(): Promise<void> {
+    const r = await panel.setRecord(!store.state.record_wanted);
+    store.state.record_wanted = r.on;
+  }
+
+  // The dump stays open with where it went: the one thing to pass on with a problem.
+  async function dump(): Promise<void> {
+    dumped = "saving…";
+    try {
+      const r = await panel.dump();
+      dumped = r.path ? "saved to " + r.path : "saved";
+    } catch (e) {
+      dumped = "could not save: " + String(e);
+    }
+  }
 
   export function show(): void {
     if (!page.state.drawer) pushState("", { drawer: true });
@@ -56,6 +91,8 @@
 
   $effect(() => {
     if (open) closeButton?.focus({ preventScroll: true });
+    if (open && shell) void alwaysOnTop().then((v) => (onTop = v));
+    if (!open) dumped = "";
   });
 </script>
 
@@ -119,26 +156,41 @@
     </button>
   </div>
 
-  <!-- The View menu's panes, where there is no menu bar: the phone, a browser. -->
-  {#if !inShell()}
-    <div class="dsec">
-      <div class="dlabel">View</div>
-      {#each PANES as pane (pane.id)}
-        <button class="ditem" role="menuitemcheckbox" aria-checked={panes[pane.id]} onclick={() => togglePane(pane.id)}>
-          {#if panes[pane.id]}
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-9 14-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
-          {:else}
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5v14H5V5h14m0-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/></svg>
-          {/if}
-          <span>{pane.name}<span class="hint">{pane.hint}</span></span>
-        </button>
-      {/each}
-      <button class="ditem" onclick={() => act(resetLayout)}>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg>
-        <span>Reset layout<span class="hint">Every pane shown, every size back to its default</span></span>
+  <div class="dsec">
+    <div class="dlabel">View</div>
+    {#each PANES as pane (pane.id)}
+      <button class="ditem" role="menuitemcheckbox" aria-checked={panes[pane.id]} onclick={() => togglePane(pane.id)}>
+        {#if panes[pane.id]}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-9 14-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+        {:else}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5v14H5V5h14m0-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/></svg>
+        {/if}
+        <span>{pane.name}<span class="hint">{pane.hint}</span></span>
       </button>
-    </div>
-  {/if}
+    {/each}
+    {#if shell}
+      <button class="ditem" role="menuitemcheckbox" aria-checked={terminal.open} onclick={toggleTerminal}>
+        {#if terminal.open}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-9 14-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+        {:else}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5v14H5V5h14m0-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/></svg>
+        {/if}
+        <span>Terminal<span class="hint">The pipeline's log, under the status strip</span></span>
+      </button>
+      <button class="ditem" role="menuitemcheckbox" aria-checked={onTop} onclick={toggleOnTop}>
+        {#if onTop}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-9 14-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+        {:else}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5v14H5V5h14m0-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/></svg>
+        {/if}
+        <span>Always on top<span class="hint">Keep this window over the game's</span></span>
+      </button>
+    {/if}
+    <button class="ditem" onclick={() => act(resetLayout)}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg>
+      <span>Reset layout<span class="hint">Every pane shown, every size back to its default</span></span>
+    </button>
+  </div>
 
   {#if voices.length}
     <div class="dsec">
@@ -173,6 +225,40 @@
     </button>
   </div>
 
+  {#if shell}
+    <div class="dsec">
+      <div class="dlabel">Debug</div>
+      <button class="ditem" onclick={dump}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zm-6 10h-2v-3H9l4-4 4 4h-3v3z"/></svg>
+        <span>Dump the last frames and the log<span class="hint">{dumped || "What the coach saw just now, saved to show a problem"}</span></span>
+      </button>
+      <button class="ditem" role="menuitemcheckbox" aria-checked={!!store.state.record_wanted} onclick={toggleRecord}>
+        {#if store.state.record_wanted}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-9 14-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+        {:else}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5v14H5V5h14m0-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/></svg>
+        {/if}
+        <span>Record sessions<span class="hint">Every session's frames and log to the data folder, to show a bug</span></span>
+      </button>
+      <button class="ditem" role="menuitemcheckbox" aria-checked={store.filters.verbose} onclick={() => (store.filters.verbose = !store.filters.verbose)}>
+        {#if store.filters.verbose}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-9 14-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+        {:else}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5v14H5V5h14m0-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/></svg>
+        {/if}
+        <span>Verbose terminal<span class="hint">Every line the pipeline writes, not only the notable ones</span></span>
+      </button>
+      <button class="ditem" onclick={() => act(openInBrowser)}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+        <span>Open the panel in a browser</span>
+      </button>
+      <button class="ditem" onclick={() => act(openDataFolder)}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>
+        <span>Open the data folder</span>
+      </button>
+    </div>
+  {/if}
+
   <div class="dsec dfoot">
     <button class="ditem" onclick={() => go("settings")}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-1.7-1L15 3.2h-4l-.3 2.7a7.6 7.6 0 0 0-1.7 1l-2.4-1-2 3.4L6.6 11a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.6 7.6 0 0 0 1.7 1l.3 2.7h4l.3-2.7a7.6 7.6 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6zM13 15a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg>
@@ -184,13 +270,21 @@
         <span>Setup<span class="hint">The models and the engine</span></span>
       </button>
     {/if}
+    {#if shell}
+      <button class="ditem" onclick={() => act(() => checkForUpdates(true))}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 10.12h-6.78l2.74-2.82a7.04 7.04 0 0 0-9.88-.1 6.88 6.88 0 0 0 0 9.8 7.04 7.04 0 0 0 9.88 0A6.5 6.5 0 0 0 19 12.1h2a9.34 9.34 0 0 1-2.64 6.46 9.1 9.1 0 0 1-12.72 0A8.98 8.98 0 0 1 5.62 5.8a9.02 9.02 0 0 1 12.68 0L21 3v7.12z"/></svg>
+        <span>Check for updates</span>
+      </button>
+      <button class="ditem" onclick={quitApp}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3h-2v10h2V3zm4.83 2.17-1.42 1.42A6.92 6.92 0 0 1 19 12a7 7 0 1 1-11.42-5.42L6.17 5.17A8.93 8.93 0 0 0 3 12a9 9 0 0 0 18 0 8.97 8.97 0 0 0-3.17-6.83z"/></svg>
+        <span>Quit Sidecoach</span>
+      </button>
+      {#if version}<div class="dversion">Sidecoach {version}</div>{/if}
+    {/if}
   </div>
 </nav>
 
 <style>
-  /* Only where the bar would otherwise wrap into rows: the wide bar keeps its controls. */
-  :global(html:not(.stacked)) .scrim, :global(html:not(.stacked)) .drawer { display: none; }
-
   .scrim {
     position: fixed; inset: 0; z-index: 50;
     background: rgba(12, 11, 10, 0.55);
@@ -282,4 +376,5 @@
     padding: 6px 10px 4px 47px; font-size: 14px; color: var(--muted);
   }
   .dselect select { max-width: 60%; }
+  .dversion { padding: 10px 10px 2px 47px; font-size: 12px; color: var(--muted); }
 </style>
