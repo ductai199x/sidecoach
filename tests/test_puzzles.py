@@ -17,6 +17,7 @@ from sidecoach.events import (
     PuzzleOutcome,
     PuzzleRef,
     Recommendation,
+    Resync,
     Side,
 )
 from sidecoach.profile.profiler import Profiler
@@ -212,6 +213,35 @@ def test_a_recommended_puzzle_opened_on_the_screen_is_scored(tmp_path: Path) -> 
     )
     assert profiler.on_event(plain, 5.0) == []
     assert profiler.on_event(_played("r", chess.Board(), "e4"), 6.0) == []
+
+
+def test_the_next_puzzle_adopted_by_a_resync_is_scored_too(tmp_path: Path) -> None:
+    """The site puts the next puzzle up with no start the reconciler could see: it is
+    adopted over the last, in the same game, and scored all the same (only the first of a
+    run was)."""
+    puzzles = PuzzleStore(None)
+    puzzles.import_csv(_csv(tmp_path))
+    store = Store(None)
+    profiler = Profiler(store, session_id="s", ts=0.0, puzzles=puzzles)
+    fork = puzzles.get("fork1")
+    assert fork is not None
+    board = chess.Board(fork.fen)
+    board.push_uci("g8f6")
+    shown = _shown(board)
+    started = GameStarted(game_id="p", user_side=Side.WHITE, start_fen=shown.fen(), kind="position")
+    profiler.on_event(started, 1.0)
+    out = profiler.on_event(_played("p", shown, "Nxe5"), 2.0)
+    assert next(e for e in out if isinstance(e, PuzzleOutcome)).puzzle_id == "fork1"
+    pin = puzzles.get("pin01")
+    assert pin is not None
+    board = chess.Board(pin.fen)
+    board.push_uci("d7d6")
+    shown = _shown(board)
+    profiler.on_event(Resync(game_id="p", fen=shown.fen(), reason="position adopted"), 3.0)
+    out = profiler.on_event(_played("p", shown, "Bb5+"), 4.0)
+    outcome = next(e for e in out if isinstance(e, PuzzleOutcome))
+    assert outcome.puzzle_id == "pin01" and outcome.solved
+    assert [pid for pid, _, _ in store.attempts()] == ["pin01", "fork1"]
 
 
 def test_the_coach_says_one_line_on_the_practice_and_a_word_on_a_fail() -> None:

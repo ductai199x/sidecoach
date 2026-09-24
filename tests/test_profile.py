@@ -1082,6 +1082,61 @@ def test_a_position_that_ends_early_leaves_nothing_behind() -> None:
     assert f.store.game("r") is None
 
 
+def test_puzzles_one_after_another_never_add_up_to_a_game() -> None:
+    """A run of puzzles on the site: the first read cold, each next one adopted by a resync
+    over the last, with no start the reconciler could see. Each is a position of its own,
+    and their plies never add up to a game (Tai's Pixel, 2026-09-24: after a few puzzles a
+    mate in three was reviewed as "won by checkmate in 3 moves, accuracy 100 ... over 5
+    games")."""
+    from sidecoach.profile.profiler import PROVISIONAL_PLIES
+
+    f = Feed(user_side=Side.WHITE)
+    run = [
+        chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R w KQkq - 0 1"),
+        chess.Board("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1"),
+        chess.Board("r1bq1k1r/1p2bp2/p2p3p/2p1n2Q/P3P3/1BN5/1PP2PPP/R1B2RK1 w - - 1 15"),
+        chess.Board("rnbqkb1r/pppp1ppp/5n2/4p3/4P3/2N5/PPPP1PPP/R1BQKBNR w KQkq - 2 3"),
+        chess.Board("8/5pk1/6p1/8/8/6P1/5PK1/3R4 w - - 0 1"),
+    ]
+    each = 4
+    assert len(run) * each >= PROVISIONAL_PLIES
+    f.send(GameStarted(game_id="p", user_side=Side.WHITE, start_fen=run[0].fen(), kind="position"))
+    for i, board in enumerate(run):
+        if i:
+            f.send(Resync(game_id="p", fen=board.fen(), reason="position adopted after 20 cells"))
+        _feed_position(f, board, "p", each)
+    assert len(f.store.moves("p")) == each, "the last puzzle's moves only"
+    ended = f.send(
+        GameEnded(
+            game_id="p", result="1-0", reason="game over on board", pgn="", final_fen=run[-1].fen()
+        )
+    )
+    assert not any(isinstance(e, GameReview) for e in ended), "no review of a puzzle"
+    assert f.store.game("p") is None and f.store.games_count() == 0
+    assert f.profiler.end_session(f.ts + 1) is None
+
+
+def test_a_joined_game_whose_turn_the_clock_settles_is_still_a_game() -> None:
+    """The resync that only settles the side to move, before any move, keeps the position:
+    the game joined late still qualifies and is reviewed."""
+    from sidecoach.profile.profiler import PROVISIONAL_PLIES
+
+    f = Feed(user_side=Side.BLACK)
+    joined = chess.Board("rnbqkb1r/pppp1ppp/5n2/4p3/4P3/2N5/PPPP1PPP/R1BQKBNR b KQkq - 2 3")
+    f.send(GameStarted(game_id="j", user_side=Side.BLACK, start_fen=joined.fen(), kind="position"))
+    joined.turn = chess.WHITE
+    f.send(Resync(game_id="j", fen=joined.fen(), reason="side to move settled by the clock: white"))
+    assert f.store.game("j") is not None
+    _feed_position(f, joined, "j", PROVISIONAL_PLIES)
+    ended = f.send(
+        GameEnded(
+            game_id="j", result="0-1", reason="game over on board", pgn="", final_fen=joined.fen()
+        )
+    )
+    assert any(isinstance(e, GameReview) for e in ended)
+    assert f.store.games_count() == 1
+
+
 def test_a_game_whose_end_was_not_seen_is_still_reviewed_at_the_next_start() -> None:
     """The site's dialog hid the result and nobody said how it went: at the next game's
     start (or the session's end) the game is ended with the result unknown and its

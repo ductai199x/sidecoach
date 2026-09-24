@@ -170,6 +170,7 @@ class Profiler:
         self._attempt: Attempt | None = None
         self._attempt_game: str | None = None
         self._recommended_for: dict[str, str] = {}
+        self._side = Side.WHITE  # the player's side in the position last started
 
     # ---- events ------------------------------------------------------------------------
 
@@ -189,6 +190,8 @@ class Profiler:
         if game is None:
             if isinstance(event, MovePlayed) and event.game_id == self._attempt_game:
                 return self._puzzle_move(event, ts)
+            if isinstance(event, Resync) and event.game_id == self._attempt_game:
+                return self._another_position(event, ts)
             return []
         if game.ended and isinstance(event, MovePlayed | Takeback | Resync | GameEnded):
             return []
@@ -203,6 +206,8 @@ class Profiler:
         if isinstance(event, Takeback):
             return self._takeback(game, event)
         if isinstance(event, Resync):
+            if game.provisional:
+                return self._another_position(event, ts)
             game.segment += 1
             game.last_fen = event.fen
             return []
@@ -231,6 +236,7 @@ class Profiler:
 
     def _start(self, event: GameStarted, ts: float) -> list[Event]:
         self._drop_if_provisional()
+        self._side = event.user_side
         if event.kind != "game":
             # A puzzle, an analysis board, or a game joined from the middle. A puzzle of
             # the store is followed for its outcome, not as a game -- a solved puzzle was
@@ -260,6 +266,23 @@ class Profiler:
             event.game_id, ts, event.user_side.value, event.start_fen, self.session_id
         )
         return []
+
+    def _another_position(self, event: Resync, ts: float) -> list[Event]:
+        """A position adopted over one that is not a game of the record: most often the
+        next puzzle of a run, which the site puts up with no start the reconciler could see,
+        so it keeps the game it had. It is followed as a position of its own, as a start
+        would be: the plies of a run of puzzles never add up to PROVISIONAL_PLIES (Tai's
+        Pixel, 2026-09-24: after a few puzzles a mate in three was reviewed as "won by
+        checkmate in 3 moves ... over 5 games", its misses kept as his habits), and a
+        puzzle of the store is recognised on every one of them, not only the first. A game
+        joined late that needs a resync before it qualifies starts its count again there."""
+        game = self._game
+        if game is not None and not game.plies and game.start_fen == event.fen:
+            return []  # the position just begun, announced again
+        started = GameStarted(
+            game_id=event.game_id, user_side=self._side, start_fen=event.fen, kind="position"
+        )
+        return self._start(started, ts)
 
     @property
     def game_over_unreviewed(self) -> bool:
