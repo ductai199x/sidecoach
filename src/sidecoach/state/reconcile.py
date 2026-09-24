@@ -64,32 +64,66 @@ def highlighted_squares(obs: Observation) -> frozenset[chess.Square]:
     return frozenset(sq for sq, r in obs.items() if r.highlighted and r.tint != "red")
 
 
-def double_step_seen(
-    board: chess.Board, highlighted: frozenset[chess.Square]
-) -> tuple[chess.Square, chess.Color] | None:
-    """A pawn's two-square advance, as the site's last-move highlight shows it: the pawn two
-    ranks from its start, its start square and the square it passed empty, both ends marked.
-    Returns the square it passed (the en-passant square) and the pawn's colour.
+def _came_from(board: chess.Board, start: chess.Square, to: chess.Square) -> bool:
+    """Whether the piece on `to` could have come from the empty `start` in one move: its own
+    geometry on the board as it stands, the pawn's pushes and captures, castling's king."""
+    piece = board.piece_at(to)
+    if piece is None or board.piece_at(start) is not None:
+        return False
+    if piece.piece_type == chess.PAWN:
+        step = 8 if piece.color == chess.WHITE else -8
+        if start == to - step:
+            return True
+        if start == to - 2 * step and board.piece_at(to - step) is None:
+            return chess.square_rank(to) == (3 if piece.color == chess.WHITE else 4)
+        return start in (to - step - 1, to - step + 1) and (chess.square_distance(start, to) == 1)
+    if (
+        piece.piece_type == chess.KING
+        and chess.square_rank(start) == chess.square_rank(to)
+        and abs(chess.square_file(start) - chess.square_file(to)) == 2
+    ):
+        return True  # castling
+    back = board.copy(stack=False)
+    back.remove_piece_at(to)
+    back.set_piece_at(start, piece)
+    return to in back.attacks(start)
 
-    A position read from pixels has no history, so it knew no en-passant square: a puzzle
-    that starts after f2-f4 with a black pawn on g4 was coached as if gxf3 e.p. did not
-    exist, and Bd7 was recommended (Tai, 2026-09-24). The highlight is the history."""
+
+@dataclass(frozen=True)
+class LastMoveSeen:
+    """What the site's last-move highlight tells a position read from pixels: who moved, and
+    the en-passant square when the move was a pawn's two-square advance."""
+
+    mover: chess.Color
+    ep_square: chess.Square | None = None
+
+
+def last_move_seen(board: chess.Board, highlighted: frozenset[chess.Square]) -> LastMoveSeen | None:
+    """The last move as the site highlights it: an empty marked square and a marked square
+    whose piece could have come from it. Every such pair must name the same mover, or nothing
+    is known. A position read from pixels has no history; the highlight is the history:
+
+    - the side to move is the other side -- a puzzle adopted with the side to move open could
+      not tell the solver's move and the instant reply from the same two moves in the other
+      order, and the record stayed empty ("sometimes there is no move list whatsoever");
+    - a pawn's two-square advance can be taken in passing: after c2-c4 the coach did not see
+      bxc3 e.p. and recommended Bd7 (Tai's chess.com puzzles, 2026-09-24)."""
+    movers: set[chess.Color] = set()
+    ep: chess.Square | None = None
     for to in highlighted:
         piece = board.piece_at(to)
-        if piece is None or piece.piece_type != chess.PAWN:
+        if piece is None:
             continue
-        white = piece.color == chess.WHITE
-        if chess.square_rank(to) != (3 if white else 4):
-            continue
-        step = 8 if white else -8
-        start, passed = to - 2 * step, to - step
-        if (
-            start in highlighted
-            and board.piece_at(start) is None
-            and board.piece_at(passed) is None
-        ):
-            return passed, piece.color
-    return None
+        for start in highlighted:
+            if start == to or not _came_from(board, start, to):
+                continue
+            movers.add(piece.color)
+            step = 8 if piece.color == chess.WHITE else -8
+            if piece.piece_type == chess.PAWN and start == to - 2 * step:
+                ep = to - step
+    if len(movers) != 1:
+        return None
+    return LastMoveSeen(mover=movers.pop(), ep_square=ep)
 
 
 @dataclass(frozen=True)
@@ -1152,12 +1186,12 @@ class Reconciler:
         valid_turns = [turn for turn in (chess.WHITE, chess.BLACK) if _turn_valid(board, turn)]
         if not valid_turns:
             return None
-        # The site's last-move highlight showing a pawn's two-square advance: the other side
-        # is to move, and may take it in passing (`double_step_seen`).
-        seen = double_step_seen(board, highlighted)
-        if seen is not None and (not seen[1]) in valid_turns:
-            board.turn = not seen[1]
-            board.ep_square = seen[0]
+        # The site's last-move highlight: the other side is to move, and may take a pawn
+        # that has just advanced two squares in passing (`last_move_seen`).
+        seen = last_move_seen(board, highlighted)
+        if seen is not None and (not seen.mover) in valid_turns:
+            board.turn = not seen.mover
+            board.ep_square = seen.ep_square
             return board, False
         board.turn = prefer if prefer in valid_turns else valid_turns[0]
         return board, len(valid_turns) > 1

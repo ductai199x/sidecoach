@@ -172,7 +172,8 @@ class GamePipeline:
     # The lock the start check last ran on with no model: unchanged pixels on it look the same.
     _start_checked: tuple[Region, float] | None = None
     # The other side the labels last said was at the bottom of an unexplained board, and when.
-    _flip_seen: tuple[Side, float] | None = None
+    # The side the labels say, when, and the position then read that way round.
+    _flip_seen: tuple[Side, float, str | None] | None = None
     # The last screen state emitted, so a ScreenStateChanged fires only on a transition.
     _screen_state: ScreenState = ScreenState.UNKNOWN
     # When a dialog-sized cover first appeared over a live game's board, or None; and
@@ -575,10 +576,19 @@ class GamePipeline:
             self._flip_seen = None
             return []
         if seen is None or seen[0] != labelled:
-            self._flip_seen = (labelled, ts)
+            self._flip_seen = (labelled, ts, None)
+            return []
+        # The position must read the same twice too: a piece still sliding in reads as two
+        # empty squares, and a board adopted then lacks it for good -- the next puzzle's setup
+        # move caught mid-slide at the phone's two frames a second, and nothing after it was
+        # recorded (Tai, 2026-09-24: "sometimes there is no move list whatsoever").
+        read = self._reread(labelled) or self._cold_read(frame, geometry, labelled)
+        placed = read[3].board_fen() if read is not None else None
+        if placed is None or placed != seen[2]:
+            self._flip_seen = (labelled, ts, placed)
             return []
         self._flip_seen = None
-        return self.reorient(frame, geometry, labelled, ts)
+        return self.reorient(frame, geometry, labelled, ts, read=read)
 
     def _reread(self, bottom: Side) -> _ColdRead | None:
         """The frame's own readings taken with `bottom` at the bottom: the recogniser read
@@ -602,6 +612,7 @@ class GamePipeline:
         ts: float,
         *,
         end_previous: bool = True,
+        read: _ColdRead | None = None,
     ) -> list[Event]:
         """Read the board again with `bottom` at the bottom and begin again from what it
         shows: the panel's Flip on a game joined from the middle, or a resync whose labels
@@ -610,7 +621,8 @@ class GamePipeline:
         may set `forced_bottom` and forget the game, and the automatic cold start reads it
         that way on the next quiet frame. The frame's own readings serve when they can
         (`_reread`); a cold read from the theme cache otherwise."""
-        read = self._reread(bottom) or self._cold_read(frame, geometry, bottom)
+        if read is None:
+            read = self._reread(bottom) or self._cold_read(frame, geometry, bottom)
         if read is None:
             return []
         events = self._end_in_progress("board reoriented") if end_previous else []
@@ -905,7 +917,7 @@ class GamePipeline:
     ) -> list[Event]:
         reconciler = Reconciler(bottom=bottom, user_side=bottom)
         # The site's last-move highlight, for what a cold read cannot know: a pawn that has
-        # just advanced two squares (`reconcile.double_step_seen`).
+        # just advanced two squares, and whose move it is (`reconcile.last_move_seen`).
         highlighted = frozenset(
             square_at(row, col, bottom)
             for row in range(8)
