@@ -189,7 +189,7 @@ def _attack(w: _Line) -> LinePlan | None:
     if king is None:
         return None
     joins: list[int] = []
-    lifted: set[chess.Square] = set()
+    lifts: set[int] = set()
     for j in w.ours:
         b, move = w.boards[j], w.line[j]
         if not _quiet(b, move):
@@ -211,13 +211,15 @@ def _attack(w: _Line) -> LinePlan | None:
             move.to_square
         ):
             # A rook lift: up its file, to swing across to their king later.
-            lifted.add(w.origin[j])
+            lifts.add(j)
             joins.append(j)
-    # A lift counts only when the rook swings in afterwards.
+    # A lift counts only when the same rook swings in afterwards; the swing itself always
+    # counts (Qd3 Re3 Rh3 was read as "Qd3 and Re3", the Kotlin port, 2026-09-24).
     joins = [
         j
         for j in joins
-        if w.origin[j] not in lifted or any(k > j and w.origin[k] == w.origin[j] for k in joins)
+        if j not in lifts
+        or any(k > j and k not in lifts and w.origin[k] == w.origin[j] for k in joins)
     ]
     pieces = {
         w.origin[j] for j in joins if w.boards[j].piece_type_at(w.line[j].from_square) != chess.PAWN

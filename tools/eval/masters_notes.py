@@ -199,9 +199,13 @@ def readings(facts_path: Path, master_path: Path) -> list[dict]:
             tags = _paid(
                 board, move, step, [MotifTag.model_validate(t) for t in assessment.get("tags", [])]
             )
-            word, _ = verdict(
-                board, move, label, tags, threats=before_analysis.threats, rng=random.Random(0)
-            )
+            # The word is said only after a move that lost nothing (a mistake gets the lesson):
+            # the app's POST_MOVE path, severity NONE.
+            word = ""
+            if label not in ("inaccuracy", "mistake", "blunder", "miss"):
+                word, _ = verdict(
+                    board, move, label, tags, threats=before_analysis.threats, rng=random.Random(0)
+                )
             best = f.candidates[0] if f.candidates else None
             lesson = ""
             if label in ("inaccuracy", "mistake", "blunder", "miss") and best:

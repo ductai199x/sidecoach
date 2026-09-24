@@ -257,6 +257,9 @@ def goal(idea: Idea) -> str | None:
         return "you can give up material and win it back with a tactic"
     if idea.goal == "defend":
         lead = "you are winning, but " if idea.winning else ""
+        if idea.prepared:
+            what = "mate" if idea.threatened == "mate" else "to win material"
+            return f"{lead}your opponent is preparing {what}: stop it before it comes"
         if idea.threatened == "mate":
             return f"{lead}your opponent threatens mate: meet it first"
         return f"{lead}your opponent threatens to win material: meet it first"
@@ -501,6 +504,13 @@ def target(idea: Idea, board: chess.Board) -> str | None:
         mover = board.piece_at(idea.threat.from_square)
         taken = board.piece_at(idea.threat.to_square)
         who = f"their {_named(board, idea.threat.from_square)}" if mover else "their threat"
+        if idea.prepared and idea.follow is not None:
+            if idea.threatened == "mate":
+                return f"{who}, one move from threatening mate"
+            aim = board.piece_at(idea.follow.to_square)
+            if aim is not None and aim.color == board.turn:
+                return f"{who}, one move from winning your {_named(board, idea.follow.to_square)}"
+            return f"{who}, one move from winning material"
         if idea.threatened == "mate":
             return f"{who}, which threatens mate"
         if taken is not None and taken.color == board.turn:
@@ -679,6 +689,15 @@ def _why(idea: Idea, board: chess.Board, describe) -> str | None:  # noqa: ANN00
     if idea.goal == "defend" and idea.threat is not None:
         passed = board.copy(stack=False)
         passed.push(chess.Move.null())
+        if idea.prepared and idea.follow is not None:
+            then = passed.copy(stack=False)
+            then.push(idea.threat)
+            then.push(chess.Move.null())
+            follow = then.san(idea.follow).rstrip("#")
+            aim = "mate" if idea.threatened == "mate" else ""
+            return f"{first} meets their idea: {passed.san(idea.threat)}, and then {follow}" + (
+                f" {aim}" if aim else ""
+            )
         return f"{first} stops {passed.san(idea.threat)}"
     if idea.goal == "convert":
         shown = [m.uci() for m in idea.line[:4]]

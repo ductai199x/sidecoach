@@ -75,6 +75,8 @@ def test_queen_and_rook_lifted_to_their_king_are_an_attack() -> None:
     plan = plans.read(board, pv)
     assert plan is not None and plan.kind == "attack" and plan.square == chess.G8
     assert set(plan.pieces) == {chess.D1, chess.E1}
+    # The lift and the swing both belong to it.
+    assert plans.why(plan, board) == "Qd3, Re3 and Rh3 bring your queen and rook against their king"
     # Not for a side the engine calls worse: there it is a hope, not a plan.
     assert plans.read(board, pv, score=0.3) is None
 

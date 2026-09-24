@@ -273,7 +273,9 @@ def pays_off(
             aimed = [s for s in chess.SQUARES if theirs(s)]
             actors = {sq[0]}
         else:
-            aimed = [sq[2]] if theirs(sq[2]) else []
+            # What it uncovers must be worth a minor piece, as a fork's target is: "the rook
+            # now bears on the pawn on a7" taught nothing (the master games, 2026-09-24).
+            aimed = [sq[2]] if theirs(sq[2]) and worth(sq[2]) >= MIN_TARGET_VALUE else []
             actors = {sq[0], sq[1]}
     elif name in ("pin", "absolutePin"):
         aimed = [s for s in sq[1:3] if theirs(s)]
@@ -288,7 +290,34 @@ def pays_off(
         aimed = [s for s in sq[1:2] if theirs(s) and worth(s) >= taken_worth]
     else:
         return True
-    if pv[i].to_square in aimed and boards[i].is_capture(pv[i]):
+    start = _balance(boards[i], us)
+
+    def wins(j: int) -> bool:
+        """The capture at ply `j` leaves the player up on the start, the captures on its
+        square that follow counted: a loose bishop taken after theirs took one of the player's, the
+        dark-squared bishops traded, won nothing ("the bishop on g7 is loose" was said of a
+        move whose point was that trade, the master games' notes, 2026-09-24). A loose piece
+        is won whole, give or take a pawn: queens traded and a pawn won is not a loose
+        queen. A trapped piece is often won for a lesser one, and that is its win."""
+        # The exchange on that square played out to its end, as the line plays it: Qxd1
+        # Rxd1 Nxd1 wins the rook on the third capture (Lichess 01q4A).
+        k = j + 1
+        while (
+            k < len(pv)
+            and k + 1 < len(boards)
+            and pv[k].to_square == pv[j].to_square
+            and boards[k].is_capture(pv[k])
+        ):
+            k += 1
+        if k >= len(boards):
+            return False
+        net = _balance(boards[k], us) - start
+        if name == "hangingPiece":
+            taken = boards[j].piece_type_at(pv[j].to_square)
+            return net >= max(1, exchange.VALUE.get(taken or chess.PAWN, 1) - 1)
+        return net > 0
+
+    if pv[i].to_square in aimed and boards[i].is_capture(pv[i]) and wins(i):
         return True  # the move itself takes it
     watched = set(aimed)
     for j in range(i + 1, min(len(pv), i + 1 + PAYOFF_PLIES)):
@@ -298,6 +327,7 @@ def pays_off(
                 move.to_square in watched
                 and boards[j].is_capture(move)
                 and (actors is None or move.from_square in actors)
+                and wins(j)
             ):
                 return True
             if actors is not None and move.from_square in actors:

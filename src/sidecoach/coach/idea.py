@@ -21,6 +21,7 @@ from dataclasses import dataclass, field, replace
 import chess
 
 from sidecoach.analysis import exchange, motifs
+from sidecoach.coach import plans
 from sidecoach.events import Analysis, MotifTag
 
 VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
@@ -134,6 +135,10 @@ class Idea:
     target: chess.Square | None = None  # their king (mate), or what falls, on the board now
     threat: chess.Move | None = None  # "defend": the opponent's move if the player passed
     threatened: str | None = None  # "mate", or the piece the threat wins: "your rook"
+    # "defend": the threat is a quiet move that would threaten it next, `follow` the move
+    # that would then mate or take (Rh1, then Qh8#: the master games, 2026-09-24).
+    prepared: bool = False
+    follow: chess.Move | None = None
     flight: tuple[chess.Square, ...] = ()  # "mate": their king's free squares now
     checks: int = 0  # how many checks the side to move has
     level: bool = False  # the line only holds the balance: what it wins, it wins back
@@ -373,7 +378,7 @@ def _read(board: chess.Board, analysis: Analysis) -> Idea:
             starts_with=starts_with,
             checks=checks,
         )
-    threat, threatened = _threat(board, analysis.threats)
+    threat, threatened, follow = _threat(board, analysis.threats, first)
     if threat is not None:
         return Idea(
             goal="defend",
@@ -382,6 +387,8 @@ def _read(board: chess.Board, analysis: Analysis) -> Idea:
             starts_with=starts_with,
             threat=threat,
             threatened=threatened,
+            prepared=follow is not None,
+            follow=follow,
             checks=checks,
         )
     return Idea(goal="plan", first=first, line=tuple(pv), starts_with=starts_with, checks=checks)
@@ -861,11 +868,23 @@ def _flight(board: chess.Board, colour: chess.Color) -> tuple[chess.Square, ...]
     return tuple(out)
 
 
-def _threat(board: chess.Board, threats: Sequence[str]) -> tuple[chess.Move | None, str | None]:
-    """The opponent's threat, if the player passed, when it mates or wins material; and
-    what it threatens ("mate", or "your rook")."""
+# A prepared threat is read only when what it prepares is mate or at least a minor piece:
+# every move attacks something, and "your opponent is preparing to win a pawn" would be
+# said of half the moves of a quiet game.
+PREPARED_MIN = 3
+
+
+def _threat(
+    board: chess.Board, threats: Sequence[str], best: chess.Move | None = None
+) -> tuple[chess.Move | None, str | None, chess.Move | None]:
+    """The opponent's threat, if the player passed, when it mates or wins material; what it
+    threatens ("mate", or "your rook"); and, when the threat is a quiet move that prepares it
+    (their best reply to a pass threatens mate or a piece next), the move that would follow.
+    A prepared threat counts only when the best move takes it away: where the best move lets
+    it come and strikes first (g4 while ...b4 still wins the knight), the point is the counter,
+    and "stop it before it comes" would be false (the master games' notes, 2026-09-24)."""
     if not threats or board.is_check():
-        return None, None
+        return None, None, None
     passed = board.copy(stack=False)
     passed.push(chess.Move.null())
     for uci in threats:
@@ -878,10 +897,39 @@ def _threat(board: chess.Board, threats: Sequence[str]) -> tuple[chess.Move | No
         after = passed.copy(stack=False)
         after.push(move)
         if after.is_checkmate():
-            return move, "mate"
+            return move, "mate", None
         taken = passed.piece_at(move.to_square)
         # A capture that wins material by the exchange, legal recaptures and all: a knight
         # left to a rook with only a pinned piece to take back is a threat (2026-09-23).
         if taken is not None and taken.color == board.turn and exchange.exchange(passed, move) > 0:
-            return move, f"your {_NAMES[taken.piece_type]}"
-    return None, None
+            return move, f"your {_NAMES[taken.piece_type]}", None
+    # The engine's first reply to a pass, when quiet: what it would threaten next.
+    for uci in threats[:1]:
+        try:
+            move = chess.Move.from_uci(uci)
+        except ValueError:
+            continue
+        if move not in passed.legal_moves or passed.is_capture(move):
+            continue
+        prepared = plans.threat(passed, move)
+        if prepared is None or prepared.kind == "trade":
+            continue
+        if best is not None and best in board.legal_moves:
+            answered = board.copy(stack=False)
+            answered.push(best)
+            if move in answered.legal_moves:
+                # The same threat, on the same target: after Nd4 the rook's Rd1 goes for the
+                # knight, not the queen it went for, and the queen's threat is met.
+                still = plans.threat(answered, move)
+                if (
+                    still is not None
+                    and still.kind == prepared.kind
+                    and (still.kind == "mate" or still.square == prepared.square)
+                ):
+                    continue
+        if prepared.kind == "mate":
+            return move, "mate", prepared.follow
+        target = passed.piece_at(prepared.square)
+        if target is not None and prepared.gain >= PREPARED_MIN:
+            return move, f"your {_NAMES[target.piece_type]}", prepared.follow
+    return None, None, None
