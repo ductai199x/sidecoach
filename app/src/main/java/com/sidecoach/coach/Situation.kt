@@ -302,6 +302,9 @@ object Situation {
         return true
     }
 
+    /** What the best move keeps, by its expected score: "your edge", "the balance". */
+    fun edgeWords(top: Double): String = edge(top)
+
     private fun edge(top: Double): String {
         if (top >= 0.6) return "your edge"
         if (top >= 0.4) return "the balance"
@@ -371,6 +374,23 @@ object Situation {
         return null  // a few moves close together: nothing worth saying about the stakes
     }
 
+    /**
+     * The traps in the order the first hint wants them: the one that takes what the best line
+     * wins later ("not yet"), then those that walk into mate, then the worst first. Topalov-
+     * Kramnik, 36.Qxg3?? "allows mate in two" was not the first trap found.
+     */
+    fun rankedTraps(traps: List<Line>, target: Int?): List<Line> {
+        fun square(trap: Line): Int? = trap.moves.getOrNull(0)?.let { Move.fromUciOrNull(it) }?.to
+        // `sorted(traps, key=(on target, mated, expected score))`: stable, as Python's sort is.
+        return traps.sortedWith(
+            compareBy<Line>(
+                { if (target != null && square(it) == target) 0 else 1 },
+                { if (it.mate != null && it.mate < 0) 0 else 1 },
+                { it.expectedScore },
+            ),
+        )
+    }
+
     /** How far a trap's line is followed to see what it nets. */
     const val TRAP_NET_PLIES = 8
 
@@ -380,6 +400,12 @@ object Situation {
     /** Below the edge by this much after the capture: the edge is gone. */
     const val TRAP_EDGE_DROP = 0.05
 
+    /** The capture costs this much ... */
+    const val BALANCE_DROP = 0.2
+
+    /** ... and leaves the player below this: clearly worse. */
+    const val WORSE = 0.4
+
     /**
      * The capture that looks free and is not: "hxg4 looks like it wins a knight, but it is a
      * trap: after hxg4 Qh4, they get a winning attack". When it takes what the best line wins
@@ -387,7 +413,13 @@ object Situation {
      * at once runs into Nxh3+, and they have mate" (16.Re2 in Capablanca-Marshall). `top` is the
      * best move's expected score: a game already lost is not lost by the capture.
      */
-    fun trapWords(board: Board, trap: Line, target: Int? = null, top: Double? = null): String? {
+    fun trapWords(
+        board: Board,
+        trap: Line,
+        target: Int? = null,
+        top: Double? = null,
+        best: Move? = null,
+    ): String? {
         val capture = trap.moves.getOrNull(0)?.let { Move.fromUciOrNull(it) } ?: return null
         val taken = board.pieceAt(capture.to)
         if (!board.isLegal(capture) || taken == null || trap.moves.size < 2) return null
@@ -409,12 +441,20 @@ object Situation {
             trap.expectedScore < 0.3 && (top == null || top >= 0.3) -> "you are lost"
             checks(after, trap.moves.drop(1)) >= 2 -> "their checks begin, and your king has no cover"
             !ahead -> "it costs you more than it wins"
+            // The balance lost without material: the wrong recapture opening a file (23.exd5?
+            // Re8 in Polugaevsky-Nezhmetdinov).
+            top != null && top - trap.expectedScore >= BALANCE_DROP && trap.expectedScore < WORSE ->
+                "you are left clearly worse"
             // Even in material but no longer better: "Not 17 Qxf2 Bg3 ... with an unclear
             // position" (Capablanca-Marshall).
             top != null && top >= EDGE && trap.expectedScore < EDGE - TRAP_EDGE_DROP -> "your edge is gone"
             else -> return null
         }
         val what = NAMES.getValue(taken.pieceType)
+        if (best != null && best != capture && best.to == capture.to) {
+            // The same piece, taken with the wrong one of yours.
+            return "Take it with the right piece: $san looks natural, but after $san $replySan, $tail"
+        }
         if (target != null && capture.to == target) {
             return "Not yet: their ${named(board, target)} can be won, but $san at once runs into " +
                 "$replySan, and $tail"
@@ -773,10 +813,13 @@ object Situation {
         return "Your king on ${sq(ours)} is your best piece here"
     }
 
-    /** The piece giving check. */
-    fun checkKey(board: Board): String? {
+    /** The piece giving check -- and, when it is what the line wins (`prize`), said so once. */
+    fun checkKey(board: Board, prize: Int? = null): String? {
         val checkers = squaresOf(board.checkersMask())
-        if (checkers.size == 1) return "Their ${named(board, checkers[0])} gives check"
+        if (checkers.size == 1) {
+            if (checkers[0] == prize) return "Their ${named(board, checkers[0])} gives check, and it is what you win"
+            return "Their ${named(board, checkers[0])} gives check"
+        }
         if (checkers.size == 2) {
             val first = named(board, checkers[0])
             val second = named(board, checkers[1])

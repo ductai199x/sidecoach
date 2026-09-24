@@ -42,6 +42,15 @@ while MASTERS_TRAPS is not met; opening games played out move by move carry the 
 `in_book` and name. Every case also says what the move that left it allowed
 (`idea_words.allowed`, desktop 25a3333).
 
+Since desktop 10fdd21/a7d4ada the hints tell one story (`coach/story.py`): every case carries
+the desktop's story checks on its three hints (`tools/puzzles/story_checks.py`, desktop tooling:
+won, plain, free, checker, queening, reason, how), and where the Analysis has traps, their
+ranking and each one's words with the best move (`situation.ranked_traps`, `trap_words`). The
+master positions are also chosen for each beat of the story, up to MASTERS_STORY of each; the
+six puzzles of `tests/test_story.py` are recorded whole, with their hints and whether every
+story check holds; and a few traps are made by hand for the ranking, the wrong piece to take
+back with, and the balance lost.
+
 Every case's lessons are also said as the move-by-move lesson says them, with the position and
 the move played (`lesson_template(..., board=, played=)`): every legal capture onto the better
 move's square by another piece (the right capture with the other piece), and the first legal
@@ -80,6 +89,7 @@ from sidecoach.coach import idea_words as W  # noqa: E402
 from sidecoach.coach import inventory as I  # noqa: E402
 from sidecoach.coach import outcome as O  # noqa: E402
 from sidecoach.coach import plans as PL  # noqa: E402
+from sidecoach.coach import situation as SIT  # noqa: E402
 from sidecoach.coach import policy as P  # noqa: E402
 from sidecoach.coach import verdicts as V  # noqa: E402
 from sidecoach.coach.coach import (  # noqa: E402
@@ -94,6 +104,9 @@ from sidecoach.coach.coach import (  # noqa: E402
 )
 from sidecoach.coach.person import third_person  # noqa: E402
 from sidecoach.config import find_stockfish, load_settings  # noqa: E402
+
+sys.path.insert(0, str(DESKTOP / "tools" / "puzzles"))
+from story_checks import story_checks  # noqa: E402
 from sidecoach.events import Analysis, DisclosureLevel, Line, MotifTag, Trigger  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "chess"
@@ -114,6 +127,90 @@ MASTERS_PREPARED = 40
 MASTERS_RUNGS = 30
 # Master positions kept whose first hint names a trap.
 MASTERS_TRAPS = 40
+# Master positions kept per beat of the story (desktop 10fdd21): a piece that simply hangs, a
+# free piece first, the checker, the pawn to queen, the prize, how a win comes, what a move
+# does where only it holds, a win back.
+MASTERS_STORY = 25
+
+# `tests/test_story.py` (desktop a7d4ada): Lichess puzzles read by hand, the lines as the app's
+# settings saw them: (name, fen, [(line, score)], threats).
+STORY_TESTS = [
+    (
+        "gNzJg: a queen that simply hangs",
+        "5r1k/p5pp/1p6/3p1r2/3P2q1/2P1QP1n/PP5P/R4R1K w - - 0 29",
+        [(["f3g4", "h3f2", "h1g1", "f5f3", "e3f2", "f3f2", "f1f2", "f8f2", "g1f2"], 0.949)],
+        (),
+    ),
+    (
+        "DWvS7: a free piece first",
+        "4r1k1/6p1/3qp2p/1Q1pr3/p1p1nP2/Pp6/1P4PP/4RRK1 w - - 0 29",
+        [(["b5e8", "g8h7", "f4e5", "d6c5", "g1h1", "e4f2", "f1f2", "c5f2", "e1g1"], 0.762)],
+        (),
+    ),
+    (
+        "EcCX4: in check, the checker first",
+        "4r3/5ppp/5n2/2Q2k2/P1qP1B2/7P/1P2p1P1/4R1K1 b - - 4 30",
+        [
+            (["c4c5", "d4c5", "f5f4", "g1f2", "f6e4", "f2e2", "e4c5", "e2d2", "e8e1"], 0.911),
+            (["c4d5", "f4d2", "d5c5", "d4c5", "e8b8", "g2g4", "f5e4", "e1e2", "e4d3"], 0.278),
+        ],
+        (),
+    ),
+    (
+        "uSAIW: the pawn the win rests on",
+        "5k2/p7/5PRp/1p6/7p/8/r2r2P1/5RK1 w - - 0 36",
+        [
+            (["f6f7", "d2g2", "g6g2", "a2g2", "g1g2", "b5b4", "g2h3", "b4b3", "h3h4"], 0.88),
+            (["g6g7", "a7a5", "g1h2", "h4h3", "h2h3", "d2f2", "f1c1", "a2c2", "c1a1"], 0.454),
+        ],
+        (),
+    ),
+    (
+        "jlCZP: a win with no pattern says how",
+        "8/8/p3k3/1p3p1p/1P6/P3K1PP/8/8 w - - 1 41",
+        [
+            (["e3f4", "e6f6", "h3h4", "f6e6", "f4g5", "e6d5", "g5h5", "a6a5", "b4a5"], 0.895),
+            (["e3d4", "e6d6", "h3h4", "d6e6", "d4e3", "e6e7", "e3f4", "e7f6", "f4f3"], 0.5),
+        ],
+        ("e6e5",),
+    ),
+    (
+        "TzhLp: where only one move holds",
+        "8/4k3/3p1pp1/7p/4PKPP/5P2/8/8 w - - 1 44",
+        [
+            (["g4h5", "g6h5", "f4f5", "e7f7", "f3f4", "f7e7", "f5g6", "e7e6", "f4f5"], 0.862),
+            (["f4e3", "e7f7", "e3f4", "f7e6", "g4g5", "e6f7", "g5f6", "f7f6", "f4e3"], 0.512),
+            (["g4g5", "e7f7", "g5f6", "f7f6", "f4e3", "g6g5", "h4g5", "f6g5", "f3f4"], 0.512),
+        ],
+        (),
+    ),
+]
+
+# Traps made by hand (desktop 10fdd21's ranking and words): (name, fen, best, target, top,
+# [(line, score, mate)]). Tai's game g03, 13.Raxd1 for Rexd1: the wrong rook, and the balance
+# lost; Capablanca-Marshall 16.Re2: the rook on a8 is the target, and a mate beside it.
+TRAP_TESTS = [
+    (
+        "the wrong piece to take back with",
+        "r3k2r/p1p1bppp/2p5/4p3/2b1P3/2N1B2P/PPP2PP1/R2qR1K1 w kq - 0 13",
+        "e1d1",
+        None,
+        0.54,
+        [(["a1d1", "e7b4"], 0.3, None)],
+    ),
+    (
+        "on the target, into mate, the worst",
+        "r1b2rk1/2p2ppp/p2b4/1p6/3P3q/1BP2Q1P/PP3nP1/RNB1R1K1 w - - 0 16",
+        "e1e2",
+        "a8",
+        0.68,
+        [
+            (["f3f2", "h4f2", "g1f2", "c8e6"], 0.35, None),
+            (["f3f2", "d6h2", "g1f1", "h2g1"], 0.0, -4),
+            (["f3a8", "f2h3", "g2h3", "h4e1", "g1g2", "e1e2", "g2g1", "e2h2"], 0.0, -8),
+        ],
+    ),
+]
 # Opening games played out move by move, each position in the book (desktop fc30fa7's
 # "this is opening theory -- the X; the main moves here are ...").
 OPENING_GAMES = [
@@ -773,6 +870,13 @@ def case_for(
     return {
         "source": source,
         "fen": board.fen(),
+        # The moves that led here, when the board knows them: the story's "taken back" and "win
+        # back" read their last move (desktop 10fdd21), so the Kotlin replays them.
+        "history": (
+            {"root": board.root().fen(), "moves": [m.uci() for m in board.move_stack]}
+            if board.move_stack
+            else None
+        ),
         "phase": phase,
         "analysis": analysis_json(analysis),
         "facts": facts_json(facts),
@@ -781,6 +885,10 @@ def case_for(
         "templates": templates_json(facts, board, W.allowed(board, analysis, PLAYED)),
         # What the move that left this position allowed, read by the same idea reader.
         "allowed": W.allowed(board, analysis, PLAYED),
+        # The desktop's story checks on the three hints (desktop tooling; recorded, not ported).
+        "story": story_of(board, analysis, idea, facts),
+        # The traps ranked as the first hint wants them, each said with the best move.
+        "trap_reads": trap_reads(board, analysis, idea),
         "material_us": F.material_text(board, us),
         "material_them": F.material_text(board, not us),
         "position_text": F.position_text(board),
@@ -934,6 +1042,59 @@ def masters_positions() -> list[tuple[str, int, Analysis]]:
     return out
 
 
+def story_of(
+    board: chess.Board, analysis: Analysis, idea: IDEA.Idea, facts: D.PositionFacts
+) -> dict[str, bool]:
+    """The desktop's story checks on the three hints of `facts`."""
+    if not analysis.lines:
+        return {}
+    texts = {"idea": idea_template(facts), "focus": focus_template(facts), "move": move_template(facts)}
+    pv = [m for m in (F._to_move(u) for u in analysis.lines[0].moves) if m is not None]
+    checks, _ = story_checks(board, pv, idea, texts)
+    return dict(checks)
+
+
+def trap_reads(board: chess.Board, analysis: Analysis, idea: IDEA.Idea) -> dict | None:
+    """The Analysis's traps ranked (their first moves), and each one's words with the best
+    move, as the facts would say them."""
+    if not analysis.traps:
+        return None
+    best = F._to_move(analysis.lines[0].moves[0]) if analysis.lines and analysis.lines[0].moves else None
+    top = analysis.lines[0].expected_score if analysis.lines else None
+    ranked = SIT.ranked_traps(analysis.traps, idea.target)
+    return {
+        "ranked": [list(t.moves) for t in ranked],
+        "words": [SIT.trap_words(board, t, idea.target, top, best) for t in ranked],
+    }
+
+
+def story_category(facts: D.PositionFacts, idea: IDEA.Idea, full: dict[str, int]) -> str | None:
+    """The first beat of the story (desktop 10fdd21) these facts tell that is still short of
+    MASTERS_STORY."""
+    situation = facts.situation or ""
+    why = facts.why or ""
+    beats = [
+        ("story:plain", "can simply be taken" in situation and ". After that," not in situation),
+        ("story:free", ". After that," in situation),
+        ("story:checker", "gives check" in situation),
+        ("story:queening", "from queening" in situation and idea.goal != "promote"),
+        ("story:prize", "The prize is" in situation),
+        (
+            "story:how",
+            any(
+                word in situation
+                for word in ("The first move ", "It starts by giving up", "A check comes first")
+            ),
+        ),
+        ("story:reason", "keeps" in why and (" -- it is" in why or ": it is" in why)),
+        ("story:win back", "win back" in (facts.goal or "")),
+    ]
+    for name, told in beats:
+        if told and full.get(name, 0) < MASTERS_STORY:
+            return name
+    return None
+
+
 def rung_category(board: chess.Board, analysis: Analysis, facts: D.PositionFacts) -> str | None:
     """What the rungs of desktop 268990e read here, if anything: a win that comes a move
     later, a mate too long to read out whole, a forcing capture's target, or a pawn threat of
@@ -1070,6 +1231,65 @@ def main() -> None:
         cases.append(case_for(board, analysis, deep=booked % 6 == 0, source="opening"))
         booked += 1
 
+    # `tests/test_story.py`: the six puzzles read by hand, their hints and the story checks.
+    stories = []
+    for name, fen, story_lines, threats in STORY_TESTS:
+        board = chess.Board(fen)
+        analysis = Analysis(
+            game_id="",
+            fen=fen,
+            ply=0,
+            lines=[Line(moves=moves, depth=18, expected_score=score) for moves, score in story_lines],
+            decisive=False,
+            only_move=False,
+            threats=list(threats),
+        )
+        facts = F.facts_from_analysis(board, analysis, user=board.turn)
+        texts = {
+            "idea": idea_template(facts),
+            "focus": focus_template(facts),
+            "move": move_template(facts),
+        }
+        pv = [chess.Move.from_uci(u) for u in story_lines[0][0]]
+        checks, _ = story_checks(board, pv, IDEA.read(board, analysis), texts)
+        assert all(checks.values()), (name, checks)
+        stories.append(
+            {
+                "name": name,
+                "fen": fen,
+                "analysis": analysis_json(analysis),
+                "texts": texts,
+                "checks": dict(checks),
+                "told": all(checks.values()),
+            }
+        )
+        cases.append(case_for(board, analysis, deep=True, source=f"test_story: {name}"))
+
+    # Traps made by hand: the ranking and the words.
+    trap_tests = []
+    for name, fen, best_uci, target_name, top, made in TRAP_TESTS:
+        board = chess.Board(fen)
+        traps = [Line(moves=moves, depth=14, expected_score=score, mate=mate) for moves, score, mate in made]
+        target = chess.parse_square(target_name) if target_name else None
+        best = chess.Move.from_uci(best_uci)
+        ranked = SIT.ranked_traps(traps, target)
+        trap_tests.append(
+            {
+                "name": name,
+                "fen": fen,
+                "best": best_uci,
+                "target": target_name,
+                "top": top,
+                "traps": [
+                    {"moves": moves, "depth": 14, "expected_score": score, "score_cp": None, "mate": mate}
+                    for moves, score, mate in made
+                ],
+                "ranked": [list(t.moves) for t in ranked],
+                "words": [SIT.trap_words(board, t, target, top, best) for t in ranked],
+                "words_without_best": [SIT.trap_words(board, t, target, top) for t in ranked],
+            }
+        )
+
     # `tests/test_situation.py`'s lines written as UCI.
     for fen, line, score in UCI_TESTS:
         board = chess.Board(fen)
@@ -1164,12 +1384,14 @@ def main() -> None:
         if tempted and by_plan.get("trap", 0) < MASTERS_TRAPS:
             analysis = with_traps(engine, board, analysis)
         facts = F.facts_from_analysis(board, analysis, last_move="e4", in_book=False, user=board.turn)
-        kind = (
+        kind = story_category(facts, IDEA.read(board, analysis), by_plan) or (
             "trap"
             if facts.trap
             else rung_category(board, analysis, facts) or plan_category(facts)
         )
-        if kind == "trap":
+        if kind.startswith("story:"):
+            quota = MASTERS_STORY
+        elif kind == "trap":
             quota = MASTERS_TRAPS
         elif kind.startswith("rung:"):
             quota = MASTERS_RUNGS
@@ -1253,6 +1475,8 @@ def main() -> None:
                 "priorities": priorities,
                 "standings": standings,
                 "policy": policy_cases(),
+                "stories": stories,
+                "trap_tests": trap_tests,
             }
         ),
         encoding="utf-8",
@@ -1296,6 +1520,35 @@ def main() -> None:
         if case["allowed"]:
             first["allowed"] = first.get("allowed", 0) + 1
     print("first hint:", dict(sorted(first.items())), f"({booked} opening positions)")
+    failed: dict[str, int] = {}
+    for case in cases:
+        for name, ok in case["story"].items():
+            if not ok:
+                failed[name] = failed.get(name, 0) + 1
+    beats: dict[str, int] = {}
+    for case in cases:
+        text = case["facts"].get("situation") or ""
+        for beat, said in (
+            ("plain", "can simply be taken"),
+            ("free", ". After that,"),
+            ("checker", "gives check"),
+            ("queening", "from queening"),
+            ("prize", "The prize is"),
+            ("how", "The first move "),
+            ("take it with the right piece", "Take it with the right piece"),
+            ("clearly worse", "you are left clearly worse"),
+        ):
+            if said in text:
+                beats[beat] = beats.get(beat, 0) + 1
+        if "win back" in (case["facts"].get("goal") or ""):
+            beats["win back"] = beats.get("win back", 0) + 1
+        if " -- it is the only move" in (case["facts"].get("why") or "") or ": it is the only move" in (
+            case["facts"].get("why") or ""
+        ):
+            beats["reason"] = beats.get("reason", 0) + 1
+    print("story beats:", dict(sorted(beats.items())))
+    print(f"story checks failing (desktop tooling, recorded): {dict(sorted(failed.items()))}")
+    print(f"{len(stories)} story tests, all told; {len(trap_tests)} trap tests")
 
 
 if __name__ == "__main__":

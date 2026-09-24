@@ -6,7 +6,10 @@ import com.sidecoach.analysis.bestMoveIdea
 import com.sidecoach.analysis.phaseOf
 import com.sidecoach.analysis.sanLine
 import com.sidecoach.analysis.topFeatures
+import com.sidecoach.analysis.worstPiece
 import com.sidecoach.analysis.worstPieceSquare
+import com.sidecoach.chess.BB_EMPTY
+import com.sidecoach.chess.BB_SQUARES
 import com.sidecoach.chess.BISHOP
 import com.sidecoach.chess.BLACK
 import com.sidecoach.chess.Board
@@ -599,11 +602,24 @@ fun factsFromAnalysis(
     if (mechanism == null && planKind != null && planKind in IdeaWords.PLAN_WHY) {
         mechanism = "$plan: ${IdeaWords.PLAN_WHY.getValue(planKind)}"
     }
-    var question = IdeaWords.question(idea, planKind)
+    var question: String? = IdeaWords.question(idea, planKind)
     var target = IdeaWords.target(idea, board)
     var nudge = IdeaWords.nudge(idea)
     var why = IdeaWords.why(idea, board, IdeaWords.Describe(::describeTactic))
     var goal = IdeaWords.goal(idea)
+    // Material won right after they took some, while behind, is won back (an equality puzzle's
+    // recapture) -- never "win back a queen" after they took a pawn.
+    val taken = Story.tookLast(board)
+    if (!goal.isNullOrEmpty() &&
+        goal.startsWith("you can win ") &&
+        "back" !in goal &&
+        " for " !in goal &&
+        idea.down &&
+        idea.gain > 0 &&
+        idea.gain <= taken + 1
+    ) {
+        goal = "you can win back " + goal.substring("you can win ".length)
+    }
     if (moveThreat != null && best != null) {
         val won = if (idea.winning) Plans.THREAT_GOAL_WON else Plans.THREAT_GOAL
         goal = won.getValue(moveThreat.kind)
@@ -707,6 +723,21 @@ fun factsFromAnalysis(
             }
         }
     }
+    // One story ([Story]): a piece that simply hangs is said as that, before any pattern the
+    // line also shows.
+    val plain = if (tacticalGoal) Story.plainCapture(board, idea) else null
+    if (plain != null && plain.whole) {
+        key = plain.key
+        principle = null
+        question = null
+        nudge = plain.nudge
+        why = plain.why
+    } else if (plain != null) {
+        // The free piece first, then what the line wins after it.
+        val named = "on ${squareName(plain.square)}"
+        val rest = if (!key.isNullOrEmpty() && named !in key) ". After that, ${key[0].lowercaseChar() + key.substring(1)}" else ""
+        key = plain.key + rest
+    }
     // The key the move itself answers, and so its reason at the move rung; the fallbacks below
     // (a static feature, their idea) are context, not the move's reason.
     val moveReason = key
@@ -736,13 +767,26 @@ fun factsFromAnalysis(
         nudge = "Which way out keeps you safest -- a king move, a block, or taking the checker?"
         if (why == null && best != null) why = Situation.evasionWhy(board, best)
     }
-    val recapture = idea.goal == "win" && idea.down && best != null && board.isCapture(best)
-    var trap = if (analysis.traps.isNotEmpty() && idea.goal != "mate" && !recapture) {
-        Situation.trapWords(
-            board, analysis.traps[0], idea.target, if (lines.isNotEmpty()) lines[0].expectedScore else null,
-        )
-    } else {
-        null
+    // A recapture: the best move takes back what the line wins, at once (8.bxc3). Beside it, only
+    // the wrong piece to take back with is a trap -- every other capture is worse only for not
+    // taking back -- and 23.exd5? Re8 in Polugaevsky-Nezhmetdinov is the lesson.
+    val recapture = idea.goal == "win" &&
+        idea.down &&
+        best != null &&
+        board.isCapture(best) &&
+        best.to == idea.target
+    val traps = analysis.traps.filter { t ->
+        !recapture || (best != null && t.moves.isNotEmpty() && t.moves[0].substring(2, 4) == best.uci().substring(2, 4))
+    }
+    var trap: String? = null
+    if (idea.goal != "mate") {
+        // The trap that matters most and can be said: on the target, into mate, the worst.
+        for (chosen in Situation.rankedTraps(traps, idea.target)) {
+            trap = Situation.trapWords(
+                board, chosen, idea.target, if (lines.isNotEmpty()) lines[0].expectedScore else null, best,
+            )
+            if (trap != null) break
+        }
     }
     if (trap != null && idea.target != null && trap.startsWith("Not yet")) {
         key = null  // the trap says it: the target can be won, but not at once
@@ -758,6 +802,52 @@ fun factsFromAnalysis(
     ) {
         parts.add(stakesText)
     }
+    // Where only one or a few moves hold, the move's reason is what it does on the board --
+    // takes, checks, attacks, stops their idea -- never "The move is Bb5+." alone.
+    val sharp = stakes != null &&
+        stakesText != null &&
+        (
+            stakes.kind == "only" ||
+                stakes.kind == "few" ||
+                ((stakes.kind == "won" || stakes.kind == "check") && "only" in stakesText)
+            )
+    if (sharp && stakes != null && best != null && (why == null || "goes from" in why)) {
+        val edge = Situation.edgeWords(stakes.top)
+        val holds = if (stakes.kind == "few" && stakes.good > 1) {
+            "it is one of the few moves that keep $edge"
+        } else {
+            "it is the only move that keeps $edge"
+        }
+        val (reason, ask) = Story.reason(board, best, threatMove, holds)
+        why = reason
+        if (why == "${board.san(best)}: $holds") why = Story.lineReason(board, pv, holds) ?: why
+        if (nudge == null) nudge = ask
+    }
+    // In check, the piece giving check comes first, unless the capture that wins takes it.
+    val checker = if (inCheck &&
+        !forced &&
+        !(plain != null && board.checkersMask() and BB_SQUARES[plain.square] != BB_EMPTY)
+    ) {
+        Situation.checkKey(board, if (tacticalGoal) idea.target else null)
+    } else {
+        null
+    }
+    var pawn = if (tacticalGoal && idea.goal != "promote" && !forced) Story.queening(board, idea) else null
+    if (pawn != null && key != null && "queening" in key) pawn = null
+    val said = listOf(checker, key, trap).filter { !it.isNullOrEmpty() }.joinToString(" ")
+    val prize = if (tacticalGoal && !forced && (plain == null || !plain.whole)) Story.prize(board, idea, said) else null
+    // After a free piece taken first, the prize comes where the line wins it: last.
+    val prizeLast = plain != null
+    // How a win with no named pattern comes about: what the first move does, and at the move
+    // rung the line to it, never the result alone.
+    val how = if (tacticalGoal && !forced && plain == null) Story.how(board, idea, threatMove) else null
+    if (tacticalGoal &&
+        best != null &&
+        idea.blow == null &&
+        (why == null || Regex("${Regex.escape(board.san(best))}: you win [^;]*").matches(why))
+    ) {
+        why = Story.moveWhy(board, idea, threatMove) ?: why
+    }
     if (forced) {
         // One legal move: the rest of the reading is the move's, not a hint.
         tacticalGoal = false
@@ -767,6 +857,7 @@ fun factsFromAnalysis(
         moveThreat = null
         nudge = null
     }
+    if (checker != null && !forced && checker != key) parts.add(checker)
     val lost = stakes != null && stakes.kind == "lost"
     if (tacticalGoal ||
         (moveThreat != null && !lost) ||
@@ -776,9 +867,24 @@ fun factsFromAnalysis(
         if (idea.goal == "plan" && idea.winning && moveThreat == null) lead = "you are winning"
         if (!lead.isNullOrEmpty()) parts.add(lead)
     }
+    if (!pawn.isNullOrEmpty()) parts.add(pawn)
+    if (!prize.isNullOrEmpty() && !prizeLast) parts.add(prize)
     if (!key.isNullOrEmpty()) parts.add(key)
+    if (!how.isNullOrEmpty()) parts.add(how)
+    if (!prize.isNullOrEmpty() && prizeLast) parts.add(prize)
     if (!principle.isNullOrEmpty() && !key.isNullOrEmpty()) parts.add(principle)
     if (!trap.isNullOrEmpty()) parts.add(trap)
+    if (parts.isEmpty() && !forced && best != null) {
+        // Nothing else to say: what they would do with a free move, or the piece doing least --
+        // never a question that fits any position ("which of your pieces has no job right now?"
+        // at 32...Kh8 in Carlsen-Kramnik).
+        var fallback = Situation.theirIdeaKey(board, threatMove, sharp = true)
+        if (fallback == null) {
+            val passive = worstPiece(board, us)
+            fallback = if (passive.isNotEmpty()) passive[0].text else null
+        }
+        if (!fallback.isNullOrEmpty()) parts.add(fallback)
+    }
     var situationText: String? = parts.joinToString(" ") { Situation.sentence(it) }.ifEmpty { null }
     // A tactic's first hint ends on the question that sets the player looking the right way
     // ("which check leaves their king no square at all?"); never one that fits any position.

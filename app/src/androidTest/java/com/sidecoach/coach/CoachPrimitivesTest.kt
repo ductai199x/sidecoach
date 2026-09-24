@@ -118,10 +118,11 @@ class CoachPrimitivesTest {
         // The positions.
         val cases = data.getJSONArray("cases")
         var deepCases = 0
+        var trapped = 0
         val goals = HashMap<String, Int>()
         for (i in 0 until cases.length()) {
             val case = cases.getJSONObject(i)
-            val board = Board(case.getString("fen"))
+            val board = boardOf(case)
             val us = board.turn
             val analysis = analysisFrom(case.getString("fen"), case.getJSONObject("analysis"))
             val facts = factsFromAnalysis(board, analysis, lastMove = "e4", inBook = false, user = us)
@@ -139,6 +140,26 @@ class CoachPrimitivesTest {
                 IdeaWords.allowed(board, analysis, "e4"),
                 if (case.isNull("allowed")) null else case.getString("allowed"),
             )
+            // The traps ranked as the first hint wants them, each said with the best move.
+            if (!case.isNull("trap_reads")) {
+                val reads = case.getJSONObject("trap_reads")
+                val ranked = Situation.rankedTraps(analysis.traps, idea.target)
+                val wanted = reads.getJSONArray("ranked")
+                check(
+                    "${case.getString("fen")} ranked traps",
+                    ranked.map { it.moves },
+                    (0 until wanted.length()).map { strings(wanted.getJSONArray(it)) },
+                )
+                val best = analysis.lines.firstOrNull()?.moves?.firstOrNull()?.let { Move.fromUciOrNull(it) }
+                val top = analysis.lines.firstOrNull()?.expectedScore
+                val words = reads.getJSONArray("words")
+                check(
+                    "${case.getString("fen")} trap words",
+                    ranked.map { Situation.trapWords(board, it, idea.target, top, best) },
+                    (0 until words.length()).map { if (words.isNull(it)) null else words.getString(it) },
+                )
+                trapped += 1
+            }
             check("material us", materialText(board, us), case.getString("material_us"))
             check("material them", materialText(board, !us), case.getString("material_them"))
             check("position text", positionText(board), case.getString("position_text"))
@@ -242,7 +263,7 @@ class CoachPrimitivesTest {
         val took = System.currentTimeMillis() - began
         Log.i(
             TAG,
-            "${cases.length()} positions ($deepCases with the whole sweep), " +
+            "${cases.length()} positions ($deepCases with the whole sweep, $trapped with traps read), " +
                 "${persons.length()} rewrites, goals $goals, ${took} ms",
         )
         assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
@@ -519,6 +540,20 @@ class CoachPrimitivesTest {
             opening = if (o.isNull("opening")) null else o.getString("opening"),
             inBook = o.getBoolean("in_book"),
         )
+    }
+
+    /**
+     * The case's board, with the moves that led to it when the desktop's board had them: the
+     * story reads their last move ("taken back", "win back").
+     */
+    private fun boardOf(case: JSONObject): Board {
+        if (case.isNull("history")) return Board(case.getString("fen"))
+        val history = case.getJSONObject("history")
+        val board = Board(history.getString("root"))
+        val moves = history.getJSONArray("moves")
+        for (k in 0 until moves.length()) board.push(Move.fromUci(moves.getString(k)))
+        check("${case.getString("fen")} replayed", board.fen(), case.getString("fen"))
+        return board
     }
 
     private fun strings(array: JSONArray): List<String> =
