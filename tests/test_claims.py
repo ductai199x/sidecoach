@@ -27,6 +27,20 @@ ITALIAN = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
 FRIED_LIVER = "r1bqkb1r/pppp1ppp/2n2n2/4p1N1/2B1P3/8/PPPP1PPP/RNBQK2R b KQkq - 5 4"
 # A white knight on e5 attacked by the d6 pawn and defended by the d4 pawn, white to move.
 KNIGHT_E5 = "rnbqkb1r/ppp2ppp/3p1n2/4N3/3PP3/8/PPP2PPP/RNBQKB1R w KQkq - 0 5"
+# Scholar's mate threatened, black to move: the h5 queen and the c4 bishop both hit f7, so
+# after either one takes, the other still covers f7 and the e8 king cannot take back.
+SCHOLAR = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 4 4"
+# The white knight on c3 is pinned to its king by the b4 bishop and reaches the black knight
+# on e4, which it cannot take. White to move, then black.
+PINNED_ATTACKER_W = "4k3/8/8/8/1b2n3/2N5/8/4K3 w - - 0 1"
+PINNED_ATTACKER_B = "4k3/8/8/8/1b2n3/2N5/8/4K3 b - - 0 1"
+# The same pinned knight is the only white piece reaching the e4 pawn, which the f6 knight
+# attacks: it cannot take back. White to move, then black.
+PINNED_DEFENDER_W = "4k3/8/5n2/8/1b2P3/2N5/8/4K3 w - - 0 1"
+PINNED_DEFENDER_B = "4k3/8/5n2/8/1b2P3/2N5/8/4K3 b - - 0 1"
+# The d4 rook is attacked once (d7 rook) and defended once (d1 queen), but the d8 queen
+# stands behind the d7 rook: Rxd4 Qxd4 Qxd4 wins it.
+X_RAY = "3q2k1/3r4/8/8/3R4/8/8/3Q2K1 w - - 0 1"
 
 
 class FakeProvider:
@@ -334,7 +348,8 @@ def test_a_real_threat_via_the_null_move() -> None:
     v = verdict(board, claim("threatens", "they", "my pawn on f7"))
     assert v.result == "true"
     assert "If you pass, their knight on g5 takes your pawn on f7 with Nxf7" in v.reason
-    assert "the e8 king can take back" in v.reason
+    # The c4 bishop still covers f7 after Nxf7, so the e8 king cannot take back.
+    assert v.reason.endswith("with Nxf7 for free.")
 
     v = verdict(board, claim("threatens", "they", "my king"))
     assert v.result == "true" and "Bxf7+" in v.reason
@@ -614,6 +629,126 @@ def test_draft_prose_with_no_board_content() -> None:
     assert check_draft("Take your time and look at what changed.", board) == []
     assert check_draft("Be careful in area1; the area12 is fine, as is h1n1.", board) == []
     assert check_draft("Point at f7 or a1, bare squares are fine.", board) == []
+
+
+# --- attack and defence by legal moves (the 2026-09-23 audit) -----------------------------
+
+
+def test_a_threat_reads_who_can_take_back_after_the_capture() -> None:
+    board = chess.Board(SCHOLAR)
+    v = verdict(board, claim("threatens", "they", "my f7 pawn"))
+    assert v.result == "true"
+    assert v.reason == (
+        "If you pass, their queen on h5 takes your pawn on f7 with Qxf7#, and it is checkmate."
+    )
+    v = verdict(board, claim("threatens", "they", None, move="Bxf7+"))
+    assert v.result == "true"
+    assert v.reason == "If you pass, their bishop on c4 takes your pawn on f7 with Bxf7+ for free."
+
+
+def test_hanging_counts_only_legal_captures_and_recaptures() -> None:
+    v = verdict(chess.Board(PINNED_ATTACKER_W), claim("hanging", None, "their knight on e4"))
+    assert v.result == "false"
+    assert v.reason == (
+        "Their knight on e4 is attacked only by the c3 knight, which is pinned and cannot take it."
+    )
+    v = verdict(chess.Board(SCHOLAR), claim("hanging", None, "my f7 pawn"))
+    assert v.result == "true"
+    assert v.reason == (
+        "Your pawn on f7 is attacked by the c4 bishop and the h5 queen, and the e8 king cannot "
+        "take back."
+    )
+    v = verdict(chess.Board(PINNED_DEFENDER_B), claim("hanging", None, "their pawn on e4"))
+    assert v.result == "true"
+    assert v.reason == (
+        "Their pawn on e4 is attacked by the f6 knight, and the c3 knight is pinned and cannot "
+        "take back."
+    )
+    # With the bishop the only piece on f7, the king does take back after Bxf7+.
+    v = verdict(chess.Board(ITALIAN), claim("hanging", None, "their f7 pawn"))
+    assert v.result == "false"
+    assert v.reason == (
+        "Their pawn on f7 is attacked by the c4 bishop but defended by the e8 king, so it is "
+        "not hanging outright, and the exchange on f7 does not win it."
+    )
+
+
+def test_safe_plays_out_the_exchange_by_legal_moves() -> None:
+    v = verdict(chess.Board(PINNED_DEFENDER_W), claim("safe", None, "my e4 pawn"))
+    assert v.result == "false"
+    assert v.reason == (
+        "Your pawn on e4 is attacked once (the f6 knight) and defended not at all, so it can be "
+        "taken; the c3 knight is pinned and cannot take back."
+    )
+    v = verdict(chess.Board(PINNED_ATTACKER_B), claim("safe", None, "my e4 knight"))
+    assert v.result == "true"
+    assert v.reason == (
+        "Your knight on e4 is attacked only by the c3 knight, which is pinned and cannot take it."
+    )
+    v = verdict(chess.Board(X_RAY), claim("safe", None, "my d4 rook"))
+    assert v.result == "false"
+    assert v.reason == (
+        "Your rook on d4 is attacked once (the d7 rook) and defended once (the d1 queen), but "
+        "the exchange on d4 still wins it: the d8 queen behind the d7 rook joins in."
+    )
+
+
+def test_a_pinned_piece_does_not_defend() -> None:
+    v = verdict(chess.Board(PINNED_DEFENDER_W), claim("defends", "my knight", "e4"))
+    assert v.result == "false"
+    assert v.reason == "Your knight on c3 is pinned and cannot take back on e4."
+
+
+def test_a_pinned_piece_attacks_but_cannot_take() -> None:
+    v = verdict(chess.Board(PINNED_ATTACKER_W), claim("attacks", "my knight", "e4"))
+    assert v.result == "true"
+    assert v.reason == (
+        "Your knight on c3 attacks their knight on e4, but it is pinned and cannot take it."
+    )
+
+
+def test_draft_hanging_counts_only_legal_captures_and_recaptures() -> None:
+    problems = check_draft("Their knight on e4 is hanging.", chess.Board(PINNED_ATTACKER_W))
+    assert len(problems) == 1
+    assert problems[0].reason == "nothing can take the knight on e4"
+    assert check_draft("Their pawn on e4 is hanging.", chess.Board(PINNED_DEFENDER_B)) == []
+    assert check_draft("Your pawn on f7 is hanging.", chess.Board(SCHOLAR)) == []
+
+
+def test_draft_safe_is_faulted_when_the_exchange_wins_the_piece() -> None:
+    problems = check_draft("Your knight on e5 is safe.", chess.Board(KNIGHT_E5))
+    assert len(problems) == 1
+    assert problems[0].reason == "the knight on e5 can be taken for profit"
+
+
+def test_draft_pin_fork_and_skewer_must_win_something() -> None:
+    # The queen on a5 hits the c3 knight with the rook on d2 behind it, but the king takes
+    # back on d2: moving the knight loses nothing, so it is not pinned.
+    board = chess.Board("4k3/8/8/q7/8/2N5/3R4/4K3 w - - 0 1")
+    problems = check_draft("Your knight on c3 is pinned.", board)
+    assert len(problems) == 1 and problems[0].reason == "the knight on c3 is not pinned"
+    # A pin to the king stays a pin.
+    assert check_draft("Your knight on c3 is pinned.", chess.Board(PINNED_DEFENDER_W)) == []
+    # The d5 knight hits the queen and the rook, but it is pinned to its king by the a8
+    # bishop and can take neither.
+    board = chess.Board("b3k3/2q1r3/8/3N4/2P5/8/8/7K b - - 0 1")
+    problems = check_draft("Their knight on d5 forks the queen and rook.", board)
+    assert len(problems) == 1
+    assert problems[0].reason == "the knight on d5 is pinned, so it forks nothing"
+    # Unpinned, but the e6 pawn takes it for free, so the double attack wins nothing.
+    board = chess.Board("4k3/2q1r3/4p3/3N4/8/8/8/7K b - - 0 1")
+    problems = check_draft("Their knight on d5 forks the queen and rook.", board)
+    assert len(problems) == 1
+    assert problems[0].reason == "the knight on d5 can be taken for profit, so it forks nothing"
+    # The b7 rook in front is worth no more than the b2 rook and the c6 king defends it, so
+    # it need not move and the knight behind is not won.
+    board = chess.Board("1n6/1r6/2k5/8/8/8/1R6/K7 w - - 0 1")
+    problems = check_draft("Your rook on b2 skewers the rook and knight.", board)
+    assert len(problems) == 1
+    assert problems[0].reason == "the rook on b2 does not skewer anything"
+    # With the front rook undefended it must move, and the knight behind falls.
+    board = chess.Board("1n6/1r6/8/8/8/8/1R6/K1k5 w - - 0 1")
+    assert check_draft("Your rook on b2 skewers the rook and knight.", board) == []
 
 
 # --- the real thing ----------------------------------------------------------------------

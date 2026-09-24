@@ -8,7 +8,7 @@ a dialog, the end of the game), the way a game record carries its annotations. O
 model has seen a move's line it is frozen and never edited; facts that arrive later go in
 a note of their own. `# Position now` is the last ply in full at the disclosure level in
 force for the position the player faces: the board, the last move, the standing, the
-engine's lines (withheld on the player's own turn below CANDIDATE), the facts in the third
+engine's lines (withheld on the player's own turn below MOVE), the facts in the third
 person per side, the disclosure line, the complete inventory of what stands on the board,
 the player's record so far, and what was already said here. The coach appends its task and
 answers as the assistant.
@@ -157,7 +157,7 @@ class Conversation:
     start_fen: str = chess.STARTING_FEN
     # The disclosure level to render the position the user faces with, set by the coach
     # before each request from the current position's disclosure state.
-    level: DisclosureLevel = DisclosureLevel.QUESTION
+    level: DisclosureLevel = DisclosureLevel.IDEA
     # The earlier dialogue, summarised (see `summarise`); empty until the first fold.
     summary: str = ""
     # The record compacted: the coach's routine nods after sound moves are written out
@@ -462,9 +462,7 @@ class Conversation:
         # the player faces they are shown only once moves may be named.
         user_to_move = board_after.turn == user_colour
         lines: list[str] = [
-            position_text(
-                board_after, legal=not (user_to_move and level < DisclosureLevel.CANDIDATE)
-            ),
+            position_text(board_after, legal=not (user_to_move and level < DisclosureLevel.MOVE)),
             self._turn_text(board_after).capitalize() + ".",
         ]
         clock = ""
@@ -505,9 +503,11 @@ class Conversation:
         facts = self._facts_lines(record, board, user_colour, level)
         if facts:
             out.append((f"Facts ({self._facts_owner(user_to_move)})", "\n".join(facts)))
-        if user_to_move and level < DisclosureLevel.CANDIDATE:
+        if user_to_move and level < DisclosureLevel.MOVE:
             out.append(("Disclosure", f"Level {level.name.lower()}: {self._level_words(level)}."))
-        if not (user_to_move and level < DisclosureLevel.PIECE):
+        # The inventory lists the checks and captures on offer, the answer among them: on
+        # the player's turn it comes with the move (at the focus rung it named Qxf7#).
+        if not (user_to_move and level < DisclosureLevel.MOVE):
             out.append(
                 ("On the board (complete lists)", "\n".join(inventory_lines(board, user_colour)))
             )
@@ -646,7 +646,7 @@ class Conversation:
             return "", ["not in yet."]
         to_move = board.turn
         user_to_move = to_move == user_colour
-        if user_to_move and level < DisclosureLevel.CANDIDATE:
+        if user_to_move and level < DisclosureLevel.MOVE:
             return "", ["withheld at this disclosure level."]
         whose = "the player's" if user_to_move else "the opponent's"
         top = analysis.lines[0].expected_score
@@ -727,21 +727,38 @@ class Conversation:
             return ""
         return f"  ({text})" if text else ""
 
-    # The facts in the order a coach reads them: what kind of moment, then the idea.
+    # The facts in the order a coach reads them: what kind of moment, the goal and the
+    # pattern, where to look, then the move.
     _FACT_KEYS = (
         "phase",
         "decisive",
         "only_move",
         "nature",
+        "goal",
         "theme",
+        "mechanism",
         "plan",
-        "region",
+        "question",
+        "target",
         "piece",
+        "nudge",
+        "region",
+        "why",
         "tactic",
         "threats",
         "ideas",
         "focus",
     )
+    # What a fact is called on the sheet, where its key would not say it.
+    _FACT_NAMES = {
+        "theme": "pattern",
+        "mechanism": "how it works",
+        "question": "a question that sets them looking (to the player, as it stands)",
+        "nudge": "a question from the target to the move (to the player, as it stands)",
+        "why": "the move and what it does",
+    }
+    # The facts addressed to the player, kept in the second person.
+    _TO_THE_PLAYER = ("question", "nudge")
 
     @staticmethod
     def _facts_owner(user_to_move: bool) -> str:
@@ -777,7 +794,7 @@ class Conversation:
             value = visible.get(key)
             if value in (None, "", [], False):
                 continue
-            name = key.replace("_", " ")
+            name = self._FACT_NAMES.get(key, key.replace("_", " "))
             if value is True:
                 out.append(f"{name}: yes")
             elif key == "ideas":
@@ -791,6 +808,8 @@ class Conversation:
                 )
             elif isinstance(value, list):
                 out.append(f"{name}: " + ", ".join(str(v) for v in value))
+            elif key in self._TO_THE_PLAYER:
+                out.append(f"{name}: {value}")
             else:
                 out.append(f"{name}: {third_person(str(value), side=side)}")
         return out
@@ -916,10 +935,11 @@ class Conversation:
     def _level_words(level: DisclosureLevel) -> str:
         return {
             DisclosureLevel.SILENT: "say nothing about the position",
-            DisclosureLevel.QUESTION: "an orienting question only; no theme, square, piece or move",
-            DisclosureLevel.THEME: "the theme may be named; no square, piece or move",
-            DisclosureLevel.REGION: "the theme and the region; no piece or move",
-            DisclosureLevel.PIECE: "the theme, the region and the piece; no move",
-            DisclosureLevel.CANDIDATE: "the candidate moves may be named",
+            DisclosureLevel.IDEA: (
+                "the idea: the goal, the pattern and why it works; no square, no move, and "
+                "not which of the player's own pieces does it"
+            ),
+            DisclosureLevel.FOCUS: "the idea, the target and the piece; not the move",
+            DisclosureLevel.MOVE: "the move and why it works may be named",
             DisclosureLevel.LINE: "everything, the line included",
         }[level]

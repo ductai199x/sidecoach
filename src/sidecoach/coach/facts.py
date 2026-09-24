@@ -14,9 +14,11 @@ from collections.abc import Sequence
 
 import chess
 
-from sidecoach.analysis import positional
+from sidecoach.analysis import exchange, positional
 from sidecoach.analysis.engine import san_line
 from sidecoach.analysis.phase import phase_of
+from sidecoach.coach import idea as idea_of
+from sidecoach.coach import idea_words
 from sidecoach.coach.disclosure import PositionFacts
 from sidecoach.events import Analysis, MotifTag
 
@@ -39,6 +41,16 @@ _PLAN_THEME: dict[str, str] = {
     "activate": "activating your worst-placed piece",
     "space": "gaining space on the flank",
     "simplify": "trading down to convert your material",
+    "passerPawnEnding": "making a passed pawn",
+}
+# In a pawn ending there is no king to storm and no space to take: a pawn move there is
+# about the passed pawn it makes ("storming the pawns in front of their King" was said of
+# h5 in a king-and-pawn ending, Lichess Yb1jJ).
+_PAWN_ENDING_PLAN = {
+    "break": "passerPawnEnding",
+    "space": "passerPawnEnding",
+    "pawnStorm": "passerPawnEnding",
+    "centre": "passerPawnEnding",
 }
 
 # Tactical tags a coach would name as the theme, most specific first. Everything that a
@@ -97,13 +109,15 @@ def standing_words(score: float, *, third_person: bool = False) -> str:
     """An expected score from the player's side, in words: as the coach says it to the
     player ("you are better"), or as the harness writes it ("the player is better")."""
     who = "the player is" if third_person else "you are"
-    if score >= 0.85:
+    # Won at 0.8, as the idea reader counts a won position (`idea.WON`): "better" of a
+    # position four pawns up read wrong against ChessQA's bands (93% -> 96% at one line).
+    if score >= 0.8:
         return f"{who} winning"
     if score >= 0.62:
         return f"{who} better"
     if score > 0.38:
         return "it is about equal"
-    if score > 0.15:
+    if score > 0.2:
         return f"{who} worse"
     return f"{who} losing"
 
@@ -268,7 +282,20 @@ def _tactic_on(board: chess.Board, name: str, squares: Sequence[str]) -> str | N
     if name == "fork" and len(sqs) >= 3 and pieces[0] and all(pieces[1:]):
         # The forking piece must bear on every target, and every target must be the enemy's:
         # a fork read off a board that has moved on is otherwise built from the wrong pieces.
-        if all(enemy_of(0, i) and sqs[i] in board.attacks(sqs[0]) for i in range(1, len(sqs))):
+        forker_colour = pieces[0].color  # type: ignore[union-attr]
+        takes = {
+            t
+            for t in sqs[1:]
+            if pieces[sqs.index(t)] is not None
+            and (
+                pieces[sqs.index(t)].piece_type == chess.KING  # type: ignore[union-attr]
+                or sqs[0] in exchange.capturers(board, forker_colour, t)
+            )
+        }
+        if all(
+            enemy_of(0, i) and sqs[i] in board.attacks(sqs[0]) and sqs[i] in takes
+            for i in range(1, len(sqs))
+        ):
             # The king first, then the most valuable, at most three: "the queen on f7 forks
             # the pawn on b3 and the king on h5 and the pawn on f6 and the pawn on h7" was
             # said of a queen check that picks up a pawn.
@@ -401,32 +428,30 @@ def nature_of(board: chess.Board, best: chess.Move, line: Sequence[str] = ()) ->
     whose best move, a quiet knight move, uncovered a rook on the queen."""
     if board.is_capture(best) or board.gives_check(best) or best.promotion:
         return "forcing -- the answer is a check, a capture or a promotion"
-    if line and _line_gain(board, line) >= TACTIC_GAIN:
+    if line and _line_gain(board, line) >= TACTIC_GAIN:  # counted as the idea counts it
         return "a tactic -- the best move is quiet, but the line after it wins material"
     return "quiet -- no tactic to find; the move improves your position"
 
 
 def _line_gain(board: chess.Board, line: Sequence[str]) -> int:
-    """Material gained by the side to move over `line` (UCI), in pawns' worth; the line
-    stops at the first illegal move."""
-    us = board.turn
-    after = board.copy(stack=False)
+    """Material gained by the side to move over `line` (UCI), in pawns' worth, counted as
+    the idea reader counts its line (`idea.line_gain`): after the opponent's replies, a
+    line that stops mid-trade not counting what can still be taken back ("a3 Kd7 Nxe5" was
+    a knight won, with dxe5 to come). The line stops at the first illegal move."""
+    moves: list[chess.Move] = []
+    boards = [board.copy(stack=False)]
     for uci in line:
         try:
             move = chess.Move.from_uci(uci)
         except ValueError:
             break
-        if move not in after.legal_moves:
+        if move not in boards[-1].legal_moves:
             break
+        after = boards[-1].copy(stack=False)
         after.push(move)
-
-    def balance(b: chess.Board) -> int:
-        return sum(
-            _VALUES.get(p.piece_type, 0) * (1 if p.color == us else -1)
-            for p in b.piece_map().values()
-        )
-
-    return balance(after) - balance(board)
+        moves.append(move)
+        boards.append(after)
+    return idea_of.line_gain(boards, moves, len(moves))[0] if moves else 0
 
 
 def facts_from_analysis(
@@ -451,24 +476,29 @@ def facts_from_analysis(
     phase = phase_of(board, in_book)
     us = board.turn
 
-    # A tactic is the headline only when it is the point: a decisive or forced position, or
-    # one where the best move plays into the very squares the tactic is on. A pin that happens
-    # to sit on the board while the plan is elsewhere is incidental, and teaching it would
-    # point the player away from the real idea, so its focus and description are withheld.
-    theme = theme_of(analysis.tags)
-    best_squares = {best.from_square, best.to_square} if best is not None else set()
-    tactic_squares = {chess.parse_square(s) for s in theme.squares} if theme else set()
-    tactic_relevant = theme is not None and (
-        analysis.decisive or analysis.only_move or bool(best_squares & tactic_squares)
-    )
-    region = region_of(theme.squares) if tactic_relevant and theme else None
-    focus = list(theme.squares) if tactic_relevant and theme else []
+    # What the best line is for, read through the player's own moves (`coach/idea.py`): the
+    # goal, the blow that delivers it on whichever move it comes, the target. The pattern is
+    # the blow's, never a static feature elsewhere on the board: a static pin took the
+    # headline from the fork on the player's second move, and a mate in one went out as
+    # "getting a piece out of danger" (Tai's puzzles, 2026-09-23).
+    idea = idea_of.read(board, analysis)
+    tactical = idea.goal in ("mate", "win", "promote", "attack", "combination")
+    blow = idea.blow if tactical else None
+    theme_text = idea_words.pattern(idea) if tactical else None
+    # The squares the pattern turns on, as they stand now: the blow's when it is the first
+    # move, else what it goes after.
+    if blow is not None and idea.blow_at == 1:
+        focus = list(blow.squares)
+    elif idea.target is not None and tactical:
+        focus = [chess.square_name(idea.target)]
+    else:
+        focus = []
+    region = region_of(focus) if focus else None
     tactic = (
-        describe_tactic(board, theme.name, theme.squares, best)
-        if tactic_relevant and theme
+        describe_tactic(idea.blow_board, blow.name, blow.squares, idea.blow_move)
+        if blow is not None and idea.blow_board is not None
         else None
     )
-    theme_text = dict(THEMES)[theme.name] if tactic_relevant and theme else None
 
     # The opponent's threat, as the coach would name it, and the move behind it: the engine's
     # best reply after a pass. The threat move lets the best move be read as prophylaxis.
@@ -488,22 +518,30 @@ def facts_from_analysis(
     # most instructive static features. The plan only competes for the theme slot when no
     # tactic leads, so the coach is never handed two headlines at once.
     plan: str | None = None
-    if best is not None:
+    plan_kind: str | None = None
+    if best is not None and idea.goal in ("plan", "defend"):
         worst = positional.worst_piece_square(board, us)
-        idea = positional.best_move_idea(
+        plan_idea = positional.best_move_idea(
             board, best, us, phase=phase, worst=worst, threat=threat_move
         )
-        if idea is not None and not tactic_relevant:
-            plan = _PLAN_THEME.get(idea.kind)
+        if plan_idea is not None:
+            kind = plan_idea.kind
+            pawn_ending = all(
+                p.piece_type in (chess.KING, chess.PAWN) for p in board.piece_map().values()
+            )
+            if pawn_ending:
+                kind = _PAWN_ENDING_PLAN.get(kind, kind)
+            plan = _PLAN_THEME.get(kind)
+            plan_kind = kind if plan else None
     ideas = [fact.text for fact in positional.top_features(board, us, phase=phase, limit=2)]
 
-    piece: str | None = None
+    piece: str | None = idea_words.piece(idea, board)
     nature: str | None = None
     if best is not None:
-        moving = board.piece_at(best.from_square)
-        if moving is not None:
-            piece = f"your {PIECE_NAMES[moving.piece_type]}"
         nature = nature_of(board, best, lines[0].moves if lines else ())
+    mechanism = idea_words.mechanism(idea)
+    if mechanism is None and plan_kind in idea_words.PLAN_WHY:
+        mechanism = f"{plan}: {idea_words.PLAN_WHY[plan_kind]}"
 
     candidates: list[str] = []
     if lines:
@@ -528,9 +566,15 @@ def facts_from_analysis(
         decisive=analysis.decisive,
         only_move=analysis.only_move,
         nature=nature,
+        goal=idea_words.goal(idea),
         theme=theme_text,
+        mechanism=mechanism,
+        question=idea_words.question(idea, plan_kind),
         region=region,
+        target=idea_words.target(idea, board),
         piece=piece,
+        why=idea_words.why(idea, board, describe_tactic),
+        nudge=idea_words.nudge(idea),
         focus=focus,
         tactic=tactic,
         plan=plan,

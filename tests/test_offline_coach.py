@@ -64,14 +64,13 @@ def test_a_typed_question_gets_the_hint_template() -> None:
 def test_the_templates_rotate_and_never_repeat_the_last() -> None:
     """Four decisive moments in one game got the same sentence four times (a master-game
     pass, 2026-09-21): each list is drawn from without the last one said."""
-    from sidecoach.coach.coach import DECISIVE_QUESTIONS, STUCK_GENERIC
+    from sidecoach.coach.coach import COST_YOU, FINE_TIGHTER
 
     coach = Coach(OfflineProvider(), policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
-    said = [coach._rotate("decisive", DECISIVE_QUESTIONS) for _ in range(40)]
-    assert all(a != b for a, b in zip(said, said[1:], strict=False))
-    assert set(said) == set(DECISIVE_QUESTIONS)
-    hints = [coach._rotate("stuck", STUCK_GENERIC) for _ in range(40)]
-    assert all(a != b for a, b in zip(hints, hints[1:], strict=False))
+    for key, options in (("cost", COST_YOU), ("fine", FINE_TIGHTER)):
+        said = [coach._rotate(key, options) for _ in range(40)]
+        assert all(a != b for a, b in zip(said, said[1:], strict=False))
+        assert set(said) == set(options)
     # A list of one is said again, rather than nothing.
     assert coach._rotate("one", ["only"]) == "only" and coach._rotate("one", ["only"]) == "only"
 

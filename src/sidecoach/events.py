@@ -244,13 +244,22 @@ class MoveAssessment(Event):
 
 
 class DisclosureLevel(IntEnum):
+    """Two hints, then the answer (Tai, 2026-09-23: "2 is probably the right number with the
+    third giving the answer with a good and correct explanation"). IDEA: the goal and the
+    pattern, and why it works. FOCUS: the target on the board and the piece that does it.
+    MOVE: the move, explained. LINE: the whole line."""
+
     SILENT = 0
+    IDEA = 1
+    FOCUS = 2
+    MOVE = 3
+    LINE = 4
+    # The old seven-rung names, for the evaluation tools that still speak them.
     QUESTION = 1
-    THEME = 2
-    REGION = 3
-    PIECE = 4
-    CANDIDATE = 5
-    LINE = 6
+    THEME = 1
+    REGION = 2
+    PIECE = 2
+    CANDIDATE = 3
 
 
 class Trigger(StrEnum):

@@ -231,9 +231,16 @@ def test_the_verdict_comes_from_one_line_before_the_position_is_measured_whole(
             self.calls: list[tuple[str, int]] = []
 
         def analyse(
-            self, board: chess.Board, *, depth: int, multipv: int = 1, time_s: float | None = None
+            self,
+            board: chess.Board,
+            *,
+            depth: int,
+            multipv: int = 1,
+            time_s: float | None = None,
+            carry_best: bool = False,
         ) -> list[Line]:
             self.calls.append((board.fen(), multipv))
+            del carry_best  # the line is as long as the fake makes it
             lines = [Line(moves=["e2e4"], depth=depth, expected_score=0.52)]
             if multipv > 1:
                 lines.append(Line(moves=["d2d4"], depth=depth, expected_score=0.51))

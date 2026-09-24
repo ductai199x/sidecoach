@@ -16,16 +16,13 @@ from sidecoach.events import DisclosureLevel
 
 
 def test_hanging_pinned_batteries_and_captures_are_read_off_the_board() -> None:
-    # Black to move; White's rook on f6 hits b6 and h6, Black's rook on e3 hits e2 and a3.
+    # Black to move; White's rook on f6 forks the loose pawns on b6 and h6. Black's rook on
+    # e3 hits e2 and a3, but the bishop and the pawn are defended and worth less: no fork.
     board = chess.Board("b5k1/8/pp3R1p/8/3p4/P3r3/1P2BKPP/8 b - - 7 39")
     text = inventory_text(board, chess.BLACK)
     assert "The player's hanging: pawn on a6 (attacked by the bishop on e2); pawn on b6" in text
-    assert (
-        "The opponent's double attacks: rook on f6 hits the pawn on b6 and the pawn on h6" in text
-    )
-    assert (
-        "The player's double attacks: rook on e3 hits the bishop on e2 and the pawn on a3" in text
-    )
+    assert "The opponent's forks: rook on f6 hits the pawn on b6 and the pawn on h6" in text
+    assert "The player's forks" not in text
     assert "The player's checks: Rf3+, Rxe2+" in text
     assert "The player's captures: Rxe2+ (the bishop, defended)" in text
     # A queen pinning the f7 pawn to the king, read from White's side.
@@ -38,7 +35,8 @@ def test_hanging_pinned_batteries_and_captures_are_read_off_the_board() -> None:
     # A rook behind a queen on a file is a battery; a skewer is the pin the other way round.
     board = chess.Board("2q4k/5pbp/5n2/1p3P2/2p3P1/P3Q3/1P4P1/4R1K1 b - - 0 32")
     assert batteries(board, chess.WHITE) == [[chess.E1, chess.E3]]
-    board = chess.Board("6k1/8/8/8/8/8/8/R2q1r1K w - - 0 1")
+    # (The king on h2, off the rook's rank: in check it could not take at all.)
+    board = chess.Board("6k1/8/8/8/8/8/7K/R2q1r2 w - - 0 1")
     assert skewer_target(board, chess.A1) == (chess.D1, chess.F1)
     assert forks_in_place(chess.Board(), chess.WHITE) == []
     assert inventory_text(chess.Board(), chess.WHITE) == (

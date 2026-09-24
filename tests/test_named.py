@@ -7,8 +7,10 @@ import chess
 
 from sidecoach.coach.claims import check_draft
 from sidecoach.coach.named import (
+    Probe,
     disclosed_frames,
     examine,
+    examine_piece,
     parse_probe,
     probes_by_words,
     spoken,
@@ -137,6 +139,70 @@ def test_a_move_recited_from_the_examined_line_is_not_faulted() -> None:
     draft = "After h3 Na5 Re1 they can play Nxc4."
     assert [p.text for p in check_draft(draft, board)] == ["Nxc4"]
     assert check_draft(draft, board, after=disclosed_frames(board, [fact])) == []
+
+
+def _piece(fen: str, square: str, user_colour: chess.Color) -> str:
+    probe = Probe(label=square, moves=[], square=chess.parse_square(square))
+    return examine_piece(probe, chess.Board(fen), user_colour=user_colour)
+
+
+def test_a_piece_attacks_and_is_defended_by_legal_captures_only() -> None:
+    """A knight pinned to its king attacks and defends nothing off its line; a king takes
+    back only where the other side does not still guard the square (the audit of
+    2026-09-23)."""
+    head = "Engine on {}, which the player asked about: "
+    pinned = "4k3/8/8/8/1b2n3/2N5/8/4K3 w - - 0 1"
+    assert _piece(pinned, "c3", chess.WHITE) == head.format("c3") + (
+        "the player's knight on c3 stands there; it has no legal move; it is attacked by the "
+        "bishop on b4 and the knight on e4; nothing defends it; it is pinned to the king on e1 "
+        "by the bishop on b4."
+    )
+    assert _piece(pinned, "e4", chess.WHITE) == head.format("e4") + (
+        "the opponent's knight on e4 stands there; it can go to c3, c5, d2, d6, f2, f6, g3, g5; "
+        "it attacks the knight on c3; nothing attacks it; nothing defends it."
+    )
+    assert _piece("4k3/8/5n2/8/1b2P3/2N5/8/4K3 b - - 0 1", "e4", chess.WHITE) == head.format(
+        "e4"
+    ) + (
+        "the player's pawn on e4 stands there; it can go to e5; it is attacked by the knight on "
+        "f6; nothing defends it."
+    )
+    # Scholar's mate threatened: the queen guards f7, so the king cannot take back there.
+    scholar = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 4 4"
+    assert _piece(scholar, "f7", chess.BLACK) == head.format("f7") + (
+        "the player's pawn on f7 stands there; it has no legal move; it is attacked by the "
+        "bishop on c4 and the queen on h5; nothing defends it; it is pinned to the king on e8 "
+        "by the queen on h5."
+    )
+    # With a single attacker the king does take back: Bxd2+ Kxd2.
+    alone = "4k3/8/5n2/8/1b2B3/8/3N4/4K3 b - - 0 1"
+    assert _piece(alone, "d2", chess.WHITE) == head.format("d2") + (
+        "the player's knight on d2 stands there; it has no legal move; it is attacked by the "
+        "bishop on b4; it is defended by the king on e1; it is pinned to the king on e1 by the "
+        "bishop on b4."
+    )
+
+
+def test_a_king_is_attacked_by_check_and_never_a_square_to_go_to() -> None:
+    """A king is attacked by what gives it check. The checking queen, examined with its own
+    side handed the move, was offered the king's square to go to."""
+    board = "4k3/8/8/8/8/8/8/4QK2 b - - 0 1"
+    assert _piece(board, "e1", chess.WHITE) == (
+        "Engine on e1, which the player asked about: the player's queen on e1 stands there; it "
+        "can go to a1, a5, b1, b4, c1, c3, d1, d2, e2, e3, e4, e5, e6, e7, f2, g3, h4; it "
+        "attacks the king on e8; nothing attacks it; it is defended by the king on f1."
+    )
+    assert _piece(board, "e8", chess.WHITE) == (
+        "Engine on e8, which the player asked about: the opponent's king on e8 stands there; it "
+        "can go to d7, d8, f7, f8; it is attacked by the queen on e1."
+    )
+
+
+def test_a_pinned_piece_controls_a_square_only_against_the_king() -> None:
+    assert _piece("4k3/8/8/8/1b6/2N5/8/4K3 w - - 0 1", "d5", chess.BLACK) == (
+        "Engine on d5, which the player asked about: d5 is empty; the opponent controls it "
+        "with the knight on c3 (pinned)."
+    )
 
 
 def test_undefended_means_no_defender_and_hanging_means_attacked_too() -> None:

@@ -24,20 +24,21 @@ def facts() -> PositionFacts:
     )
 
 
-def test_autonomous_escalation_stops_at_region() -> None:
+def test_autonomous_escalation_gives_the_idea_then_stops_at_the_focus() -> None:
     d = Disclosure()
-    assert d.apply(Unlock.DECISIVE) == L.QUESTION
-    assert d.apply(Unlock.STUCK) == L.THEME
-    assert d.apply(Unlock.STUCK) == L.REGION
+    assert d.apply(Unlock.DECISIVE) == L.IDEA
+    assert d.apply(Unlock.STUCK) == L.FOCUS
     assert d.apply(Unlock.STUCK) is None
-    assert d.level == L.REGION
+    assert d.level == L.FOCUS
 
 
-def test_hint_request_may_reach_piece_but_not_candidate() -> None:
-    d = Disclosure(level=L.REGION)
-    assert d.apply(Unlock.HINT) == L.PIECE
+def test_two_hints_then_the_answer() -> None:
+    d = Disclosure()
+    assert d.apply(Unlock.HINT) == L.IDEA
+    assert d.apply(Unlock.HINT) == L.FOCUS
+    assert d.apply(Unlock.HINT) == L.MOVE, "the third hint is the move, explained"
     assert d.apply(Unlock.HINT) is None
-    assert d.level == L.PIECE
+    assert d.level == L.MOVE
 
 
 def test_asking_for_the_move_unlocks_candidates() -> None:
@@ -57,13 +58,18 @@ def test_playing_the_move_unlocks_the_line() -> None:
     assert d.history == [(Unlock.MOVE_PLAYED, L.LINE)]
 
 
-def test_visible_facts_hide_moves_below_candidate() -> None:
-    bundle = visible_facts(facts(), L.REGION)
+def test_visible_facts_hide_moves_below_the_move_level() -> None:
+    bundle = visible_facts(facts(), L.FOCUS)
     assert bundle["theme"] == "loose piece"
     assert bundle["region"] == "around f7"
-    for hidden in ("piece", "candidates", "threats", "line"):
+    assert bundle["piece"] == "your knight"
+    for hidden in ("candidates", "threats", "line"):
         assert hidden not in bundle
     assert "fen" in bundle
+    idea = visible_facts(facts(), L.IDEA)
+    assert idea["theme"] == "loose piece"
+    for hidden in ("region", "piece", "candidates"):
+        assert hidden not in idea
 
 
 def test_visible_facts_show_everything_at_line() -> None:

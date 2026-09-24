@@ -97,6 +97,24 @@ def test_best_move_idea_rescues_a_piece_in_danger() -> None:
     assert idea is not None and idea.kind == "rescue"
 
 
+def test_a_rescue_needs_a_piece_that_can_be_won_and_a_safe_square() -> None:
+    # A knight beside the enemy king, guarded by its pawn: the king cannot take it, so it is
+    # not in danger (the king used to count as a capturer worth nothing).
+    guarded = chess.Board("8/8/5k2/4N3/3P4/8/8/4K3 w - - 0 1")
+    assert not P._piece_is_attacked(guarded, chess.E5, chess.WHITE)
+    assert _idea_kind(guarded, "Nd3", chess.WHITE) != "rescue"
+    # A knight attacked only by the c6 knight, which the b5 bishop pins to its king.
+    pinned = chess.Board("4k3/8/2n5/1B6/3N4/8/8/4K3 w - - 0 1")
+    assert not P._piece_is_attacked(pinned, chess.D4, chess.WHITE)
+    assert _idea_kind(pinned, "Nf3", chess.WHITE) != "rescue"
+    # The d5 pawn attacks the knight, so it is in danger; running to b6, where the a7 pawn
+    # takes it, is no rescue, and e3 is.
+    board = chess.Board("4k3/p7/8/3p4/2N5/8/8/4K3 w - - 0 1")
+    assert P._piece_is_attacked(board, chess.C4, chess.WHITE)
+    assert _idea_kind(board, "Nb6", chess.WHITE) != "rescue"
+    assert _idea_kind(board, "Ne3", chess.WHITE) == "rescue"
+
+
 def test_top_features_are_ranked_deduped_and_capped() -> None:
     # A position rich in features: up material, a passed a-pawn, and open files.
     board = chess.Board("3r2k1/6pp/8/P7/8/8/6PP/3R2K1 w - - 0 1")
@@ -184,6 +202,19 @@ def test_prophylaxis_is_a_quiet_move_that_stops_the_opponent_s_threat() -> None:
     )
     # With no threat supplied, Nc3 is read as ordinary development, not prophylaxis.
     assert _idea_kind(board, "Nc3", chess.WHITE, phase="opening") == ("develop")
+
+
+def test_a_guard_that_still_loses_the_piece_is_not_prophylaxis() -> None:
+    # ...bxc3 threatens the knight. Bd2 guards it, but the pawn still wins a knight for a
+    # pawn, so the threat is not stopped.
+    board = chess.Board("4k3/8/8/8/1p6/2N5/8/2B1K3 w - - 0 1")
+    threat = chess.Move.from_uci("b4c3")
+    assert _idea_kind(board, "Bd2", chess.WHITE, threat=threat) != "prophylaxis"
+    # A guard pinned to its own king takes nothing back: the g2 pawn guards the h3 bishop
+    # ...Nxh3 threatens, but the d5 bishop pins it, so a quiet a4 stops nothing.
+    board = chess.Board("4k3/8/8/3b4/5n2/P6B/6P1/7K w - - 0 1")
+    threat = chess.Move.from_uci("f4h3")
+    assert _idea_kind(board, "a4", chess.WHITE, threat=threat) != "prophylaxis"
 
 
 def test_central_infiltration_is_not_called_centralising() -> None:

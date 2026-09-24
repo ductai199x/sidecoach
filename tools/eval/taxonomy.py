@@ -97,7 +97,7 @@ class Class:
     # Form constraints the judge checks.
     max_sentences: int | None = None
     ends_with_question: bool | None = None
-    no_names_below: DisclosureLevel | None = DisclosureLevel.CANDIDATE
+    no_names_below: DisclosureLevel | None = DisclosureLevel.MOVE
 
 
 def _loss_words(loss: float) -> str:
@@ -135,20 +135,22 @@ def _eval_words(score: float) -> str:
 
 
 def _level_fact(m: Moment) -> list[Fact]:
-    """The one fact the level allows about the position the player faces."""
+    """What the level must give about the position the player faces: the goal and the
+    pattern (idea), the target and the piece (focus), the move, the line."""
     f = m.facts
-    if m.level <= DisclosureLevel.QUESTION:
-        return [Fact("nature", f.nature or "", "sense")] if f.nature else []
-    if m.level == DisclosureLevel.THEME:
-        return [Fact("theme", f.theme or f.plan or "", "sense")]
-    if m.level == DisclosureLevel.REGION:
-        return [
-            Fact("theme", f.theme or f.plan or "", "sense"),
-            Fact("region", f.region or "", "named"),
-        ]
-    if m.level == DisclosureLevel.PIECE:
-        return [Fact("piece", f.piece or "", "named")]
-    if m.level == DisclosureLevel.CANDIDATE:
+    if m.level <= DisclosureLevel.IDEA:
+        out = [Fact("goal", f.goal, "sense")] if f.goal else []
+        if f.theme or f.plan:
+            out.append(Fact("pattern", f.theme or f.plan or "", "sense"))
+        if not out and f.nature:
+            out.append(Fact("nature", f.nature, "sense"))
+        return out
+    if m.level == DisclosureLevel.FOCUS:
+        out = [Fact("target", f.target, "named")] if f.target else []
+        if f.piece:
+            out.append(Fact("piece", f.piece, "named"))
+        return out
+    if m.level == DisclosureLevel.MOVE:
         return [Fact("candidate", f.candidates[0], "named")] if f.candidates else []
     return [Fact("line", " ".join(f.line), "named")] if f.line else []
 
@@ -174,14 +176,14 @@ def required(cls: Class, m: Moment) -> list[Fact]:
         if idea:
             out.append(Fact("idea", idea, "sense"))
         # At full disclosure the tactic itself -- what forks or pins what -- is the lesson.
-        if fb.tactic and m.level >= DisclosureLevel.PIECE:
+        if fb.tactic and m.level >= DisclosureLevel.FOCUS:
             out.append(Fact("tactic", fb.tactic, "sense"))
     elif cls.id in ("decisive_question", "stuck_hint", "ask_hint"):
         out.extend(_level_fact(m) if cls.id != "decisive_question" else [])
     elif cls.id == "ask_move" or cls.id == "ask_line":
         out.extend(_level_fact(m))
     elif cls.id == "ask_plan":
-        if m.level >= DisclosureLevel.THEME and (f.plan or f.theme):
+        if m.level >= DisclosureLevel.IDEA and (f.plan or f.theme):
             out.append(Fact("plan", f.plan or f.theme or "", "sense"))
         else:
             out.extend(_level_fact(m))
@@ -191,7 +193,7 @@ def required(cls: Class, m: Moment) -> list[Fact]:
         if m.material:
             out.append(Fact("material", m.material, "sense"))
     elif cls.id == "ask_threat":
-        if m.level >= DisclosureLevel.CANDIDATE and f.threats:
+        if m.level >= DisclosureLevel.MOVE and f.threats:
             out.extend(Fact(f"threat_{i}", t, "named") for i, t in enumerate(f.threats[:3], 1))
         else:
             out.extend(_level_fact(m))
@@ -212,12 +214,12 @@ def required(cls: Class, m: Moment) -> list[Fact]:
                         "sense",
                     )
                 )
-            if m.level >= DisclosureLevel.CANDIDATE and f.candidates and m.named_rank != 1:
+            if m.level >= DisclosureLevel.MOVE and f.candidates and m.named_rank != 1:
                 out.append(Fact("better_move", f.candidates[0], "named"))
     elif cls.id == "ask_opponent_move":
         out.append(Fact("move", m.last_san or "", "sense"))
         out.append(Fact("label", m.last_label or "", "sense"))
-        if m.level >= DisclosureLevel.CANDIDATE and f.threats:
+        if m.level >= DisclosureLevel.MOVE and f.threats:
             out.extend(Fact(f"threat_{i}", t, "named") for i, t in enumerate(f.threats[:3], 1))
     elif cls.id == "ask_game_so_far":
         # One yes-or-no each: how many moves were strong, each kind of slip and its count,

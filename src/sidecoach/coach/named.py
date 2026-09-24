@@ -21,6 +21,7 @@ from typing import Protocol
 
 import chess
 
+from sidecoach.analysis import exchange
 from sidecoach.analysis.engine import san_line
 from sidecoach.coach.effects import effects_text
 from sidecoach.coach.facts import PIECE_NAMES, standing_words
@@ -147,10 +148,22 @@ def pieces_by_words(text: str, board: chess.Board) -> list[Probe]:
     return out[:4]
 
 
+def _controller(board: chess.Board, at: chess.Square, square: chess.Square) -> str:
+    """The piece on `at` as it controls `square`: marked pinned when it is pinned to its king
+    off the line through `square` -- it still keeps the enemy king off, but takes nothing
+    that lands there."""
+    colour = board.color_at(at)
+    if colour is not None and square not in board.pin(colour, at):
+        return f"{name_of(board, at)} (pinned)"
+    return name_of(board, at)
+
+
 def examine_piece(probe: Probe, board: chess.Board, *, user_colour: chess.Color) -> str:
     """The board on one piece or square: what stands there, where it can go, what it
     attacks and defends, what attacks and defends it, whether it is pinned. Static facts
-    of the position, no search."""
+    of the position, no search. Attack and defence are legal captures and recaptures
+    (`sidecoach.analysis.exchange`): a piece pinned to its king attacks and defends nothing
+    off its line, and a king does not take back where the other side still guards."""
     assert probe.square is not None
     square = probe.square
     head = f"Engine on {probe.label}, which the player asked about:"
@@ -162,12 +175,12 @@ def examine_piece(probe: Probe, board: chess.Board, *, user_colour: chess.Color)
         if holders:
             parts.append(
                 "the player controls it with the "
-                + " and the ".join(name_of(board, s) for s in holders[:3])
+                + " and the ".join(_controller(board, s, square) for s in holders[:3])
             )
         if theirs:
             parts.append(
                 "the opponent controls it with the "
-                + " and the ".join(name_of(board, s) for s in theirs[:3])
+                + " and the ".join(_controller(board, s, square) for s in theirs[:3])
             )
         if not holders and not theirs:
             parts.append("nobody controls it")
@@ -175,30 +188,50 @@ def examine_piece(probe: Probe, board: chess.Board, *, user_colour: chess.Color)
     whose = "the player's" if piece.color == user_colour else "the opponent's"
     name = f"{whose} {PIECE_NAMES[piece.piece_type]} on {chess.square_name(square)}"
     parts = [f"{name} stands there"]
-    # Where it can go, on the board as it stands, with its own side to move.
+    # Where it can go, on the board as it stands, with its own side to move. Never onto the
+    # enemy king: with the turn handed to the side giving check, the generator offers it.
     view = board.copy(stack=False)
     view.turn = piece.color
-    moves = [m for m in view.legal_moves if m.from_square == square]
+    moves = [
+        m
+        for m in view.legal_moves
+        if m.from_square == square and view.piece_type_at(m.to_square) != chess.KING
+    ]
     if moves:
         parts.append(
             "it can go to " + ", ".join(sorted({chess.square_name(m.to_square) for m in moves}))
         )
     else:
         parts.append("it has no legal move")
+    # It attacks what it could take among those moves, and the enemy king when it gives
+    # check (a pinned piece still does); it defends the pieces it could legally take back on.
     attacks = [
-        t for t in board.attacks(square) if (o := board.piece_at(t)) and o.color != piece.color
+        t
+        for t in board.attacks(square)
+        if (o := board.piece_at(t))
+        and o.color != piece.color
+        and (o.piece_type == chess.KING or any(m.to_square == t for m in moves))
     ]
     defends = [
         t
         for t in board.attacks(square)
-        if (o := board.piece_at(t)) and o.color == piece.color and o.piece_type != chess.KING
+        if (o := board.piece_at(t))
+        and o.color == piece.color
+        and o.piece_type != chess.KING
+        and square in exchange.defenders(board, piece.color, t)
     ]
     if attacks:
         parts.append("it attacks the " + " and the ".join(name_of(board, t) for t in attacks[:4]))
     if defends:
         parts.append("it defends the " + " and the ".join(name_of(board, t) for t in defends[:4]))
-    attackers = sorted(board.attackers(not piece.color, square))
-    defenders = sorted(board.attackers(piece.color, square))
+    # A king is attacked by what gives it check, pinned or not; any other piece by what can
+    # legally take it.
+    attackers = (
+        sorted(board.attackers(not piece.color, square))
+        if piece.piece_type == chess.KING
+        else exchange.capturers(board, not piece.color, square)
+    )
+    defenders = exchange.defenders(board, piece.color, square)
     if attackers:
         parts.append(
             "it is attacked by the " + " and the ".join(name_of(board, s) for s in attackers[:3])

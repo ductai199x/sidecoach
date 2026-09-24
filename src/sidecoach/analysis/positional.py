@@ -22,6 +22,8 @@ from dataclasses import dataclass
 
 import chess
 
+from sidecoach.analysis import exchange
+
 PIECE_NAMES: dict[chess.PieceType, str] = {
     chess.PAWN: "pawn",
     chess.KNIGHT: "knight",
@@ -1117,14 +1119,16 @@ def _rook_behind_passer(
 
 
 def _piece_is_attacked(board: chess.Board, square: chess.Square, us: chess.Color) -> bool:
-    """Whether an enemy piece attacks `square` and it is worth more than the cheapest attacker."""
-    attackers = board.attackers(not us, square)
-    if not attackers:
-        return False
-    mine = _VALUE.get(board.piece_type_at(square) or chess.PAWN, 0)
-    cheapest = min(_VALUE.get(board.piece_type_at(a) or chess.PAWN, 0) for a in attackers)
-    defended = bool(board.attackers(us, square))
-    return cheapest < mine or not defended
+    """Whether your piece on `square` is in danger: the opponent can win it, taking with a
+    legal capture and coming out ahead once the recaptures are played out.
+
+    Read by the rules (`exchange.can_be_won`), not off `board.attackers()`, which called a
+    knight guarded by a pawn "in danger" from the enemy king beside it (the king was worth
+    nothing, and it cannot take a guarded piece anyway), and a knight attacked only by a piece
+    pinned to its own king.
+    """
+    piece = board.piece_at(square)
+    return piece is not None and piece.color == us and exchange.can_be_won(board, square)
 
 
 def _prevents_threat(
@@ -1133,16 +1137,23 @@ def _prevents_threat(
     """Whether the move that led to `after` stops the opponent's threatened move.
 
     Stopped when the threat is no longer a legal move at all, or when it was a capture of one
-    of your pieces that you now guard, so it can be met.
+    of your pieces that won material and no longer does: played out by the rules, recaptures
+    included, it now nets nothing (`exchange.exchange`). A guard alone is not enough -- a
+    bishop guarding a knight a pawn attacks leaves the pawn winning it, and a guard pinned to
+    its own king takes nothing back.
     """
     if threat not in after.legal_moves:
         return True
-    if after.is_capture(threat):
-        target = threat.to_square
-        victim = after.piece_at(target)
-        if victim is not None and victim.color == us and after.attackers(us, target):
-            return True
-    return False
+    victim = after.piece_at(threat.to_square)
+    if victim is None or victim.color != us:
+        return False
+    passed = board.copy(stack=False)
+    passed.push(chess.Move.null())  # the position before the move, the opponent to move
+    return (
+        threat in passed.legal_moves
+        and exchange.exchange(passed, threat) > 0
+        and exchange.exchange(after, threat) <= 0
+    )
 
 
 def best_move_idea(
@@ -1173,7 +1184,13 @@ def best_move_idea(
             "castle", "castle to tuck your king away and connect the rooks", (to,)
         )
 
-    if _piece_is_attacked(board, move.from_square, us) and not board.is_capture(move):
+    # A rescue needs the square the piece goes to to be safe as well: a knight that runs from
+    # one pawn onto a square another pawn takes is not brought to safety.
+    if (
+        _piece_is_attacked(board, move.from_square, us)
+        and not board.is_capture(move)
+        and not _piece_is_attacked(after, move.to_square, us)
+    ):
         name = PIECE_NAMES[piece_type]
         return PositionalFact(
             "rescue", f"your {name} was in danger; moving to {to} brings it to safety", (to,)

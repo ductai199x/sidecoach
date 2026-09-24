@@ -60,16 +60,16 @@ def test_facts_name_the_theme_region_piece_and_candidates() -> None:
     facts = facts_from_analysis(board, analysis, last_move="Nf6")
     assert facts.side_to_move == "white" and facts.phase == "opening"
     assert facts.theme == "a mating attack"
-    assert facts.region == "the kingside, around f7"
-    assert facts.piece == "your queen", "the piece, never its destination"
+    assert facts.region == "the kingside, around e8", "around the king being mated"
+    assert facts.piece == "your queen on h5", "the piece where it stands, never its destination"
     assert facts.candidates == ["Qxf7#"]
     assert facts.threats == ["Nxh5"], "what the opponent would play if it were their turn"
     assert facts.line == ["Qxf7#"]
     assert facts.decisive and facts.last_move == "Nf6"
     # And the disclosure machine can hide all of it.
-    hidden = visible_facts(facts, DisclosureLevel.QUESTION)
-    assert "theme" not in hidden and "candidates" not in hidden and "line" not in hidden
-    assert visible_facts(facts, DisclosureLevel.THEME)["theme"] == "a mating attack"
+    hidden = visible_facts(facts, DisclosureLevel.IDEA)
+    assert "piece" not in hidden and "candidates" not in hidden and "line" not in hidden
+    assert visible_facts(facts, DisclosureLevel.IDEA)["theme"] == "a mating attack"
 
 
 def test_facts_survive_a_line_the_board_cannot_play() -> None:
@@ -201,13 +201,16 @@ def test_time_controls_follow_the_sites_bands() -> None:
     assert time_control_of(2 * 60_000, 12_000) is TimeControl.RAPID, "increment counts forty moves"
 
 
-def test_one_unprompted_message_per_position_while_thinking() -> None:
+def test_two_unprompted_messages_per_position_the_idea_then_the_focus() -> None:
     policy = InterjectionPolicy(PolicySettings(stuck_seconds=10))
     policy.new_position(6, 100.0, user_to_move=True)
     assert policy.on_position_analysed(6, decisive=True) is Trigger.DECISIVE_QUESTION
-    policy.said(6)
+    policy.said(6, 101.0)
     assert policy.on_position_analysed(6, decisive=True) is None, "already spoke here"
-    assert policy.tick(200.0) is None, "and a stuck hint would be a second message"
+    assert policy.tick(105.0) is None, "a full stuck spell from the idea"
+    assert policy.tick(112.0) is Trigger.STUCK, "then the focus"
+    policy.said(6, 112.0)
+    assert policy.tick(200.0) is None, "and no third: the move only when asked"
     policy.new_position(8, 200.0, user_to_move=True)
     assert policy.tick(205.0) is None, "not stuck yet"
     assert policy.tick(211.0) is Trigger.STUCK

@@ -108,44 +108,13 @@ TAUGHT_MEMORY = 3
 VERDICTS: dict[str, list[str]] = {
     label: [opener + "." for opener in openers] for label, openers in OPENERS.items()
 }
-# The templates said without a model, where the same sentence four times in a game
-# wears thin (a master-game pass, offline, 2026-09-21): a choice each time, never the
-# last one said. The orienting question at a critical moment names nothing on the board.
-DECISIVE_QUESTIONS = [
-    "This is a moment to slow down. What is your opponent's most dangerous idea here, and "
-    "which of your pieces is doing the least?",
-    "Take your time here: it matters. What does your opponent want to do next, and can "
-    "you stop it and improve at the same time?",
-    "A critical moment. Before you move, what are their checks, captures and threats?",
-    "Slow down. If you passed, what would your opponent play -- and does your move answer it?",
-    "This one counts. Which of your pieces would you most like to improve, and what are they "
-    "threatening right now?",
-]
-# The hint when the sheet gives nothing to point at: what to take stock of.
-STUCK_GENERIC = [
-    "Take stock: what changed with the last move, and what does it allow?",
-    "Start from their last move: what does it attack, and what did it leave behind?",
-    "List the forcing moves first -- the checks and captures -- then the quiet ones.",
-    "Which of your pieces is worst placed? A move that fixes it is rarely wrong.",
-]
-# The theme-level hint, "{theme}" the idea the sheet names (a noun phrase, "a pin", or a
-# plan, "finishing your development"; the frames read with either).
-THEME_HINTS = [
-    "The idea here is {theme}. What would make it count?",
-    "Think about {theme}. What is the first step?",
-    "Something to build on: {theme}. Which move serves it?",
-]
-# The one fact the question level allows: whether the answer is forcing or quiet.
-FORCING_HINTS = [
-    "Something forcing is on: is there a check or a capture worth calculating first?",
-    "There is a forcing move here. Go through your checks and captures, in order.",
-    "Start with the forcing moves: which check or capture changes the most?",
-]
-QUIET_HINTS = [
-    "Nothing forcing is on. Which of your pieces is doing the least, and where would it do more?",
-    "A quiet move is wanted. Which piece would you most like to improve?",
-    "No tactic to find here. What would your opponent least like you to do?",
-]
+# The templates said without a model are the coach on a phone with no model, and the floor
+# the model must rise above (Tai, 2026-09-23: "the template coach must be good already").
+# Each rung says something true about this position that helps to find the answer: the
+# idea (the goal, the pattern and why it works), the focus (the target and the piece), the
+# move (played out, correct by construction). Nothing here could be said of any position:
+# the stock questions it replaces -- "what is your opponent's most dangerous idea?", "look
+# at the whole board" -- were said on a mate in one.
 # The word on a move a little behind the best, and the start of the lesson on one that cost
 # something; "{best}" is the better move. Without the move played in them, the same better
 # move twice running gave the same sentence twice (the offline sweep, 2026-09-23).
@@ -159,13 +128,141 @@ COST_YOU = [
     "That cost you something: {best} was the move",
     "Not that one -- {best} was better",
 ]
-# A question at the question level, where nothing of the position may be named.
-ASK_GENERIC = [
-    "What is your opponent's most dangerous idea here?",
-    "Before anything else: what does your opponent want to play next?",
-    "Which of your pieces is doing the least right now?",
-    "What did their last move change -- what does it attack, and what did it leave?",
-]
+# The pattern to keep, said after a mistake that missed it: the rule of thumb, not the
+# position. Keyed by the pattern's name as the fact sheet gives it.
+PATTERN_LESSONS: dict[str, str] = {
+    "a fork": "when two of their pieces can be hit from one square, look for the move that "
+    "gets there",
+    "a skewer": "a check or an attack on a line with something bigger behind it wins what is "
+    "behind",
+    "a pin": "a pinned piece cannot run, so hit it again",
+    "a discovered attack": "when one of your pieces blocks another's line, moving it with a "
+    "threat makes two threats at once",
+    "a double check": "against a double check the king must move, whatever else is attacked",
+    "a trapped piece": "a piece with no safe square is lost once it is attacked",
+    "removing the defender": "take the guard first, and what it guarded falls",
+    "a deflection": "a piece guarding two things guards neither once one is attacked",
+    "a decoy": "a sacrifice can drag a piece onto the square where it gets hit",
+    "a loose piece": "before every move, look at what they have left undefended",
+    "a mating attack": "when their king is short of squares, look at every check, the "
+    "sacrifices too",
+}
+_MATES = ("mate", "Boden's")
+# Before the facts of the position have landed: an honest word, not a stock question.
+STILL_READING = "Give me a moment: I am still reading this position."
+
+
+_PAWN_MOVE = re.compile(r"[a-h](x[a-h])?[1-8]")
+
+
+def _sentence(text: str) -> str:
+    """`text` as a sentence: a capital first, a stop last."""
+    text = text.strip()
+    if not text:
+        return ""
+    if not _PAWN_MOVE.match(text):  # "f7+ forces mate", never "F7+"
+        text = text[0].upper() + text[1:]
+    return text if text[-1] in ".!?" else text + "."
+
+
+def idea_template(facts: PositionFacts) -> str:
+    """The idea rung, without a model: the goal, the pattern and why it works, and the
+    question that sets the player looking."""
+    parts: list[str] = []
+    if facts.goal:
+        parts.append(_sentence(facts.goal))
+        if facts.mechanism and facts.plan and not facts.theme:
+            parts.append(_sentence(f"the key is {facts.mechanism}"))
+        elif facts.mechanism:
+            parts.append(_sentence(f"it's {facts.mechanism}"))
+    elif facts.plan and facts.mechanism:
+        # At a critical moment there is one move, and "no tactic here" would say otherwise.
+        critical = facts.decisive or facts.only_move
+        lead = "the key here is" if critical else "no tactic here -- this is about"
+        parts.append(_sentence(f"{lead} {facts.mechanism}"))
+    elif facts.nature:
+        # Never a bare question: the one square-free thing the idea rung knows beyond the
+        # goal -- whether the answer is forcing or quiet (the board's features name squares,
+        # which wait for the focus rung).
+        if facts.nature.startswith("quiet"):
+            parts.append("A quiet move is wanted here: no check, no capture.")
+        else:
+            parts.append("The answer is forcing: a check, a capture or a direct threat.")
+    if facts.question:
+        parts.append(facts.question)
+    return " ".join(parts) if parts else STILL_READING
+
+
+def focus_template(facts: PositionFacts) -> str:
+    """The focus rung, without a model: the target on the board and the piece, and the
+    question from the target to the move."""
+    parts: list[str] = []
+    if facts.target:
+        parts.append(_sentence(f"look at {facts.target}"))
+    elif facts.ideas:
+        parts.append(_sentence(facts.ideas[0]))
+    if facts.piece:
+        parts.append(_sentence(f"use {facts.piece}"))
+    if facts.nudge:
+        parts.append(facts.nudge)
+    elif facts.question and parts:
+        parts.append(facts.question)
+    return " ".join(parts) if parts else idea_template(facts)
+
+
+def move_template(facts: PositionFacts) -> str:
+    """The move rung, without a model: the move, played out and explained."""
+    if facts.why:
+        return _sentence(facts.why)
+    if not facts.candidates:
+        return "I have no move for this yet."
+    if facts.plan:
+        return _sentence(f"the move is {facts.candidates[0]}: {facts.plan}")
+    return f"The move is {facts.candidates[0]}."
+
+
+def line_template(facts: PositionFacts) -> str:
+    if not facts.line:
+        return "I have no line for this yet."
+    text = f"The line is {' '.join(facts.line)}."
+    return f"{text} {_sentence(facts.why)}" if facts.why else text
+
+
+def hint_template(facts: PositionFacts, level: DisclosureLevel) -> str:
+    """The template for a hint at `level`: two hints, then the answer."""
+    if level >= DisclosureLevel.LINE:
+        return line_template(facts)
+    if level >= DisclosureLevel.MOVE:
+        return move_template(facts)
+    if level >= DisclosureLevel.FOCUS:
+        return focus_template(facts)
+    return idea_template(facts)
+
+
+def lesson_template(facts: PositionFacts, best: str, opener: str) -> str:
+    """After a move that cost something: the better move, what it does, and the pattern to
+    keep. `opener` is the rotated "That one cost you: {best} was better"."""
+    text = opener
+    why = facts.why or ""
+    if why.startswith(best):
+        rest = why[len(best) :].lstrip(" ,:;")
+        rest = rest[4:] if rest.startswith("and ") else rest
+        if rest.startswith(("is ", "forces ")):
+            rest = "it " + rest  # "Nf2# was better -- it is mate"
+        if rest:
+            text += f" -- {rest}"
+    text = _sentence(text)
+    theme = facts.theme or ""
+    keep = PATTERN_LESSONS.get(theme)
+    if keep is None and any(word in theme for word in _MATES):
+        keep = PATTERN_LESSONS["a mating attack"]
+    if keep is None and facts.plan and facts.mechanism:
+        keep = facts.mechanism.split(": ", 1)[-1]
+    if keep:
+        text += " " + _sentence(f"keep this one: {keep}")
+    return text
+
+
 # Verbalized sampling: how many candidate replies to ask for, and the room and warmth to
 # give the distribution. Warmer than a single reply on purpose, since a check filters them.
 VS_CANDIDATES = 4
@@ -196,6 +293,29 @@ NOT_THE_MOVE = (
     "-- what it took, the check, the castling, the promotion: they just played it and see it. "
     "Say what it means instead: the idea behind it, the pattern to keep, the better move and "
     "why."
+)
+
+
+# What the model is asked to do on each rung before the player moves. The template for the
+# rung is the floor; the model is there to rise above it (Tai, 2026-09-23: "AI is supposed
+# to elevate good to great"): the same facts, in its own words, sharper for this position,
+# and tied to the player's game where that helps.
+IDEA_DIRECTIVE = (
+    "Give the idea, from the fact sheet: what the position offers (its goal) and the pattern, "
+    "with one sentence on why that pattern works in this position; then the one question "
+    "that sets them looking the right way -- sharper and more specific than the sheet's "
+    "question. Where it helps, tie it to something from earlier in this game. Name no "
+    "square and no move, and not which of their own pieces does it. Two or three sentences."
+)
+FOCUS_DIRECTIVE = (
+    "Point them at the target the fact sheet names and the piece to use, say what makes that "
+    "target vulnerable, from the sheet, and ask the one question that leads from there to "
+    "the move. Do not name the move. Two sentences."
+)
+MOVE_DIRECTIVE = (
+    "The next hint is the answer: give the move and explain it correctly from the fact "
+    "sheet's why -- what it does and what it leads to -- and the pattern to keep. One or two "
+    "sentences, no question."
 )
 
 
@@ -1345,7 +1465,7 @@ class Coach:
         if trigger is None or self._current is None or self._current.facts is None:
             return
         level = self._current.disclosure.apply(Unlock.STUCK) or self._current.disclosure.level
-        self.policy.said(self._current.ply)
+        self.policy.said(self._current.ply, ts)
         self._speak(trigger, self._current, level, ts)
 
     def ask(self, text: str, ts: float) -> None:
@@ -1376,7 +1496,7 @@ class Coach:
         unlock = unlock_for(text, position.board, position.facts.candidates)
         if unlock is not None:
             position.disclosure.apply(unlock)
-        level = max(position.disclosure.level, DisclosureLevel.QUESTION)
+        level = max(position.disclosure.level, DisclosureLevel.IDEA)
         if self.finished or position.board.is_game_over():
             # Nothing is withheld from a game that is over.
             level = DisclosureLevel.LINE
@@ -1723,7 +1843,7 @@ class Coach:
             trigger = self.policy.on_position_analysed(event.ply, decisive=decisive)
             if trigger is not None:
                 level = position.disclosure.apply(Unlock.DECISIVE) or position.disclosure.level
-                self.policy.said(position.ply)
+                self.policy.said(position.ply, ts)
                 self._speak(trigger, position, level, ts)
 
     def _obvious_recapture(self, position: _Position, event: Analysis) -> bool:
@@ -1889,12 +2009,6 @@ class Coach:
         chosen = random.choice(choices)
         self._last_said[key] = chosen
         return chosen
-
-    def _nature_hint(self, forcing: bool) -> str:
-        """What the nature of the answer allows: forcing, or quiet."""
-        return self._rotate(
-            "forcing" if forcing else "quiet", FORCING_HINTS if forcing else QUIET_HINTS
-        )
 
     def _opening_so_far(self) -> str | None:
         """The opening the game was in: the last name the book gave."""
@@ -2100,11 +2214,12 @@ class Coach:
             return ""
         words = {
             DisclosureLevel.SILENT: "nothing about the position",
-            DisclosureLevel.QUESTION: "an orienting question only; no theme, square, piece or move",
-            DisclosureLevel.THEME: "the theme; no square, piece or move",
-            DisclosureLevel.REGION: "the theme and the region; no piece or move",
-            DisclosureLevel.PIECE: "the theme, the region and the piece; no move",
-            DisclosureLevel.CANDIDATE: "the candidate moves; not the line",
+            DisclosureLevel.IDEA: (
+                "the idea: the goal, the pattern and why it works; no square, no move, and "
+                "not which of the player's own pieces does it"
+            ),
+            DisclosureLevel.FOCUS: "the idea, the target and the piece; not the move",
+            DisclosureLevel.MOVE: "the move and why it works; not the whole line",
             DisclosureLevel.LINE: "everything, the line included",
         }[level]
         return f"Disclosure for the position the player faces: {words}.\n\n"
@@ -2163,17 +2278,6 @@ class Coach:
         """
         facts = position.facts
         assert facts is not None
-        theme = facts.theme or facts.plan or "the position"
-        region = facts.region or "the whole board"
-        forcing = bool(facts.nature and facts.nature.startswith("forcing"))
-
-        def theme_hint() -> str:
-            """The theme-level template: the idea when there is one; when the sheet names
-            none, what the nature says ("The idea here is the position" was said, once).
-            Drawn when it is used, so a draw is never spent on a turn that says nothing."""
-            if facts.theme or facts.plan:
-                return self._rotate("theme", THEME_HINTS).format(theme=theme)
-            return self._nature_hint(forcing)
 
         if trigger is Trigger.REVIEW:
             return (
@@ -2185,25 +2289,14 @@ class Coach:
                 " ".join(self._review_lines[:4]),
             )
         if trigger is Trigger.DECISIVE_QUESTION:
-            return (
-                "The player is to move and this is a critical moment. Ask one orienting "
-                "question that makes them look for the right thing without pointing at "
-                "any square, piece or move. Do not evaluate the position out loud.",
-                self._rotate("decisive", DECISIVE_QUESTIONS),
-            )
+            return (IDEA_DIRECTIVE, idea_template(facts))
         if trigger is Trigger.STUCK:
-            if level >= DisclosureLevel.REGION:
-                fallback = f"Look at {region}. Something is going on there."
-            elif level >= DisclosureLevel.THEME:
-                fallback = theme_hint()
-            else:
-                fallback = self._rotate("stuck", STUCK_GENERIC)
+            directive = FOCUS_DIRECTIVE if level >= DisclosureLevel.FOCUS else IDEA_DIRECTIVE
             return (
-                "The player has been thinking for a while and is stuck. Give one hint, at the "
-                "level of what the fact sheet allows, in one or two sentences, ending with a "
-                "question. Do not name a move. Take a different angle from every hint you "
-                "have already given in this game; never repeat one.",
-                fallback,
+                "The player has been thinking for a while and is stuck. "
+                + directive
+                + " Take a different angle from anything already said about this position.",
+                hint_template(facts, level),
             )
         if trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE) and assessment and played:
             # The better move is the engine's own from the position the player faced
@@ -2221,18 +2314,19 @@ class Coach:
             better_words = _in_words(position.board, best) if facts.candidates else best
             routine = not facts.candidates or best == played.san or _local(assessment.label)
             if trigger is Trigger.POST_MISTAKE:
-                # With a theme or a plan the lesson names the idea; without one it stops at
-                # the better move ("the idea was the position" was said, offline).
-                idea = facts.theme or facts.plan
-                fallback = self._rotate("cost", COST_YOU).format(best=best) + (
-                    f"; the idea was {idea}." if idea else "."
+                # The better move played out, and the pattern to keep: never "the idea was
+                # a mating attack" and nothing more.
+                fallback = lesson_template(
+                    facts, best, self._rotate("cost", COST_YOU).format(best=best)
                 )
                 instruction = (
                     f"The player just played {played.san}, which was a {label}: it cost "
                     f"{loss:.0%} of the game. The better move was {best} ({better_words}). "
-                    f"Explain the difference as a pattern to remember, in three sentences at "
-                    f"most, then ask one question that checks they see it. {NOT_THE_MOVE} "
-                    f"{NO_NUMBERS}"
+                    "Teach the difference from the fact sheet of the position they faced -- "
+                    "its goal, its pattern, why the better move works, and what their move "
+                    "missed or allowed -- as a pattern to remember, in three sentences at "
+                    "most, then ask one question that checks they see it. "
+                    f"{NOT_THE_MOVE} {NO_NUMBERS}"
                 )
                 if elicit:
                     # Sparingly: what they saw at that moment, for the profile's record
@@ -2245,10 +2339,11 @@ class Coach:
                     instruction = (
                         f"The player just played {played.san}, which was a {label}: it cost "
                         f"{loss:.0%} of the game. The better move was {best} ({better_words}). "
-                        "Explain the difference as a pattern to remember, in three sentences at "
-                        "most, then -- instead of a check question -- ask, in one short "
-                        "question of your own, what they expected their move to do. "
-                        f"{NOT_THE_MOVE} {NO_NUMBERS}"
+                        "Teach the difference from the fact sheet of the position they faced "
+                        "-- its goal, its pattern, why the better move works -- as a pattern "
+                        "to remember, in three sentences at most, then -- instead of a check "
+                        "question -- ask, in one short question of your own, what they "
+                        f"expected their move to do. {NOT_THE_MOVE} {NO_NUMBERS}"
                     )
             elif _exciting(assessment.label):
                 # Rare and worth it: the board's own sentence stands in, the model says
@@ -2304,10 +2399,9 @@ class Coach:
                     f"lesson, no question. {NOT_THE_MOVE} {NO_NUMBERS}"
                 )
             else:
-                # The better move's idea, when the sheet has one, is the lesson in it.
-                idea = facts.theme or facts.plan
-                fallback = self._rotate("fine", FINE_TIGHTER).format(best=best) + (
-                    f": the idea was {idea}." if idea else "."
+                # The better move and what it does, when the sheet has it, is the lesson.
+                fallback = lesson_template(
+                    facts, best, self._rotate("fine", FINE_TIGHTER).format(best=best)
                 )
                 instruction = (
                     f"The player just played {played.san}, which was fine but not the "
@@ -2332,31 +2426,8 @@ class Coach:
             # The engine on what they asked about: theirs to hear about in full, and
             # already said out loud as the coach's last turn when `quick`.
             checks += "\n".join(engine_words) + "\n\n"
-        if level >= DisclosureLevel.LINE:
-            fallback = (
-                f"The line is {' '.join(facts.line)}."
-                if facts.line
-                else "I have no line for this yet."
-            )
-        elif level >= DisclosureLevel.CANDIDATE:
-            fallback = (
-                f"The move is {facts.candidates[0]}."
-                if facts.candidates
-                else "I have no move for this yet."
-            )
-        elif level >= DisclosureLevel.PIECE and facts.piece:
-            fallback = f"It is about {facts.piece}. Where does it want to go?"
-        elif level >= DisclosureLevel.REGION:
-            fallback = f"Look at {region}."
-        elif level >= DisclosureLevel.THEME:
-            fallback = theme_hint()
-        elif forcing:
-            # The one fact the QUESTION level allows: whether the answer is forcing. The
-            # generic "opponent's idea" question pointed the wrong way in a position where
-            # the player had a capture to find.
-            fallback = self._nature_hint(forcing)
-        else:
-            fallback = self._rotate("ask", ASK_GENERIC)
+        # The rung's template: two hints, then the answer; the line when asked for it.
+        fallback = hint_template(facts, level)
         # The position answered about is not the one on the board (its analysis has not
         # landed): say so, or the template speaks of a past position as the present --
         # "the line is Bb3 ..." right after Bb3 was played (the offline pass, 2026-09-21).
@@ -2368,7 +2439,7 @@ class Coach:
                 rest = facts.line[1:] if facts.line and facts.line[0] == san else facts.line
                 if level >= DisclosureLevel.LINE and rest:
                     fallback = f"It's their move. After your move, the line runs {' '.join(rest)}."
-                elif level >= DisclosureLevel.CANDIDATE and facts.candidates:
+                elif level >= DisclosureLevel.MOVE and facts.candidates:
                     choice = facts.candidates[0]
                     fallback = "It's their move now. " + (
                         "Yours was the engine's choice too."
@@ -2410,12 +2481,15 @@ class Coach:
             fallback = self._review_template()
         elif _ASK_HINT.match(said):
             # A bare "hint" carries no claim to be honest about; treated as one, the model
-            # answered its own last message as if the player had said it.
-            directive = (
-                "They asked for a hint. Give one, at the level of what the fact sheet allows, "
-                "in one or two sentences, ending with a question. Do not name a move, and do "
-                "not comment on anything said earlier." + (shown if quick else "")
-            )
+            # answered its own last message as if the player had said it. Two hints, then
+            # the answer: the rung decides what the hint may give.
+            if level >= DisclosureLevel.MOVE:
+                directive = MOVE_DIRECTIVE
+            elif level >= DisclosureLevel.FOCUS:
+                directive = "They asked for another hint. " + FOCUS_DIRECTIVE
+            else:
+                directive = "They asked for a hint. " + IDEA_DIRECTIVE
+            directive += " Do not comment on anything said earlier." + (shown if quick else "")
         elif level >= DisclosureLevel.LINE and _ASK_LINE.search(said) and facts.line:
             directive = (
                 (
@@ -2429,17 +2503,19 @@ class Coach:
                     "then one short sentence on the idea behind it. Do not answer with a question."
                 )
             )
-        elif level >= DisclosureLevel.CANDIDATE and _ASK_MOVE.search(said) and facts.candidates:
+        elif level >= DisclosureLevel.MOVE and _ASK_MOVE.search(said) and facts.candidates:
             directive = (
                 (
                     f"They asked what to play and have just been shown that it is "
-                    f"{facts.candidates[0]}. Give one or two short sentences on why. Do not "
-                    "answer with a question this time."
+                    f"{facts.candidates[0]}, with what it does. Build on it in one or two "
+                    "sentences: why it works, from the fact sheet's why and pattern, and the "
+                    "idea to keep. Do not answer with a question this time."
                 )
                 if quick
                 else (
                     f"They asked what to play: tell them plainly it is {facts.candidates[0]}, "
-                    "then one short sentence on why. Do not answer with a question this time."
+                    "then why it works, from the fact sheet's why and pattern, correctly. Do "
+                    "not answer with a question this time."
                 )
             )
         elif engine_words and quick:

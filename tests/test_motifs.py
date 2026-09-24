@@ -210,14 +210,26 @@ def test_relative_pin_against_the_queen() -> None:
     assert "pin" in position_names(standing)
 
 
-def test_a_pawn_is_pinned_to_the_piece_behind_it_even_if_it_cannot_be_won() -> None:
-    # The Italian bishop on c4 looks through the f7 pawn to the knight on g8: the pawn cannot
-    # advance without exposing the knight, so it is pinned, the way Lichess tags a pin, even
-    # though winning the knight would cost the bishop (the h8 rook holds g8). The pin is in
-    # the position; castling does not create it, so it is not a tag of the castling move.
+def test_a_pin_wins_nothing_when_the_piece_behind_is_defended_and_worth_no_more() -> None:
+    # The Italian bishop on c4 looks through the f7 pawn to the knight on g8, which the h8
+    # rook holds: taking the knight would cost the bishop, so nothing is pinned in a sense
+    # the coach may teach, though Lichess would tag it (Tai, 2026-09-23: "if that piece is
+    # defended then there is no winning that piece hence it's not a valid pin").
     fen = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
-    assert "pin" in position_names(fen)
-    assert "pin" not in tag_names(fen, "e1g1")
+    assert "pin" not in position_names(fen)
+    # A queen against a knight with a defended rook behind it: queen for rook loses.
+    fen = "8/3k4/3r4/8/3n4/8/8/3QK3 w - - 0 1"
+    assert "pin" not in position_names(fen)
+
+
+def test_a_pin_holds_when_the_piece_behind_can_be_won() -> None:
+    # The bishop on b5 pins the knight on c6 to the queen on d7, which the king defends:
+    # bishop for queen still wins material, so the knight cannot move.
+    assert "pin" in position_names("4k3/3q4/2n5/1B6/8/8/8/4K3 w - - 0 1")
+    # The bishop on a4 against the pawn on c6 and a loose rook on e8 behind it.
+    assert "pin" in position_names("4r2k/8/2p5/8/B7/8/8/4K3 w - - 0 1")
+    # And the king behind always pins.
+    assert "absolutePin" in position_names("4k3/8/2n5/1B6/8/8/8/4K3 w - - 0 1")
 
 
 def test_a_move_does_not_inherit_a_pin_that_was_already_there() -> None:
@@ -230,12 +242,20 @@ def test_a_move_does_not_inherit_a_pin_that_was_already_there() -> None:
     assert "absolutePin" in position_names(fen)
 
 
-def test_skewer_drives_the_queen_off_a_loose_rook() -> None:
-    # Rd1-e1 attacks the queen on e5; behind her sits the rook on e8, which only she guards.
-    # The white rook is held by the king on f1, so she cannot just take it.
-    fen = "4r1k1/8/8/4q3/8/8/8/3R1K2 w - - 0 1"
-    assert "skewer" in tag_names(fen, "d1e1")
-    assert squares_of(fen, "d1e1", "skewer") == ["e1", "e5", "e8"]
+def test_skewer_drives_the_king_off_the_queen() -> None:
+    # Rh1-a1+ checks the king on a5; behind it on the file sits the queen on a8. Every king
+    # step off the file leaves her to Rxa8, and none of them reaches a square that guards her.
+    fen = "q7/8/8/k7/8/8/7K/7R w - - 0 1"
+    assert "skewer" in tag_names(fen, "h1a1")
+    assert squares_of(fen, "h1a1", "skewer") == ["a1", "a5", "a8"]
+
+
+def test_no_skewer_when_the_queen_can_step_off_and_guard_the_rook() -> None:
+    # Rd1-e1 hits the queen on e5 with the loose rook on e8 behind, but Qb8 steps off the
+    # file and guards e8: Rxe8+ Qxe8 is only a trade. The same with Rb1 ...Qe8 guarding b8.
+    assert "skewer" not in tag_names("4r1k1/8/8/4q3/8/8/8/3R1K2 w - - 0 1", "d1e1")
+    fen = "1r6/6pk/7p/1q6/8/8/K5PP/R7 w - - 0 1"
+    assert "skewer" not in tag_names(fen, "a1b1", pv=["b5e8"])
 
 
 def test_no_skewer_when_the_front_piece_can_simply_take_the_rook() -> None:
@@ -295,11 +315,14 @@ def test_a_slider_looking_through_a_piece_that_never_moves_is_no_x_ray() -> None
 
 def test_interference_cuts_a_defender_off_its_charge() -> None:
     # Bg3-d6 sits down between the rook on d8 and the knight on d5, which the e4 pawn wins.
-    fen = "3r2k1/8/8/3n4/4P3/6B1/8/6K1 w - - 0 1"
+    # The c5 pawn holds the bishop there: Rxd6 cxd6 costs the rook.
+    fen = "3r2k1/8/8/2Pn4/4P3/6B1/8/6K1 w - - 0 1"
     names = tag_names(fen, "g3d6")
     assert "interference" in names
     assert squares_of(fen, "g3d6", "interference") == ["d6", "d8", "d5"]
     assert "hangingPiece" in names
+    # Without the c5 pawn the rook just takes the bishop and guards d5 again: nothing is cut.
+    assert "interference" not in tag_names("3r2k1/8/8/3n4/4P3/6B1/8/6K1 w - - 0 1", "g3d6")
 
 
 def test_interference_a_forced_king_block_cuts_its_own_rook_off_the_mate_square() -> None:
@@ -324,12 +347,16 @@ def test_trapped_piece_has_nowhere_safe_to_go() -> None:
 
 
 def test_attacking_f2_f7() -> None:
-    fen = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
-    assert "attackingF2F7" in tag_names(fen, "f1c4")
-    assert squares_of(fen, "f1c4", "attackingF2F7") == ["c4", "f7"]
-    # And the mirror image for black: Bf8-c5 takes aim at f2.
-    black = "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2"
-    assert "attackingF2F7" in tag_names(black, "f8c5")
+    # Qh5 joins the bishop on c4 against f7, which only the king holds: Qxf7 wins it.
+    fen = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/8/PPPP1PPP/RNBQK1NR w KQkq - 2 3"
+    assert "attackingF2F7" in tag_names(fen, "d1h5")
+    assert squares_of(fen, "d1h5", "attackingF2F7") == ["h5", "f7"]
+    # And the mirror image for black: Qh4 joins the bishop on c5 against f2.
+    black = "rnbqk1nr/pppp1ppp/8/2b1p3/4P3/2N5/PPPP1PPP/R1BQKBNR b KQkq - 0 3"
+    assert "attackingF2F7" in tag_names(black, "d8h4")
+    # Bc4 on move two only looks at f7: the king holds it and Bxf7+ Kxf7 loses the bishop.
+    book = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+    assert "attackingF2F7" not in tag_names(book, "f1c4")
 
 
 def test_exposed_king_needs_a_stripped_shelter_and_real_force() -> None:
@@ -385,11 +412,14 @@ def test_capturing_defender_takes_the_guard_of_a_square_the_line_uses() -> None:
 
 
 def test_attraction_drags_the_king_onto_a_square_the_knight_hits() -> None:
-    # The Greek gift: Bxh7+ Kxh7 and Ng5+ forks the king on the square it was pulled to.
-    fen = "5rk1/5ppp/8/8/8/3B1N2/8/3Q2K1 w - - 0 1"
-    names = tag_names(fen, "d3h7", pv=["g8h7", "f3g5"])
-    assert "attraction" in names
-    assert squares_of(fen, "d3h7", "attraction", pv=["g8h7", "f3g5"]) == ["g8", "h7", "g5"]
+    # The Greek gift: Bxh7+ Kxh7 and Ng5+ forks the king on the square it was pulled to and
+    # the queen on e6, which falls: the bishop comes back with a queen's interest.
+    fen = "5rk1/5ppp/4q3/8/8/3B1N2/8/3Q2K1 w - - 0 1"
+    line = ["g8h7", "f3g5", "h7g8", "g5e6", "f7e6"]
+    assert "attraction" in tag_names(fen, "d3h7", pv=line)
+    assert squares_of(fen, "d3h7", "attraction", pv=line) == ["g8", "h7", "g5"]
+    # The same check that wins nothing in the line given is a sacrifice, not yet a lure.
+    assert "attraction" not in tag_names(fen, "d3h7", pv=["g8h7", "f3g5"])
 
 
 def test_clearance_vacates_a_file_with_tempo() -> None:
@@ -463,19 +493,21 @@ def test_arabian_mate() -> None:
     assert "vukovicMate" not in names
 
 
-def test_hook_mate() -> None:
-    # Rg7 checks beside the king on g8, the knight on f5 holds the rook and the e4 pawn holds
-    # the knight; the king's own rooks on f8 and h8 take the last two squares away.
+def test_rooks_on_both_shoulders_are_an_epaulette_not_a_hook() -> None:
+    # Rg7 checks beside the king on g8 with its own rooks on f8 and h8: an epaulette mate.
+    # A hook mate needs a pawn of theirs beside the king, and the e4 pawn behind the knight
+    # is not needed (`analysis/mates.py`; the positives are in test_mates.py).
     names = mate_names("5rkr/R7/8/5N2/4P3/8/8/1K6 w - - 0 1", "a7g7")
-    assert "hookMate" in names
+    assert "hookMate" not in names
+    assert "epauletteMate" in names
     assert "arabianMate" not in names
 
 
-def test_kill_box_mate() -> None:
-    # Rh7 checks next to the king on h8; the queen on g6 is a knight's move from the king,
-    # holds the rook and covers g7 and g8. The 3x3 box has no way out.
+def test_rook_and_queen_side_by_side_are_no_kill_box() -> None:
+    # Rh7 checks next to the king on h8 with the queen on g6 beside it: a kill box needs
+    # rook and queen on opposite corners of the 3x3 box, guarding each other across it.
     names = mate_names("7k/R7/6Q1/8/8/8/8/1K6 w - - 0 1", "a7h7")
-    assert "killBoxMate" in names
+    assert "killBoxMate" not in names
     assert "arabianMate" not in names
 
 
@@ -486,11 +518,12 @@ def test_anastasia_mate() -> None:
     assert "anastasiaMate" in names
 
 
-def test_vukovic_mate() -> None:
-    # Rh7 mates the king on h6 held by the g6 pawn rather than by the knight, while the
-    # knight on g3 takes h5 away. That support is what separates it from the Arabian mate.
+def test_a_knight_that_is_not_needed_makes_no_vukovic() -> None:
+    # Rh7 mates the king on h6; the rook already covers h5 through the king, so the knight
+    # on g3 is not needed -- the d8 bishop taking g5 makes it Pillsbury's mate.
     names = mate_names("3B4/R7/6Pk/5P2/8/6N1/8/1K6 w - - 0 1", "a7h7")
-    assert "vukovicMate" in names
+    assert "vukovicMate" not in names
+    assert "pillsburysMate" in names
     assert "arabianMate" not in names
     assert "hookMate" not in names
 
@@ -648,3 +681,123 @@ def test_a_piece_handed_to_the_reply_is_a_sacrifice() -> None:
     fen = "rnbq1rk1/ppp2ppp/3b1n2/8/3P4/3B1N2/PPP2PPP/RNBQ1RK1 w - - 0 1"
     names = tag_names(fen, "d3h7", pv=["g8h7", "f3g5", "h7g6"], mate_in=4)
     assert "sacrifice" in names and "capture" in names and "check" in names
+
+
+# --- tactically real, not geometry (audit of 2026-09-23) ---------------------------------
+
+# Each of these was tagged by the geometry alone; the coach would have taught a tactic that
+# wins nothing. The number is the audit's item; the line is the move and the engine's PV.
+NOT_REAL_ON_A_MOVE = [
+    # 1: the checking forker is simply taken (gxf6, Kxf7).
+    ("1a", "6k1/3q1ppp/8/8/4N3/8/5PPP/6K1 w - - 0 1", "e4f6", ["g7f6"], "fork"),
+    ("1b", "4r1k1/6pp/6B1/8/8/8/6PP/6K1 w - - 0 1", "g6f7", ["g8f7"], "fork"),
+    # 2: the bishop is pinned to its king by the f6 bishop and may take neither rook.
+    ("2", "8/r5k1/5b2/4B3/8/5N2/1K6/6r1 w - - 0 1", "e5d4", [], "fork"),
+    # 3: ...Re5, held by d6, blocks the check and pins the queen: the knight is safe.
+    ("3", "4k3/8/3p4/7r/n6Q/8/8/4K3 w - - 0 1", "h4e4", [], "fork"),
+    # 4: the pinner is simply won (...Rxd1+, ...Rxe1+, ...axb5).
+    ("4a", "3q2k1/5ppp/8/3r4/8/8/5PPP/R5K1 w - - 0 1", "a1d1", [], "pin"),
+    ("4b", "4k3/8/8/4r3/8/8/6PP/R5K1 w - - 0 1", "a1e1", [], "absolutePin"),
+    ("4c", "4r1k1/5ppp/p1n5/8/8/8/5PPP/5BK1 w - - 0 1", "f1b5", [], "pin"),
+    # 6: the e5 pawn's only move is down the file: the "pin" holds back nothing.
+    ("6", "4q1k1/5ppp/8/4p3/8/8/5PPP/R5K1 w - - 0 1", "a1e1", [], "pin"),
+    # 7: ...axb5 wins the skewering bishop.
+    ("7", "4r1k1/5ppp/p1q5/8/P7/8/4BPPP/6K1 w - - 0 1", "e2b5", [], "skewer"),
+    # 10a: ...fxe4 takes the hunter, so the rook on a8 is not trapped.
+    ("10a", "rn4k1/p1p3pp/8/5p2/8/3B2P1/5P1P/6K1 w - - 0 1", "d3e4", [], "trappedPiece"),
+    # 11: the knight guards the rook, but ...Nxe4 Nxe4 still wins the exchange.
+    ("11", "6k1/5ppp/3n4/8/4R3/8/5PPP/5NK1 w - - 0 1", "f1g3", [], "defensiveMove"),
+    # 12: 2.d4 opens the c1 bishop onto h6, which the g7 pawn holds.
+    (
+        "12",
+        "rnbqkbnr/ppppppp1/7p/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+        "d2d4",
+        [],
+        "discoveredAttack",
+    ),
+    # 13: ...Nfd7 is a free retreat, and d5 was taken before it, not after.
+    (
+        "13",
+        "r1bqkb1r/ppp2ppp/5n2/4p3/4P3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 1",
+        "c3d5",
+        ["f6d7"],
+        "interference",
+    ),
+    # 14: ...Rxc5 takes the interposer; the rook on e4 is pinned to its king and takes nothing.
+    ("14a", "6k1/5ppp/8/r3p3/8/3N1N2/5PPP/6K1 w - - 0 1", "d3c5", [], "interference"),
+    ("14b", "4r3/5k2/8/8/q6r/3P4/4R3/4K3 w - - 0 1", "e2e4", [], "interference"),
+    # 15: the rook on a1 is blocked by its own knight on a4 when the bishop takes on a7.
+    ("15", "6k1/p4ppp/8/8/n7/2N1B3/5PPP/R5K1 w - - 0 1", "c3a4", ["g8h8", "e3a7"], "xRayAttack"),
+    # 16: g7 still holds f6; and the rook given for the knight costs more than the pawn.
+    (
+        "16a",
+        "6k1/5ppp/4pn2/3n2B1/8/2N5/5PPP/6K1 w - - 0 1",
+        "c3d5",
+        ["e6d5", "g5f6", "g7f6"],
+        "capturingDefender",
+    ),
+    (
+        "16b",
+        "6k1/5ppp/5n2/8/4p3/2N5/6PP/5RK1 w - - 0 1",
+        "f1f6",
+        ["g7f6", "c3e4"],
+        "capturingDefender",
+    ),
+    # 17: ...Qh4 is a free choice; and Re8+ Kg7 wins nothing.
+    ("17a", "3q2k1/p2b1ppp/8/8/8/4B3/5PPP/3R2K1 w - - 0 1", "e3a7", ["d8h4", "d1d7"], "deflection"),
+    (
+        "17b",
+        "6k1/4qp1p/5np1/6B1/8/8/5PPP/4R1K1 w - - 0 1",
+        "g5f6",
+        ["e7f6", "e1e8", "g8g7"],
+        "deflection",
+    ),
+    # 18: a knight taking back a knight, then a bishop for a knight: a trade, not a lure.
+    (
+        "18",
+        "6k1/5ppp/4pn2/3n4/8/1BN5/5PPP/6K1 w - - 0 1",
+        "c3d5",
+        ["f6d5", "b3d5", "e6d5"],
+        "attraction",
+    ),
+    # 19: the queen grabs b7 and comes back to d5: nothing else used the square.
+    ("19", "5rk1/1p3ppp/8/3Q4/8/8/5PPP/6K1 w - - 0 1", "d5b7", ["h7h6", "b7d5"], "clearance"),
+    # 20: the king on f7 is checked; there is no weak pawn there.
+    ("20", "8/5k2/8/8/8/8/6PP/R5K1 w - - 0 1", "a1a7", [], "attackingF2F7"),
+]
+
+NOT_REAL_IN_A_POSITION = [
+    # 5: the b5 bishop (held by a4) is pinned to b1 by the b8 rook: it can never take e8.
+    ("5", "1r2r1k1/5ppp/2n5/1B6/P7/8/5PPP/1K6 w - - 0 1", "pin"),
+    # 9: the knight on e2 is pinned to its king; white is in check and cannot take on e5.
+    ("9a", "4r1k1/8/8/8/5n2/8/4N3/4K3 w - - 0 1", "hangingPiece"),
+    ("9b", "k7/8/8/4n3/8/8/1B4PP/3r2K1 w - - 0 1", "hangingPiece"),
+    # 10: the knight on h6 has f5 and g4, both held; the hunting bishop is pinned to e1.
+    ("10b", "6k1/5pp1/4p2n/6Pp/8/5Q2/5PPP/6K1 w - - 0 1", "trappedPiece"),
+    ("10c", "rn2r1k1/p5pp/8/8/4B3/8/6PP/4K3 w - - 0 1", "trappedPiece"),
+    # 21: a rook and knight ending with the king walking up the board: no queen, no attack.
+    ("21", "r1b5/8/4k2N/pp6/8/8/6PP/3R2K1 w - - 0 1", "exposedKing"),
+]
+
+
+@pytest.mark.parametrize(("item", "fen", "uci", "pv", "name"), NOT_REAL_ON_A_MOVE)
+def test_a_tactic_that_wins_nothing_is_not_named(
+    item: str, fen: str, uci: str, pv: list[str], name: str
+) -> None:
+    board = chess.Board(fen)
+    for played in [chess.Move.from_uci(uci), *[chess.Move.from_uci(x) for x in pv]]:
+        assert played in board.legal_moves, f"item {item}: {played} is not legal"
+        board.push(played)
+    assert name not in tag_names(fen, uci, pv=pv), f"item {item}"
+
+
+@pytest.mark.parametrize(("item", "fen", "name"), NOT_REAL_IN_A_POSITION)
+def test_a_feature_that_wins_nothing_is_not_named(item: str, fen: str, name: str) -> None:
+    assert name not in position_names(fen), f"item {item}"
+
+
+def test_a_pin_to_the_king_holds_even_when_the_pinner_is_pinned() -> None:
+    # The bishop on b5, held by a4, is pinned to b1 by the b8 rook, but the knight on c6 may not
+    # leave the line to the king on e8: that is the rule, not a threat, so it is a pin.
+    names = position_names("1r2k3/5ppp/2n5/1B6/P7/8/5PPP/1K6 w - - 0 1")
+    assert "absolutePin" in names

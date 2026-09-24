@@ -230,6 +230,19 @@ def _after(board: chess.Board, move: chess.Move) -> chess.Board:
     return after
 
 
+def test_a_piece_guarded_only_by_a_pinned_piece_is_left_to_be_taken() -> None:
+    # Be4?? beside the f6 knight: the c3 knight guards e4, but the b4 bishop pins it to its
+    # king, so it cannot take back and ...Nxe4 wins the bishop for nothing.
+    board = chess.Board("4k3/8/5n2/8/1b6/2N2B2/8/4K3 w - - 0 1")
+    move = chess.Move.from_uci("f3e4")
+    assert causes.wins_material(_after(board, move), chess.Move.from_uci("f6e4"))
+    cause, motif = causes.classify(board, move, reply="f6e4")
+    assert (cause, motif) == (causes.MISSED_THREAT, "hangingPiece")
+    # Unpinned, the knight takes back: a knight for a bishop wins nothing.
+    unpinned = chess.Board("4k3/8/5n2/8/4B3/2N5/8/4K3 b - - 0 1")
+    assert not causes.wins_material(unpinned, chess.Move.from_uci("f6e4"))
+
+
 def test_an_attempted_tactic_or_a_capture_that_failed_is_a_miscalculation() -> None:
     board = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
     move = chess.Move.from_uci("c4f7")  # Bxf7+?, a sacrifice tagged as such

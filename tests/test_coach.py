@@ -143,13 +143,13 @@ def _record(messages: list[ChatMessage]) -> str:
     )
 
 
-def test_a_decisive_moment_earns_one_question_that_names_nothing() -> None:
-    coach, provider = _coach(["What is your opponent's most dangerous idea right now?"])
+def test_a_decisive_moment_earns_the_idea_and_names_no_move() -> None:
+    coach, provider = _coach(["You can mate right now. Which check leaves their king stuck?"])
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6), 7.0)
     out = _messages(coach)
     assert len(out) == 1 and out[0].trigger is Trigger.DECISIVE_QUESTION
-    assert out[0].level is DisclosureLevel.QUESTION
+    assert out[0].level is DisclosureLevel.IDEA
     # The model was handed the game as one message: the setting, the record one line per
     # move, the position the player faces in full with the engine's lines withheld.
     messages = _given(provider, 0)
@@ -169,9 +169,12 @@ def test_a_decisive_moment_earns_one_question_that_names_nothing() -> None:
     assert "Pieces -- White: K e1, Q h5" in current, "the position is given piece by piece"
     assert "Legal moves" not in current, "the moves are withheld with the lines at this level"
     assert "## Engine lines" + chr(10) + "withheld" in current
-    for secret in ("Qxf7", "mating", "queen", "h5f7", "candidates"):
+    # The idea is given -- the goal and the pattern -- and nothing that plays it.
+    assert "goal: the player can mate in one move" in current
+    assert "pattern: a mating attack" in current
+    for secret in ("Qxf7", "queen", "h5f7", "candidates", "Checks"):
         assert secret not in current, secret
-    assert "an orienting question only" in _directive(messages)
+    assert "the idea: the goal, the pattern and why it works" in _directive(messages)
     # And a second question for the same position is not asked.
     coach.on_event(_mate_analysis(6), 8.0)
     assert _messages(coach) == []
@@ -192,34 +195,39 @@ def test_a_leaked_draft_is_regenerated_then_replaced() -> None:
     assert "not allowed" in retry[-1]["content"] and "Qxf7" in retry[-1]["content"]
 
 
-def test_a_hint_unlocks_the_theme_and_asking_for_the_move_unlocks_it() -> None:
+def test_two_hints_give_the_idea_then_the_focus_and_asking_for_the_move_gives_it() -> None:
     coach, provider = _coach(
         [
-            "What is your opponent's king missing right now?",
-            "Think about a mating attack: where is their king weakest?",
+            "You can mate in one: their king has no square. Which check is it?",
+            "Their king on e8 is boxed in; your queen does it. Which check?",
             "Qxf7# ends it.",
         ]
     )
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)
     assert _messages(coach) == [], "nothing unprompted in a quiet position"
-    # The first hint in a fresh position is the orienting question; the next one, the theme.
+    # The first hint in a fresh position is the idea: the goal and the pattern.
     coach.ask("give me a hint", 8.0)
     out = _messages(coach)
-    assert out[0].level is DisclosureLevel.QUESTION
+    assert out[0].level is DisclosureLevel.IDEA
     current = _current_move_message(_given(provider, 0))
-    assert "theme:" not in current and "Qxf7" not in current
+    assert "goal: the player can mate in one move" in current and "Qxf7" not in current
+    facts = current.split("## Facts (the player to move)")[1].split("## Said here")[0]
+    assert "queen" not in facts and "target:" not in facts, "not the piece or the target yet"
     # The player's words stand under the position, verbatim.
     assert '## Said here\n    PLAYER said: "give me a hint"' in current
+    # The second, the focus: the target and the piece, never the move.
     coach.ask("another hint", 8.5)
     out = _messages(coach)
-    assert out[0].level is DisclosureLevel.THEME
+    assert out[0].level is DisclosureLevel.FOCUS
     current = _current_move_message(_given(provider, 1))
-    assert "theme: a mating attack" in current and "Qxf7" not in current
-    assert "queen" not in current.split("## Facts (the player to move)")[1].split("## Said here")[0]
+    facts = current.split("## Facts (the player to move)")[1].split("## Said here")[0]
+    assert "target: the opponent's king on e8" in facts
+    assert "piece: the player's queen on h5" in facts
+    assert "Qxf7" not in current, "not even among the checks on offer"
     coach.ask("ok just tell me the move", 9.0)
     out = _messages(coach)
-    assert out[0].level is DisclosureLevel.CANDIDATE and "Qxf7" in out[0].text
+    assert out[0].level is DisclosureLevel.MOVE and "Qxf7" in out[0].text
     current = _current_move_message(_given(provider, 2))
     assert "Engine lines" in current and "Qxf7#" in current
     # Every earlier coach turn stands under the position as an annotation: two hints, each
@@ -229,7 +237,7 @@ def test_a_hint_unlocks_the_theme_and_asking_for_the_move_unlocks_it() -> None:
     lines = said.strip().splitlines()
     assert sum(line.startswith("    YOU (the coach) said: ") for line in lines) == 5
     assert lines[-2] == '    PLAYER said: "ok just tell me the move"'
-    assert lines[-1].startswith('    YOU (the coach) said: "The move is Qxf7')
+    assert lines[-1].startswith('    YOU (the coach) said: "Qxf7# is mate')
     assert "have just been shown that it is Qxf7" in _directive(_given(provider, 2))
 
 
@@ -296,8 +304,8 @@ def test_feedback_after_the_users_move_may_say_everything_about_that_position() 
     assert "3... Nf6 (the opponent)" in _record(messages)
 
 
-def test_stuck_gives_a_hint_once_and_the_opponents_turn_is_silent() -> None:
-    coach, _ = _coach(["Take stock of what changed."])
+def test_stuck_gives_the_idea_then_the_focus_and_the_opponents_turn_is_silent() -> None:
+    coach, _ = _coach(["You can mate here.", "Look at their king."])
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)
     coach.tick(12.0)
@@ -305,8 +313,14 @@ def test_stuck_gives_a_hint_once_and_the_opponents_turn_is_silent() -> None:
     coach.tick(17.0)
     out = _messages(coach)
     assert len(out) == 1 and out[0].trigger is Trigger.STUCK
-    coach.tick(40.0)
-    assert _messages(coach) == [], "one unprompted message per position"
+    assert out[0].level is DisclosureLevel.IDEA
+    coach.tick(22.0)
+    assert _messages(coach) == [], "the second waits a full spell from the first"
+    coach.tick(28.0)
+    out = _messages(coach)
+    assert len(out) == 1 and out[0].level is DisclosureLevel.FOCUS
+    coach.tick(80.0)
+    assert _messages(coach) == [], "two unprompted messages per position; the move only asked"
     # With the opponent to move, nothing unprompted.
     quiet, _ = _coach(["..."])
     _start(quiet, Side.BLACK)
@@ -444,9 +458,9 @@ def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
     _, fallback = coach._instruction(
         Trigger.POST_MOVE, position, DisclosureLevel.LINE, None, (), good, played
     )
-    assert fallback in [
-        f.format(best="Qxf7#") + ": the idea was a mating attack." for f in FINE_TIGHTER
-    ]
+    # The better move and what it does, and the pattern to keep.
+    assert any(fallback.startswith(f.format(best="Qxf7#")) for f in FINE_TIGHTER)
+    assert "it is mate" in fallback and "Keep this one:" in fallback
     assert "Do not open with the move they played" in instruction
 
 
@@ -513,9 +527,11 @@ def test_the_fact_sheet_hides_by_level() -> None:
         line=["Qxf7#"],
         decisive=True,
     )
-    assert "theme" not in visible_facts(facts, DisclosureLevel.QUESTION)
-    assert visible_facts(facts, DisclosureLevel.REGION)["region"] == "the kingside, around f7"
-    assert "candidates" not in visible_facts(facts, DisclosureLevel.REGION)
+    assert visible_facts(facts, DisclosureLevel.IDEA)["theme"] == "a mating attack"
+    assert "region" not in visible_facts(facts, DisclosureLevel.IDEA)
+    assert "piece" not in visible_facts(facts, DisclosureLevel.IDEA)
+    assert visible_facts(facts, DisclosureLevel.FOCUS)["region"] == "the kingside, around f7"
+    assert "candidates" not in visible_facts(facts, DisclosureLevel.FOCUS)
     assert visible_facts(facts, DisclosureLevel.LINE)["line"] == ["Qxf7#"]
 
 
@@ -696,8 +712,8 @@ def test_a_canned_ask_is_answered_at_once_and_the_model_builds_on_it() -> None:
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)
     coach.ask_move(8.0)
     quick = coach.poll()  # before the model has answered anything
-    assert [m.text for m in quick] == ["The move is Qxf7#."]
-    assert quick[0].trigger is Trigger.USER_ASK and quick[0].level is DisclosureLevel.CANDIDATE
+    assert [m.text for m in quick] == ["Qxf7# is mate."]
+    assert quick[0].trigger is Trigger.USER_ASK and quick[0].level is DisclosureLevel.MOVE
     assert any(mark.kind == "arrow" for mark in quick[0].annotations)
     out = _messages(coach)
     assert [m.text for m in out] == ["Because it keeps the knight out of play, and eyes e5."]
@@ -878,7 +894,7 @@ def test_material_is_always_from_the_users_side_and_the_review_draws_on_the_tall
 
 
 def test_a_quick_answer_is_a_turn_before_the_model_and_a_failed_reply_adds_nothing() -> None:
-    # The model's two candidates both name the mating move at the QUESTION level: rejected
+    # The model's two candidates both name the mating move at the IDEA level: rejected
     # twice. With the quick answer already out, nothing is said in its place -- the same
     # line a second time was what the first rendered example showed.
     coach, provider = _coach(["[p=0.5] Play Qxf7#.\n[p=0.5] Qxf7 mates.", "[p=1.0] Qxf7#!"])
@@ -886,10 +902,8 @@ def test_a_quick_answer_is_a_turn_before_the_model_and_a_failed_reply_adds_nothi
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)
     coach.ask("hint", 8.0)
     out = _messages(coach)
-    # The quick answer is one of the forcing-nature hints (they rotate).
-    from sidecoach.coach.coach import FORCING_HINTS
-
-    assert len(out) == 1 and out[0].text in FORCING_HINTS
+    # The quick answer is the idea template: the goal and the pattern.
+    assert len(out) == 1 and out[0].text.startswith("You can mate in one move.")
     quick = out[0].text
     # The request carried the quick answer as the coach's own turn, then the directive.
     given = _given(provider, 0)

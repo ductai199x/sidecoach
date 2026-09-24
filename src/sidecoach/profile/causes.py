@@ -20,6 +20,7 @@ from collections.abc import Sequence
 
 import chess
 
+from sidecoach.analysis import exchange
 from sidecoach.analysis.motifs import TAG_ORDER
 from sidecoach.events import MotifTag
 
@@ -61,7 +62,8 @@ def tactical(tags: Sequence[MotifTag]) -> str | None:
 
 def wins_material(board: chess.Board, reply: chess.Move) -> bool:
     """Whether the reply takes something for less than it gives: a bigger piece, or one
-    nobody can take back."""
+    nobody can take back -- by the rules, so a guard pinned to its own king, or a king that
+    would step into check, takes nothing back (`exchange.can_retake`)."""
     if not board.is_capture(reply) or reply not in board.legal_moves:
         return False
     victim = board.piece_at(reply.to_square)
@@ -71,9 +73,7 @@ def wins_material(board: chess.Board, reply: chess.Move) -> bool:
     taken = _VALUE.get(victim.piece_type, 1) if victim is not None else 1  # en passant
     if taken > _VALUE.get(attacker.piece_type, 0):
         return True
-    after = board.copy(stack=False)
-    after.push(reply)
-    return not after.is_attacked_by(after.turn, reply.to_square)
+    return not exchange.can_retake(board, reply)
 
 
 def classify(

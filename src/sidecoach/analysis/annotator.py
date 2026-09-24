@@ -22,6 +22,7 @@ from typing import Protocol
 
 import chess
 
+from sidecoach.analysis import exchange
 from sidecoach.analysis.engine import Engine
 from sidecoach.analysis.score import (
     Thresholds,
@@ -151,7 +152,11 @@ class GameAnnotator:
         if cached is not None:
             return cached
         lines = self.engine.analyse(
-            board, depth=self.depth, multipv=self.multipv, time_s=HURRY_S if hurry else None
+            board,
+            depth=self.depth,
+            multipv=self.multipv,
+            time_s=HURRY_S if hurry else None,
+            carry_best=not hurry,
         )
         measured = Measured(
             fen=key,
@@ -229,7 +234,9 @@ class GameAnnotator:
             and move.to_square == previous[3]
         )
         # A capture nobody can take back is a grab, not a find; a king's capture always is.
-        free_grab = before.is_capture(move) and not after.is_attacked_by(after.turn, move.to_square)
+        # Taking back is read by the rules: a piece guarded only by one pinned to its own king
+        # is taken for nothing.
+        free_grab = before.is_capture(move) and not exchange.can_retake(before, move)
         obvious = recapture or free_grab or before.legal_moves.count() == 1
         label = label_move(
             loss,

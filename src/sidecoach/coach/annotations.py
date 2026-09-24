@@ -2,9 +2,9 @@
 
 The marks come from the same disclosure-filtered fact bundle the message was written from,
 never from the prose alone, so an arrow cannot give away more than the words do: at the
-question level there is nothing to draw; at the region level a tint on the region; at the
-piece level the focus squares and a ring on the piece; at the candidate level an arrow for
-the move; at the line level the line. A message about a move already played -- where the
+idea level there is nothing to draw; at the focus level a tint on the region, the target
+and a ring on the piece; at the move level the focus squares and an arrow for the move; at
+the line level the line. A message about a move already played -- where the
 disclosure rules allow the best move to be named -- gets the played move coloured by how it
 scored and a green arrow for the better one -- two arrows, no more.
 
@@ -133,7 +133,12 @@ def annotations_for(
             add(_arrow(board, better, "good"))
         return marks
 
-    # A hint about the live position: exactly what the level lets the words say.
+    # A hint about the live position: exactly what the level lets the words say. The
+    # target first: a square the region also tints is marked as the target.
+    target = visible.get("target")
+    if target:
+        for square in sorted(squares_in(target)):
+            add(Annotation(kind="square", squares=[square], color="focus"))
     region = visible.get("region")
     if region:
         for square in _region_squares(region):

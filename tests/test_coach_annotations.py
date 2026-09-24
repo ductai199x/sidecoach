@@ -1,8 +1,8 @@
 """Board marks for a coach message never show more than the words may say.
 
-They are built from the disclosure-filtered facts, level by level: nothing at the question
-level, a region tint at the region level, the focus squares and the piece at the piece
-level, an arrow at the candidate level, the line at the line level. A message about a
+They are built from the disclosure-filtered facts, level by level: nothing at the idea
+level, the region, the target and a ring on the piece at the focus level, the focus squares
+and an arrow at the move level, the line at the line level. A message about a
 played move gets the played move coloured by how it scored and the better move in green.
 """
 
@@ -38,28 +38,21 @@ def kinds(marks: list) -> set[tuple[str, tuple[str, ...], str]]:
     return {(m.kind, tuple(m.squares), m.color) for m in marks}
 
 
-def test_nothing_is_drawn_at_the_question_level() -> None:
-    assert annotations_for(FACTS, DisclosureLevel.QUESTION, BOARD, trigger=Trigger.STUCK) == []
-    assert annotations_for(FACTS, DisclosureLevel.THEME, BOARD, trigger=Trigger.STUCK) == []
+def test_nothing_is_drawn_at_the_idea_level() -> None:
+    assert annotations_for(FACTS, DisclosureLevel.IDEA, BOARD, trigger=Trigger.STUCK) == []
 
 
-def test_region_level_tints_the_region_only() -> None:
-    marks = annotations_for(FACTS, DisclosureLevel.REGION, BOARD, trigger=Trigger.STUCK)
-    assert marks, "the region should be tinted"
-    assert all(m.kind == "square" for m in marks), "no arrows or rings below the piece level"
-    squares = {m.squares[0] for m in marks}
-    assert "c6" in squares  # the anchor named in the region words
-    assert "a1" in squares and "e4" not in squares  # queenside files only
-    # The ideas are visible from the region level: the squares they name are marked too.
-    assert "b5" in squares
-
-
-def test_piece_level_marks_focus_and_rings_the_piece_but_no_move() -> None:
-    marks = annotations_for(FACTS, DisclosureLevel.PIECE, BOARD, trigger=Trigger.STUCK)
+def test_focus_level_tints_the_region_marks_the_target_and_rings_the_piece() -> None:
+    facts = FACTS.model_copy(update={"target": "their knight on c6"})
+    marks = annotations_for(facts, DisclosureLevel.FOCUS, BOARD, trigger=Trigger.STUCK)
     ks = kinds(marks)
-    assert ("ring", ("b5",), "focus") in ks
-    assert ("square", ("e8",), "focus") in ks
-    assert not any(m.kind == "arrow" for m in marks), "the candidate is not disclosed yet"
+    squares = {m.squares[0] for m in marks if m.kind == "square"}
+    assert "c6" in squares  # the anchor named in the region words, and the target
+    assert "a1" in squares and "e4" not in squares  # queenside files only
+    assert ("square", ("c6",), "focus") in ks, "the target"
+    assert ("ring", ("b5",), "focus") in ks, "the piece"
+    assert ("square", ("e8",), "focus") not in ks, "the focus squares come with the move"
+    assert not any(m.kind == "arrow" for m in marks), "the move is not disclosed yet"
 
 
 def test_candidate_level_draws_the_move_and_the_threat() -> None:

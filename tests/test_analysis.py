@@ -412,6 +412,30 @@ def test_the_assessment_says_how_deep_the_search_got() -> None:
     assert assessment.depth == 11, "the shallower of the two searches"
 
 
+def test_a_capture_guarded_only_by_a_pinned_piece_is_a_free_grab() -> None:
+    """A capture nobody can take back is obvious, never great, and taking back is read by
+    the rules: the c3 knight guarding e4 is pinned to its king by the b4 bishop, so ...Nxe4
+    is a grab. With the knight free to take back, the one move that holds is great."""
+    from sidecoach.events import Label
+
+    def label(fen: str) -> Label | None:
+        board = chess.Board(fen)
+        fake = FakeEngine(
+            {
+                board.fen(): [
+                    Line(moves=["f6e4"], depth=6, expected_score=0.80),
+                    Line(moves=["e8d7"], depth=6, expected_score=0.40),
+                ]
+            }
+        )
+        annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+        annotator.measure(board)  # measured whole, so the only-move call is made
+        return annotator.assess_move("g", board, chess.Move.from_uci("f6e4"), 1).label
+
+    assert label("4k3/8/5n2/8/1b2B3/2N5/8/4K3 b - - 0 1") is Label.BEST
+    assert label("4k3/8/5n2/8/4B3/2N5/8/4K3 b - - 0 1") is Label.GREAT
+
+
 @needs_engine
 def test_no_single_position_may_hold_up_a_game(engine: Engine) -> None:
     """A knight endgame that takes minutes to reach depth 14 with four lines is cut short."""

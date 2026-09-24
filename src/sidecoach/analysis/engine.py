@@ -24,6 +24,18 @@ from sidecoach.events import Line
 
 # A principal variation can run thirty plies; nobody reads that far and events stay small.
 DEFAULT_PV_PLIES = 12
+# The best line is read for what it is for -- the mate, the piece won, the pawn queened --
+# and a puzzle's point can come seven moves in (a queen won on ply 11, a pawn queening on
+# ply 15, in a sample of Lichess puzzles). Stockfish's own line often stops short (a hash
+# hit cuts it to three plies), so the best line is kept to this length, and a shorter one
+# carried on by searching from its end, whatever the other lines are cut to (Tai,
+# 2026-09-23: "at least 8 to 10 ply since some puzzles and hard positions are really deep").
+MIN_BEST_PLIES = 16
+# How deep, and for how long at most, each search that carries the line on looks.
+EXTEND_DEPTH = 14
+EXTEND_SECONDS = 0.5
+# How many searches may carry one line on.
+EXTEND_TRIES = 3
 # python-chess's model for turning centipawns into win-draw-loss when an engine will not.
 WDL_MODEL = "sf"
 DEFAULT_SCORE_MODEL = "human"
@@ -123,8 +135,11 @@ class Engine:
         time_s: float | None = None,
         multipv: int | None = None,
         pv_plies: int | None = None,
+        carry_best: bool = False,
     ) -> list[Line]:
         """The best lines for `board`, best first, from the side to move's point of view.
+        `carry_best`: a best line shorter than MIN_BEST_PLIES is carried on to it -- for
+        the coach, who reads the line for its point; a verdict needs only the score.
 
         A finished position has no lines: there is nothing to play. Callers read its value
         from the result instead, with `sidecoach.analysis.score.terminal_expected_score`.
@@ -142,8 +157,40 @@ class Engine:
         with self._lock:
             infos = self._analyse_with_restart(board, limit, wanted)
         plies = pv_plies if pv_plies is not None else self.pv_plies
-        lines = [_line(info, board, plies, self.score_model) for info in infos]
-        return [line for line in lines if line.moves]
+        lines = [
+            _line(
+                info,
+                board,
+                max(plies, MIN_BEST_PLIES) if carry_best and i == 0 else plies,
+                self.score_model,
+            )
+            for i, info in enumerate(infos)
+        ]
+        lines = [line for line in lines if line.moves]
+        if carry_best and lines and len(lines[0].moves) < MIN_BEST_PLIES:
+            lines[0] = self._carried_on(board, lines[0], MIN_BEST_PLIES)
+        return lines
+
+    def _carried_on(self, board: chess.Board, line: Line, plies: int) -> Line:
+        """`line` carried on by searches from its end until it is `plies` long or the game
+        is over there; its score and depth stay the first search's."""
+        moves = list(line.moves)
+        end = board.copy(stack=False)
+        for uci in moves:
+            end.push(chess.Move.from_uci(uci))
+        for _ in range(EXTEND_TRIES):
+            if len(moves) >= plies or end.is_game_over(claim_draw=True):
+                break
+            limit = chess.engine.Limit(depth=EXTEND_DEPTH, time=EXTEND_SECONDS)
+            with self._lock:
+                infos = self._analyse_with_restart(end, limit, 1)
+            more = (infos[0].get("pv") or []) if infos else []
+            if not more:
+                break
+            for move in more[: plies - len(moves)]:
+                moves.append(move.uci())
+                end.push(move)
+        return line.model_copy(update={"moves": moves})
 
     def _analyse_with_restart(
         self, board: chess.Board, limit: chess.engine.Limit, multipv: int

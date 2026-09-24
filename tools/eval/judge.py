@@ -255,11 +255,12 @@ def _played_sans(item: dict) -> list[str]:
 def _level_words(level: DisclosureLevel) -> str:
     return {
         DisclosureLevel.SILENT: "nothing about the position",
-        DisclosureLevel.QUESTION: "an orienting question only; no theme, square, piece or move",
-        DisclosureLevel.THEME: "the theme; no square, piece or move",
-        DisclosureLevel.REGION: "the theme and the region; no piece or move",
-        DisclosureLevel.PIECE: "the theme, the region and the piece; no move",
-        DisclosureLevel.CANDIDATE: "the candidate moves; not the line",
+        DisclosureLevel.IDEA: (
+            "the idea: the goal, the pattern and why it works; no square, no move, and not "
+            "which of the player's own pieces does it"
+        ),
+        DisclosureLevel.FOCUS: "the idea, the target and the piece; not the move",
+        DisclosureLevel.MOVE: "the move and why it works; not the whole line",
         DisclosureLevel.LINE: "everything",
     }[level]
 
@@ -1204,16 +1205,16 @@ _TIERS = {
 # reply to one of these made only of questions answered nothing. A hint request or a plan
 # question below the theme level is rightly answered with a question.
 _FACT_ASKS = {
-    "ask_opponent_move": DisclosureLevel.QUESTION,
-    "ask_last_move": DisclosureLevel.QUESTION,
-    "ask_eval": DisclosureLevel.QUESTION,
-    "ask_material": DisclosureLevel.QUESTION,
-    "ask_opening": DisclosureLevel.QUESTION,
-    "ask_game_so_far": DisclosureLevel.QUESTION,
-    "ask_named_move": DisclosureLevel.QUESTION,
-    "ask_plan": DisclosureLevel.THEME,
-    "ask_threat": DisclosureLevel.CANDIDATE,
-    "ask_move": DisclosureLevel.CANDIDATE,
+    "ask_opponent_move": DisclosureLevel.IDEA,
+    "ask_last_move": DisclosureLevel.IDEA,
+    "ask_eval": DisclosureLevel.IDEA,
+    "ask_material": DisclosureLevel.IDEA,
+    "ask_opening": DisclosureLevel.IDEA,
+    "ask_game_so_far": DisclosureLevel.IDEA,
+    "ask_named_move": DisclosureLevel.IDEA,
+    "ask_plan": DisclosureLevel.IDEA,
+    "ask_threat": DisclosureLevel.MOVE,
+    "ask_move": DisclosureLevel.MOVE,
     "ask_line": DisclosureLevel.LINE,
 }
 

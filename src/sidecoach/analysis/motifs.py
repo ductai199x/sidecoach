@@ -13,12 +13,18 @@ move: the static features plus the tags of the engine's best move.
 The theme names are Lichess's, and so are the definitions: a motif is what Lichess would tag,
 not a stricter thing of our own. Two rules keep the tags honest:
 
-1. A tag that claims material has to gain material once defenders are counted: a knight
-   forking two rooks while a pawn can take it is not a fork, and a loose piece must really be
-   undefended. But a pin, a skewer's front piece, or a discovered attack is a restriction or a
-   revealed line, not a material claim, so those follow the geometry the way Lichess does --
-   a piece is pinned when it cannot leave the line without exposing a more valuable one behind
-   it, whether or not that piece can be won.
+1. A tactic is named only when it is tactically real: it wins something, never as geometry
+   alone (Tai, 2026-09-23). A tag that claims material has to gain it once defenders are
+   counted: a knight forking two rooks while a pawn can take it is not a fork, and a loose
+   piece must really be undefended. A pin is a claim too: a piece is pinned when leaving
+   the line would lose what stands behind it -- the king, or a piece the pinner could take
+   for profit -- and a pinner the enemy simply wins pins nothing. A queen "pinning" a knight
+   to a defended rook pins nothing, whatever the geometry; Lichess tags it, the coach must
+   not teach it. The same goes for the rest: a discovered attack reveals something the
+   slider can win (or the king), a skewer still wins the piece behind whatever the front
+   piece does, and the line motifs (deflection, attraction, removing the defender,
+   interference, clearance) end in material won or mate. "Can take" and "defends" are read
+   off legal moves (`exchange`): a piece pinned to its own king takes nothing.
 2. `tags_for_move` reports only what the move brought about. A pin the bishop was already
    making before the move is not something the move did, so castling does not inherit it.
    Those features still show up in `tags_for_position`, where they belong.
@@ -47,6 +53,7 @@ from collections.abc import Iterable, Sequence
 
 import chess
 
+from sidecoach.analysis import exchange, mates
 from sidecoach.events import MotifTag
 
 __all__ = ["TAG_ORDER", "tags_for_move", "tags_for_position"]
@@ -99,6 +106,15 @@ TAG_ORDER: tuple[str, ...] = (
     "bodenMate",
     "doubleBishopMate",
     "dovetailMate",
+    "swallowstailMate",
+    "epauletteMate",
+    "triangleMate",
+    "blindSwineMate",
+    "cornerMate",
+    "operaMate",
+    "pillsburysMate",
+    "morphysMate",
+    "balestraMate",
 )
 
 _ORDER_INDEX = {name: i for i, name in enumerate(TAG_ORDER)}
@@ -177,6 +193,62 @@ def _balance(board: chess.Board, color: chess.Color) -> int:
     return total
 
 
+def _as_side(board: chess.Board, color: chess.Color) -> chess.Board:
+    """`board` with `color` to move, the way `exchange` reads a threat: a null move hands the
+    turn over, so no en passant right is carried across."""
+    if board.turn == color:
+        return board
+    view = board.copy(stack=False)
+    view.push(chess.Move.null())
+    return view
+
+
+def _capture_gain(
+    board: chess.Board, color: chess.Color, frm: chess.Square, to: chess.Square
+) -> int | None:
+    """What the piece of `color` on `frm` nets by taking on `to`, the recaptures played out
+    with legal moves (`exchange.exchange`); None when it cannot legally take there at all --
+    pinned to its own king, blocked, gone, or the king in check with the capture no answer."""
+    view = _as_side(board, color)
+    gains = [
+        exchange.exchange(view, m)
+        for m in exchange.captures_on(view, color, to)
+        if m.from_square == frm
+    ]
+    return max(gains) if gains else None
+
+
+def _mates(boards: Sequence[chess.Board], mover: chess.Color) -> bool:
+    """The line ends with the mover's opponent checkmated."""
+    return boards[-1].is_checkmate() and boards[-1].turn != mover
+
+
+def _wins_material(
+    boards: Sequence[chess.Board],
+    played: Sequence[chess.Move],
+    mover: chess.Color,
+    *,
+    square: chess.Square | None = None,
+    upto: int | None = None,
+) -> bool:
+    """Whether one of the mover's later captures (from its second move on) leaves it ahead of
+    where it stood before the first move: the balance before that capture plus what the
+    capture nets by static exchange. Counting the exchange rather than the bare balance at
+    the end of the line means a line cut off mid-trade neither gains nor loses a piece.
+    `square` keeps to captures on that square; `upto` stops at that ply."""
+    start = _balance(boards[0], mover)
+    last = len(played) if upto is None else min(len(played), upto + 1)
+    for k in range(2, last, 2):
+        later = played[k]
+        if square is not None and later.to_square != square:
+            continue
+        if not boards[k].is_capture(later):
+            continue
+        if _balance(boards[k], mover) + exchange.exchange(boards[k], later) > start:
+            return True
+    return False
+
+
 def _line_boards(
     before: chess.Board, moves: Sequence[chess.Move]
 ) -> tuple[list[chess.Board], list[chess.Move]]:
@@ -222,14 +294,17 @@ def _defensive_evidence(
 ) -> list[chess.Square] | None:
     """A quiet move that saves material: it runs from an attack, or it defends an attacked man.
 
-    Running away means the piece could have been taken for profit where it stood and its new
-    square is not attacked at all. Defending means the move newly covers a friendly piece the
-    opponent could have won before the move and is still attacking after it. Adding a second
-    guard to a piece that was already holding is not a rescue, so it does not count.
+    Running away means the piece could have been taken for profit where it stood and cannot
+    be on its new square. Defending means the move newly covers a friendly piece the opponent
+    could have won before the move, is still attacking after it, and can no longer win. A
+    guard that does not stop the loss is no rescue: a knight covering a rook that a knight
+    attacks still loses the exchange. Nor is one that is itself lost where it lands, and
+    adding a second guard to a piece that was already holding does not count either.
     """
     enemy = not mover
-    ran = not _is_safe(before, move.from_square) and not after.is_attacked_by(enemy, move.to_square)
-    if ran:
+    if not is_safe(after, move.to_square):
+        return None
+    if not is_safe(before, move.from_square):
         return [move.from_square, move.to_square]
     covered_before = before.attacks(move.from_square)
     for square in after.attacks(move.to_square):
@@ -238,7 +313,9 @@ def _defensive_evidence(
         piece = after.piece_at(square)
         if piece is None or piece.color != mover:
             continue
-        if _is_safe(before, square) or not after.is_attacked_by(enemy, square):
+        if is_safe(before, square) or not exchange.capturers(after, enemy, square):
+            continue
+        if not is_safe(after, square):
             continue
         return [move.to_square, square]
     return None
@@ -280,6 +357,10 @@ def _group_a(
         if len(checkers) >= 2:
             tags.append(_tag("doubleCheck", squares, move))
     if not is_capture and not gives_check and move.promotion is None:
+        # Bookkeeping, not a teaching claim: the move is not a capture, a check or a
+        # promotion, and that is all. Lichess's quietMove is narrower (a quiet move that
+        # makes no threat and still wins); the coach never names this one as a theme and the
+        # panel hides it. It gates `defensiveMove` and records what kind of move it was.
         tags.append(_tag("quietMove", [frm, to], move))
         evidence = _defensive_evidence(before, after, move, mover)
         if evidence is not None:
@@ -290,38 +371,36 @@ def _group_a(
 # --- group B: what the move creates -----------------------------------------------------
 
 
-def _winnable(
+def winnable(
     view: chess.Board, square: chess.Square, cost: int, ignore: chess.Square | None = None
 ) -> bool:
     """Would taking the piece on `square` with a `cost`-valued piece gain material?
 
-    True when the piece is worth more than what takes it, or when nothing defends it.
-    `ignore` drops one defender, which is how a skewered piece stops counting as the guard of
-    the piece behind it: it is the one being driven off the line.
+    True when the piece is worth more than what takes it, or when nothing can legally take
+    back (`exchange.defenders`: a defender pinned to its own king does not count, nor a
+    king that would step onto a guarded square). `ignore` drops one piece from the board
+    first, which is how a pinned or skewered piece stops counting as the guard of the piece
+    behind it: it is the one being driven off the line.
     """
     piece = view.piece_at(square)
     if piece is None:
         return False
     if piece.piece_type == chess.KING or _value(piece.piece_type) > cost:
         return True
-    defenders = view.attackers(piece.color, square)
+    probe = view
     if ignore is not None:
-        defenders.discard(ignore)
-    return not defenders
+        probe = view.copy(stack=False)
+        probe.remove_piece_at(ignore)
+    return not exchange.defenders(probe, piece.color, square)
 
 
-def _is_safe(view: chess.Board, square: chess.Square) -> bool:
-    """Can the piece on `square` be taken for profit? Safe means no, so it can stay."""
-    piece = view.piece_at(square)
-    if piece is None:
-        return True
-    mine = _value(piece.piece_type)
-    attackers = view.attackers(not piece.color, square)
-    if not attackers:
-        return True
-    if any(_value(view.piece_type_at(a)) < mine for a in attackers):
-        return False
-    return bool(view.attackers(piece.color, square))
+def is_safe(view: chess.Board, square: chess.Square) -> bool:
+    """Can the piece on `square` be taken for profit? Safe means no, so it can stay. Read
+    off the static exchange with legal moves (`exchange.can_be_won`): an attacker pinned to
+    its own king cannot take -- the knight forking king and queen is safe from the pawn
+    that is pinned (the "pin" of Lichess's fork puzzles) -- and an x-ray piece behind the
+    first attacker counts."""
+    return not exchange.can_be_won(view, square)
 
 
 def _mover_captures(
@@ -355,9 +434,12 @@ def _fork(
 
     A target is the enemy king, an enemy piece worth more than the moved piece, or an enemy
     piece worth at least as much and undefended. Equal value plus a defender is a trade, not
-    a fork, which is what keeps pawn pushes out of this. Unless the enemy king is one of the
-    targets, the forking piece must also be safe where it stands: a knight forking two rooks
-    while a pawn can take it wins nothing.
+    a fork, which is what keeps pawn pushes out of this. The forker has to be able to take a
+    target by the rules: a piece pinned to its own king bears on the pieces around it but may
+    take none of them. And the forking piece must be safe where it stands, a check included:
+    a knight forking two rooks while a pawn can take it wins nothing, and a knight checking
+    king and queen that the g-pawn simply takes wins nothing either -- taking the checker is
+    a legal answer to the check, which the exchange with legal moves counts.
 
     A check is the exception to value: when the move gives check, a loose enemy piece the
     forker also hits counts however cheap it is, because the enemy must answer the check and
@@ -372,19 +454,18 @@ def _fork(
     mine = _value(piece.piece_type)
     gives_check = after.is_check()
     targets: list[chess.Square] = []
-    forks_king = False
     for square in after.attacks(move.to_square):
         victim = after.piece_at(square)
         if victim is None or victim.color != enemy:
             continue
-        if victim.piece_type == chess.KING:
-            forks_king = True
-            targets.append(square)
-        elif _fork_target(after, move.to_square, square, mine, mover, gives_check, won_in_line):
+        king = victim.piece_type == chess.KING
+        if king or _fork_target(
+            after, move.to_square, square, mine, mover, gives_check, won_in_line
+        ):
             targets.append(square)
     if len(targets) < 2:
         return None
-    if not forks_king and not _is_safe(after, move.to_square):
+    if not is_safe(after, move.to_square):
         return None
     return _tag("fork", [move.to_square, *targets], move)
 
@@ -400,18 +481,23 @@ def _fork_target(
 ) -> bool:
     """Whether the enemy piece on `square` is one a fork from `forker` would win.
 
-    A cheap loose piece counts when the move gives check and either the piece cannot be
-    saved against any reply (`_check_fork_wins`) or the engine's own line actually captures
-    it -- the latter settles the cases where the enemy has a defence that only fails to
-    deeper calculation, which is the engine's job, not the geometry's.
+    Only a piece the forker can legally take (`exchange.capturers`), and "undefended" means
+    nothing can legally take back (`exchange.defenders`). A cheap loose piece counts when the
+    move gives check and either the piece cannot be saved against any reply
+    (`_check_fork_wins`) or the engine's own line actually captures it -- the latter settles
+    the cases where the enemy has a defence that only fails to deeper calculation, which is
+    the engine's job, not the geometry's.
     """
+    if forker not in exchange.capturers(after, mover, square):
+        return False
     enemy = not mover
     theirs = _value(after.piece_type_at(square))
-    if theirs > mine or (theirs >= mine and not after.attackers(enemy, square)):
+    loose = not exchange.defenders(after, enemy, square)
+    if theirs > mine or (theirs >= mine and loose):
         return True
     return (
         gives_check
-        and not after.attackers(enemy, square)
+        and loose
         and (square in won_in_line or _check_fork_wins(after, forker, square, mover))
     )
 
@@ -422,33 +508,36 @@ def _check_fork_wins(
     """After a checking move, is the loose enemy piece on `target` truly won?
 
     True only when no legal reply to the check rescues it: for every reply the piece is still
-    there, still attacked by the forker, and still undefended. A reply that captures the
-    forker, guards the piece, or moves it to safety means the check-fork does not win it.
+    there, the forker can still legally take it, and taking it still gains material. A reply
+    that captures the forker, guards the piece, moves it to safety, or blocks with a piece
+    that pins the forker to its own king means the check-fork does not win it.
     """
     replies = list(after.legal_moves)
     if not replies:  # checkmate: the mate tags cover this, it is not a fork win
         return False
     enemy = not mover
-    cost = _value(after.piece_type_at(forker))
     for reply in replies:
         nxt = after.copy(stack=False)
         nxt.push(reply)
         victim = nxt.piece_at(target)
         if victim is None or victim.color != enemy:
             return False  # the piece moved, was traded, or the square changed hands
-        if forker not in nxt.attackers(mover, target):
-            return False  # the forker no longer hits it (captured, pinned, blocked)
-        if not _winnable(nxt, target, cost):
+        gain = _capture_gain(nxt, mover, forker, target)
+        if gain is None:
+            return False  # the forker cannot take it now (captured, pinned, blocked)
+        if gain <= 0:
             return False  # it is defended now
     return True
 
 
 def _hanging_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
-    """Enemy pieces attacked by the mover with no defender at all, one tag per piece.
+    """Enemy pieces the mover can take with nothing to take back, one tag per piece.
 
-    Pawns are excluded: loose pawns are everywhere and a coach calling one "hanging" is noise.
-    One tag per piece so that a piece that was already loose before a move can be told apart
-    from one the move just left en prise.
+    Read off legal moves (`exchange.hanging`): a piece attacked only by a piece pinned to its
+    own king is not hanging, nor is one the mover cannot take because it has a check to
+    answer first. Pawns are excluded: loose pawns are everywhere and a coach calling one
+    "hanging" is noise. One tag per piece so that a piece that was already loose before a
+    move can be told apart from one the move just left en prise.
     """
     enemy = not mover
     tags: list[MotifTag] = []
@@ -458,7 +547,7 @@ def _hanging_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
             continue
         if piece.piece_type in (chess.PAWN, chess.KING):
             continue
-        if view.attackers(mover, square) and not view.attackers(enemy, square):
+        if exchange.hanging(view, square):
             tags.append(_tag("hangingPiece", [square]))
     return tags
 
@@ -466,16 +555,30 @@ def _hanging_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
 def _ray_motifs(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
     """Pins and skewers: one mover slider, one enemy piece, one enemy piece behind it.
 
-    A pin is geometric, the way Lichess tags it: an enemy piece with a more valuable enemy
-    piece (or the king) directly behind it on the slider's line is pinned, whether or not the
-    piece behind can be won, because the front piece cannot leave the line without exposing
-    it. A skewer names a piece to go after, so it still requires the piece behind to be
-    winnable, and a front piece that can simply take the slider for profit leaves nothing to
-    act on. The x-ray is a line motif, not a static one, and lives in `_xray`.
+    A pin is tactical, not only geometric: an enemy piece with a more valuable enemy piece
+    behind it on the slider's line is pinned when leaving the line would lose that piece --
+    the king always, another piece when the slider could legally take it for profit once the
+    front piece has gone. A pin against a defended piece worth no more than the pinner wins
+    nothing, and the coach said such pins made no sense (Tai, 2026-09-23). A pin also has to
+    hold something back: a pawn on the file whose only move is straight ahead is not stopped
+    from anything (`_leaves_line`).
+
+    Neither holds when the enemy simply wins the slider (`is_safe`): a rook "pinning" a rook
+    that takes it with check, or a bishop pinning a knight while a pawn takes the bishop.
+    A slider pinned to its own king can never take what is behind, so it pins nothing but
+    the king: a pin to the king stays, because the front piece still cannot move by the
+    rules, but a relative pin needs the slider to be able to cash it in.
+
+    A skewer names a piece to go after, so it requires the piece behind to be winnable, and
+    it must still be winnable whatever the front piece does (`_skewer_holds`): a queen that
+    steps off the line to guard the rook behind has answered it. The x-ray is a line motif,
+    not a static one, and lives in `_xray`.
     """
     enemy = not mover
     tags: list[MotifTag] = []
     for slider in _sliders(view, mover):
+        if not is_safe(view, slider):
+            continue
         cost = _value(view.piece_type_at(slider))
         for front_sq in view.attacks(slider):
             front = view.piece_at(front_sq)
@@ -490,31 +593,94 @@ def _ray_motifs(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
             squares = [slider, front_sq, back_sq]
             front_value, back_value = _value(front.piece_type), _value(back.piece_type)
             if back_value > front_value:
-                tags.append(_tag("pin", squares))
+                if not _leaves_line(view, slider, front_sq, back_sq):
+                    continue
                 if back.piece_type == chess.KING:
+                    tags.append(_tag("pin", squares))
                     tags.append(_tag("absolutePin", squares))
-                continue
-            if slider in view.attacks(front_sq) and _winnable(view, slider, front_value):
+                    continue
+                probe = view.copy(stack=False)
+                probe.remove_piece_at(front_sq)
+                gain = _capture_gain(probe, mover, slider, back_sq)
+                if gain is not None and gain > 0:
+                    tags.append(_tag("pin", squares))
                 continue
             if front_value > back_value:
-                must_move = _winnable(view, front_sq, cost)
-                behind_is_loose = _winnable(view, back_sq, cost, ignore=front_sq)
-                if must_move and behind_is_loose:
+                must_move = winnable(view, front_sq, cost)
+                behind_is_loose = winnable(view, back_sq, cost, ignore=front_sq)
+                if must_move and behind_is_loose and _skewer_holds(view, mover, squares):
                     tags.append(_tag("skewer", squares))
     return tags
 
 
-def _discovered_attack(
-    before: chess.Board, after: chess.Board, move: chess.Move, mover: chess.Color
-) -> MotifTag | None:
-    """The move steps off a line and a friendly slider now bears on something it did not.
+def _leaves_line(
+    view: chess.Board, slider: chess.Square, front_sq: chess.Square, back_sq: chess.Square
+) -> bool:
+    """Whether the piece on `front_sq` has a move off the slider's line, the pin ignored.
 
-    The proof is geometric, the way Lichess tags a discovery: the vacated square lies
-    strictly between the slider and an enemy piece it now attacks and did not before. Whether
-    that piece can be won is not the test -- revealing the attack is the motif -- so a
-    discovery onto a defended piece, or onto a pawn, still counts.
+    A pin restricts only a piece that had somewhere else to go: the pawn in front of the
+    queen on a file whose only move is a step down that file is held back from nothing.
+    Pseudo-legal moves are what the piece could do were it not pinned.
     """
+    front = view.piece_at(front_sq)
+    if front is None:
+        return False
+    line = chess.ray(slider, back_sq)
+    side = _as_side(view, front.color)
+    moves = side.generate_pseudo_legal_moves(from_mask=chess.BB_SQUARES[front_sq])
+    return any(not chess.BB_SQUARES[m.to_square] & line for m in moves)
+
+
+def _skewer_holds(view: chess.Board, mover: chess.Color, squares: Sequence[chess.Square]) -> bool:
+    """Whether every way the front piece can step off the line still loses the piece behind.
+
+    For each legal move of the front piece off the line, the slider must still be able to
+    take the piece behind for a gain (`exchange.exchange` > 0). A queen that answers a rook
+    skewer by stepping to a square that guards the rook behind has met it: Rxb8 Qxb8 is only
+    a trade. A front piece with no way off the line is not skewered but simply lost, which
+    the loose and trapped pieces cover.
+    """
+    slider, front_sq, back_sq = squares
+    front = view.piece_at(front_sq)
+    if front is None:
+        return False
+    line = chess.ray(slider, back_sq)
+    side = _as_side(view, front.color)
+    escapes = [
+        m
+        for m in side.legal_moves
+        if m.from_square == front_sq and not chess.BB_SQUARES[m.to_square] & line
+    ]
+    if not escapes:
+        return False
+    for escape in escapes:
+        nxt = side.copy(stack=False)
+        nxt.push(escape)
+        gain = _capture_gain(nxt, mover, slider, back_sq)
+        if gain is None or gain <= 0:
+            return False
+    return True
+
+
+def _discovered_attack(
+    boards: list[chess.Board], played: Sequence[chess.Move], mover: chess.Color
+) -> MotifTag | None:
+    """The move steps off a line and a friendly slider now bears on something it can win.
+
+    The geometry first: the vacated square lies strictly between the slider and an enemy
+    piece it now attacks and did not before. Then the claim: the revealed piece is the king
+    (a discovered check), or the slider could take it for a gain (`exchange.exchange` > 0),
+    or the slider does take it later in the line -- Lichess tags a discovery only when that
+    capture happens. Revealing a bishop onto a pawn the g-pawn guards, as 2.d4 does to h6,
+    is a line opening, not a discovered attack.
+    """
+    before, after, move = boards[0], boards[1], played[0]
     enemy = not mover
+    later = {
+        (played[k].from_square, played[k].to_square)
+        for k in range(2, len(played), 2)
+        if boards[k].is_capture(played[k])
+    }
     squares: list[chess.Square] = []
     for slider in _sliders(after, mover):
         if slider == move.to_square or before.piece_at(slider) != after.piece_at(slider):
@@ -528,6 +694,10 @@ def _discovered_attack(
                 continue
             if not chess.BB_SQUARES[move.from_square] & chess.between(slider, target):
                 continue
+            if piece.piece_type != chess.KING and (slider, target) not in later:
+                gain = _capture_gain(after, mover, slider, target)
+                if gain is None or gain <= 0:
+                    continue
             if slider not in squares:
                 squares.append(slider)
             squares.append(target)
@@ -543,17 +713,29 @@ def _interference(
 
     Two shapes. The mover interposes between an enemy slider and a piece it was defending,
     cutting the guard and winning that piece (`_mover_interference`). Or the mover forces the
-    enemy -- almost always with a check -- to answer with a move that blocks one of the
-    enemy's own sliders off a square it was guarding, a square the mover then captures or
-    mates on (`_self_interference`). The forced self-block is the common case; the mover's own
-    interposition is the textbook one.
+    enemy -- with a check, or by taking so that the reply is the recapture -- to answer with
+    a move that blocks one of the enemy's own sliders off a square it was guarding, a square
+    the mover takes or mates on with its very next move (`_self_interference`). The forced
+    self-block is the common case; the mover's own interposition is the textbook one.
     """
-    exploited = {played[k].to_square for k in range(0, len(played), 2)}
     for i, move in enumerate(played):
         before, after = boards[i], boards[i + 1]
         if i % 2 == 0:
-            tag = _mover_interference(before, after, move, mover)
+            taken = {
+                played[k].to_square
+                for k in range(i + 2, len(played), 2)
+                if boards[k].is_capture(played[k])
+            }
+            tag = _mover_interference(before, after, move, mover, taken)
         else:
+            recapture = before.is_capture(move) and move.to_square == played[i - 1].to_square
+            if not before.is_check() and not recapture:
+                continue  # a reply the enemy chose freely did not interfere under force
+            exploited: set[chess.Square] = set()
+            if i + 1 < len(played):
+                nxt = played[i + 1]
+                if boards[i + 1].is_capture(nxt) or boards[i + 2].is_checkmate():
+                    exploited.add(nxt.to_square)
             tag = _self_interference(before, after, move, not mover, exploited)
         if tag is not None:
             return tag
@@ -561,14 +743,23 @@ def _interference(
 
 
 def _mover_interference(
-    before: chess.Board, after: chess.Board, move: chess.Move, mover: chess.Color
+    before: chess.Board,
+    after: chess.Board,
+    move: chess.Move,
+    mover: chess.Color,
+    taken: set[chess.Square],
 ) -> MotifTag | None:
     """The mover lands on the line between an enemy slider and the piece it was defending.
 
-    Geometric plus a before/after test: the defended piece loses its last defender and comes
-    under attack from the mover.
+    Geometric plus a before/after test with legal moves: the defended piece loses its last
+    defender (`exchange.defenders`) and the mover can now take it for a gain -- which a piece
+    pinned to its own king cannot, even standing on the line. And the interposer must hold
+    its square (`is_safe`), or the line must go on to take the piece it cut off (`taken`,
+    the squares the mover captures on later): a knight dropped between rook and pawn that
+    the rook simply takes has cut nothing.
     """
     enemy = not mover
+    holds = is_safe(after, move.to_square)
     for slider in _sliders(before, enemy):
         if slider == move.to_square or before.piece_at(slider) != after.piece_at(slider):
             continue
@@ -580,9 +771,11 @@ def _mover_interference(
                 continue
             if not chess.BB_SQUARES[move.to_square] & chess.between(slider, guarded):
                 continue
-            if guarded in after.attacks(slider) or after.attackers(enemy, guarded):
+            if guarded in after.attacks(slider) or exchange.defenders(after, enemy, guarded):
                 continue
-            if not after.attackers(mover, guarded):
+            if exchange.best_capture(after, mover, guarded) <= 0:
+                continue
+            if not holds and guarded not in taken:
                 continue
             return _tag("interference", [move.to_square, slider, guarded], move)
     return None
@@ -598,8 +791,10 @@ def _self_interference(
     """A forced reply that blocks one of the replier's own sliders off a square it was guarding.
 
     The block lands on `reply.to_square`; a `defender` slider that reached that square cleanly
-    and guarded a square the mover later lands on (`exploited`) no longer guards it afterwards.
-    That is the enemy interfering with its own defence.
+    and guarded a square the mover takes or mates on next (`exploited`) no longer guards it
+    afterwards. That is the enemy interfering with its own defence. `_interference` hands in
+    only forced replies -- a check evasion or a recapture -- and only the next move's square:
+    a knight that retreats of its own accord in front of its queen interferes with nothing.
     """
     block = reply.to_square
     for slider in _sliders(before, defender):
@@ -612,7 +807,7 @@ def _self_interference(
                 break
             if (
                 target in exploited
-                and slider in before.attackers(defender, target)
+                and slider in exchange.defenders(before, defender, target)
                 and slider not in after.attackers(defender, target)
             ):
                 return _tag("interference", [target, block, slider], reply)
@@ -633,14 +828,17 @@ def _beyond(frm: chess.Square, through: chess.Square) -> Iterable[chess.Square]:
 
 
 def _trapped_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
-    """An enemy piece attacked by something cheaper with nowhere safe to go.
+    """An enemy piece the mover can win that no move of the enemy's saves.
 
-    Minor pieces count, not only rooks and queens: a knight or bishop hemmed in and hunted by
-    a pawn is trapped just as a rook is. A piece merely left undefended is caught as a loose
-    piece instead; trapped is the one with no square to flee to. Needs the enemy to move, so
-    it is skipped whenever either king is in check: check evasions would make every piece look
-    trapped. One tag per piece, so a piece that was already trapped before a move can be told
-    apart from one the move just shut in.
+    The piece can be taken for profit now (`exchange.can_be_won`, legal moves: a hunter
+    pinned to its own king hunts nothing), and after every legal enemy move it still can
+    (`_rescues`): not by fleeing, not by guarding it, not by taking the hunter with something
+    else, not by a check. A flight square that is attacked but held is a flight square: the
+    knight on h6 hit by a pawn is not trapped while f5 and g4 are guarded. Minor pieces count,
+    not only rooks and queens: a knight or bishop hemmed in and hunted by a pawn is trapped
+    just as a rook is. Needs the enemy to move, so it is skipped whenever either king is in
+    check: check evasions would make every piece look trapped. One tag per piece, so a piece
+    that was already trapped before a move can be told apart from one the move just shut in.
     """
     enemy = not mover
     enemy_king = view.king(enemy)
@@ -649,45 +847,69 @@ def _trapped_tags(view: chess.Board, mover: chess.Color) -> list[MotifTag]:
         return []
     if view.attackers(mover, enemy_king) or view.attackers(enemy, mover_king):
         return []
-    escapes: dict[chess.Square, list[chess.Move]] = {}
-    for move in view.legal_moves:
-        escapes.setdefault(move.from_square, []).append(move)
+    replies = list(view.legal_moves)
     trapped: list[MotifTag] = []
     for square in sorted(view.piece_map()):
         piece = view.piece_at(square)
         if piece is None or piece.color != enemy or _value(piece.piece_type) < _MINOR:
             continue
-        mine = _value(piece.piece_type)
-        hunters = view.attackers(mover, square)
-        if not any(_value(view.piece_type_at(h)) < mine for h in hunters):
+        if not exchange.can_be_won(view, square):
             continue
-        safe = False
-        for move in escapes.get(square, []):
-            victim = view.piece_at(move.to_square)
-            if victim is not None and _value(victim.piece_type) >= mine:
-                safe = True
-                break
-            if not view.is_attacked_by(mover, move.to_square):
-                safe = True
-                break
-        if not safe:
-            trapped.append(_tag("trappedPiece", [square, *hunters]))
+        # The piece's own moves first: fleeing is the usual rescue, and the search stops there.
+        ordered = sorted(replies, key=lambda m, sq=square: m.from_square != sq)
+        if any(_rescues(view, reply, square, mover) for reply in ordered):
+            continue
+        hunters = exchange.capturers(view, mover, square)
+        trapped.append(_tag("trappedPiece", [square, *hunters]))
     return trapped
 
 
+def _rescues(
+    view: chess.Board, reply: chess.Move, square: chess.Square, mover: chess.Color
+) -> bool:
+    """Whether the enemy `reply` saves the piece on `square` from being won.
+
+    It does when, after the reply, the mover can no longer take the piece (wherever it went)
+    for more than the reply itself took: a piece that flees to a held square, a hunter taken,
+    a check to answer first, or a capture worth at least what is lost -- the old rule that a
+    trapped piece taking something as valuable on its way out is not trapped, and a queen that
+    wins a rook elsewhere has not lost her knight for nothing. A queen taking a rook on a1
+    that the bishop takes back has still lost herself.
+    """
+    nxt = view.copy(stack=False)
+    nxt.push(reply)
+    where = reply.to_square if reply.from_square == square else square
+    taken = chess.PAWN if view.is_en_passant(reply) else view.piece_type_at(reply.to_square)
+    gained = _value(taken)
+    if reply.promotion is not None:
+        gained += _value(reply.promotion) - _value(chess.PAWN)
+    return exchange.best_capture(nxt, mover, where) <= gained
+
+
 def _attacking_f2f7(
-    before: chess.Board, after: chess.Board, move: chess.Move, mover: chess.Color
+    before: chess.Board,
+    after: chess.Board,
+    move: chess.Move,
+    mover: chess.Color,
+    *,
+    won_in_line: frozenset[chess.Square] = frozenset(),
 ) -> MotifTag | None:
-    """The move takes aim at the beginner's square: f7 as white, f2 as black."""
+    """The move takes aim at the beginner's weak pawn: f7 as white, f2 as black.
+
+    The pawn itself, not whatever stands on the square: a rook checking a king that has
+    walked to f7 in the endgame is a check, not this. And the aim must be real: the pawn can
+    be won (`exchange.best_capture` > 0) or the engine's line takes it (`won_in_line`). A
+    bishop eyeing f7 in a book Italian, with the king and queen holding it, only looks.
+    """
     target = chess.F7 if mover == chess.WHITE else chess.F2
     piece = after.piece_at(target)
-    if piece is None or piece.color == mover:
-        return None
-    if piece.piece_type not in (chess.PAWN, chess.KING):
+    if piece is None or piece.color == mover or piece.piece_type != chess.PAWN:
         return None
     if target not in after.attacks(move.to_square):
         return None
     if target in before.attacks(move.from_square):
+        return None
+    if exchange.best_capture(after, mover, target) <= 0 and target not in won_in_line:
         return None
     return _tag("attackingF2F7", [move.to_square, target], move)
 
@@ -700,11 +922,13 @@ def _exposed_king(view: chess.Board, mover: chess.Color) -> MotifTag | None:
     attacking the king's ring (one of them a queen or rook), and at least two ring squares
     under fire. Counting pieces on the ring rather than pieces on the board is what keeps an
     opening king that just pushed a pawn from looking besieged. The theme ranks low, so a
-    sharper motif in the same position wins out.
+    sharper motif in the same position wins out. Without a queen of the mover's there is no
+    attack to speak of: a king walking up the board in a rook and knight ending is active,
+    not exposed.
     """
     enemy = not mover
     king = view.king(enemy)
-    if king is None:
+    if king is None or not view.pieces(chess.QUEEN, mover):
         return None
     king_file, king_rank = chess.square_file(king), chess.square_rank(king)
     step = 1 if enemy == chess.WHITE else -1
@@ -832,66 +1056,111 @@ def _sacrifice(
 
 
 def _clearance(boards: list[chess.Board], played: list[chess.Move]) -> MotifTag | None:
-    """The move vacates a square with tempo and a later move of the mover's uses that square.
+    """The move vacates a square with tempo and another piece soon uses that square with force.
 
     Tempo means the move is a capture or a check, which is what separates a clearance from a
-    piece that merely happened to be in the way.
+    piece that merely happened to be in the way. The square is cleared for another piece: a
+    queen that grabs a pawn and comes back to where it stood cleared nothing. Soon means one
+    of the mover's next two moves, and the use must itself be a capture, a check or mate, or
+    set up what the line goes on to win or mate with (Bxe5 Bxe5 Qd5, the queen's fork that
+    takes e5 a move later) -- a rook strolling down a file the knight left long ago is not
+    what the knight's move was for.
     """
+    mover = boards[0].turn
     if len(played) < 3:
         return None
     first = played[0]
     if not boards[0].is_capture(first) and not boards[1].is_check():
         return None
     vacated = first.from_square
-    for i in range(2, len(played), 2):
+    cleared_piece = first.to_square
+    for i in range(2, min(len(played), 5), 2):
         later = played[i]
-        if later.to_square == vacated:
-            return _tag("clearance", [vacated, later.from_square, later.to_square], first)
-        if chess.BB_SQUARES[vacated] & chess.between(later.from_square, later.to_square):
+        if later.from_square == cleared_piece:
+            cleared_piece = later.to_square  # the piece that cleared the square, moving on
+            continue
+        uses = later.to_square == vacated or bool(
+            chess.BB_SQUARES[vacated] & chess.between(later.from_square, later.to_square)
+        )
+        if not uses:
+            continue
+        forcing = boards[i].is_capture(later) or boards[i + 1].is_check()
+        if forcing or _mates(boards, mover) or _wins_material(boards, played, mover):
             return _tag("clearance", [vacated, later.from_square, later.to_square], first)
     return None
 
 
-def _capturing_defender(boards: list[chess.Board], played: list[chess.Move]) -> MotifTag | None:
-    """The move captures a piece and a later move of the mover's lands on a square it guarded."""
+def _capturing_defender(
+    boards: list[chess.Board], played: list[chess.Move], mover: chess.Color
+) -> MotifTag | None:
+    """The move captures a defender, and a later move of the mover's wins what it defended.
+
+    The captured piece must have been a legal defender of the later square at the start
+    (`exchange.defenders`), and the piece there must be one the mover could not win before
+    (`exchange.best_capture` is 0) but wins at that point (`exchange.exchange` > 0), with the
+    line ahead of where it started once that capture is counted: removing a knight that
+    guarded f6 when the g-pawn guards it too wins nothing, and giving a rook for the knight
+    that guarded a pawn loses more than the pawn. A move onto a square the defender guarded
+    counts without material only when it is a check and the line ends in mate.
+    """
     first = played[0]
     if not boards[0].is_capture(first):
         return None
+    enemy = not mover
     victim_square = _ep_victim(first) if boards[0].is_en_passant(first) else first.to_square
-    guarded = boards[0].attacks(victim_square)
+    start = _balance(boards[0], mover)
+    mates = _mates(boards, mover)
     for i in range(2, len(played), 2):
         later = played[i]
-        if later.to_square not in guarded:
+        square = later.to_square
+        if victim_square not in exchange.defenders(boards[0], enemy, square):
             continue
         position = boards[i]
-        if position.is_capture(later) or position.gives_check(later):
-            return _tag("capturingDefender", [victim_square, later.to_square], first)
+        if mates and boards[i + 1].is_check():
+            return _tag("capturingDefender", [victim_square, square], first)
+        if not position.is_capture(later):
+            continue
+        if exchange.best_capture(boards[0], mover, square) > 0:
+            continue  # it could be won before: the defender was not what held it
+        gain = exchange.exchange(position, later)
+        if gain <= 0 or _balance(position, mover) + gain <= start:
+            continue
+        return _tag("capturingDefender", [victim_square, square], first)
     return None
 
 
 def _deflection(
     boards: list[chess.Board], played: list[chess.Move], mover: chess.Color
 ) -> MotifTag | None:
-    """A forcing move pulls the only defender of a square away, and the mover takes the square.
+    """A forcing move pulls the only defender of a square away, and the mover wins there.
 
-    Forcing means the move is a capture or a check, so the reply is the engine's, not a
-    choice. "Only defender" is checked on the position after the move.
+    Forcing means the move is a capture or a check, and the reply is what it forces: the
+    recapture on the move's square, or an answer to the check. A queen that walks away of
+    her own accord was not deflected. "Only defender" is checked on the position after the
+    move, by legal moves (`exchange.defenders`). And the follow-up must win: a capture that
+    nets material (`exchange.exchange` > 0) with the line ahead of where it started, or
+    mate. A rook check on the square the queen left, answered by a king step, wins nothing.
     """
     if len(played) < 3:
         return None
     first, reply, follow = played[0], played[1], played[2]
     if not boards[0].is_capture(first) and not boards[1].is_check():
         return None
+    recapture = boards[1].is_capture(reply) and reply.to_square == first.to_square
+    if not recapture and not boards[1].is_check():
+        return None
     defender = reply.from_square
-    guards = boards[1].attackers(not mover, follow.to_square)
+    guards = exchange.defenders(boards[1], not mover, follow.to_square)
     if len(guards) != 1 or defender not in guards:
         return None
     if follow.to_square not in boards[1].attacks(defender):
         return None
     if follow.to_square in boards[2].attacks(reply.to_square):
         return None
-    if not boards[2].is_capture(follow) and not boards[2].gives_check(follow):
-        return None
+    if not boards[3].is_checkmate() and not _mates(boards, mover):
+        gain = exchange.exchange(boards[2], follow)
+        if gain <= 0 or _balance(boards[2], mover) + gain <= _balance(boards[0], mover):
+            return None
     return _tag("deflection", [defender, reply.to_square, follow.to_square], first)
 
 
@@ -900,25 +1169,37 @@ def _attraction(
 ) -> MotifTag | None:
     """A forcing move drags an enemy piece onto a square where the next move hits it.
 
-    The enemy is dragged by capturing, so the reply must be a capture; the piece pulled has
-    to be worth at least a knight (the king included); and the mover's follow-up must land on
-    that square or attack it while capturing or checking.
+    The enemy is dragged by taking the piece the move put there, so the reply must capture on
+    the move's square; the piece pulled is the king, a queen or a rook, as Lichess has it (a
+    knight taking back a knight is a trade, not a lure); and the mover's follow-up must land
+    on that square or attack it while capturing or checking. Then the lure has to pay: the
+    line ends in mate, or wins material -- by taking the lured queen or rook on its square
+    within the mover's next two moves, or, for a king, anywhere in the line. Material is
+    counted from before the first move, so the piece given as bait is paid back first.
     """
     if len(played) < 3:
         return None
     first, reply, follow = played[0], played[1], played[2]
     if not boards[0].is_capture(first) and not boards[1].is_check():
         return None
-    if not boards[1].is_capture(reply):
+    if not boards[1].is_capture(reply) or reply.to_square != first.to_square:
         return None
     landed = reply.to_square
     attracted = boards[2].piece_at(landed)
-    if attracted is None or attracted.color == mover or _value(attracted.piece_type) < _MINOR:
+    if attracted is None or attracted.color == mover:
+        return None
+    if attracted.piece_type not in (chess.KING, chess.QUEEN, chess.ROOK):
         return None
     if not boards[2].is_capture(follow) and not boards[2].gives_check(follow):
         return None
     hits = follow.to_square == landed or landed in boards[3].attacks(follow.to_square)
     if not hits:
+        return None
+    if attracted.piece_type == chess.KING:
+        pays = _wins_material(boards, played, mover)
+    else:
+        pays = _wins_material(boards, played, mover, square=landed, upto=4)
+    if not pays and not _mates(boards, mover):
         return None
     return _tag("attraction", [reply.from_square, landed, follow.to_square], first)
 
@@ -949,153 +1230,6 @@ def _mate_tags(
 
 
 # --- group D: mating patterns -----------------------------------------------------------
-
-
-def _diagonal_kind(a: chess.Square, b: chess.Square) -> str | None:
-    fa, ra = chess.square_file(a), chess.square_rank(a)
-    fb, rb = chess.square_file(b), chess.square_rank(b)
-    if fa - ra == fb - rb:
-        return "main"
-    if fa + ra == fb + rb:
-        return "anti"
-    return None
-
-
-def _defenders(position: chess.Board, color: chess.Color, square: chess.Square) -> chess.SquareSet:
-    return position.attackers(color, square)
-
-
-def _mating_pattern_tags(position: chess.Board) -> list[MotifTag]:
-    """Each pattern is emitted only when its shape matches exactly.
-
-    `dovetailMate` and the rest are defined on the mated king, the single checker, and the
-    pieces that support it, so two patterns can only both fire when the position genuinely
-    contains both shapes.
-    """
-    loser = position.turn
-    winner = not loser
-    king = position.king(loser)
-    if king is None:
-        return []
-    checkers = list(position.checkers())
-    ring = chess.SquareSet(chess.BB_KING_ATTACKS[king])
-    own_ring = [s for s in ring if (p := position.piece_at(s)) is not None and p.color == loser]
-    king_file, king_rank = chess.square_file(king), chess.square_rank(king)
-    tags: list[MotifTag] = []
-
-    back_rank = 0 if loser == chess.WHITE else 7
-    if king_rank == back_rank:
-        forward = back_rank + (1 if loser == chess.WHITE else -1)
-        front = [
-            chess.square(f, forward)
-            for f in (king_file - 1, king_file, king_file + 1)
-            if 0 <= f <= 7
-        ]
-        blocked = all((p := position.piece_at(s)) is not None and p.color == loser for s in front)
-        heavy = [
-            c
-            for c in checkers
-            if position.piece_type_at(c) in (chess.ROOK, chess.QUEEN)
-            and chess.square_rank(c) == back_rank
-        ]
-        if blocked and heavy:
-            tags.append(_tag("backRankMate", [king, *heavy, *front]))
-
-    if len(checkers) == 1:
-        checker = checkers[0]
-        kind = position.piece_type_at(checker)
-        adjacent = chess.square_distance(checker, king) == 1
-        knights = [
-            s
-            for s in _defenders(position, winner, checker)
-            if position.piece_type_at(s) == chess.KNIGHT
-        ]
-
-        if kind == chess.KNIGHT and len(own_ring) == len(ring):
-            tags.append(_tag("smotheredMate", [king, checker, *own_ring]))
-
-        if kind == chess.ROOK and adjacent and knights and king in _CORNERS:
-            tags.append(_tag("arabianMate", [king, checker, knights[0]]))
-
-        if kind == chess.ROOK and adjacent and knights:
-            pawns = [
-                s
-                for s in _defenders(position, winner, knights[0])
-                if position.piece_type_at(s) == chess.PAWN
-            ]
-            if pawns:
-                tags.append(_tag("hookMate", [king, checker, knights[0], pawns[0]]))
-
-        if kind == chess.ROOK and adjacent:
-            queens = [
-                s
-                for s in _defenders(position, winner, checker)
-                if position.piece_type_at(s) == chess.QUEEN
-            ]
-            box = [q for q in queens if chess.square_knight_distance(q, king) == 1]
-            if box:
-                tags.append(_tag("killBoxMate", [king, checker, box[0]]))
-
-        on_edge = king_file in (0, 7) or king_rank in (0, 7)
-        if kind == chess.ROOK and adjacent and on_edge:
-            others = [
-                s
-                for s in _defenders(position, winner, checker)
-                if position.piece_type_at(s) != chess.KNIGHT
-            ]
-            covers = [
-                s
-                for s in ring
-                if position.piece_at(s) is None
-                and any(s in position.attacks(n) for n in position.pieces(chess.KNIGHT, winner))
-            ]
-            if others and covers:
-                tags.append(_tag("vukovicMate", [king, checker, others[0], *covers]))
-
-        if kind == chess.ROOK and king_file in (0, 7) and chess.square_file(checker) == king_file:
-            inner = 1 if king_file == 0 else 6
-            above, below = king_rank + 1, king_rank - 1
-            if below >= 0 and above <= 7:
-                beside = chess.square(inner, king_rank)
-                blocker = position.piece_at(beside)
-                flights = (chess.square(inner, above), chess.square(inner, below))
-                covered = any(
-                    all(f in position.attacks(n) for f in flights)
-                    for n in position.pieces(chess.KNIGHT, winner)
-                )
-                if blocker is not None and blocker.color == loser and covered:
-                    tags.append(_tag("anastasiaMate", [king, checker, beside, *flights]))
-
-        if kind == chess.BISHOP:
-            check_kind = _diagonal_kind(checker, king)
-            for other in position.pieces(chess.BISHOP, winner):
-                if other == checker:
-                    continue
-                for square in ring:
-                    if square not in position.attacks(other):
-                        continue
-                    other_kind = _diagonal_kind(other, square)
-                    if other_kind is None or check_kind is None:
-                        continue
-                    evidence = [king, checker, other, square]
-                    if other_kind == check_kind and on_edge:
-                        tags.append(_tag("doubleBishopMate", evidence))
-                    elif other_kind != check_kind and len(own_ring) >= 2:
-                        tags.append(_tag("bodenMate", evidence))
-                    break
-
-        if kind == chess.QUEEN and len(ring) == 8 and _defenders(position, winner, checker):
-            diagonal = abs(chess.square_file(checker) - king_file) == 1
-            diagonal = diagonal and abs(chess.square_rank(checker) - king_rank) == 1
-            orthogonal = [
-                s
-                for s in own_ring
-                if chess.square_file(s) == king_file or chess.square_rank(s) == king_rank
-            ]
-            if diagonal and len(own_ring) == 2 and len(orthogonal) == 2:
-                tags.append(_tag("dovetailMate", [king, checker, *own_ring]))
-
-    return tags
 
 
 def _slider_reaches(
@@ -1140,15 +1274,17 @@ def _xray(
 
     Read over the line, the way the sacrifice and clearance motifs are: a square the mover
     captures or mates on was, at some earlier point in the line, borne on by a mover slider
-    through exactly one enemy piece, and by the time the square is taken that blocker has been
-    cleared off the ray. The blocker clearing is what turns a latent x-ray into a real one, so
-    a slider that merely looks through a piece that never moves is not called one.
+    through exactly one enemy piece, and by the time the square is taken the slider is still
+    there with its ray to the square open, and either makes the capture itself or stands
+    behind the piece that does, guarding it. The ray opening is what turns a latent x-ray
+    into a real one, so a slider that merely looks through a piece that never moves is not
+    called one -- nor a rook whose own knight took the blocker's place on the file.
     """
     for k in range(0, len(played), 2):  # the mover's own moves
         move = played[k]
         board_k = boards[k]
-        after_k = boards[k + 1] if k + 1 < len(boards) else None
-        if not (board_k.is_capture(move) or (after_k is not None and after_k.is_checkmate())):
+        after_k = boards[k + 1]
+        if not (board_k.is_capture(move) or after_k.is_checkmate()):
             continue
         target = move.to_square
         for j in range(0, k + 1, 2):  # a mover position at or before this move
@@ -1156,9 +1292,11 @@ def _xray(
             if found is None:
                 continue
             slider, blocker = found
-            occupant = board_k.piece_at(blocker)
-            if occupant is not None and occupant.color != mover:
-                continue  # the blocker is still on the ray; the x-ray never opened
+            if board_k.piece_at(slider) != boards[j].piece_at(slider):
+                continue  # the slider has moved on or been taken
+            takes = move.from_square == slider
+            if not takes and target not in after_k.attacks(slider):
+                continue  # the ray is still shut, by the blocker or by a piece of ours
             return _tag("xRayAttack", [target, blocker, slider], move)
     return None
 
@@ -1188,17 +1326,18 @@ def tags_for_move(
     boards, played = _line_boards(before, [move, *pv])
     after = boards[1]
 
+    won_in_line = _mover_captures(boards, played, mover)
     tags = _group_a(before, after, move, mover)
     tags.extend(_new_static_tags(before, after, mover))
     for tag in (
-        _fork(after, move, mover, won_in_line=_mover_captures(boards, played, mover)),
-        _discovered_attack(before, after, move, mover),
+        _fork(after, move, mover, won_in_line=won_in_line),
+        _discovered_attack(boards, played, mover),
         _xray(boards, played, mover),
         _interference(boards, played, mover),
-        _attacking_f2f7(before, after, move, mover),
+        _attacking_f2f7(before, after, move, mover, won_in_line=won_in_line),
         _sacrifice(boards, played, mover, mate_in),
         _clearance(boards, played),
-        _capturing_defender(boards, played),
+        _capturing_defender(boards, played, mover),
         _deflection(boards, played, mover),
         _attraction(boards, played, mover),
     ):
@@ -1207,9 +1346,9 @@ def tags_for_move(
     tags.extend(_mate_tags(after, boards[-1], mover, mate_in))
 
     if after.is_checkmate():
-        tags.extend(_mating_pattern_tags(after))
+        tags.extend(mates.mating_pattern_tags(after, move))
     elif boards[-1].is_checkmate() and boards[-1].turn != mover:
-        tags.extend(_mating_pattern_tags(boards[-1]))
+        tags.extend(mates.mating_pattern_tags(boards[-1], played[-1]))
     return _finish(tags)
 
 

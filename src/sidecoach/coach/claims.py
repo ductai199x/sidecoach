@@ -5,7 +5,9 @@ pawn is hanging") is turned into structured claims by the LLM and every checkabl
 tested against the board before the coach agrees with anything. Only the extraction uses
 the LLM. Resolving "my knight" to a square, counting attackers and defenders, trying the
 null move and comparing with the engine's candidates all happen here, in python-chess,
-where nothing can be made up.
+where nothing can be made up. Attackers and defenders are counted by legal moves
+(`analysis.exchange`): a piece pinned to its king takes nothing and takes nothing back, and
+a king takes back only where it may.
 
 Direction two: the coach's own draft is checked before it is shown. Every piece it places
 on a square must be there, and every move it names must be playable, by the side to move
@@ -25,6 +27,7 @@ from typing import Literal, Protocol
 
 import chess
 
+from sidecoach.analysis import exchange
 from sidecoach.analysis.positional import is_passed
 from sidecoach.coach.disclosure import PositionFacts
 from sidecoach.coach.facts import CANDIDATE_MARGIN, PIECE_NAMES
@@ -486,6 +489,86 @@ def _after_move(pos: _Position, reason: str) -> str:
     return f"after {pos.played_san}, {reason}"
 
 
+def _to_move(board: chess.Board, color: chess.Color) -> chess.Board:
+    """`board` with `color` to move: the same position, handed over by a pass if need be."""
+    if board.turn == color:
+        return board
+    view = board.copy(stack=False)
+    view.push(chess.Move.null())
+    return view
+
+
+def _takes_back(board: chess.Board, capture: chess.Move) -> list[chess.Square]:
+    """The pieces that can legally take back after `capture`, a move of the side to move."""
+    after = board.copy(stack=False)
+    after.push(capture)
+    onto = after.generate_legal_moves(chess.BB_ALL, chess.BB_SQUARES[capture.to_square])
+    return sorted({m.from_square for m in onto})
+
+
+def _captures_of(
+    board: chess.Board, square: chess.Square
+) -> dict[chess.Square, list[chess.Square]]:
+    """Each enemy piece that can legally take the piece on `square`, with the pieces that can
+    legally take back once it has. Read after the capture itself, so the e8 king takes back
+    after Bxf7+ but not after Qxf7 with the bishop still on c4."""
+    piece = board.piece_at(square)
+    if piece is None:
+        return {}
+    view = _to_move(board, not piece.color)
+    found: dict[chess.Square, set[chess.Square]] = {}
+    for capture in exchange.captures_on(board, not piece.color, square):
+        found.setdefault(capture.from_square, set()).update(_takes_back(view, capture))
+    return {attacker: sorted(backs) for attacker, backs in sorted(found.items())}
+
+
+def _guards(board: chess.Board, square: chess.Square) -> list[chess.Square]:
+    """The pieces that can legally take back for the piece on `square`: after any capture of
+    it, or, when nothing can take it, were something to (`exchange.defenders`)."""
+    piece = board.piece_at(square)
+    if piece is None:
+        return []
+    captures = _captures_of(board, square)
+    if not captures:
+        return exchange.defenders(board, piece.color, square)
+    return sorted({guard for backs in captures.values() for guard in backs})
+
+
+def _idle(
+    board: chess.Board, color: chess.Color, square: chess.Square, active: Iterable[chess.Square]
+) -> list[chess.Square]:
+    """The pieces of `color` that reach `square` but are not among `active`, the ones that
+    can legally move there."""
+    moving = set(active)
+    return [reach for reach in board.attackers(color, square) if reach not in moving]
+
+
+def _cannot(
+    board: chess.Board, color: chess.Color, squares: Sequence[chess.Square], action: str
+) -> str:
+    """ "is pinned and cannot take it": why pieces of `color` that reach a square cannot move
+    there, said as a pin when every one of them is pinned to its king."""
+    if squares and all(board.is_pinned(color, square) for square in squares):
+        return f"{'is' if len(squares) == 1 else 'are'} pinned and cannot {action}"
+    return f"cannot {action}"
+
+
+def _joins_in(
+    pos: _Position, color: chess.Color, square: chess.Square, fronts: Iterable[chess.Square]
+) -> str | None:
+    """ "the d8 queen behind the d7 rook joins in": a piece of `color` lined up behind one of
+    `fronts` that reaches `square` once the front one has taken there, an x-ray."""
+    board = pos.board
+    reach = board.attackers(color, square)
+    for front in fronts:
+        probe = board.copy(stack=False)
+        probe.remove_piece_at(front)
+        for backer in probe.attackers(color, square):
+            if backer not in reach:
+                return f"{pos.short(backer)} behind {pos.short(front)} joins in"
+    return None
+
+
 def _check_attacks(pos: _Position, claim: Claim) -> tuple[Result, str]:
     board = pos.board
     subjects = _subjects(pos, claim, pos.us)
@@ -503,12 +586,31 @@ def _check_attacks(pos: _Position, claim: Claim) -> tuple[Result, str]:
                 continue
             reason = f"{pos.name(subject)} attacks {pos.name(target)}"
             hit = board.piece_at(target)
-            if hit is not None and hit.color != board.color_at(subject):
-                defenders = board.attackers(hit.color, target)
-                if defenders:
-                    reason += f", though it is defended by {pos.listed(defenders)}"
+            if (
+                hit is not None
+                and hit.color != board.color_at(subject)
+                and hit.piece_type != chess.KING
+            ):
+                # Attacking is the geometry; taking is a legal move. A pinned piece still
+                # attacks, but it cannot take, and then who defends does not arise.
+                mover = not hit.color
+                own = [
+                    m
+                    for m in exchange.captures_on(board, mover, target)
+                    if m.from_square == subject
+                ]
+                if not own:
+                    reason += f", but it {_cannot(board, mover, [subject], 'take it')}"
                 else:
-                    reason += ", and nothing defends it"
+                    guards = _takes_back(_to_move(board, mover), own[0])
+                    idle = _idle(board, hit.color, target, guards)
+                    if guards:
+                        reason += f", though it is defended by {pos.listed(guards)}"
+                    elif idle:
+                        cannot = _cannot(board, hit.color, idle, "take back")
+                        reason += f", and {pos.listed(idle)} {cannot}"
+                    else:
+                        reason += ", and nothing defends it"
             return "true", _sentence(_after_move(pos, reason))
     wanted = _join([pos.name(target) for target in targets[:3]])
     if len(occupied) == 1:
@@ -546,7 +648,14 @@ def _check_defends(pos: _Position, claim: Claim) -> tuple[Result, str]:
                 reason = f"{pos.name(subject)} covers {chess.square_name(target)}, which is empty"
                 return "true", _sentence(_after_move(pos, reason))
             if held.color == board.color_at(subject):
-                others = [sq for sq in board.attackers(held.color, target) if sq != subject]
+                # Defending is taking back: a piece pinned to its king reaches the square and
+                # still cannot.
+                guards = _guards(board, target)
+                if subject not in guards:
+                    square = chess.square_name(target)
+                    cannot = _cannot(board, held.color, [subject], f"take back on {square}")
+                    return "false", _sentence(_after_move(pos, f"{pos.name(subject)} {cannot}"))
+                others = [sq for sq in guards if sq != subject]
                 reason = f"{pos.name(subject)} defends {pos.name(target)}"
                 if others:
                     reason += f", together with {pos.listed(others)}"
@@ -576,28 +685,48 @@ def _check_hanging(pos: _Position, claim: Claim) -> tuple[Result, str]:
         if piece.piece_type == chess.KING:
             fallback = fallback or f"{pos.name(target)} cannot hang; it can only be in check"
             continue
-        attackers = board.attackers(not piece.color, target)
-        defenders = board.attackers(piece.color, target)
-        if attackers and not defenders:
-            reason = (
-                f"{pos.name(target)} is attacked by {pos.listed(attackers)} and nothing defends it"
-            )
+        captures = _captures_of(board, target)
+        attackers = list(captures)
+        if exchange.hanging(board, target):
+            guards = _guards(board, target)
+            idle = _idle(board, piece.color, target, guards)
+            reason = f"{pos.name(target)} is attacked by {pos.listed(attackers)}"
+            if guards:
+                # Taken back after one capture, but not after another.
+                free = next((a for a, backs in captures.items() if not backs), attackers[0])
+                reason += f", and after {pos.short(free)} takes, nothing can take back"
+            elif idle:
+                cannot = _cannot(board, piece.color, idle, "take back")
+                reason += f", and {pos.listed(idle)} {cannot}"
+            else:
+                reason += " and nothing defends it"
             return "true", _sentence(_after_move(pos, reason))
         if not attackers:
-            reason = f"{pos.name(target)} is not attacked at all"
+            idle = _idle(board, not piece.color, target, [])
+            if idle:
+                only, cannot = pos.listed(idle), _cannot(board, not piece.color, idle, "take it")
+                reason = f"{pos.name(target)} is attacked only by {only}, which {cannot}"
+            else:
+                reason = f"{pos.name(target)} is not attacked at all"
         else:
             reason = (
                 f"{pos.name(target)} is attacked by {pos.listed(attackers)} but defended by "
-                f"{pos.listed(defenders)}, so it is not hanging outright"
+                f"{pos.listed(_guards(board, target))}, so it is not hanging outright"
             )
+            where = chess.square_name(target)
             cheapest = min(attackers, key=lambda sq: _VALUE[board.piece_type_at(sq) or 0])
             if _VALUE[board.piece_type_at(cheapest) or 0] < _VALUE[piece.piece_type]:
                 reason += (
                     f", though {pos.short(cheapest)} taking a {PIECE_NAMES[piece.piece_type]} "
                     "still wins material"
                 )
+            elif exchange.can_be_won(board, target):
+                reason += f", though the exchange on {where} still wins it"
+                joined = _joins_in(pos, not piece.color, target, attackers)
+                if joined:
+                    reason += f": {joined}"
             else:
-                reason += "; I have not counted the whole exchange"
+                reason += f", and the exchange on {where} does not win it"
         # An attacked piece is the interesting one to explain when several fit the words.
         if fallback is None or attackers:
             fallback = reason
@@ -629,38 +758,62 @@ def _check_safe(pos: _Position, claim: Claim) -> tuple[Result, str]:
 
 
 def _safety(pos: _Position, target: chess.Square) -> tuple[bool, str]:
-    """Whether the piece on `target` (or the empty square) can be taken, with the counts."""
+    """Whether the piece on `target` can be taken for profit, or a piece of yours on the
+    empty square taken at all, with the counts. Only legal captures count, and the verdict is
+    the exchange played out by legal moves (`exchange.can_be_won`), x-rays included; a
+    king's safety is whether it is in check."""
     board = pos.board
     square = chess.square_name(target)
     piece = board.piece_at(target)
     if piece is None:
-        attackers = board.attackers(pos.them, target)
-        if not attackers:
-            return True, f"{square} is not attacked by any of their pieces"
-        return False, f"{square} is attacked by {pos.listed(attackers)}"
-    attackers = board.attackers(not piece.color, target)
-    defenders = board.attackers(piece.color, target)
+        # Who of theirs could take a piece of yours standing there.
+        takers = exchange.defenders(board, pos.them, target)
+        if takers:
+            return False, f"{square} is attacked by {pos.listed(takers)}"
+        idle = _idle(board, pos.them, target, [])
+        if idle:
+            cannot = _cannot(board, pos.them, idle, "take there")
+            return True, f"{square} is attacked only by {pos.listed(idle)}, which {cannot}"
+        return True, f"{square} is not attacked by any of their pieces"
     if piece.piece_type == chess.KING:
-        if not attackers:
+        checkers = board.attackers(not piece.color, target)
+        if not checkers:
             return True, f"{pos.name(target)} is not in check"
-        return False, f"{pos.name(target)} is in check from {pos.listed(attackers)}"
+        return False, f"{pos.name(target)} is in check from {pos.listed(checkers)}"
+    attackers = list(_captures_of(board, target))
     if not attackers:
+        idle = _idle(board, not piece.color, target, [])
+        if idle:
+            only, cannot = pos.listed(idle), _cannot(board, not piece.color, idle, "take it")
+            return True, f"{pos.name(target)} is attacked only by {only}, which {cannot}"
         return True, f"{pos.name(target)} is not attacked"
+    guards = _guards(board, target)
     counts = (
         f"{pos.name(target)} is attacked {_times(len(attackers))} ({pos.listed(attackers)}) "
-        f"and defended {_times(len(defenders))}"
+        f"and defended {_times(len(guards))}"
     )
-    if defenders:
-        counts += f" ({pos.listed(defenders)})"
-    if len(defenders) < len(attackers):
-        return False, f"{counts}, so it can be taken"
+    if guards:
+        counts += f" ({pos.listed(guards)})"
+    if not exchange.can_be_won(board, target):
+        return True, f"{counts}, so it holds"
     cheapest = min(attackers, key=lambda sq: _VALUE[board.piece_type_at(sq) or 0])
     if _VALUE[board.piece_type_at(cheapest) or 0] < _VALUE[piece.piece_type]:
-        return False, (
+        reason = (
             f"{counts}, but {pos.short(cheapest)} is worth less than a "
             f"{PIECE_NAMES[piece.piece_type]}, so it can still be taken profitably"
         )
-    return True, f"{counts}, so it holds"
+    elif len(guards) < len(attackers):
+        reason = f"{counts}, so it can be taken"
+    else:
+        # As many defenders, and still lost: a piece lined up behind an attacker joins in.
+        reason = f"{counts}, but the exchange on {square} still wins it"
+        joined = _joins_in(pos, not piece.color, target, attackers)
+        if joined:
+            reason += f": {joined}"
+    idle = _idle(board, piece.color, target, guards)
+    if idle:
+        reason += f"; {pos.listed(idle)} {_cannot(board, piece.color, idle, 'take back')}"
+    return False, reason
 
 
 def _check_threatens(
@@ -744,7 +897,11 @@ def _engine_threats(position: chess.Board, facts: PositionFacts | None) -> list[
 
 
 def _describe_threat(pos: _Position, position: chess.Board, move: chess.Move) -> str:
-    """ "their bishop on c4 takes your pawn on f7, and your king on e8 can take back"."""
+    """ "their bishop on c4 takes your pawn on f7, and your king on e8 can take back".
+
+    Who can take back is read by legal moves after the capture itself: after Qxf7# nothing
+    can, and after Bxf7+ with the queen still on h5 the e8 king cannot either.
+    """
     actor = pos.name(move.from_square)
     victim = position.piece_at(move.to_square)
     san = position.san(move)
@@ -754,9 +911,11 @@ def _describe_threat(pos: _Position, position: chess.Board, move: chess.Move) ->
             what += ", with check"
         return what
     what = f"{actor} takes {pos.name(move.to_square)} with {san}"
-    recapturers = position.attackers(victim.color, move.to_square)
+    recapturers = _takes_back(position, move)
     if recapturers:
         return f"{what}, and {pos.listed(recapturers)} can take back"
+    if san.endswith("#"):
+        return f"{what}, and it is checkmate"
     return f"{what} for free"
 
 
@@ -881,37 +1040,35 @@ _VALUE: dict[chess.PieceType, int] = {
 }
 
 
+_SLIDERS = (chess.BISHOP, chess.ROOK, chess.QUEEN)
+
+
 def _pin_line(board: chess.Board, square: chess.Square) -> chess.Square | None:
     """The friendly piece a piece on `square` shields, or None if it shields nothing.
 
-    A pin, absolute or relative: an enemy slider attacks `square` along a line, and the next
-    piece past it on that line is a friendly piece worth more (the king counts as most). This
-    is the tagger's own test, so a true pin to the queen is not called false.
+    A pin, absolute or relative, by the inventory's rule (`inventory.pin_target`), so a pin
+    the coach was told about is not called false: an enemy slider that can legally take the
+    piece on `square` attacks it along a line, and the next piece past it on that line is a
+    friendly piece worth more that the slider would win once the front one moved -- the
+    king, or a piece the capture wins (worth more than the slider, or undefended). A knight
+    in front of a defended rook pins nothing.
     """
     piece = board.piece_at(square)
-    if piece is None:
+    if piece is None or piece.piece_type == chess.KING:
         return None
-    for attacker in board.attackers(not piece.color, square):
-        slider = board.piece_at(attacker)
-        if slider is None or slider.piece_type not in (chess.BISHOP, chess.ROOK, chess.QUEEN):
+    for attacker in exchange.capturers(board, not piece.color, square):
+        if board.piece_type_at(attacker) not in _SLIDERS:
             continue
-        if chess.square_distance(attacker, square) == 0:
-            continue
-        df = _sign(chess.square_file(square) - chess.square_file(attacker))
-        dr = _sign(chess.square_rank(square) - chess.square_rank(attacker))
-        file_, rank_ = chess.square_file(square) + df, chess.square_rank(square) + dr
-        while 0 <= file_ <= 7 and 0 <= rank_ <= 7:
-            behind = chess.square(file_, rank_)
-            occupant = board.piece_at(behind)
-            if occupant is not None:
-                if (
-                    occupant.color == piece.color
-                    and _VALUE[occupant.piece_type] > _VALUE[piece.piece_type]
-                ):
-                    return behind
-                break
-            file_ += df
-            rank_ += dr
+        behind = _beyond(board, attacker, square)
+        occupant = board.piece_at(behind) if behind is not None else None
+        if (
+            behind is not None
+            and occupant is not None
+            and occupant.color == piece.color
+            and _VALUE[occupant.piece_type] > _VALUE[piece.piece_type]
+            and _wins(board, attacker, behind, without=square)
+        ):
+            return behind
     return None
 
 
@@ -919,31 +1076,100 @@ def _sign(n: int) -> int:
     return (n > 0) - (n < 0)
 
 
+def _beyond(board: chess.Board, frm: chess.Square, through: chess.Square) -> chess.Square | None:
+    """The first occupied square past `through` on the line from `frm`, or None."""
+    df = _sign(chess.square_file(through) - chess.square_file(frm))
+    dr = _sign(chess.square_rank(through) - chess.square_rank(frm))
+    if df == 0 and dr == 0:
+        return None
+    file_, rank_ = chess.square_file(through) + df, chess.square_rank(through) + dr
+    while 0 <= file_ <= 7 and 0 <= rank_ <= 7:
+        square = chess.square(file_, rank_)
+        if board.piece_at(square) is not None:
+            return square
+        file_ += df
+        rank_ += dr
+    return None
+
+
+def _wins(
+    board: chess.Board,
+    frm: chess.Square,
+    target: chess.Square,
+    *,
+    without: chess.Square | None = None,
+) -> bool:
+    """Whether the piece on `frm` wins the piece on `target` by taking it, with the piece on
+    `without` stepped off the line: the target is the king, or the capture is legal and nets
+    material once the recaptures are played out (`exchange.exchange`)."""
+    if board.piece_type_at(target) == chess.KING:
+        return True
+    color = board.color_at(frm)
+    if color is None:
+        return False
+    probe = board.copy(stack=False)
+    if without is not None:
+        probe.remove_piece_at(without)
+    probe = _to_move(probe, color)
+    capture = next(
+        iter(probe.generate_legal_moves(chess.BB_SQUARES[frm], chess.BB_SQUARES[target])), None
+    )
+    return capture is not None and exchange.exchange(probe, capture) > 0
+
+
 def _fork_targets(board: chess.Board, square: chess.Square) -> list[chess.Square]:
-    """Enemy pieces a fork on `square` would win: worth as much as the forker, or the king."""
+    """Enemy pieces a fork on `square` would win, by the inventory's rule
+    (`inventory.forks_in_place`): the king it checks, or a piece it can legally take that can
+    be won -- worth more than the forker, or not defended well enough. A pinned knight takes
+    nothing, so it forks nothing."""
     piece = board.piece_at(square)
     if piece is None:
         return []
-    own_value = _VALUE[piece.piece_type]
     targets = []
     for target in board.attacks(square):
         other = board.piece_at(target)
         if other is None or other.color == piece.color:
             continue
-        if other.piece_type == chess.KING or _VALUE[other.piece_type] >= own_value:
+        if other.piece_type == chess.KING or (
+            square in exchange.capturers(board, piece.color, target)
+            and exchange.can_be_won(board, target)
+        ):
             targets.append(target)
-        elif not board.attackers(other.color, target):
-            targets.append(target)  # an undefended lesser piece is still worth the fork
     return targets
+
+
+def _skewers(board: chess.Board, square: chess.Square) -> bool:
+    """Whether the slider on `square` skewers, by the inventory's rule
+    (`inventory.skewer_target`): it attacks an enemy piece that must step aside -- the king,
+    or one it can legally take and win (worth more than the slider, or undefended) -- and
+    past it on the same line stands a less valuable enemy piece the slider then wins."""
+    piece = board.piece_at(square)
+    if piece is None or piece.piece_type not in _SLIDERS:
+        return False
+    for front in board.attacks(square):
+        target = board.piece_at(front)
+        if target is None or target.color == piece.color or not _wins(board, square, front):
+            continue
+        behind = _beyond(board, square, front)
+        occupant = board.piece_at(behind) if behind is not None else None
+        if (
+            behind is not None
+            and occupant is not None
+            and occupant.color != piece.color
+            and _VALUE[occupant.piece_type] < _VALUE[target.piece_type]
+            and _wins(board, square, behind, without=front)
+        ):
+            return True
+    return False
 
 
 def _tactic_problem(board: chess.Board, square_name: str, state: str) -> str | None:
     """Whether the board bears out a tactic claimed of a piece; None when it does or might.
 
     Only plainly false claims are faulted: a pin that is not there (to any piece, not only
-    the king), a piece called loose that is defended, a piece called safe that hangs, a fork
-    or skewer the piece does not make. The exchange is not evaluated, so "safe" is faulted
-    only when the piece is attacked and not defended at all.
+    the king), a piece called loose that is defended, a piece called safe that can be won, a
+    fork or skewer the piece does not make. Attack and defence are legal moves: a piece
+    pinned to its king neither takes nor takes back, and a king takes back only where it may.
     """
     square = chess.parse_square(square_name.lower())
     piece = board.piece_at(square)
@@ -951,55 +1177,37 @@ def _tactic_problem(board: chess.Board, square_name: str, state: str) -> str | N
         return f"{square_name} is empty"
     name = PIECE_NAMES[piece.piece_type]
     state = state.lower().replace(" ", "").rstrip("s")
-    attackers = board.attackers(not piece.color, square)
-    defenders = board.attackers(piece.color, square)
     if state == "pinned":
         if _pin_line(board, square) is None:
             return f"the {name} on {square_name} is not pinned"
     elif state in ("hanging", "enprise"):
-        if not attackers:
+        if not exchange.capturers(board, not piece.color, square):
+            if board.attackers(not piece.color, square):
+                return f"nothing can take the {name} on {square_name}"
             return f"nothing attacks the {name} on {square_name}"
-        if defenders:
+        if not exchange.hanging(board, square):
             return f"the {name} on {square_name} is defended"
     elif state in ("undefended", "unprotected", "loose"):
         # A piece with no defender is undefended whether or not anything attacks it yet.
-        if defenders:
+        if _guards(board, square):
             return f"the {name} on {square_name} is defended"
     elif state == "safe":
-        if attackers and not defenders:
+        if exchange.hanging(board, square):
             return f"the {name} on {square_name} is attacked and undefended"
-    elif state == "trapped" and not attackers:
+        if exchange.can_be_won(board, square):
+            return f"the {name} on {square_name} can be taken for profit"
+    elif state == "trapped" and not board.attackers(not piece.color, square):
         return f"nothing is attacking the {name} on {square_name}"
     elif state in ("fork", "forking"):
         if len(_fork_targets(board, square)) < 2:
+            if board.is_pinned(piece.color, square):
+                return f"the {name} on {square_name} is pinned, so it forks nothing"
             return f"the {name} on {square_name} does not fork two pieces"
-    elif state in ("skewer", "skewering"):
-        # A skewer is a pin the other way round: the enemy piece behind is worth less.
-        hits = [t for t in board.attacks(square) if _behind_is_enemy(board, square, t, piece.color)]
-        if not hits:
-            return f"the {name} on {square_name} does not skewer anything"
+        if exchange.can_be_won(board, square):
+            return f"the {name} on {square_name} can be taken for profit, so it forks nothing"
+    elif state in ("skewer", "skewering") and not _skewers(board, square):
+        return f"the {name} on {square_name} does not skewer anything"
     return None
-
-
-def _behind_is_enemy(
-    board: chess.Board, frm: chess.Square, through: chess.Square, mover: chess.Color
-) -> bool:
-    """Whether, past an enemy piece on `through`, the same line holds another enemy piece."""
-    occupant = board.piece_at(through)
-    if occupant is None or occupant.color == mover:
-        return False
-    df = _sign(chess.square_file(through) - chess.square_file(frm))
-    dr = _sign(chess.square_rank(through) - chess.square_rank(frm))
-    if df == 0 and dr == 0:
-        return False
-    file_, rank_ = chess.square_file(through) + df, chess.square_rank(through) + dr
-    while 0 <= file_ <= 7 and 0 <= rank_ <= 7:
-        behind = board.piece_at(chess.square(file_, rank_))
-        if behind is not None:
-            return behind.color != mover
-        file_ += df
-        rank_ += dr
-    return False
 
 
 def check_draft(
