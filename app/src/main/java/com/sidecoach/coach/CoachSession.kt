@@ -1610,8 +1610,9 @@ class Coach(
             } else {
                 fallback = "It cost you ${percent(loss)} of the game."
                 if (best.isNotEmpty()) {
-                    fallback += " $best was better" +
-                        (if (idea.isNotEmpty()) "; the idea was $idea." else ".")
+                    // The better move played out and the pattern to keep, as the lesson says it
+                    // -- not "the idea was a pin" and nothing more.
+                    fallback += " " + lessonTemplate(facts, best, "$best was better")
                 }
                 directive =
                     "They ask about the move they already played, $san. Its verdict is in its " +

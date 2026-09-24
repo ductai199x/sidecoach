@@ -256,7 +256,20 @@ class GameAnnotator(
     private fun moveTags(before: Board, move: Move, after: Measured): List<MotifTag> {
         val tagger = tagger ?: return emptyList()
         val pv = if (after.lines.isNotEmpty()) lineMoves(after.lines[0]) else emptyList()
-        return tagger.tagsForMove(before, move, pv = pv, mateIn = mateIn(before, move, after.lines))
+        val tags = tagger.tagsForMove(before, move, pv = pv, mateIn = mateIn(before, move, after.lines))
+        // A tactic the move makes is only its point when the line after it cashes it in: "the
+        // queen on e7 is loose" was said of a queen that simply steps away, 98 times in the
+        // master games at moves whose note names no tactic (2026-09-24).
+        var line = listOf(move) + pv
+        val boards = arrayListOf(before.copy(withStack = false))
+        for (m in line) {
+            if (!boards.last().isLegal(m)) break
+            val nxt = boards.last().copy(withStack = false)
+            nxt.push(m)
+            boards.add(nxt)
+        }
+        line = line.subList(0, boards.size - 1)
+        return tags.filter { it.name !in Motifs.TARGETED || Motifs.paysOff(boards, line, 0, it) }
     }
 
     /** Whether the game is still in theory after this move; needs the moves that got here. */

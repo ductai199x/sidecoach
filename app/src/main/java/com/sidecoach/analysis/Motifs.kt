@@ -15,6 +15,7 @@ import com.sidecoach.chess.QUEEN
 import com.sidecoach.chess.ROOK
 import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.between
+import com.sidecoach.chess.parseSquare
 import com.sidecoach.chess.ray
 import com.sidecoach.chess.square
 import com.sidecoach.chess.squareFile
@@ -188,6 +189,133 @@ object Motifs : Tagger {
         val view = board.copy(withStack = false)
         view.push(Move.NULL)
         return view
+    }
+
+    /**
+     * The tactics aimed at a piece: the blow only when the line then takes that piece. A
+     * discovered attack on a pawn the line never touches, a fork of two pieces that both get
+     * away, was the headline of a promotion (Tai's puzzles, 2026-09-23).
+     */
+    val TARGETED: List<String> = listOf(
+        "fork",
+        "skewer",
+        "discoveredAttack",
+        "absolutePin",
+        "pin",
+        "trappedPiece",
+        "hangingPiece",
+        "capturingDefender",
+    )
+
+    /**
+     * A fork or a skewer is the point only when what it wins is worth a minor piece: the king
+     * and a pawn on a2 forked five moves after the queen was won was named as the idea.
+     */
+    const val MIN_TARGET_VALUE = 3
+
+    /** How far on the line takes it: three of the player's moves. */
+    const val PAYOFF_PLIES = 6
+
+    /**
+     * Whether the line cashes in the tactic at ply `i` within [PAYOFF_PLIES]: takes a piece it
+     * goes after -- by the piece that does it, where the pattern says so -- with every piece
+     * followed as it moves. The squares are the tagger's, per pattern: a fork's forker then its
+     * targets; a skewer's and a pin's slider, front, back; a discovered attack's mover, slider,
+     * target; a trapped piece then its hunters; a loose piece; a captured defender then what it
+     * guarded. `motifs.pays_off`.
+     */
+    fun paysOff(boards: List<Board>, pv: List<Move>, i: Int, tag: MotifTag): Boolean {
+        val us = boards[i].turn
+        val sq = tag.squares.map { parseSquare(it) }
+        if (sq.isEmpty()) return false
+        val name = tag.name
+        val after = boards[i + 1]
+
+        fun theirs(square: Int): Boolean {
+            val piece = after.pieceAt(square)
+            return piece != null && piece.colour != us && piece.pieceType != KING
+        }
+
+        fun worth(square: Int): Int {
+            val kind = after.pieceTypeAt(square)
+            return Exchange.VALUE[if (kind == 0) PAWN else kind]
+        }
+
+        var actors: MutableSet<Int>? = null  // null: any of the player's pieces
+        // The piece the pattern stands on: a pin is gone once its pinner is taken (a rook that
+        // pins as it takes the queen, and is taken back at once, pinned nothing).
+        var holder: Int? = null
+        // A fork's piece taken by anything but one of its targets refutes it: "Nf3+ forks the
+        // king, queen and rook" was said of a knight gxf3 simply took (Lichess 026RF).
+        var forker: Int? = null
+        val aimed: List<Int>
+        if (name == "fork") {
+            // Whoever collects it: the queen that takes back on e6 after Bxe6+ Qxe6 cashed in
+            // the bishop's fork (Lichess 0BD4O).
+            aimed = sq.drop(1).filter { theirs(it) && worth(it) >= MIN_TARGET_VALUE }
+            forker = sq[0]
+            // A bystander that can take the forking piece for profit where it lands refutes the
+            // fork, whatever the line then does (Nf2+ with the rook on f1 able to take it: the
+            // discovered attack behind it was the point, Lichess 01q4A). A pinned piece cannot
+            // take; a target that takes and is taken back is the fork working.
+            val targets = sq.drop(1)
+            for (capture in Exchange.capturesOn(after, !us, forker)) {
+                if (capture.from !in targets && Exchange.exchange(after, capture) > 0) return false
+            }
+        } else if (name == "skewer") {
+            aimed = sq.drop(2).take(1).filter { theirs(it) && worth(it) >= MIN_TARGET_VALUE }
+            actors = mutableSetOf(sq[0])
+        } else if (name == "discoveredAttack" && sq.size >= 3) {
+            val king = after.pieceAt(sq[2])
+            if (king != null && king.pieceType == KING) {
+                // A discovered check: the point is what the piece that moved goes on to take.
+                aimed = (0 until 64).filter { theirs(it) }
+                actors = mutableSetOf(sq[0])
+            } else {
+                aimed = if (theirs(sq[2])) listOf(sq[2]) else emptyList()
+                actors = mutableSetOf(sq[0], sq[1])
+            }
+        } else if (name == "pin" || name == "absolutePin") {
+            aimed = sq.drop(1).take(2).filter { theirs(it) }
+            holder = sq[0]
+        } else if (name == "trappedPiece" || name == "hangingPiece") {
+            aimed = if (theirs(sq[0])) listOf(sq[0]) else emptyList()
+        } else if (name == "capturingDefender") {
+            // Taking their queen is its own point, not the removal of the pawn's guard: what was
+            // guarded must be worth what was taken.
+            val taken = boards[i].pieceAt(sq[0])
+            val takenWorth = if (taken != null) Exchange.VALUE[taken.pieceType] else 0
+            aimed = sq.drop(1).take(1).filter { theirs(it) && worth(it) >= takenWorth }
+        } else {
+            return true
+        }
+        if (pv[i].to in aimed && boards[i].isCapture(pv[i])) return true  // the move itself takes it
+        var watched: MutableSet<Int> = aimed.toMutableSet()
+        for (j in i + 1 until minOf(pv.size, i + 1 + PAYOFF_PLIES)) {
+            val move = pv[j]
+            if (boards[j].turn == us) {
+                if (move.to in watched &&
+                    boards[j].isCapture(move) &&
+                    (actors == null || move.from in actors)
+                ) {
+                    return true
+                }
+                if (actors != null && move.from in actors) {
+                    actors = (actors - move.from + move.to).toMutableSet()
+                }
+                if (holder != null && move.from == holder) holder = move.to
+                if (forker != null && move.from == forker) forker = move.to
+            } else {
+                if (forker != null && move.to == forker) {
+                    if (move.from !in watched) return false  // the fork's piece taken by a bystander
+                    forker = null
+                }
+                if (move.from in watched) watched = (watched - move.from + move.to).toMutableSet()
+                actors?.remove(move.to)  // a piece of the player's taken
+                if (holder != null && move.to == holder) return false  // the pinner taken: the pin is gone
+            }
+        }
+        return false
     }
 
     /**

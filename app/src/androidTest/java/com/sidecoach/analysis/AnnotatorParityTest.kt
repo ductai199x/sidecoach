@@ -178,6 +178,56 @@ class AnnotatorParityTest {
         assertEquals(Label.GREAT, label("4k3/8/5n2/8/4B3/2N5/8/4K3 b - - 0 1"))
     }
 
+    /** The desktop test's `RecordingTagger`: the same tags for every move, the calls kept. */
+    private class RecordingTagger : Tagger {
+        val moveCalls = ArrayList<Pair<String, Int?>>()
+
+        override fun tagsForMove(before: Board, move: Move, pv: List<Move>, mateIn: Int?): List<MotifTag> {
+            moveCalls.add(move.uci() to mateIn)
+            // A fork the line never cashes in, and a sacrifice the payoff rule does not judge:
+            // the annotator keeps a move's tactic only when the line after it wins with it.
+            return listOf(
+                MotifTag("fork", listOf("a3", "b4", "c4"), move.uci()),
+                MotifTag("sacrifice", listOf("a3"), move.uci()),
+            )
+        }
+
+        override fun tagsForPosition(board: Board, pv: List<Move>, mateIn: Int?): List<MotifTag> =
+            listOf(MotifTag("hangingPiece", listOf("d1"), null))
+    }
+
+    /**
+     * `test_assessment_carries_the_loss_the_best_line_and_the_tags`: the loss, the best line,
+     * and the move's tags as the tagger gave them, less a targeted tactic the line after the
+     * move never cashes in (`motifs.pays_off`, desktop 5e80cdf).
+     */
+    @Test
+    fun anAssessmentKeepsOnlyTheTacticsTheLineCashesIn() {
+        val board = Board()
+        val after = board.copy(withStack = false)
+        after.push(Move.fromUci("a2a3"))
+        val fake = FakeEngine(
+            mapOf(
+                board.fen() to listOf(
+                    Line(moves = listOf("e2e4", "e7e5"), depth = 6, expectedScore = 0.60),
+                    Line(moves = listOf("d2d4"), depth = 6, expectedScore = 0.45),
+                ),
+                after.fen() to listOf(
+                    Line(moves = listOf("e7e5"), depth = 6, expectedScore = 0.55, mate = -3),
+                    Line(moves = listOf("d7d5"), depth = 6, expectedScore = 0.20),
+                ),
+            ),
+        )
+        val tagger = RecordingTagger()
+        val annotator = GameAnnotator(fake, depth = 6, tagger = tagger, withThreats = false)
+        val (assessment, analysis) = annotator.assess("game1", board, Move.fromUci("a2a3"), 1)
+        assertEquals(0.15, assessment.expectedLoss, 1e-9)
+        assertEquals(listOf("e2e4", "e7e5"), assessment.best)
+        assertEquals("the unpaid fork is dropped", listOf("sacrifice"), assessment.tags.map { it.name })
+        assertEquals("mated in three more moves, four counting this", listOf("a2a3" to 4), tagger.moveCalls)
+        assertEquals(listOf("hangingPiece"), analysis.tags.map { it.name })
+    }
+
     private companion object {
         fun strings(array: JSONArray): List<String> = (0 until array.length()).map { array.getString(it) }
     }

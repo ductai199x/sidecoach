@@ -20,7 +20,13 @@ fixture as it was fed, so the Kotlin reads exactly the same one:
   hand-made draws (a stalemate, a repetition);
 - positions from the same cache whose idea reaches the rarer goals and fields (RARE: a trade
   into a won ending, the king leading, an attack, a combination, a threat to meet, a
-  perpetual, a pinned guard, an in-between move...).
+  perpetual, a pinned guard, an in-between move...);
+- positions of the master games (`data/eval/facts/masters_v2/`, their engine analysis as the
+  eval harness recorded it), chosen for the plan the facts carry (`coach/plans.py`, desktop
+  5e80cdf): each kind of line plan -- an attack, a storm, doubled heavy pieces, a knight's
+  outpost, a passed pawn, a break, space on the wing -- and each threat of the best move -- a
+  mate, a piece to win, a trade and what it is for -- up to MASTERS_PER_KIND, and a stride of
+  the rest.
 
     cd D:/chess-coaching-companion
     PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python D:/sidecoach-android/tools/make_coach_fixtures.py
@@ -51,6 +57,7 @@ from sidecoach.coach import idea as IDEA  # noqa: E402
 from sidecoach.coach import idea_words as W  # noqa: E402
 from sidecoach.coach import inventory as I  # noqa: E402
 from sidecoach.coach import outcome as O  # noqa: E402
+from sidecoach.coach import plans as PL  # noqa: E402
 from sidecoach.coach import policy as P  # noqa: E402
 from sidecoach.coach import verdicts as V  # noqa: E402
 from sidecoach.coach.coach import (  # noqa: E402
@@ -72,6 +79,11 @@ THEMES = DESKTOP / "data" / "puzzles" / "themes-7-120.csv"
 CACHE = DESKTOP / "data" / "puzzles" / "analysis" / "d18-pv6-13cdf1d231.jsonl"
 # Puzzles per theme with the engine's real analysis; a puzzle counts for every theme it has.
 PER_THEME = 5
+MASTERS = DESKTOP / "data" / "eval" / "facts" / "masters_v2"
+# Master positions kept per plan the facts carry (a line plan's kind, a threat's kind and what
+# a trade is for); one in MASTERS_STRIDE of the rest, whose plan is the best move's own or none.
+MASTERS_PER_KIND = 24
+MASTERS_STRIDE = 150
 
 # Sentences written for the side to move as "you", the way the facts and ideas read.
 PERSON_TEXTS = [
@@ -384,9 +396,15 @@ def templates_json(facts: D.PositionFacts) -> dict:
         "line": line_template(facts),
         "hints": {str(int(level)): hint_template(facts, level) for level in levels},
         "best": best,
+        # The lesson after a costly move, and as the answer to "why was that bad?" says it when
+        # the model gives nothing (`Coach`'s fallback: "{best} was better", desktop 5e80cdf).
         "lessons": [
             {"opener": opener, "text": lesson_template(facts, best, opener)}
-            for opener in (COST_YOU[0].format(best=best), FINE_TIGHTER[1].format(best=best))
+            for opener in (
+                COST_YOU[0].format(best=best),
+                FINE_TIGHTER[1].format(best=best),
+                f"{best} was better",
+            )
         ],
         # Each rung's words checked at every level: the scrubbing of the visible facts and the
         # piece-word rule see every sentence the templates can say.
@@ -728,6 +746,35 @@ def theme_positions() -> list[tuple[str, str, chess.Board]]:
     return wanted
 
 
+def masters_positions() -> list[tuple[str, int, Analysis]]:
+    """(game, index, analysis) of every position the master games' facts measured: the start
+    and the position after each move, as the eval harness recorded the engine's analysis."""
+    out: list[tuple[str, int, Analysis]] = []
+    for path in sorted(MASTERS.glob("*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        rows = [data.get("start_analysis")] + [s.get("analysis") for s in data.get("script", [])]
+        for index, row in enumerate(rows):
+            if row:
+                out.append((path.stem, index, Analysis.model_validate(row)))
+    return out
+
+
+def plan_category(facts: D.PositionFacts) -> str:
+    """Which plan the facts carry, read off their mechanism: a line plan's kind, a threat's
+    kind (and what a trade is for), or the best move's own idea ("move") or none."""
+    mechanism = facts.mechanism or ""
+    for kind, reason in PL.PLAN_REASON.items():
+        if facts.plan and mechanism.endswith(": " + reason):
+            return f"plan:{kind}"
+    for kind, reason in PL.THREAT_REASON.items():
+        if mechanism == f"{PL.THREAT_NAME[kind]}: {reason}":
+            return f"threat:{kind}"
+    for why, reason in PL.TRADE_REASON.items():
+        if mechanism == f"{PL.THREAT_NAME['trade']}: {reason}":
+            return f"threat:trade:{why}"
+    return "move" if facts.plan else "none"
+
+
 def main() -> None:
     rng = random.Random(20260922)
     cases: list[dict] = []
@@ -815,6 +862,46 @@ def main() -> None:
         )
         rare += 1
 
+    # The master games: the plan of the best line and the threat of the best move, where the
+    # facts carry them. A position is read whole only when its line could carry one (the cheap
+    # read of lines[0] finds a plan or a threat) or it falls on the stride.
+    masters = masters_positions()
+    random.Random(20260924).shuffle(masters)
+    by_plan: dict[str, int] = {}
+    mastered = 0
+    for index, (game, ply, analysis) in enumerate(masters):
+        if not analysis.lines or not analysis.lines[0].moves:
+            continue
+        board = chess.Board(analysis.fen)
+        if board.fen() in seen:
+            continue
+        top = analysis.lines[0]
+        pv = [m for m in (F._to_move(u) for u in top.moves) if m is not None]
+        best = pv[0] if pv else None
+        could = best is not None and best in board.legal_moves and (
+            PL.read(board, pv, top.expected_score) is not None
+            or PL.threat(board, best, pv, top.expected_score) is not None
+        )
+        if not could and index % MASTERS_STRIDE:
+            continue
+        facts = F.facts_from_analysis(board, analysis, last_move="e4", in_book=False, user=board.turn)
+        kind = plan_category(facts)
+        quota = MASTERS_PER_KIND if kind.startswith(("plan:", "threat:")) else MASTERS_PER_KIND // 2
+        if by_plan.get(kind, 0) >= quota:
+            continue
+        by_plan[kind] = by_plan.get(kind, 0) + 1
+        seen.add(board.fen())
+        cases.append(
+            case_for(
+                board,
+                analysis,
+                deep=mastered % 12 == 0,
+                marks_deep=mastered % 3 == 0,
+                source=f"masters {game} #{ply}: {kind}",
+            )
+        )
+        mastered += 1
+
     persons = [
         {"text": text, "side": side, "out": third_person(text, side=side)}
         for text in PERSON_TEXTS
@@ -880,11 +967,13 @@ def main() -> None:
     size = (OUT / "coach.json").stat().st_size
     print(
         f"{len(cases)} positions ({synthesised} synthesised, {len(IDEA_TESTS)} idea tests, "
-        f"{themed} Lichess by theme over {len(per_theme)} themes, {rare} rarer goals), "
+        f"{themed} Lichess by theme over {len(per_theme)} themes, {rare} rarer goals, "
+        f"{mastered} master positions), "
         f"{len(persons)} rewrites "
         f"-> {OUT / 'coach.json'} ({size / 1e6:.1f} MB)"
     )
     print("goals:", dict(sorted(goals.items(), key=lambda kv: -kv[1])))
+    print("master positions by plan:", dict(sorted(by_plan.items())))
 
 
 if __name__ == "__main__":

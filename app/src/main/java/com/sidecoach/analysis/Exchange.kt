@@ -42,7 +42,7 @@ object Exchange {
      * `board` with `colour` to move: the same position, the move handed over (no en passant
      * right carried across, no castling taken as a capture).
      */
-    private fun asMover(board: Board, colour: Boolean): Board {
+    fun asMover(board: Board, colour: Boolean): Board {
         if (board.turn == colour) return board
         val view = board.copy(withStack = false)
         view.push(Move.NULL)

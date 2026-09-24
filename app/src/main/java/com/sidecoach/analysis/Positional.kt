@@ -712,7 +712,7 @@ private fun pawnSafe(board: Board, sq: Int, us: Boolean): Boolean {
 }
 
 /** A square in enemy territory, defended by one of your pawns, no enemy pawn can hit. */
-private fun isOutpost(board: Board, sq: Int, us: Boolean): Boolean {
+internal fun isOutpost(board: Board, sq: Int, us: Boolean): Boolean {
     val rank = squareRank(sq)
     val reach = if (us == WHITE) rank >= 4 else rank <= 3
     if (!reach) return false
@@ -992,13 +992,33 @@ private fun isCentralStrong(board: Board, sq: Int, us: Boolean): Boolean {
     return board.attackers(!us, sq).none { board.pieceTypeAt(it) == PAWN }
 }
 
-/** The wing being stormed if the move pushes a pawn at the enemy King, else null. */
-private fun pawnStormSide(board: Board, move: Move, us: Boolean): String? {
+/** The wing a file belongs to: a to c the queenside, f to h the kingside, else null. */
+private fun wing(file: Int): String? = if (file <= 2) "queenside" else if (file >= 5) "kingside" else null
+
+/** The square's rank counted from your side of the board, 1 to 8. */
+private fun relativeRank(sq: Int, us: Boolean): Int {
+    val rank = squareRank(sq)
+    return if (us == WHITE) rank + 1 else 8 - rank
+}
+
+/**
+ * The wing being stormed if the move pushes a pawn at the enemy King, else null.
+ *
+ * A pawn advance -- not a capture -- toward an enemy King that has castled to a wing, on the
+ * files around it: the classic way to prise open a castled position. Only with your own King
+ * off that wing, and only a pawn that reaches its fourth rank: with both Kings behind the same
+ * pawns, h3 or g6 is a flight square or a guard, not a storm (the master games' notes, where
+ * "storming the pawns in front of their King" was said of h3 at move 15, 2026-09-24).
+ */
+internal fun pawnStormSide(board: Board, move: Move, us: Boolean): String? {
     if (board.pieceTypeAt(move.from) != PAWN || board.isCapture(move)) return null
     val enemyKing = board.king(!us) ?: return null
+    val ownKing = board.king(us)
     val kingFile = squareFile(enemyKing)
     if (!(kingFile <= 2 || kingFile >= 5)) return null  // a King in the centre is no wing
+    if (ownKing != null && wing(squareFile(ownKing)) == wing(kingFile)) return null  // storming your own King's cover
     if (abs(squareFile(move.to) - kingFile) > 2) return null
+    if (relativeRank(move.to, us) < 4) return null
     val advancing = (squareRank(move.to) - squareRank(move.from)) * forward(us) > 0
     return if (advancing) (if (kingFile <= 2) "queenside" else "kingside") else null
 }
@@ -1125,7 +1145,11 @@ fun bestMoveIdea(
         }
     }
 
-    if (pieceType == KNIGHT && isOutpost(after, move.to, us)) {
+    // What a piece move is for, when it takes nothing: a capture's point is the exchange, and
+    // "centralise the knight" was said of Nxe5 winning a pawn (the master games, 2026-09-24).
+    val quiet = !board.isCapture(move)
+
+    if (quiet && pieceType == KNIGHT && isOutpost(after, move.to, us)) {
         return PositionalFact(
             "outpostMove",
             "the knight lands on $to, an outpost no enemy pawn can chase it from",
@@ -1133,14 +1157,14 @@ fun bestMoveIdea(
         )
     }
 
-    if ((pieceType == KNIGHT || pieceType == BISHOP) && isCentralStrong(after, move.to, us)) {
+    if (quiet && (pieceType == KNIGHT || pieceType == BISHOP) && isCentralStrong(after, move.to, us)) {
         val pieceName = PIECE_NAMES[pieceType]
         return PositionalFact(
             "centralise", "centralise the $pieceName on $to, a strong square in the middle", listOf(to),
         )
     }
 
-    val fileLetter = rookToFileIsOpen(board, move, us)
+    val fileLetter = if (quiet) rookToFileIsOpen(board, move, us) else null
     if (fileLetter != null) {
         return PositionalFact(
             "takeFile", "your rook takes the $fileLetter-file, where it has room to work", listOf(to),
@@ -1174,7 +1198,7 @@ fun bestMoveIdea(
         return PositionalFact("pushPasser", "push your passed $file-pawn toward $to", listOf(to))
     }
 
-    if (worst != null && move.from == worst) {
+    if (quiet && worst != null && move.from == worst) {
         val pieceName = PIECE_NAMES[pieceType]
         return PositionalFact(
             "activate", "this brings your most passive piece, the $pieceName, to life on $to", listOf(to),
@@ -1190,7 +1214,9 @@ fun bestMoveIdea(
         )
     }
 
-    if (phase != "opening" && pieceType == PAWN) {
+    // Space is a pawn that goes forward and stays: not a capture, and past its third rank (a3
+    // and h3 make room for the King or keep a piece out; they take no space).
+    if (phase != "opening" && pieceType == PAWN && quiet && relativeRank(move.to, us) >= 4) {
         val file = squareFile(move.to)
         if (file <= 1 || file >= 6) {
             val side = if (file <= 1) "queenside" else "kingside"

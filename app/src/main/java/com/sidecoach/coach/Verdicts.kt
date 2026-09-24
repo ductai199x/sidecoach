@@ -1,9 +1,11 @@
 package com.sidecoach.coach
 
+import com.sidecoach.analysis.Exchange
 import com.sidecoach.analysis.bestMoveIdea
 import com.sidecoach.analysis.worstPieceSquare
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
+import com.sidecoach.chess.parseSquare
 import com.sidecoach.events.MotifTag
 import kotlin.random.Random
 
@@ -130,6 +132,15 @@ private fun threatOf(board: Board, threats: List<String>): Move? {
 }
 
 /**
+ * The pinned piece can be won as the board stands: a pin worth a word after the move. A pawn
+ * pinned to its king with nothing to take it is true and teaches nothing.
+ */
+private fun pinWins(after: Board, tag: MotifTag): Boolean {
+    if (tag.squares.size < 2) return false
+    return Exchange.canBeWon(after, parseSquare(tag.squares[1]))
+}
+
+/**
  * What a sound move teaches, as its kind and the ways to say it: the mate, the tactic a tag
  * names when the squares bear it out, or the idea behind the move as its principle (two
  * wordings). Null when the board shows none, or when its kind is in [taught] (said in one of
@@ -148,6 +159,7 @@ fun lesson(
     if (after.isCheckmate()) return "mate" to listOf("checkmate")
     for (tag in tags) {
         if (tag.name in VERDICT_TACTICS && tag.squares.isNotEmpty() && tag.name !in taught) {
+            if ((tag.name == "pin" || tag.name == "absolutePin") && !pinWins(after, tag)) continue
             val said = describeTactic(after, tag.name, tag.squares)
             if (said != null) return tag.name to listOf(said)
         }

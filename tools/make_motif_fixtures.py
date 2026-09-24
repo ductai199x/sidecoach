@@ -20,6 +20,11 @@ carries, because since 2026-09-23 most detectors reject what the geometry alone 
 pin that wins nothing, a fork the enemy takes), and those rejections are in the cases no quota
 picks.
 
+Each case also carries `pays_off` (`motifs.pays_off`, 2026-09-24): for every tag of a pattern
+aimed at a piece (`motifs.TARGETED`) among the move's and the position's tags, whether the line
+[move, *pv] cashes it in -- what the annotator keeps a move's tactic by, and the idea reader its
+blow.
+
     cd D:/chess-coaching-companion
     uv run --no-sync python D:/sidecoach-android/tools/make_motif_fixtures.py [puzzles]
 """
@@ -37,7 +42,12 @@ sys.path.insert(0, str(DESKTOP / "src"))
 
 import chess  # noqa: E402
 
-from sidecoach.analysis.motifs import tags_for_move, tags_for_position  # noqa: E402
+from sidecoach.analysis.motifs import (  # noqa: E402
+    TARGETED,
+    pays_off,
+    tags_for_move,
+    tags_for_position,
+)
 from sidecoach.analysis.phase import phase_of  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "chess"
@@ -62,6 +72,29 @@ def mate_distance(board: chess.Board, moves: list[chess.Move]) -> int | None:
             # The mover moves on the even plies of the line (0, 2, 4 ...).
             return (played + 1) // 2 if played % 2 == 1 else None
     return None
+
+
+def payoffs(board: chess.Board, move: chess.Move, pv: list[chess.Move], tags: list) -> list[dict]:
+    """`pays_off` at ply 0 of the line [move, *pv], walked to its first illegal move as the
+    annotator walks it, for each distinct targeted tag."""
+    line = [move, *pv]
+    boards = [board.copy(stack=False)]
+    for m in line:
+        if m not in boards[-1].legal_moves:
+            break
+        nxt = boards[-1].copy(stack=False)
+        nxt.push(m)
+        boards.append(nxt)
+    line = line[: len(boards) - 1]
+    out: list[dict] = []
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    for tag in tags:
+        key = (tag.name, tuple(tag.squares))
+        if tag.name not in TARGETED or key in seen:
+            continue
+        seen.add(key)
+        out.append({**tag_json(tag), "pays": pays_off(boards, line, 0, tag)})
+    return out
 
 
 # Cases kept per tag name. Enough that a detector's branches are exercised, few enough
@@ -108,6 +141,8 @@ def main() -> None:
             if index % 2 == 1:  # the solver is to move here
                 pv = moves[index + 1 :]
                 mate_in = mate_distance(board, moves[index:])
+                for_move = tags_for_move(board, move, pv=pv, mate_in=mate_in)
+                for_position = tags_for_position(board, pv=[move, *pv], mate_in=mate_in)
                 cases.append(
                     {
                         "puzzle": row["PuzzleId"],
@@ -115,16 +150,9 @@ def main() -> None:
                         "move": move.uci(),
                         "pv": [m.uci() for m in pv],
                         "mate_in": mate_in,
-                        "for_move": [
-                            tag_json(t)
-                            for t in tags_for_move(board, move, pv=pv, mate_in=mate_in)
-                        ],
-                        "for_position": [
-                            tag_json(t)
-                            for t in tags_for_position(
-                                board, pv=[move, *pv], mate_in=mate_in
-                            )
-                        ],
+                        "for_move": [tag_json(t) for t in for_move],
+                        "for_position": [tag_json(t) for t in for_position],
+                        "pays_off": payoffs(board, move, pv, [*for_move, *for_position]),
                     }
                 )
                 phases.append(
@@ -157,6 +185,8 @@ def main() -> None:
             names[tag["name"]] = names.get(tag["name"], 0) + 1
     print(f"{len(cases)} of {seen_all} positions from {len(rows)} puzzles -> {OUT / 'motifs.json'}")
     print("tags seen: " + ", ".join(f"{n}x{c}" for n, c in sorted(names.items())))
+    paid = [p["pays"] for case in cases for p in case["pays_off"]]
+    print(f"pays_off: {len(paid)} targeted tags, {sum(paid)} paid off")
 
 
 if __name__ == "__main__":

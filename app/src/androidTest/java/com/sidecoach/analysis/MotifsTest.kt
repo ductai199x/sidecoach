@@ -33,6 +33,8 @@ class MotifsTest {
         val data = fixtures().getJSONArray("cases")
         val failures = ArrayList<String>()
         val seen = HashMap<String, Int>()
+        var payoffs = 0
+        var paid = 0
         val began = System.currentTimeMillis()
         for (i in 0 until data.length()) {
             val case = data.getJSONObject(i)
@@ -55,11 +57,36 @@ class MotifsTest {
                 failures,
             )
             for (tag in position) seen[tag.name] = (seen[tag.name] ?: 0) + 1
+
+            // `motifs.pays_off` at ply 0 of [move, *pv], walked as the annotator walks it.
+            val wanted = case.optJSONArray("pays_off")
+            if (wanted != null && wanted.length() > 0) {
+                val line = listOf(move) + pv
+                val boards = arrayListOf(board.copy(withStack = false))
+                for (m in line) {
+                    if (!boards.last().isLegal(m)) break
+                    val nxt = boards.last().copy(withStack = false)
+                    nxt.push(m)
+                    boards.add(nxt)
+                }
+                val walked = line.subList(0, boards.size - 1)
+                for (k in 0 until wanted.length()) {
+                    val o = wanted.getJSONObject(k)
+                    val squares = o.getJSONArray("squares").let { a -> List(a.length()) { a.getString(it) } }
+                    val tag = MotifTag(o.getString("name"), squares, if (o.isNull("move")) null else o.getString("move"))
+                    val mine = Motifs.paysOff(boards, walked, 0, tag)
+                    payoffs += 1
+                    if (mine) paid += 1
+                    if (mine != o.getBoolean("pays") && failures.size < 8) {
+                        failures.add("${case.getString("puzzle")} pays_off ${show(tag)}: kotlin $mine, python ${o.getBoolean("pays")}")
+                    }
+                }
+            }
         }
         val took = System.currentTimeMillis() - began
         Log.i(
             TAG,
-            "${data.length()} positions tagged in $took ms; " +
+            "${data.length()} positions tagged in $took ms, $payoffs payoffs ($paid paid); " +
                 seen.entries.sortedBy { it.key }.joinToString(", ") { "${it.key}x${it.value}" },
         )
         assertTrue(failures.take(8).joinToString("\n"), failures.isEmpty())

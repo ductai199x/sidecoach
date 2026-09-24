@@ -60,6 +60,13 @@ private val PLAN_THEME = mapOf(
 )
 
 /**
+ * The best move's own idea that comes before the plan its line carries out: a king to get to
+ * safety, a piece to save, their threat to stop, a piece still at home. Anything else gives way
+ * to the plan of the player's next moves ([Plans]).
+ */
+private val BEFORE_THE_PLAN = setOf("castle", "rescue", "prophylaxis", "develop")
+
+/**
  * In a pawn ending there is no king to storm and no space to take: a pawn move there is about
  * the passed pawn it makes ("storming the pawns in front of their King" was said of h5 in a
  * king-and-pawn ending, Lichess Yb1jJ).
@@ -530,9 +537,30 @@ fun factsFromAnalysis(
             planKind = if (plan != null) kind else null
         }
     }
+    // The plan the best line carries out over the player's next moves: a king attack, rooks
+    // doubled on a file, a knight's route to an outpost. What a grandmaster's note says of a
+    // quiet position, where the best move alone reads as "a rook to an open file". And the
+    // threat the best move makes, where the line wins nothing because they answer it: a threat
+    // of mate comes before any plan, a threat to win material after the line's plan.
+    var linePlan: LinePlan? = null
+    var moveThreat: MoveThreat? = null
+    if (best != null && idea.goal == "plan" && (planKind == null || planKind !in BEFORE_THE_PLAN)) {
+        val pv = lines[0].moves.mapNotNull { toMove(it) }
+        linePlan = Plans.read(board, pv, lines[0].expectedScore)
+        moveThreat = Plans.threat(board, best, pv, lines[0].expectedScore)
+        if (moveThreat != null && (moveThreat.kind == "mate" || linePlan == null)) {
+            linePlan = null
+            plan = Plans.THREAT_NAME.getValue(moveThreat.kind)
+            planKind = null
+        } else if (linePlan != null) {
+            moveThreat = null
+            plan = Plans.name(linePlan)
+            planKind = null
+        }
+    }
     val ideas = topFeatures(board, us, phase, limit = 2).map { it.text }
 
-    val piece: String? = IdeaWords.piece(idea, board)
+    var piece: String? = IdeaWords.piece(idea, board)
     var nature: String? = null
     if (best != null) {
         nature = natureOf(board, best, if (lines.isNotEmpty()) lines[0].moves else emptyList())
@@ -540,6 +568,28 @@ fun factsFromAnalysis(
     var mechanism = IdeaWords.mechanism(idea)
     if (mechanism == null && planKind != null && planKind in IdeaWords.PLAN_WHY) {
         mechanism = "$plan: ${IdeaWords.PLAN_WHY.getValue(planKind)}"
+    }
+    var question = IdeaWords.question(idea, planKind)
+    var target = IdeaWords.target(idea, board)
+    var nudge = IdeaWords.nudge(idea)
+    var why = IdeaWords.why(idea, board, IdeaWords.Describe(::describeTactic))
+    var goal = IdeaWords.goal(idea)
+    if (moveThreat != null && best != null) {
+        val won = if (idea.winning) Plans.THREAT_GOAL_WON else Plans.THREAT_GOAL
+        goal = won.getValue(moveThreat.kind)
+        mechanism = Plans.threatMechanism(moveThreat)
+        question = Plans.THREAT_QUESTION.getValue(moveThreat.kind)
+        target = Plans.threatTarget(moveThreat, board) ?: target
+        nudge = Plans.THREAT_NUDGE.getValue(moveThreat.kind)
+        why = Plans.threatWhy(moveThreat, board, best)
+    }
+    if (linePlan != null) {
+        mechanism = Plans.mechanism(linePlan)
+        question = Plans.PLAN_QUESTION.getValue(linePlan.kind)
+        target = Plans.target(linePlan) ?: target
+        piece = Plans.pieces(linePlan, board) ?: piece
+        nudge = Plans.PLAN_NUDGE.getValue(linePlan.kind)
+        why = Plans.why(linePlan, board)
     }
 
     val candidates = ArrayList<String>()
@@ -569,15 +619,15 @@ fun factsFromAnalysis(
         decisive = analysis.decisive,
         onlyMove = analysis.onlyMove,
         nature = nature,
-        goal = IdeaWords.goal(idea),
+        goal = goal,
         theme = themeText,
         mechanism = mechanism,
-        question = IdeaWords.question(idea, planKind),
+        question = question,
         region = region,
-        target = IdeaWords.target(idea, board),
+        target = target,
         piece = piece,
-        why = IdeaWords.why(idea, board, IdeaWords.Describe(::describeTactic)),
-        nudge = IdeaWords.nudge(idea),
+        why = why,
+        nudge = nudge,
         focus = focus,
         tactic = tactic,
         plan = plan,

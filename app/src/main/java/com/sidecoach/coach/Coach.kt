@@ -248,8 +248,8 @@ fun lessonTemplate(facts: PositionFacts, best: String, opener: String): String {
     if (why.startsWith(best)) {
         var rest = why.substring(best.length).trimStart(' ', ',', ':', ';')
         rest = if (rest.startsWith("and ")) rest.substring(4) else rest
-        if (rest.startsWith("is ") || rest.startsWith("forces ")) {
-            rest = "it $rest"  // "Nf2# was better -- it is mate"
+        if (listOf("is ", "forces ", "stops ", "starts ", "holds ", "takes ").any { rest.startsWith(it) }) {
+            rest = "it $rest"  // "Nf2# was better -- it is mate", "-- it stops Nxd3"
         }
         if (rest.isNotEmpty()) text += " -- $rest"
     }

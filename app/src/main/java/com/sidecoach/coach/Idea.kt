@@ -13,7 +13,6 @@ import com.sidecoach.chess.PAWN
 import com.sidecoach.chess.QUEEN
 import com.sidecoach.chess.ROOK
 import com.sidecoach.chess.WHITE
-import com.sidecoach.chess.parseSquare
 import com.sidecoach.chess.squareDistance
 import com.sidecoach.chess.squareFile
 import com.sidecoach.chess.squareRank
@@ -136,6 +135,9 @@ object IdeaReader {
      */
     const val ATTACK_CHECKS = 2
 
+    /** The furthest of the player's moves a named pattern may land on and still be the idea. */
+    const val FAR_BLOW = 3
+
     /** The named mating patterns, which say more than "a mating attack". */
     val MATE_PATTERNS: List<String> = listOf(
         "smotheredMate",
@@ -178,36 +180,12 @@ object IdeaReader {
     private val BLOW_INDEX: Map<String, Int> = BLOW_RANK.withIndex().associate { (i, name) -> name to i }
 
     /**
-     * The tactics aimed at a piece: the blow only when the line then takes that piece. A
-     * discovered attack on a pawn the line never touches, a fork of two pieces that both get
-     * away, was the headline of a promotion (Tai's puzzles, 2026-09-23).
-     */
-    val TARGETED: List<String> = listOf(
-        "fork",
-        "skewer",
-        "discoveredAttack",
-        "absolutePin",
-        "pin",
-        "trappedPiece",
-        "hangingPiece",
-        "capturingDefender",
-    )
-
-    /**
      * What a mate is named by: its pattern, or two checks at once. A pin or a skewer that
      * happens to be on the board as the mate lands is not its point ("It's a pin" was said of
-     * Qh7+ Kf6 Qxh6#, Lichess 01xbu).
+     * Qh7+ Kf6 Qxh6#, Lichess 01xbu). The tactics aimed at a piece, the blow only when the line
+     * then takes that piece, are the tagger's ([Motifs.TARGETED], [Motifs.paysOff]).
      */
     val MATE_BLOWS: List<String> = MATE_PATTERNS + listOf("doubleCheck")
-
-    /**
-     * A fork or a skewer is the point only when what it wins is worth a minor piece: the king
-     * and a pawn on a2 forked five moves after the queen was won was named as the idea.
-     */
-    const val MIN_TARGET_VALUE = 3
-
-    /** How far on the line takes it: three of the player's moves. */
-    const val PAYOFF_PLIES = 6
 
     /** What can clear a pawn's way or hold the defence off, for a promotion. */
     val PROMOTION_BLOWS: List<String> = listOf(
@@ -334,7 +312,8 @@ object IdeaReader {
                 checks = checks,
             )
         }
-        val draw = drawn(boards, pv, analysis.lines[0].expectedScore)
+        val second = if (analysis.lines.size > 1) analysis.lines[1].expectedScore else null
+        val draw = drawn(boards, pv, analysis.lines[0].expectedScore, second)
         if (draw != null) {
             return Idea(
                 goal = "draw",
@@ -362,15 +341,27 @@ object IdeaReader {
         val firstAt = if (gain > 0) firstReaching(boards, pv, at, minOf(gain, WIN_GAIN)) else 0
         at = if (firstAt != 0) firstAt else at
         var (blow, blowAt, preparation) = findBlow(boards, pv, if (at != 0) at else minOf(pv.size, 6), null)
+        if (blow != null && blowAt > FAR_BLOW) {
+            // A loose rook picked up on the fifth move is not the idea a player can see from
+            // here; the start of the line is (Tai's game g06, 2026-09-24).
+            blow = null
+            blowAt = 1
+            preparation = emptyList()
+        }
         val winning = analysis.lines[0].expectedScore >= WON
         // A pawn of the player's reaching the seventh, or queening, anywhere in the line.
         val seventh = if (us == WHITE) 6 else 1
+        // A pawn of the player's queening in the line; one reaching the seventh only in an
+        // ending, where it is on its way: in a middlegame a pawn on the seventh is a capture on
+        // f7 in an attack ("you can push a pawn through to promotion" was said of exf7 in
+        // Gligoric-Fischer, move 17).
+        val ending = piecesLeft(board) <= 4
         var queens = false
         for (j in 0 until horizon) {
             if (j % 2 != 0) continue
             val move = pv[j]
             if (move.promotion != 0 ||
-                (boards[j].pieceTypeAt(move.from) == PAWN && squareRank(move.to) == seventh)
+                (ending && boards[j].pieceTypeAt(move.from) == PAWN && squareRank(move.to) == seventh)
             ) {
                 queens = true
                 break
@@ -432,7 +423,10 @@ object IdeaReader {
         // Won, or clearly better with material given for the checks: a sacrificial attack at
         // 0.78 was "which of your pieces has no job right now?" (Lichess PZm0M).
         val better = analysis.lines[0].expectedScore >= 0.65
-        val opened = better && sacrifices(boards, pv, 6).isNotEmpty() && checksGiven >= 1
+        val theirKing = board.king(!us)
+        val nearKing = theirKing != null &&
+            (0 until minOf(pv.size, 8) step 2).any { squareDistance(pv[it].to, theirKing) <= 2 }
+        val opened = better && sacrifices(boards, pv, 6).isNotEmpty() && (checksGiven >= 1 || nearKing)
         if ((winning && checksGiven >= ATTACK_CHECKS) || opened) {
             // The king is the target: what the checks open up is the point.
             return Idea(
@@ -573,7 +567,7 @@ object IdeaReader {
             if (i >= pv.size) break
             for (tag in Motifs.tagsForMove(boards[i], pv[i], pv.subList(i + 1, pv.size), null)) {
                 val name = if (tag.name == "absolutePin") "pin" else tag.name
-                if (name in ALSO && name != main && paysOff(boards, pv, i, tag)) return tag.name
+                if (name in ALSO && name != main && Motifs.paysOff(boards, pv, i, tag)) return tag.name
             }
         }
         return null
@@ -633,13 +627,21 @@ object IdeaReader {
      */
     private fun retaken(board: Board, square: Int): Boolean = board.legalMoves().any { it.to == square }
 
+    /** How much worse the next-best move must be for a draw to be the point: the draw saves the game. */
+    const val RESCUE = 0.15
+
     /**
      * How the line saves the game, when it is a draw the player forces: stalemate on the
      * board, check after check with the game level (a perpetual), or a position that comes
-     * round again. Null when the line is not that.
+     * round again. Null when the line is not that -- or when the draw saves nothing: the
+     * next-best move (`second`, its expected score) does as well, and a level line that goes
+     * round in a circle is the engine marking time, not a rescue ("you can hold the game" was
+     * said at 80 of the master games' 93 such moves, all level whatever was played,
+     * 2026-09-24).
      */
-    private fun drawn(boards: List<Board>, pv: List<Move>, score: Double): String? {
+    internal fun drawn(boards: List<Board>, pv: List<Move>, score: Double, second: Double? = null): String? {
         if (!(score >= 0.35 && score <= 0.65)) return null
+        if (second != null && second > score - RESCUE) return null
         if (boards.drop(1).any { it.isStalemate() }) return "stalemate"
         val ours = (0 until minOf(pv.size, 10) step 2).toList()
         if (ours.size >= 3 && ours.all { boards[it].givesCheck(pv[it]) }) return "perpetual"
@@ -783,7 +785,8 @@ object IdeaReader {
             for (tag in tags) {
                 val rank = BLOW_INDEX[tag.name] ?: continue
                 if (allowed != null && tag.name !in allowed) continue
-                if (mate == null && tag.name in TARGETED && !paysOff(boards, pv, i, tag)) continue
+                val targeted = tag.name in Motifs.TARGETED
+                if (mate == null && targeted && !Motifs.paysOff(boards, pv, i, tag)) continue
                 if (mate == null && tag.name in PREPARATION && i + 2 >= upto) {
                     // A decoy or a deflection prepares what a later move cashes in: on the last
                     // of the player's moves before the win it explains what comes after it (the
@@ -808,108 +811,6 @@ object IdeaReader {
             }
         }
         return Triple(ply to tag, ply / 2 + 1, preparation)
-    }
-
-    /**
-     * Whether the line cashes in the tactic at ply `i` within [PAYOFF_PLIES]: takes a piece it
-     * goes after -- by the piece that does it, where the pattern says so -- with every piece
-     * followed as it moves. The squares are the tagger's, per pattern: a fork's forker then its
-     * targets; a skewer's and a pin's slider, front, back; a discovered attack's mover, slider,
-     * target; a trapped piece then its hunters; a loose piece; a captured defender then what it
-     * guarded.
-     */
-    private fun paysOff(boards: List<Board>, pv: List<Move>, i: Int, tag: MotifTag): Boolean {
-        val us = boards[i].turn
-        val sq = tag.squares.map { parseSquare(it) }
-        if (sq.isEmpty()) return false
-        val name = tag.name
-        val after = boards[i + 1]
-
-        fun theirs(square: Int): Boolean {
-            val piece = after.pieceAt(square)
-            return piece != null && piece.colour != us && piece.pieceType != KING
-        }
-
-        fun worth(square: Int): Int {
-            val kind = after.pieceTypeAt(square)
-            return value(if (kind == 0) PAWN else kind)
-        }
-
-        var actors: MutableSet<Int>? = null  // null: any of the player's pieces
-        // The piece the pattern stands on: a pin is gone once its pinner is taken (a rook that
-        // pins as it takes the queen, and is taken back at once, pinned nothing).
-        var holder: Int? = null
-        // A fork's piece taken by anything but one of its targets refutes it: "Nf3+ forks the
-        // king, queen and rook" was said of a knight gxf3 simply took (Lichess 026RF).
-        var forker: Int? = null
-        val aimed: List<Int>
-        if (name == "fork") {
-            // Whoever collects it: the queen that takes back on e6 after Bxe6+ Qxe6 cashed in
-            // the bishop's fork (Lichess 0BD4O).
-            aimed = sq.drop(1).filter { theirs(it) && worth(it) >= MIN_TARGET_VALUE }
-            forker = sq[0]
-            // A bystander that can take the forking piece for profit where it lands refutes the
-            // fork, whatever the line then does (Nf2+ with the rook on f1 able to take it: the
-            // discovered attack behind it was the point, Lichess 01q4A). A pinned piece cannot
-            // take; a target that takes and is taken back is the fork working.
-            val targets = sq.drop(1)
-            for (capture in Exchange.capturesOn(after, !us, forker)) {
-                if (capture.from !in targets && Exchange.exchange(after, capture) > 0) return false
-            }
-        } else if (name == "skewer") {
-            aimed = sq.drop(2).take(1).filter { theirs(it) && worth(it) >= MIN_TARGET_VALUE }
-            actors = mutableSetOf(sq[0])
-        } else if (name == "discoveredAttack" && sq.size >= 3) {
-            val king = after.pieceAt(sq[2])
-            if (king != null && king.pieceType == KING) {
-                // A discovered check: the point is what the piece that moved goes on to take.
-                aimed = (0 until 64).filter { theirs(it) }
-                actors = mutableSetOf(sq[0])
-            } else {
-                aimed = if (theirs(sq[2])) listOf(sq[2]) else emptyList()
-                actors = mutableSetOf(sq[0], sq[1])
-            }
-        } else if (name == "pin" || name == "absolutePin") {
-            aimed = sq.drop(1).take(2).filter { theirs(it) }
-            holder = sq[0]
-        } else if (name == "trappedPiece" || name == "hangingPiece") {
-            aimed = if (theirs(sq[0])) listOf(sq[0]) else emptyList()
-        } else if (name == "capturingDefender") {
-            // Taking their queen is its own point, not the removal of the pawn's guard: what was
-            // guarded must be worth what was taken.
-            val taken = boards[i].pieceAt(sq[0])
-            val takenWorth = if (taken != null) value(taken.pieceType) else 0
-            aimed = sq.drop(1).take(1).filter { theirs(it) && worth(it) >= takenWorth }
-        } else {
-            return true
-        }
-        if (pv[i].to in aimed && boards[i].isCapture(pv[i])) return true  // the move itself takes it
-        var watched: MutableSet<Int> = aimed.toMutableSet()
-        for (j in i + 1 until minOf(pv.size, i + 1 + PAYOFF_PLIES)) {
-            val move = pv[j]
-            if (boards[j].turn == us) {
-                if (move.to in watched &&
-                    boards[j].isCapture(move) &&
-                    (actors == null || move.from in actors)
-                ) {
-                    return true
-                }
-                if (actors != null && move.from in actors) {
-                    actors = (actors - move.from + move.to).toMutableSet()
-                }
-                if (holder != null && move.from == holder) holder = move.to
-                if (forker != null && move.from == forker) forker = move.to
-            } else {
-                if (forker != null && move.to == forker) {
-                    if (move.from !in watched) return false  // the fork's piece taken by a bystander
-                    forker = null
-                }
-                if (move.from in watched) watched = (watched - move.from + move.to).toMutableSet()
-                actors?.remove(move.to)  // a piece of the player's taken
-                if (holder != null && move.to == holder) return false  // the pinner taken: the pin is gone
-            }
-        }
-        return false
     }
 
     /** The first ply, to `upto`, at which the line has won `target` or more. */
