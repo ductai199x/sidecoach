@@ -1,0 +1,121 @@
+"""The hints tell one story (`coach/story.py`), held on Lichess puzzles read by hand on
+2026-09-24, with the engine's lines as the app's settings saw them; and the story checks
+(`tools/puzzles/story_checks.py`) pass on each."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import chess
+
+from sidecoach.coach import idea as idea_of
+from sidecoach.coach.coach import focus_template, idea_template, move_template
+from sidecoach.coach.facts import facts_from_analysis
+from sidecoach.events import Analysis, Line
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "puzzles"))
+from story_checks import story_checks  # noqa: E402
+
+
+def _hints(
+    fen: str, lines: list[tuple[list[str], float]], threats: tuple[str, ...] = ()
+) -> tuple[dict[str, str], bool]:
+    board = chess.Board(fen)
+    analysis = Analysis(
+        game_id="",
+        fen=fen,
+        ply=0,
+        lines=[Line(moves=moves, depth=18, expected_score=score) for moves, score in lines],
+        decisive=False,
+        only_move=False,
+        threats=list(threats),
+    )
+    facts = facts_from_analysis(board, analysis, user=board.turn)
+    texts = {
+        "idea": idea_template(facts),
+        "focus": focus_template(facts),
+        "move": move_template(facts),
+    }
+    pv = [chess.Move.from_uci(u) for u in lines[0][0]]
+    checks, _ = story_checks(board, pv, idea_of.read(board, analysis), texts)
+    return texts, all(checks.values())
+
+
+def test_a_queen_that_simply_hangs_is_said_plainly() -> None:
+    # gNzJg: a pawn takes the queen -- no discovered attack about it.
+    texts, told = _hints(
+        "5r1k/p5pp/1p6/3p1r2/3P2q1/2P1QP1n/PP5P/R4R1K w - - 0 29",
+        [(["f3g4", "h3f2", "h1g1", "f5f3", "e3f2", "f3f2", "f1f2", "f8f2", "g1f2"], 0.949)],
+    )
+    assert "Their queen on g4 can simply be taken: nothing defends it" in texts["idea"]
+    assert "discovered" not in texts["idea"]
+    assert texts["move"].startswith("fxg4 takes their queen")
+    assert told
+
+
+def test_a_free_piece_first_then_what_the_line_wins_after_it() -> None:
+    # DWvS7: Qxe8+ takes a free rook, and the line wins more after it.
+    texts, told = _hints(
+        "4r1k1/6p1/3qp2p/1Q1pr3/p1p1nP2/Pp6/1P4PP/4RRK1 w - - 0 29",
+        [(["b5e8", "g8h7", "f4e5", "d6c5", "g1h1", "e4f2", "f1f2", "c5f2", "e1g1"], 0.762)],
+    )
+    assert "Their rook on e8 can simply be taken" in texts["idea"]
+    assert told
+
+
+def test_in_check_the_checker_comes_first() -> None:
+    # EcCX4: their queen gives check, and taking it is the point.
+    texts, told = _hints(
+        "4r3/5ppp/5n2/2Q2k2/P1qP1B2/7P/1P2p1P1/4R1K1 b - - 4 30",
+        [
+            (["c4c5", "d4c5", "f5f4", "g1f2", "f6e4", "f2e2", "e4c5", "e2d2", "e8e1"], 0.911),
+            (["c4d5", "f4d2", "d5c5", "d4c5", "e8b8", "g2g4", "f5e4", "e1e2", "e4d3"], 0.278),
+        ],
+    )
+    assert "Their queen on c5 gives check" in texts["idea"]
+    assert "The first move takes their queen on c5" in texts["idea"]
+    assert told
+
+
+def test_the_pawn_the_win_rests_on_is_named() -> None:
+    # uSAIW: f7, and the rook must give itself up for the pawn.
+    texts, told = _hints(
+        "5k2/p7/5PRp/1p6/7p/8/r2r2P1/5RK1 w - - 0 36",
+        [
+            (["f6f7", "d2g2", "g6g2", "a2g2", "g1g2", "b5b4", "g2h3", "b4b3", "h3h4"], 0.88),
+            (["g6g7", "a7a5", "g1h2", "h4h3", "h2h3", "d2f2", "f1c1", "a2c2", "c1a1"], 0.454),
+        ],
+    )
+    assert "Your pawn on f6 is two squares from queening" in texts["idea"]
+    assert told
+
+
+def test_a_win_with_no_pattern_says_how() -> None:
+    # jlCZP, a zugzwang: never "their pawn on h5 is the target" and "you win two pawns" alone.
+    texts, told = _hints(
+        "8/8/p3k3/1p3p1p/1P6/P3K1PP/8/8 w - - 1 41",
+        [
+            (["e3f4", "e6f6", "h3h4", "f6e6", "f4g5", "e6d5", "g5h5", "a6a5", "b4a5"], 0.895),
+            (["e3d4", "e6d6", "h3h4", "d6e6", "d4e3", "e6e7", "e3f4", "e7f6", "f4f3"], 0.5),
+        ],
+        threats=("e6e5",),
+    )
+    assert "The first move stops Ke5" in texts["idea"]
+    assert texts["move"].startswith("Kf4") and "and after" in texts["move"]
+    assert told
+
+
+def test_where_only_one_move_holds_the_move_says_what_it_does() -> None:
+    # TzhLp: "The move is gxh5." said nothing.
+    texts, told = _hints(
+        "8/4k3/3p1pp1/7p/4PKPP/5P2/8/8 w - - 1 44",
+        [
+            (["g4h5", "g6h5", "f4f5", "e7f7", "f3f4", "f7e7", "f5g6", "e7e6", "f4f5"], 0.862),
+            (["f4e3", "e7f7", "e3f4", "f7e6", "g4g5", "e6f7", "g5f6", "f7f6", "f4e3"], 0.512),
+            (["g4g5", "e7f7", "g5f6", "f7f6", "f4e3", "g6g5", "h4g5", "f6g5", "f3f4"], 0.512),
+        ],
+    )
+    assert "takes their pawn on h5" in texts["move"]
+    assert "?" in texts["focus"]
+    assert told

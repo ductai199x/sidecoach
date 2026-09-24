@@ -827,7 +827,7 @@ def facts_from_analysis(
     # rung the line to it, never the result alone.
     how = (
         story.how(board, idea, threat_move)
-        if tactical_goal and not forced and plain is None and not in_check
+        if tactical_goal and not forced and plain is None
         else None
     )
     if (

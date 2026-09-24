@@ -368,7 +368,15 @@ def how(board: chess.Board, idea: Idea, threat: chess.Move | None) -> str | None
         given = idea.sacrifices[0][1]
         return f"It starts by giving up {'the' if given == 'exchange' else 'a'} {given}"
     found = effects(board, idea.first, threat)
-    found = [e for e in found if not e.said.startswith("takes their")] or found
+    # Taking a piece is the point when it is a piece, or the one giving check; a pawn taken on
+    # the way is not, and what else the move does comes first.
+    first = idea.first
+    taken = board.piece_type_at(first.to_square) if board.is_capture(first) else None
+    big = taken is not None and (
+        exchange.VALUE.get(taken, 0) >= FREE_MIN or first.to_square in board.checkers()
+    )
+    if not big:
+        found = [e for e in found if not e.said.startswith("takes their")] or found
     # "pushes your passed pawn" is the move itself, not how it wins.
     found = [e for e in found if not e.said.startswith("pushes")]
     if not found:
