@@ -71,6 +71,12 @@ data class Idea(
     val threat: Move? = null,
     /** "mate", or the piece the threat wins: "your rook". */
     val threatened: String? = null,
+    /**
+     * "defend": the threat is a quiet move that would threaten it next, [follow] the move that
+     * would then mate or take (Rh1, then Qh8#: the master games, 2026-09-24).
+     */
+    val prepared: Boolean = false,
+    val follow: Move? = null,
     /** "mate": their king's free squares now. */
     val flight: List<Int> = emptyList(),
     /** How many checks the side to move has. */
@@ -472,7 +478,7 @@ object IdeaReader {
                 checks = checks,
             )
         }
-        val (threat, threatened) = threatOf(board, analysis.threats)
+        val (threat, threatened, follow) = threatOf(board, analysis.threats, first)
         if (threat != null) {
             return Idea(
                 goal = "defend",
@@ -481,6 +487,8 @@ object IdeaReader {
                 startsWith = startsWith,
                 threat = threat,
                 threatened = threatened,
+                prepared = follow != null,
+                follow = follow,
                 checks = checks,
             )
         }
@@ -958,11 +966,23 @@ object IdeaReader {
     }
 
     /**
-     * The opponent's threat, if the player passed, when it mates or wins material; and what it
-     * threatens ("mate", or "your rook").
+     * A prepared threat is read only when what it prepares is mate or at least a minor piece:
+     * every move attacks something, and "your opponent is preparing to win a pawn" would be
+     * said of half the moves of a quiet game.
      */
-    private fun threatOf(board: Board, threats: List<String>): Pair<Move?, String?> {
-        if (threats.isEmpty() || board.isCheck()) return null to null
+    const val PREPARED_MIN = 3
+
+    /**
+     * The opponent's threat, if the player passed, when it mates or wins material; what it
+     * threatens ("mate", or "your rook"); and, when the threat is a quiet move that prepares it
+     * (their best reply to a pass threatens mate or a piece next), the move that would follow.
+     * A prepared threat counts only when the best move takes it away: where the best move lets
+     * it come and strikes first (g4 while ...b4 still wins the knight), the point is the
+     * counter, and "stop it before it comes" would be false (the master games' notes,
+     * 2026-09-24).
+     */
+    private fun threatOf(board: Board, threats: List<String>, best: Move? = null): Triple<Move?, String?, Move?> {
+        if (threats.isEmpty() || board.isCheck()) return Triple(null, null, null)
         val passed = board.copy(withStack = false)
         passed.push(Move.NULL)
         for (uci in threats) {
@@ -970,14 +990,41 @@ object IdeaReader {
             if (!passed.isLegal(move)) continue
             val after = passed.copy(withStack = false)
             after.push(move)
-            if (after.isCheckmate()) return move to "mate"
+            if (after.isCheckmate()) return Triple(move, "mate", null)
             val taken = passed.pieceAt(move.to)
             // A capture that wins material by the exchange, legal recaptures and all: a knight
             // left to a rook with only a pinned piece to take back is a threat (2026-09-23).
             if (taken != null && taken.colour == board.turn && Exchange.exchange(passed, move) > 0) {
-                return move to "your ${NAMES.getValue(taken.pieceType)}"
+                return Triple(move, "your ${NAMES.getValue(taken.pieceType)}", null)
             }
         }
-        return null to null
+        // The engine's first reply to a pass, when quiet: what it would threaten next.
+        for (uci in threats.take(1)) {
+            val move = Move.fromUciOrNull(uci) ?: continue
+            if (!passed.isLegal(move) || passed.isCapture(move)) continue
+            val prepared = Plans.threat(passed, move)
+            if (prepared == null || prepared.kind == "trade") continue
+            if (best != null && board.isLegal(best)) {
+                val answered = board.copy(withStack = false)
+                answered.push(best)
+                if (answered.isLegal(move)) {
+                    // The same threat, on the same target: after Nd4 the rook's Rd1 goes for the
+                    // knight, not the queen it went for, and the queen's threat is met.
+                    val still = Plans.threat(answered, move)
+                    if (still != null &&
+                        still.kind == prepared.kind &&
+                        (still.kind == "mate" || still.square == prepared.square)
+                    ) {
+                        continue
+                    }
+                }
+            }
+            if (prepared.kind == "mate") return Triple(move, "mate", prepared.follow)
+            val target = passed.pieceAt(prepared.square)
+            if (target != null && prepared.gain >= PREPARED_MIN) {
+                return Triple(move, "your ${NAMES.getValue(target.pieceType)}", prepared.follow)
+            }
+        }
+        return Triple(null, null, null)
     }
 }

@@ -288,6 +288,10 @@ object IdeaWords {
         if (idea.goal == "combination") return "you can give up material and win it back with a tactic"
         if (idea.goal == "defend") {
             val lead = if (idea.winning) "you are winning, but " else ""
+            if (idea.prepared) {
+                val what = if (idea.threatened == "mate") "mate" else "to win material"
+                return "${lead}your opponent is preparing $what: stop it before it comes"
+            }
             if (idea.threatened == "mate") return "${lead}your opponent threatens mate: meet it first"
             return "${lead}your opponent threatens to win material: meet it first"
         }
@@ -513,6 +517,14 @@ object IdeaWords {
             val mover = board.pieceAt(idea.threat.from)
             val taken = board.pieceAt(idea.threat.to)
             val who = if (mover != null) "their ${named(board, idea.threat.from)}" else "their threat"
+            if (idea.prepared && idea.follow != null) {
+                if (idea.threatened == "mate") return "$who, one move from threatening mate"
+                val aim = board.pieceAt(idea.follow.to)
+                if (aim != null && aim.colour == board.turn) {
+                    return "$who, one move from winning your ${named(board, idea.follow.to)}"
+                }
+                return "$who, one move from winning material"
+            }
             if (idea.threatened == "mate") return "$who, which threatens mate"
             if (taken != null && taken.colour == board.turn) {
                 return "$who, which threatens to take your ${named(board, idea.threat.to)}"
@@ -699,6 +711,15 @@ object IdeaWords {
         if (idea.goal == "defend" && idea.threat != null) {
             val passed = board.copy(withStack = false)
             passed.push(Move.NULL)
+            if (idea.prepared && idea.follow != null) {
+                val then = passed.copy(withStack = false)
+                then.push(idea.threat)
+                then.push(Move.NULL)
+                val follow = then.san(idea.follow).trimEnd('#')
+                val aim = if (idea.threatened == "mate") "mate" else ""
+                return "$first meets their idea: ${passed.san(idea.threat)}, and then $follow" +
+                    (if (aim.isNotEmpty()) " $aim" else "")
+            }
             return "$first stops ${passed.san(idea.threat)}"
         }
         if (idea.goal == "convert") {

@@ -272,7 +272,9 @@ object Motifs : Tagger {
                 aimed = (0 until 64).filter { theirs(it) }
                 actors = mutableSetOf(sq[0])
             } else {
-                aimed = if (theirs(sq[2])) listOf(sq[2]) else emptyList()
+                // What it uncovers must be worth a minor piece, as a fork's target is: "the rook
+                // now bears on the pawn on a7" taught nothing (the master games, 2026-09-24).
+                aimed = if (theirs(sq[2]) && worth(sq[2]) >= MIN_TARGET_VALUE) listOf(sq[2]) else emptyList()
                 actors = mutableSetOf(sq[0], sq[1])
             }
         } else if (name == "pin" || name == "absolutePin") {
@@ -289,14 +291,45 @@ object Motifs : Tagger {
         } else {
             return true
         }
-        if (pv[i].to in aimed && boards[i].isCapture(pv[i])) return true  // the move itself takes it
+        val start = balance(boards[i], us)
+
+        /**
+         * The capture at ply `j` leaves the player up on the start, the captures on its square
+         * that follow counted: a loose bishop taken after theirs took one of the player's, the
+         * dark-squared bishops traded, won nothing ("the bishop on g7 is loose" was said of a
+         * move whose point was that trade, the master games' notes, 2026-09-24). A loose piece
+         * is won whole, give or take a pawn: queens traded and a pawn won is not a loose queen.
+         * A trapped piece is often won for a lesser one, and that is its win.
+         */
+        fun wins(j: Int): Boolean {
+            // The exchange on that square played out to its end, as the line plays it: Qxd1 Rxd1
+            // Nxd1 wins the rook on the third capture (Lichess 01q4A).
+            var k = j + 1
+            while (k < pv.size &&
+                k + 1 < boards.size &&
+                pv[k].to == pv[j].to &&
+                boards[k].isCapture(pv[k])
+            ) {
+                k += 1
+            }
+            if (k >= boards.size) return false
+            val net = balance(boards[k], us) - start
+            if (name == "hangingPiece") {
+                val taken = boards[j].pieceTypeAt(pv[j].to)
+                return net >= maxOf(1, Exchange.VALUE[if (taken == 0) PAWN else taken] - 1)
+            }
+            return net > 0
+        }
+
+        if (pv[i].to in aimed && boards[i].isCapture(pv[i]) && wins(i)) return true  // the move itself takes it
         var watched: MutableSet<Int> = aimed.toMutableSet()
         for (j in i + 1 until minOf(pv.size, i + 1 + PAYOFF_PLIES)) {
             val move = pv[j]
             if (boards[j].turn == us) {
                 if (move.to in watched &&
                     boards[j].isCapture(move) &&
-                    (actors == null || move.from in actors)
+                    (actors == null || move.from in actors) &&
+                    wins(j)
                 ) {
                     return true
                 }

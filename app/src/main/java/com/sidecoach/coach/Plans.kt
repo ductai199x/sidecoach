@@ -229,7 +229,7 @@ object Plans {
     private fun attack(w: WalkedLine): LinePlan? {
         val king = w.board.king(!w.us) ?: return null
         val joins = ArrayList<Int>()
-        val lifted = HashSet<Int>()
+        val lifts = HashSet<Int>()
         for (j in w.ours) {
             val b = w.boards[j]
             val move = w.line[j]
@@ -248,13 +248,15 @@ object Plans {
                 joins.add(j)
             } else if (piece == ROOK && squareFile(move.from) == squareFile(move.to)) {
                 // A rook lift: up its file, to swing across to their king later.
-                lifted.add(w.origin.getValue(j))
+                lifts.add(j)
                 joins.add(j)
             }
         }
-        // A lift counts only when the rook swings in afterwards.
+        // A lift counts only when the same rook swings in afterwards; the swing itself always
+        // counts (Qd3 Re3 Rh3 was read as "Qd3 and Re3", the Kotlin port, 2026-09-24).
         val kept = joins.filter { j ->
-            w.origin.getValue(j) !in lifted || joins.any { k -> k > j && w.origin.getValue(k) == w.origin.getValue(j) }
+            j !in lifts ||
+                joins.any { k -> k > j && k !in lifts && w.origin.getValue(k) == w.origin.getValue(j) }
         }
         val pieces = kept
             .filter { w.boards[it].pieceTypeAt(w.line[it].from) != PAWN }

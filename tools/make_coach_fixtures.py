@@ -26,7 +26,9 @@ fixture as it was fed, so the Kotlin reads exactly the same one:
   5e80cdf): each kind of line plan -- an attack, a storm, doubled heavy pieces, a knight's
   outpost, a passed pawn, a break, space on the wing -- and each threat of the best move -- a
   mate, a piece to win, a trade and what it is for -- up to MASTERS_PER_KIND, and a stride of
-  the rest.
+  the rest; and the threats the opponent prepares (`idea._threat`, desktop 6637098: a quiet
+  reply to a pass that would threaten mate or a piece next, met by the best move), up to
+  MASTERS_PREPARED of each.
 
     cd D:/chess-coaching-companion
     PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python D:/sidecoach-android/tools/make_coach_fixtures.py
@@ -84,6 +86,8 @@ MASTERS = DESKTOP / "data" / "eval" / "facts" / "masters_v2"
 # a trade is for); one in MASTERS_STRIDE of the rest, whose plan is the best move's own or none.
 MASTERS_PER_KIND = 24
 MASTERS_STRIDE = 150
+# Master positions kept per prepared threat to meet (mate, a piece).
+MASTERS_PREPARED = 40
 
 # Sentences written for the side to move as "you", the way the facts and ideas read.
 PERSON_TEXTS = [
@@ -201,6 +205,24 @@ IDEA_TESTS = [
     ),
     ("r3k3/p1pb4/2p2p2/2q1p1p1/2B3p1/2P4r/P1P2PQP/3RR1K1 w q - 4 21", "Qe4", 0.55, None, ["c5c4"], False),
     ("1k2r3/1p3ppp/3p4/2n5/1rPN4/1P3P2/P5PP/2KRR3 b - - 2 23", "Rxe1 Rxe1 Nd3+ Kd2 Nxe1", 0.95, None, [], True),
+    # `tests/test_threats_to_meet.py`: Short-Timman before 11...Nd4, where Rd1 would come and
+    # then Rxd8 -- met by Nd4, and not by Kh8 (desktop 6637098).
+    (
+        "r1bq1rk1/1pp1ppbp/1nn3p1/p3P3/P7/1B3N1P/1PP1QPP1/RNB2RK1 b - - 0 11",
+        "Nd4 Nxd4 Qxd4 Re1",
+        0.39,
+        None,
+        ["f1d1"],
+        False,
+    ),
+    (
+        "r1bq1rk1/1pp1ppbp/1nn3p1/p3P3/P7/1B3N1P/1PP1QPP1/RNB2RK1 b - - 0 11",
+        "Kh8 Rd1",
+        0.39,
+        None,
+        ["f1d1"],
+        False,
+    ),
     # Two draws no cached line reaches: a stalemate on the board, and a position that comes
     # round again (no perpetual: two checks are not three).
     ("7k/4Q3/6K1/8/8/8/8/8 w - - 0 1", "Qf7", 0.5, None, [], False),
@@ -354,6 +376,8 @@ def idea_json(idea: IDEA.Idea) -> dict:
         "target": square_or_none(idea.target),
         "threat": None if idea.threat is None else idea.threat.uci(),
         "threatened": idea.threatened,
+        "prepared": idea.prepared,
+        "follow": None if idea.follow is None else idea.follow.uci(),
         "flight": [chess.square_name(s) for s in idea.flight],
         "checks": idea.checks,
         "level": idea.level,
@@ -760,9 +784,15 @@ def masters_positions() -> list[tuple[str, int, Analysis]]:
 
 
 def plan_category(facts: D.PositionFacts) -> str:
-    """Which plan the facts carry, read off their mechanism: a line plan's kind, a threat's
-    kind (and what a trade is for), or the best move's own idea ("move") or none."""
+    """Which plan the facts carry, read off their goal and mechanism: a threat the opponent
+    prepares, a line plan's kind, a threat's kind (and what a trade is for), or the best
+    move's own idea ("move") or none."""
     mechanism = facts.mechanism or ""
+    goal = facts.goal or ""
+    if "your opponent is preparing mate" in goal:
+        return "prepared:mate"
+    if "your opponent is preparing to win material" in goal:
+        return "prepared:win"
     for kind, reason in PL.PLAN_REASON.items():
         if facts.plan and mechanism.endswith(": " + reason):
             return f"plan:{kind}"
@@ -881,12 +911,18 @@ def main() -> None:
         could = best is not None and best in board.legal_moves and (
             PL.read(board, pv, top.expected_score) is not None
             or PL.threat(board, best, pv, top.expected_score) is not None
+            or IDEA._threat(board, analysis.threats, best)[2] is not None
         )
         if not could and index % MASTERS_STRIDE:
             continue
         facts = F.facts_from_analysis(board, analysis, last_move="e4", in_book=False, user=board.turn)
         kind = plan_category(facts)
-        quota = MASTERS_PER_KIND if kind.startswith(("plan:", "threat:")) else MASTERS_PER_KIND // 2
+        if kind.startswith("prepared:"):
+            quota = MASTERS_PREPARED
+        elif kind.startswith(("plan:", "threat:")):
+            quota = MASTERS_PER_KIND
+        else:
+            quota = MASTERS_PER_KIND // 2
         if by_plan.get(kind, 0) >= quota:
             continue
         by_plan[kind] = by_plan.get(kind, 0) + 1

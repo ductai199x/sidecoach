@@ -245,6 +245,8 @@ class PlansTest {
             assertEquals("attack", plan.kind)
             assertEquals(parseSquare("g8"), plan.square)
             assertEquals(setOf(parseSquare("d1"), parseSquare("e1")), plan.pieces.toSet())
+            // The lift and the swing both belong to it.
+            assertEquals("Qd3, Re3 and Rh3 bring your queen and rook against their king", Plans.why(plan, board))
             assertNull(Plans.read(board, pv, score = 0.3))
         }
         // Captures make no plan: pawns traded on the queenside are an exchange.
