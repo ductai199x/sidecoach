@@ -359,8 +359,11 @@ fn open_splash(app: &AppHandle) -> bool {
         .resizable(false)
         .decorations(false)
         .shadow(true) // Windows 11 rounds and shadows a frameless window that asks
-        .always_on_top(true)
-        .skip_taskbar(true)
+        // An ordinary window: never on top of everything, and in the taskbar and Alt+Tab so
+        // it can be brought back once something else is in front (Tai, 2026-09-24: "it's
+        // basically on top of everything else and I can't bring something else in front").
+        .always_on_top(false)
+        .skip_taskbar(false)
         .center()
         .build();
     match built {

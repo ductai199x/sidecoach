@@ -211,13 +211,19 @@ def check(out: Path) -> None:
         ).stdout
     )
     print(
-        subprocess.run(
-            [str(python), "-m", "sidecoach", "doctor"],
-            text=True,
-            capture_output=True,
-            env=env,
-            cwd=ROOT,
-        ).stdout[-1500:]
+        # The doctor draws its table in box characters: read as UTF-8, whatever the console's
+        # code page (cp1252 lost the whole output, and the build with it).
+        (
+            subprocess.run(
+                [str(python), "-m", "sidecoach", "doctor"],
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                env={**env, "PYTHONIOENCODING": "utf-8"},
+                cwd=ROOT,
+            ).stdout
+            or ""
+        )[-1500:]
     )
 
 
