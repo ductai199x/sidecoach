@@ -63,6 +63,20 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import chess  # noqa: E402
+from story_checks import STORY_CHECKS  # noqa: E402
+
+# Every check, in the order the summary prints them.
+ALL_CHECKS = (
+    "move",
+    "goal",
+    "amount",
+    "leak",
+    "grounded",
+    "claims",
+    "text",
+    "concrete",
+    *STORY_CHECKS,
+)
 
 PUZZLES = ROOT / "data/puzzles"
 RESULTS = PUZZLES / "bench"
@@ -696,6 +710,20 @@ def score_board(
     if stock:
         notes["text"] = ", ".join(stock)
 
+    # The story checks (`story_checks.py`): the rungs tell the story the best line tells.
+    from story_checks import story_checks
+
+    top_moves = analysis.lines[0].moves if analysis.lines else []
+    pv_moves: list[chess.Move] = []
+    for uci in top_moves:
+        try:
+            pv_moves.append(chess.Move.from_uci(uci))
+        except ValueError:
+            break
+    told, told_notes = story_checks(board, pv_moves, idea, texts)
+    checks.update(told)
+    notes.update(told_notes)
+
     # The sacrifices, for reference: Lichess's tag against what the idea rung says.
     says_sac = bool(re.search(r"sacrific|giv(e|en|ing) up", texts["idea"], re.I))
     sac_tagged = "sacrifice" in themes
@@ -758,7 +786,7 @@ def summarise(records: list[dict], show: int) -> dict:
             counts[name] += ok
     correct = sum(r["correct"] for r in records)
     print(f"\n{n} puzzles: {correct / n:.2%} correct")
-    for name in ("move", "goal", "amount", "leak", "grounded", "claims", "text"):
+    for name in ALL_CHECKS:
         if scored[name]:
             share = counts[name] / scored[name]
             wrong = scored[name] - counts[name]
@@ -829,7 +857,7 @@ def summarise(records: list[dict], show: int) -> dict:
     goals = Counter(r["goal"] for r in records)
     print(f"  goals: {dict(goals)}")
     if show:
-        for name in ("move", "goal", "amount", "leak", "grounded", "claims", "text"):
+        for name in ALL_CHECKS:
             bad = [r for r in records if not r["checks"].get(name, True)][:show]
             for r in bad:
                 print(f"\n[{name}] {r['id']} ({r['rating']}) {' '.join(r['themes'])}")

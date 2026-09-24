@@ -18,7 +18,7 @@ from sidecoach.analysis import exchange, positional
 from sidecoach.analysis.engine import san_line
 from sidecoach.analysis.phase import phase_of
 from sidecoach.coach import idea as idea_of
-from sidecoach.coach import idea_words, plans, situation
+from sidecoach.coach import idea_words, plans, situation, story
 from sidecoach.coach.disclosure import PositionFacts
 from sidecoach.events import Analysis, MotifTag
 
@@ -591,6 +591,18 @@ def facts_from_analysis(
     nudge = idea_words.nudge(idea)
     why = idea_words.why(idea, board, describe_tactic)
     goal = idea_words.goal(idea)
+    # Material won right after they took some, while behind, is won back (an equality
+    # puzzle's recapture) -- never "win back a queen" after they took a pawn.
+    taken = story.took_last(board)
+    if (
+        goal
+        and goal.startswith("you can win ")
+        and "back" not in goal
+        and " for " not in goal
+        and idea.down
+        and 0 < idea.gain <= taken + 1
+    ):
+        goal = "you can win back " + goal[len("you can win ") :]
     if move_threat is not None and best is not None:
         won = plans.THREAT_GOAL_WON if idea.winning else plans.THREAT_GOAL
         goal = won[move_threat.kind]
@@ -696,6 +708,17 @@ def facts_from_analysis(
             if said is not None:
                 nudge = nudge or said[0]
                 why = why or said[1]
+    # One story (`coach/story.py`): a piece that simply hangs is said as that, before any
+    # pattern the line also shows.
+    plain = story.plain_capture(board, idea) if tactical_goal else None
+    if plain is not None and plain.whole:
+        key, principle, question = plain.key, None, None
+        nudge, why = plain.nudge, plain.why
+    elif plain is not None:
+        # The free piece first, then what the line wins after it.
+        named = f"on {chess.square_name(plain.square)}"
+        rest = f". After that, {key[0].lower() + key[1:]}" if key and named not in key else ""
+        key = plain.key + rest
     # The key the move itself answers, and so its reason at the move rung; the fallbacks
     # below (a static feature, their idea) are context, not the move's reason.
     move_reason = key
@@ -724,14 +747,30 @@ def facts_from_analysis(
         nudge = "Which way out keeps you safest -- a king move, a block, or taking the checker?"
         if why is None and best is not None:
             why = situation.evasion_why(board, best)
-    recapture = idea.goal == "win" and idea.down and best is not None and board.is_capture(best)
-    trap = (
-        situation.trap_words(
-            board, analysis.traps[0], idea.target, lines[0].expected_score if lines else None
-        )
-        if analysis.traps and idea.goal != "mate" and not recapture
-        else None
+    # A recapture: the best move takes back what the line wins, at once (8.bxc3). Beside it,
+    # only the wrong piece to take back with is a trap -- every other capture is worse only for
+    # not taking back -- and 23.exd5? Re8 in Polugaevsky-Nezhmetdinov is the lesson.
+    recapture = (
+        idea.goal == "win"
+        and idea.down
+        and best is not None
+        and board.is_capture(best)
+        and best.to_square == idea.target
     )
+    traps = [
+        t
+        for t in analysis.traps
+        if not recapture or (best is not None and t.moves and t.moves[0][2:4] == best.uci()[2:4])
+    ]
+    trap = None
+    if idea.goal != "mate":
+        # The trap that matters most and can be said: on the target, into mate, the worst.
+        for chosen in situation.ranked_traps(traps, idea.target):
+            trap = situation.trap_words(
+                board, chosen, idea.target, lines[0].expected_score if lines else None, best
+            )
+            if trap is not None:
+                break
     if trap is not None and idea.target is not None and trap.startswith("Not yet"):
         key = None  # the trap says it: the target can be won, but not at once
     parts: list[str] = []
@@ -741,11 +780,70 @@ def facts_from_analysis(
         stakes_text = None  # "nothing is urgent" beside their threat said the opposite
     if stakes_text and (not tactical_goal or (stakes and stakes.kind in ("check", "book"))):
         parts.append(stakes_text)
+    # Where only one or a few moves hold, the move's reason is what it does on the board --
+    # takes, checks, attacks, stops their idea -- never "The move is Bb5+." alone.
+    sharp = (
+        stakes is not None
+        and stakes_text is not None
+        and (
+            stakes.kind in ("only", "few")
+            or (stakes.kind in ("won", "check") and "only" in stakes_text)
+        )
+    )
+    if sharp and stakes is not None and best is not None and (why is None or "goes from" in why):
+        edge = situation.edge_words(stakes.top)
+        holds = (
+            f"it is one of the few moves that keep {edge}"
+            if stakes.kind == "few" and stakes.good > 1
+            else f"it is the only move that keeps {edge}"
+        )
+        why, ask = story.reason(board, best, threat_move, holds)
+        if why == f"{board.san(best)}: {holds}":
+            why = story.line_reason(board, pv, holds) or why
+        if nudge is None:
+            nudge = ask
+    # In check, the piece giving check comes first, unless the capture that wins takes it.
+    checker = (
+        situation.check_key(board, idea.target if tactical_goal else None)
+        if in_check and not forced and not (plain is not None and plain.square in board.checkers())
+        else None
+    )
+    pawn = (
+        story.queening(board, idea)
+        if tactical_goal and idea.goal != "promote" and not forced
+        else None
+    )
+    if pawn is not None and key is not None and "queening" in key:
+        pawn = None
+    said = " ".join(part for part in (checker, key, trap) if part)
+    prize = (
+        story.prize(board, idea, said)
+        if tactical_goal and not forced and (plain is None or not plain.whole)
+        else None
+    )
+    # After a free piece taken first, the prize comes where the line wins it: last.
+    prize_last = plain is not None
+    # How a win with no named pattern comes about: what the first move does, and at the move
+    # rung the line to it, never the result alone.
+    how = (
+        story.how(board, idea, threat_move)
+        if tactical_goal and not forced and plain is None and not in_check
+        else None
+    )
+    if (
+        tactical_goal
+        and best is not None
+        and idea.blow is None
+        and (why is None or re.fullmatch(rf"{re.escape(board.san(best))}: you win [^;]*", why))
+    ):
+        why = story.move_why(board, idea, threat_move) or why
     if forced:
         # One legal move: the rest of the reading is the move's, not a hint.
         tactical_goal, key, principle, trap = False, None, None, None
         move_threat = None
         nudge = None
+    if checker is not None and not forced and checker != key:
+        parts.append(checker)
     lost = stakes is not None and stakes.kind == "lost"
     if (
         tactical_goal
@@ -757,12 +855,30 @@ def facts_from_analysis(
             lead = "you are winning"
         if lead:
             parts.append(lead)
+    if pawn:
+        parts.append(pawn)
+    if prize and not prize_last:
+        parts.append(prize)
     if key:
         parts.append(key)
+    if how:
+        parts.append(how)
+    if prize and prize_last:
+        parts.append(prize)
     if principle and key:
         parts.append(principle if tactical_goal else principle)
     if trap:
         parts.append(trap)
+    if not parts and not forced and best is not None:
+        # Nothing else to say: what they would do with a free move, or the piece doing least --
+        # never a question that fits any position ("which of your pieces has no job right
+        # now?" at 32...Kh8 in Carlsen-Kramnik).
+        fallback = situation.their_idea_key(board, threat_move, sharp=True)
+        if fallback is None:
+            passive = positional.worst_piece(board, us)
+            fallback = passive[0].text if passive else None
+        if fallback:
+            parts.append(fallback)
     situation_text = " ".join(situation.sentence(part) for part in parts) or None
     # A tactic's first hint ends on the question that sets the player looking the right way
     # ("which check leaves their king no square at all?"); never one that fits any position.

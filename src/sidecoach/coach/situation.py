@@ -289,6 +289,11 @@ def _have(board: chess.Board, given: str) -> bool:
     return True
 
 
+def edge_words(top: float) -> str:
+    """What the best move keeps, by its expected score: "your edge", "the balance"."""
+    return _edge(top)
+
+
 def _edge(top: float) -> str:
     if top >= 0.6:
         return "your edge"
@@ -370,11 +375,31 @@ def stakes_words(board: chess.Board, stakes: Stakes, opening: str | None) -> str
     return None  # a few moves close together: nothing worth saying about the stakes
 
 
+def ranked_traps(traps: Sequence[Line], target: chess.Square | None) -> list[Line]:
+    """The traps in the order the first hint wants them: the one that takes what the best line
+    wins later ("not yet"), then those that walk into mate, then the worst first. Topalov-
+    Kramnik, 36.Qxg3?? "allows mate in two" was not the first trap found."""
+
+    def square(trap: Line) -> chess.Square | None:
+        try:
+            return chess.Move.from_uci(trap.moves[0]).to_square
+        except (ValueError, IndexError):
+            return None
+
+    def rank(trap: Line) -> tuple[int, int, float]:
+        on_target = target is not None and square(trap) == target
+        mated = trap.mate is not None and trap.mate < 0
+        return (0 if on_target else 1, 0 if mated else 1, trap.expected_score)
+
+    return sorted(traps, key=rank)
+
+
 def trap_words(
     board: chess.Board,
     trap: Line,
     target: chess.Square | None = None,
     top: float | None = None,
+    best: chess.Move | None = None,
 ) -> str | None:
     """The capture that looks free and is not: "hxg4 looks like it wins a knight, but it is a
     trap: after hxg4 Qh4, they get a winning attack". When it takes what the best line wins
@@ -415,6 +440,14 @@ def trap_words(
         tail = "their checks begin, and your king has no cover"
     elif not ahead:
         tail = "it costs you more than it wins"
+    elif (
+        top is not None
+        and top - trap.expected_score >= BALANCE_DROP
+        and trap.expected_score < WORSE
+    ):
+        # The balance lost without material: the wrong recapture opening a file (23.exd5?
+        # Re8 in Polugaevsky-Nezhmetdinov).
+        tail = "you are left clearly worse"
     elif top is not None and top >= EDGE and trap.expected_score < EDGE - TRAP_EDGE_DROP:
         # Even in material but no longer better: "Not 17 Qxf2 Bg3 ... with an unclear
         # position" (Capablanca-Marshall).
@@ -422,6 +455,12 @@ def trap_words(
     else:
         return None
     what = _NAMES[taken.piece_type]
+    if best is not None and best != capture and best.to_square == capture.to_square:
+        # The same piece, taken with the wrong one of yours.
+        return (
+            f"Take it with the right piece: {san} looks natural, but after {san} {reply_san}, "
+            f"{tail}"
+        )
     if target is not None and capture.to_square == target:
         return (
             f"Not yet: their {_named(board, target)} can be won, but {san} at once runs into "
@@ -433,6 +472,8 @@ def trap_words(
 TRAP_NET_PLIES = 8  # how far a trap's line is followed to see what it nets
 EDGE = 0.6  # a better game, by expected score
 TRAP_EDGE_DROP = 0.05  # below the edge by this much after the capture: the edge is gone
+BALANCE_DROP = 0.2  # the capture costs this much ...
+WORSE = 0.4  # ... and leaves the player below this: clearly worse
 
 
 def _net(board: chess.Board, moves: Sequence[str]) -> int:
@@ -822,10 +863,12 @@ def king_key(board: chess.Board, idea: Idea) -> str | None:
     return f"Your king on {_sq(ours)} is your best piece here"
 
 
-def check_key(board: chess.Board) -> str | None:
-    """The piece giving check."""
+def check_key(board: chess.Board, prize: chess.Square | None = None) -> str | None:
+    """The piece giving check -- and, when it is what the line wins (`prize`), said so once."""
     checkers = list(board.checkers())
     if len(checkers) == 1:
+        if checkers[0] == prize:
+            return f"Their {_named(board, checkers[0])} gives check, and it is what you win"
         return f"Their {_named(board, checkers[0])} gives check"
     if len(checkers) == 2:
         first, second = (_named(board, sq) for sq in checkers)
