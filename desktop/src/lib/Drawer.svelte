@@ -11,7 +11,7 @@
   import { page } from "$app/state";
   import { panel } from "./api";
   import { store } from "./panel.svelte";
-  import { inShell, openWindow } from "./shell.svelte";
+  import { inShell, openWindow, PANES, panes, resetLayout, togglePane } from "./shell.svelte";
   import { voiceLabel } from "./voices";
 
   let { missing = [] }: { missing?: string[] } = $props();
@@ -118,6 +118,27 @@
       <span>Forget this game<span class="hint">Wait for the next start position</span></span>
     </button>
   </div>
+
+  <!-- The View menu's panes, where there is no menu bar: the phone, a browser. -->
+  {#if !inShell()}
+    <div class="dsec">
+      <div class="dlabel">View</div>
+      {#each PANES as pane (pane.id)}
+        <button class="ditem" role="menuitemcheckbox" aria-checked={panes[pane.id]} onclick={() => togglePane(pane.id)}>
+          {#if panes[pane.id]}
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-9 14-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+          {:else}
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5v14H5V5h14m0-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/></svg>
+          {/if}
+          <span>{pane.name}<span class="hint">{pane.hint}</span></span>
+        </button>
+      {/each}
+      <button class="ditem" onclick={() => act(resetLayout)}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg>
+        <span>Reset layout<span class="hint">Every pane shown, every size back to its default</span></span>
+      </button>
+    </div>
+  {/if}
 
   {#if voices.length}
     <div class="dsec">

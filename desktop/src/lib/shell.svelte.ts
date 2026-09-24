@@ -35,6 +35,25 @@ export function togglePane(id: "board" | "moves" | "strip"): void {
   prefs.setStr("view." + id, panes[id] ? "1" : "0");
 }
 
+/** What the View menu shows, for the page's own controls where there is no menu bar: in a
+ * browser, and on the phone, whose panel is a web view (Tai, 2026-09-24: "on mobile it's
+ * missing the feature where I want to hide or unhide elements on the panel"). */
+export const PANES: { id: "board" | "moves" | "strip"; name: string; hint: string }[] = [
+  { id: "board", name: "Board", hint: "The position as the coach reads it" },
+  { id: "moves", name: "Move list", hint: "The game's moves and their verdicts" },
+  { id: "strip", name: "Status strip", hint: "The pipeline's status, and the terminal under it" },
+];
+
+/** The View menu's Reset layout: every remembered size and pane back to its default. */
+export function resetLayout(): void {
+  try {
+    for (const k of Object.keys(localStorage)) if (k.startsWith("sidecoach.")) localStorage.removeItem(k);
+  } catch {
+    /* private mode */
+  }
+  location.reload();
+}
+
 type MenuHandles = {
   refresh: () => Promise<void>;
 };
@@ -88,10 +107,7 @@ export async function buildShell(terminal: { shown: () => boolean; toggle: () =>
       await sep(),
       topItem,
       await sep(),
-      await item("Reset layout", () => {
-        try { for (const k of Object.keys(localStorage)) if (k.startsWith("sidecoach.")) localStorage.removeItem(k); } catch { /* private mode */ }
-        location.reload();
-      }),
+      await item("Reset layout", () => resetLayout()),
     ],
   });
   const muteItem = await check("Mute", !!store.state.muted, () => store.setMuted(!store.state.muted), "voice-mute");

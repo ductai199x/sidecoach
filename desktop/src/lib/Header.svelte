@@ -5,7 +5,7 @@
   import { onMount } from "svelte";
   import { connect, get, panel } from "./api";
   import { store } from "./panel.svelte";
-  import { inShell, openWindow } from "./shell.svelte";
+  import { inShell, openWindow, PANES, panes, resetLayout, togglePane } from "./shell.svelte";
   import { voiceLabel } from "./voices";
   import Drawer from "./Drawer.svelte";
 
@@ -41,7 +41,7 @@
     else window.location.href = "/settings";
   }
 
-  let openMenu = $state<"game" | "data" | null>(null);
+  let openMenu = $state<"game" | "data" | "view" | null>(null);
   const voices = $derived(store.state.voices || []);
   const shown = $derived(store.bottom);
 
@@ -100,6 +100,18 @@
       </div>
     </div>
     {#if !inShell()}
+      <!-- The View menu's panes, where there is no menu bar (a browser). -->
+      <div class="ctlgroup menu">
+        <span class="ctllabel">view</span>
+        <button class="ghost menubtn" aria-haspopup="menu" aria-expanded={openMenu === "view"} title="Show or hide the board, the move list and the status strip" onclick={(e) => { e.stopPropagation(); openMenu = openMenu === "view" ? null : "view"; }}>Panes&hellip; &#9662;</button>
+        <div class="menulist" role="menu" hidden={openMenu !== "view"}>
+          {#each PANES as pane (pane.id)}
+            <button role="menuitemcheckbox" aria-checked={panes[pane.id]} onclick={(e) => { e.stopPropagation(); togglePane(pane.id); }}>{panes[pane.id] ? "✓" : "\u00a0\u00a0"} {pane.name}</button>
+          {/each}
+          <div class="menusep" role="separator"></div>
+          <button role="menuitem" onclick={() => { closeMenus(); resetLayout(); }}>Reset layout</button>
+        </div>
+      </div>
       <button class="ghost settings-link" title="Settings" onclick={openSettings}>
         <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-1.7-1L15 3.2h-4l-.3 2.7a7.6 7.6 0 0 0-1.7 1l-2.4-1-2 3.4L6.6 11a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.6 7.6 0 0 0 1.7 1l.3 2.7h4l.3-2.7a7.6 7.6 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6zM13 15a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg>
         Settings
