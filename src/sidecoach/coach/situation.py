@@ -665,8 +665,10 @@ def threat_key(board: chess.Board, threat: plans.MoveThreat) -> str | None:
     return f"Their {_named(board, threat.square)} can be hit"
 
 
-def defend_key(board: chess.Board, idea: Idea) -> str | None:
-    """Their threat, named: the move they threaten and what it wins, or what it prepares."""
+def defend_key(board: chess.Board, idea: Idea, best: chess.Move | None = None) -> str | None:
+    """Their threat, named: the move they threaten and what it wins, or what it prepares.
+    When their move goes to the square the best move takes first, it is said by their piece:
+    "they are preparing e6" named the answer, e6 (Lichess vgdbX)."""
     if idea.threat is None:
         return None
     passed = board.copy(stack=False)
@@ -674,6 +676,11 @@ def defend_key(board: chess.Board, idea: Idea) -> str | None:
     if idea.threat not in passed.legal_moves:
         return None
     san = passed.san(idea.threat)
+    if best is not None and idea.threat.to_square == best.to_square:
+        mover = _named(passed, idea.threat.from_square)
+        if idea.threatened == "mate":
+            return f"Their {mover} is one move from a mating threat"
+        return f"Their {mover} is one move from winning material"
     if idea.prepared and idea.follow is not None:
         then = passed.copy(stack=False)
         then.push(idea.threat)

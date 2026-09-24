@@ -641,7 +641,7 @@ def facts_from_analysis(
         "breakthrough",
     )
     if idea.goal == "defend":
-        key = situation.defend_key(board, idea)
+        key = situation.defend_key(board, idea, best)
     elif idea.goal in ("mate", "attack"):
         key = situation.mate_key(board, idea)
         principle = idea_words.mechanism(idea)

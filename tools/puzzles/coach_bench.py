@@ -101,7 +101,9 @@ PATTERNS = {
 _ALIASES = {"absolutePin": "pin"}
 # Lines no rung may say: the stock questions the rewrite removed (Tai, 2026-09-23).
 _STOCK = re.compile(
-    r"whole board|most dangerous idea|doing the least|still reading|\bNone\b|  ", re.I
+    # "None" leaked from code, case and all: "none of your rooks" is English.
+    r"whole board|most dangerous idea|doing the least|still reading|(?-i:\bNone\b)|  ",
+    re.I,
 )
 _CONCRETE = re.compile(
     r"\b[a-h][1-8]\b|\b[a-h]-file\b|[KQRBN]?[a-h]?x?[a-h][1-8]|opening theory|legal move"
