@@ -59,11 +59,20 @@ def _choices(self, population, weights=None, *, cum_weights=None, k=1):  # noqa:
     return [items[_counter.take() % len(items)] for _ in range(k)]
 
 
-# The class, for the `random.Random()` a verdict makes of its own; and the module's own
-# names, which were bound to the hidden instance's methods at import and do not follow the
-# class.
+def _shuffle(self, x):  # noqa: ANN001, ANN201
+    """`shuffle`, pinned like `choice`: the list turned round by the next draw (the coach's
+    bags, `coach/bag.py`, desktop 6f70e2e); the Kotlin injects the same."""
+    if x:
+        k = _counter.take() % len(x)
+        x[:] = x[k:] + x[:k]
+
+
+# The class, for the `random.Random()` a verdict makes of its own and the coach's bags; and the
+# module's own names, which were bound to the hidden instance's methods at import and do not
+# follow the class.
 random.Random.choice = _choice  # type: ignore[method-assign]
 random.Random.choices = _choices  # type: ignore[method-assign]
+random.Random.shuffle = _shuffle  # type: ignore[method-assign]
 random.choice = lambda seq: _choice(None, seq)  # type: ignore[assignment]
 random.choices = lambda population, weights=None, *, cum_weights=None, k=1: _choices(  # type: ignore[assignment]
     None, population, weights, cum_weights=cum_weights, k=k

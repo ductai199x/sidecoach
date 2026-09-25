@@ -37,9 +37,10 @@ import org.junit.runner.RunWith
  * recorded model, and after every step the messages, the checks, the counters and the
  * prompts must be the same, once without a verifier and once with one.
  *
- * The draws are the same too: the desktop's `random.choice` was patched with a counter, and
- * the same counter is injected here, so which template of a rotating list is said and which
- * candidate is spoken are compared in the order they were drawn.
+ * The draws are the same too: the desktop's `random.choice`, `choices` and `shuffle` were
+ * patched with a counter (a shuffle turns the list round by the next draw), and the same counter
+ * is injected here, so which wording each bag gives ([Bags]) and which candidate is spoken are
+ * compared in the order they were drawn.
  */
 @RunWith(AndroidJUnit4::class)
 class CoachSessionTest {
@@ -167,7 +168,14 @@ class CoachSessionTest {
                 compactRecord = false,
                 persona = "warm_direct",
                 rating = 1000 to 1400,
-                chooser = { list -> list[draws[0]++ % list.size] },
+                shuffle = { list ->
+                    if (list.isNotEmpty()) {
+                        val k = draws[0]++ % list.size
+                        val turned = list.drop(k) + list.take(k)
+                        list.clear()
+                        list.addAll(turned)
+                    }
+                },
                 sample = { passed -> passed[draws[0]++ % passed.size].second },
             )
             coach.syncClaims = true

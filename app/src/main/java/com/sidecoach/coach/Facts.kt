@@ -489,6 +489,8 @@ fun factsFromAnalysis(
     lastMove: String? = null,
     inBook: Boolean = false,
     user: Boolean? = null,
+    /** The live coach's bags, drawing the first hint's lead ([IdeaWords.opener]). */
+    pick: ((String, List<String>) -> String)? = null,
 ): PositionFacts {
     val lines = analysis.lines
     val bestUci = if (lines.isNotEmpty() && lines[0].moves.isNotEmpty()) lines[0].moves[0] else null
@@ -917,7 +919,7 @@ fun factsFromAnalysis(
             lead = "you are winning"
         } else if (moveThreat == null) {
             val seed = IdeaWords.openerSeed(board)
-            lead = IdeaWords.opener(idea, goal, tactic = isTactic, seed = seed)
+            lead = IdeaWords.opener(idea, goal, tactic = isTactic, seed = seed, pick = pick)
         }
         if (!lead.isNullOrEmpty()) parts.add(lead)
     }

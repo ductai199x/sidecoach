@@ -329,7 +329,7 @@ object IdeaWords {
         "you have a tactic that wins {what}",
         "this position has a tactic that wins {what}",
     )
-    private val MATE_ONE_LEADS = listOf(
+    internal val MATE_ONE_LEADS = listOf(
         "there is a mate in one here",
         "you can mate in one move",
         "you have a mate in one",
@@ -344,24 +344,34 @@ object IdeaWords {
     /**
      * The first hint's lead: what the best line is for ([goalWords], as [goal] or the caller made
      * it), said as a tactic when [tactic] -- a line that wins material by force, not a piece simply
-     * left hanging or a recapture -- and a mate as one to find. [seed] picks the words
-     * ([openerSeed]).
+     * left hanging or a recapture -- and a mate as one to find. [pick] (the live coach's bags,
+     * [Bags]) draws the words, each once before any comes again; without it [seed] picks them
+     * ([openerSeed]), the same every time for a position.
      */
-    fun opener(idea: Idea, goalWords: String?, tactic: Boolean, seed: Long): String? {
+    fun opener(
+        idea: Idea,
+        goalWords: String?,
+        tactic: Boolean,
+        seed: Long,
+        pick: ((String, List<String>) -> String)? = null,
+    ): String? {
+        fun choose(key: String, leads: List<String>): String =
+            if (pick != null) pick(key, leads) else leads[(seed % leads.size).toInt()]
+
         if (idea.goal == "mate" && goalWords != null && "mate" in goalWords) {
             val n = idea.mateIn ?: 0
-            if (n == 1) return MATE_ONE_LEADS[(seed % MATE_ONE_LEADS.size).toInt()]
+            if (n == 1) return choose("lead:mate-one", MATE_ONE_LEADS)
             if (n <= 5) {
-                val lead = MATE_LEADS[(seed % MATE_LEADS.size).toInt()]
+                val lead = choose("lead:mate", MATE_LEADS)
                 return lead.replace("{n}", NUMBER[n] ?: n.toString())
             }
-            return MATE_LONG_LEADS[(seed % MATE_LONG_LEADS.size).toInt()]
+            return choose("lead:mate-long", MATE_LONG_LEADS)
         }
         if (!tactic || goalWords == null) return goalWords
         if (goalWords.startsWith("you can win ")) {
             var what = goalWords.substring("you can win ".length)
             if (what == "material by force") what = "material"
-            return TACTIC_LEADS[(seed % TACTIC_LEADS.size).toInt()].replace("{what}", what)
+            return choose("lead:tactic", TACTIC_LEADS).replace("{what}", what)
         }
         if (idea.goal == "promote") return "there is a tactic here that gets a pawn through to promotion"
         if (idea.goal == "combination") {

@@ -197,9 +197,11 @@ fun praiseFor(label: String?, last: String?): List<String> {
 }
 
 /**
- * The sentence -- the praise for the label (never [last]'s), then what the move teaches --
- * and the kind of lesson it taught, null when it is praise alone. [pick] makes every draw,
- * the praise before the wording, as the desktop's `rng.choice` does.
+ * The sentence -- the praise for the label, then what the move teaches -- and the kind of lesson
+ * it taught, null when it is praise alone. With [bags] (the live coach's) every wording is drawn
+ * from its bag, each once before any comes again ([Bags]); without, [pick] makes every draw, one
+ * that is never [last]'s praise, as the desktop's `rng.choice` does. The praise is drawn before
+ * the wording.
  */
 fun verdict(
     board: Board,
@@ -211,12 +213,27 @@ fun verdict(
     taught: List<String> = emptyList(),
     last: String? = null,
     pick: (List<String>) -> String = { it[Random.nextInt(it.size)] },
+    bags: Bags? = null,
 ): Pair<String, String?> {
     val found = lesson(board, move, tags, phase, threats, taught)
-    if (found != null && found.first == "mate") return pick(MATE.filter { it != last }.ifEmpty { MATE }) to "mate"
-    val opener = pick(praiseFor(label, last))
+    if (found != null && found.first == "mate") {
+        if (bags != null) return bags.draw("mate", MATE) to "mate"
+        return pick(MATE.filter { it != last }.ifEmpty { MATE }) to "mate"
+    }
+    val opener = if (bags != null) {
+        val praise = if (label.isNullOrEmpty()) "good" else label
+        bags.draw("praise:$praise", OPENERS[label ?: ""] ?: OPENERS.getValue("good"))
+    } else {
+        pick(praiseFor(label, last))
+    }
     if (found == null) return "$opener." to null
     val (kind, clauses) = found
-    val clause = if (clauses.size > 1) pick(clauses) else clauses[0]
+    val clause = if (bags != null) {
+        bags.draw("clause:$kind", clauses)
+    } else if (clauses.size > 1) {
+        pick(clauses)
+    } else {
+        clauses[0]
+    }
     return "$opener -- $clause." to kind
 }

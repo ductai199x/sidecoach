@@ -245,7 +245,7 @@ class CoachPrimitivesTest {
                 )
                 check(
                     "verdict ${o.getString("move")} $label",
-                    verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last) { it[0] },
+                    verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last, pick = { it[0] }),
                     o.getString("sentence") to if (o.isNull("kind")) null else o.getString("kind"),
                 )
             }

@@ -18,6 +18,7 @@ import com.sidecoach.events.Trigger
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.Completion
 import com.sidecoach.llm.LLMProvider
+import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.vision.Pieces
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -250,7 +251,7 @@ class CoachTest {
     }
 
     /** `_mate_analysis`: Qxf7# on the scholar's board. */
-    private fun mateAnalysis(ply: Int) = Analysis(
+    private fun mateAnalysis(ply: Int, decisive: Boolean = true) = Analysis(
         gameId = "g",
         fen = SCHOLAR,
         ply = ply,
@@ -258,7 +259,7 @@ class CoachTest {
             Line(moves = listOf("h5f7"), depth = 12, expectedScore = 1.0, mate = 1),
             Line(moves = listOf("c4f7"), depth = 12, expectedScore = 0.55),
         ),
-        decisive = true,
+        decisive = decisive,
         onlyMove = true,
         tags = listOf(MotifTag(name = "mateIn1", squares = listOf("f7", "e8"), move = "h5f7")),
     )
@@ -342,6 +343,60 @@ class CoachTest {
             "the pawn on d2. Worth remembering: the centre is where pieces have the most room."
         assertEquals("Playable -- d4 was a little more precise.", fresh(text, said))
         assertEquals(text, fresh(text, "Nice."))
+        var opener = "Playable -- d4 was a little more precise"
+        assertEquals("$opener.", fresh(text, said, opener))
+        // An opener with its own " -- " and no reason after it: the better move is not a reason,
+        // and stays when the same move was just said ("Not that one." -- Nova bot games).
+        opener = "Not that one -- Ng3 was better"
+        val just = "That one cost you: Ng3 was better. After c6, they win a pawn."
+        assertEquals("$opener.", fresh("$opener.", just.lowercase(), opener))
+        assertEquals("$opener.", fresh("$opener -- it wins a pawn.", "$just It wins a pawn.", opener))
+    }
+
+    /**
+     * `test_offline_coach.py`: four decisive moments in one game got the same sentence four times
+     * (a master-game pass, 2026-09-21): each list is a bag, every wording once before any comes
+     * again (Tai, 2026-09-25), and never the last one said.
+     */
+    @Test
+    fun theTemplatesRotateAndNeverRepeatTheLast() {
+        val coach = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+        for ((key, options) in listOf("cost" to COST_YOU, "fine" to FINE_TIGHTER, "keep" to KEEP_LEADS)) {
+            val said = List(options.size * 8) { coach.bags.draw(key, options) }
+            assertTrue("$key: $said", said.zipWithNext().all { (a, b) -> a != b })
+            for (start in said.indices step options.size) {
+                assertEquals(key, options.sorted(), said.subList(start, start + options.size).sorted())
+            }
+        }
+        // The praise on a fine move too, the same bag whether a lesson follows or not.
+        val said = List(10) { coach.verdictWord("best") }
+        assertEquals(OPENERS.getValue("best").map { "$it." }.sorted(), said.take(5).sorted())
+        // A list of one is said again, rather than nothing.
+        assertEquals("only", coach.bags.draw("one", listOf("only")))
+        assertEquals("only", coach.bags.draw("one", listOf("only")))
+    }
+
+    /**
+     * `test_offline_coach.py`: the first hint is written into every position's facts and said in
+     * few: its lead ("There is a mate in one here") is peeked from its bag as it is written and
+     * taken only when it is said, so the hints never asked for do not use up the bag.
+     */
+    @Test
+    fun theFirstHintsLeadIsDrawnWhenTheHintIsSaid() {
+        val coach = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+        playToScholar(coach)
+        for (ts in listOf(7.0, 7.5)) coach.onEvent(mateAnalysis(6, decisive = false), ts)  // twice; nothing asked
+        messages(coach)
+        val position = coach.positions.getValue(6)
+        val lead = position.leads.getValue("lead:mate-one")
+        assertEquals(IdeaWords.MATE_ONE_LEADS.sorted(), coach.bags.left("lead:mate-one").sorted())
+        coach.ask("hint", 8.0)
+        val out = messages(coach)
+        assertEquals(out.map { it.text }.toString(), 1, out.size)
+        assertTrue("$lead / ${out[0].text}", out[0].text.lowercase().startsWith(Situation.spoken(lead).lowercase()))
+        val left = coach.bags.left("lead:mate-one")
+        assertTrue(lead !in left && left.size == IdeaWords.MATE_ONE_LEADS.size - 1)
+        assertEquals(emptyMap<String, String>(), position.leads)
     }
 
     companion object {

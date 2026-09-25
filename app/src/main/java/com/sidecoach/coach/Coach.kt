@@ -367,21 +367,32 @@ private val LESSON_SENTENCES = Regex("(?<=[.?!])\\s+")
 /**
  * `coach.fresh`: [text] without what the coach said lately ([recent], lower case): the "Keep
  * this one" sentence, and the reason after " -- " in the first sentence. The verdict and the
- * better move always stay: that is news.
+ * better move always stay: that is news. [opener] is what the first sentence opens with, the
+ * verdict and the better move; the reason is what follows it.
  */
-fun fresh(text: String, recent: String): String {
+fun fresh(text: String, recent: String, opener: String? = null): String {
     val said = recent.lowercase()
     val sentences = text.trim().split(LESSON_SENTENCES)
     if (sentences.isEmpty()) return text
     var first = sentences[0]
     val rest = sentences.drop(1)
-    if (" -- " in first) {
-        // The last clause: an opener may carry its own ("Playable -- d4 was a little more
-        // precise -- your bishop on c1 is still shut in ...").
-        val head = first.substringBeforeLast(" -- ")
-        val reason = first.substringAfterLast(" -- ")
-        if (reason.trimEnd('.').lowercase() in said) first = head.trimEnd('.') + "."
+    var head = first
+    var reason = ""
+    if (opener != null) {
+        // An opener may carry its own " -- " ("Not that one -- Ng3 was better"): with no reason
+        // after it, the better move was taken for one and dropped when the same move had just
+        // been said (Nova bot games, 2026-09-25).
+        if (first.lowercase().startsWith(opener.lowercase() + " -- ")) {
+            head = first.substring(0, opener.length)
+            reason = first.substring(opener.length + 4)
+        }
+    } else if (" -- " in first) {
+        // The last clause ("Playable -- d4 was a little more precise -- your bishop on c1 is
+        // still shut in ...").
+        head = first.substringBeforeLast(" -- ")
+        reason = first.substringAfterLast(" -- ")
     }
+    if (reason.isNotEmpty() && reason.trimEnd('.').lowercase() in said) first = head.trimEnd('.') + "."
     val kept = rest.filter { s -> val rule = kept(s); rule == null || rule !in said }
     return (listOf(first) + kept).joinToString(" ")
 }
@@ -866,7 +877,13 @@ class CoachPosition(
     var facts: PositionFacts? = null,
     val disclosure: Disclosure = Disclosure(),
     val lastMove: String? = null,
-)
+) {
+    /**
+     * The first hint's wordings, peeked from the coach's bags as the facts were written and taken
+     * from them when the hint is said ([Bags]).
+     */
+    var leads: Map<String, String> = emptyMap()
+}
 
 /**
  * The game's pace: the user's last few think times. Under [FAST_PACE_S] a move, the game is

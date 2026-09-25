@@ -28,7 +28,6 @@ import com.sidecoach.events.Trigger
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.LLMProvider
 import com.sidecoach.vision.Pieces
-import kotlin.random.Random
 
 /**
  * The second half of `coach/coach.py`: what the user's words mean for disclosure, and the
@@ -227,8 +226,8 @@ class Coach(
     var localVerdicts: Boolean = true,
     persona: String? = null,
     rating: Pair<Int, Int>? = null,
-    /** Which of a rotating list is said; injected so a test can fix the draw. */
-    val chooser: (List<String>) -> String = { it[Random.nextInt(it.size)] },
+    /** How a bag is shuffled when refilled ([Bags]); injected so a test can fix the draw. */
+    shuffle: (MutableList<String>) -> Unit = { it.shuffle() },
     sample: (List<Pair<Double, String>>) -> String = ::sampleReply,
 ) {
     val policy: InterjectionPolicy = policy ?: InterjectionPolicy()
@@ -281,13 +280,11 @@ class Coach(
     /** The coach's own lock; the panel reads the conversation under it. */
     internal val lock = Any()
 
-    private var lastVerdict: String? = null
+    /** Every wording drawn like a marble from a bag, each once before any comes again. */
+    internal val bags = Bags(shuffle)
 
     /** The kinds of lesson the last sound moves' words taught ([lesson]), [TAUGHT_MEMORY] at most. */
     private val taught = ArrayDeque<String>()
-
-    /** The last template said from each rotating list, keyed by the list. */
-    private val lastSaid = HashMap<String, String>()
 
     /**
      * What the game is (GameStarted.kind): a game from the start, or a position -- a puzzle,
@@ -462,6 +459,7 @@ class Coach(
             val quick = instruction(
                 Trigger.USER_ASK, where, level, text, emptyList(), null, null
             ).second
+            takeLeads(where, quick)
             queuePlain(
                 Trigger.USER_ASK,
                 quick,
@@ -824,9 +822,16 @@ class Coach(
         val position = positions[event.ply] ?: return
         if (position.board.fen() != event.fen) return
         position.analysis = event
+        val leads = LinkedHashMap<String, String>()
+        val peek = { key: String, options: List<String> ->
+            val wording = bags.peek(key, options)
+            leads[key] = wording
+            wording
+        }
         position.facts = factsFromAnalysis(
-            position.board, event, lastMove = position.lastMove, user = userColour
+            position.board, event, lastMove = position.lastMove, user = userColour, pick = peek
         )
+        position.leads = leads
         conversation.analysed(event, position.facts!!)
         val pending = pendingAsk
         if (position === current && pending != null) {
@@ -945,10 +950,8 @@ class Coach(
                     phase = facts.phase,
                     threats = facts.threats,
                     taught = taught.toList(),
-                    last = lastVerdict,
-                    pick = chooser,
+                    bags = bags,
                 )
-                lastVerdict = written
                 if (kind != null) {
                     taught.addLast(kind)
                     if (taught.size > TAUGHT_MEMORY) taught.removeFirst()
@@ -1001,15 +1004,12 @@ class Coach(
     }
 
     /**
-     * The word of praise on a fine move, by its label and never the same as the last one: a
-     * game of "Good. Good. Good." wears thin.
+     * The word of praise on a fine move, by its label, from the bag the local verdicts draw from
+     * too: a game of "Good. Good. Good." wears thin.
      */
-    private fun verdictWord(label: String?): String {
-        val phrases = VERDICTS[label ?: ""] ?: VERDICTS.getValue("good")
-        val choices = phrases.filter { it != lastVerdict }.ifEmpty { phrases }
-        val chosen = chooser(choices)
-        lastVerdict = chosen
-        return chosen
+    internal fun verdictWord(label: String?): String {
+        val openers = OPENERS[label ?: ""] ?: OPENERS.getValue("good")
+        return bags.draw("praise:${if (label.isNullOrEmpty()) "good" else label}", openers) + "."
     }
 
     /**
@@ -1052,12 +1052,28 @@ class Coach(
         return texts.joinToString(" ")
     }
 
-    /** One of [phrases], never the one said last under [key]. */
-    private fun rotate(key: String, phrases: List<String>): String {
-        val choices = phrases.filter { it != lastSaid[key] }.ifEmpty { phrases }
-        val chosen = chooser(choices)
-        lastSaid[key] = chosen
-        return chosen
+    /**
+     * The first hint's wordings taken from their bags once the hint is said: this turn's template
+     * is the position's first hint, or holds it.
+     */
+    private fun takeLeads(position: CoachPosition, template: String) {
+        val situation = position.facts?.situation
+        if (!situation.isNullOrEmpty() && situation in template) {
+            for ((key, wording) in position.leads) bags.take(key, wording)
+            position.leads = emptyMap()
+        }
+    }
+
+    /**
+     * [lesson], opening with [opener], written with the next rule-to-keep lead from its bag, less
+     * what was said lately ([fresh]). The lead is taken from the bag only when the lesson still
+     * says it: one with no rule to keep, or whose rule was said lately, leaves it for the next.
+     */
+    private fun freshLesson(opener: String, lesson: (String) -> String): String {
+        val lead = bags.peek("keep", KEEP_LEADS)
+        val text = fresh(lesson(lead), recentlySaid(), opener)
+        if ("$lead:" in text.lowercase()) bags.take("keep", lead)
+        return text
     }
 
     /** The opening the game was in: the last name the book gave. */
@@ -1229,6 +1245,7 @@ class Coach(
             trigger, position, level, userText, verdicts, assessment, played,
             quick = quick, elicit = elicit,
         )
+        takeLeads(position, fallback)
         if (quick) {
             // The template is already out as the quick answer; a model reply that fails the
             // checks adds nothing, rather than the same line a second time.
@@ -1426,18 +1443,18 @@ class Coach(
                 } else {
                     null
                 }
-                fallback = fresh(
+                val opener = bags.draw("cost", COST_YOU).replace("{best}", best)
+                fallback = freshLesson(opener) { lead ->
                     lessonTemplate(
                         facts,
                         best,
-                        rotate("cost", COST_YOU).replace("{best}", best),
+                        opener,
                         board = position.board,
                         played = played.uci,
                         allowed = allowed,
-                        keepLead = rotate("keep", KEEP_LEADS),
-                    ),
-                    recentlySaid(),
-                )
+                        keepLead = lead,
+                    )
+                }
                 instructionText =
                     "The player just played ${played.san}, which was a $label: it cost " +
                         "${percent(loss)} of the game. The better move was $best ($betterWords). " +
@@ -1476,10 +1493,8 @@ class Coach(
                     phase = facts.phase,
                     threats = facts.threats,
                     taught = taught.toList(),
-                    last = lastVerdict,
-                    pick = chooser,
+                    bags = bags,
                 ).first
-                lastVerdict = fallback
                 val meaning = when (label) {
                     "brilliant" -> "a sound sacrifice"
                     else -> "the one move that keeps the advantage, or the chance taken"
@@ -1514,24 +1529,24 @@ class Coach(
             ) {
                 // A mistake in blitz: the policy keeps it to the word after the move (no
                 // lesson), but the word says what the move was -- never "fine".
-                fallback = rotate("cost", COST_YOU).replace("{best}", best) + "."
+                fallback = bags.draw("cost", COST_YOU).replace("{best}", best) + "."
                 instructionText =
                     "The player just played ${played.san}, which was a $label: $best " +
                         "($betterWords) was better. It is a fast game: one or two sentences, no " +
                         "lesson, no question. $NOT_THE_MOVE $NO_NUMBERS"
             } else {
                 // The better move and what it does, when the sheet has it, is the lesson.
-                fallback = fresh(
+                val opener = bags.draw("fine", FINE_TIGHTER).replace("{best}", best)
+                fallback = freshLesson(opener) { lead ->
                     lessonTemplate(
                         facts,
                         best,
-                        rotate("fine", FINE_TIGHTER).replace("{best}", best),
+                        opener,
                         board = position.board,
                         played = played.uci,
-                        keepLead = rotate("keep", KEEP_LEADS),
-                    ),
-                    recentlySaid(),
-                )
+                        keepLead = lead,
+                    )
+                }
                 instructionText =
                     "The player just played ${played.san}, which was fine but not the " +
                         "strongest: $best ($betterWords) was better, by a little. One or two " +
@@ -1710,16 +1725,10 @@ class Coach(
                     // The better move played out and the pattern to keep, as the lesson says it
                     // -- not "the idea was a pin" and nothing more.
                     // Asked about the move just taught, the lesson is not said twice.
-                    fallback += " " + fresh(
-                        lessonTemplate(
-                            facts,
-                            best,
-                            "$best was better",
-                            played = lastOwn.move.uci,
-                            keepLead = rotate("keep", KEEP_LEADS),
-                        ),
-                        recentlySaid(),
-                    )
+                    val opener = "$best was better"
+                    fallback += " " + freshLesson(opener) { lead ->
+                        lessonTemplate(facts, best, opener, played = lastOwn.move.uci, keepLead = lead)
+                    }
                 }
                 directive =
                     "They ask about the move they already played, $san. Its verdict is in its " +
