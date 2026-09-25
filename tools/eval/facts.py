@@ -11,9 +11,12 @@ Sources:
   masters      data/eval/masters/<book>/<game>.json   (from masters.py)
   recordings   data/recordings/<session>/events.jsonl (the live sessions: moves and takebacks
                as they happened) or truth.pgn + chesscom.json (the older, hand-truthed ones)
+  bots         data/bots/games/*.pgn (Nova bot games, tools/bots/play.py: the amateur games
+               the other sources lack), every game of every file
 
 Run:  uv run python tools/eval/facts.py masters [--depth 14] [--seconds 2.0] [--limit N]
       uv run python tools/eval/facts.py recordings
+      uv run python tools/eval/facts.py bots [--limit N]
 """
 
 from __future__ import annotations
@@ -123,6 +126,10 @@ def live_asks(debug: Path) -> list[dict]:
 def game_from_pgn(path: Path, user_side: str) -> dict:
     game = chess.pgn.read_game(path.open(encoding="utf-8"))
     assert game is not None
+    return game_from_game(game, user_side)
+
+
+def game_from_game(game: chess.pgn.Game, user_side: str) -> dict:
     board = game.board()
     script = []
     for ply, move in enumerate(game.mainline_moves(), start=1):
@@ -225,6 +232,14 @@ def sources(kind: str) -> list[tuple[str, dict]]:
                         f"{d.name}: cannot tell the user's side from {white} / {black}"
                     )
                 out.append((d.name, game_from_pgn(d / "truth.pgn", side)))
+    elif kind == "bots":
+        # Both sides are coached (the sweep plays each); White is the facts' nominal user.
+        for path in sorted((ROOT / "data" / "bots" / "games").glob("*.pgn")):
+            with path.open(encoding="utf-8") as fh:
+                i = 0
+                while (game := chess.pgn.read_game(fh)) is not None:
+                    out.append((f"{path.stem}__{i:03d}", game_from_game(game, "white")))
+                    i += 1
     return out
 
 
@@ -277,7 +292,7 @@ def compute(name: str, game: dict, ann: GameAnnotator, out_path: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("source", choices=["masters", "recordings"])
+    ap.add_argument("source", choices=["masters", "recordings", "bots"])
     ap.add_argument("--depth", type=int, default=14)
     ap.add_argument("--seconds", type=float, default=2.0)
     ap.add_argument("--threads", type=int, default=10)

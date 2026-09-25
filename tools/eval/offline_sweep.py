@@ -10,6 +10,7 @@ minutes for the 199 master games.
 
   uv run python tools/eval/offline_sweep.py            # masters, both sides
   uv run python tools/eval/offline_sweep.py --recordings --show 20
+  uv run python tools/eval/offline_sweep.py --bots     # Nova bot games (tools/bots)
   uv run python tools/eval/offline_sweep.py --game fischer__002-fischer-larsen --transcripts out/
 """
 
@@ -20,6 +21,7 @@ import re
 import sys
 import time
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 
 import chess
@@ -55,21 +57,44 @@ PLAIN = re.compile(
 )
 
 
-def _pieces(board: chess.Board, before: chess.Board | None, text: str) -> list[str]:
-    """Every 'the X on sq' names what stands there; a capture's victim stood there before."""
+def _pieces(board: chess.Board, frames: list[chess.Board], text: str) -> list[str]:
+    """Every 'the X on sq' names what stands there -- on the board now, or on one of the
+    `frames` a lesson speaks of: the position the player faced, and the better move's line
+    from it ("Rh1 was better -- after Qg2, Rdg1, the queen on g2 is trapped")."""
     out = []
-    taken = set(TAKING.findall(text))
     for name, sq in PIECE.findall(text):
-        frame = before if (name, sq) in taken and before is not None else board
-        piece = frame.piece_at(chess.parse_square(sq))
-        if piece is None or piece.piece_type != NAMES[name]:
-            out.append(f"'{name} on {sq}' but the square holds {piece}")
+        square = chess.parse_square(sq)
+        if not any(
+            (p := f.piece_at(square)) is not None and p.piece_type == NAMES[name]
+            for f in [board, *frames]
+        ):
+            out.append(f"'{name} on {sq}' but the square holds {board.piece_at(square)}")
     return out
 
 
-def _colours(board: chess.Board, text: str) -> list[str]:
+def _line_boards(before: chess.Board, line: list[str]) -> list[chess.Board]:
+    """The position the player faced, and each position along the better move's line."""
+    boards = [before.copy()]
+    for uci in line:
+        move = chess.Move.from_uci(uci)
+        if move not in boards[-1].legal_moves:
+            break
+        nxt = boards[-1].copy()
+        nxt.push(move)
+        boards.append(nxt)
+    return boards
+
+
+def _colours(board: chess.Board, text: str, frames: Sequence[chess.Board] = ()) -> list[str]:
     """Targets are the enemy's; the pinned piece and its shield share a colour, the pinner
-    is the other's."""
+    is the other's -- on the board now or on one of the lesson's `frames`."""
+    problems = _colours_on(board, text)
+    if problems and any(not _colours_on(frame, text) for frame in frames):
+        return []
+    return problems
+
+
+def _colours_on(board: chess.Board, text: str) -> list[str]:
     out = []
 
     def colour(sq: chess.Square) -> bool | None:
@@ -115,9 +140,16 @@ def check_transcript(lines: list[str], facts: dict) -> list[str]:
         said = c.group(2)
         found: list[str] = []
         found += [f"placeholder {bad!r}" for bad in PLACEHOLDERS if bad in said]
-        found += _pieces(board, before if c.group(1) == "after the move" else None, said)
-        found += _colours(board, said)
         after_move = c.group(1) == "after the move"
+        # The lesson on the move just played, and an answer about it ("why was that bad?"),
+        # speak of the position it was played from and the better move's line.
+        frames = (
+            _line_boards(before, moves[ply - 1]["assessment"].get("best") or [])
+            if before is not None and 0 < ply <= len(moves)
+            else []
+        )
+        found += _pieces(board, frames, said)
+        found += _colours(board, said, frames)
         lesson = re.match(
             r"^(?:That one cost you: |That cost you something: |Not that one -- )(\S+)", said
         )
@@ -142,12 +174,19 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--game", action="append", help="only these facts stems")
     ap.add_argument("--recordings", action="store_true", help="the recorded games instead")
+    ap.add_argument("--bots", action="store_true", help="the bot games instead, both sides")
     ap.add_argument("--side", choices=["white", "black"], help="one side only")
     ap.add_argument("--show", type=int, default=40, help="problems to print")
     ap.add_argument("--transcripts", type=Path, help="keep every transcript here")
     args = ap.parse_args()
 
-    folder = FACTS.parent / "recordings" if args.recordings else FACTS
+    folder = (
+        FACTS.parent / "recordings"
+        if args.recordings
+        else FACTS.parent / "bots"
+        if args.bots
+        else FACTS
+    )
     games = args.game or sorted(p.stem for p in folder.glob("*.json"))
     sides = [args.side] if args.side else ["white", "black"]
     if args.transcripts:

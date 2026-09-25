@@ -102,11 +102,12 @@ def main() -> None:
 
 
 def load_facts(game: str) -> dict:
-    """A master game by default; a recorded game's facts (data/eval/facts/recordings) when
-    the stem is found there instead."""
+    """A master game by default; a recorded game's facts (data/eval/facts/recordings) or a
+    bot game's (data/eval/facts/bots) when the stem is found there instead."""
     path = FACTS / f"{game}.json"
-    if not path.exists():
-        path = FACTS.parent / "recordings" / f"{game}.json"
+    for other in ("recordings", "bots"):
+        if not path.exists():
+            path = FACTS.parent / other / f"{game}.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 
