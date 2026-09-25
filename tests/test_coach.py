@@ -348,9 +348,9 @@ def test_a_question_about_the_plan_is_answered_by_the_first_hint_at_once() -> No
     coach.ask("what should I be aiming for here?", 8.0)
     out = _messages(coach)
     assert out[0].level is DisclosureLevel.IDEA and "e8" in out[0].text, out[0].text
+    # The hint is out at once, in the template's words; the model adds to it.
     directive = _directive(_given(provider, 0))
-    assert "They asked what to aim for" in directive
-    assert "Give the first hint as a short lesson" in directive
+    assert "have just been shown it" in directive and "Do not repeat it" in directive
     assert "be honest about their own claim" not in directive
 
 
@@ -1148,7 +1148,7 @@ def test_a_quick_answer_is_a_turn_before_the_model_and_a_failed_reply_adds_nothi
     said = _current_move_message(given).split("## Said here", 1)[1].strip(chr(10)).splitlines()
     assert said[-2] == '    PLAYER said: "hint"'
     assert said[-1] == f'    YOU (the coach) said: "{quick}"'
-    assert "build on it, do not repeat it" in _directive(given)
+    assert "build on it" in _directive(given) and "Do not repeat it" in _directive(given)
     assert "PLAYER said" not in _directive(given)
     # The rejected reply is in the log, with its calls, and nowhere else.
     rejected = [s for s in coach.spoken if not s.message.text]
@@ -1842,3 +1842,73 @@ def test_the_draft_checker_sees_every_line_the_facts_were_read_from() -> None:
     frames = Coach._analysis_frames(position)
     assert any(f.piece_at(chess.E7) == chess.Piece(chess.KING, chess.BLACK) for f in frames)
     assert any(f.piece_at(chess.F7) == chess.Piece(chess.QUEEN, chess.WHITE) for f in frames)
+
+
+def test_with_the_voice_on_nothing_goes_out_before_the_key_fact_and_not_past_the_length() -> None:
+    """The runtime audit: with the voice on, the reply was checked sentence by sentence only,
+    and "Mate is close." went out whole. Now the stream holds until what the reply must name
+    has come, says nothing when it never does, and stops at the task's length."""
+    from sidecoach.coach.coach import _FirstCandidate
+
+    heard: list[str] = []
+    reader = _FirstCandidate(heard.append or (lambda t: True), lambda t: [], must_name=("e8",))
+    reader.sink = lambda t: heard.append(t) is None
+    reader.feed("Stay calm. Look carefully at the whole board. ")
+    assert heard == [], "held: the key fact has not come"
+    reader.finish()
+    assert heard == [] and reader.problems and reader.problems[0].startswith("left out")
+
+    heard.clear()
+    reader = _FirstCandidate(lambda t: heard.append(t) is None, lambda t: [], must_name=("e8",))
+    reader.feed("Mate is close. Their king on e8 has one square. Which check takes it? ")
+    reader.finish()
+    assert " ".join(heard).startswith("Mate is close. Their king on e8"), heard
+
+    heard.clear()
+    reader = _FirstCandidate(lambda t: heard.append(t) is None, lambda t: [], limit=1)
+    reader.feed("One. Two. Three. Four. Five. ")
+    reader.finish()
+    assert sum(t.count(".") for t in heard) == 3, "the limit and its slack, no more"
+
+
+def test_a_late_lesson_does_not_give_away_the_move_they_face_now() -> None:
+    from sidecoach.coach.coach import Speaker
+
+    request = _after_move_request(SCHOLAR, "Bxf7+", "h5f7")
+    request.now_answer = ("Qxf7#",)
+    faults = Speaker(ScriptedProvider([]))._problems("And now Qxf7# is mate on the spot.", request)
+    assert "gives away Qxf7# in the position they face now" in faults
+
+
+def test_the_verdict_words_are_checked_clause_by_clause() -> None:
+    """Every lesson names the better move, and skipping any reply that did let "That was a
+    blunder: a3 was better" through for a good move (the runtime audit)."""
+    from sidecoach.coach.coach import _verdict_problems
+
+    ruy = "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
+    good = _after_move_request(ruy, "O-O", "b5a4")
+    assert good.assessment is not None
+    good.assessment = good.assessment.model_copy(
+        update={"severity": Severity.NONE, "label": Label.GOOD, "expected_loss": 0.04}
+    )
+    assert _verdict_problems("That was a blunder: Ba4 was better.", good) == [
+        "called O-O a slip; its verdict is good"
+    ]
+    assert _verdict_problems("O-O was the best move here, though Ba4 was close.", good)
+    assert _verdict_problems("Fine, but Ba4 was the best move here.", good) == []
+
+
+def test_their_own_move_is_theirs_even_after_the_reply_and_a_threat_gets_its_answer() -> None:
+    from sidecoach.coach.coach import _ASK_THREAT, _MY_MOVE
+
+    for said in ("what should I have played?", "did I just blunder?", "was my move bad?"):
+        assert _MY_MOVE.search(said), said
+    assert not _MY_MOVE.search("why was that bad?"), "'that' is the last move played"
+    for said in ("what is their threat?", "what does my opponent threaten?", "am I in danger?"):
+        assert _ASK_THREAT.search(said), said
+    coach, provider = _coach(["Nothing is threatened right now."])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    coach.ask("what is their threat?", 8.0)
+    _messages(coach)
+    assert "They ask what the opponent threatens" in _directive(_given(provider, 0))

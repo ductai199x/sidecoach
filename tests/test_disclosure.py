@@ -63,13 +63,15 @@ def test_visible_facts_hide_moves_below_the_move_level() -> None:
     assert bundle["theme"] == "loose piece"
     assert bundle["region"] == "around f7"
     assert bundle["piece"] == "your knight"
-    for hidden in ("candidates", "threats", "line"):
+    for hidden in ("candidates", "line"):
         assert hidden not in bundle
     assert "fen" in bundle
     idea = visible_facts(facts(), L.IDEA)
     assert idea["theme"] == "loose piece"
     for hidden in ("region", "piece", "candidates"):
         assert hidden not in idea
+    # Their threat is the first hint's key fact as often as not: words from the idea level.
+    assert idea["threats"] == ["Qxd4"]
 
 
 def test_visible_facts_show_everything_at_line() -> None:
@@ -84,10 +86,16 @@ def test_leak_check_flags_withheld_square_and_move() -> None:
     assert "square f7" in leaks
 
 
-def test_leak_check_flags_any_move_below_candidate_even_if_not_withheld() -> None:
-    leaks = leak_check("Maybe d3 or Nc3 here?", facts(), L.QUESTION)
-    assert "square d3" in leaks
-    assert "move Nc3" in leaks
+def test_leak_check_withholds_the_answer_and_nothing_else_below_the_move() -> None:
+    """Tai, 2026-09-25: "leaking is not a criminal offense ... clamp down egregious offense
+    but be smart about it". The moves to find and the squares they go to are withheld; a
+    plan, a weakness, another move or square may be named."""
+    assert leak_check("Maybe d3 or Nc3 here, then a plan on the queenside?", facts(), L.IDEA) == []
+    leaks = leak_check("Try Ng5, then Nxf7.", facts(), L.IDEA)
+    assert "move Ng5" in leaks and "move Nxf7" in leaks
+    assert "square g5" in leak_check("A knight on g5 would be strong.", facts(), L.IDEA)
+    # The opponent's move in the line is not the player's answer.
+    assert leak_check("If they push d5, the centre opens.", facts(), L.IDEA) == []
 
 
 def test_leak_check_allows_candidates_but_not_line_at_candidate_level() -> None:
@@ -121,5 +129,5 @@ def test_leak_check_allows_squares_and_pieces_the_user_named() -> None:
     said = "Is my bishop on c4 attacking f7? And what is my knight doing?"
     assert leak_check("Yes, your bishop hits f7.", facts(), L.QUESTION, said=said) == []
     assert leak_check("Your knight is well placed.", facts(), L.QUESTION, said=said) == []
-    # A square or piece the user did not name is still withheld.
-    assert "square d5" in leak_check("Look at d5.", facts(), L.QUESTION, said=said)
+    # An answer square the user did not name is still withheld.
+    assert "square g5" in leak_check("Look at g5.", facts(), L.QUESTION, said=said)

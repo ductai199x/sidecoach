@@ -156,7 +156,10 @@ def annotations_for(
         # hashing per process, so the marks came out in a different order on every run.
         for square in sorted(squares_in(text)):
             add(Annotation(kind="square", squares=[square], color="mention", opacity=0.6))
-    for san in (visible.get("threats") or [])[:2]:
+    # Their threat is words from the idea level (disclosure._IDEA); its arrow still waits
+    # for the move level, where it always came.
+    threats = (visible.get("threats") or []) if level >= DisclosureLevel.MOVE else []
+    for san in threats[:2]:
         # A threat is the opponent's move, read after a null move.
         after_pass = board.copy(stack=False)
         after_pass.push(chess.Move.null())

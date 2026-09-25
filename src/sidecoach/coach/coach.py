@@ -473,7 +473,8 @@ IDEA_DIRECTIVE = (
     "threat, the target, the plan -- and the principle behind it in a clause, and the trap if "
     "the sheet gives one. Precise, never a principle on its own: every sentence says "
     "something about this board. Never name the player's move or the square it goes to, and "
-    "not which of their own pieces moves -- that is the next hint. Two or three sentences."
+    "not which of their own pieces moves -- that is the next hint -- though the moves the "
+    "sheet lists as all as good, when several are, may be named. Two or three sentences."
 )
 _LENGTH_WORDS = {4: "Four", 5: "Five", 6: "Six"}
 
@@ -547,46 +548,61 @@ _SAYS_COST = re.compile(
 )
 
 
+# A reply's clauses: a sentence, or the halves of one joined by " -- " or ", but / though".
+_CLAUSE = re.compile(r"(?<=[.;:!?])\s+|\s+--\s+|,\s+(?:but|though|while)\s+")
+# A clause about the move just played without naming it: "That was ...", "It cost ...".
+_ABOUT_IT = re.compile(r"^\W*(?:that|it|this|your (?:last )?move)\b", re.IGNORECASE)
+
+
 def _verdict_problems(text: str, request: _Request) -> list[str]:
     """Faults in what a reply says of the move just assessed: a "best" that was not, a
-    slip word for a sound move, a cost that is not the recorded one."""
+    slip word for a sound move, a cost that is not the recorded one -- clause by clause,
+    where the clause is about that move (it names it, or opens with "that" or "it"). Every
+    lesson names the better move too, and skipping any reply that did let "That was a
+    blunder: a3 was better" through for a good move (the runtime audit, 2026-09-25)."""
     a = request.assessment
     played = request.played_san
     if a is None or not played:
         return []
-    # Only when the reply speaks of that move, and of no other move by name.
-    others = [m for m in _SAN.findall(text) if m.rstrip("+#") != played.rstrip("+#")]
-    if others or not re.search(
-        rf"(?<![A-Za-z]){re.escape(played.rstrip('+#'))}[+#]?(?![A-Za-z0-9])", text
-    ):
-        return []
+    core = played.rstrip("+#")
+    names_it = re.compile(rf"(?<![A-Za-z]){re.escape(core)}[+#]?(?![A-Za-z0-9])")
     label = a.label.value if a.label else a.severity.value
+    # A move that cost nothing is as good as the best: "the best move on the board" for a
+    # great move the engine chose itself is true.
+    best_ok = label in ("best", "excellent") or a.expected_loss < 0.005
     problems: list[str] = []
-    if (
-        _SAYS_BEST.search(text)
-        and label not in ("best", "excellent")
-        and not re.search(
-            r"\bnot (?:the )?(?:best|strongest)\b|\bwas better\b|\bwas stronger\b", text, re.I
-        )
-    ):
-        problems.append(f"called {played} the best move; its verdict is {label}")
-    if (
-        _SAYS_SLIP.search(text)
-        and a.severity is Severity.NONE
-        and not re.search(
-            r"\bnot (?:a )?(?:blunder|mistake)\b|\bno (?:blunder|mistake)\b", text, re.I
-        )
-    ):
-        problems.append(f"called {played} a slip; its verdict is {label}")
-    for found in _SAYS_COST.finditer(text):
-        value = float(found.group(1))
-        if found.group(2) or value > 1.0:
-            value /= 100.0
-        if abs(value - a.expected_loss) > max(0.02, 0.35 * a.expected_loss):
-            problems.append(
-                f"gave the cost of {played} as {found.group(1)}; it was {a.expected_loss:.2f}"
+    for clause in _CLAUSE.split(text):
+        if not (names_it.search(clause) or _ABOUT_IT.match(clause)):
+            continue
+        others = [m for m in _SAN.findall(clause) if m.rstrip("+#") != core]
+        if (
+            not others
+            and not best_ok
+            and _SAYS_BEST.search(clause)
+            and not re.search(
+                r"\bnot (?:the )?(?:best|strongest)\b|\bwas better\b|\bwas stronger\b",
+                clause,
+                re.I,
             )
-    return problems
+        ):
+            problems.append(f"called {played} the best move; its verdict is {label}")
+        if (
+            a.severity is Severity.NONE
+            and _SAYS_SLIP.search(clause)
+            and not re.search(
+                r"\bnot (?:a )?(?:blunder|mistake)\b|\bno (?:blunder|mistake)\b", clause, re.I
+            )
+        ):
+            problems.append(f"called {played} a slip; its verdict is {label}")
+        for found in _SAYS_COST.finditer(clause):
+            value = float(found.group(1))
+            if found.group(2) or value > 1.0:
+                value /= 100.0
+            if abs(value - a.expected_loss) > max(0.02, 0.35 * a.expected_loss):
+                problems.append(
+                    f"gave the cost of {played} as {found.group(1)}; it was {a.expected_loss:.2f}"
+                )
+    return list(dict.fromkeys(problems))
 
 
 _LIMIT_WORDS = re.compile(
@@ -719,9 +735,21 @@ class _FirstCandidate:
     stream is stopped once the candidate is complete -- the second marker seen -- so the
     other candidates are never written. A reply with no marker at all is one candidate."""
 
-    def __init__(self, sink: Callable[[str], bool], check: Callable[[str], list[str]]) -> None:
+    def __init__(
+        self,
+        sink: Callable[[str], bool],
+        check: Callable[[str], list[str]],
+        *,
+        must_name: Sequence[str] = (),
+        limit: int | None = None,
+    ) -> None:
         self.sink = sink
         self.check = check
+        # What the whole reply must name (held until it comes), and the task's length (the
+        # stream is closed there): with the voice on, the reply was never checked whole, and
+        # "Mate is close." and an eight-sentence homily both went out (the runtime audit).
+        self.must_name = tuple(must_name)
+        self.limit = limit
         self.buffer = ""
         self.spoken = ""  # what the sink has been given
         self.problems: list[str] = []
@@ -751,12 +779,24 @@ class _FirstCandidate:
         move number the model put first) waits for the sentence it introduces."""
         cleaned = _STRAY_MARKER.sub("", text).strip()
         ends = [m for m in _SENTENCE_END.finditer(cleaned) if final or m.end() < len(cleaned)]
+        if self.limit is not None:
+            # Cut at the task's length before anything is said, however large the chunk.
+            ends = ends[: self.limit + LENGTH_SLACK]
         complete = cleaned[: ends[-1].end()].strip() if ends else ""
         if len(complete) <= len(self.spoken):
             return True
         fresh = complete[len(self.spoken) :].strip()
         if sum(ch.isalpha() for ch in fresh) < 2:
             return True  # a number and a stop: the sentence it begins is still coming
+        if self.must_name and not self.spoken:
+            # Nothing goes out before what the reply must name: held until it comes, and a
+            # reply that ends without it is not said at all -- it is read whole instead.
+            left_out = omitted(complete, self.must_name)
+            if left_out:
+                if final:
+                    self.problems = [left_out]
+                    return False
+                return True
         faults = self.check(fresh) if fresh else []
         # Sentence by sentence, only what a sentence can get wrong: the length, the closing
         # question and what the whole must name are the whole reply's.
@@ -764,7 +804,7 @@ class _FirstCandidate:
             f
             for f in faults
             if not f.startswith(("too long", "left out"))
-            and "question" not in f
+            and f != "no closing question"
             # Only the reply's first sentence can open it with the move.
             and not (self.spoken and f.startswith("opens with"))
         ]
@@ -775,7 +815,8 @@ class _FirstCandidate:
             self.declined = True
             return False
         self.spoken = complete
-        return True
+        # As long as the task allows: the rest is not said.
+        return self.limit is None or _sentence_total(self.spoken) < self.limit + LENGTH_SLACK
 
     def feed(self, delta: str) -> bool:
         if self.done:
@@ -909,6 +950,10 @@ class _Request:
     # More boards a statement may be true on: after the move the player just made, and along
     # the engine's line from there -- the board the model is shown for a lesson after a move.
     frames: list[chess.Board] = field(default_factory=list)
+    # When the reply is about a position already moved from and the player is to move again:
+    # the answer there (its best move and line), which the reply must not give away -- a late
+    # verdict's lesson said "and now Qxf7# is mate" (the runtime audit, 2026-09-25).
+    now_answer: tuple[str, ...] = ()
 
 
 def _after_best(request: _Request) -> list[chess.Board]:
@@ -1185,7 +1230,15 @@ class Speaker:
                 # The first candidate goes to the voice sentence by sentence as it is
                 # written, each sentence checked for leaks before it is said; the stream
                 # is closed once that candidate is complete, the others unwritten.
-                reader = _FirstCandidate(request.stream_to, lambda t: self._problems(t, request))
+                limit, _ = directive_limits(
+                    str(request.messages[-1]["content"]).rsplit("# Task", 1)[-1]
+                )
+                reader = _FirstCandidate(
+                    request.stream_to,
+                    lambda t: self._problems(t, request),
+                    must_name=request.must_name,
+                    limit=limit,
+                )
             try:
                 if reader is not None and stream is not None:
                     completion = stream(
@@ -1382,16 +1435,18 @@ class Speaker:
         # The piece a played move moved may be named too: "your opponent's rook took on
         # c6" about a move of the record is no hint, but the word "rook" was a leak
         # whenever the withheld piece happened to be a rook as well.
-        moved = {_PIECE_WORD.get(san[0], "pawn") for san in request.played if san and san[0] != "O"}
-        said = " ".join(
-            filter(
-                None,
-                [request.user_text, request.disclosed, *sorted(request.played), *sorted(moved)],
-            )
-        )
+        # What the user said and what the directive disclosed are theirs already. The moves of
+        # the game are no exemption: only the answer is withheld (disclosure.leak_check), and
+        # exempting the record's moves, squares and pieces had let the answer through.
+        said = " ".join(filter(None, [request.user_text, request.disclosed]))
         found = [
             f"withheld {item}"
             for item in leak_check(text, request.facts, request.level, said=said or None)
+        ]
+        found += [
+            f"gives away {move} in the position they face now"
+            for move in request.now_answer
+            if _names(text, move)
         ]
         # The length the directive states: a reply over it is a fault of its own, so
         # a shorter candidate wins the draw, or the likeliest is cut to size.
@@ -1521,6 +1576,19 @@ _ASK_EVAL = re.compile(
 _ASK_HINT = re.compile(
     r"^\W*(?:(?:give me |i need |can i have |i want |any |another |one more )?(?:a |an |some )?"
     r"(?:hint|clue|nudge|help|tip)s?(?: please)?)\W*$",
+    re.IGNORECASE,
+)
+# The player's own move, named as theirs: asked after the opponent has replied too.
+_MY_MOVE = re.compile(
+    r"\b(?:what should i have (?:played|done)|what did i (?:miss|do wrong)|did i (?:just )?"
+    r"(?:blunder|mess up)|my (?:last )?move|was i wrong|should i have)\b",
+    re.IGNORECASE,
+)
+# A question about the opponent's threat.
+_ASK_THREAT = re.compile(
+    r"\b(?:what(?:'s| is| are) (?:their|the|his|her|my opponent's|the opponent's) threats?"
+    r"|what (?:do|does) (?:they|he|she|my opponent|the opponent) threaten"
+    r"|is (?:there|anything) (?:a )?threat(?:ened)?|am i (?:in danger|threatened))\b",
     re.IGNORECASE,
 )
 # A question about what to aim for: the first hint answers it, and its template is the floor.
@@ -1802,7 +1870,7 @@ class Coach:
             level = DisclosureLevel.LINE
         with self._lock:
             self.conversation.user_said(text)
-        if _ASK_LAST_MOVE.search(text) and (own := self._last_own_move()) is not None:
+        if (own := self._asked_own_move(text)) is not None:
             # About the move they already played: spoken from the position it was played
             # from, with everything shown, as the lesson after a mistake is. That position
             # is past; the level in force binds only the one they face now.
@@ -2398,20 +2466,34 @@ class Coach:
                 level=level,
                 # Without an engine only pieces and squares can be examined, and the
                 # words name those well enough: no planner call.
-                planner=self.speaker.provider if self.engine is not None else None,
+                # Parsing their words into moves is no lesson: the routine effort, not
+                # the coach's (at medium it was a second model call's worth of waiting).
+                planner=self.speaker.routine_provider if self.engine is not None else None,
             )
         except Exception as exc:  # noqa: BLE001
             self.speaker.last_error = f"named analysis: {type(exc).__name__}: {exc}"
             return []
 
-    def _last_own_move(self) -> PlyRecord | None:
-        """The player's own move, when it is the last move played and has its verdict.
-        Once the opponent has replied, "that move" is theirs: the generic ask handles it."""
+    def _last_own_move(self, *, mine: bool = False) -> PlyRecord | None:
+        """The player's own move, when it is the last move played and has its verdict. Once
+        the opponent has replied, "that move" is theirs -- unless the words say it is the
+        player's (`mine`): "what should I have played?", "did I blunder?"."""
         with self._lock:
             records = self.conversation.active_records()
+            if mine:
+                own = next((r for r in reversed(records) if r.move.by_user), None)
+                return own if own is not None and own.assessment is not None else None
             if records and records[-1].move.by_user and records[-1].assessment is not None:
                 return records[-1]
         return None
+
+    def _asked_own_move(self, text: str) -> PlyRecord | None:
+        """The player's move a question is about, when it asks about their own last move:
+        against a bot the reply comes at once, and "what should I have played?" then found
+        the opponent's move last and got a hint for the next one (the runtime audit)."""
+        if not _ASK_LAST_MOVE.search(text):
+            return None
+        return self._last_own_move(mine=bool(_MY_MOVE.search(text)))
 
     def _last_opponent_move(self) -> PlyRecord | None:
         """The opponent's move, when it is the last move played and has its verdict."""
@@ -2515,17 +2597,41 @@ class Coach:
             elicit=elicit,
         )
         self._take_leads(position, fallback)
-        must_name = self._must_name(trigger, position, fallback, assessment, played, user_text)
+        must_name = self._must_name(
+            trigger, position, level, fallback, assessment, played, user_text
+        )
         if quick:
             # The template is already out as the quick answer; a model reply that fails the
             # checks adds nothing, rather than the same line a second time.
             fallback, must_name = "", ()
-        directive = f"{self._level_line(level, position)}{instruction}"
+        # A reply about a position already moved from -- the lesson on a move, an answer
+        # about it -- is rendered at the level of the position on the board now, and must not
+        # give away the answer there (a verdict can land after the opponent has replied).
+        now = self._current
+        past = now is not None and now is not position and now.ply > position.ply
+        render_level = now.disclosure.level if past and now is not None else level
+        now_answer: tuple[str, ...] = ()
+        if (
+            past
+            and now is not None
+            and now.facts is not None
+            and now.board.turn == self.user_colour
+            and now.disclosure.level < DisclosureLevel.MOVE
+        ):
+            spoken_of = {played.san if played else "", *self._played_moves()}
+            if assessment is not None and assessment.best:
+                with contextlib.suppress(ValueError):
+                    spoken_of.add(position.board.san(chess.Move.from_uci(assessment.best[0])))
+            answer = [*now.facts.candidates[:1], *now.facts.line]
+            now_answer = tuple(m for m in dict.fromkeys(answer) if m not in spoken_of)
+        directive = (
+            f"{self._level_line(level, position, render_level if past else None)}{instruction}"
+        )
         faced = ""
         frames: list[chess.Board] = []
         moved = played if trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE) else None
-        if moved is None and trigger is Trigger.USER_ASK and _ASK_LAST_MOVE.search(user_text or ""):
-            own = self._last_own_move()
+        if moved is None and trigger is Trigger.USER_ASK:
+            own = self._asked_own_move(user_text or "")
             if own is not None and own.move.ply == position.ply + 1:
                 moved = own.move
         if moved is not None:
@@ -2544,7 +2650,7 @@ class Coach:
             frames = self._frames_after(position, moved)
         frames += self._analysis_frames(position)
         with self._lock:
-            self.conversation.level = level
+            self.conversation.level = render_level
             harness = self.conversation.render()
             messages: list[ChatMessage] = [
                 {"role": "user", "content": f"{harness}{faced}\n\n# Task\n{directive}"},
@@ -2584,6 +2690,7 @@ class Coach:
             template_only=(self.fast_now(ts) and trigger not in (Trigger.USER_ASK, Trigger.REVIEW)),
             must_name=must_name,
             frames=frames,
+            now_answer=now_answer,
         )
         self.speaker.submit(request)
 
@@ -2591,22 +2698,26 @@ class Coach:
         self,
         trigger: Trigger,
         position: _Position,
+        level: DisclosureLevel,
         template: str,
         assessment: MoveAssessment | None,
         played: MovePlayed | None,
         user_text: str | None,
     ) -> tuple[str, ...]:
         """What a model reply must name, as its template does: the better move, after a move
-        that was not the best; one of the squares a hint's template names -- the key fact is
-        on the board. Nothing for a word of praise, an answer to a question of the player's
-        own, or a template with none."""
+        that was not the best; for a hint, by its rung -- one of the key fact's squares, the
+        target's or the piece's, the move; their threat, asked for it. Never a move the sheet
+        lists as one of several good ones: the directive forbids the player's moves, and
+        requiring them rejected every obedient reply (the runtime audit, 2026-09-25).
+        Nothing for a word of praise, another question, or a template with none."""
         if not template:
             return ()
         said = user_text or ""
-        if trigger is Trigger.USER_ASK and _ASK_LAST_MOVE.search(said):
+        facts = position.facts
+        own = self._asked_own_move(said) if trigger is Trigger.USER_ASK else None
+        if own is not None:
             # "Why was that bad?": the lesson on their last move, as after it.
-            own = self._last_own_move()
-            if own is None or own.move.ply != position.ply + 1:
+            if own.move.ply != position.ply + 1:
                 return ()
             trigger, assessment, played = Trigger.POST_MISTAKE, own.assessment, own.move
         if trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE):
@@ -2617,10 +2728,26 @@ class Coach:
             except ValueError:
                 return ()
             return (best,) if best != played.san and _names(template, best) else ()
+        if facts is None:
+            return ()
+        if trigger is Trigger.USER_ASK and _ASK_THREAT.search(said):
+            return tuple(t for t in facts.threats if _names(template, t))
         hint = trigger in (Trigger.DECISIVE_QUESTION, Trigger.STUCK) or (
             trigger is Trigger.USER_ASK and bool(_ASK_HINT.match(said) or _ASK_AIM.search(said))
         )
-        return tuple(sorted(squares_in(template))) if hint else ()
+        if not hint:
+            return ()
+        if level >= DisclosureLevel.MOVE:
+            best = facts.candidates[0] if facts.candidates else ""
+            return (best,) if best and _names(template, best) else ()
+        choices = squares_in(" ".join(facts.choices))
+        if level >= DisclosureLevel.FOCUS:
+            source = " ".join(x for x in (facts.target, facts.piece) if x)
+        else:
+            source = facts.key or ""
+        named = squares_in(template) - choices
+        squares = (squares_in(source) & named) or named
+        return tuple(sorted(squares))
 
     @staticmethod
     def _analysis_frames(position: _Position) -> list[chess.Board]:
@@ -2700,6 +2827,11 @@ class Coach:
                 frames.append(board)
         return frames
 
+    def _played_moves(self) -> frozenset[str]:
+        """The moves played in the game so far, as SAN."""
+        with self._lock:
+            return frozenset(r.move.san for r in self.conversation.judged_records())
+
     def _record_moves(self) -> frozenset[str]:
         """The moves the messages name about the game so far: every move played, and the
         move each verdict said the engine preferred."""
@@ -2714,8 +2846,12 @@ class Coach:
         return frozenset(out)
 
     @staticmethod
-    def _level_line(level: DisclosureLevel, position: _Position) -> str:
-        """What may be said about the position the player faces, stated on the directive."""
+    def _level_line(
+        level: DisclosureLevel, position: _Position, now_level: DisclosureLevel | None = None
+    ) -> str:
+        """What may be said about the position the player faces, stated on the directive;
+        with `now_level`, the reply is about a position already moved from, and the one on
+        the board has its own level."""
         if position.board.is_game_over():
             return ""
         words = {
@@ -2724,8 +2860,14 @@ class Coach:
             DisclosureLevel.FOCUS: "the idea, the target and the piece; not the move",
             DisclosureLevel.MOVE: "the move and why it works; not the whole line",
             DisclosureLevel.LINE: "everything, the line included",
-        }[level]
-        return f"Disclosure for the position the player faces: {words}.\n\n"
+        }
+        if now_level is not None:
+            return (
+                "The position this is about has been moved from: everything about it may be "
+                "said. Disclosure for the position the player faces now: "
+                f"{words[now_level]}.\n\n"
+            )
+        return f"Disclosure for the position the player faces: {words[level]}.\n\n"
 
     def _queue_plain(
         self,
@@ -3024,7 +3166,18 @@ class Coach:
                 directive = (aim or "They asked for another hint. ") + FOCUS_DIRECTIVE
             else:
                 directive = (aim or "They asked for a hint. ") + idea_directive(facts)
-            directive += " Do not comment on anything said earlier." + (shown if quick else "")
+            if quick and level < DisclosureLevel.MOVE:
+                # The hint is out already, in the template's words: the model adds to it, in
+                # a sentence or two -- not the whole hint again, which the voice talked over
+                # the template with (the runtime audit, 2026-09-25).
+                directive = (
+                    "They asked for a hint and have just been shown it -- your last turn above. "
+                    "In one or two sentences, build on it: a sharper angle on the same key fact, "
+                    "or the one question that sets them looking. Do not repeat it, and give "
+                    "nothing the next hint would. Do not comment on anything said earlier."
+                )
+            else:
+                directive += " Do not comment on anything said earlier." + (shown if quick else "")
         elif level >= DisclosureLevel.LINE and _ASK_LINE.search(said) and facts.line:
             directive = (
                 (
@@ -3077,7 +3230,7 @@ class Coach:
                 "two or three sentences; then, if you like, one question about what it asks "
                 "of them. Never answer about the player's own move instead."
             )
-        elif _ASK_LAST_MOVE.search(said) and (record := self._last_own_move()) is not None:
+        elif (record := self._asked_own_move(said)) is not None:
             # Asked about their own last move. Its verdict was given in its move message and
             # the facts of the position it was played from in the message before: all of it
             # may be said outright. Without this the model took "the better move is withheld"
@@ -3088,19 +3241,35 @@ class Coach:
             label = verdict.label.value if verdict.label else verdict.severity.value
             loss = verdict.expected_loss
             best = ""
-            if verdict.best and verdict.severity is not Severity.NONE:
+            if verdict.best:
                 try:
                     best = chess.Board(record.move.fen_before).san(
                         chess.Move.from_uci(verdict.best[0])
                     )
                 except ValueError:
                     best = ""
+            best = "" if best == san else best
             # The request's facts are those of the position the move was played from when
             # the coach has them (ask() chose that position); the idea is theirs. The theme
             # or the plan, never a static feature: "the idea was the isolated d-pawn ..."
             # became the reason a bishop retreat was an inaccuracy.
             idea = facts.theme or facts.plan or ""
-            if verdict.severity is Severity.NONE:
+            if verdict.severity is Severity.NONE and best and loss >= 0.005:
+                # Sound but not the best: said as the word after it said it ("Fine, but a3
+                # was a little tighter"), never "it cost nothing" (the runtime audit).
+                opener = self._bags.draw("fine", FINE_TIGHTER).format(best=best)
+                fallback = self._fresh_lesson(
+                    opener,
+                    lambda lead: lesson_template(
+                        facts, best, opener, played=record.move.uci, keep_lead=lead
+                    ),
+                )
+                directive = (
+                    f"They ask about the move they already played, {san}. It was {label}: sound, "
+                    f"a little behind {best}. Say so plainly -- it was fine, then the better move "
+                    "and the idea behind it. Two sentences at most, no question."
+                )
+            elif verdict.severity is Severity.NONE:
                 fallback = self._verdict(label)
                 directive = (
                     f"They ask about the move they already played, {san}. It was not bad: the "
@@ -3131,6 +3300,18 @@ class Coach:
                     "they face now. Three sentences at most, then one question that checks they "
                     "see the pattern."
                 )
+        elif _ASK_THREAT.search(said):
+            threats = facts.threats[:2]
+            if threats:
+                words = [Conversation._threat_words(position.board, t) for t in threats]
+                fallback = "They threaten " + " and ".join(words) + "."
+            else:
+                fallback = "Nothing is threatened right now: no move of theirs wins anything."
+            directive = (
+                "They ask what the opponent threatens. Say it as the facts give it -- the move and "
+                "what it does, from 'what the other side threatens' -- or, when the facts list "
+                "none, say plainly that nothing is threatened. One or two sentences, no question."
+            )
         else:
             directive = (
                 "Answer them directly and be honest about their own claim. If they proposed a "

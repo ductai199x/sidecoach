@@ -144,9 +144,13 @@ _IDEA = (
     "trap",
     "choices",
     "situation",
+    # Their threat is the first hint's key fact as often as not ("they threaten Nxe5,
+    # winning your pawn"): withheld to the move level, "what is their threat?" got "nothing"
+    # (the runtime audit, 2026-09-25).
+    "threats",
 )
 _FOCUS = (*_IDEA, "target", "piece", "nudge", "region", "ideas")
-_MOVE = (*_FOCUS, "why", "tactic", "focus", "candidates", "threats")
+_MOVE = (*_FOCUS, "why", "tactic", "focus", "candidates")
 _BY_LEVEL: dict[DisclosureLevel, tuple[str, ...]] = {
     DisclosureLevel.SILENT: (),
     DisclosureLevel.IDEA: _IDEA,
@@ -244,6 +248,15 @@ def leak_check(
 
     `said` is what the user asked this turn: a square, piece word or move they named is theirs
     already, so confirming it back is not a leak and never faulted.
+
+    Below MOVE only the answer is withheld (Tai, 2026-09-25: "leaking is not a criminal
+    offense ... it's useful to point out in precise manner the plan (yours or opponent's) or
+    the positional advantage or disadvantage ... clamp down egregious offense but be smart
+    about it"): the moves the player is to find -- the good moves, the player's moves in the
+    best line -- and the squares they go to, unless the visible facts name them. Any other
+    move or square -- a plan, a weakness, their threat, a line the facts give -- may be said.
+    The moves of the game are no exemption: the answer is withheld even when it was played
+    before (by mid-game that exemption covered most of the board: the runtime audit).
     """
     visible = visible_facts(facts, level)
     allowed_squares: set[str] = set()
@@ -278,6 +291,8 @@ def leak_check(
             leaks.append(item)
 
     if level < DisclosureLevel.MOVE:
+        answer = {_TRAILING_MARKS.sub("", m) for m in [*facts.candidates, *facts.line[0::2]] if m}
+        answer_squares = squares_in(" ".join(answer)) - allowed_squares
         for token in _TOKEN_SPLIT.split(text):
             match = _SQUARE_TOKEN.fullmatch(token)
             if not match:
@@ -285,9 +300,10 @@ def leak_check(
             square = match.group(1)
             core = _TRAILING_MARKS.sub("", token)
             if core != square:
-                if core.lower() not in said_words and core not in allowed_moves:
+                known = core.lower() in said_words or core in allowed_moves
+                if core in answer and not known:
                     add(f"move {core}")
-            elif square not in allowed_squares:
+            elif square in answer_squares and square not in said_squares:
                 add(f"square {square}")
     elif level < DisclosureLevel.LINE:
         shown = set(facts.candidates) | set(facts.threats)
@@ -324,12 +340,18 @@ def leak_check(
             value = visible.get(key)
             if isinstance(value, str) and value:
                 scrubbed = scrubbed.replace(value.lower(), " ")
+        # A piece the visible facts name on its square, said in other words ("their pawn on
+        # b5 is about to take your bishop on a4" for "winning your bishop on a4"), is the
+        # fact, not a hint at the piece to move.
+        shown = " ".join(str(v) for v in visible.values() if isinstance(v, str)).lower()
+        for piece_word, square in set(re.findall(rf"({_PIECE})s? on ([a-h][1-8])", shown)):
+            scrubbed = re.sub(rf"\b{piece_word}s? on {square}\b", " ", scrubbed)
         scrubbed = _PIECE_WORD_CONTEXTS.sub(" ", scrubbed)
         for piece_word in dict.fromkeys(re.findall(_PIECE, facts.piece.lower())):
             # "The king behind it", "their king runs out of squares": the word is in every
             # explanation of a pin or a mate, and says nothing about which piece to move.
             if piece_word in said_words or piece_word == "king":
                 continue
-            if re.search(rf"\b{re.escape(piece_word)}\b", scrubbed):
+            if re.search(rf"\b{re.escape(piece_word)}s?\b", scrubbed):
                 add(f"piece {piece_word}")
     return leaks

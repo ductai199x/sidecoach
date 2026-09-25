@@ -1050,7 +1050,10 @@ class _Coaching:
             provider,
             policy=policy,
             draft_check=_draft_check(),
-            claims=None if offline else _claims_check(provider),
+            # The claims in their words are parsed at the routine effort: thinking=False is
+            # ignored where the effort is the provider's, and at medium every ask with a claim
+            # waited on a second full model call first (the runtime audit, 2026-09-25).
+            claims=None if offline else _claims_check(_routine_provider(settings, provider)),
             verifier=None if offline else _verifier(settings, provider),  # type: ignore[arg-type]
             engine=_named_engine(settings),  # type: ignore[arg-type]
             summarise_every=settings.coach.summarise_every,
@@ -1097,7 +1100,7 @@ class _Coaching:
             provider,
             routine_provider=_routine_provider(settings, provider),  # type: ignore[arg-type]
             verifier=None if offline else _verifier(settings, provider),  # type: ignore[arg-type]
-            claims=None if offline else _claims_check(provider),
+            claims=None if offline else _claims_check(_routine_provider(settings, provider)),
         )
         self.detail = f"{provider.name} ({detail})"
 

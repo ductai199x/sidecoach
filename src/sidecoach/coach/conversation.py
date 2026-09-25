@@ -201,8 +201,8 @@ class Conversation:
             text += (
                 f"\nThis is a puzzle the player is solving on the panel's board, {side} to "
                 "move and to find the best line. Say nothing unasked; when they ask for a "
-                "hint, give one at the level allowed, never the move itself unless asked "
-                "for it:\n" + position_text(chess.Board(event.start_fen))
+                "hint, give one at the level allowed -- the move itself only at the third hint "
+                "or when asked for it:\n" + position_text(chess.Board(event.start_fen))
             )
         elif event.kind != "game":
             text += (
@@ -828,7 +828,8 @@ class Conversation:
         # The hint's questions were for finding the move; the lesson is on the move made.
         for key in ("question", "nudge"):
             visible.pop(key, None)
-        return "\n".join(self._fact_lines(visible, board, "player", past=True))
+        lines = self._fact_lines(visible, board, "player", past=True)
+        return "\n".join([position_text(board, legal=False), *lines])
 
     def _fact_lines(
         self, visible: dict, board: chess.Board, side: str, *, past: bool = False
