@@ -28,6 +28,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.sidecoach.capture.CaptureService
+import com.sidecoach.capture.RecordingNotice
 import com.sidecoach.ui.Captions
 import com.sidecoach.ui.LocalServer
 import com.sidecoach.ui.PanelApi
@@ -272,6 +273,25 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startCapture() {
+        // A chess app that can be told it is being recorded is named first, and the screen
+        // is shared only on Continue (`RecordingNotice`).
+        val installed = RecordingNotice.installed(this)
+        Log.i(TAG, "recording notice: " + RecordingNotice.survey(installed))
+        val watching = RecordingNotice.unanswered(this, installed)
+        if (watching.isNotEmpty()) {
+            RecordingNotice.ask(this, watching, proceed = { shareScreen() }, cancelled = {
+                PanelEngine.emit(
+                    "sys",
+                    "info",
+                    "not started, as you chose: ${RecordingNotice.names(watching)} can tell when it is recorded",
+                )
+            })
+            return
+        }
+        shareScreen()
+    }
+
+    private fun shareScreen() {
         val granted = ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.POST_NOTIFICATIONS,

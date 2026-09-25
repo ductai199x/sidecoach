@@ -16,6 +16,16 @@
     <!-- The captions: the coach's words in a box over other apps, allowed by the user. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
+    <!-- The chess apps whose declared permissions Start reads, to say which of them can be
+         told they are being recorded (capture/RecordingNotice.kt): since Android 11 an app
+         sees only the packages it names. -->
+    <queries>
+        <package android:name="com.chess" />
+        <package android:name="org.lichess.mobileapp" />
+        <package android:name="org.lichess.mobileV2" />
+        <package android:name="com.chesskid" />
+    </queries>
+
     <application
         android:name=".SidecoachApp"
         android:allowBackup="false"
