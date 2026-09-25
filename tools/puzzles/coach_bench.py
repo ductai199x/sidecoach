@@ -620,7 +620,8 @@ def score_board(
         # Saving the game: never said as a win.
         idea_text = texts["idea"].lower()
         claims_win = "winning attack" in idea_text or (
-            "you can win" in idea_text and not re.search(r"level|back", idea_text)
+            re.search(r"you can win|tactic[^.]*\bwins\b", idea_text) is not None
+            and not re.search(r"level|back", idea_text)
         )
         checks["goal"] = not claims_win and idea.goal not in ("mate", "attack")
     elif themes & {"crushing", "advantage"} and engine_sees and top.expected_score < 0.8:

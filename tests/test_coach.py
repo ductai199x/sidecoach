@@ -1031,7 +1031,7 @@ def test_a_quick_answer_is_a_turn_before_the_model_and_a_failed_reply_adds_nothi
     coach.ask("hint", 8.0)
     out = _messages(coach)
     # The quick answer is the idea template: the goal and the pattern.
-    assert len(out) == 1 and out[0].text.startswith("You can mate in one move.")
+    assert len(out) == 1 and "mate in one" in out[0].text.split(".")[0]
     quick = out[0].text
     # The request carried the quick answer as the coach's own turn, then the directive.
     given = _given(provider, 0)

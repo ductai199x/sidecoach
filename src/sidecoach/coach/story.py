@@ -135,6 +135,12 @@ class Defence:
     clause: str  # at the move rung: "their pawn on f2 cannot take back on g3"
     square: str  # where that piece stands: "f2"
     target: str  # the square it would take back on: "g3"
+    who: str  # "their pawn on f2"
+    duty: str  # "shields their king"
+    # The player's pawn it has to stop, where it stands now, when that is its other job: the
+    # first hint says the two as one ("your pawn on e6 is two squares from queening, and
+    # their rook on f8 has to stop it").
+    stops: str | None
     lesson: str  # the overloaded defender's lesson
     ask: str  # the second hint's question
     line: str  # at the move rung: "if fxg3, Bc5+"
@@ -226,6 +232,21 @@ def defence(board: chess.Board, defences: list[Line], best: list[str]) -> Defenc
         recapture_san = before.san(recapture)
         after = before.copy(stack=False)
         after.push(recapture)
+        stops: str | None = None
+        runner = after.piece_at(refute.from_square)
+        if (
+            runner is not None
+            and runner.piece_type == chess.PAWN
+            and refute.to_square == recapture.from_square
+        ):
+            boards = [board.copy(stack=False)]
+            for move in moves[:cut]:
+                nxt = boards[-1].copy(stack=False)
+                nxt.push(move)
+                boards.append(nxt)
+            start = idea_of.origin(board, boards, cut, refute.from_square)
+            if start is not None and board.piece_type_at(start) == chess.PAWN:
+                stops = _sq(start)
         cannot = (
             f"{_NAMES[piece.piece_type]} on {_sq(recapture.from_square)} cannot take "
             f"back on {_sq(recapture.to_square)}"
@@ -235,6 +256,9 @@ def defence(board: chess.Board, defences: list[Line], best: list[str]) -> Defenc
             clause=f"their {cannot}",
             square=_sq(recapture.from_square),
             target=_sq(recapture.to_square),
+            who=f"their {_NAMES[piece.piece_type]} on {_sq(recapture.from_square)}",
+            duty=duty,
+            stops=stops,
             lesson=(
                 f"{idea_words.PATTERN_NAMES['overloading']}: "
                 f"{idea_words.PATTERN_WHY['overloading']}"

@@ -150,7 +150,7 @@ def test_a_queen_sacrifice_for_mate_is_said_at_each_rung() -> None:
     board = chess.Board(fen)
     facts = facts_from_analysis(board, analysis(fen, "Qxh7+ Kxh7 Rh5#", mate=2))
     idea = idea_template(facts)
-    assert idea.startswith("You can force mate in two.")
+    assert "mate in two" in idea.split(".")[0]
     assert "sacrifice" in idea and not leak_check(idea, facts, DisclosureLevel.IDEA)
     assert "the piece you give up" in focus_template(facts)
     assert move_template(facts) == "Qxh7+, a queen sacrifice, and after Kxh7, Rh5 is mate."

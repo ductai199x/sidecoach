@@ -656,7 +656,7 @@ def facts_from_analysis(
         key = situation.defend_key(board, idea, best)
     elif idea.goal in ("mate", "attack"):
         key = situation.mate_key(board, idea)
-        principle = idea_words.mechanism(idea)
+        principle = idea_words.lesson(idea_words.mechanism(idea), idea)
     elif tactical_goal:
         key = idea_words.target(idea, board)
         if key is not None and ":" not in key and " is " not in key and "," not in key:
@@ -674,7 +674,7 @@ def facts_from_analysis(
         # The principle is the pattern's: a sacrifice on the way, with no pattern, is not
         # what a winning capture teaches (17.hxg4 was "a sacrifice").
         principle = (
-            idea_words.mechanism(idea)
+            idea_words.lesson(idea_words.mechanism(idea), idea)
             if idea.blow is not None
             or idea.goal
             in (
@@ -771,12 +771,7 @@ def facts_from_analysis(
             )
             if trap is not None:
                 break
-    if (
-        trap is not None
-        and idea.target is not None
-        and trap.startswith("Not yet")
-        and plain is None
-    ):
+    if trap is not None and idea.target is not None and situation.NOT_YET in trap and plain is None:
         key = None  # the trap says it: the target can be won, but not at once
     parts: list[str] = []
     forced = board.is_check() and board.legal_moves.count() == 1
@@ -837,8 +832,9 @@ def facts_from_analysis(
     )
     how = told_how.said if told_how is not None else None
     if told_how is not None and told_how.lesson:
-        # The pattern the move carries, taught after it: "A trapped piece: ..."
-        how = f"{how}. {told_how.lesson[0].upper()}{told_how.lesson[1:]}"
+        # The pattern the move carries, taught after it: "That's a trapped piece: ..."
+        taught = idea_words.lesson(told_how.lesson, idea) or told_how.lesson
+        how = f"{how}. {taught[0].upper()}{taught[1:]}"
         nudge = told_how.ask or nudge
     if (
         tactical_goal
@@ -862,12 +858,12 @@ def facts_from_analysis(
         loose = idea.blow is not None and idea.blow.name == "hangingPiece"
         if key is None or (loose and (held.square in key or held.target in key)):
             # The loose piece was half the story: the defender is there, with another job.
-            key, principle, question = held.said, held.lesson, held.ask
+            key, principle, question = held.said, idea_words.lesson(held.lesson, idea), held.ask
             if why is not None:
                 why = re.sub(r"the \w+ on [a-h][1-8] is loose", held.clause, why)
         else:
             defended = held.said
-            principle = principle or held.lesson
+            principle = principle or idea_words.lesson(held.lesson, idea)
         nudge = held.ask
         if why is not None:
             why = f"{why}; {held.line}"
@@ -879,6 +875,13 @@ def facts_from_analysis(
     if checker is not None and not forced and checker != key:
         parts.append(checker)
     lost = stakes is not None and stakes.kind == "lost"
+    # A line that wins by force -- not one that starts by taking a piece simply left hanging
+    # or taking back (`story.plain_capture`) -- is a tactic, and the first hint says there is
+    # one to find (Tai, 2026-09-25).
+    is_tactic = (
+        idea.goal in ("win", "combination")
+        or (idea.goal == "promote" and (idea.blow is not None or bool(idea.sacrifices)))
+    ) and plain is None
     if (
         tactical_goal
         or (move_threat is not None and not lost)
@@ -887,14 +890,66 @@ def facts_from_analysis(
         lead = goal
         if idea.goal == "plan" and idea.winning and move_threat is None:
             lead = "you are winning"
+        elif move_threat is None:
+            seed = idea_words.opener_seed(board)
+            lead = idea_words.opener(idea, goal, tactic=is_tactic, seed=seed)
         if lead:
             parts.append(lead)
+    # Facts about the same piece or square said as one sentence, the way a coach links them.
+    shown_key = key
+    if held is not None and not forced:
+        held_as_key = key == held.said
+        stops = held.stops
+
+        def stops_it(text: str | None) -> bool:
+            # The pawn the defender has to stop, named in `text`.
+            return (
+                text is not None
+                and stops is not None
+                and f"pawn on {stops} " in text
+                and "queening" in text
+            )
+
+        also = f"{held.who} has to stop it, so it cannot also take back on {held.target}"
+        if stops_it(pawn):
+            # "Your pawn on e6 is two squares from queening, and their rook on f8 has to stop
+            # it, so it can't also take back on b8."
+            pawn = f"{pawn}, and {also}"
+            shown_key = None if held_as_key else key
+            defended = None
+        elif stops_it(key) and not held_as_key:
+            shown_key = f"{key}, and {also}"
+            defended = None
+        elif (
+            defended is not None
+            and key is not None
+            and key.endswith(f"on {held.target} is the target")
+        ):
+            # "Their queen on g3 is the target, and their pawn on f2 can't take back there:
+            # it also shields their king."
+            shown_key = f"{key}, and {held.who} cannot take back there: it also {held.duty}"
+            defended = None
+    if (
+        how
+        and shown_key
+        and shown_key.endswith(" is the target")
+        and how.startswith("The first move ")
+    ):
+        # "Their queen on d3 is the target, and the first move attacks it."
+        named = shown_key[: -len(" is the target")]
+        rest = how[len("The first move ") :]
+        rest = re.sub(rf"^(\w+) {re.escape(named[0].lower() + named[1:])}\b", r"\1 it", rest)
+        if ", and " in rest.split(". ", 1)[0]:
+            how = f"The first move {rest}"  # two "and"s in one sentence: said apart
+        else:
+            shown_key = f"{shown_key}, and the first move {rest}"
+            how = None
     if pawn:
         parts.append(pawn)
     if prize and not prize_last:
         parts.append(prize)
-    if key:
-        parts.append(key)
+    if shown_key:
+        parts.append(shown_key)
     if defended and not forced:
         parts.append(defended)
     if how:
@@ -902,8 +957,16 @@ def facts_from_analysis(
     if prize and prize_last:
         parts.append(prize)
     if principle and key:
-        parts.append(principle if tactical_goal else principle)
+        parts.append(principle)
     if trap:
+        # The target named already (the piece, not only its square): the order is the lesson.
+        prey = board.piece_at(idea.target) if idea.target is not None else None
+        if prey is not None and idea.target is not None:
+            named = f"{idea_words.PIECE_NAMES[prey.piece_type]} on {chess.square_name(idea.target)}"
+            if named in " ".join(parts):
+                trap = situation.in_order(trap)
+        if not parts:
+            trap = situation.first_said(trap)
         parts.append(trap)
     if not parts and not forced and best is not None:
         # Nothing else to say: what they would do with a free move, or the piece doing least --
@@ -926,6 +989,8 @@ def facts_from_analysis(
         and question not in situation.ANY_POSITION
     ):
         situation_text += " " + question
+    if situation_text:
+        situation_text = situation.spoken(situation_text)
     # A quiet move's own reason, said at the move rung: the key fact it answers.
     if why is None and move_reason and best is not None:
         why = f"{board.san(best)}: {move_reason[0].lower() + move_reason[1:]}"

@@ -28,7 +28,7 @@ def test_the_bait_knight_is_a_trap() -> None:
     trap = _line(["h3g4", "d8h4", "d1f3", "h4h2", "g1f1", "h2h1", "f1e2", "f8e8"], 0.45)
     said = situation.trap_words(board, trap, None, 0.60)
     assert said is not None
-    assert said.startswith("hxg4 looks like it wins a knight, but it is a trap: after hxg4 Qh4")
+    assert said.startswith("careful, though: hxg4 looks like it wins a knight, but after hxg4 Qh4")
 
 
 def test_the_rook_the_line_wins_later_is_not_yet() -> None:
@@ -36,7 +36,8 @@ def test_the_rook_the_line_wins_later_is_not_yet() -> None:
     board = chess.Board("r1b2rk1/2p2ppp/p2b4/1p6/3P3q/1BP2Q1P/PP3nP1/RNB1R1K1 w - - 0 16")
     trap = _line(["f3a8", "f2h3", "g2h3", "h4e1", "g1g2", "e1e2", "g2g1", "e2h2"], 0.0, mate=-8)
     assert situation.trap_words(board, trap, chess.A8, 0.68) == (
-        "Not yet: their rook on a8 can be won, but Qxa8 at once runs into Nxh3+, and they have mate"
+        "their rook on a8 can be won, but not at once: Qxa8 right away runs into Nxh3+, and they "
+        "have mate"
     )
 
 
@@ -54,7 +55,7 @@ def test_a_capture_into_mate_is_a_trap_in_a_lost_game() -> None:
     assert _worse(trap, _line(["h1e4"], 0.06))
     assert not _worse(_line(["h1e4"], 0.04), _line(["h1e4"], 0.06))
     assert situation.trap_words(board, trap, None, 0.06) == (
-        "Kxh3 looks like it wins a bishop, but it is a trap: after Kxh3 Qf5+, they have mate"
+        "careful, though: Kxh3 looks like it wins a bishop, but after Kxh3 Qf5+, they have mate"
     )
 
 
@@ -146,3 +147,25 @@ def test_the_pattern_to_keep_is_not_said_twice() -> None:
     )
     assert _said("their idea is worth stopping before it starts", text)
     assert not _said("more space gives your pieces room and cramps theirs", text)
+
+
+def test_the_first_hint_is_said_the_way_a_coach_speaks() -> None:
+    # Tai, 2026-09-25: "make it sound a bit better and more natural". Contractions, except
+    # where the verb ends its clause.
+    assert situation.spoken(
+        "It is Boden's mate. Their pawn cannot take back, it is not defended, and you are "
+        "winning -- leave the knight where it is."
+    ) == (
+        "It's Boden's mate. Their pawn can't take back, it isn't defended, and you're "
+        "winning -- leave the knight where it is."
+    )
+    # A trap said first has nothing to turn from; a target named already leaves the order.
+    assert situation.first_said("careful, though: Nxe5 looks like it wins a pawn") == (
+        "careful: Nxe5 looks like it wins a pawn"
+    )
+    assert (
+        situation.in_order(
+            "their rook on b8 can be won, but not at once: Qxb8 right away runs into Qd2+"
+        )
+        == "careful with the order, though: Qxb8 right away runs into Qd2+"
+    )

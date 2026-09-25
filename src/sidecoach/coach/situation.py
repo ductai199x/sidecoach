@@ -157,6 +157,30 @@ def _wing(square: chess.Square) -> str:
     return "in the centre"
 
 
+# The first hint said as a coach speaks (Tai, 2026-09-25: "make it sound a bit better and
+# more natural"): the contractions of speech. A verb that ends its clause stays whole
+# ("where it is.", never "where it's."), so "is" and "are" contract only before a word.
+_CONTRACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b([Cc])annot\b"), r"\1an't"),
+    (re.compile(r"\b([Ww])ill not\b"), r"\1on't"),
+    (
+        re.compile(r"\b(is|are|was|were|does|do|did|has|have|had|could|would|should) not\b", re.I),
+        r"\1n't",
+    ),
+    (re.compile(r"\b([Ii]t|[Tt]here|[Tt]hat|[Ww]hat) is (?=\w)"), r"\1's "),
+    (re.compile(r"\b([Yy]ou|[Tt]hey|[Ww]e) are (?=\w)"), r"\1're "),
+    (re.compile(r"\bI am\b"), "I'm"),
+)
+
+
+def spoken(text: str) -> str:
+    """`text` with the contractions a coach speaks with: "it's a trap", "can't take back",
+    "you're lost"."""
+    for pattern, short in _CONTRACTIONS:
+        text = pattern.sub(short, text)
+    return text
+
+
 def sentence(text: str) -> str:
     """`text` as a sentence: a capital first (never on a pawn's move: "hxg4 looks..."), a
     stop last."""
@@ -401,11 +425,12 @@ def trap_words(
     top: float | None = None,
     best: chess.Move | None = None,
 ) -> str | None:
-    """The capture that looks free and is not: "hxg4 looks like it wins a knight, but it is a
-    trap: after hxg4 Qh4, they get a winning attack". When it takes what the best line wins
-    later (`target`), the two are one lesson: "Not yet: their rook on a8 can be won, but Qxa8
-    at once runs into Nxh3+, and they have mate" (16.Re2 in Capablanca-Marshall). `top` is the
-    best move's expected score: a game already lost is not lost by the capture."""
+    """The capture that looks free and is not: "careful, though: hxg4 looks like it wins a
+    knight, but after hxg4 Qh4, they get a winning attack". When it takes what the best line
+    wins later (`target`), the two are one lesson: "their rook on a8 can be won, but not at
+    once: Qxa8 right away runs into Nxh3+, and they have mate" (16.Re2 in Capablanca-Marshall;
+    `in_order` when the hint has named the target already). `top` is the best move's expected
+    score: a game already lost is not lost by the capture."""
     try:
         capture = chess.Move.from_uci(trap.moves[0])
     except (ValueError, IndexError):
@@ -465,15 +490,34 @@ def trap_words(
     if best is not None and best != capture and best.to_square == capture.to_square:
         # The same piece, taken with the wrong one of yours.
         after_it = f"{san}" if shows else f"{san} {reply_san}"
-        return f"Take it with the right piece: {san} looks natural, but after {after_it}, {tail}"
+        return f"{RIGHT_PIECE}, though: {san} looks natural, but after {after_it}, {tail}"
     if target is not None and capture.to_square == target:
         runs = "a reply" if shows else reply_san
         return (
-            f"Not yet: their {_named(board, target)} can be won, but {san} at once runs into "
+            f"their {_named(board, target)} can be won{NOT_YET}{san} right away runs into "
             f"{runs}, and {tail}"
         )
     after_it = f"{san}" if shows else f"{san} {reply_san}"
-    return f"{san} looks like it wins a {what}, but it is a trap: after {after_it}, {tail}"
+    return f"careful, though: {san} looks like it wins a {what}, but after {after_it}, {tail}"
+
+
+# The trap that takes the target too soon, as `trap_words` says it: the target named, then
+# the order ("their rook on b8 can be won, but not at once: Qxb8 right away runs into ...").
+NOT_YET = ", but not at once: "
+RIGHT_PIECE = "take back with the right piece"
+
+
+def in_order(trap: str) -> str:
+    """A trap that takes the target too soon, where the hint has named the target already:
+    the order alone ("careful with the order, though: Qxb8 right away runs into Qd2+")."""
+    if NOT_YET not in trap:
+        return trap
+    return "careful with the order, though: " + trap.split(NOT_YET, 1)[1]
+
+
+def first_said(trap: str) -> str:
+    """A trap said first, with nothing before it to turn from: "careful: ..."."""
+    return trap.replace(", though: ", ": ", 1)
 
 
 TRAP_NET_PLIES = 8  # how far a trap's line is followed to see what it nets

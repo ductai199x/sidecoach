@@ -54,7 +54,8 @@ _GENERIC_MOVE = re.compile(
 _QUEENING = re.compile(r"queening|promot|new queen|to queen\b", re.I)
 # A first hint that names only what falls, a third that says only what is won.
 _BARE_FIRST = re.compile(
-    r"^(?:You're[^.]*\. )?(?:Their \w+ on [a-h][1-8] gives check[^.]*\. )?You can win [^.]*\. "
+    r"^(?:You're[^.]*\. )?(?:Their \w+ on [a-h][1-8] gives check[^.]*\. )?"
+    r"(?:You can win|[^.]*\btactic\b[^.]* wins) [^.]*\. "
     r"(?:The prize is [^.]*\. )?Their \w+ on [a-h][1-8] is the target\.$"
 )
 _BARE_MOVE = re.compile(r"^\S+: you win [^;.]*(, a few moves on)?\.$")
@@ -71,7 +72,8 @@ def _without_traps(text: str) -> str:
     return " ".join(
         s
         for s in re.split(r"(?<=[.?!])\s+", text)
-        if "it is a trap" not in s and not s.startswith("Not yet")
+        if not s.startswith(("Careful", "Take back with the right piece"))
+        and ", but not at once: " not in s
     )
 
 

@@ -9,6 +9,8 @@ position is not written here (Tai, 2026-09-23: "we want instructive comments, no
 
 from __future__ import annotations
 
+import zlib
+
 import chess
 
 from sidecoach.analysis.engine import san_line
@@ -119,7 +121,7 @@ PATTERN_WHY: dict[str, str] = {
     "deflection": "a defender is pulled away from what it guards, and what it guarded falls",
     "attraction": "a piece is lured onto a square where it can be hit",
     "hangingPiece": "something of theirs is not defended at all",
-    "overloading": "one of their pieces has two jobs, and doing one gives up the other",
+    "overloading": "one piece with two jobs cannot do both",
 }
 
 # What each preparation does, said of the moves before the blow.
@@ -281,6 +283,85 @@ def goal(idea: Idea) -> str | None:
         # move is wanted" in a position the engine calls won (Lichess 8KhlA, y6QH7).
         return "you are winning: no trick is needed here, only good technique"
     return None
+
+
+# The first hint's first words when the best line is a tactic: said as one to find (Tai,
+# 2026-09-25: "if there's a tactic that results in a material or big positional gain, the
+# coach should mention that there is tactics to be exploited in the first hint"). Three ways
+# of saying each, chosen by the position (`opener`), so the same words do not open every hint.
+_TACTIC_LEADS = (
+    "there is a tactic here that wins {what}",
+    "you have a tactic that wins {what}",
+    "this position has a tactic that wins {what}",
+)
+_MATE_ONE_LEADS = (
+    "there is a mate in one here",
+    "you can mate in one move",
+    "you have a mate in one",
+)
+_MATE_LEADS = (
+    "there is a forced mate in {n} here",
+    "you can force mate in {n}",
+    "you have a forced mate in {n}",
+)
+_MATE_LONG_LEADS = ("there is a forced mate here", "you can force mate", "you have a forced mate")
+
+
+def opener(idea: Idea, goal_words: str | None, *, tactic: bool, seed: int) -> str | None:
+    """The first hint's lead: what the best line is for (`goal_words`, as `goal` or the
+    caller made it), said as a tactic when `tactic` -- a line that wins material by force,
+    not a piece simply left hanging or a recapture -- and a mate as one to find. `seed` picks
+    the words (`opener_seed`)."""
+    if idea.goal == "mate" and goal_words is not None and "mate" in goal_words:
+        n = idea.mate_in or 0
+        if n == 1:
+            return _MATE_ONE_LEADS[seed % len(_MATE_ONE_LEADS)]
+        if n <= 5:
+            lead = _MATE_LEADS[seed % len(_MATE_LEADS)]
+            return lead.format(n=_NUMBER.get(n, str(n)))
+        return _MATE_LONG_LEADS[seed % len(_MATE_LONG_LEADS)]
+    if not tactic or goal_words is None:
+        return goal_words
+    if goal_words.startswith("you can win "):
+        what = goal_words[len("you can win ") :]
+        if what == "material by force":
+            what = "material"
+        return _TACTIC_LEADS[seed % len(_TACTIC_LEADS)].format(what=what)
+    if idea.goal == "promote":
+        return "there is a tactic here that gets a pawn through to promotion"
+    if idea.goal == "combination":
+        score = idea.score or 0.0
+        if score >= 0.8:
+            return (
+                "there is a tactic here that gives up material, wins it back and leaves you winning"
+            )
+        if score >= 0.62:
+            return (
+                "there is a tactic here that gives up material, wins it back and leaves you "
+                "clearly better"
+            )
+        return "there is a tactic here that gives up material and wins it back"
+    return goal_words
+
+
+def opener_seed(board: chess.Board) -> int:
+    """What picks the opener's words: the position's placement and side to move, the same
+    on every platform (the move counters are not read off a screen)."""
+    text = f"{board.board_fen()} {'w' if board.turn == chess.WHITE else 'b'}"
+    return zlib.crc32(text.encode("ascii"))
+
+
+def lesson(text: str | None, idea: Idea) -> str | None:
+    """A pattern's lesson (`mechanism`, a defence's) said of what the hint just named:
+    "that's a fork: ..." after the two pieces one move hits; of a mate, an attack or a draw
+    still to come, "it's a back-rank mate: ..."; "it takes two sacrifices: ..."."""
+    if not text:
+        return text
+    head = text.split(":", 1)[0]
+    if head.endswith(" sacrifices"):
+        return f"it takes {text}"
+    lead = "it is" if idea.goal in ("mate", "attack", "draw") else "that is"
+    return f"{lead} {text}"
 
 
 def mechanism(idea: Idea) -> str | None:

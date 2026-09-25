@@ -74,7 +74,7 @@ def test_in_check_the_checker_comes_first() -> None:
         ],
     )
     assert "Their queen on c5 gives check" in texts["idea"]
-    assert "The first move takes their queen on c5" in texts["idea"]
+    assert "the first move takes their queen on c5" in texts["idea"]
     assert told
 
 
@@ -101,7 +101,7 @@ def test_a_win_with_no_pattern_says_how() -> None:
         ],
         threats=("e6e5",),
     )
-    assert "The first move stops Ke5" in texts["idea"]
+    assert "Their pawn on h5 is the target, and the first move stops Ke5." in texts["idea"]
     assert texts["move"].startswith("Kf4") and "and after" in texts["move"]
     assert told
 
@@ -131,8 +131,8 @@ def test_a_piece_with_no_safe_square_is_taught_as_trapped() -> None:
             (["c5c4", "h2h3", "c4b3", "c2b3", "e7e6", "a1a3", "a8c8", "c1e3"], 0.63),
         ],
     )
-    assert "their queen on h5, and it has no safe square to go to" in texts["idea"]
-    assert "A trapped piece" in texts["idea"]
+    assert "The first move attacks it, and it has no safe square to go to" in texts["idea"]
+    assert "That's a trapped piece" in texts["idea"]
     assert "no safe square" in texts["focus"]
     assert told
 
@@ -179,8 +179,14 @@ def test_why_the_obvious_recapture_fails_is_the_lesson() -> None:
             )
         ],
     )
-    assert "Their pawn on f2 cannot take back on g3: it also shields their king" in texts["idea"]
-    assert "An overloaded defender" in texts["idea"]
+    # Said as a coach speaks (Tai, 2026-09-25): a tactic to find, the target and the defender
+    # that cannot take back as one sentence, the pattern said of it.
+    assert "tactic that wins their queen." in texts["idea"]
+    assert (
+        "Their queen on g3 is the target, and their pawn on f2 can't take back there: it also "
+        "shields their king. That's an overloaded defender: one piece with two jobs can't do "
+        "both." in texts["idea"]
+    )
     assert "Which of their pieces has two jobs?" in texts["focus"]
     assert "if fxg3, Bc5+" in texts["move"]
     assert told
@@ -213,10 +219,13 @@ def test_a_defender_with_two_jobs_is_not_a_loose_piece() -> None:
         [Line(moves=["d6b8", "g5d2", "g2h1", "f8b8", "d4f3"], depth=14, expected_score=0.09)],
     )
     assert (
-        "Their rook on f8 cannot take back on b8: it also guards f8, where your pawn queens"
-        in (texts["idea"])
+        "Your pawn on e6 is two squares from queening, and their rook on f8 has to stop it, so it "
+        "can't also take back on b8." in texts["idea"]
     )
     assert "loose" not in texts["idea"] and "no defender" not in texts["idea"]
-    assert "Not yet: their rook on b8 can be won, but Qxb8 at once runs into Qd2+" in texts["idea"]
+    assert (
+        "Their rook on b8 can be won, but not at once: Qxb8 right away runs into Qd2+"
+        in texts["idea"]
+    )
     assert "if Rxb8, f8=Q+" in texts["move"]
     assert told
