@@ -7,6 +7,7 @@
   // every coach message as a turn, and under a coach turn the exact turn the model was
   // given and what it wrote, for each call it took.
   import { tick } from "svelte";
+  import { stickToBottom } from "./stick";
   import { stamp } from "./chess";
   import { CHANNELS, store, type TermRow } from "./panel.svelte";
 
@@ -27,16 +28,9 @@
     return !!row.line.data && Object.keys(row.line.data).length > 0;
   }
 
-  const rowCount = $derived(store.rows.length);
-  const turnCount = $derived(store.convo.length);
-  $effect(() => {
-    void rowCount;
-    if (store.autoscroll && store.pane === "terminal") tick().then(() => { if (term) term.scrollTop = term.scrollHeight; });
-  });
-  $effect(() => {
-    void turnCount;
-    if (store.autoscroll && store.pane === "conversation") tick().then(() => { if (convo) convo.scrollTop = convo.scrollHeight; });
-  });
+  // Both panes follow their newest entry (`stick.ts`) while autoscroll is on and they show.
+  const followTerminal = { enabled: () => store.autoscroll && store.pane === "terminal" };
+  const followConversation = { enabled: () => store.autoscroll && store.pane === "conversation" };
   function showPane(p: "terminal" | "conversation") {
     store.pane = p;
     tick().then(() => { const el = p === "terminal" ? term : convo; if (el) el.scrollTop = el.scrollHeight; });
@@ -59,7 +53,7 @@
   <label class="ctl"><input type="checkbox" bind:checked={store.autoscroll} /> autoscroll</label>
   <button class="ghost small" onclick={() => store.clearTerminal()}>clear</button>
 </div>
-<div class="terminal" bind:this={term} hidden={store.pane !== "terminal"}>
+<div class="terminal" bind:this={term} hidden={store.pane !== "terminal"} use:stickToBottom={followTerminal}>
   {#each store.rows as row (row.key + row.line.t + (row.line.seq ?? 0))}
     {@const data = hasData(row)}
     <div
@@ -79,7 +73,7 @@
     </div>
   {/each}
 </div>
-<div class="conversation" bind:this={convo} hidden={store.pane !== "conversation"}>
+<div class="conversation" bind:this={convo} hidden={store.pane !== "conversation"} use:stickToBottom={followConversation}>
   {#each store.convo as turn (turn.id)}
     <div class="turn {turn.who}" class:unspoken={turn.unspoken}>
       <div class="who">{turn.label}</div>{turn.text}

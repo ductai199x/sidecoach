@@ -16,6 +16,7 @@
   import { FILES, cellOf, colourOf, motifWords, placement, spriteOf, squareAt } from "$lib/chess";
   import { layoutMode, mobileBoard } from "$lib/layout";
   import { prefs } from "$lib/panel.svelte";
+  import { stickToBottom } from "$lib/stick";
 
   const id = decodeURIComponent(page.params.id ?? "");
   const api = puzzleApi(id);
@@ -496,7 +497,7 @@
 
   <section id="right">
     <div class="panel-title">Coach</div>
-    <div class="coach" bind:this={coachEl}>
+    <div class="coach" bind:this={coachEl} use:stickToBottom>
       {#each messages as m (m.id)}
         <div class="msg" class:you={m.you} role="note" onmouseenter={() => { if (m.marks) coachMarks = m.marks; }}>
           <div class="meta">{m.meta}</div>

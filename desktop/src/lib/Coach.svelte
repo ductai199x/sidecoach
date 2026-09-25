@@ -3,25 +3,18 @@
   // A message with marks shows its own position while hovered, so an arrow from an
   // earlier moment is never drawn over pieces that have since moved; a turning point
   // in the review shows its position too, and carries a menu to correct why it happened.
-  import { tick } from "svelte";
   import LinkedText from "./LinkedText.svelte";
   import { motifWords } from "./chess";
   import { panel } from "./api";
   import { store, type CoachItem } from "./panel.svelte";
   import { inShell, openWindow } from "./shell.svelte";
+  import { stickToBottom } from "./stick";
 
   const CAUSES = [
     "missed opponent threat", "miscalculated line", "never considered the candidate",
     "positional misjudgment", "opening knowledge gap", "endgame technique", "time pressure",
   ];
   const ORDER = ["brilliant", "great", "best", "excellent", "good", "book", "inaccuracy", "mistake", "miss", "blunder"];
-
-  let box = $state<HTMLDivElement | null>(null);
-  const count = $derived(store.coach.length);
-  $effect(() => {
-    void count;
-    tick().then(() => { if (box) box.scrollTop = box.scrollHeight; });
-  });
 
   function meta(m: Extract<CoachItem, { kind: "message" }>): string {
     return m.trigger + " · level " + m.disclosure + (m.ply != null ? " · ply " + m.ply : "") + (m.fallback ? " · template" : "");
@@ -34,7 +27,7 @@
   }
 </script>
 
-<div id="coach" class="coach" bind:this={box}>
+<div id="coach" class="coach" use:stickToBottom>
   {#each store.coach as item (item.id)}
     {#if item.kind === "pending"}
       <div class="msg pending"><div class="meta">coach</div><div class="dots"></div></div>
