@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import itertools
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 
 import chess
@@ -140,6 +140,36 @@ Explanation = tuple[chess.Move, ...]
 PendingKey = tuple[object, ...]
 # Pending keys whose last element is a story of moves from the latest position.
 STORY_KEYS = ("moves", "moves-cautious")
+
+
+# How long a premove queue, once its red tint is seen, is taken to be about: a queue
+# executes one step for each of the opponent's replies, within a second or two.
+QUEUE_MEMORY_S = 3.0
+
+
+def in_flight(moves: Sequence[chess.Move]) -> bool:
+    """Whether a story has a piece stop partway along a straight line and then go on the same
+    way: a to x, and later x to y by that piece, x strictly between a and y. Seen on one frame,
+    that is one move in flight, never two. Every site slides a moved piece in a straight line
+    from its square to the next, and a frame that catches it near the centre of a square on
+    its way reads as a piece standing there; the next frame, with the piece further on (or
+    landed), then explains as the same piece moving on. Chess.com's phone app slides every
+    move and cannot be told not to, speeding up as it goes, with a trail (Tai, 2026-09-25): "I
+    played Rxc1+ but it misunderstood as Rc7". Geometry alone, for every piece, both sides,
+    any speed and any capture rate; the highlights are not read (they can be turned off, and
+    section 5.3 of DESIGN.md keeps the reconciler free of them). A piece that returns to a
+    square it left, or another piece moving next, is not in flight. The caller decides when
+    the shape means flight (`Reconciler._flight`): a pawn pushed twice is two moves when each
+    stood still to be seen."""
+    landed: dict[chess.Square, chess.Move] = {}
+    for move in moves:
+        came = landed.pop(move.from_square, None)
+        if came is not None and move.from_square in chess.SquareSet(
+            chess.between(came.from_square, move.to_square)
+        ):
+            return True
+        landed[move.to_square] = move
+    return False
 
 
 def touched_squares(board: chess.Board, move: chess.Move) -> set[chess.Square]:
@@ -279,6 +309,8 @@ class Reconciler:
     _last_obs: Observation = field(default_factory=dict)
     _ts: float = 0.0
     _last_commit_ts: float | None = None
+    # When a premove queue's red tint was last seen (`_flight`).
+    _red_ts: float | None = None
 
     @property
     def started(self) -> bool:
@@ -704,7 +736,12 @@ class Reconciler:
             for r, row in enumerate(readings)
             for c, reading in enumerate(row)
         )
-        obs = self._unqueue(self._observe(readings))  # premove ghosts put back
+        seen = self._observe(readings)
+        # A queue leaves its piece's real square red and empty; a checked king's red glow
+        # stands on a piece, and says nothing of a queue.
+        if any(r.tint == "red" and r.kind == "empty" for r in seen.values()):
+            self._red_ts = ts
+        obs = self._unqueue(seen)  # premove ghosts put back
         if len(obs) < self.min_readable_cells:
             self._hold_pending(True)
             return events
@@ -1440,12 +1477,26 @@ class Reconciler:
     def user_colour(self) -> chess.Color:
         return chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
 
+    def _flight(self, moves: Explanation) -> bool:
+        """Whether `moves`, the pending story or a story built on it, catch a piece in flight:
+        the pending story seen on one frame only -- a piece that stood still on a square was
+        seen there twice, which a slide never is -- no premove queue about, whose steps land
+        one for each reply faster than any frame can witness them, and a piece stopping
+        partway along its line and going on the same way (`in_flight`)."""
+        seen_once = self._pending is None or self._pending[1] < 2
+        queue = self._red_ts is not None and self._ts - self._red_ts <= QUEUE_MEMORY_S
+        return seen_once and not queue and in_flight(moves)
+
     def _pending_story(self) -> tuple[Explanation, chess.Board] | None:
-        """The pending story from the latest position and the position it leads to."""
+        """The pending story from the latest position and the position it leads to. A story
+        with a piece in flight (`in_flight`) is nothing to build on: it settles, if it ever
+        does, on frames of its own."""
         if self._pending is None or self._pending[0][0] not in STORY_KEYS:
             return None
         moves = self._pending[0][-1]
         assert isinstance(moves, tuple)
+        if self._flight(moves):
+            return None
         base = self.board.copy(stack=False)
         for move in moves:
             if move not in base.legal_moves:
@@ -1502,6 +1553,10 @@ class Reconciler:
                 return None
             story = paths[0]
         combined = tuple(moves) + tuple(story)
+        if self._flight(combined):
+            # The frame shows a piece of the pending story further along its own line: the
+            # story caught it in flight, and this frame is no second witness of it.
+            return None
         if not self._highlight_ok(obs, combined):
             return None
         # A bot that answers within a frame or two and a queue that executes on every
@@ -1568,7 +1623,7 @@ class Reconciler:
         if not self._cells_clean(obs, touched_squares(base, reply)):
             return None
         combined = moves + (reply,)
-        if len(combined) > self.max_chain_plies:
+        if len(combined) > self.max_chain_plies or self._flight(combined):
             return None
         return self._settle(("moves", combined), obs, self._commit_moves(combined))
 
