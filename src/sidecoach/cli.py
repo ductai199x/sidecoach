@@ -1015,7 +1015,7 @@ class _Coaching:
         self.detail = "off"
         if not enabled:
             return
-        from sidecoach.coach.coach import Coach
+        from sidecoach.coach.coach import LESSON_WAIT_S, Coach
         from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
         from sidecoach.llm.factory import make_provider
 
@@ -1061,6 +1061,7 @@ class _Coaching:
             routine_provider=_routine_provider(settings, provider),  # type: ignore[arg-type]
             verbalized_sampling=settings.coach.verbalized_sampling,
             local_verdicts=settings.coach.local_verdicts,
+            lesson_wait_s=LESSON_WAIT_S,
             persona=settings.coach.persona,
             rating=(settings.profile.rating_low, settings.profile.rating_high),
         )

@@ -1912,3 +1912,66 @@ def test_their_own_move_is_theirs_even_after_the_reply_and_a_threat_gets_its_ans
     coach.ask("what is their threat?", 8.0)
     _messages(coach)
     assert "They ask what the opponent threatens" in _directive(_given(provider, 0))
+
+
+def test_a_mistakes_lesson_waits_for_what_the_move_allowed() -> None:
+    """The verdict comes first, from the best line alone; the analysis of the position the
+    move left about a second later, and with it what the move allowed. The app holds the
+    lesson for it (at most LESSON_WAIT_S); the game moving on releases it at once."""
+    from sidecoach.coach.coach import LESSON_WAIT_S
+    from sidecoach.events import Takeback
+
+    coach = Coach(
+        ScriptedProvider([]),
+        policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)),
+        lesson_wait_s=LESSON_WAIT_S,
+    )
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6), 7.0)
+    _messages(coach)
+    board = chess.Board(SCHOLAR)
+    move = board.parse_san("Bxf7+")
+    board.push(move)
+    played = MovePlayed(
+        game_id="g",
+        ply=7,
+        san="Bxf7+",
+        uci=move.uci(),
+        fen_before=SCHOLAR,
+        fen_after=board.fen(),
+        by_user=True,
+    )
+    verdict = MoveAssessment(
+        game_id="g",
+        ply=7,
+        uci=move.uci(),
+        expected_loss=0.45,
+        severity=Severity.BLUNDER,
+        best=["h5f7"],
+        label=Label.MISS,
+    )
+    coach.on_event(played, 10.0)
+    coach.on_event(verdict, 10.1)
+    assert _messages(coach) == [], "held for the analysis of the position it left"
+    coach.tick(10.1 + LESSON_WAIT_S / 2)
+    assert _messages(coach) == [], "still inside the wait"
+    coach.tick(10.1 + LESSON_WAIT_S)
+    out = _messages(coach)
+    assert len(out) == 1 and out[0].trigger is Trigger.POST_MISTAKE
+    # The analysis landing releases it at once.
+    coach.on_event(Takeback(game_id="g", plies=1, fen=SCHOLAR), 12.0)
+    _messages(coach)
+    coach.on_event(played, 13.0)
+    coach.on_event(verdict, 13.1)
+    after = Analysis(
+        game_id="g",
+        fen=board.fen(),
+        ply=7,
+        lines=[Line(moves=["e8e7"], depth=12, expected_score=0.1)],
+        decisive=False,
+        only_move=True,
+    )
+    coach.on_event(after, 13.5)
+    out = _messages(coach)
+    assert [m.trigger for m in out] == [Trigger.POST_MISTAKE]
+

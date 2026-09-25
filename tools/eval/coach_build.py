@@ -32,7 +32,7 @@ from providers import Metered  # noqa: E402
 
 from sidecoach import cli  # noqa: E402
 from sidecoach.coach.bag import Bags  # noqa: E402
-from sidecoach.coach.coach import Coach  # noqa: E402
+from sidecoach.coach.coach import LESSON_WAIT_S, Coach  # noqa: E402
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings  # noqa: E402
 from sidecoach.config import Settings, load_settings  # noqa: E402
 from sidecoach.llm.offline import OfflineProvider  # noqa: E402
@@ -101,6 +101,8 @@ def build_coach(
         routine_provider=routine,  # type: ignore[arg-type]
         verbalized_sampling=settings.coach.verbalized_sampling,
         local_verdicts=settings.coach.local_verdicts,
+        # The app holds a mistake's lesson for the analysis of the position it left.
+        lesson_wait_s=LESSON_WAIT_S,
         persona=settings.coach.persona,
         rating=(settings.profile.rating_low, settings.profile.rating_high),
     )

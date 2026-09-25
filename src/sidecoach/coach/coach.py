@@ -904,6 +904,10 @@ FAST_PACE_S = 6.0
 PACE_MOVES = 4
 # How many plies back the coach keeps a position and its facts.
 POSITIONS_KEPT = 40
+# How long the lesson on a mistake waits for the analysis of the position the move left:
+# the verdict comes first, from the best line alone, and the analysis about a second after
+# it -- without it the lesson had no "what your move allowed" (the parity audit, 2026-09-25).
+LESSON_WAIT_S = 1.5
 
 
 @dataclass
@@ -1679,8 +1683,13 @@ class Coach:
         local_verdicts: bool = True,
         persona: str | None = None,
         rating: tuple[int, int] | None = None,
+        lesson_wait_s: float = 0.0,
     ) -> None:
         self.policy = policy or InterjectionPolicy()
+        # The lesson on a mistake, held until the position the move left is analysed (or
+        # LESSON_WAIT_S passes, or the game moves on): the app waits, the tests do not.
+        self.lesson_wait_s = lesson_wait_s
+        self._held_lesson: tuple[float, _Position, MoveAssessment, MovePlayed, bool] | None = None
         # One reply instead of a verbalized distribution (see config.CoachSettings).
         self.verbalized_sampling = verbalized_sampling
         # The word on a sound move written from the board (coach/verdicts.py) instead of
@@ -1781,10 +1790,13 @@ class Coach:
         elif isinstance(event, ClockObservation):
             self._on_clock(event, ts)
         elif isinstance(event, Takeback):
+            self._held_lesson = None  # the move it was on is gone
             self._on_takeback(event, ts)
         elif isinstance(event, Resync):
+            self._held_lesson = None
             self._on_resync(event, ts)
         elif isinstance(event, GameEnded):
+            self._release_lesson(ts)
             self._current = None
             self.finished = True
             self.conversation.ended(event)
@@ -1815,7 +1827,10 @@ class Coach:
         self.policy.settings.quiet = value
 
     def tick(self, ts: float) -> None:
-        """Time passing: a hint if the user has been stuck long enough."""
+        """Time passing: a held lesson once its wait is up; a hint if the user has been stuck
+        long enough."""
+        if self._held_lesson is not None and ts - self._held_lesson[0] >= self.lesson_wait_s:
+            self._release_lesson(ts)
         trigger = self.policy.tick(ts)
         if trigger is None or self._current is None or self._current.facts is None:
             return
@@ -2145,7 +2160,26 @@ class Coach:
         since = self.policy.position_since
         return not (self.policy.user_to_move and since is not None and ts - since >= FAST_PACE_S)
 
+    def _release_lesson(self, ts: float) -> None:
+        """The held lesson on a mistake, spoken now."""
+        held, self._held_lesson = self._held_lesson, None
+        if held is None:
+            return
+        _, position, assessment, played, elicit = held
+        self._speak(
+            Trigger.POST_MISTAKE,
+            position,
+            DisclosureLevel.LINE,
+            ts,
+            assessment=assessment,
+            played=played,
+            elicit=elicit,
+        )
+
     def _on_move(self, event: MovePlayed, ts: float) -> None:
+        # The game moved on: a lesson still waiting on its analysis goes now, before the
+        # new move is in the record.
+        self._release_lesson(ts)
         if event.by_user and event.think_ms is not None:
             self._think_s.append(event.think_ms / 1000.0)
         if event.by_user:
@@ -2228,6 +2262,8 @@ class Coach:
         )
         position.leads = leads
         self.conversation.analysed(event, position.facts)
+        if self._held_lesson is not None and self._held_lesson[3].ply == event.ply:
+            self._release_lesson(ts)  # what the move allowed is known now
         if position is self._current and self._pending_ask is not None:
             text, _asked = self._pending_ask
             self._pending_ask = None
@@ -2369,6 +2405,13 @@ class Coach:
                 annotations=marks,
                 fen=before.board.fen(),
             )
+            return
+        if (
+            trigger is Trigger.POST_MISTAKE
+            and self.lesson_wait_s > 0
+            and (after is None or after.analysis is None)
+        ):
+            self._held_lesson = (ts, before, event, move, elicit)
             return
         self._speak(
             trigger,
@@ -2627,9 +2670,11 @@ class Coach:
                     spoken_of.add(position.board.san(chess.Move.from_uci(assessment.best[0])))
             answer = [*now.facts.candidates[:1], *now.facts.line]
             now_answer = tuple(m for m in dict.fromkeys(answer) if m not in spoken_of)
-        directive = (
-            f"{self._level_line(level, position, render_level if past else None)}{instruction}"
-        )
+        # The player faces a position again only once it is their turn: on the opponent's,
+        # what the move allowed is the lesson, and "nothing about the position" forbade it.
+        facing = past and now is not None and now.board.turn == self.user_colour
+        line = self._level_line(level, position, render_level if facing else None, past=past)
+        directive = f"{line}{instruction}"
         faced = ""
         frames: list[chess.Board] = []
         moved = played if trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE) else None
@@ -2850,7 +2895,11 @@ class Coach:
 
     @staticmethod
     def _level_line(
-        level: DisclosureLevel, position: _Position, now_level: DisclosureLevel | None = None
+        level: DisclosureLevel,
+        position: _Position,
+        now_level: DisclosureLevel | None = None,
+        *,
+        past: bool = False,
     ) -> str:
         """What may be said about the position the player faces, stated on the directive;
         with `now_level`, the reply is about a position already moved from, and the one on
@@ -2869,6 +2918,11 @@ class Coach:
                 "The position this is about has been moved from: everything about it may be "
                 "said. Disclosure for the position the player faces now: "
                 f"{words[now_level]}.\n\n"
+            )
+        if past:
+            return (
+                "The position this is about has been moved from: everything about it may be "
+                "said, and what the opponent can do now.\n\n"
             )
         return f"Disclosure for the position the player faces: {words[level]}.\n\n"
 
