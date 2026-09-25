@@ -510,7 +510,9 @@ class Conversation:
         head, body = self._lines_block(record, board, user_colour, level)
         out.append((f"Engine lines {head}".rstrip(), "\n".join(body)))
         facts = self._facts_lines(record, board, user_colour, level)
-        if facts:
+        # Over the board, the game is over: a first hint for the mated position ("their queen
+        # on b7 gives check") is noise beside the review.
+        if facts and not board.is_game_over():
             out.append((f"Facts ({self._facts_owner(user_to_move)})", "\n".join(facts)))
         if user_to_move and level < DisclosureLevel.MOVE:
             out.append(("Disclosure", f"Level {level.name.lower()}: {self._level_words(level)}."))
@@ -773,6 +775,8 @@ class Conversation:
         "question": "a question that sets them looking (to the player, as it stands)",
         "nudge": "a question from the target to the move (to the player, as it stands)",
         "why": "the move and what it does",
+        # Whose: the other side's moves, were the side to move to pass.
+        "threats": "what the other side threatens, if the side to move passed",
     }
     # The facts addressed to the player, kept in the second person.
     _TO_THE_PLAYER = ("question", "nudge", "situation")
@@ -801,8 +805,11 @@ class Conversation:
         level = level if user_to_move else DisclosureLevel.LINE
         visible = visible_facts(facts, level)
         if not user_to_move:
-            # The first hint is the player's: said of the opponent's move it reads as theirs.
-            visible.pop("situation", None)
+            # The hints are for the side to move: on the opponent's turn the first hint and the
+            # two questions are the opponent's, and labelled "to the player" the model asked
+            # the player the opponent's question (parity pass 2, 2026-09-25).
+            for key in ("situation", "question", "nudge"):
+                visible.pop(key, None)
         side = "player" if user_to_move else "opponent"
         out: list[str] = []
         if record.analysis is not None and record.analysis.opening:
@@ -818,16 +825,28 @@ class Conversation:
         past): the lesson after the move is taught from them, and the record keeps only one
         line for that position."""
         visible = visible_facts(facts, DisclosureLevel.LINE)
-        return "\n".join(self._fact_lines(visible, board, "player"))
+        # The hint's questions were for finding the move; the lesson is on the move made.
+        for key in ("question", "nudge"):
+            visible.pop(key, None)
+        return "\n".join(self._fact_lines(visible, board, "player", past=True))
 
-    def _fact_lines(self, visible: dict, board: chess.Board, side: str) -> list[str]:
-        """The sheet's lines for `visible`, in reading order, in the third person for `side`."""
+    def _fact_lines(
+        self, visible: dict, board: chess.Board, side: str, *, past: bool = False
+    ) -> list[str]:
+        """The sheet's lines for `visible`, in reading order, in the third person for `side`;
+        `past` for a position the player has moved from."""
+        names = self._FACT_NAMES
+        if past:
+            names = {
+                **names,
+                "situation": "the first hint for that position (to the player, as it stood)",
+            }
         out: list[str] = []
         for key in self._FACT_KEYS:
             value = visible.get(key)
             if value in (None, "", [], False):
                 continue
-            name = self._FACT_NAMES.get(key, key.replace("_", " "))
+            name = names.get(key, key.replace("_", " "))
             if value is True:
                 out.append(f"{name}: yes")
             elif key == "ideas":

@@ -1743,7 +1743,12 @@ class Coach:
         # but not its template -- "What is your opponent's most dangerous idea?" as the
         # first of two answers to "what should I be aiming for?" was noise.
         canned = (
-            unlock in (Unlock.ASK_MOVE, Unlock.ASK_LINE) or bool(_ASK_HINT.match(text))
+            unlock in (Unlock.ASK_MOVE, Unlock.ASK_LINE)
+            or bool(_ASK_HINT.match(text))
+            # The first hint is now the lesson a question about the plan asks for (the
+            # stakes, the key fact, the principle), no longer "what is your opponent's most
+            # dangerous idea?": it goes out at once, as for a bare hint.
+            or bool(_ASK_AIM.search(text))
         ) and not may_carry_claims(text)
         if canned:
             _, quick = self._instruction(Trigger.USER_ASK, position, level, text, (), None, None)
@@ -2446,20 +2451,25 @@ class Coach:
         directive = f"{self._level_line(level, position)}{instruction}"
         faced = ""
         frames: list[chess.Board] = []
-        if played is not None and trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE):
+        moved = played if trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE) else None
+        if moved is None and trigger is Trigger.USER_ASK and _ASK_LAST_MOVE.search(user_text or ""):
+            own = self._last_own_move()
+            if own is not None and own.move.ply == position.ply + 1:
+                moved = own.move
+        if moved is not None:
             # The lesson after a move is taught from the position the player faced, which the
             # record keeps as one line: its sheet goes with the request, and the template's
             # lesson as the floor (parity pass, 2026-09-25).
             with self._lock:
                 sheet = self.conversation.faced_text(position.facts, position.board)
             if sheet:
-                faced = f"\n\n# The position they faced, before {played.san}\n{sheet}"
+                faced = f"\n\n# The position they faced, before {moved.san}\n{sheet}"
             if must_name and fallback:
                 directive += (
                     "\n\nThe lesson in the board's own words, all of it true -- your reply says at "
                     f"least this, in your own words, and may say more: {fallback}"
                 )
-            frames = self._frames_after(position, played)
+            frames = self._frames_after(position, moved)
         with self._lock:
             self.conversation.level = level
             harness = self.conversation.render()
@@ -2519,6 +2529,13 @@ class Coach:
         own, or a template with none."""
         if not template:
             return ()
+        said = user_text or ""
+        if trigger is Trigger.USER_ASK and _ASK_LAST_MOVE.search(said):
+            # "Why was that bad?": the lesson on their last move, as after it.
+            own = self._last_own_move()
+            if own is None or own.move.ply != position.ply + 1:
+                return ()
+            trigger, assessment, played = Trigger.POST_MISTAKE, own.assessment, own.move
         if trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE):
             if assessment is None or played is None or not assessment.best:
                 return ()
@@ -2527,7 +2544,6 @@ class Coach:
             except ValueError:
                 return ()
             return (best,) if best != played.san and _names(template, best) else ()
-        said = user_text or ""
         hint = trigger in (Trigger.DECISIVE_QUESTION, Trigger.STUCK) or (
             trigger is Trigger.USER_ASK and bool(_ASK_HINT.match(said) or _ASK_AIM.search(said))
         )
@@ -2870,16 +2886,20 @@ class Coach:
             )
             # A review has a record to fall back on, not a line.
             fallback = self._review_template()
-        elif _ASK_HINT.match(said):
+        elif _ASK_HINT.match(said) or _ASK_AIM.search(said):
             # A bare "hint" carries no claim to be honest about; treated as one, the model
             # answered its own last message as if the player had said it. Two hints, then
-            # the answer: the rung decides what the hint may give.
+            # the answer: the rung decides what the hint may give. A question about what to
+            # aim for is answered by the same hint: the generic answer ("be honest about their
+            # own claim") gave the model no lesson to give (parity pass 2, 2026-09-25).
+            aim = "" if _ASK_HINT.match(said) else "They asked what to aim for: answer with "
+            aim += "the hint at this rung. " if aim else ""
             if level >= DisclosureLevel.MOVE:
-                directive = MOVE_DIRECTIVE
+                directive = aim + MOVE_DIRECTIVE
             elif level >= DisclosureLevel.FOCUS:
-                directive = "They asked for another hint. " + FOCUS_DIRECTIVE
+                directive = (aim or "They asked for another hint. ") + FOCUS_DIRECTIVE
             else:
-                directive = "They asked for a hint. " + IDEA_DIRECTIVE
+                directive = (aim or "They asked for a hint. ") + IDEA_DIRECTIVE
             directive += " Do not comment on anything said earlier." + (shown if quick else "")
         elif level >= DisclosureLevel.LINE and _ASK_LINE.search(said) and facts.line:
             directive = (

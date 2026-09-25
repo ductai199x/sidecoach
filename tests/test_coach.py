@@ -323,6 +323,35 @@ def test_feedback_after_the_users_move_may_say_everything_about_that_position() 
     assert "goal: the player can mate in one move" in faced
     assert "The lesson in the board's own words" in _directive(messages)
     assert coach.spoken[-1].problems == [], coach.spoken[-1].problems
+    # The hints' questions are for the side to move: never on the opponent's sheet, where
+    # labelled "to the player" they were the opponent's; nor on the faced sheet, a position
+    # already moved from (parity pass 2).
+    now = played.split("# The position they faced")[0]
+    assert "(to the player, as it stands)" not in now.split("## Facts", 1)[-1]
+    assert "a question that sets them looking" not in faced
+    # Asked why it was bad, the answer is taught from the same position, and names the move.
+    coach.ask("why was that bad?", 12.0)
+    _messages(coach)
+    asked = str(_given(provider)[-1]["content"])
+    assert "# The position they faced, before Bxf7+" in asked
+    assert coach.spoken[-1].message.text and "Qxf7" in coach.spoken[-1].message.text
+
+
+def test_a_question_about_the_plan_is_answered_by_the_first_hint_at_once() -> None:
+    """ "What should I be aiming for?" earns the hint's rung, and its template -- the first
+    hint, a lesson on the position -- goes out at once, as for a bare hint; the model builds
+    on it with the hint's directive, not the generic answer (parity pass 2, 2026-09-25)."""
+    coach, provider = _coach(["The king on e8 has one square left. Which check takes it away?"])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    assert _messages(coach) == []
+    coach.ask("what should I be aiming for here?", 8.0)
+    out = _messages(coach)
+    assert out[0].level is DisclosureLevel.IDEA and "e8" in out[0].text, out[0].text
+    directive = _directive(_given(provider, 0))
+    assert "They asked what to aim for" in directive
+    assert "Give the first hint as a short lesson" in directive
+    assert "be honest about their own claim" not in directive
 
 
 def test_stuck_gives_the_idea_then_the_focus_and_the_opponents_turn_is_silent() -> None:
