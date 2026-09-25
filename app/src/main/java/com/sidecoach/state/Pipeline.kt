@@ -35,6 +35,21 @@ import com.sidecoach.vision.ThemeStore
 import com.sidecoach.vision.Which
 import org.opencv.core.Mat
 
+/** What a read shows: the placement and the squares the site highlights. */
+private typealias View = Pair<String, Set<Int>>
+
+/** The squares the site marks as its last move (or a selection), not a red mark. */
+private fun highlighted(readings: Readings, bottom: Side): Set<Int> {
+    val squares = HashSet<Int>()
+    for (row in 0 until 8) for (col in 0 until 8) {
+        val reading = readings[row * 8 + col]
+        if (reading.highlighted && reading.tint != "red") {
+            squares.add(Squares.squareAt(row, col, bottom == Side.WHITE))
+        }
+    }
+    return squares
+}
+
 /**
  * Frame to events: tracker, start-position bootstrap, recogniser, reconciler.
  * A port of `sidecoach/state/pipeline.py`.
@@ -146,7 +161,7 @@ class GamePipeline(
     private var readingsKey: Pair<Region, Double>? = null
     private var unreadChange = false
     private var coldTried: Double? = null
-    private var coldCandidate: Triple<String, Int, Double>? = null
+    private var coldCandidate: Triple<View, Int, Double>? = null
 
     /**
      * The last cold read and what it was read from (the lock and the side told), so pixels
@@ -162,7 +177,7 @@ class GamePipeline(
 
     /** The other side the labels last said was at the bottom of an unexplained board, and when. */
     // The side the labels say, when, and the position then read that way round.
-    private var flipSeen: Triple<Side, Double, String?>? = null
+    private var flipSeen: Triple<Side, Double, View?>? = null
     private var screenState: ScreenState = ScreenState.UNKNOWN
     private var dialogSince: Double? = null
     private var covered = false
@@ -615,7 +630,7 @@ class GamePipeline(
         // move caught mid-slide at two frames a second, and nothing after it was recorded
         // (Tai, 2026-09-24: "sometimes there is no move list whatsoever").
         val read = reread(labelled) ?: coldRead(frame, geometry, labelled)
-        val placed = read?.placement?.boardFen()
+        val placed = read?.let { view(it) }
         if (placed == null || placed != seen.third) {
             flipSeen = Triple(labelled, ts, placed)
             return mutableListOf()
@@ -781,7 +796,12 @@ class GamePipeline(
      * right one (Tai's Pixel, 2026-09-23: a test board's set, cached under chess.com's green,
      * read his puzzle's black pawns as white).
      */
-    private fun coldRead(frame: Mat, geometry: BoardGeometry, bottom: Side?): ColdRead? {
+    private fun coldRead(
+        frame: Mat,
+        geometry: BoardGeometry,
+        bottom: Side?,
+        asked: Boolean = false,
+    ): ColdRead? {
         val store = cache ?: return null
         val sampled = com.sidecoach.vision.ThemeCache.samplePalette(frame, geometry) ?: return null
         var best: Pair<Double, ColdRead>? = null
@@ -789,7 +809,7 @@ class GamePipeline(
             // Coordinates off, or not this set's; the caller may say the side.
             val side = bottom ?: Coordinates.readBottomSide(frame, geometry, cached.rankLabels) ?: continue
             val readings = cached.classifyFrame(frame, geometry, embedder)
-            val placement = placementFromReadings(readings, side) ?: continue
+            val placement = placementFromReadings(readings, side, asked = asked) ?: continue
             if (adoptPlacement(placement) == null) continue
             val fit = fit(readings)
             if (best == null || fit > best.first) best = fit to ColdRead(cached, side, readings, placement)
@@ -884,6 +904,17 @@ class GamePipeline(
     )
 
     /**
+     * A board is adopted only once every read that confirms it shows the same view: the same
+     * pieces and the same highlighted squares. A site's move lights its squares before the
+     * piece leaves, so a read taken as the next puzzle's setup move began matched the one
+     * before it square for square; the board was adopted with the piece still on its origin,
+     * the highlight said the other side had just moved, and the setup move that followed could
+     * not be explained (Tai's desktop, 2026-09-24: 1...Qxh7 2.Qb1 invented, dump
+     * 20260924-165745).
+     */
+    private fun view(read: ColdRead): View = read.placement.boardFen() to highlighted(read.readings, read.bottom)
+
+    /**
      * A game joined from the middle, without being asked. With the theme in the cache the
      * board reads cold; the position is adopted once it has read the same, quiet and complete,
      * on [COLD_START_HOLD] tries [COLD_START_EVERY_S] apart, so a board mid-animation or a page
@@ -911,14 +942,14 @@ class GamePipeline(
         // Nothing read cleanly this time; the candidate stands until it expires.
         if (read == null) return coldNotice(frame, geometry, ts)
         coldSince = null
-        val fen = read.placement.boardFen()
+        val view = view(read)
         val candidate = coldCandidate
-        coldCandidate = if (candidate != null && candidate.first == fen &&
+        coldCandidate = if (candidate != null && candidate.first == view &&
             ts - candidate.third <= COLD_START_EXPIRE_S
         ) {
-            Triple(fen, candidate.second + 1, ts)
+            Triple(view, candidate.second + 1, ts)
         } else {
-            Triple(fen, 1, ts)
+            Triple(view, 1, ts)
         }
         if (coldCandidate!!.second < COLD_START_HOLD) return mutableListOf()
         coldCandidate = null
@@ -935,21 +966,15 @@ class GamePipeline(
         bottom: Side? = null,
         ts: Double? = null,
     ): MutableList<Event> {
-        val read = coldRead(frame, geometry, bottom) ?: return mutableListOf()
+        val read = coldRead(frame, geometry, bottom, asked = true) ?: return mutableListOf()
         return adoptCold(read, ts)
     }
 
     private fun adoptCold(read: ColdRead, ts: Double?): MutableList<Event> {
         val reconciler = Reconciler(bottom = read.bottom, userSide = read.bottom)
         // The site's last-move highlight, for what a cold read cannot know: a pawn that has
-        // just advanced two squares (`doubleStepSeen`).
-        val highlighted = HashSet<Int>()
-        for (row in 0 until 8) for (col in 0 until 8) {
-            val r = read.readings[row * 8 + col]
-            if (r.highlighted && r.tint != "red") {
-                highlighted.add(Squares.squareAt(row, col, read.bottom == Side.WHITE))
-            }
-        }
+        // just advanced two squares, and whose move it is ([lastMoveSeen]).
+        val highlighted = highlighted(read.readings, read.bottom)
         val events = reconciler.startFrom(read.placement, ts, highlighted)
         if (events.isEmpty()) return mutableListOf()  // not a legal position; adopt nothing
         // Only now, with a legal position begun, is the pipeline switched onto this theme.
@@ -971,12 +996,20 @@ class GamePipeline(
      * a lifted piece empties its square and floats over another with the drag's hover outline,
      * so a single frame read then would drop or misplace a piece. Every square must therefore
      * be a settled piece or a settled empty with no hover and no unreadable cell.
+     *
+     * [asked]: the player asked for this read ("Re-read the screen"), so a mark on an empty
+     * square -- a legal-move dot around a piece left selected -- is the empty square it is
+     * ([Pieces.markOnEmpty]), as long as nothing on the board is being dragged. Reads nobody
+     * asked for keep treating it as no evidence: a phone may draw no outline around a dragged
+     * piece, and a drag held still must not be adopted.
      */
-    private fun placementFromReadings(readings: Readings, bottom: Side): Board? {
+    private fun placementFromReadings(readings: Readings, bottom: Side, asked: Boolean = false): Board? {
+        if (asked && readings.any { it.hover }) return null
         val board = Board(null)
         for (row in 0 until 8) {
             for (col in 0 until 8) {
                 val reading = readings[row * 8 + col]
+                if (asked && Pieces.markOnEmpty(reading)) continue
                 if (reading.hover || reading.kind == Kind.UNKNOWN || !reading.settled) return null
                 if (reading.kind == Kind.PIECE) {
                     val symbol = reading.symbol ?: return null  // no known kind: not a clean read

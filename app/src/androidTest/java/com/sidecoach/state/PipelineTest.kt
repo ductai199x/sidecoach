@@ -13,6 +13,7 @@ import com.sidecoach.events.Resync
 import com.sidecoach.events.ScreenStateChanged
 import com.sidecoach.events.Takeback
 import com.sidecoach.events.Unexplained
+import com.sidecoach.vision.BoardGeometry
 import com.sidecoach.vision.CellEmbedder
 import com.sidecoach.vision.ChangeGate
 import com.sidecoach.vision.FramePixels
@@ -41,6 +42,9 @@ import org.opencv.imgproc.Imgproc
  * covers; a game that ends in a resignation, which only the site's badges on the two kings
  * can end; and a game browsed back two plies and played on, which the record tells as a
  * takeback.
+ *
+ * A frame may carry the player's "Re-read the screen" (`asked`): the cold read they asked for,
+ * taken from the tracker's lock as the panel takes it, and held to the desktop's the same way.
  */
 @RunWith(AndroidJUnit4::class)
 class PipelineTest {
@@ -123,6 +127,26 @@ class PipelineTest {
                             "$name frame $f ($file):\n  kotlin: ${mine.joinToString(" | ")}" +
                                 "\n  python: ${theirs.joinToString(" | ")}",
                         )
+                    }
+                    if (frame.has("asked")) {
+                        // "Re-read the screen" on this frame: `GameWatcher.analyse`, from the lock.
+                        val lock = pipeline.board
+                        val asked = if (lock == null) {
+                            listOf("no board locked to re-read")
+                        } else {
+                            pipeline.coldStart(
+                                mat, BoardGeometry(lock.region, lock.cellPx), null, frame.getDouble("ts"),
+                            ).map { line(it) }
+                        }
+                        val wanted = frame.getJSONArray("asked").let { a ->
+                            List(a.length()) { a.getString(it) }
+                        }
+                        if (asked != wanted && failures.size < 8) {
+                            failures.add(
+                                "$name frame $f ($file) re-read:\n  kotlin: ${asked.joinToString(" | ")}" +
+                                    "\n  python: ${wanted.joinToString(" | ")}",
+                            )
+                        }
                     }
                 }
                 val took = System.currentTimeMillis() - began

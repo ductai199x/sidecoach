@@ -45,6 +45,7 @@ from sidecoach.events import (  # noqa: E402
 )
 from sidecoach.replay.recording import ChangeGate, board_gate  # noqa: E402
 from sidecoach.state.pipeline import GamePipeline  # noqa: E402
+from sidecoach.vision.squares import BoardGeometry  # noqa: E402
 from sidecoach.vision.theme_cache import ThemeCache  # noqa: E402
 from tests import synth  # noqa: E402
 
@@ -377,6 +378,62 @@ def flip_slide(theme: str) -> list[dict]:
     return states
 
 
+# The next puzzle of Tai's desktop, 2026-09-24 (dump 20260924-165745), before its setup move.
+SETUP_LIT = "2k5/7N/3p3q/1n2p2P/4P3/3P4/2P1KPP1/3Q1B1R w - - 0 1"
+
+
+def setup_lit(theme: str) -> list[dict]:
+    """The next puzzle, turned round, read twice with White's queen still on d1 -- the second
+    time with d1 and b1 already lit for the setup move Qd1-b1 -- and adopted then: the
+    highlight said White had just moved, the queen's arrival on b1 could not be explained,
+    and the record invented 1...Qxh7 2.Qb1 2...Qh6 (Tai's desktop, 2026-09-24). A board is
+    adopted only when the reads confirming it show the same view: the same pieces and the
+    same lit squares (desktop 815af2f, `test_the_next_puzzle_is_not_adopted_as_its_setup_move_lights_up`)."""
+    board = chess.Board(SETUP_LIT)
+    black = synth.Side.BLACK
+    setup = chess.Move.from_uci("d1b1")
+
+    def shown(**extra) -> dict:
+        return board_kwargs(
+            board=board.copy(), theme=theme, style="cburnett", bottom=black, **extra
+        )
+
+    states = [
+        dict(board_kwargs(board=chess.Board(), theme=theme, style="cburnett"), _repeat=3),
+        dict(shown(), _repeat=4),  # the puzzle, nothing lit yet
+        dict(shown(highlight=setup), _repeat=3),  # lit, the queen not yet off d1
+    ]
+    for progress in (0.35, 0.8):
+        states.append(
+            shown(highlight=setup, animating=(setup.from_square, setup.to_square, progress))
+        )
+    board.push(setup)
+    states.append(dict(shown(highlight=setup), _repeat=6))
+    # The fork the puzzle is about, recorded as the solver's move and nothing else.
+    fork = board.push_uci("b5c3")
+    states.append(dict(shown(highlight=fork), _repeat=6))
+    return states
+
+
+# After 10 moves of a Ruy Lopez, both sides castled: a quiet middlegame board.
+MIDGAME = "r1bq1rk1/2ppbppp/p1n2n2/1p2p3/4P3/1B3N2/PPPP1PPP/RNBQR1K1 w - - 4 8"
+
+
+def reread_selected(theme: str) -> list[dict]:
+    """A knight left selected puts chess.com's legal-move dots on the empty squares it can go
+    to, the dots read as unknown, and every "Re-read the screen" was refused (Tai's desktop,
+    2026-09-24). Nobody asked, the board is not taken while the dots are up; asked -- the
+    panel's Re-read on the state's last frame (`_asked`, `GamePipeline.cold_start`) -- a dot
+    is the empty square it is (desktop 815af2f,
+    `test_asked_to_reread_a_board_with_a_piece_left_selected`)."""
+    selected = board_kwargs(board=chess.Board(MIDGAME), theme=theme, selected=chess.F3)
+    return [
+        dict(board_kwargs(board=chess.Board(), theme=theme), _repeat=5, _session=True),
+        dict(selected, _repeat=30, _session=True, _asked=True),
+        dict(selected, _repeat=5),
+    ]
+
+
 SCENARIOS = {
     "mate-green": lambda: scholars_mate("green", "cburnett"),
     "resign-green": lambda: a_resignation("green", "cburnett"),
@@ -388,6 +445,9 @@ SCENARIOS = {
     "puzzle-flip-green": lambda: puzzle_flip("green"),
     "fast-reply-green": lambda: fast_reply("green"),
     "flip-slide-green": lambda: flip_slide("green"),
+    "setup-lit-green": lambda: setup_lit("green"),
+    "reread-selected-green": lambda: reread_selected("green"),
+    "reread-selected-brown": lambda: reread_selected("brown"),
 }
 
 
@@ -404,6 +464,7 @@ def run(name: str, states: list[dict]) -> dict:
     for index, state in enumerate(states):
         repeat = state.pop("_repeat", 1)
         session = state.pop("_session", False)
+        asked = state.pop("_asked", False)
         if session:
             pipeline = GamePipeline(cache=cache)
             gate = ChangeGate()
@@ -433,6 +494,14 @@ def run(name: str, states: list[dict]) -> dict:
             }
             if session and i == 0:
                 frame["session"] = True
+            if asked and i == repeat - 1:
+                # The panel's "Re-read the screen" on this frame: a cold read the player
+                # asked for, from the tracker's lock (`panel._analyze`).
+                assert pipeline.board is not None, "no board locked to re-read"
+                geometry = BoardGeometry(pipeline.board.region, pipeline.board.cell_px)
+                frame["asked"] = [
+                    event_json(event) for event in pipeline.cold_start(stored, geometry, ts=ts)
+                ]
             frames.append(frame)
             frame_id += 1
     rec = pipeline.reconciler
@@ -468,6 +537,8 @@ def main() -> None:
             for line in f["events"]:
                 if line.startswith(("BoardUnread", "GameStarted")) and "themes" in data:
                     print(f"    {f['ts']:.1f}s {line}")
+            if "asked" in f:
+                print(f"    {f['ts']:.1f}s asked to re-read: {f['asked']}")
         if "themes" in data:
             print(f"    {data['themes']} learned sets in the cache")
         runs.append(data)

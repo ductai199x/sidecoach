@@ -321,6 +321,12 @@ class Coach(
     private var elicitAsked: Double? = null
     private var elicitAnswered = false
 
+    /**
+     * A question asked before the engine had looked at the position on the board: it is
+     * answered the moment the analysis lands (see [ask]).
+     */
+    private var pendingAsk: Pair<String, Double>? = null
+
     // Lifecycle
 
     fun start() = speaker.start()
@@ -401,11 +407,22 @@ class Coach(
         val asked = elicitAsked
         if (asked != null && ts - asked <= ELICIT_ANSWER_S) elicitAnswered = true
         var position = current
+        if (position != null && position.facts == null && userToMove && !finished) {
+            // The engine is still looking at the position on the board: said so, and answered
+            // the moment its analysis lands -- never from an older position's (Tai, 2026-09-24:
+            // a hint pressed as a puzzle appeared got "I have not seen enough of this game yet
+            // to say. Give me a move or two.").
+            if (pendingAsk == null) {
+                queuePlain(Trigger.USER_ASK, "One moment -- still looking at this position.", ts)
+            }
+            pendingAsk = text to ts
+            return
+        }
         if (position == null || position.facts == null) position = latestWithFacts()
         if (position == null || position.facts == null) {
             queuePlain(
                 Trigger.USER_ASK,
-                "I have not seen enough of this game yet to say. Give me a move or two.",
+                "I have not seen a position to talk about yet.",
                 ts,
             )
             return
@@ -600,8 +617,10 @@ class Coach(
         mistakes = 0
         elicitAsked = null
         elicitAnswered = false
+        pendingAsk = null
         finished = false
         current = positions[0]
+        policy.restart()
         policy.newPosition(0, ts, userToMove = userToMove)
         clockPeakMs = null
         policy.setRemaining(null)
@@ -733,6 +752,7 @@ class Coach(
             thinkS.addLast(event.thinkMs / 1000.0)
             while (thinkS.size > PACE_MOVES) thinkS.removeFirst()
         }
+        if (event.byUser) pendingAsk = null // they played on: the question is answered by the move
         board = Board(event.fenAfter)
         moves[event.ply] = event
         conversation.move(event)
@@ -794,6 +814,8 @@ class Coach(
         positions = linkedMapOf(0 to CoachPosition(ply = 0, board = board.copy()))
         moves = LinkedHashMap()
         current = positions[0]
+        pendingAsk = null
+        policy.restart()
         policy.newPosition(0, ts, userToMove = userToMove)
     }
 
@@ -806,8 +828,17 @@ class Coach(
             position.board, event, lastMove = position.lastMove, user = userColour
         )
         conversation.analysed(event, position.facts!!)
+        val pending = pendingAsk
+        if (position === current && pending != null) {
+            val (text, _) = pending
+            pendingAsk = null
+            ask(text, ts)
+            return
+        }
         if (position === current && userToMove) {
-            val decisive = event.decisive && !obviousRecapture(position, event)
+            val decisive = event.decisive &&
+                !obviousRecapture(position, event) &&
+                !carryingOut(position)
             val trigger = policy.onPositionAnalysed(event.ply, decisive = decisive)
             if (trigger != null) {
                 val level = position.disclosure.apply(Unlock.DECISIVE) ?: position.disclosure.level
@@ -815,6 +846,23 @@ class Coach(
                 speak(trigger, position, level, ts)
             }
         }
+    }
+
+    /**
+     * The player's last move and the reply to it are the first two moves of the engine's line
+     * from a decisive position: they found the idea and are playing it out, so a question about
+     * the next step asks what they already know (Tai's desktop, 2026-09-24: after Qd1+ Rxd1
+     * Rxd1+ Qe1, "You can mate in one move ... Which check leaves their king no square at
+     * all?", heard as the puzzle's hint). An opponent who leaves the line keeps the question.
+     */
+    private fun carryingOut(position: CoachPosition): Boolean {
+        val own = moves[position.ply - 1]
+        val reply = moves[position.ply]
+        val before = positions[position.ply - 2]
+        if (own == null || reply == null || !own.byUser || before == null) return false
+        val analysis = before.analysis
+        if (analysis == null || !analysis.decisive || analysis.lines.isEmpty()) return false
+        return analysis.lines[0].moves.take(2) == listOf(own.uci, reply.uci)
     }
 
     /**

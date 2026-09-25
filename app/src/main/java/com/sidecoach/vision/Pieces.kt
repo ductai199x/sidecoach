@@ -207,6 +207,22 @@ object Pieces {
         override fun hashCode(): Int = System.identityHashCode(this)
     }
 
+    /**
+     * `pieces.mark_on_empty`: a little drawn on an empty square and nothing more -- a
+     * legal-move dot, a label -- less than the smallest piece covers, no arrow over it, no drag
+     * outline on it, nothing hiding it. It is no evidence while pieces move (a dot is read as
+     * unknown for that: see [ThemeModel.classify]), but a board read on the player's word
+     * counts it as the empty square it is: a piece left selected put dots on five squares, and
+     * "Re-read the screen" failed every time (Tai's desktop, 2026-09-24, dump
+     * 20260924-165745).
+     */
+    fun markOnEmpty(reading: CellReading): Boolean =
+        reading.kind == Kind.UNKNOWN &&
+            !reading.drawn &&
+            !reading.hover &&
+            !reading.covered &&
+            reading.fgFraction < PIECE_MIN_FRACTION
+
     /** Which side a piece belongs to, as `sidecoach.events.Side`. */
     enum class Side { WHITE, BLACK }
 }

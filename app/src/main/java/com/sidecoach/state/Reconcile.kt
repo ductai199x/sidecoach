@@ -1060,7 +1060,10 @@ class Reconciler(
             resyncCandidate = null
             return mutableListOf()
         }
-        val placement = placement(obs).boardFen()
+        // Held as a view: the pieces and the squares the site highlights, which a move
+        // starting changes first (`GamePipeline.view`).
+        val placement = placement(obs).boardFen() + "|" +
+            highlightedSquares(obs).sorted().joinToString(",") { squareName(it) }
         val candidate = resyncCandidate
         resyncCandidate = if (candidate != null && candidate.first == placement) {
             Triple(placement, candidate.second + 1, candidate.third)

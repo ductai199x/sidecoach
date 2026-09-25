@@ -106,6 +106,16 @@ class InterjectionPolicy(
         userToMoveValue = userToMove
     }
 
+    /**
+     * A new game, or a position adopted: move numbers start again, so the decisive stretch
+     * pointed at in the last one says nothing about this one. A puzzle's first position was
+     * skipped as part of the previous puzzle's stretch, which ended at a higher ply (Tai's
+     * desktop, 2026-09-24: the mate in three was never asked, only hinted 45 s later).
+     */
+    fun restart() {
+        lastDecisivePly = null
+    }
+
     /** The user's clock, when the screen shows one. */
     fun setRemaining(remaining: Int?) {
         remainingMs = remaining
