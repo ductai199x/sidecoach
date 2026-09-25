@@ -48,7 +48,7 @@ def test_a_stump_never_reaches_the_user_even_when_it_is_the_only_clean_candidate
         return ["the rook on f7 is not there"] if "rook on f7" in text else []
 
     first = "[p=0.6] Your rook on f7 is strong. What next?\n[p=0.4] Given"
-    second = "[p=0.7] Your king is safe for now. What is their threat?"
+    second = "[p=0.7] Their king on e8 is short of squares. What is their threat?"
     provider = ScriptedProvider([first, second])
     coach = Coach(
         provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), draft_check=checker
@@ -56,7 +56,7 @@ def test_a_stump_never_reaches_the_user_even_when_it_is_the_only_clean_candidate
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6), 7.0)
     out = _messages(coach)
-    assert out[0].text == "Your king is safe for now. What is their threat?"
+    assert out[0].text == "Their king on e8 is short of squares. What is their threat?"
     spoken = coach.spoken[-1]
     assert spoken.attempts == 2
     # Both calls are kept for the log: what the model wrote and how the candidates fared.

@@ -47,6 +47,7 @@ from taxonomy import sentence_count  # noqa: E402
 
 from sidecoach.cli import _draft_check  # noqa: E402
 from sidecoach.coach.coach import _after_best, _Request  # noqa: E402
+from sidecoach.coach.conversation import IDEA_LEVEL_WORDS  # noqa: E402
 from sidecoach.coach.disclosure import PositionFacts, leak_check  # noqa: E402
 from sidecoach.coach.effects import effects_text  # noqa: E402
 from sidecoach.coach.facts import ascii_board  # noqa: E402
@@ -255,10 +256,7 @@ def _played_sans(item: dict) -> list[str]:
 def _level_words(level: DisclosureLevel) -> str:
     return {
         DisclosureLevel.SILENT: "nothing about the position",
-        DisclosureLevel.IDEA: (
-            "the idea: the goal, the pattern and why it works; no square, no move, and not "
-            "which of the player's own pieces does it"
-        ),
+        DisclosureLevel.IDEA: IDEA_LEVEL_WORDS,
         DisclosureLevel.FOCUS: "the idea, the target and the piece; not the move",
         DisclosureLevel.MOVE: "the move and why it works; not the whole line",
         DisclosureLevel.LINE: "everything",

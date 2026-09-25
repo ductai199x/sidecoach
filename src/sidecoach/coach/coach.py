@@ -32,12 +32,13 @@ import chess
 from sidecoach.coach import idea_words, situation
 from sidecoach.coach.annotations import annotations_for, mentions_in
 from sidecoach.coach.bag import Bags
-from sidecoach.coach.conversation import Conversation, PlyRecord
+from sidecoach.coach.conversation import IDEA_LEVEL_WORDS, Conversation, PlyRecord
 from sidecoach.coach.disclosure import (
     Disclosure,
     PositionFacts,
     Unlock,
     leak_check,
+    squares_in,
 )
 from sidecoach.coach.facts import describe_move, facts_from_analysis
 from sidecoach.coach.named import EngineLike as NamedEngine
@@ -742,7 +743,11 @@ class _FirstCandidate:
         if sum(ch.isalpha() for ch in fresh) < 2:
             return True  # a number and a stop: the sentence it begins is still coming
         faults = self.check(fresh) if fresh else []
-        faults = [f for f in faults if not f.startswith("too long") and "question" not in f]
+        # Sentence by sentence, only what a sentence can get wrong: the length, the closing
+        # question and what the whole must name are the whole reply's.
+        faults = [
+            f for f in faults if not f.startswith(("too long", "left out")) and "question" not in f
+        ]
         if faults:
             self.problems = faults
             return False
@@ -877,6 +882,13 @@ class _Request:
     # A fast game: the fallback -- the template written from the board -- is the reply,
     # and the model is not called (it could not keep up).
     template_only: bool = False
+    # What a reply must name, one of: the better move the lesson's template names, or a
+    # square the hint's template names. The template is the floor; a true reply that says
+    # less than it was a loss the checks let through (parity pass, 2026-09-25).
+    must_name: tuple[str, ...] = ()
+    # More boards a statement may be true on: after the move the player just made, and along
+    # the engine's line from there -- the board the model is shown for a lesson after a move.
+    frames: list[chess.Board] = field(default_factory=list)
 
 
 def _after_best(request: _Request) -> list[chess.Board]:
@@ -901,7 +913,25 @@ def _after_best(request: _Request) -> list[chess.Board]:
     # And along what the directive disclosed: the line the player asked about, examined.
     if request.disclosed:
         frames += disclosed_frames(request.board, request.disclosed.splitlines())
-    return frames
+    return frames + request.frames
+
+
+def _names(text: str, item: str) -> bool:
+    """Whether `text` names `item`: a square, or a move in SAN (with or without its mark)."""
+    if re.fullmatch(r"[a-h][1-8]", item):
+        return item in squares_in(text)
+    core = item.rstrip("+#")
+    return re.search(rf"(?<![A-Za-z]){re.escape(core)}[+#]?(?![A-Za-z0-9])", text) is not None
+
+
+def omitted(text: str, must_name: Sequence[str]) -> str | None:
+    """The fault when `text` names none of `must_name`; None when it names one, or there is
+    nothing it must name."""
+    if not must_name or any(_names(text, item) for item in must_name):
+        return None
+    if len(must_name) == 1:
+        return f"left out {must_name[0]}: the reply must name it"
+    return f"left out the key fact: the reply must name one of {', '.join(must_name)}"
 
 
 VERIFY_SYSTEM = (
@@ -1310,6 +1340,9 @@ class Speaker:
             found.append("no closing question")
         if wants_question is False and text.rstrip().endswith("?"):
             found.append("a question where the task allows none")
+        left_out = omitted(text, request.must_name)
+        if left_out:
+            found.append(left_out)
         if self.draft_check is not None:
             for problem in self.draft_check(text, request.board, _after_best(request)):
                 san = problem.split(":", 1)[0].strip()
@@ -1416,6 +1449,13 @@ _ASK_EVAL = re.compile(
 _ASK_HINT = re.compile(
     r"^\W*(?:(?:give me |i need |can i have |i want |any |another |one more )?(?:a |an |some )?"
     r"(?:hint|clue|nudge|help|tip)s?(?: please)?)\W*$",
+    re.IGNORECASE,
+)
+# A question about what to aim for: the first hint answers it, and its template is the floor.
+_ASK_AIM = re.compile(
+    r"\bwhat (?:should|do|can|could) i (?:be )?(?:aim|go|look|play|work|strive)(?:ing)? for\b"
+    r"|\bwhat(?:'s| is) (?:the|my) (?:plan|idea|goal|aim)\b|\bwhat am i (?:aiming|going|playing) "
+    r"for\b|\bwhat to (?:aim|go) for\b",
     re.IGNORECASE,
 )
 # Words that can carry a claim about the board worth checking: a move, a square, a piece.
@@ -2398,16 +2438,33 @@ class Coach:
             elicit=elicit,
         )
         self._take_leads(position, fallback)
+        must_name = self._must_name(trigger, position, fallback, assessment, played, user_text)
         if quick:
             # The template is already out as the quick answer; a model reply that fails the
             # checks adds nothing, rather than the same line a second time.
-            fallback = ""
+            fallback, must_name = "", ()
         directive = f"{self._level_line(level, position)}{instruction}"
+        faced = ""
+        frames: list[chess.Board] = []
+        if played is not None and trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE):
+            # The lesson after a move is taught from the position the player faced, which the
+            # record keeps as one line: its sheet goes with the request, and the template's
+            # lesson as the floor (parity pass, 2026-09-25).
+            with self._lock:
+                sheet = self.conversation.faced_text(position.facts, position.board)
+            if sheet:
+                faced = f"\n\n# The position they faced, before {played.san}\n{sheet}"
+            if must_name and fallback:
+                directive += (
+                    "\n\nThe lesson in the board's own words, all of it true -- your reply says at "
+                    f"least this, in your own words, and may say more: {fallback}"
+                )
+            frames = self._frames_after(position, played)
         with self._lock:
             self.conversation.level = level
             harness = self.conversation.render()
             messages: list[ChatMessage] = [
-                {"role": "user", "content": f"{harness}\n\n# Task\n{directive}"},
+                {"role": "user", "content": f"{harness}{faced}\n\n# Task\n{directive}"},
             ]
         request = _Request(
             trigger=trigger,
@@ -2442,8 +2499,66 @@ class Coach:
             # A fast game gets the template, not a model reply; what the player asks, and
             # the review of a game that is over, always get the model.
             template_only=(self.fast_now(ts) and trigger not in (Trigger.USER_ASK, Trigger.REVIEW)),
+            must_name=must_name,
+            frames=frames,
         )
         self.speaker.submit(request)
+
+    def _must_name(
+        self,
+        trigger: Trigger,
+        position: _Position,
+        template: str,
+        assessment: MoveAssessment | None,
+        played: MovePlayed | None,
+        user_text: str | None,
+    ) -> tuple[str, ...]:
+        """What a model reply must name, as its template does: the better move, after a move
+        that was not the best; one of the squares a hint's template names -- the key fact is
+        on the board. Nothing for a word of praise, an answer to a question of the player's
+        own, or a template with none."""
+        if not template:
+            return ()
+        if trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE):
+            if assessment is None or played is None or not assessment.best:
+                return ()
+            try:
+                best = position.board.san(chess.Move.from_uci(assessment.best[0]))
+            except ValueError:
+                return ()
+            return (best,) if best != played.san and _names(template, best) else ()
+        said = user_text or ""
+        hint = trigger in (Trigger.DECISIVE_QUESTION, Trigger.STUCK) or (
+            trigger is Trigger.USER_ASK and bool(_ASK_HINT.match(said) or _ASK_AIM.search(said))
+        )
+        return tuple(sorted(squares_in(template))) if hint else ()
+
+    def _frames_after(self, position: _Position, played: MovePlayed) -> list[chess.Board]:
+        """The board after the move just played, and along the engine's line from there: the
+        board the model is shown, so a true sentence about it is not faulted against the
+        position before the move."""
+        try:
+            move = chess.Move.from_uci(played.uci)
+        except ValueError:
+            return []
+        if move not in position.board.legal_moves:
+            return []
+        board = position.board.copy(stack=False)
+        board.push(move)
+        frames = [board]
+        left = self.positions.get(played.ply)
+        if left is not None and left.analysis is not None and left.analysis.lines:
+            for uci in left.analysis.lines[0].moves[:8]:
+                try:
+                    step = chess.Move.from_uci(uci)
+                except ValueError:
+                    break
+                if step not in board.legal_moves:
+                    break
+                board = board.copy(stack=False)
+                board.push(step)
+                frames.append(board)
+        return frames
 
     def _record_moves(self) -> frozenset[str]:
         """The moves the messages name about the game so far: every move played, and the
@@ -2465,10 +2580,7 @@ class Coach:
             return ""
         words = {
             DisclosureLevel.SILENT: "nothing about the position",
-            DisclosureLevel.IDEA: (
-                "the idea: the goal, the pattern and why it works; no square, no move, and "
-                "not which of the player's own pieces does it"
-            ),
+            DisclosureLevel.IDEA: IDEA_LEVEL_WORDS,
             DisclosureLevel.FOCUS: "the idea, the target and the piece; not the move",
             DisclosureLevel.MOVE: "the move and why it works; not the whole line",
             DisclosureLevel.LINE: "everything, the line included",

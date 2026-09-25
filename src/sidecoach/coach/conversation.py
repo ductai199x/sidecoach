@@ -52,6 +52,15 @@ from sidecoach.events import (
 )
 from sidecoach.llm.base import ChatMessage
 
+# What the first hint may say, as the disclosure line and the directive state it: the key
+# fact is named on the board (Tai, 2026-09-24), so "no square" -- the rule before the first
+# hint was a lesson -- told the model to say less than the template.
+IDEA_LEVEL_WORDS = (
+    "the idea: what is at stake and the key fact on the board -- the pieces, squares and "
+    "their moves the facts name -- with the principle behind it; never the player's move, "
+    "the square it goes to, or which of their own pieces moves"
+)
+
 # The engine lines the harness shows: the best three, then three weaker ones, each to
 # this many plies.
 BEST_LINES = 3
@@ -734,6 +743,7 @@ class Conversation:
         "decisive",
         "only_move",
         "nature",
+        "situation",
         "goal",
         "theme",
         "mechanism",
@@ -751,6 +761,13 @@ class Conversation:
     )
     # What a fact is called on the sheet, where its key would not say it.
     _FACT_NAMES = {
+        # The template's first hint whole: its stakes, key fact, principle and trap, several
+        # of which exist nowhere else on the sheet. Without it the model was asked for "the
+        # stakes" and "the trap" and never given them (parity pass, 2026-09-25).
+        "situation": (
+            "the first hint in the board's own words, all of it true (to the player, as it "
+            "stands): the least a hint says"
+        ),
         "theme": "pattern",
         "mechanism": "how it works",
         "question": "a question that sets them looking (to the player, as it stands)",
@@ -758,7 +775,7 @@ class Conversation:
         "why": "the move and what it does",
     }
     # The facts addressed to the player, kept in the second person.
-    _TO_THE_PLAYER = ("question", "nudge")
+    _TO_THE_PLAYER = ("question", "nudge", "situation")
 
     @staticmethod
     def _facts_owner(user_to_move: bool) -> str:
@@ -783,6 +800,9 @@ class Conversation:
         user_to_move = board.turn == user_colour
         level = level if user_to_move else DisclosureLevel.LINE
         visible = visible_facts(facts, level)
+        if not user_to_move:
+            # The first hint is the player's: said of the opponent's move it reads as theirs.
+            visible.pop("situation", None)
         side = "player" if user_to_move else "opponent"
         out: list[str] = []
         if record.analysis is not None and record.analysis.opening:
@@ -790,6 +810,19 @@ class Conversation:
             before = previous.analysis.opening if previous and previous.analysis else None
             if before != record.analysis.opening:
                 out.append(f"opening: {record.analysis.opening}")
+        out.extend(self._fact_lines(visible, board, side))
+        return out
+
+    def faced_text(self, facts: PositionFacts, board: chess.Board) -> str:
+        """The facts of the position the player faced before their move, all of them (it is
+        past): the lesson after the move is taught from them, and the record keeps only one
+        line for that position."""
+        visible = visible_facts(facts, DisclosureLevel.LINE)
+        return "\n".join(self._fact_lines(visible, board, "player"))
+
+    def _fact_lines(self, visible: dict, board: chess.Board, side: str) -> list[str]:
+        """The sheet's lines for `visible`, in reading order, in the third person for `side`."""
+        out: list[str] = []
         for key in self._FACT_KEYS:
             value = visible.get(key)
             if value in (None, "", [], False):
@@ -935,10 +968,7 @@ class Conversation:
     def _level_words(level: DisclosureLevel) -> str:
         return {
             DisclosureLevel.SILENT: "say nothing about the position",
-            DisclosureLevel.IDEA: (
-                "the idea: the goal, the pattern and why it works; no square, no move, and "
-                "not which of the player's own pieces does it"
-            ),
+            DisclosureLevel.IDEA: IDEA_LEVEL_WORDS,
             DisclosureLevel.FOCUS: "the idea, the target and the piece; not the move",
             DisclosureLevel.MOVE: "the move and why it works may be named",
             DisclosureLevel.LINE: "everything, the line included",

@@ -144,7 +144,9 @@ def _record(messages: list[ChatMessage]) -> str:
 
 
 def test_a_decisive_moment_earns_the_idea_and_names_no_move() -> None:
-    coach, provider = _coach(["You can mate right now. Which check leaves their king stuck?"])
+    coach, provider = _coach(
+        ["You can mate right now: their king on e8 is short of squares. Which check does it?"]
+    )
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6), 7.0)
     out = _messages(coach)
@@ -174,7 +176,13 @@ def test_a_decisive_moment_earns_the_idea_and_names_no_move() -> None:
     assert "pattern: a mating attack" in current
     for secret in ("Qxf7", "queen", "h5f7", "candidates", "Checks"):
         assert secret not in current, secret
-    assert "the idea: the goal, the pattern and why it works" in _directive(messages)
+    # The first hint whole is on the sheet, the least the model's says (parity, 2026-09-25),
+    # and the idea level names the key fact on the board, as the first hint does.
+    assert "the first hint in the board's own words" in current
+    assert "Their king on e8 has one free square" in current
+    assert "the idea: what is at stake and the key fact on the board" in _directive(messages)
+    assert "no square" not in _directive(messages)
+    assert out[0].text.startswith("You can mate right now"), "named the key square: it stands"
     # And a second question for the same position is not asked.
     coach.on_event(_mate_analysis(6), 8.0)
     assert _messages(coach) == []
@@ -259,7 +267,12 @@ def test_naming_the_move_yourself_earns_the_candidate_level() -> None:
 
 
 def test_feedback_after_the_users_move_may_say_everything_about_that_position() -> None:
-    coach, provider = _coach(["...", "Bxf7+ was fine, but Qxf7 was mate on the spot."])
+    coach, provider = _coach(
+        [
+            "Their king on e8 is nearly out of squares.",
+            "Bxf7+ was fine, but Qxf7 was mate on the spot. Do you see why?",
+        ]
+    )
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6), 7.0)
     _messages(coach)
@@ -302,6 +315,14 @@ def test_feedback_after_the_users_move_may_say_everything_about_that_position() 
     assert "the engine preferred 4. Qxf7#" in played
     # The record is at full disclosure: the earlier verdicts stand in full.
     assert "3... Nf6 (the opponent)" in _record(messages)
+    # The lesson is taught from the position they faced, which the record keeps as one line:
+    # its sheet goes with the request, and the template's lesson as the floor, whose better
+    # move the reply must name (parity pass, 2026-09-25).
+    content = str(messages[-1]["content"])
+    faced = content.split("# The position they faced, before Bxf7+")[1].split("# Task")[0]
+    assert "goal: the player can mate in one move" in faced
+    assert "The lesson in the board's own words" in _directive(messages)
+    assert coach.spoken[-1].problems == [], coach.spoken[-1].problems
 
 
 def test_stuck_gives_the_idea_then_the_focus_and_the_opponents_turn_is_silent() -> None:
@@ -509,17 +530,33 @@ def test_the_draft_checker_can_veto_a_false_claim() -> None:
     def checker(text: str, board: chess.Board, after: Sequence[chess.Board] = ()) -> list[str]:
         return ["the rook on f7 is not there"] if "rook on f7" in text else []
 
-    provider = ScriptedProvider(
-        ["Your rook on f7 is strong.", "Your king is safe for now, is it not?"]
-    )
+    fine = "Their king on e8 is short of squares, is it not?"
+    provider = ScriptedProvider(["Your rook on f7 is strong.", fine])
     coach = Coach(
         provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), draft_check=checker
     )
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6), 7.0)
     out = _messages(coach)
-    assert out[0].text == "Your king is safe for now, is it not?"
+    assert out[0].text == fine
     assert coach.spoken[-1].attempts == 2 and coach.speaker.fallbacks == 0
+
+
+def test_a_reply_that_says_less_than_the_template_is_not_said() -> None:
+    """The template is the floor (parity pass, 2026-09-25): a first hint that names nothing of
+    the key fact -- true, and thinner than the free coach's -- is sent back, and the template
+    speaks when the second is no better."""
+    thin = "Your king is safe for now, is it not?"
+    coach, provider = _coach([thin, "Think about checks. Which one works?"])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6), 7.0)
+    out = _messages(coach)
+    assert out[0].text != thin and "e8" in out[0].text, out[0].text
+    spoken = coach.spoken[-1]
+    assert spoken.attempts == 2 and coach.speaker.fallbacks == 1
+    assert any(p.startswith("left out") for p in spoken.problems), spoken.problems
+    _, retry = provider.prompts[1]
+    assert "left out" in retry[-1]["content"] and "e8" in retry[-1]["content"]
 
 
 def test_verbalized_replies_parse_into_weighted_candidates() -> None:
@@ -543,7 +580,10 @@ def test_verbalized_sampling_keeps_the_checked_candidate() -> None:
     def checker(text: str, board: chess.Board, after: Sequence[chess.Board] = ()) -> list[str]:
         return ["the rook on f7 is not there"] if "rook on f7" in text else []
 
-    block = "[p=0.6] Your rook on f7 is strong.\n[p=0.4] Your king is safe for now, is it not?"
+    block = (
+        "[p=0.6] Your rook on f7 is strong.\n"
+        "[p=0.4] Their king on e8 is short of squares, is it not?"
+    )
     provider = ScriptedProvider([block])
     coach = Coach(
         provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), draft_check=checker
@@ -551,7 +591,7 @@ def test_verbalized_sampling_keeps_the_checked_candidate() -> None:
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6), 7.0)
     out = _messages(coach)
-    assert out[0].text == "Your king is safe for now, is it not?"
+    assert out[0].text == "Their king on e8 is short of squares, is it not?"
     assert coach.spoken[-1].attempts == 1 and coach.speaker.fallbacks == 0
 
 
