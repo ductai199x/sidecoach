@@ -1,7 +1,10 @@
 package com.sidecoach.vision
 
 import android.util.Log
+import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.core.Size
+import org.opencv.imgproc.Imgproc
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.max
@@ -24,6 +27,25 @@ class Exemplar(
 )
 
 /**
+ * A piece kind's start-position crop in grey: the reference the phase landing measures a cell's
+ * shift against (`ThemeModel.landing_crops`).
+ */
+class LandingCrop(val rows: Int, val cols: Int, val pixels: ByteArray) {
+    companion object {
+        /** A cell's BGR crop in grey, as `cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)`. */
+        fun of(crop: Mat): LandingCrop {
+            val grey = Mat()
+            Imgproc.cvtColor(crop, grey, Imgproc.COLOR_BGR2GRAY)
+            val pixels = ByteArray(grey.rows() * grey.cols())
+            grey.get(0, 0, pixels)
+            val out = LandingCrop(grey.rows(), grey.cols(), pixels)
+            grey.release()
+            return out
+        }
+    }
+}
+
+/**
  * Per-theme piece recognition bootstrapped from the start position: the `ThemeModel` of
  * `sidecoach/vision/pieces.py`, ported.
  *
@@ -44,6 +66,13 @@ class ThemeModel(
     val exemplarVectors: Array<FloatArray>,
     val exemplarLabels: List<String>,
     val whiteAtBottom: Boolean,
+    /**
+     * Each piece kind's start-position crop in grey, the reference the phase landing measures a
+     * cell's shift against (an instance off the labelled edge cells). Empty for a set learned
+     * before the phone kept them: its pieces land by the centroid, as the desktop's do for a
+     * kind with no crop.
+     */
+    val landingCrops: Map<String, LandingCrop> = emptyMap(),
 ) {
 
     /** The last frame's cells: the crop, its silhouette, the cover flag, the cell size, the reading. */
@@ -222,7 +251,7 @@ class ThemeModel(
                     readings.add(last.reading)
                     continue
                 }
-                val reading = classify(sils[i], i / 8, i % 8, covered[i], cellPx, vectors[i])
+                val reading = classify(sils[i], i / 8, i % 8, covered[i], cellPx, vectors[i], crops[i])
                 cells[i] = Cell(bytes[i], sils[i], covered[i], cellPx, reading)
                 readings.add(reading)
             }
@@ -285,6 +314,7 @@ class ThemeModel(
         covered: Boolean,
         cellPx: Double?,
         vector: FloatArray?,
+        crop: Mat? = null,
     ): Pieces.CellReading {
         val (kindOfTint, tint) = tintKind(sil, row, col)
         // Red is the colour of marks, checks and premove queues, never of a move.
@@ -307,7 +337,7 @@ class ThemeModel(
         if (vector != null && sil.fraction >= Pieces.PIECE_MIN_FRACTION) {
             // Nothing is nothing, whatever tint it wears, and a hint dot is no evidence:
             // the embedding is asked only where a piece's worth of foreground is.
-            return fromEmbedding(sil, vector, highlighted, tint, cellPx)
+            return fromEmbedding(sil, vector, highlighted, tint, cellPx, crop)
         }
         if (sil.fraction <= Pieces.EMPTY_MAX_FRACTION) {
             return reading(
@@ -321,7 +351,8 @@ class ThemeModel(
     /**
      * The cell named by the nearest of the start position's cells in embedding space. The
      * side comes from the piece's brightness only where the embedding's nearest white and
-     * nearest black lie close.
+     * nearest black lie close. Where the piece sits is [Pieces.LANDING]'s: the phase
+     * correlation against the piece's own start crop by default.
      */
     private fun fromEmbedding(
         sil: Sil,
@@ -329,6 +360,7 @@ class ThemeModel(
         highlighted: Boolean,
         tint: String?,
         cellPx: Double?,
+        crop: Mat? = null,
     ): Pieces.CellReading {
         val sims = FloatArray(exemplarVectors.size)
         for (i in exemplarVectors.indices) {
@@ -378,10 +410,19 @@ class ThemeModel(
                 landing.second - exemplar.landingCentroid.second,
             )
         }
-        // The desktop's default landing is the phase correlation of the cell against the
-        // piece's own start crop; the centroid rule is its documented alternative and is
-        // what is ported here. The crops the phase rule needs come with the theme cache.
-        val settled = offset <= Pieces.settleTolerance(cellPx) && !sil.hover
+        // The desktop's `still` is always true unless SIDECOACH_STILLNESS is set (off by
+        // default, and never ported): a piece's settling is its offset and the hover alone.
+        val reference = landingCrops[label]
+        val settled = if (Pieces.LANDING == "phase" && crop != null && reference != null) {
+            offset = phaseShift(reference, crop)
+            var tolerance = Pieces.SETTLED_TOLERANCE
+            if (cellPx != null && cellPx != 0.0) {
+                tolerance = max(Pieces.SETTLED_TOLERANCE, Pieces.SETTLED_FLOOR_PX / cellPx)
+            }
+            offset <= tolerance && !sil.hover
+        } else {
+            offset <= Pieces.settleTolerance(cellPx) && !sil.hover
+        }
         if (margin < CellEmbedder.MIN_MARGIN && runnerIndex != null && exemplarLabels[runnerIndex] == "empty") {
             // As near an empty square as a piece: something on the square that is neither,
             // a hint, a label, a mark's edge. No evidence, and no drag either.
@@ -394,6 +435,30 @@ class ThemeModel(
             sil, Pieces.Kind.PIECE, symbol = label, colour = colour, confidence = margin.toDouble(),
             highlighted = highlighted, settled = settled, hover = sil.hover, offset = offset, tint = tint,
         )
+    }
+
+    /**
+     * `pieces._phase_shift`: how far the piece in [crop] (BGR) sits from where it sits in
+     * [reference] (grey), as a share of the cell, by phase correlation under a Hanning window.
+     * Internal for the landing bench ([com.sidecoach.vision.LandingCostTest]).
+     */
+    internal fun phaseShift(reference: LandingCrop, crop: Mat): Double {
+        val ref = Mat(reference.rows, reference.cols, CvType.CV_8UC1)
+        ref.put(0, 0, reference.pixels)
+        val grey = Mat()
+        Imgproc.cvtColor(crop, grey, Imgproc.COLOR_BGR2GRAY)
+        if (grey.rows() != ref.rows() || grey.cols() != ref.cols()) {
+            Imgproc.resize(grey, grey, Size(ref.cols().toDouble(), ref.rows().toDouble()))
+        }
+        val window = Mat()
+        Imgproc.createHanningWindow(window, Size(ref.cols().toDouble(), ref.rows().toDouble()), CvType.CV_32F)
+        val a = Mat()
+        ref.convertTo(a, CvType.CV_32F)
+        val b = Mat()
+        grey.convertTo(b, CvType.CV_32F)
+        val shift = Imgproc.phaseCorrelate(a, b, window)
+        for (m in listOf(ref, grey, window, a, b)) m.release()
+        return hypot(shift.x, shift.y) / reference.rows
     }
 
     /**
@@ -677,6 +742,17 @@ class ThemeModel(
                 if (distance(lightBg, darkBg) <= Pieces.COVER_TOLERANCE) {
                     return null  // the two square colours cannot be told apart
                 }
+                // The phase landing's references: one crop per piece kind, from a cell off the
+                // labelled left column and bottom row where it can be.
+                val landingCrops = LinkedHashMap<String, LandingCrop>()
+                for (r in 0 until 8) {
+                    for (c in 0 until 8) {
+                        val symbol = labels[r * 8 + c]
+                        if (symbol == "empty") continue
+                        if (symbol in landingCrops && (c == 0 || r == 7)) continue
+                        landingCrops[symbol] = LandingCrop.of(crops[r * 8 + c])
+                    }
+                }
                 val vectors = embedder.embed(crops)
                 if (!startReadsAsStart(vectors, labels)) {
                     Log.i(TAG, "a piece is hidden or spoiled; the next start frame gets a chance")
@@ -691,6 +767,7 @@ class ThemeModel(
                     exemplarVectors = vectors,
                     exemplarLabels = labels,
                     whiteAtBottom = whiteAtBottom,
+                    landingCrops = landingCrops,
                 )
             } finally {
                 crops.forEach { it.release() }

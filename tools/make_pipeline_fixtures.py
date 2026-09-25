@@ -46,7 +46,6 @@ from sidecoach.events import (  # noqa: E402
 )
 from sidecoach.replay.recording import ChangeGate, board_gate  # noqa: E402
 from sidecoach.state.pipeline import GamePipeline  # noqa: E402
-from sidecoach.vision import pieces  # noqa: E402
 from sidecoach.vision.squares import BoardGeometry  # noqa: E402
 from sidecoach.vision.theme_cache import ThemeCache  # noqa: E402
 from tests import synth  # noqa: E402
@@ -543,15 +542,6 @@ SCENARIOS = {
 }
 
 
-# Scenarios recorded with the landing rule the phone's recogniser uses: the centroid, the
-# desktop's documented alternative to its default phase correlation (`ThemeModel.fromEmbedding`
-# says why). The two read a slide's trail-blended frames differently -- the queen caught
-# mid-slide is still landing to one and landed to the other -- and these scenarios are about
-# the reconciler, not about that choice. Under either rule the desktop before 8fadeda invents
-# moves on them and the desktop after it does not.
-PHONE_LANDING = {"slide-rook-green", "slide-queen-green"}
-
-
 def run(name: str, states: list[dict]) -> dict:
     folder = OUT / name
     folder.mkdir(parents=True, exist_ok=True)
@@ -633,13 +623,7 @@ def main() -> None:
     OUT.mkdir(parents=True)
     runs = []
     for name, build in SCENARIOS.items():
-        landing = pieces.LANDING
-        if name in PHONE_LANDING:
-            pieces.LANDING = "centroid"
-        try:
-            data = run(name, build())
-        finally:
-            pieces.LANDING = landing
+        data = run(name, build())
         moves = sum(
             1 for f in data["frames"] for line in f["events"] if line.startswith("MovePlayed")
         )

@@ -124,6 +124,21 @@ object Pieces {
      */
     const val COLOUR_TIE = 0.05
 
+    /**
+     * Where a piece sits, under the embedding matcher (`pieces.LANDING`): "phase", the phase
+     * correlation of the cell against the named piece's start-position crop, which measures the
+     * shift itself (no silhouette: at 0.03, 0.06, 0.1 and 0.2 of a cell off it read 0.031,
+     * 0.062, 0.098 and 0.199 over eight sets, three sizes, both square colours, highlighted or
+     * not, and 0.033 at rest with a pixel of lock jitter; 0.9% of pieces at rest and 0.1% of
+     * pieces a tenth off wrongly called at the 0.08 tolerance; unmoved by a badge, the check
+     * glow, a hint ring, an arrow, a tint or a label); "centroid", the silhouette's centroid
+     * against the exemplar's (the overlap's rule). Both need the hover outline absent. The
+     * desktop reads it from `SIDECOACH_LANDING`; the phone has no environment to read, so it is
+     * a property a bench may set ([com.sidecoach.vision.LandingCostTest]).
+     */
+    @Volatile
+    var LANDING: String = "phase"
+
     /** The fill read under the exemplar's mask (`_fill_side`). */
     const val FILL_SIDE_ERODE = 2
     const val FILL_SIDE_MIN_PIXELS = 30

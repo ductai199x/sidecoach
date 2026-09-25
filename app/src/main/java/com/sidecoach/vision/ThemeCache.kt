@@ -25,8 +25,13 @@ import kotlin.math.sqrt
  */
 object ThemeCache {
 
-    /** 1: the first Android format. The desktop's numbering is its own file's. */
-    const val CACHE_VERSION = 1
+    /**
+     * 2: the landing crops travel with the theme (the desktop's 10). 1, the first Android
+     * format, has none and still reads: its pieces land by the centroid until the set is
+     * learned again from a start position. The desktop's numbering is its own file's.
+     */
+    const val CACHE_VERSION = 2
+    const val CACHE_VERSION_NO_CROPS = 1
 
     /** Square colours within this many levels share a fingerprint (tolerates lighting). */
     private const val QUANTUM = 8
@@ -225,7 +230,10 @@ class ThemeStore(private val directory: File) {
         if (!palettes.containsKey(key)) {
             palettes[key] = try {
                 DataInputStream(file.inputStream().buffered()).use { stream ->
-                    if (stream.readInt() != ThemeCache.CACHE_VERSION) return@use null
+                    val version = stream.readInt()
+                    if (version != ThemeCache.CACHE_VERSION && version != ThemeCache.CACHE_VERSION_NO_CROPS) {
+                        return@use null
+                    }
                     val light = DoubleArray(3) { stream.readDouble() }
                     val dark = DoubleArray(3) { stream.readDouble() }
                     light to dark
@@ -272,10 +280,18 @@ class ThemeStore(private val directory: File) {
             out.writeInt(rank)
             writeBits(out, glyph)
         }
+        out.writeInt(model.landingCrops.size)
+        for ((symbol, crop) in model.landingCrops) {
+            out.writeUTF(symbol)
+            out.writeInt(crop.rows)
+            out.writeInt(crop.cols)
+            out.write(crop.pixels)
+        }
     }
 
     private fun read(input: DataInputStream): ThemeModel? {
-        if (input.readInt() != ThemeCache.CACHE_VERSION) return null
+        val version = input.readInt()
+        if (version != ThemeCache.CACHE_VERSION && version != ThemeCache.CACHE_VERSION_NO_CROPS) return null
         val lightBg = DoubleArray(3) { input.readDouble() }
         val darkBg = DoubleArray(3) { input.readDouble() }
         val whiteAtBottom = input.readBoolean()
@@ -303,6 +319,22 @@ class ThemeStore(private val directory: File) {
         val vectors = Array(vectorCount) { FloatArray(dim) { input.readFloat() } }
         val labels = ArrayList<String>()
         repeat(input.readInt()) { labels.add(input.readUTF()) }
+        val rankLabels = LinkedHashMap<Int, BooleanArray>()
+        repeat(input.readInt()) {
+            val rank = input.readInt()
+            rankLabels[rank] = readBits(input)
+        }
+        val landingCrops = LinkedHashMap<String, LandingCrop>()
+        if (version == ThemeCache.CACHE_VERSION) {
+            repeat(input.readInt()) {
+                val symbol = input.readUTF()
+                val rows = input.readInt()
+                val cols = input.readInt()
+                val pixels = ByteArray(rows * cols)
+                input.readFully(pixels)
+                landingCrops[symbol] = LandingCrop(rows, cols, pixels)
+            }
+        }
         val model = ThemeModel(
             exemplars = exemplars,
             lightBg = lightBg,
@@ -312,12 +344,8 @@ class ThemeStore(private val directory: File) {
             exemplarVectors = vectors,
             exemplarLabels = labels,
             whiteAtBottom = whiteAtBottom,
+            landingCrops = landingCrops,
         )
-        val rankLabels = LinkedHashMap<Int, BooleanArray>()
-        repeat(input.readInt()) {
-            val rank = input.readInt()
-            rankLabels[rank] = readBits(input)
-        }
         model.rankLabels = rankLabels
         return model
     }
