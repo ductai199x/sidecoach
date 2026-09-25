@@ -804,6 +804,12 @@ def main() -> None:
         help="judge each judged moment's template too and write the parity report",
     )
     ap.add_argument(
+        "--no-prefer",
+        dest="prefer",
+        action="store_false",
+        help="with --floor: skip the A-or-B preference between the AI reply and the template",
+    )
+    ap.add_argument(
         "--reuse-stale",
         action="store_true",
         help="read items and judgments another version of the code made",
@@ -918,7 +924,8 @@ def dry_run(
     stop_after = stops(catalogue_of(items), {it["id"] for it in judged})
     played = [r for r in requests if r["ply"] <= stop_after.get(r["game"].replace("/", "__"), -1)]
     played.sort(key=lambda r: (r["game"], r["ply"]))
-    coach = estimate.coach_estimate(played, prices)
+    completion = estimate.coach_completion(args.coach)
+    coach = estimate.coach_estimate(played, prices, completion=completion)
     asks = [r for r in played if r.get("question") and may_carry_claims(str(r["question"]))]
     words = estimate.words_estimate(len(asks), prices)
 
@@ -928,6 +935,7 @@ def dry_run(
     judge = estimate.judge_estimate(judged, prices, record_of=record)
     to_pair = [it for it in judged if not parity.is_quick(it)]
     floor = estimate.judge_estimate(to_pair, prices, record_of=record) if args.floor else None
+    prefer = parity.prefer_estimate(to_pair, prices, seed) if args.floor and args.prefer else None
     by_trigger = Counter(r["trigger"] for r in played if not r.get("template_only"))
     print(
         f"dry run, {len(games)} games, {len(judged)} moments drawn with seed {seed}"
@@ -938,14 +946,17 @@ def dry_run(
         f" prices ${prices[0]}/{prices[1]}/{prices[2]} per M (prompt/cached/completion)",
         flush=True,
     )
-    print(f"  coach: {coach.line()}")
+    print(f"  coach ({args.coach}, ~{completion} completion tokens a call): {coach.line()}")
     print(f"  the player's words (claims, planner): {words.line()}")
     print(f"  judge: {judge.line()}")
     if floor is not None:
         print(f"  floor: {floor.line()} ({len(judged) - len(to_pair)} quick follow-ups not paired)")
+    if prefer is not None:
+        print(f"  preference, one A/B question a paired moment: {prefer.line()}")
     total = coach.add(words).add(judge)
-    if floor is not None:
-        total = total.add(floor)
+    for part in (floor, prefer):
+        if part is not None:
+            total = total.add(part)
     print(
         f"  a round: ~${total.usd:.2f}; {rounds} round(s): ~${total.usd * rounds:.2f}"
         f" (budget ${args.budget_usd:.2f}). Assumptions: estimate.py.",
@@ -1239,6 +1250,20 @@ def run(args: argparse.Namespace) -> None:
                 reuse_stale=args.reuse_stale,
             )
             rows = parity.pair(by_id, own, floor)
+            prefs = (
+                parity.judge_prefer(
+                    by_id,
+                    rows,
+                    run,
+                    judge,
+                    ledger,
+                    seed=seed,
+                    workers=args.judge_workers,
+                    reuse_stale=args.reuse_stale,
+                )
+                if args.prefer
+                else []
+            )
             path = parity.write_report(
                 run,
                 rows,
@@ -1246,12 +1271,19 @@ def run(args: argparse.Namespace) -> None:
                 seed=seed,
                 per_game=args.moments_per_game,
                 latency=latency,
+                prefer=prefs,
             )
             outcomes = Counter(row["outcome"] for row in rows)
+            preferred = (
+                f"; the AI preferred in {sum(p['ai_preferred'] for p in prefs)} of {len(prefs)}"
+                if prefs
+                else ""
+            )
             print(
                 "  parity: "
                 + ", ".join(f"{k} {outcomes.get(k, 0)}" for k in parity.OUTCOMES)
                 + f"; template spoke {left_out.get('rejected', 0)}"
+                + preferred
                 + f" -> {path}",
                 flush=True,
             )
@@ -1359,6 +1391,10 @@ def run(args: argparse.Namespace) -> None:
                     "ledger": ledger.summary(),
                     "commit": version,
                     "run": run,
+                    "coach": args.coach,
+                    "seed": seed,
+                    "drawn": sorted(wanted_ids),
+                    "judged": sorted(j["id"] for j in judgments),
                 },
                 indent=1,
                 ensure_ascii=False,

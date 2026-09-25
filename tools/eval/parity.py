@@ -39,9 +39,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import random
 import re
 import sys
+import threading
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,19 +52,25 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import estimate  # noqa: E402
+import judge as judge_module  # noqa: E402
 import stamp  # noqa: E402
 from judge import (  # noqa: E402
     BINARY_SYSTEM,
     BudgetExceeded,
+    JudgeFailed,
     Ledger,
+    _chat_with_backoff,
+    binary_judge,
     evidence_block,
     judge_all,
     reply_status,
     settings_prices,
+    without_coach_words,
 )
 from providers import judge_provider  # noqa: E402
 
 from sidecoach.coach.coach import _names, omitted  # noqa: E402
+from sidecoach.config import load_settings  # noqa: E402
 
 PARITY = ROOT / "data" / "eval" / "parity"
 
@@ -75,6 +84,178 @@ LEFT_OUT_WORDS = {
     "template_only": "no call was made (a fast game)",
     QUICK: "a quick follow-up: its template was already spoken as the answer",
 }
+
+
+# ---- the preference: which reply helps the player more ---------------------------------
+
+PREFER_SYSTEM = (
+    "You compare two replies a chess coach could give at one moment of a game. Answer with "
+    "one letter, A or B, and nothing else. Nothing the coach itself said earlier in the game "
+    "is evidence: its earlier turns are left out of the record."
+)
+
+
+def prefer_question(rating: tuple[int, int] | None = None) -> str:
+    low, high = rating or _rating()
+    return (
+        f"A chess coach said one of these two replies to a player rated about {low} to "
+        f"{high}, in this moment of their game. Which would help that player more -- "
+        "understand the position and play better -- while staying true to the record? "
+        "Answer A or B."
+    )
+
+
+def _rating() -> tuple[int, int]:
+    profile = load_settings().profile
+    return profile.rating_low, profile.rating_high
+
+
+def ai_first(item_id: str, seed: int) -> bool:
+    """Whether the AI reply is shown as A for this item: a seeded coin per item, so the
+    order bias cancels over the moments and each order is known."""
+    return random.Random(f"{seed}:prefer:{item_id}").random() < 0.5
+
+
+def prefer_prompt(
+    item: dict, ai_reply: str, template: str, *, seed: int, rating: tuple[int, int] | None = None
+) -> tuple[str, str, bool]:
+    """(system, user message, whether the AI is A): the record -- the message the coach was
+    given, save its own earlier words -- in the system prompt, the two replies and the
+    question in the user message."""
+    shown = str(item["messages"][-1]["content"]) if item.get("messages") else ""
+    system = PREFER_SYSTEM + "\n\nThe record:\n<<<\n" + without_coach_words(shown) + "\n>>>"
+    first = ai_first(item["id"], seed)
+    a, b = (ai_reply, template) if first else (template, ai_reply)
+    user = (
+        f'Reply A:\n"""\n{a}\n"""\n\nReply B:\n"""\n{b}\n"""\n\nQuestion: {prefer_question(rating)}'
+    )
+    return system, user, first
+
+
+def judge_prefer(
+    by_id: dict[str, dict],
+    rows: list[dict],
+    run: str,
+    judge,
+    ledger: Ledger,
+    *,
+    seed: int,
+    workers: int = 8,
+    reuse_stale: bool = False,
+) -> list[dict]:
+    """One A-or-B question per paired moment, at effort none, one vote: which reply helps
+    the player more while staying true to the record. The order is a seeded coin per item.
+    Kept under `<run>-prefer` (a moment asked once is never asked again); a call that fails
+    or an answer that is neither A nor B is no preference -- it is counted, never scored.
+    Every call is budget-checked on the ledger."""
+    version = stamp.code_version()
+    out_dir = judge_module.JUDGMENTS / f"{run}-prefer"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    done: dict[str, dict] = {}
+    for path in out_dir.glob("*.jsonl"):
+        for line in path.open(encoding="utf-8"):
+            rec = json.loads(line)
+            stamp.check(
+                rec.get("commit"),
+                f"the preference on {rec['id']}",
+                reuse_stale=reuse_stale,
+                current=version,
+            )
+            done[rec["id"]] = rec
+    binary = binary_judge(judge)
+    rating = _rating()
+    lock = threading.Lock()
+    failed = 0
+
+    def ask(row: dict) -> dict:
+        item = by_id[row["id"]]
+        system, user, first = prefer_prompt(
+            item, row["ai"], row["template"], seed=seed, rating=rating
+        )
+        completion = _chat_with_backoff(
+            binary,
+            system,
+            [{"role": "user", "content": user}],
+            ledger,
+            row["id"],
+            max_tokens=5,
+            temperature=0.0,
+            thinking=False,
+        )
+        answer = prefer_answer(completion.text or "")
+        if answer is None:
+            raise JudgeFailed(f"{row['id']}: no A or B in {completion.text!r}")
+        return {
+            "id": row["id"],
+            "class": row["class"],
+            "ai_is": "A" if first else "B",
+            "answer": answer,
+            "ai_preferred": (answer == "A") == first,
+            "commit": version,
+        }
+
+    todo = [r for r in rows if r["id"] not in done]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(ask, row): row for row in todo}
+        try:
+            for fut in as_completed(futures):
+                try:
+                    rec = fut.result()
+                except Exception as exc:  # noqa: BLE001 -- BudgetExceeded is not an Exception
+                    failed += 1
+                    if failed <= 5:
+                        print(f"  preference failed: {type(exc).__name__}: {exc}", flush=True)
+                    continue
+                with lock:
+                    game = by_id[rec["id"]]["game"].replace("/", "__")
+                    with (out_dir / f"{game}.jsonl").open("a", encoding="utf-8") as f:
+                        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    done[rec["id"]] = rec
+        except BudgetExceeded:
+            for fut in futures:
+                fut.cancel()
+            raise
+    if failed:
+        print(f"  {failed} preferences not given (the call failed or no A/B)", flush=True)
+    return [done[r["id"]] for r in rows if r["id"] in done]
+
+
+def prefer_answer(text: str) -> str | None:
+    """ "A" or "B" when the answer is that letter ("A", "B.", "Reply B"); None otherwise --
+    "Both." is not B."""
+    words = re.sub(r"[^A-Za-z]", " ", text).upper().split()
+    if words and words[0] == "REPLY":
+        words = words[1:]
+    return words[0] if words and words[0] in ("A", "B") else None
+
+
+def prefer_summary(prefs: list[dict]) -> list[str]:
+    """The preference's lines for the report: the AI preferred in N of M, by class, and
+    by the order the replies were shown in (so a position bias shows)."""
+    if not prefs:
+        return []
+    n = len(prefs)
+    won = sum(p["ai_preferred"] for p in prefs)
+    lines = [
+        "",
+        f"Preferred (one A/B question a moment, effort none): the AI in {won} of {n}"
+        f" ({won / n:.2f}).",
+    ]
+    for order, label in (("A", "shown first (A)"), ("B", "shown second (B)")):
+        ps = [p for p in prefs if p["ai_is"] == order]
+        if ps:
+            k = sum(p["ai_preferred"] for p in ps)
+            lines.append(f"- the AI {label}: preferred in {k} of {len(ps)}")
+    answered_a = sum(p["answer"] == "A" for p in prefs)
+    lines.append(f"- the judge answered A in {answered_a} of {n} (position bias shows here)")
+    lines += ["", "| class | n | AI preferred |", "|---|---|---|"]
+    by_class: dict[str, list[dict]] = {}
+    for p in prefs:
+        by_class.setdefault(p["class"], []).append(p)
+    for cls in sorted(by_class):
+        ps = by_class[cls]
+        lines.append(f"| {cls} | {len(ps)} | {sum(p['ai_preferred'] for p in ps)} |")
+    return lines
 
 
 def round_seed(seed: int, round_no: int = 1) -> int:
@@ -239,9 +420,11 @@ def summary(
     seed: int | None = None,
     per_game: int | None = None,
     latency: list[tuple[str, int, float, float]] | None = None,
+    prefer: list[dict] | None = None,
 ) -> str:
     """The pairing report, as markdown: the headline -- pass and completeness side by side,
-    the wins each way -- then by class, the moments to read, and the latency."""
+    the wins each way -- then by class, the preference, the latency, and the moments to
+    read."""
     lines = ["# Parity: the AI coach against its template", ""]
     n = len(rows)
     counts = Counter(r["outcome"] for r in rows)
@@ -310,6 +493,7 @@ def summary(
             f"| {cls} | {len(rs)} | {outcomes} | {f.get('fewer', 0)} | {f.get('more', 0)} |"
             f" {_mean(cov)} |"
         )
+    lines += prefer_summary(prefer or [])
     if latency:
         lines += [
             "",
@@ -368,11 +552,13 @@ def write_report(
     seed: int | None = None,
     per_game: int | None = None,
     latency: list[tuple[str, int, float, float]] | None = None,
+    prefer: list[dict] | None = None,
 ) -> Path:
     PARITY.mkdir(parents=True, exist_ok=True)
     md = PARITY / f"{run}.md"
     md.write_text(
-        summary(rows, left_out, seed=seed, per_game=per_game, latency=latency), encoding="utf-8"
+        summary(rows, left_out, seed=seed, per_game=per_game, latency=latency, prefer=prefer),
+        encoding="utf-8",
     )
     (PARITY / f"{run}.json").write_text(
         json.dumps(
@@ -382,6 +568,7 @@ def write_report(
                 "rows": rows,
                 "left_out": dict(left_out),
                 "latency": latency,
+                "prefer": prefer or [],
             },
             indent=1,
             ensure_ascii=False,
@@ -423,6 +610,12 @@ def main() -> None:
     ap.add_argument("--budget-usd", type=float, required=True)
     ap.add_argument("--dry-run", action="store_true", help="estimate the cost; call nothing")
     ap.add_argument("--reuse-stale", action="store_true")
+    ap.add_argument(
+        "--no-prefer",
+        dest="prefer",
+        action="store_false",
+        help="skip the A-or-B preference between the AI reply and the template",
+    )
     args = ap.parse_args()
 
     from icr_play import sample_moments
@@ -465,6 +658,9 @@ def main() -> None:
             estimate.judge_estimate(pairable, prices, record_of=record)
         )
         print(f"dry run: AI arm {len(todo_ai)} + floor arm {len(pairable)} replies: {cost.line()}")
+        if args.prefer:
+            asked = prefer_estimate(pairable, prices, seed)
+            print(f"  preference, {len(pairable)} questions: {asked.line()}")
         return
     judge, thinking = judge_provider(args.judge)
     ledger = Ledger(
@@ -502,17 +698,45 @@ def main() -> None:
             workers=args.judge_workers,
             reuse_stale=args.reuse_stale,
         )
+        rows = pair(items, ai, floor)
+        prefs = (
+            judge_prefer(
+                items,
+                rows,
+                args.run,
+                judge,
+                ledger,
+                seed=seed,
+                workers=args.judge_workers,
+                reuse_stale=args.reuse_stale,
+            )
+            if args.prefer
+            else []
+        )
     except BudgetExceeded as exc:
         print(f"stopped: {exc}", flush=True)
         raise SystemExit(2) from None
-    rows = pair(items, ai, floor)
     latency = latency_by_trigger(with_reply)
     # icr_play.py draws a round's moments with the same seed (round_seed): judged there or
     # drawn here, they are the same moments.
     per_game = None if judged_ids else args.moments_per_game
-    path = write_report(args.run, rows, left_out, seed=seed, per_game=per_game, latency=latency)
-    print(summary(rows, left_out, seed=seed, per_game=per_game, latency=latency))
+    path = write_report(
+        args.run, rows, left_out, seed=seed, per_game=per_game, latency=latency, prefer=prefs
+    )
+    print(summary(rows, left_out, seed=seed, per_game=per_game, latency=latency, prefer=prefs))
     print(f"wrote {path}; {ledger.summary()}", flush=True)
+
+
+def prefer_estimate(items: list[dict], prices: tuple[float, float, float], seed: int):
+    """The preference's cost: one uncached call a paired moment, its prompt the record and
+    the two replies (the template's length stands in for the AI reply's)."""
+
+    def prompt(it: dict) -> str:
+        template = it.get("fallback") or ""
+        system, user, _ = prefer_prompt(it, template, template, seed=seed, rating=(0, 0))
+        return system + user
+
+    return estimate.single_call_estimate([prompt(it) for it in items], prices)
 
 
 if __name__ == "__main__":

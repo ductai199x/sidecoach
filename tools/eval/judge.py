@@ -575,8 +575,11 @@ _PIECE_TYPES = {
 def owner_problems(reply: str, item: dict) -> list[str]:
     """A piece named with an owner and a square ("Black's rook on e7", "your knight on
     f3") checked on the board: the piece there must be that piece and belong to that side,
-    on the position now or on the one the last move was played from. "Black's rook on e7"
-    said of White's rook passed the model judge."""
+    on the position now, on the one the last move was played from, or on one of the boards
+    the coach's own draft check reads along (the request's frames: the engine's lines, the
+    traps, the threats) -- wrong only when wrong on every one, as the coach's check has it,
+    so the judge is never stricter than the coach. "Black's rook on e7" said of White's rook
+    passed the model judge."""
     f = item["moment"]["facts"]
     side = (f.get("user_side") or f.get("side_to_move") or "").lower()
     if side not in ("white", "black"):
@@ -587,6 +590,8 @@ def owner_problems(reply: str, item: dict) -> list[str]:
     if before and before not in fens:
         fens.append(before)
     boards = [chess.Board(x) for x in fens]
+    if item.get("messages") and item.get("trigger"):
+        boards += _after_best(request_for(item, item.get("system", "")))
     problems: list[str] = []
     for match in _OWNED.finditer(reply):
         owner = match.group("owner").lower()
@@ -935,14 +940,12 @@ def _after_null(board: chess.Board) -> chess.Board | None:
 
 
 def checker_rules(text: str, item: dict, provider, reply: str = "") -> tuple[str, str, str]:
-    """The board-checker's ruling on one claim the judge marked unsupported: ("true" |
-    "false" | "unclear", the checker's reason, the claim kind). True on the position now
-    or on the one the last move was played from counts as true; false only when false on
-    both; the kinds the checker cannot read are unclear."""
+    """The board-checker's ruling on one claim: ("true" | "false" | "unclear", the checker's
+    reason, the claim kind). The claims are read out of the sentence by the extractor (a
+    model call, on the ledger); the ruling on them is code (rule_claims)."""
     from sidecoach.coach import claims as claims_mod
 
     m = item["moment"]
-    facts = PositionFacts.model_validate(m["facts"])
     fens = [item.get("fen_now") or item["fen"]]
     if m.get("fen_before_last") and m["fen_before_last"] not in fens:
         fens.append(m["fen_before_last"])
@@ -985,10 +988,51 @@ def checker_rules(text: str, item: dict, provider, reply: str = "") -> tuple[str
     if first is None:
         return "unclear", "", "other"
     found = claims_mod.extract_claims(student, first, provider, thinking=False, max_tokens=4000)
-    # A piece named with no owner ('the King', 'the bishop') may be either side's: the
-    # claim is tried with the opponent's as well, and holds when either reading does.
-    # 'a square attacked by the King' was Black's king on e8 attacking f7, ruled false
-    # against the player's own king.
+    return rule_claims(text, item, found, fens=fens)
+
+
+# The checker's "false" that says it misread the claim rather than found the board against
+# it: a threatened move read as a target square ("h5 is empty; what do you expect to happen
+# there?" for "they threaten ...h5"), and a threat read as the wrong side's ("your rook on c6
+# is yours, not a target"). Not a contradiction: the vote stands (the pilot, 2026-09-25).
+_MISREAD = re.compile(r"is empty; what do you expect|, not a target\b", re.IGNORECASE)
+# The claim kinds the coach's own draft check reads, when the claim says them as it reads
+# them ("the knight on e5 is hanging"): a claim it passes along the request's frames is
+# not faulted here -- the judge is never stricter than the coach on what the coach checks.
+_DRAFT_KINDS = ("hanging", "safe")
+
+_DRAFT: list[Any] = []
+
+
+def _coach_draft_check():
+    if not _DRAFT:
+        _DRAFT.append(_draft_check())
+    return _DRAFT[0]
+
+
+def rule_claims(
+    text: str, item: dict, found: list, *, fens: list[str] | None = None, draft_check=None
+) -> tuple[str, str, str]:
+    """The ruling on a claim sentence from the claims the extractor found in it: code only,
+    no model. ("true" | "false" | "unclear", the reason, the claim kind).
+
+    True when every checkable claim holds on one of the positions -- now, before the last
+    move, along what the directive disclosed, after the moves the claim names, and along the
+    request's own frames (the coach's draft check reads those too). False only for a clear
+    contradiction: never a misreading of the claim (_MISREAD), and never a claim the coach's
+    own draft check reads and passes along the request's frames."""
+    from sidecoach.coach import claims as claims_mod
+
+    m = item["moment"]
+    facts = PositionFacts.model_validate(m["facts"])
+    fens = list(fens) if fens is not None else [item.get("fen_now") or item["fen"]]
+    for fen in item.get("frames") or ():
+        if fen not in fens:
+            fens.append(fen)
+    # A piece named with no owner ('the King', 'the bishop') may be either side's, and a
+    # threat said of the player's piece may be the opponent's on it: each claim is tried
+    # with the other reading as well, and holds when either does. 'a square attacked by
+    # the King' was Black's king on e8 attacking f7, ruled false against the player's own.
     found = _with_owner_variants(found)
     # A move of the game's record, named as such (a review: "17.Nxd8 was accurate"), is
     # not a claim about the board now: it was legal where it was played.
@@ -1031,8 +1075,27 @@ def checker_rules(text: str, item: dict, provider, reply: str = "") -> tuple[str
             # "Undefended" / "loose" says nothing about attackers; the checker's "hanging"
             # does. Whether the piece has a defender is read off the board instead.
             return _undefended_ruling(bad.claim, fens, m["facts"]["user_side"], bad.reason)
+        if _MISREAD.search(bad.reason):
+            return "unclear", bad.reason, bad.claim.kind.value
+        if bad.claim.kind.value in _DRAFT_KINDS and _draft_passes(text, item, draft_check):
+            return "unclear", "the coach's draft check passes it", bad.claim.kind.value
         return "false", bad.reason, bad.claim.kind.value
     return "unclear", results[0][0].reason if results else "", checkable[0].kind.value
+
+
+def _draft_passes(text: str, item: dict, draft_check=None) -> bool:
+    """Whether the coach's own draft check reads a tactic in `text` ("the knight on e5 is
+    hanging") and finds nothing wrong with it along the request's frames."""
+    from sidecoach.coach import claims as claims_mod
+
+    tactic = getattr(claims_mod, "_TACTIC", None)
+    if tactic is None or not tactic.search(text):
+        return False  # the coach's check does not read this claim: the checker rules
+    check = draft_check or _coach_draft_check()
+    if check is None:
+        return False
+    request = request_for(item, item["system"])
+    return not check(text, request.board, _after_best(request))
 
 
 _OWNER_WORD = re.compile(
@@ -1041,20 +1104,38 @@ _OWNER_WORD = re.compile(
 )
 
 
+_OURS_WORD = re.compile(r"\b(my|mine|i|me|our|your)\b", re.IGNORECASE)
+
+
 def _with_owner_variants(found):
-    """Each claim, and for a claim whose subject names a piece with no owner and no
-    square, a twin with the opponent's ('the King' -> 'their King'), marked as such."""
+    """Each claim, and a twin with the other reading of whose it is, marked as such:
+
+    - a subject that names a piece with no owner and no square ('the King') may be the
+      opponent's ('their King');
+    - a threat or an attack said by or of the player's side may be the opponent's on the
+      player's piece: "removing the threat to your rook on c6" came back from the extractor
+      as the player threatening their own rook -- "your rook on c6 is yours, not a target"
+      -- when the key fact was their threat to it (the pilot, 2026-09-25)."""
     from dataclasses import replace
 
     out = []
     for c in found:
         out.append(c)
-        if (
-            c.subject
-            and not _OWNER_WORD.search(c.subject)
-            and c.kind.value in ("attacks", "defends")
-        ):
+        kind = c.kind.value
+        if c.subject and not _OWNER_WORD.search(c.subject) and kind in ("attacks", "defends"):
             out.append(replace(c, subject="their " + c.subject, text=c.text + " [their]"))
+        elif kind in ("threatens", "attacks") and (not c.subject or _OURS_WORD.search(c.subject)):
+            out.append(
+                replace(
+                    c,
+                    subject="they" if kind == "threatens" else "their pieces",
+                    text=c.text + " [their]",
+                )
+            )
+        if kind == "attacks" and c.move:
+            # An attack a move makes or keeps may be another piece's: Ba7+ uncovers the rook
+            # on e1's attack on e5, and "Ba7+ keeps the attack on e5" is true (the pilot).
+            out.append(replace(c, subject="my pieces", text=c.text + " [their]"))
     return out
 
 
@@ -1930,6 +2011,128 @@ def _about_opponents_move(text: str, item: dict) -> bool:
     return re.search(rf"(?<![A-Za-z]){san}[+#]?(?![A-Za-z0-9])", text) is not None
 
 
+_THREAT_TALK = re.compile(
+    r"\bthreat\w*|\bbefore (?:your opponent|they|their|the opponent)\b", re.IGNORECASE
+)
+# A move said as a threat: a SAN move, or a pawn move written with its dots ("...h5") or
+# right after the verb ("threatens h5"); a bare square elsewhere is a place, not a move.
+_THREAT_MOVE = re.compile(
+    r"(?:\.\.\.\s*|\bthreat(?:en)?s?\s+(?:to\s+play\s+)?)(?P<pawn>[a-h](?:x[a-h])?[1-8](?:=[QRBN])?)\b"
+    r"|(?<![A-Za-z])(?P<piece>O-O(?:-O)?|[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h]x[a-h][1-8](?:=[QRBN])?)"
+    r"(?=[+#]?(?![A-Za-z0-9]))"
+)
+# A threat said of a piece: "the threat to it", "under attack", "is attacked".
+_THREAT_ON = re.compile(
+    r"\bthreats? (?:to|against|on)\b|\bunder (?:threat|attack)\b"
+    r"|\b(?:is|are|being|was) (?:threatened|attacked)\b|\battack on\b",
+    re.IGNORECASE,
+)
+_PIECE_SQUARE = re.compile(
+    r"\b(king|queen|rook|bishop|knight|pawn)s?\s+on\s+([a-h][1-8])\b", re.IGNORECASE
+)
+
+
+def known_threats(item: dict) -> set[str]:
+    """The moves the record gives as the opponent's threats: the facts' threats (of the
+    position now and of the one the last move was played from) and every move on a line of
+    the coach's message that speaks of a threat (the sheet's "what the other side threatens,
+    if the side to move passed: h5", the key fact "They threaten Nxc6"), the coach's own
+    earlier words left out."""
+    m = item["moment"]
+    out: set[str] = set()
+    for facts in (m.get("facts") or {}, m.get("facts_before") or {}):
+        out |= {str(t).rstrip("+#") for t in facts.get("threats") or ()}
+        key = str(facts.get("key") or "")
+        if _THREAT_TALK.search(key):
+            out |= {x.rstrip("+#") for x in _SAN_IN_TEXT.findall(key)}
+    shown = (
+        without_coach_words(str(item["messages"][-1]["content"])) if item.get("messages") else ""
+    )
+    for line in shown.splitlines():
+        if _THREAT_TALK.search(line):
+            out |= {x.rstrip("+#") for x in _SAN_IN_TEXT.findall(line)}
+    return out
+
+
+def threat_check(text: str, item: dict) -> bool | None:
+    """A threat the record gives, said as a threat, is stated: "your opponent threatens
+    ...h5" with h5 among the facts' threats (the board checker read "...h5" as a target
+    square and faulted it as empty, the pilot 2026-09-25). A threat said of the player's own
+    piece ("removing the threat to your rook on c6") holds when the opponent attacks that
+    square, or a threat the record gives lands there. None otherwise: the vote decides."""
+    if not _THREAT_TALK.search(text) and not _THREAT_ON.search(text):
+        return None
+    known = known_threats(item)
+    moves = [
+        (found.group("pawn") or found.group("piece")).rstrip("+#")
+        for found in _THREAT_MOVE.finditer(text)
+    ]
+    if moves and _THREAT_TALK.search(text):
+        return True if all(mv in known for mv in moves) else None
+    if not _THREAT_ON.search(text):
+        return None
+    f = item["moment"]["facts"]
+    side = (f.get("user_side") or f.get("side_to_move") or "").lower()
+    if side not in ("white", "black"):
+        return None
+    player = chess.WHITE if side == "white" else chess.BLACK
+    board = chess.Board(item["fen"])
+    named = _PIECE_SQUARE.findall(text)
+    if not named:
+        return None
+    for piece_word, square_name in named:
+        square = chess.parse_square(square_name.lower())
+        piece = board.piece_at(square)
+        if (
+            piece is None
+            or piece.color != player
+            or piece.piece_type != _PIECE_TYPES[piece_word.lower()]
+        ):
+            return None  # not the player's piece named: not a threat on it
+        lands = any(re.fullmatch(rf"[KQRBN]?[a-h]?[1-8]?x{square_name}", mv) for mv in known)
+        if not board.attackers(not player, square) and not lands:
+            return None
+    return True
+
+
+_ATTACK_ON = re.compile(
+    r"\battack(?:s|ing)?\s+(?:on\s+)?(?:(?:the|their|your)\s+)?"
+    r"(?:(?:king|queen|rook|bishop|knight|pawn)\s+on\s+)?([a-h][1-8])\b",
+    re.IGNORECASE,
+)
+
+
+def move_attack_check(text: str, item: dict) -> bool | None:
+    """A move said to make or keep an attack on a square ("Ba7+ ... keeping the attack on
+    e5") holds when, after the move, the player's side attacks that square -- by any piece:
+    Ba7+ uncovered the rook on e1, and the checker, reading the bishop as the attacker,
+    faulted a true sentence (the pilot, 2026-09-25). None otherwise: the vote decides."""
+    squares = _ATTACK_ON.findall(text)
+    if not squares or _NEGATED.search(text):
+        return None
+    moves = [x for x in _SAN_IN_TEXT.findall(text) if not re.fullmatch(r"[a-h][1-8]", x)]
+    if len(set(moves)) != 1:
+        return None
+    f = item["moment"]["facts"]
+    side = (f.get("user_side") or f.get("side_to_move") or "").lower()
+    if side not in ("white", "black"):
+        return None
+    player = chess.WHITE if side == "white" else chess.BLACK
+    for fen in dict.fromkeys([item["fen"], item.get("fen_now") or item["fen"]]):
+        board = _player_to_move(fen, side)
+        if board is None:
+            continue
+        try:
+            move = board.parse_san(moves[0])
+        except ValueError:
+            continue
+        after = board.copy(stack=False)
+        after.push(move)
+        if all(after.attackers(player, chess.parse_square(sq.lower())) for sq in squares):
+            return True
+    return None
+
+
 def code_check(text: str, item: dict) -> bool | None:
     """Claims the record decides without a model: a count of moves by label against the
     tally; the cost of the last move against its recorded loss. None when the claim is
@@ -1963,6 +2166,12 @@ def code_check(text: str, item: dict) -> bool | None:
             if tally.get(label, 0) != int(n):
                 return False
         return True
+    threat = threat_check(text, item)
+    if threat is not None:
+        return threat
+    attack = move_attack_check(text, item)
+    if attack is not None:
+        return attack
     recited = line_check(text, item)
     if recited is not None:
         return recited

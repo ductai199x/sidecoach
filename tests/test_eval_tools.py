@@ -372,7 +372,7 @@ def test_the_budget_stops_the_game_through_the_coachs_own_handlers(tmp_path):
 
 
 def test_the_dry_run_estimate_reads_the_cache_prefix():
-    system = "S" * 8000  # 2,000 tokens, shared by both requests of the game
+    system = "S" * 8000  # ~2,400 tokens, shared by both requests of the game
     requests = [
         {"game": "g", "system": system, "user": "a" * 400, "template_only": False},
         {"game": "g", "system": system, "user": "a" * 400 + "b" * 400, "template_only": False},
@@ -380,7 +380,9 @@ def test_the_dry_run_estimate_reads_the_cache_prefix():
     ]
     est = estimate.coach_estimate(requests, PRICES, completion=100, retry_share=0.0)
     assert est.calls == 2
-    assert est.cached == pytest.approx(len(system + "\n" + "a" * 400) // 4)
+    shared = estimate._tokens(system + "\n" + "a" * 400)
+    # Of the shared prefix, the share the cache served in the pilot.
+    assert est.cached == pytest.approx(shared * estimate.COACH_CACHE_HIT)
 
 
 # ---- B7: a failed call is never scored ------------------------------------------------
@@ -623,3 +625,153 @@ def test_a_vote_stops_once_two_agree():
 def test_the_estimate_counts_the_calls_the_players_words_cost():
     est = estimate.words_estimate(3, PRICES)
     assert est.calls == 6 and est.usd > 0
+
+
+# ---- the pilot's board-check fails ------------------------------------------------------
+
+
+def _position_item(fen: str, sheet: str, **facts) -> dict:
+    """An item of the player's own position: the sheet the coach was shown, its facts."""
+    board = chess.Board(fen)
+    side = "white" if board.turn == chess.WHITE else "black"
+    base = {"fen": fen, "side_to_move": side, "user_side": side, "phase": "middlegame"}
+    return {
+        "id": "hand/x/p001",
+        "game": "hand/x",
+        "ply": 1,
+        "fen": fen,
+        "fen_now": fen,
+        "trigger": "stuck",
+        "level": "IDEA",
+        "system": "",
+        "fallback": "",
+        "frames": [],
+        "messages": [{"role": "user", "content": sheet + "\n\n# Task\nThe first hint."}],
+        "moment": {"facts": PositionFacts(**base, **facts).model_dump()},
+    }
+
+
+def test_a_threat_the_facts_give_is_supported():
+    # bots/...__004/p032: "your opponent threatens ...h5", h5 among the facts' threats.
+    fen = "2kr3r/1pp1q1pp/p1bp1b2/4p3/2PP4/6NP/PP3PP1/R1BQR1K1 w - - 1 17"
+    sheet = "what the other side threatens, if the side to move passed: h5"
+    item = _position_item(fen, sheet, threats=["h5"])
+    assert judge.code_check("your opponent threatens ...h5", item) is True
+    assert judge.code_check("Your opponent threatens ...c4", item) is None  # not given
+    # The checker's misreading of the move as a target square is no contradiction.
+    from sidecoach.coach.claims import Claim, ClaimKind
+
+    misread = Claim(ClaimKind.THREATENS, "they", "h5", None, "they threaten h5")
+    ruling, _, _ = judge.rule_claims("your opponent threatens ...h5", item, [misread])
+    assert ruling != "false"
+
+
+def test_a_threat_on_the_players_own_piece_is_the_opponents():
+    # bots/...__002/p054: the key fact is their threat to the rook on c6 (Nb4xc6).
+    fen = "r5k1/5p1p/p1R3p1/4P1B1/1n6/8/PP3PP1/6K1 w - - 1 28"
+    item = _position_item(fen, "key: They threaten Nxc6, winning your rook on c6", threats=["Nxc6"])
+    text = "The plan is to keep the rook on c6 active while removing the threat to it."
+    assert judge.code_check(text, item) is True
+    from sidecoach.coach.claims import Claim, ClaimKind
+
+    # The extractor read the threat as the player's own: its twin reads it as theirs.
+    own = Claim(ClaimKind.THREATENS, "I", "my rook on c6", None, "I threaten my rook on c6")
+    ruling, reason, _ = judge.rule_claims(text, item, [own])
+    assert ruling == "true", reason
+    # A piece of theirs said to be under threat is not decided this way.
+    assert judge.code_check("the threat to the pawn on a6", item) is None
+
+
+def test_an_attack_a_move_uncovers_is_the_moves():
+    # bots/...__004/p058: Ba7+ moves the bishop off the e-file; the rook on e1 attacks e5.
+    fen = "1k1r1q2/1pp5/p4p2/4p3/2P5/4Bb1P/PP4r1/R1Q1RK2 w - - 4 30"
+    item = _position_item(fen, "")
+    assert judge.code_check("Ba7+ keeps the attack on e5", item) is True
+    assert judge.code_check("Bd4 keeps the attack on h8", item) is None  # the vote decides
+    from sidecoach.coach.claims import Claim, ClaimKind
+
+    bishop = Claim(ClaimKind.ATTACKS, "my bishop", "their pawn on e5", "Ba7+", "Ba7+ attacks e5")
+    ruling, reason, _ = judge.rule_claims("Ba7+ keeps the attack on e5", item, [bishop])
+    assert ruling == "true", reason
+
+
+# ---- the preference and the effort bench -------------------------------------------------
+
+
+def _pair_row(i: str) -> dict:
+    return {"id": i, "class": "lesson", "ai": f"AI reply {i}.", "template": f"Template {i}."}
+
+
+def _pair_item(i: str) -> dict:
+    shown = (
+        "# Game so far\n1. e4 (the player): best\n"
+        '    YOU (the coach) said: "An old word of the coach."\n\n# Task\nThe lesson.'
+    )
+    return {"id": i, "game": "hand/x", "messages": [{"role": "user", "content": shown}]}
+
+
+def test_the_preference_shows_the_record_and_both_replies_in_a_seeded_order():
+    item = _pair_item("m1")
+    system, user, first = parity.prefer_prompt(
+        item, "AI.", "Template.", seed=7001, rating=(1000, 1400)
+    )
+    assert "An old word of the coach" not in system and "The lesson." in system
+    assert "rated about 1000 to 1400" in user and user.endswith("Answer A or B.")
+    assert ('Reply A:\n"""\nAI.' in user) == first
+    assert parity.ai_first("m1", 7001) == first  # the same coin every time
+    orders = {parity.ai_first(f"m{k}", 7001) for k in range(20)}
+    assert orders == {True, False}  # both orders occur
+
+
+def test_the_preference_is_one_question_a_moment_asked_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(judge, "JUDGMENTS", tmp_path)
+    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
+    rows = [_pair_row(f"m{k}") for k in range(6)]
+    by_id = {r["id"]: _pair_item(r["id"]) for r in rows}
+    model = FakeModel("A")
+    prefs = parity.judge_prefer(by_id, rows, "run", model, ledger, seed=7001, workers=1)
+    assert model.calls == 6 and len(prefs) == 6
+    for p in prefs:
+        assert p["ai_preferred"] == (p["ai_is"] == "A")  # the judge always said A
+    again = parity.judge_prefer(by_id, rows, "run", model, ledger, seed=7001, workers=1)
+    assert model.calls == 6 and len(again) == 6  # kept, not asked again
+    text = "\n".join(parity.prefer_summary(prefs))
+    assert "the judge answered A in 6 of 6" in text
+
+
+def test_an_answer_that_is_neither_a_nor_b_is_no_preference(tmp_path, monkeypatch):
+    monkeypatch.setattr(judge, "JUDGMENTS", tmp_path)
+    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
+    rows = [_pair_row("m1")]
+    prefs = parity.judge_prefer(
+        {"m1": _pair_item("m1")}, rows, "run", FakeModel("Both."), ledger, seed=7001, workers=1
+    )
+    assert prefs == []
+
+
+def test_the_effort_table_says_when_arms_are_not_comparable():
+    import effort_table  # pyright: ignore[reportMissingImports]
+
+    def arm(name: str, drawn: list[str], commit: str = "abc") -> dict:
+        return {
+            "name": name,
+            "run": name,
+            "effort": name.split("-")[1],
+            "commit": commit,
+            "seed": 7001,
+            "drawn": drawn,
+            "ids": drawn,
+            "scores": {"pass": 0.9, "completeness": 0.8, "fabrication": 0.05},
+            "preferred": 0.6,
+            "prefs": 10,
+            "latency": {"stuck": (4, 2.0, 5.0)},
+            "usd": 0.4,
+            "coach_usd": 0.2,
+        }
+
+    same = effort_table.table([arm("effort-none", ["a", "b"]), arm("effort-low", ["a", "b"])])
+    assert "NOT COMPARABLE" not in same and "| effort-none | none | 2 | 0.90 |" in same
+    assert "2.0/5.0 (n=4)" in same
+    other = effort_table.table([arm("effort-none", ["a"]), arm("effort-low", ["b"], "def")])
+    assert "NOT COMPARABLE" in other
+    assert estimate.coach_completion("openai:gpt-5.6-luna@low") == 200
