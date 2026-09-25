@@ -26,6 +26,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
+mod places;
+
 /// How long the shell waits for the sidecar's port line and for its health route.
 const START_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -341,6 +343,7 @@ fn show_main(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
+        places::shown(&window);
         let _ = window.set_focus();
     }
 }
@@ -516,11 +519,17 @@ async fn open_window(app: AppHandle, route: String) -> Result<(), String> {
             });
         }
     }
+    // Built hidden, put back where a window of its kind was last, then shown.
     let window = builder
         .inner_size(width, height)
         .min_inner_size(600.0, 420.0)
+        .visible(false)
         .build()
         .map_err(|e| e.to_string())?;
+    places::restore(&window);
+    let _ = window.show();
+    places::shown(&window);
+    let _ = window.set_focus();
     if trace {
         // Where the webview says it is, a few seconds in.
         let file = data_dir(&app)
@@ -569,6 +578,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(sidecar)
         .manage(Shell::default())
+        .manage(places::Places::default())
         .invoke_handler(tauri::generate_handler![
             sidecar_port,
             sidecar_status,
@@ -582,6 +592,11 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             *handle.state::<Shell>().settings.lock().unwrap() = load_shell_settings(&handle);
+            // The main window comes up where it was closed (still hidden behind the splash).
+            places::load(&handle);
+            if let Some(main) = handle.get_webview_window("main") {
+                places::restore(&main);
+            }
             let splash = open_splash(&handle);
             if !splash {
                 show_main(&handle);
@@ -633,6 +648,15 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Where each window is, for the next start (`places`).
+            match event {
+                WindowEvent::Moved(_) | WindowEvent::Resized(_) => places::record(window),
+                WindowEvent::CloseRequested { .. } => {
+                    places::record(window);
+                    places::save(window.app_handle());
+                }
+                _ => {}
+            }
             // The main window closing quits, unless the setting says the tray; the other
             // windows just close.
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -656,6 +680,7 @@ pub fn run() {
         .expect("error while building the Sidecoach shell");
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
+            places::save(handle);
             stop_sidecar(handle, &handle.state::<Sidecar>());
         }
     });
