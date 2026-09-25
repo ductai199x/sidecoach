@@ -43,12 +43,13 @@ import kotlin.math.roundToInt
  * 2026-09-23: "behave like Live Caption"; the phone's own, the desktop has none). While you
  * play in another app the voice is all the panel gives you; this puts its words on screen too.
  *
- * The box comes up when the coach starts to speak and its words appear as they are said,
- * newest at the bottom, the earlier ones scrolling up; it fades a few seconds after the voice
- * stops, or stays up with the last words when the setting keeps it on screen. A line the voice
- * does not say (muted, or a fast game) appears whole. Touch and hold
- * to move it anywhere; double-tap to see more lines; drag the bar at its foot for more or
- * fewer; tap for its buttons -- mute, and the panel's three quick pills -- and the game's
+ * The box comes up with the coach's words the moment the coach has them, newest at the bottom,
+ * the earlier ones scrolling up; the voice follows as soon as the phone has made it, and the box
+ * stays up while it speaks (Tai, 2026-09-25: "just output the text asap and then the voice can
+ * come whenever" -- the words used to wait for their audio, seconds on the phone). It fades a
+ * few seconds after, or stays up with the last words when the setting keeps it on screen.
+ * Touch and hold to move it anywhere; double-tap to see more lines; drag the bar at its foot
+ * for more or fewer; tap for its buttons -- mute, and the panel's three quick pills -- and the game's
  * moves; drag it onto the cross at the bottom of the screen to turn captions off. Taps
  * anywhere else go to the app underneath. It keeps off the chess board -- the vision reads the
  * board from the screen, and a box over it would hide squares -- and it is not shown while
@@ -162,13 +163,19 @@ object Captions {
         if (ensureBox()) box?.setText(said.toString())
     }
 
-    /** A line the voice starts to say now, and about how long it speaks for. */
-    fun say(text: String, speechMs: Long) {
+    /**
+     * The voice has started on a line already shown: the box stays up while it speaks, [speechMs]
+     * about, then fades as it would (or stays, kept on screen).
+     */
+    fun voiced(speechMs: Long) {
         if (!on || front) return
-        main.post { begin(text, speechMs) }
+        main.post {
+            if (box == null || saying.isNotEmpty()) return@post
+            hideSoon(speechMs)
+        }
     }
 
-    /** A line the voice will not say (muted, a fast game): shown whole. */
+    /** A line of the coach's, shown whole the moment it comes: its voice follows. */
     fun show(text: String) {
         if (!on || front) return
         main.post { begin(text, 0) }
@@ -253,10 +260,10 @@ object Captions {
 
     private val hideLater = Runnable { hide() }
 
-    private fun hideSoon() {
+    private fun hideSoon(speaking: Long = 0) {
         main.removeCallbacks(hideLater)
         if (keep && !previewing) return
-        main.postDelayed(hideLater, HIDE_AFTER_MS)
+        main.postDelayed(hideLater, speaking + HIDE_AFTER_MS)
     }
 
     /** A touch on the box ends: the fade waits its full time again, once the words are out. */

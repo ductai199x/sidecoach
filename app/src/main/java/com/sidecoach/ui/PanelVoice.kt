@@ -79,7 +79,9 @@ object PanelVoice {
         val made = KokoroTts(context.applicationContext, modelDir(context), settings.voice(), settings.speed(), settings.lang())
         made.onPlay = { line -> onAudioStarts(line) }
         made.onSynthesis = { synthesising -> juggle(synthesising) }
-        made.onCaption = { line, speechMs -> Captions.say(line, speechMs) }
+        // The words are shown when the coach has them (`speak`); the voice, when it comes,
+        // keeps them up while it speaks.
+        made.onCaption = { _, speechMs -> Captions.voiced(speechMs) }
         // The voice it replaces is cut off and freed (off this thread: a line being
         // synthesised finishes first).
         tts?.let { old ->
@@ -200,6 +202,7 @@ object PanelVoice {
         if (action == "speak" || action == "supersede") {
             voicing = trigger to ply
             awaitAudio(trigger, ply, text)
+            Captions.show(text)  // at once; the voice follows when it is made
             speaker.say(text)
             PanelEngine.emit("voice", "debug", "speaking ($voice): ${PanelEngine.elide(text, 60)}")
         } else if (action == "text") {
@@ -231,6 +234,7 @@ object PanelVoice {
                 voicing = name to ply
                 awaitAudio(name, ply, sentence)
             }
+            Captions.show(sentence)  // each sentence as the model writes it; its voice follows
             speaker.say(sentence)
             PanelEngine.emit("voice", "debug", "speaking ($voice): ${PanelEngine.elide(sentence, 60)}")
             true
