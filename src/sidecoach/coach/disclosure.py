@@ -362,6 +362,7 @@ def leak_check(
             "stakes",
             "key",
             "trap",
+            "material",
         ):
             value = visible.get(key)
             if isinstance(value, str) and value:

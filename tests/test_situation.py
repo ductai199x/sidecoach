@@ -135,7 +135,7 @@ def test_a_quiet_move_says_what_it_is_for() -> None:
         "f4: the pawn now covers e5",
     )
     assert situation.reach_why(board, chess.Move.from_uci("b1c3")) == (
-        "Nc3: your knight goes from 2 squares to 5"
+        "Nc3: your knight goes from two squares to five"
     )
 
 

@@ -1011,7 +1011,7 @@ def figure_said(text: str) -> bool:
     """Whether `text` quotes a figure: any digit outside a move, a square or an ordinal ("the
     7th rank") -- "ahead by about 1.2 pawns" went through a check for percentages alone."""
     rest = _SAN.sub(" ", text)
-    rest = re.sub(r"\b\d+(?:st|nd|rd|th)\b", " ", rest)
+    rest = re.sub(r"\b\d+(?:st|nd|rd|th)\b|\b[A-E]\d\d\b", " ", rest)
     return re.search(r"\d", rest) is not None
 
 

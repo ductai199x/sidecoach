@@ -29,6 +29,41 @@ PIECE_NAMES = {
 }
 _ORDINAL = {1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth"}
 _NUMBER = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}
+# Counts to thirty in words: a queen's squares, a pawn's way to queening.
+_WORDS = (
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+)
+
+
+def in_words(n: int) -> str:
+    """A count as a coach says it: "nine", "twenty-three"."""
+    if 0 <= n < len(_WORDS):
+        return _WORDS[n]
+    if 20 < n < 30:
+        return f"twenty-{_WORDS[n - 20]}"
+    return str(n)
+
+
 # The longest mate whose line the move rung reads out whole; past it, its first moves.
 MATE_READ = 5
 MATE_SHOWN = 5  # the plies of a longer mate read out, the first move with them

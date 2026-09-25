@@ -132,8 +132,8 @@ def centre_move(board: chess.Board, move: chess.Move) -> tuple[str, str] | None:
 
 
 def reach_why(board: chess.Board, move: chess.Move) -> str | None:
-    """A piece brought to a better square, counted: "Bf6: your bishop goes from 4 squares to
-    9". "The move is Bf6: centralising a piece" said nothing (Karpov-Ribli)."""
+    """A piece brought to a better square, counted: "Bf6: your bishop goes from four squares
+    to nine". "The move is Bf6: centralising a piece" said nothing (Karpov-Ribli)."""
     piece = board.piece_at(move.from_square)
     if piece is None or piece.piece_type in (chess.PAWN, chess.KING):
         return None
@@ -144,8 +144,9 @@ def reach_why(board: chess.Board, move: chess.Move) -> str | None:
     later = chess.popcount(after.attacks_mask(move.to_square) & ~after.occupied_co[us])
     if later <= before:
         return None
-    was = "1 square" if before == 1 else f"{before} squares"
-    return f"{board.san(move)}: your {_NAMES[piece.piece_type]} goes from {was} to {later}"
+    was = "one square" if before == 1 else f"{idea_words.in_words(before)} squares"
+    name = _NAMES[piece.piece_type]
+    return f"{board.san(move)}: your {name} goes from {was} to {idea_words.in_words(later)}"
 
 
 def _wing(square: chess.Square) -> str:
@@ -672,7 +673,8 @@ def positional_key(
     if kind in ("pushPasser", "passerPawnEnding") and piece.piece_type == chess.PAWN:
         rank = chess.square_rank(best.from_square)
         to_go = 7 - rank if us == chess.WHITE else rank
-        return f"Your passed pawn on {frm} is {to_go} squares from queening"
+        away = f"{idea_words.in_words(to_go)} square{'s' if to_go != 1 else ''}"
+        return f"Your passed pawn on {frm} is {away} from queening"
     if kind == "rookBehindPasser":
         return f"Your rook on {frm} belongs behind a passed pawn, where it pushes it on"
     if kind == "break":
