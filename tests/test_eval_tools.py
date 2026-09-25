@@ -37,8 +37,10 @@ PRICES = (0.20, 0.02, 1.20)
 
 @pytest.fixture(autouse=True)
 def _ledger_file(tmp_path, monkeypatch):
-    """Every ledger line of a test goes to a scratch file, never data/eval/usage/."""
-    monkeypatch.setattr(judge, "USAGE_MINE", tmp_path / "usage.jsonl")
+    """Every ledger line of a test goes to a scratch file, never data/eval/usage/, and a
+    ledger resuming a run reads only the scratch files."""
+    monkeypatch.setattr(judge, "USAGE_MINE", tmp_path / "usage-test.jsonl")
+    monkeypatch.setattr(judge, "USAGE", tmp_path / "legacy-usage.jsonl")
 
 
 class FakeModel:
@@ -227,10 +229,14 @@ def test_an_item_keeps_the_request_the_coach_built(tmp_path):
     assert "%" not in cost["value"]
 
 
-def test_the_judges_record_holds_the_whole_request(tmp_path):
+def test_the_judges_record_holds_the_whole_request_save_the_coachs_words(tmp_path):
     item = _lesson(_build(tmp_path))
     record = judge.evidence_block(item, with_reference=False)
-    assert item["messages"][-1]["content"] in record
+    shown = item["messages"][-1]["content"]
+    assert judge.without_coach_words(shown) in record
+    said = [x for x in shown.splitlines() if "YOU (the coach) said: " in x]
+    assert said, "the lesson's message carries the coach's word on 1. e4"
+    assert not any(x.strip() in record for x in said)
 
 
 # ---- B4, B5, M3: the judge checks as the coach checks --------------------------------
@@ -433,21 +439,187 @@ def test_floor_coverage_is_decided_in_code():
     assert not thin["must_name_ok"] and thin["share"] == 0.0
 
 
-def test_the_pairing_counts_each_outcome():
+def _judged(i: str, ok: bool, completeness: float | None = 1.0) -> dict:
+    return {
+        "id": i,
+        "class": "lesson",
+        "level": "LINE",
+        "reply": "Nf3.",
+        "scores": {"pass": ok, "completeness": completeness},
+        "deterministic": {},
+    }
+
+
+def test_the_pairing_counts_each_outcome_and_the_required_facts():
     items = {i: {"fallback": "Nf3.", "must_name": []} for i in "abcd"}
-
-    def judged(i: str, ok: bool) -> dict:
-        return {
-            "id": i,
-            "class": "lesson",
-            "level": "LINE",
-            "reply": "Nf3.",
-            "scores": {"pass": ok},
-            "deterministic": {},
-        }
-
-    ai = [judged("a", True), judged("b", True), judged("c", False), judged("d", False)]
-    floor = [judged("a", True), judged("b", False), judged("c", True), judged("d", False)]
+    ai = [
+        _judged("a", True, 1.0),
+        _judged("b", True, 0.5),
+        _judged("c", False),
+        _judged("d", False),
+    ]
+    floor = [
+        _judged("a", True, 0.5),
+        _judged("b", False, 1.0),
+        _judged("c", True),
+        _judged("d", False),
+    ]
     rows = parity.pair(items, ai, floor)
     assert [r["outcome"] for r in rows] == ["both", "ai_only", "template_only", "neither"]
-    assert "template_only 1" in parity.summary(rows, parity.excluded([]))
+    assert [r["facts"] for r in rows] == ["more", "fewer", "same", "same"]
+    text = parity.summary(rows, parity.Counter({"rejected": 2}), seed=7001, per_game=8)
+    # Pass and completeness side by side; a reply the checks refused is a template win.
+    assert "| AI | 0.50 | 0.88 |" in text and "| template | 0.50 | 0.88 |" in text
+    assert "the template 3 (1 judged, 2 where the checks refused" in text
+    assert "fewer than the template in 1, the same in 2, more in 1" in text
+    assert "seed 7001, 8 a game" in text
+
+
+def _drawn(i: str, *, fallback: str = "Nf3 was better.", quick: bool = False, **reply) -> dict:
+    return {
+        "id": i,
+        "fallback": fallback,
+        "quick_followup": quick,
+        "reply": {"fallback_used": False, **reply},
+    }
+
+
+def test_quick_followups_and_refused_replies_are_not_paired():
+    drawn = [
+        _drawn("own"),
+        _drawn("quick", fallback="", quick=True),
+        _drawn("no-template", fallback=""),
+        _drawn("refused", fallback_used=True),
+        _drawn("failed", fallback_used=True, model_failed=True),
+        _drawn("fast", template_only=True),
+    ]
+    pairable, left_out = parity.sort_out(drawn)
+    assert [it["id"] for it in pairable] == ["own"]
+    assert left_out == {
+        parity.QUICK: 2,
+        "rejected": 1,
+        "model_failed": 1,
+        "template_only": 1,
+    }
+
+
+def test_quick_followups_owe_nothing_their_template_said():
+    from types import SimpleNamespace
+
+    from sidecoach.events import Trigger
+
+    quick = SimpleNamespace(trigger=Trigger.USER_ASK, fallback="", must_name=())
+    assert corpus.quick_followup(quick, "the quick answer they have already been shown")
+    assert corpus.quick_followup(quick, "")
+    hint = SimpleNamespace(trigger=Trigger.USER_ASK, fallback="Only one move holds.", must_name=())
+    assert not corpus.quick_followup(hint, "They asked for a hint.")
+    assert {"stakes", "key_fact", "trap"} <= corpus.QUICK_NOT_REQUIRED
+
+
+def test_one_seed_draws_a_rounds_moments_in_both_tools():
+    assert parity.round_seed(7, 1) == 7001
+    from icr_play import sample_moments  # pyright: ignore[reportMissingImports]
+
+    items = [
+        {"id": f"g{g}/p{p:03d}", "game": f"g{g}", "ply": p, "class": "lesson"}
+        for g in range(2)
+        for p in range(30)
+    ]
+    drawn = [it["id"] for it in sample_moments(items, 8, parity.round_seed(7, 1))]
+    shuffled = list(reversed(items))
+    assert [it["id"] for it in sample_moments(shuffled, 8, parity.round_seed(7, 1))] == drawn
+    assert len(drawn) == 16
+
+
+def test_latency_is_reported_by_trigger():
+    items = [
+        {"trigger": "post_mistake", "reply": {"elapsed_s": s, "fallback_used": False}}
+        for s in (2.0, 4.0, 3.0, 10.0)
+    ] + [{"trigger": "stuck", "reply": {"elapsed_s": 9.0, "model_failed": True}}]
+    assert parity.latency_by_trigger(items) == [("post_mistake", 4, 3.0, 10.0)]
+
+
+# ---- the second audit --------------------------------------------------------------------
+
+
+def test_the_version_follows_only_what_shapes_a_reply():
+    assert "src/sidecoach/coach" in stamp.WATCHED and "tools/eval" in stamp.WATCHED
+    assert "src/sidecoach" not in stamp.WATCHED
+    for elsewhere in ("ui", "voice", "vision", "capture"):
+        assert not any(w.startswith(f"src/sidecoach/{elsewhere}") for w in stamp.WATCHED)
+
+
+def test_the_coachs_own_words_are_not_evidence():
+    harness = (
+        "# Game so far\n1. e4 (the player): best\n"
+        '    YOU (the coach) said: "Their queen on d8 is trapped."\n'
+        '    PLAYER said: "why?"\n'
+        "Earlier dialogue, summarised: the coach said the queen was lost.\n"
+        "# Task\nAnswer."
+    )
+    cleaned = judge.without_coach_words(harness)
+    assert "trapped" not in cleaned and "queen was lost" not in cleaned
+    assert 'PLAYER said: "why?"' in cleaned and "YOU (the coach) said:" in cleaned
+    assert "Nothing the coach itself said earlier in the game is evidence" in judge.BINARY_SYSTEM
+
+
+def test_the_claims_check_runs_at_the_routine_effort(monkeypatch):
+    class EffortModel(FakeModel):
+        reasoning_effort = "medium"
+
+        def with_effort(self, effort):
+            other = EffortModel(self.answer)
+            other.reasoning_effort = effort
+            return other
+
+    seen = []
+
+    def claims_check(provider):
+        seen.append(provider)
+        return None
+
+    import coach_build  # pyright: ignore[reportMissingImports]
+
+    monkeypatch.setattr(coach_build.cli, "_claims_check", claims_check)
+    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
+    build_coach(EffortModel("hi"), ledger=ledger)
+    assert isinstance(seen[0], providers.Metered)
+    assert seen[0].inner.reasoning_effort == Settings().llm.routine_effort == "none"
+
+
+def test_the_review_owes_the_move_that_cost_the_most():
+    m = _moment()
+    m.tally = {"best": 3, "inaccuracy": 1, "mistake": 1}
+    m.lost = ["3. f3 (mistake; Nf3 was better)", "9. h3 (inaccuracy; O-O was better)"]
+    m.lost_loss = [0.10, 0.20]  # the inaccuracy cost more
+    facts = taxonomy.required(taxonomy.CLASSES["ask_game_so_far"], m)
+    worst = next(f for f in facts if f.key == "lost_worst")
+    assert worst.value.startswith("9. h3")
+
+
+def test_a_restarted_run_keeps_its_budget(tmp_path):
+    first = judge.Ledger("run-a", "test", "fake", budget_usd=0.0005, prices=PRICES, resume=True)
+    providers.Metered(FakeModel("yes"), first).chat("s", [])
+    again = judge.Ledger("run-a", "test", "fake", budget_usd=0.0005, prices=PRICES, resume=True)
+    assert again.before == pytest.approx(0.00032) and again.calls == 1
+    model = FakeModel("yes")
+    providers.Metered(model, again).chat("s", [])  # 0.00032 < 0.0005: allowed
+    with pytest.raises(judge.BudgetExceeded):
+        providers.Metered(model, again).chat("s", [])
+    other = judge.Ledger("run-b", "test", "fake", budget_usd=0.0005, prices=PRICES, resume=True)
+    assert other.before == 0.0
+
+
+def test_a_vote_stops_once_two_agree():
+    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
+    agree = FakeModel("yes")
+    assert judge._yes_no(agree, ledger, "x", "record", "question?") is True
+    assert agree.calls == 2
+    split = FakeModel(lambda n: "yes" if n % 2 else "no")
+    assert judge._yes_no(split, ledger, "x", "record", "question?") is True
+    assert split.calls == 3
+
+
+def test_the_estimate_counts_the_calls_the_players_words_cost():
+    est = estimate.words_estimate(3, PRICES)
+    assert est.calls == 6 and est.usd > 0

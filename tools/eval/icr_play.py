@@ -30,8 +30,13 @@ round would cost. Run names and item directories carry the code's version
 whose coach call failed is not judged (it is counted); --floor judges each moment's template
 too and writes the parity report (parity.py).
 
-  uv run python tools/eval/icr_play.py --source bots --games 8 --rounds 1 \
-      --moments-per-game 5 --floor --budget-usd 2 --name parity-pilot [--dry-run]
+The moments a round judges are drawn first -- round 1 from a free play with the templates
+answering -- and each game is played with the model only up to its last drawn moment; the
+seed is parity.round_seed(--seed, round), the one parity.py draws with. The pilot: 40
+moments from 5 bot games, 8 a game, so fewer calls go to history alone:
+
+  uv run python tools/eval/icr_play.py --source bots --games 5 --rounds 1 \
+      --moments-per-game 8 --floor --budget-usd 2 --name parity-pilot [--dry-run]
 """
 
 from __future__ import annotations
@@ -85,7 +90,7 @@ from report import aggregate  # noqa: E402
 
 from sidecoach.cli import _draft_check  # noqa: E402
 from sidecoach.coach import prompt as coach_prompt  # noqa: E402
-from sidecoach.coach.coach import directive_limits  # noqa: E402
+from sidecoach.coach.coach import directive_limits, may_carry_claims  # noqa: E402
 from sidecoach.config import load_settings  # noqa: E402
 
 WRITER_SYSTEM = (
@@ -543,12 +548,24 @@ _JUDGE_FIRST = (
 VERDICT_WEIGHT = 0.3
 
 
+def stops(catalogue: dict[str, list[dict]], wanted: Collection[str]) -> dict[str, int]:
+    """For each game with a moment in `wanted`, the ply of its last one: the game is played
+    that far and no further (the moves after it would be coach calls for nothing)."""
+    return {
+        stem: max(m["ply"] for m in ms if m["id"] in wanted)
+        for stem, ms in catalogue.items()
+        if any(m["id"] in wanted for m in ms)
+    }
+
+
 def catalogue_of(items: list[dict]) -> dict[str, list[dict]]:
     """Every moment of every game, as (id, ply, class) by facts stem: what a round can
     sample from without playing the game first."""
     out: dict[str, list[dict]] = {}
     for it in items:
-        stem = it["id"].split("/")[1] + "__" + it["id"].split("/")[2]
+        # The facts file's stem: "fischer/001-..." is "fischer__001-...", a bot game's name is
+        # its stem (splitting the id took a bot game's moment key for part of its name).
+        stem = it["game"].replace("/", "__")
         out.setdefault(stem, []).append(
             {"id": it["id"], "ply": it["ply"], "class": it["class"], "game": it["game"]}
         )
@@ -560,7 +577,10 @@ def sample_moments(
 ) -> list[dict]:
     """`per_game` moments of every game to judge, drawn at random with `seed` (a different
     seed each round draws a different batch), weighted toward the classes that teach;
-    never a moment already in C (`exclude`)."""
+    never a moment already in C (`exclude`). The draw does not depend on the order `items`
+    come in: a catalogue, a round's items and the items read back from their files draw
+    the same moments with the same seed."""
+    items = sorted(items, key=lambda it: (it["game"], it["ply"], it["id"]))
     if per_game <= 0:
         return [it for it in items if it["id"] not in exclude]
     by_game: dict[str, list[dict]] = {}
@@ -738,10 +758,10 @@ def main() -> None:
     ap.add_argument(
         "--moments-per-game",
         type=int,
-        default=5,
+        default=8,
         help=(
-            "judge this many moments a game each round -- one early, two mid, two late for "
-            "five -- a fresh draw every round (0 = every moment)"
+            "judge this many moments a game each round -- a fifth early, two fifths mid, the "
+            "rest late -- a fresh draw every round (0 = every moment); parity.py's default too"
         ),
     )
     ap.add_argument("--start-round", type=int, default=1)
@@ -874,8 +894,10 @@ def dry_run(
     rounds: int,
 ) -> None:
     """What a round costs, with the games played by the templates and nothing called: the
-    coach's requests sized as they are, the judge's records sized on the moments a round
-    would judge (and their templates, with --floor)."""
+    moments drawn as the round draws them (the same seed), the coach's requests up to each
+    game's last drawn moment sized as they are, the calls the player's words cost (the
+    claims check, the named-move planner), and the judge's records sized on the drawn
+    moments (and their templates, with --floor, save those with none to compare)."""
     requests: list[dict] = []
     items = play_round(
         games,
@@ -891,28 +913,39 @@ def dry_run(
         engine_threads=args.engine_threads,
     )
     prices = settings_prices()
-    requests.sort(key=lambda r: (r["game"], r["ply"]))
-    coach = estimate.coach_estimate(requests, prices)
-    judged = sample_moments(items, args.moments_per_game, args.seed * 1000 + 1)
+    seed = parity.round_seed(args.seed, args.start_round)
+    judged = sample_moments(items, args.moments_per_game, seed)
+    stop_after = stops(catalogue_of(items), {it["id"] for it in judged})
+    played = [r for r in requests if r["ply"] <= stop_after.get(r["game"].replace("/", "__"), -1)]
+    played.sort(key=lambda r: (r["game"], r["ply"]))
+    coach = estimate.coach_estimate(played, prices)
+    asks = [r for r in played if r.get("question") and may_carry_claims(str(r["question"]))]
+    words = estimate.words_estimate(len(asks), prices)
 
     def record(it: dict) -> str:
         return BINARY_SYSTEM + evidence_block(it, with_reference=False) + (it.get("fallback") or "")
 
     judge = estimate.judge_estimate(judged, prices, record_of=record)
-    floor = estimate.judge_estimate(judged, prices, record_of=record) if args.floor else None
-    by_trigger = Counter(r["trigger"] for r in requests if not r.get("template_only"))
+    to_pair = [it for it in judged if not parity.is_quick(it)]
+    floor = estimate.judge_estimate(to_pair, prices, record_of=record) if args.floor else None
+    by_trigger = Counter(r["trigger"] for r in played if not r.get("template_only"))
     print(
-        f"dry run, {len(games)} games: {len(requests)} coach requests"
+        f"dry run, {len(games)} games, {len(judged)} moments drawn with seed {seed}"
+        f" ({args.moments_per_game} a game), played to the last drawn: {len(played)} of"
+        f" {len(requests)} coach requests"
         f" ({', '.join(f'{v} {k}' for k, v in by_trigger.most_common())}),"
-        f" {len(judged)} moments judged a round; prices ${prices[0]}/{prices[1]}/{prices[2]}"
-        " per M (prompt/cached/completion)",
+        f" {len(asks)} asks the claims check and the planner read;"
+        f" prices ${prices[0]}/{prices[1]}/{prices[2]} per M (prompt/cached/completion)",
         flush=True,
     )
     print(f"  coach: {coach.line()}")
+    print(f"  the player's words (claims, planner): {words.line()}")
     print(f"  judge: {judge.line()}")
     if floor is not None:
-        print(f"  floor: {floor.line()}")
-    total = coach.add(judge).add(floor) if floor is not None else coach.add(judge)
+        print(f"  floor: {floor.line()} ({len(judged) - len(to_pair)} quick follow-ups not paired)")
+    total = coach.add(words).add(judge)
+    if floor is not None:
+        total = total.add(floor)
     print(
         f"  a round: ~${total.usd:.2f}; {rounds} round(s): ~${total.usd * rounds:.2f}"
         f" (budget ${args.budget_usd:.2f}). Assumptions: estimate.py.",
@@ -1037,13 +1070,23 @@ def run(args: argparse.Namespace) -> None:
         dry_run(args, games, system_for(known), args.rounds - args.start_round + 1)
         return
     judge, thinking = judge_provider(args.judge)
+    # The budget is the run's, across restarts and code versions: what the run name spent
+    # before counts against it (a restart never gets a fresh budget).
     ledger = Ledger(
-        f"{args.name}-{version}",
+        args.name,
         "icr",
         judge.model,
         args.budget_tokens,
         budget_usd=args.budget_usd,
+        resume=True,
+        version=version,
     )
+    if ledger.before:
+        print(
+            f"run {args.name} spent ${ledger.before:.4f} before this start; it counts against"
+            f" the ${args.budget_usd:.2f} budget",
+            flush=True,
+        )
     # The writer's calls are checked against the budget and recorded where they are made
     # (write_demo, distil): a Metered writer was recorded twice.
     writer = judge if args.writer == args.judge else judge_provider(args.writer)[0]
@@ -1084,73 +1127,62 @@ def run(args: argparse.Namespace) -> None:
             if catalogue_path.exists()
             else None
         )
-        if catalogue is None or args.heldout:
-            # The first round plays every game in full: the baseline, and the catalogue of
-            # every game's moments that later rounds sample from before playing.
-            items = play_round(
-                games,
-                args.seed,
-                system,
-                provider,
-                args.workers,
-                icr / f"items-{version}-r{r}",
-                source=args.source,
-                ledger=ledger,
-                summarise_every=args.summarise_every,
-                summariser=summariser,
-                compact_record=args.compact_record,
-                engine_threads=args.engine_threads,
-                version=version,
-                reuse_stale=args.reuse_stale,
-            )
-            if not args.heldout:
-                catalogue_path.write_text(json.dumps(catalogue_of(items)), encoding="utf-8")
-            judged_items = sample_moments(
-                [it for it in items if it.get("reply")],
-                args.moments_per_game,
-                args.seed * 1000 + r,
-                exclude=demonstrated,
-            )
-        else:
-            # A fresh draw of moments from every game, then each game played only as far
-            # as its last drawn moment.
-            wanted = sample_moments(
-                [m for ms in catalogue.values() for m in ms],
-                args.moments_per_game,
-                args.seed * 1000 + r,
-                exclude=demonstrated,
-            )
-            wanted_ids = {m["id"] for m in wanted}
-            stop_after = {
-                stem: max(m["ply"] for m in ms if m["id"] in wanted_ids)
-                for stem, ms in catalogue.items()
-                if any(m["id"] in wanted_ids for m in ms)
-            }
-            games_now = [g for g in games if g[0].stem in stop_after]
-            items = play_round(
-                games_now,
-                args.seed,
-                system,
-                provider,
-                args.workers,
-                icr / f"items-{version}-r{r}",
-                source=args.source,
-                ledger=ledger,
-                summarise_every=args.summarise_every,
-                summariser=summariser,
-                stop_after=stop_after,
-                compact_record=args.compact_record,
-                engine_threads=args.engine_threads,
-                version=version,
-                reuse_stale=args.reuse_stale,
-            )
-            judged_items = [it for it in items if it["id"] in wanted_ids and it.get("reply")]
-            if len(judged_items) < len(wanted_ids):
-                print(
-                    f"  {len(wanted_ids) - len(judged_items)} drawn moments did not recur in"
-                    " the replay",
-                    flush=True,
+        if catalogue is None:
+            # Every game's moments, from a play with the templates answering: free, and the
+            # moments are the same with the model (the policy fires on the game, not on the
+            # replies). Round 1 draws from it like every other round, so no game is played
+            # past its last drawn moment -- those calls would feed no judged moment.
+            catalogue = catalogue_of(
+                play_round(
+                    games,
+                    args.seed,
+                    system,
+                    None,
+                    min(args.workers, 2),
+                    icr,
+                    source=args.source,
+                    summarise_every=args.summarise_every,
+                    compact_record=args.compact_record,
+                    engine_threads=args.engine_threads,
+                    version=version,
                 )
+            )
+            catalogue_path.write_text(json.dumps(catalogue), encoding="utf-8")
+        # The round's draw, with the seed parity.py draws the same moments with.
+        seed = parity.round_seed(args.seed, r)
+        wanted = sample_moments(
+            [m for ms in catalogue.values() for m in ms],
+            args.moments_per_game,
+            seed,
+            exclude=demonstrated,
+        )
+        wanted_ids = {m["id"] for m in wanted}
+        stop_after = stops(catalogue, wanted_ids)
+        games_now = [g for g in games if g[0].stem in stop_after]
+        items = play_round(
+            games_now,
+            args.seed,
+            system,
+            provider,
+            args.workers,
+            icr / f"items-{version}-r{r}",
+            source=args.source,
+            ledger=ledger,
+            summarise_every=args.summarise_every,
+            summariser=summariser,
+            stop_after=stop_after,
+            compact_record=args.compact_record,
+            engine_threads=args.engine_threads,
+            version=version,
+            reuse_stale=args.reuse_stale,
+        )
+        judged_items = [it for it in items if it["id"] in wanted_ids and it.get("reply")]
+        if len(judged_items) < len(wanted_ids):
+            print(
+                f"  {len(wanted_ids) - len(judged_items)} drawn moments did not recur in"
+                " the replay",
+                flush=True,
+            )
         # How each reply came to be: the model's own, the template after the checks refused
         # the model, the template after the call failed (never judged), no call at all.
         statuses = Counter(reply_status(it["reply"]) for it in items if it.get("reply"))
@@ -1169,6 +1201,13 @@ def run(args: argparse.Namespace) -> None:
                 " judged; read the log before trusting this round",
                 flush=True,
             )
+        latency = parity.latency_by_trigger(items)
+        if latency:
+            print(
+                "  coach seconds a moment, p50/p90: "
+                + ", ".join(f"{t} {p50:.1f}/{p90:.1f} (n={n})" for t, n, p50, p90 in latency),
+                flush=True,
+            )
         replies = [it["reply"] for it in judged_items]
         by_id = {it["id"]: it for it in items}
         judgments = judge_all(
@@ -1183,7 +1222,12 @@ def run(args: argparse.Namespace) -> None:
             reuse_stale=args.reuse_stale,
         )
         if args.floor:
-            own = [j for j in judgments if j.get("status", "model") == "model"]
+            # Paired: the model's own replies beside a template of the same moment; a quick
+            # follow-up (its template already spoken) and a reply the checks refused are
+            # counted apart (parity.sort_out).
+            pairable, left_out = parity.sort_out(judged_items)
+            pair_ids = {it["id"] for it in pairable}
+            own = [j for j in judgments if j["id"] in pair_ids]
             floor = parity.judge_floor(
                 by_id,
                 [j["id"] for j in own],
@@ -1195,12 +1239,19 @@ def run(args: argparse.Namespace) -> None:
                 reuse_stale=args.reuse_stale,
             )
             rows = parity.pair(by_id, own, floor)
-            left_out = parity.excluded(replies)
-            path = parity.write_report(run, rows, left_out)
+            path = parity.write_report(
+                run,
+                rows,
+                left_out,
+                seed=seed,
+                per_game=args.moments_per_game,
+                latency=latency,
+            )
             outcomes = Counter(row["outcome"] for row in rows)
             print(
                 "  parity: "
                 + ", ".join(f"{k} {outcomes.get(k, 0)}" for k in parity.OUTCOMES)
+                + f"; template spoke {left_out.get('rejected', 0)}"
                 + f" -> {path}",
                 flush=True,
             )

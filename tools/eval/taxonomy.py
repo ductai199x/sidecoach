@@ -65,6 +65,8 @@ class Moment:
     # The player's record so far: label counts and the moves where ground was lost.
     tally: dict[str, int] = field(default_factory=dict)
     lost: list[str] = field(default_factory=list)
+    # What each of those moves cost (expected score), in the same order.
+    lost_loss: list[float] = field(default_factory=list)
     opening: str | None = None
     material: str | None = None
     # Who stands better, as the harness states it: "It is about equal (Stockfish: White
@@ -270,18 +272,21 @@ def required(
                             "words",
                         )
                     )
-        # The one thing to work on: the most serious slip (the worst label; the latest of
-        # equals). A four-sentence review cannot name every lost move, and the coach's own
-        # directive asks for the one thing.
+        # The one thing to work on: the move of the whole game that cost the most (the
+        # latest of equals), which the coach's own review names among the three that cost
+        # the most (coach._review_template). Without costs (an older item), the worst label.
         if m.lost:
-            rank = {"blunder": 4, "miss": 3, "mistake": 2, "inaccuracy": 1}
-            worst = max(
-                enumerate(m.lost),
-                key=lambda e: (
-                    max((v for k, v in rank.items() if f"({k}" in e[1]), default=0),
-                    e[0],
-                ),
-            )[1]
+            if len(m.lost_loss) == len(m.lost):
+                worst = max(zip(m.lost_loss, range(len(m.lost)), m.lost, strict=True))[2]
+            else:
+                rank = {"blunder": 4, "miss": 3, "mistake": 2, "inaccuracy": 1}
+                worst = max(
+                    enumerate(m.lost),
+                    key=lambda e: (
+                        max((v for k, v in rank.items() if f"({k}" in e[1]), default=0),
+                        e[0],
+                    ),
+                )[1]
             out.append(Fact("lost_worst", worst, "named"))
         if m.opening:
             out.append(Fact("opening", m.opening, "named"))
@@ -584,6 +589,7 @@ def as_json(m: Moment) -> dict[str, Any]:
         "record": m.record,
         "tally": m.tally,
         "lost": m.lost,
+        "lost_loss": m.lost_loss,
         "opening": m.opening,
         "material": m.material,
         "standing": m.standing,

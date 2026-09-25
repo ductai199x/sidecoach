@@ -73,6 +73,18 @@ STUCK_PAST = 15
 ANALYSIS_FIELDS = ("traps", "in_book", "defences", "threatens")
 
 
+# What a quick follow-up is not asked again: the template already said it.
+QUICK_NOT_REQUIRED = frozenset({"candidate", "line", "stakes", "key_fact", "trap"})
+
+
+def quick_followup(request: _Request, directive: str) -> bool:
+    """Whether the request builds on an answer already spoken -- the template went out at
+    once and the model is told so (the coach then gives it no template of its own)."""
+    if "have just been shown" in directive or "already been shown" in directive:
+        return True
+    return request.trigger.value == "user_ask" and not request.fallback and not request.must_name
+
+
 def facts_current(facts: dict) -> list[str]:
     """The Analysis fields a facts file lacks (empty: made by the current annotator)."""
     analyses = [facts.get("start_analysis") or {}] + [
@@ -215,6 +227,7 @@ def moment_for(
             last_best_leads = None
     tally: dict[str, int] = {}
     lost: list[str] = []
+    lost_loss: list[float] = []
     for r in convo.judged_records():
         if not r.move.by_user or r.assessment is None:
             continue
@@ -234,6 +247,7 @@ def moment_for(
                 except (ValueError, AssertionError):
                     better = ""
             lost.append(f"{convo._numbered(r.move)} ({lab}{better})")
+            lost_loss.append(r.assessment.expected_loss)
     best_san = None
     if last is not None and last.assessment is not None and last.assessment.best:
         try:
@@ -274,7 +288,10 @@ def moment_for(
         last_best_leads=last_best_leads,
         record=_record_lines(convo, user_colour),
         tally=tally,
-        lost=lost[-6:],
+        # Every move that lost ground, with what it cost: the review names the three that
+        # cost the most, from the whole game (coach._review_template), not the last six.
+        lost=lost,
+        lost_loss=lost_loss,
         opening=_opening_so_far(records),
         material=material_text(board, user_colour),
         standing=(
@@ -528,6 +545,9 @@ def build_game(
                         "user": directive_text,
                         "template_only": request.template_only,
                         "routine": request.routine,
+                        # The player's words: the claims check and the named-move planner
+                        # read them (a model call each, where they may carry claims).
+                        "question": question if kind != "coach" else None,
                     }
                 )
             if cls_id is None or cls_id not in CLASSES:
@@ -542,11 +562,14 @@ def build_game(
                 question=question,
                 numbers_allowed=not (no_numbers and no_numbers in directive_text),
             )
-            # A quick follow-up ("They asked what to play and have just been shown that it
-            # is Nf3...") is asked only for the idea; the move or line it must not restate
-            # is not required of it.
-            if "have just been shown" in directive_text:
-                reqs = [f for f in reqs if f.key not in ("candidate", "line")]
+            quick = quick_followup(request, directive_text)
+            # A quick follow-up -- the template already spoken as the answer ("They asked
+            # what to play and have just been shown that it is Nf3...", "the quick answer
+            # they have already been shown; build on it, do not repeat it") -- is asked only
+            # to build on it: the move, the line, and the first hint's stakes, key fact and
+            # trap it already said are not required again.
+            if quick:
+                reqs = [f for f in reqs if f.key not in QUICK_NOT_REQUIRED]
             # The engine's word on a move they named is spoken first, as the coach's own
             # turn (the standing after it, how far behind the best, and at LINE the best
             # move); the reply that builds on it is not asked to say those again.
@@ -579,7 +602,7 @@ def build_game(
                     "candidates": request.candidates,
                     "fallback": request.fallback,
                     "required": [f.as_dict() for f in reqs],
-                    "quick_followup": "have just been shown" in directive_text,
+                    "quick_followup": quick,
                     "form": {
                         "max_sentences": cls.max_sentences,
                         "ends_with_question": cls.ends_with_question,

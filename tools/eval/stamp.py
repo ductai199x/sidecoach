@@ -1,12 +1,12 @@
 """The code a result was made with, so a result from other code is never read as this code's.
 
-`code_version()` is the short commit hash of HEAD, and, when the coach or the evaluation
-tools differ from it (edited or new files under src/sidecoach or tools/eval), a digest of
-that difference: "2219e11" or "2219e11-d4f09a1". Items and judgments carry it; a runner
-puts it in its run names and refuses to reuse what another version made unless told to
-(`--reuse-stale`). The coach changed under the same run name was the silent failure: the
-cached replies and verdicts of the old coach, reported as the new one's (the eval audit,
-2026-09-25).
+`code_version()` is the short hash of the last commit that changed what shapes a coach
+reply (WATCHED), and, when those files differ from it (edited or new), a digest of that
+difference: "2219e11" or "2219e11-d4f09a1". A commit to the panel, the voice or the vision
+leaves it as it was. Items and judgments carry it; a runner puts it in its run names and
+refuses to reuse what another version made unless told to (`--reuse-stale`). The coach
+changed under the same run name was the silent failure: the cached replies and verdicts of
+the old coach, reported as the new one's (the eval audit, 2026-09-25).
 """
 
 from __future__ import annotations
@@ -17,8 +17,20 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-# What the numbers depend on: the coach, and the tools that play, judge and score it.
-WATCHED = ("src/sidecoach", "tools/eval")
+# What a coach reply and its score depend on: the coach, the model client, the engine's
+# analysis, the events and the settings -- and the tools that play, judge and score it. Not
+# the panel, the voice, the vision or the capture (the second eval audit, 2026-09-25).
+WATCHED = (
+    "src/sidecoach/coach",
+    "src/sidecoach/llm",
+    "src/sidecoach/analysis",
+    "src/sidecoach/events.py",
+    "src/sidecoach/config.py",
+    # The app's wiring of the checks the coach runs: the draft check, the claims check,
+    # the routine effort.
+    "src/sidecoach/cli.py",
+    "tools/eval",
+)
 
 
 class StaleData(RuntimeError):
@@ -33,9 +45,11 @@ def _git(*args: str) -> bytes:
 
 @functools.cache
 def code_version() -> str:
-    """The short commit hash, plus a digest of any uncommitted change to the watched code."""
+    """The short hash of the last commit to the watched code, plus a digest of any
+    uncommitted change to it."""
     try:
-        head = _git("rev-parse", "--short", "HEAD").decode().strip()
+        head = _git("log", "-1", "--format=%h", "HEAD", "--", *WATCHED).decode().strip()
+        head = head or _git("rev-parse", "--short", "HEAD").decode().strip()
         diff = _git("diff", "HEAD", "--", *WATCHED)
         untracked = (
             _git("ls-files", "--others", "--exclude-standard", "--", *WATCHED).decode().split()

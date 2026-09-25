@@ -124,8 +124,22 @@ DECOMPOSE_SYSTEM = (
 BINARY_SYSTEM = (
     "You answer one question about a chess coach's reply and the record of the game. When "
     "the question asks yes or no, answer with that one word only, no explanation. When it "
-    "asks for the reply's atomic claims, answer in JSON only."
+    "asks for the reply's atomic claims, answer in JSON only. Nothing the coach itself said "
+    "earlier in the game is evidence: its earlier turns are left out of the record, and a "
+    "statement is supported only by what the rest of the record states."
 )
+
+# A turn of the coach's own in the message it was given, and the folded dialogue: both are
+# the coach's words, which a claim cannot be supported by (the second eval audit: a claim
+# the model made once was "stated by the record" ever after).
+_COACH_TURN = re.compile(r"^(\s*YOU \(the coach\) said: ).*$", re.MULTILINE)
+_SUMMARY = re.compile(r"^(Earlier dialogue, summarised: ).*$", re.MULTILINE)
+_LEFT_OUT = "(left out: the coach's own words are not evidence)"
+
+
+def without_coach_words(text: str) -> str:
+    """`text` with every turn of the coach's own, and the folded dialogue, left out."""
+    return _SUMMARY.sub(r"\g<1>" + _LEFT_OUT, _COACH_TURN.sub(r"\g<1>" + _LEFT_OUT, text))
 
 
 # Dollars per million tokens -- prompt, cached prompt, completion -- when the app's settings
@@ -181,7 +195,9 @@ class Ledger:
 
     The budget is in dollars (`budget_usd`), in tokens (`budget_tokens`, the older form), or
     both. Calls in flight when the budget is reached still complete: the overshoot is at
-    most one call per worker."""
+    most one call per worker. With `resume` the spend already on the record under the same
+    run name counts against the budget: a run started again goes on from what it spent, and
+    never gets a fresh budget. `version` (stamp.code_version) is written on every line."""
 
     def __init__(
         self,
@@ -192,8 +208,11 @@ class Ledger:
         *,
         budget_usd: float | None = None,
         prices: tuple[float, float, float] | None = None,
+        resume: bool = False,
+        version: str | None = None,
     ) -> None:
         self.run, self.purpose, self.model = run, purpose, model
+        self.version = version
         self.budget = budget_tokens
         self.budget_usd = budget_usd
         self.calls = 0
@@ -205,6 +224,20 @@ class Ledger:
         self.stopped: str | None = None
         self._lock = threading.RLock()
         USAGE_MINE.parent.mkdir(parents=True, exist_ok=True)
+        # What the run spent before this start (0 on a fresh run).
+        self.before = 0.0
+        if resume:
+            for rec in usage_records(run):
+                p = int(rec.get("prompt_tokens") or 0)
+                c = int(rec.get("completion_tokens") or 0)
+                cached = int(rec.get("cached_tokens") or 0)
+                self.calls += 1
+                self.prompt += p
+                self.cached += cached
+                self.completion += c
+                usd = rec.get("usd")
+                self.usd += float(usd) if usd is not None else self.call_cost(p, cached, c)
+            self.before = self.usd
 
     @property
     def total(self) -> int:
@@ -257,6 +290,7 @@ class Ledger:
                             "completion_tokens": c,
                             "usd": round(usd, 6),
                             "elapsed_s": round(elapsed, 2),
+                            **({"version": self.version} if self.version else {}),
                         }
                     )
                     + "\n"
@@ -278,8 +312,28 @@ class Ledger:
             f"{self.calls} calls, {self.prompt:,} prompt ({self.cached:,} cached) + "
             f"{self.completion:,} completion = {self.total:,} tokens, ${self.usd:.4f}"
             + (f" of a budget of {' / '.join(limits)}" if limits else " (no budget)")
+            + (f", ${self.before:.4f} of it before this start" if self.before else "")
             + f" at ${self.price_in}/{self.price_cached}/{self.price_out} per M"
         )
+
+
+def usage_records(run: str) -> list[dict[str, Any]]:
+    """Every call on the record under `run`, from every ledger file."""
+    paths = ([USAGE] if USAGE.exists() else []) + sorted(USAGE_MINE.parent.glob("usage-*.jsonl"))
+    needle = json.dumps({"run": run})[1:-1]  # '"run": "<run>"', as the ledger writes it
+    out = []
+    for path in paths:
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                if needle not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("run") == run:
+                    out.append(rec)
+    return out
 
 
 def lifetime_usage() -> dict[str, int]:
@@ -434,16 +488,18 @@ def deterministic(item: dict, reply: str, draft_check, *, floor: bool = False) -
     form     the length and closing question the item's directive asks for (not applied
              with `floor`: the template is not asked to keep the model's form; what it
              breaks of it is kept under form["directive_only"])
-    rules    the owner's rules after a move (the coach's `restated`: the move just played
-             opened with or said back, a figure nobody asked for)
+    rules    the owner's rules (the coach's `restated`: the move just played opened with or
+             said back, a figure nobody asked for), and any other rule the coach's own
+             Speaker._problems holds a reply to beyond the kinds here
     verdict  the verdict word or cost said of the move just assessed, against its
              assessment (the coach's `_verdict_problems`)
     floor    what the reply must name, as its template does (the coach's `omitted`)
-    leak     everything else the coach's own Speaker._problems flags: its disclosure leak
-             check with its own exemptions, the answer given away, and any check the coach
-             adds later -- the judge is never more lenient than the coach
+    leak     the coach's own disclosure checks in Speaker._problems, with its own
+             exemptions: a withheld item named, the answer given away
     coach    the coach's own Speaker._problems, whole, for the audit
-    """
+
+    The judge is never more lenient than the coach: whatever the coach's checks flag is a
+    fail here too."""
     board = chess.Board(item["fen"])
     request = request_for(item, item["system"])
     speaking = bool(reply.strip())
@@ -479,7 +535,17 @@ def deterministic(item: dict, reply: str, draft_check, *, floor: bool = False) -
     classified = set(directive_form) | set(rules) | set(verdict) | set(drafted)
     if left_out:
         classified.add(left_out)
-    leaks = [p for p in coach_checks if p not in classified]
+    # What else the coach's own checks flag: its disclosure checks ("withheld ...", "gives
+    # away ...") are leaks; any other is one of its rules (a figure in a remark nobody asked
+    # for, from a check beyond `restated`). Both fail the reply, as they stop it live.
+    leaks: list[str] = []
+    for problem in coach_checks:
+        if problem in classified:
+            continue
+        if problem.startswith(("withheld ", "gives away ")):
+            leaks.append(problem)
+        else:
+            rules.append(problem)
     return {
         "leak": leaks,
         "board": board_problems,
@@ -680,12 +746,10 @@ def evidence_block(item: dict, *, with_reference: bool = True) -> str:
         lines.append(
             "The moves that lost ground, as the coach's message states them: " + " | ".join(slips)
         )
-    said = said_here(item)
+    # What the player said here; the coach's own earlier words are not evidence.
+    said = [x for x in said_here(item) if not _COACH_TURN.match(x)]
     if said:
-        lines.append(
-            "Already said at this position (the coach's own earlier words here, and the player's): "
-            + " | ".join(said)
-        )
+        lines.append("Already said at this position by the player: " + " | ".join(said))
     facts = []
     if f.get("decisive"):
         facts.append(
@@ -754,32 +818,17 @@ def evidence_block(item: dict, *, with_reference: bool = True) -> str:
     for line in directive.splitlines():
         if line.startswith("Engine on "):
             lines.append(line)
-    if item.get("quick_followup"):
-        # The coach's own last turn is the last thing said under "Said here" in the harness.
-        said = (
-            [
-                x
-                for x in directive.split("## Said here", 1)[-1].splitlines()
-                if x.strip().startswith("YOU (the coach) said: ")
-            ]
-            if "## Said here" in directive
-            else []
-        )
-        if said:
-            lines.append(
-                "The coach's own last turn, spoken from the facts above: "
-                + said[-1].strip().removeprefix("YOU (the coach) said: ").strip(chr(34))
-            )
-    # Everything the coach was shown, as it was shown: the game so far, the position and its
+    # Everything the coach was shown, as it was shown -- the game so far, the position and its
     # sheet, the position they faced, the task with the template's lesson as its floor and
-    # what the move allowed. A reply that says what its message says is supported; the
+    # what the move allowed -- save its own earlier words. A reply that says what its message
+    # says is supported; the
     # lines above re-render only parts of it, and the parts they missed -- the first hint,
     # the faced sheet, the floor -- made true replies read as fabrications (the audit).
     shown = str(item["messages"][-1]["content"]) if item.get("messages") else ""
     if shown:
         lines.append(
-            "The message the coach was given, verbatim -- all of it is part of the record:\n"
-            "<<<\n" + shown + "\n>>>"
+            "The message the coach was given, verbatim save the coach's own earlier words --"
+            " all of it is part of the record:\n<<<\n" + without_coach_words(shown) + "\n>>>"
         )
     lines.append("Required facts: " + json.dumps(item["required"], ensure_ascii=False))
     if with_reference and item.get("reference"):
@@ -1385,13 +1434,17 @@ VOTES = 3
 
 
 def _yes_no(binary, ledger: Ledger, item_id: str, context: str, question: str) -> bool | None:
-    """One binary check, asked three times: the record and the reply in the system prompt
-    (the part this model's cache serves again; a shared prefix of the user message was not
-    -- measured), the question alone in the user message. A single no-reasoning answer
-    flips on paraphrase; the majority does not. yes -> True, no -> False, no majority ->
-    None (not judged)."""
-    votes = []
+    """One binary check, asked up to three times: the record and the reply in the system
+    prompt (the part this model's cache serves again; a shared prefix of the user message
+    was not -- measured), the question alone in the user message. A single no-reasoning
+    answer flips on paraphrase; the majority does not. The asking stops once a majority
+    agrees (two of three): the third vote could not change it. yes -> True, no -> False, no
+    majority -> None (not judged)."""
+    votes: list[bool | None] = []
+    majority = VOTES // 2 + 1
     for _ in range(VOTES):
+        if votes.count(True) >= majority or votes.count(False) >= majority:
+            break
         completion = _chat_with_backoff(
             binary,
             BINARY_SYSTEM + "\n\n" + context,

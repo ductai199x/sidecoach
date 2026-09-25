@@ -29,6 +29,16 @@ CHECKER_COMPLETION = 200
 VOTE_COMPLETION = 2
 POINT_COMPLETION = 60
 QUESTION_TOKENS = 40  # the user message of one yes/no check
+# A yes/no check stops once two votes agree (judge._yes_no): three votes only on a split.
+EXPECTED_VOTES = 2.2
+# The player's words, where they may carry a claim (coach.may_carry_claims): the claims
+# extractor at the routine effort (~560-token system prompt, the FEN and the words) and the
+# named-move planner at the coach's effort (~290-token system prompt, the FEN and the legal
+# moves), one call each.
+CLAIMS_PROMPT = 700
+CLAIMS_COMPLETION = 200
+PLANNER_PROMPT = 700
+PLANNER_COMPLETION = 400
 
 
 @dataclass
@@ -105,23 +115,32 @@ def coach_estimate(
     return out
 
 
+def words_estimate(asks: int, prices: tuple[float, float, float]) -> Estimate:
+    """The calls the player's words cost: the claims check and the planner, per ask whose
+    words may carry a claim."""
+    prompt = asks * (CLAIMS_PROMPT + PLANNER_PROMPT)
+    completion = asks * (CLAIMS_COMPLETION + PLANNER_COMPLETION)
+    return Estimate(2 * asks, prompt, 0, completion, _usd(prompt, 0, completion, prices))
+
+
 def judge_calls(item: dict) -> tuple[float, float]:
     """(calls, completion tokens) the judge spends on one reply of `item`."""
-    calls = 1.0 + VOTES * CLAIMS_PER_REPLY + CHECKER_CALLS_PER_REPLY
+    votes = EXPECTED_VOTES
+    calls = 1.0 + votes * CLAIMS_PER_REPLY + CHECKER_CALLS_PER_REPLY
     completion = (
         DECOMPOSE_COMPLETION
-        + VOTES * CLAIMS_PER_REPLY * VOTE_COMPLETION
+        + votes * CLAIMS_PER_REPLY * VOTE_COMPLETION
         + CHECKER_CALLS_PER_REPLY * CHECKER_COMPLETION
     )
     for fact in item.get("required") or []:
         if fact.get("key") == "opening":
             continue  # decided in code
-        votes = 2 * VOTES if fact.get("key") in ("label", "named_verdict") else VOTES
-        calls += votes
-        completion += votes * VOTE_COMPLETION
+        asked = 2 * votes if fact.get("key") in ("label", "named_verdict") else votes
+        calls += asked
+        completion += asked * VOTE_COMPLETION
     if item.get("reference"):
-        calls += 1 + 2 * VOTES
-        completion += POINT_COMPLETION + 2 * VOTES * VOTE_COMPLETION
+        calls += 1 + 2 * votes
+        completion += POINT_COMPLETION + 2 * votes * VOTE_COMPLETION
     return calls, completion
 
 

@@ -81,7 +81,12 @@ def build_coach(
     verifier = None if offline else cli._verifier(settings, main)
     if verifier is not None and verifier is not main:
         verifier = metered(verifier, "verifier")
-    claims = None if offline else cli._claims_check(metered(inner, "claims"))
+    # The player's claims are read at the routine effort (none), as the app reads them.
+    claims = (
+        None
+        if offline
+        else cli._claims_check(metered(cli._routine_provider(settings, inner), "claims"))
+    )
     if summariser is not None and not isinstance(summariser, Metered):
         summariser = metered(summariser, "summariser")
     coach = Coach(
