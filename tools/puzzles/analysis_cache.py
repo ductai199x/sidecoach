@@ -34,9 +34,11 @@ CACHE_DIR = ROOT / "data/puzzles/analysis"
 WORKER_HASH_MB = 64
 # What an analysis holds beyond the engine's lines, by version: 2 added the recaptures the
 # best line declines (`analysis/defences.py`) and the solution played out of order among the
-# traps (`traps.tempting`). A cache of the version before is upgraded in place of a new
-# search: the lines are kept, only what the new version adds is searched.
-ANALYSIS_VERSION = 3  # 3: the solution out of order only on a square of its own
+# traps (`traps.tempting`); 3 the solution out of order only on a square of its own; 4 what
+# a quiet best move threatens (`threats.aim_lines`). A cache of the version before is
+# upgraded in place of a new search: what it holds is kept, only what the new version adds is
+# searched.
+ANALYSIS_VERSION = 4
 
 
 def settings_key(version: int = ANALYSIS_VERSION) -> str:
@@ -114,11 +116,10 @@ def _init() -> None:
 
 def _analyse(job: tuple[str, str | None]) -> tuple[str, str]:
     """A position analysed: from scratch, or, given the previous version's analysis, only
-    what this version adds -- its lines kept, the traps and the declined recaptures searched."""
+    what this version adds -- everything else kept, what a quiet best move threatens searched."""
     import chess
 
-    from sidecoach.analysis.defences import defence_lines
-    from sidecoach.analysis.traps import trap_lines
+    from sidecoach.analysis.threats import aim_lines
 
     fen, older = job
     assert _annotator is not None
@@ -129,12 +130,7 @@ def _analyse(job: tuple[str, str | None]) -> tuple[str, str]:
     else:
         event = Analysis.model_validate_json(older)
         engine = _annotator.engine
-        event = event.model_copy(
-            update={
-                "traps": trap_lines(engine, board, event.lines),
-                "defences": defence_lines(engine, board, event.lines),
-            }
-        )
+        event = event.model_copy(update={"threatens": aim_lines(engine, board, event.lines)})
     return fen, event.model_dump_json()
 
 

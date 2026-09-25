@@ -35,7 +35,7 @@ from sidecoach.analysis.score import (
     position_score,
     severity,
 )
-from sidecoach.analysis.threats import threat_moves
+from sidecoach.analysis.threats import aim_lines, threat_moves
 from sidecoach.analysis.traps import trap_lines
 from sidecoach.events import Analysis, Event, Line, MotifTag, MoveAssessment
 
@@ -86,6 +86,7 @@ class Measured:
     threats: list[str] = field(default_factory=list)
     traps: list[Line] = field(default_factory=list)
     defences: list[Line] = field(default_factory=list)
+    threatens: list[Line] = field(default_factory=list)
 
     @property
     def depth(self) -> int:
@@ -181,6 +182,10 @@ class GameAnnotator:
             defences=(
                 defence_lines(self.engine, board, lines) if self.with_threats and not hurry else []
             ),
+            # And what a quiet best move threatens: how it wins ("it threatens mate").
+            threatens=(
+                aim_lines(self.engine, board, lines) if self.with_threats and not hurry else []
+            ),
         )
         self._cache[key] = measured
         return measured
@@ -203,6 +208,7 @@ class GameAnnotator:
             threats=measured.threats,
             traps=measured.traps,
             defences=measured.defences,
+            threatens=measured.threatens,
             tags=self._position_tags(board, measured),
             opening=self._opening(board),
             in_book=self._in_book(board),

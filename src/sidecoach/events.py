@@ -198,6 +198,9 @@ class Analysis(Event):
     # line up to the player's capture, the recapture, then the engine's best play after it,
     # scored from the side to move's view.
     defences: list[Line] = Field(default_factory=list)
+    # What the best move threatens when it is quiet (`analysis/threats.aim_lines`): the side
+    # to move's best line after it and a free move for the opponent, from that side's view.
+    threatens: list[Line] = Field(default_factory=list)
     tags: list[MotifTag] = Field(default_factory=list)
     opening: str | None = None
     # The game is still in the opening book at this position (`opening` is the deepest line

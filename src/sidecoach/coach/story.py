@@ -21,6 +21,7 @@ master games, read from the board and the engine's line, never from this code.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import chess
@@ -550,7 +551,9 @@ def reason(
     return f"{san}: {holds}", "Which move keeps everything you have?"
 
 
-def how(board: chess.Board, idea: Idea, threat: chess.Move | None) -> Effect | None:
+def how(
+    board: chess.Board, idea: Idea, threat: chess.Move | None, aim: Line | None = None
+) -> Effect | None:
     """How a win with no named pattern comes about, for the first hint: what the first move
     does, never the move. "Their pawn on h5 is the target" alone left the player to find the
     king walk that wins it (Lichess jlCZP, a zugzwang); "the first move attacks their rook on
@@ -575,11 +578,202 @@ def how(board: chess.Board, idea: Idea, threat: chess.Move | None) -> Effect | N
     if not big:
         found = [e for e in found if not e.said.startswith("takes their")] or found
     # "pushes your passed pawn" is the move itself, not how it wins.
+    pushes = any(e.said.startswith("pushes") for e in found)
     found = [e for e in found if not e.said.startswith("pushes")]
     if not found:
-        return None
+        # A quiet move: what it threatens, else the bait or the passed pawn it sets going.
+        return aim_how(board, idea, aim) or quiet_how(board, idea, pushes)
     first_effect = found[0]
     return Effect(f"The first move {first_effect.said}", first_effect.ask, first_effect.lesson)
+
+
+_MATE_IN = {2: "two", 3: "three", 4: "four", 5: "five"}
+_QUIET = "The first move is quiet, but it threatens"
+_HIT = re.compile(r"attacks their (\w+ on [a-h][1-8])(, and it has no safe square to go to)?")
+
+
+def aim_how(board: chess.Board, idea: Idea, aim: Line | None) -> Effect | None:
+    """How a quiet first move wins: what it threatens (`Analysis.threatens`, the engine's best
+    line for the player after the move and a free move for the opponent). "Their knight on c3
+    is the target" alone left the player to find a quiet move with nothing to go on (the 28
+    wins of the puzzle sample the story checks found bare, 2026-09-25); "the first move is
+    quiet, but it threatens mate" is the lesson. Said by what the threat does -- a mate, a pawn
+    that queens, a piece taken, a check that hits a piece too, material won -- naming only what
+    stands on the board now, never the move or where it goes."""
+    first = idea.first
+    if aim is None or not aim.moves or first is None or first not in board.legal_moves:
+        return None
+    after = board.copy(stack=False)
+    after.push(first)
+    if after.is_check():
+        return None
+    passed = after.copy(stack=False)
+    passed.push(chess.Move.null())
+    try:
+        threat = chess.Move.from_uci(aim.moves[0])
+    except ValueError:
+        return None
+    if threat not in passed.legal_moves:
+        return None
+    if aim.mate is not None and aim.mate > 0:
+        said = (
+            f"{_QUIET} mate"
+            if aim.mate == 1
+            else f"{_QUIET} mate in {_MATE_IN[aim.mate]}"
+            if aim.mate in _MATE_IN
+            else f"{_QUIET} a mating attack"
+        )
+        return Effect(said, "Which quiet move sets up a mate?")
+    # A pawn of yours that queens along the threat.
+    b = passed.copy(stack=False)
+    for j, uci in enumerate(aim.moves[:6]):
+        move = chess.Move.from_uci(uci)
+        if move not in b.legal_moves:
+            break
+        if j % 2 == 0 and move.promotion is not None:
+            return Effect(
+                f"{_QUIET} to queen a pawn", "Which quiet move makes your pawn unstoppable?"
+            )
+        b.push(move)
+    found = effects(passed, threat, None)
+    check = any(e.said == "gives check" for e in found)
+    taken = passed.piece_at(threat.to_square) if passed.is_capture(threat) else None
+    if (
+        taken is not None
+        and taken.piece_type not in (chess.PAWN, chess.KING)
+        and exchange.exchange(passed, threat) > 0
+    ):
+        return Effect(
+            f"{_QUIET} to take their {_named(passed, threat.to_square)}",
+            "Which of their pieces would a quiet move put in danger?",
+        )
+    hit = next((m for e in found if (m := _HIT.fullmatch(e.said)) is not None), None)
+    if hit is not None and check:
+        tail = ", which has no safe square left" if hit.group(2) else ""
+        return Effect(
+            f"{_QUIET} a check that also attacks their {hit.group(1)}{tail}",
+            "Which check could hit two things at once, once the way is ready?",
+        )
+    if hit is not None and hit.group(2):
+        return Effect(
+            f"{_QUIET} their {hit.group(1)}, which has no safe square left",
+            "Which of their pieces is short of squares?",
+        )
+    net = _line_net(passed, aim.moves)
+    if net >= 1:
+        what = "a pawn" if net == 1 else "material"
+        how_ = f"a check that wins {what}" if check else f"to win {what}"
+        return Effect(f"{_QUIET} {how_}", "What would you play next if they did nothing?")
+    # Nothing won yet within reach: the break or the check the move prepares.
+    mover = passed.piece_at(threat.from_square)
+    if (
+        mover is not None
+        and mover.piece_type == chess.PAWN
+        and not passed.is_capture(threat)
+        and any(
+            (target := passed.piece_at(sq)) is not None
+            and target.color != passed.turn
+            and target.piece_type == chess.PAWN
+            for sq in chess.SquareSet(chess.BB_PAWN_ATTACKS[passed.turn][threat.to_square])
+        )
+    ):
+        return Effect(f"{_QUIET} a pawn break", "Which pawn break could a quiet move prepare?")
+    if check:
+        return Effect(f"{_QUIET} a check", "Which check could a quiet move prepare?")
+    return None
+
+
+def _line_net(board: chess.Board, moves: list[str], plies: int = 6) -> int:
+    """What `moves` net the side to move in material, in pawns, after their last reply
+    within `plies`."""
+    us = board.turn
+    b = board.copy(stack=False)
+
+    def balance() -> int:
+        return sum(
+            idea_of.VALUES.get(piece.piece_type, 0) * (1 if piece.color == us else -1)
+            for piece in b.piece_map().values()
+        )
+
+    start = balance()
+    net = 0
+    for j, uci in enumerate(moves[:plies]):
+        move = chess.Move.from_uci(uci)
+        if move not in b.legal_moves:
+            break
+        b.push(move)
+        if j % 2 == 1:
+            net = balance() - start
+    return net
+
+
+def quiet_how(board: chess.Board, idea: Idea, pushes: bool = False) -> Effect | None:
+    """How a quiet first move wins when there is no threat to say (`aim_how`), read off the
+    best line: the bait it sets -- the piece it moves is taken, and the next move takes the
+    taker or what the taker had been guarding -- or the passed pawn it sets going, which costs
+    them a piece to stop. Names only what stands on the board now, never the move."""
+    first = idea.first
+    line = list(idea.line)
+    if first is None or not line or line[0] != first or first not in board.legal_moves:
+        return None
+    after = board.copy(stack=False)
+    after.push(first)
+    if len(line) >= 3 and line[1] in after.legal_moves:
+        reply, follow = line[1], line[2]
+        taker = after.piece_at(reply.from_square)
+        # The bait is what the first move itself puts where it can be taken.
+        if (
+            after.is_capture(reply)
+            and reply.to_square == first.to_square
+            and taker is not None
+            and taker.piece_type != chess.KING
+        ):
+            took = after.copy(stack=False)
+            took.push(reply)
+            if follow in took.legal_moves and took.is_capture(follow):
+                name = _named(after, reply.from_square)
+                if follow.to_square == reply.to_square:
+                    return Effect(
+                        f"The first move sets a bait: if their {name} takes, it is lost",
+                        "What could you offer that they cannot afford to take?",
+                    )
+                if follow.to_square in after.attacks(reply.from_square):
+                    return Effect(
+                        f"The first move sets a bait: if their {name} takes, their "
+                        f"{_named(after, follow.to_square)} loses its guard",
+                        "Which of their pieces is doing the guarding?",
+                    )
+    # The passed pawn: pushed, or walked in behind by the king, and stopping it costs them.
+    moved = board.piece_at(first.from_square)
+    runner = pushes or (
+        moved is not None
+        and moved.piece_type == chess.KING
+        and len(line) >= 3
+        and _pushes_passer(after, line[1], line[2])
+    )
+    if runner and idea.won and " for " in idea.won:
+        cost = idea.won.split(" for ")[0].removeprefix("back ")
+        return Effect(
+            f"The first move gets your passed pawn going, and stopping it costs them {cost}",
+            "How far can your passed pawn go?",
+        )
+    return None
+
+
+def _pushes_passer(after: chess.Board, reply: chess.Move, follow: chess.Move) -> bool:
+    """Whether `follow`, after `reply`, pushes a passed pawn of the side that played first."""
+    if reply not in after.legal_moves:
+        return False
+    b = after.copy(stack=False)
+    b.push(reply)
+    piece = b.piece_at(follow.from_square)
+    return (
+        follow in b.legal_moves
+        and piece is not None
+        and piece.piece_type == chess.PAWN
+        and not b.is_capture(follow)
+        and positional.is_passed(b, follow.from_square)
+    )
 
 
 def move_why(board: chess.Board, idea: Idea, threat: chess.Move | None) -> str | None:

@@ -138,7 +138,11 @@ def test_a_piece_with_no_safe_square_is_taught_as_trapped() -> None:
 
 
 def _hints_with(
-    fen: str, lines: list[tuple[list[str], float]], defences: list[Line], traps: list[Line] = ()
+    fen: str,
+    lines: list[tuple[list[str], float]],
+    defences: list[Line],
+    traps: list[Line] = (),
+    threatens: list[Line] = (),
 ) -> tuple[dict[str, str], bool]:
     board = chess.Board(fen)
     analysis = Analysis(
@@ -150,6 +154,7 @@ def _hints_with(
         only_move=True,
         defences=defences,
         traps=list(traps),
+        threatens=list(threatens),
     )
     facts = facts_from_analysis(board, analysis, user=board.turn)
     texts = {
@@ -228,4 +233,100 @@ def test_a_defender_with_two_jobs_is_not_a_loose_piece() -> None:
         in texts["idea"]
     )
     assert "if Rxb8, f8=Q+" in texts["move"]
+    assert told
+
+
+def test_a_quiet_move_is_told_by_what_it_threatens() -> None:
+    # The 28 wins of the puzzle sample whose first hint was "their X is the target" and no
+    # more (2026-09-25): a quiet first move's point is its threat, asked of the engine
+    # (`threats.aim_lines`). Lichess 06VoP: 32.Qg4, threatening Qxg7#.
+    texts, told = _hints_with(
+        "2rr2k1/5pp1/p1qp3p/4pP1N/1p6/1P4PK/PP5P/R2Q4 w - - 5 32",
+        [
+            (["d1g4", "g8f8", "g4g7", "f8e8", "g7g8", "e8e7", "f5f6", "e7e6"], 0.924),
+            (["d1f1"], 0.241),
+        ],
+        [],
+        threatens=[Line(moves=["g4g7"], depth=14, expected_score=1.0, mate=1)],
+    )
+    assert "The first move is quiet, but it threatens mate." in texts["idea"]
+    assert "Which quiet move sets up a mate?" in texts["focus"]
+    assert told
+
+
+def test_a_quiet_move_that_threatens_a_piece_names_it_where_it_stands() -> None:
+    # Lichess 05cb6: in check, 35.Kd2 steps out and threatens Rxb1, their queen.
+    texts, told = _hints_with(
+        "r4rk1/p3pp1p/1p4p1/3P4/2P4b/1Q3R2/PP2N3/1q1K2R1 w - - 3 35",
+        [
+            (["d1d2", "b1e4", "f3f4", "e4e5", "f4h4", "e7e6", "b3c3", "e5c3"], 0.797),
+            (["e2c1", "a8c8", "g1g4", "h4f6", "f3f6", "e7f6", "b3c2", "b1c2"], 0.093),
+        ],
+        [],
+        threatens=[
+            Line(
+                moves=["g1b1", "e7e6", "b1h1", "a7a5", "h1h4", "a5a4"],
+                depth=14,
+                expected_score=0.959,
+            )
+        ],
+    )
+    assert "The first move is quiet, but it threatens to take their queen on b1." in texts["idea"]
+    assert told
+
+
+def test_a_quiet_pawn_move_threatens_a_break() -> None:
+    # Lichess 00pWF, a king and pawn ending: 53...a5, threatening a4 and a passed pawn.
+    texts, told = _hints_with(
+        "8/8/p3k3/1p1pP3/5P2/1P3K2/8/8 b - - 1 53",
+        [
+            (
+                [
+                    "a6a5",
+                    "f3g4",
+                    "e6f7",
+                    "f4f5",
+                    "a5a4",
+                    "b3a4",
+                    "b5a4",
+                    "f5f6",
+                    "f7g6",
+                    "f6f7",
+                    "g6f7",
+                    "g4f5",
+                    "f7e7",
+                    "e5e6",
+                    "a4a3",
+                    "f5e5",
+                ],
+                0.874,
+            ),
+            (["b5b4"], 0.456),
+            (
+                [
+                    "e6f5",
+                    "b3b4",
+                    "a6a5",
+                    "b4a5",
+                    "b5b4",
+                    "f3e3",
+                    "b4b3",
+                    "e3d3",
+                    "b3b2",
+                    "d3c2",
+                    "f5e4",
+                ],
+                0.089,
+            ),
+        ],
+        [],
+        threatens=[
+            Line(
+                moves=["a5a4", "b3a4", "b5a4", "f3e3", "a4a3", "f4f5"],
+                depth=14,
+                expected_score=0.872,
+            )
+        ],
+    )
+    assert "The first move is quiet, but it threatens a pawn break." in texts["idea"]
     assert told

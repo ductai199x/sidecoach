@@ -826,7 +826,7 @@ def facts_from_analysis(
     # How a win with no named pattern comes about: what the first move does, and at the move
     # rung the line to it, never the result alone.
     told_how = (
-        story.how(board, idea, threat_move)
+        story.how(board, idea, threat_move, analysis.threatens[0] if analysis.threatens else None)
         if tactical_goal and not forced and plain is None
         else None
     )
@@ -836,6 +836,10 @@ def facts_from_analysis(
         taught = idea_words.lesson(told_how.lesson, idea) or told_how.lesson
         how = f"{how}. {taught[0].upper()}{taught[1:]}"
         nudge = told_how.ask or nudge
+    elif told_how is not None and told_how.ask and not in_check:
+        # The second hint asks after what the first said the move is for: "which quiet move
+        # sets up a mate?" after "the first move is quiet, but it threatens mate".
+        nudge = told_how.ask
     if (
         tactical_goal
         and best is not None
@@ -929,21 +933,25 @@ def facts_from_analysis(
             # it also shields their king."
             shown_key = f"{key}, and {held.who} cannot take back there: it also {held.duty}"
             defended = None
-    if (
-        how
-        and shown_key
-        and shown_key.endswith(" is the target")
-        and how.startswith("The first move ")
-    ):
-        # "Their queen on d3 is the target, and the first move attacks it."
-        named = shown_key[: -len(" is the target")]
-        rest = how[len("The first move ") :]
-        rest = re.sub(rf"^(\w+) {re.escape(named[0].lower() + named[1:])}\b", r"\1 it", rest)
-        if ", and " in rest.split(". ", 1)[0]:
-            how = f"The first move {rest}"  # two "and"s in one sentence: said apart
-        else:
-            shown_key = f"{shown_key}, and the first move {rest}"
-            how = None
+    target_said = (
+        re.fullmatch(r"[Tt]heir (\w+) on [a-h][1-8]", shown_key[: -len(" is the target")])
+        if shown_key and shown_key.endswith(" is the target")
+        else None
+    )
+    if how and shown_key and target_said is not None:
+        their = "t" + shown_key[1 : -len(" is the target")]  # "their rook on a1"
+        if how.startswith("The first move "):
+            # "Their queen on d3 is the target, and the first move attacks it."
+            rest = how[len("The first move ") :]
+            rest = re.sub(rf"^(\w+) {re.escape(their)}\b", r"\1 it", rest)
+            if "," in rest.split(". ", 1)[0]:
+                how = f"The first move {rest}"  # a clause of its own: said apart
+            else:
+                shown_key = f"{shown_key}, and the first move {rest}"
+                how = None
+        if how is not None and their in how:
+            # Named once: "... a check that also attacks the rook, which has no safe square".
+            how = how.replace(their, f"the {target_said.group(1)}")
     if pawn:
         parts.append(pawn)
     if prize and not prize_last:

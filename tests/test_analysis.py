@@ -701,3 +701,31 @@ def test_a_declined_recapture_is_played_out_by_the_engine(engine) -> None:  # no
     rook = [d for d in defences if d.moves[:4] == ["e6f7", "g8h8", "d6b8", "f8b8"]]
     assert rook and rook[0].mate is not None and rook[0].mate > 0, defences
     assert rook[0].moves[4].startswith("f7f8"), "the pawn queens where the rook stood"
+
+
+# 32.Qg4 in Lichess 06VoP: a quiet queen move whose point is Qxg7#.
+QUIET_MATE = "2rr2k1/5pp1/p1qp3p/4pP1N/1p6/1P4PK/PP5P/R2Q4 w - - 5 32"
+
+
+def test_a_quiet_best_move_is_asked_what_it_threatens() -> None:
+    from sidecoach.analysis.threats import aim_lines
+
+    board = chess.Board(QUIET_MATE)
+    passed = board.copy(stack=False)
+    passed.push_uci("d1g4")
+    passed.push(chess.Move.null())
+    threat = [Line(moves=["g4g7"], depth=14, expected_score=1.0, mate=1)]
+    engine = FakeEngine({chess.Board(passed.fen()).fen(): threat})
+    assert aim_lines(engine, board, [Line(moves=["d1g4"], depth=18, expected_score=0.92)]) == threat
+    # A capture is its own point, and a line that only holds is not a win to explain.
+    assert aim_lines(engine, board, [Line(moves=["h5g7"], depth=18, expected_score=0.9)]) == []
+    assert aim_lines(engine, board, [Line(moves=["d1g4"], depth=18, expected_score=0.5)]) == []
+
+
+@needs_engine
+def test_the_engine_finds_what_a_quiet_move_threatens(engine) -> None:  # noqa: ANN001
+    from sidecoach.analysis.threats import aim_lines
+
+    board = chess.Board(QUIET_MATE)
+    aims = aim_lines(engine, board, [Line(moves=["d1g4"], depth=18, expected_score=0.92)], depth=10)
+    assert aims and aims[0].moves[0] == "g4g7" and aims[0].mate == 1, aims
