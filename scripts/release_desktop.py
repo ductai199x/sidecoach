@@ -14,6 +14,9 @@ The steps, each logged under data/build/:
    leaves them out (src-tauri/tauri.no-updater.json).
 3. With --install (Windows): the installer run silently, then the installed version checked
    against tauri.conf.json. It refuses while the app is running -- never over a live game.
+
+It refuses to build when the platforms' versions differ (scripts/bump_version.py --check):
+bump them together with scripts/bump_version.py <version>.
 """
 
 from __future__ import annotations
@@ -100,6 +103,14 @@ def main() -> None:
         sys.exit("--install is for Windows; on Linux run the AppImage or install the .deb")
     if args.install and _running():
         sys.exit("Sidecoach is running: not installing over a live session. Close it first.")
+    # One version for every platform (scripts/bump_version.py): a build refuses when they
+    # differ. The check needs the phone's repo beside this one.
+    if (ROOT.parent / "sidecoach-android").exists():
+        check = [sys.executable, str(ROOT / "scripts" / "bump_version.py"), "--check"]
+        if subprocess.call(check, stdout=subprocess.DEVNULL) != 0:
+            sys.exit("the platforms' versions differ: bump_version.py --check says where")
+    else:
+        print("no ../sidecoach-android here: the versions are not checked", flush=True)
     LOGS.mkdir(parents=True, exist_ok=True)
     version = _version()
     print(f"Sidecoach {version}", flush=True)
