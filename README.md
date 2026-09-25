@@ -66,6 +66,8 @@ points at it and is not committed. JDK 17.
 ```
 gradlew.bat assembleDebug                      # the APK
 gradlew.bat installDebug                       # onto the phone over adb
+powershell -File tools\install.ps1 -Serial <serial>   # the same, checked: refuses a live
+                                               # session, prints what landed
 powershell -File tools\test.ps1                # the parity suite, on a device or emulator
 powershell -File tools\test.ps1 -Class com.sidecoach.state.PipelineTest
 ```
