@@ -95,13 +95,28 @@ pub fn record(window: &Window) {
         height: size.height,
         maximized,
     };
-    let place = match (maximized, map.get(&kind)) {
+    // A window that fills its screen is being maximised, whether or not it says so yet:
+    // Windows moves it there before it reports itself maximised, and those bounds recorded
+    // as the ones to come back to made "restore" a screen-sized window (2026-09-25).
+    let filling = window
+        .outer_size()
+        .ok()
+        .zip(window.current_monitor().ok().flatten())
+        .is_some_and(|(outer, m)| pos.x <= m.position().x && outer.width >= m.size().width);
+    let place = if maximized || filling {
         // Maximised: the flag, and the bounds from before, when there are any.
-        (true, Some(before)) => Place {
-            maximized: true,
-            ..*before
-        },
-        _ => now,
+        match map.get(&kind) {
+            Some(before) => Place {
+                maximized: maximized || before.maximized,
+                ..*before
+            },
+            None => Place {
+                maximized: true,
+                ..now
+            },
+        }
+    } else {
+        now
     };
     map.insert(kind, place);
 }
