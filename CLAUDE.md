@@ -6,6 +6,7 @@ Vision-first chess coaching companion. Watches the screen, finds the board, reco
 
 - `uv sync` installs everything. Python 3.12 is pinned in `.python-version`.
 - `uv run sidecoach --help` for the CLI. `uv run sidecoach doctor` checks the local setup.
+- `uv run --no-sync python scripts/release_desktop.py --install` builds the desktop app (the sidecar, then the installer) and installs it; it refuses while the app is running. The phone: `tools\install.ps1 -Serial <serial>` in the Android repo.
 - `uv run pytest` runs the suite: unit, synthetic-vision, panel and server tests, in parallel, about ten seconds; `-m slow` adds the tests that need the voice models. `uv run ruff check .` and `uv run ruff format .` for lint and format. `uv run pyright` for types.
 
 ## Conventions
