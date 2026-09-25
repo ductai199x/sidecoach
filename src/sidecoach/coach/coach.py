@@ -1629,8 +1629,9 @@ _MY_MOVE = re.compile(
 )
 # A question about the opponent's threat.
 _ASK_THREAT = re.compile(
-    r"\b(?:what(?:'s| is| are) (?:their|the|his|her|my opponent's|the opponent's) threats?"
+    r"\b(?:what(?:'s|s| is| are) (?:their|the|his|her|my opponent's|the opponent's) threats?"
     r"|what (?:do|does) (?:they|he|she|my opponent|the opponent) threaten"
+    r"|what (?:is|are|'s|'re) (?:they|he|she|my opponent|the opponent) (?:threatening|up to)"
     r"|is (?:there|anything) (?:a )?threat(?:ened)?|am i (?:in danger|threatened))\b",
     re.IGNORECASE,
 )
@@ -1654,8 +1655,10 @@ _CLAIM_WORDS = re.compile(
 
 
 def may_carry_claims(text: str) -> bool:
-    """Whether the user's words could state something about the board to check."""
-    if _ASK_HINT.match(text) or _ASK_REVIEW.search(text):
+    """Whether the user's words could state something about the board to check. "What is he
+    threatening?" states nothing: it is answered from the facts' threats, not examined as a
+    named line (the examination read it back, question and move numbers, as the answer)."""
+    if _ASK_HINT.match(text) or _ASK_REVIEW.search(text) or _ASK_THREAT.search(text):
         return False
     return _CLAIM_WORDS.search(text) is not None
 
