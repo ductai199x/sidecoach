@@ -17,7 +17,7 @@ import argparse
 import json
 import sys
 import time
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from pathlib import Path
 
 import chess
@@ -121,9 +121,12 @@ def play(
     no_corrections: bool = False,
     summarise_every: int = 0,
     summariser: str = "openai:gpt-5.6-luna@none",
+    on_coach: Callable[[Coach], None] | None = None,
 ) -> tuple[list[str], list[tuple[str, str]], Coach]:
     """The game through the coach: the transcript's lines, the harness at the dumped
-    plies, and the coach itself (for its conversation and its speaker's counts)."""
+    plies, and the coach itself (for its conversation and its speaker's counts).
+    `on_coach` sees the coach before the game starts (dump_prompts.py records its
+    requests there)."""
     facts = load_facts(game)
     moves = [s for s in facts["script"] if s["kind"] == "move"]
     side = Side.WHITE if side_name == "white" else Side.BLACK
@@ -140,6 +143,8 @@ def play(
     )
     coach.sync_summaries = True
     coach.system = prompt.system_message(with_corrections=not no_corrections)
+    if on_coach is not None:
+        on_coach(coach)
     gid = game
     ts = 0.0
     transcript: list[str] = []
