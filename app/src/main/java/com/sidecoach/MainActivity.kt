@@ -276,7 +276,11 @@ class MainActivity : ComponentActivity() {
         // A chess app that can be told it is being recorded is named first, and the screen
         // is shared only on Continue (`RecordingNotice`).
         val installed = RecordingNotice.installed(this)
-        Log.i(TAG, "recording notice: " + RecordingNotice.survey(installed))
+        // Also in the panel's own log, which keeps it: the system's is a few hundred kilobytes
+        // and drops the chattiest app's lines first (a Start's line was gone within minutes).
+        val found = RecordingNotice.survey(installed)
+        Log.i(TAG, "recording notice: $found")
+        PanelEngine.emit("sys", "debug", "recording notice: $found")
         val watching = RecordingNotice.unanswered(this, installed)
         if (watching.isNotEmpty()) {
             RecordingNotice.ask(this, watching, proceed = { shareScreen() }, cancelled = {

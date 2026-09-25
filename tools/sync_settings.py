@@ -6,10 +6,9 @@ now, at the next Start or after a restart. The phone runs that same page, so it 
 same schema; it is a description of the settings, not a value, so it ships as an asset and
 is refreshed here whenever `config.py` changes.
 
-The defaults come with it, as the settings a phone starts from. What the phone actually
-honours is a subset -- there is no voice yet, no CUDA pack, no tools directory -- and the
-page shows every field either way, which is the desktop's behaviour for a setting that does
-not apply to the machine in front of you.
+The defaults come with it, as the settings a phone starts from. The schema is trimmed to
+what the phone honours -- its folders, devices, GPU switches and the rest the desktop has are
+left out -- so the page never shows an option that does nothing on the phone.
 
     cd D:/chess-coaching-companion
     uv run --no-sync python D:/sidecoach-android/tools/sync_settings.py
@@ -127,6 +126,25 @@ def main() -> None:
         captions_opacity=92,
         captions_text_size=17,
     )
+    # What the phone does not honour is not on its page (Tai's rule of 2026-09-21: no dead
+    # option shown; 2026-09-24: the phone's page showed the desktop's devices, folders, GPU
+    # and capture switches, none of which the phone reads). The folders are the phone's own;
+    # the devices are the phone's one microphone and speaker; the voice and the recogniser run
+    # on the CPU; the engine is the bundled one; nothing is recorded.
+    hidden = {
+        "capture": ["backend", "record"],
+        "engine": ["stockfish_path"],
+        "voice": ["model_dir", "tts_device", "stt_device", "mic_device", "output_device", "ptt_key"],
+    }
+    refs = {name: prop["$ref"].split("/")[-1] for name, prop in schema["properties"].items() if "$ref" in prop}
+    for section, keys in hidden.items():
+        props = schema["$defs"][refs[section]]["properties"]
+        for key in keys:
+            del props[key]
+    for name in ("data_dir", "tools_dir", "gpu"):
+        del schema["properties"][name]
+    # The phone reads the frame rate when a session starts.
+    schema["$defs"][refs["capture"]]["properties"]["fps"]["applies"] = "next"
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
     (OUT / "defaults.json").write_text(json.dumps(defaults), encoding="utf-8")

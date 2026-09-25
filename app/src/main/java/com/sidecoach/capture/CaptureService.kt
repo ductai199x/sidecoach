@@ -66,6 +66,7 @@ class CaptureService : Service() {
     private var handler: Handler? = null
     private var stats: CaptureStats? = null
     private var lastFrameAt = 0L
+    private var minIntervalMs = 1000L / TARGET_FPS
     private var buffer: ByteArray? = null
     // The frame as pixels we own, reused: the reader's buffer is handed back the moment
     // the image is closed, so nothing may be kept from it.
@@ -221,7 +222,10 @@ class CaptureService : Service() {
             null,
             handler,
         )
-        Log.i(TAG, "capturing ${width}x$height at ${TARGET_FPS} fps")
+        // The setting's rate (`capture.fps`), read at each Start; ten unless changed.
+        val fps = com.sidecoach.ui.SettingsStore(this).captureFps()
+        minIntervalMs = 1000L / fps
+        Log.i(TAG, "capturing ${width}x$height at $fps fps")
     }
 
     /** The screen turned, or the captured window changed size. */
@@ -239,7 +243,7 @@ class CaptureService : Service() {
         val image = runCatching { reader.acquireLatestImage() }.getOrNull() ?: return
         try {
             val now = SystemClock.elapsedRealtime()
-            if (now - lastFrameAt < MIN_INTERVAL_MS) {
+            if (now - lastFrameAt < minIntervalMs) {
                 stats?.skipped()
                 return
             }
@@ -549,7 +553,6 @@ class CaptureService : Service() {
          * second). The change gate keeps a still board cheap.
          */
         const val TARGET_FPS = 10
-        private const val MIN_INTERVAL_MS = 1000L / TARGET_FPS
         private const val BUFFERS = 3
         private const val PREVIEW_WIDTH = 360
         private const val PREVIEW_INTERVAL_MS = 500L

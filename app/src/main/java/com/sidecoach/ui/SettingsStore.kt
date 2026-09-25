@@ -4,6 +4,7 @@ import android.content.Context
 import com.sidecoach.analysis.Thresholds
 import com.sidecoach.coach.PolicySettings
 import com.sidecoach.llm.LLMSettings
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -109,9 +110,21 @@ class SettingsStore(private val context: Context) {
             priceCachedPerM = number(o, "price_cached_per_m"),
             priceCompletionPerM = number(o, "price_completion_per_m"),
             timeoutS = o.optDouble("timeout_s", 60.0),
-            extraBody = emptyMap(),
+            extraBody = plain(o.optJSONObject("extra_body")) as? Map<String, Any?> ?: emptyMap(),
         )
     }
+
+    /** JSON as the provider sends it: maps, lists and values (`llm.extra_body`). */
+    private fun plain(value: Any?): Any? = when (value) {
+        null, JSONObject.NULL -> null
+        is JSONObject -> value.keys().asSequence().associateWith { plain(value.opt(it)) }
+        is JSONArray -> (0 until value.length()).map { plain(value.opt(it)) }
+        else -> value
+    }
+
+    /** How often the screen is read, from `capture.fps`; the service takes it at Start. */
+    fun captureFps(): Int =
+        section("capture").optInt("fps", com.sidecoach.capture.CaptureService.TARGET_FPS).coerceIn(1, 30)
 
     /** The `[coach]` section the interjection policy takes. */
     fun policy(): PolicySettings {

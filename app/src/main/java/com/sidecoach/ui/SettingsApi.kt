@@ -1,5 +1,6 @@
 package com.sidecoach.ui
 
+import com.sidecoach.voice.Voices
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -12,10 +13,10 @@ import org.json.JSONObject
  * the store of their own, and answers with what took effect now, what waits for the next
  * Start and what needs a restart.
  *
- * The phone has no audio devices to list and no voices yet, so those come back empty and
- * the page shows them as such. What the phone cannot honour it still shows and still saves,
- * which is the desktop's behaviour for a setting that does not apply to the machine in
- * front of you.
+ * The voices are the phone's own (`Voices.english`, the list the panel's drawer shows). The
+ * schema is the phone's (`tools/sync_settings.py`): a field the phone does not honour is not
+ * in it, so the page never shows one that does nothing (Tai, 2026-09-24: the Voice setting
+ * listed one voice, and the page showed the desktop's devices, folders and GPU switches).
  */
 class SettingsApi(private val store: SettingsStore) {
 
@@ -33,7 +34,7 @@ class SettingsApi(private val store: SettingsStore) {
         put("keyring", true)
         put("key_envs", store.keyEnvs)
         put("devices", JSONObject().apply { put("inputs", JSONArray()); put("outputs", JSONArray()) })
-        put("voices", JSONArray())
+        put("voices", JSONArray(Voices.english(PanelVoice.tts?.voicesPath)))
         put(
             "personas",
             JSONObject().apply {
