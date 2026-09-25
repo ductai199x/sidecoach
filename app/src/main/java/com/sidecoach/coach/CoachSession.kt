@@ -1032,6 +1032,26 @@ class Coach(
         }
     }
 
+    /**
+     * What the coach has said over the last [RECENT_PLIES] plies, as one text. The entries are
+     * copied under the coach's lock: a summary folds them on its own thread (Python's GIL makes
+     * the desktop's `list(...)` of them whole).
+     */
+    private fun recentlySaid(): String {
+        val texts = ArrayList<String>()
+        var plies = 0
+        val entries = synchronized(lock) { conversation.entries.toList() }
+        for (entry in entries.asReversed()) {
+            if (entry.kind == "ply") {
+                plies += 1
+                if (plies > RECENT_PLIES) break
+            } else if (entry.kind == "coach") {
+                texts.add(entry.text)
+            }
+        }
+        return texts.joinToString(" ")
+    }
+
     /** One of [phrases], never the one said last under [key]. */
     private fun rotate(key: String, phrases: List<String>): String {
         val choices = phrases.filter { it != lastSaid[key] }.ifEmpty { phrases }
@@ -1406,13 +1426,17 @@ class Coach(
                 } else {
                     null
                 }
-                fallback = lessonTemplate(
-                    facts,
-                    best,
-                    rotate("cost", COST_YOU).replace("{best}", best),
-                    board = position.board,
-                    played = played.uci,
-                    allowed = allowed,
+                fallback = fresh(
+                    lessonTemplate(
+                        facts,
+                        best,
+                        rotate("cost", COST_YOU).replace("{best}", best),
+                        board = position.board,
+                        played = played.uci,
+                        allowed = allowed,
+                        keepLead = rotate("keep", KEEP_LEADS),
+                    ),
+                    recentlySaid(),
                 )
                 instructionText =
                     "The player just played ${played.san}, which was a $label: it cost " +
@@ -1497,8 +1521,16 @@ class Coach(
                         "lesson, no question. $NOT_THE_MOVE $NO_NUMBERS"
             } else {
                 // The better move and what it does, when the sheet has it, is the lesson.
-                fallback = lessonTemplate(
-                    facts, best, rotate("fine", FINE_TIGHTER).replace("{best}", best)
+                fallback = fresh(
+                    lessonTemplate(
+                        facts,
+                        best,
+                        rotate("fine", FINE_TIGHTER).replace("{best}", best),
+                        board = position.board,
+                        played = played.uci,
+                        keepLead = rotate("keep", KEEP_LEADS),
+                    ),
+                    recentlySaid(),
                 )
                 instructionText =
                     "The player just played ${played.san}, which was fine but not the " +
@@ -1677,7 +1709,17 @@ class Coach(
                 if (best.isNotEmpty()) {
                     // The better move played out and the pattern to keep, as the lesson says it
                     // -- not "the idea was a pin" and nothing more.
-                    fallback += " " + lessonTemplate(facts, best, "$best was better")
+                    // Asked about the move just taught, the lesson is not said twice.
+                    fallback += " " + fresh(
+                        lessonTemplate(
+                            facts,
+                            best,
+                            "$best was better",
+                            played = lastOwn.move.uci,
+                            keepLead = rotate("keep", KEEP_LEADS),
+                        ),
+                        recentlySaid(),
+                    )
                 }
                 directive =
                     "They ask about the move they already played, $san. Its verdict is in its " +

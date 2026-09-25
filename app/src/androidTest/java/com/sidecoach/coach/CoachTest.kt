@@ -5,16 +5,23 @@ import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.CoachMessage
+import com.sidecoach.events.DisclosureLevel
 import com.sidecoach.events.GameStarted
+import com.sidecoach.events.Label
 import com.sidecoach.events.Line
+import com.sidecoach.events.MotifTag
+import com.sidecoach.events.MoveAssessment
 import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.Resync
+import com.sidecoach.events.Severity
 import com.sidecoach.events.Trigger
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.Completion
 import com.sidecoach.llm.LLMProvider
 import com.sidecoach.vision.Pieces
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -217,7 +224,130 @@ class CoachTest {
         assertEquals(listOf(Trigger.DECISIVE_QUESTION), messages(coach).map { it.trigger })
     }
 
+    /** White, the user, to move with Qxf7# on the board, after black's Nf6 (`_play_to_scholar`). */
+    private fun playToScholar(coach: Coach) {
+        start(coach)
+        val board = Board()
+        for ((i, san) in listOf("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6").withIndex()) {
+            val ply = i + 1
+            val move = board.parseSan(san)!!
+            val before = board.fen()
+            board.push(move)
+            coach.onEvent(
+                MovePlayed(
+                    gameId = "g",
+                    ply = ply,
+                    san = san,
+                    uci = move.uci(),
+                    fenBefore = before,
+                    fenAfter = board.fen(),
+                    byUser = ply % 2 == 1,
+                ),
+                ply.toDouble(),
+            )
+        }
+        assertTrue(coach.userToMove && coach.board.fen() == SCHOLAR)
+    }
+
+    /** `_mate_analysis`: Qxf7# on the scholar's board. */
+    private fun mateAnalysis(ply: Int) = Analysis(
+        gameId = "g",
+        fen = SCHOLAR,
+        ply = ply,
+        lines = listOf(
+            Line(moves = listOf("h5f7"), depth = 12, expectedScore = 1.0, mate = 1),
+            Line(moves = listOf("c4f7"), depth = 12, expectedScore = 0.55),
+        ),
+        decisive = true,
+        onlyMove = true,
+        tags = listOf(MotifTag(name = "mateIn1", squares = listOf("f7", "e8"), move = "h5f7")),
+    )
+
+    @Test
+    fun inBlitzAMistakeGetsAWordThatDoesNotCallItFine() {
+        // Blitz keeps only the word after the move (the policy), so a blunder comes to the
+        // directive as POST_MOVE: no lesson and no question, but not "fine" either.
+        val (coach, _) = coach(emptyList())
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 6.5)
+        val position = coach.positions.getValue(6)
+        assertNotNull(position.facts)
+        val board = Board(SCHOLAR)
+        val move = board.parseSan("a3")!!
+        board.push(move)
+        val played = MovePlayed(
+            gameId = "g",
+            ply = 7,
+            san = "a3",
+            uci = move.uci(),
+            fenBefore = SCHOLAR,
+            fenAfter = board.fen(),
+            byUser = true,
+        )
+        val blunder = MoveAssessment(
+            gameId = "g",
+            ply = 7,
+            uci = move.uci(),
+            expectedLoss = 0.5,
+            severity = Severity.BLUNDER,
+            best = listOf("h5f7"),
+            label = Label.BLUNDER,
+        )
+        val (instruction, fallback) = coach.instruction(
+            Trigger.POST_MOVE, position, DisclosureLevel.LINE, null, emptyList(), blunder, played,
+        )
+        assertTrue(fallback, fallback in COST_YOU.map { it.replace("{best}", "Qxf7#") + "." })
+        assertTrue(instruction, "which was a blunder" in instruction && "fine" !in instruction)
+        assertTrue(instruction, "no lesson, no question" in instruction)
+        // A move a little behind the best is still fine.
+        val good = MoveAssessment(
+            gameId = "g",
+            ply = 7,
+            uci = move.uci(),
+            expectedLoss = 0.03,
+            severity = Severity.NONE,
+            best = listOf("h5f7"),
+            label = Label.GOOD,
+        )
+        val (_, fine) = coach.instruction(
+            Trigger.POST_MOVE, position, DisclosureLevel.LINE, null, emptyList(), good, played,
+        )
+        // The better move and what it does, and the pattern to keep.
+        assertTrue(fine, FINE_TIGHTER.any { fine.startsWith(it.replace("{best}", "Qxf7#")) })
+        assertTrue(fine, "it is mate" in fine)
+        assertTrue(fine, KEEP_LEADS.any { "${it.replaceFirstChar { c -> c.uppercase() }}:" in fine })
+        // Said once, the lesson is not said again a move later: the verdict and the better move
+        // stand alone (Nova bot games, 2026-09-25: 27% of lessons came again within three moves).
+        coach.conversation.coachSaid(fine)
+        val (_, again) = coach.instruction(
+            Trigger.POST_MOVE, position, DisclosureLevel.LINE, null, emptyList(), good, played,
+        )
+        assertTrue(again, FINE_TIGHTER.any { again.startsWith(it.replace("{best}", "Qxf7#")) })
+        assertTrue(again, "it is mate" !in again)
+        assertTrue(again, KEEP_LEADS.none { "${it.replaceFirstChar { c -> c.uppercase() }}:" in again })
+        assertTrue(instruction, "Do not open with the move they played" in instruction)
+    }
+
+    @Test
+    fun aLessonIsSaidOfTheBoardThePlayerSeesAndNotTwice() {
+        // 4.d3 had just let the bishop out: "still shut in behind the pawn on d2" was the
+        // position before the move (Nova bot games, 2026-09-25).
+        assertTrue(stale("your bishop on c1 is still shut in behind the pawn on d2", "d2d3"))
+        assertFalse(stale("your bishop on c1 is still shut in behind the pawn on d2", "b1c3"))
+        // A line is about the moves to come, and stands.
+        assertFalse(stale("after Qg2, Rdg1, and the queen on g2 is trapped", "g2g3"))
+        val said = "That works, though d4 was a touch better -- your bishop on c1 is still shut in behind " +
+            "the pawn on d2. The lesson to keep: the centre is where pieces have the most room."
+        val text = "Playable -- d4 was a little more precise -- your bishop on c1 is still shut in behind " +
+            "the pawn on d2. Worth remembering: the centre is where pieces have the most room."
+        assertEquals("Playable -- d4 was a little more precise.", fresh(text, said))
+        assertEquals(text, fresh(text, "Nice."))
+    }
+
     companion object {
+        // 1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6??: white to move, Qxf7 mates.
+        private const val SCHOLAR = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
+
         // The puzzle of Tai's desktop, 2026-09-24: Black to move, 1...Qd1+ 2.Rxd1 Rxd1+ 3.Qe1 Rxe1#.
         private const val QD1 = "2kr2nr/2p5/2p1p1pp/Q3Pp2/3R4/P3P3/1Pq2PPP/R1B3K1 b - - 1 1"
         private val QD1_LINE = listOf("c2d1", "d4d1", "d8d1", "a5e1", "d1e1")

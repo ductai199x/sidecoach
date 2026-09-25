@@ -127,6 +127,18 @@ val COST_YOU = listOf(
 )
 
 /**
+ * How the rule to keep is introduced, rotated like the openers (Tai, 2026-09-25: "there's a lot
+ * of 'keep this one' ... it could use some variety"). The first is the templates' own.
+ */
+val KEEP_LEADS = listOf(
+    "keep this one",
+    "the lesson to keep",
+    "worth remembering",
+    "a rule to take with you",
+    "the thing to remember",
+)
+
+/**
  * The pattern to keep, said after a mistake that missed it: the rule of thumb, not the
  * position. Keyed by the pattern's name as the fact sheet gives it.
  */
@@ -273,8 +285,9 @@ private fun recapture(board: Board?, best: String, played: String?): String? {
 /**
  * After a move that cost something: the better move, what it does, what the move made allowed,
  * and the pattern to keep. `opener` is the rotated "That one cost you: {best} was better";
- * `board` and `played` (UCI) are the position the player faced and the move made, and
- * `allowed` what it let the opponent do ([IdeaWords.allowed]), when known.
+ * `board` and `played` (UCI) are the position the player faced and the move made, `allowed`
+ * what it let the opponent do ([IdeaWords.allowed]), when known, and `keepLead` how the rule to
+ * keep is introduced ([KEEP_LEADS], rotated by the coach).
  */
 fun lessonTemplate(
     facts: PositionFacts,
@@ -283,6 +296,7 @@ fun lessonTemplate(
     board: Board? = null,
     played: String? = null,
     allowed: String? = null,
+    keepLead: String = KEEP_LEADS[0],
 ): String {
     var text = opener
     val why = facts.why ?: ""
@@ -291,7 +305,7 @@ fun lessonTemplate(
         text += " -- $otherPiece"
         if (!allowed.isNullOrEmpty()) text = templateSentence(text) + " " + allowed
         return templateSentence(text) + " " +
-            templateSentence("keep this one: when two pieces can take, ask which you want to keep where it is")
+            templateSentence("$keepLead: when two pieces can take, ask which you want to keep where it is")
     }
     if (why.startsWith(best)) {
         var rest = why.substring(best.length).trimStart(' ', ',', ':', ';')
@@ -311,6 +325,7 @@ fun lessonTemplate(
                 rest = "it $rest"  // "Nf2# was better -- it is mate", "-- it stops Nxd3"
             }
         }
+        if (rest.isNotEmpty() && stale(rest, played)) rest = ""
         if (rest.isNotEmpty()) text += " -- $rest"
     }
     text = templateSentence(text)
@@ -321,8 +336,63 @@ fun lessonTemplate(
     if (keep == null && !facts.plan.isNullOrEmpty() && !facts.mechanism.isNullOrEmpty()) {
         keep = facts.mechanism.split(": ", limit = 2).last()
     }
-    if (!keep.isNullOrEmpty() && !said(keep, text)) text += " " + templateSentence("keep this one: $keep")
+    if (!keep.isNullOrEmpty() && !said(keep, text)) text += " " + templateSentence("$keepLead: $keep")
     return text
+}
+
+/**
+ * `coach._stale`: whether a lesson's reason, read off the position the player faced, names a
+ * piece on a square their move then left or landed on -- the position before it, not the one
+ * now: "d4 was a little more precise -- your bishop on c1 is still shut in behind the pawn on d2"
+ * after 4.d3, which had just let it out (Nova bot games, 2026-09-25). A line ("after Qg2, Rdg1,
+ * the queen on g2 is trapped") is about the moves to come, and stands.
+ */
+internal fun stale(reason: String, played: String?): Boolean {
+    if (played == null || reason.startsWith("after ")) return false
+    val move = Move.fromUciOrNull(played) ?: return false
+    val squares = listOf(squareName(move.from), squareName(move.to))
+    return squares.any { sq -> Regex("\\bon $sq\\b").containsMatchIn(reason) }
+}
+
+/**
+ * A lesson the player heard over this many plies (their last three moves) is not said again: in
+ * amateur games "fine, but not the best" comes move after move, and the same "keep this one"
+ * came with it -- 27% of them within three moves in twenty Nova bot games (2026-09-25).
+ */
+const val RECENT_PLIES = 6
+
+/** `fresh`'s own split: `re.split(r"(?<=[.?!])\\s+", ...)`. */
+private val LESSON_SENTENCES = Regex("(?<=[.?!])\\s+")
+
+/**
+ * `coach.fresh`: [text] without what the coach said lately ([recent], lower case): the "Keep
+ * this one" sentence, and the reason after " -- " in the first sentence. The verdict and the
+ * better move always stay: that is news.
+ */
+fun fresh(text: String, recent: String): String {
+    val said = recent.lowercase()
+    val sentences = text.trim().split(LESSON_SENTENCES)
+    if (sentences.isEmpty()) return text
+    var first = sentences[0]
+    val rest = sentences.drop(1)
+    if (" -- " in first) {
+        // The last clause: an opener may carry its own ("Playable -- d4 was a little more
+        // precise -- your bishop on c1 is still shut in ...").
+        val head = first.substringBeforeLast(" -- ")
+        val reason = first.substringAfterLast(" -- ")
+        if (reason.trimEnd('.').lowercase() in said) first = head.trimEnd('.') + "."
+    }
+    val kept = rest.filter { s -> val rule = kept(s); rule == null || rule !in said }
+    return (listOf(first) + kept).joinToString(" ")
+}
+
+/** `coach._kept`: the rule a "keep this one" sentence gives, in lower case, whichever lead it has. */
+private fun kept(sentence: String): String? {
+    val low = sentence.lowercase()
+    for (lead in KEEP_LEADS) {
+        if (low.startsWith("$lead:")) return low.substring(lead.length + 1).trim().trimEnd('.')
+    }
+    return null
 }
 
 private val WORDS = Regex("[a-z']+")
