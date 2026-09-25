@@ -204,6 +204,7 @@ class SituationTest {
             onlyMove = o.getBoolean("only_move"),
             threats = (0 until o.getJSONArray("threats").length()).map { o.getJSONArray("threats").getString(it) },
             traps = lines(o.getJSONArray("traps")),
+            defences = lines(o.getJSONArray("defences")),
             opening = if (o.isNull("opening")) null else o.getString("opening"),
             inBook = o.getBoolean("in_book"),
         )

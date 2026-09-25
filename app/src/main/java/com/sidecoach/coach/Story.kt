@@ -13,11 +13,13 @@ import com.sidecoach.chess.PAWN
 import com.sidecoach.chess.QUEEN
 import com.sidecoach.chess.ROOK
 import com.sidecoach.chess.WHITE
+import com.sidecoach.chess.between
 import com.sidecoach.chess.square
 import com.sidecoach.chess.squareFile
 import com.sidecoach.chess.squareName
 import com.sidecoach.chess.squareRank
 import com.sidecoach.chess.squaresOf
+import com.sidecoach.events.Line
 import kotlin.math.abs
 
 /**
@@ -138,6 +140,151 @@ object Story {
             nudge = "Before you take, look at what can take back: is it safe?",
             why = "${board.san(first)} takes their $name: $reason${forcingReply(board, idea)}",
         )
+    }
+
+    /**
+     * Why the obvious defence fails: the recapture the best line does not play, and what the
+     * piece that would take back is also doing ([com.sidecoach.analysis.Defences]).
+     */
+    data class Defence(
+        /** "Their pawn on f2 cannot take back on g3: it also shields their king". */
+        val said: String,
+        /** At the move rung: "their pawn on f2 cannot take back on g3". */
+        val clause: String,
+        /** Where that piece stands: "f2". */
+        val square: String,
+        /** The square it would take back on: "g3". */
+        val target: String,
+        /** The overloaded defender's lesson. */
+        val lesson: String,
+        /** The second hint's question. */
+        val ask: String,
+        /** At the move rung: "if fxg3, Bc5+". */
+        val line: String,
+    )
+
+    /**
+     * What the piece that would take back is also doing, read off what the refutation does with
+     * the square it would leave: guards the square a pawn queens on, shields its king from a
+     * check through that square, guards the square, or defends the piece the refutation takes.
+     * Null when the refutation uses none of that.
+     */
+    private fun duty(before: Board, recapture: Move, refute: Move?, now: Board? = null): String? {
+        if (refute == null || refute.to == recapture.to) {
+            // Taking the piece that took back is the square being guarded twice, not a second
+            // job: "it also defends their queen on f5" of the queen that took on f5.
+            return null
+        }
+        val left = recapture.from
+        val after = before.copy(withStack = false)
+        after.push(recapture)
+        if (!after.isLegal(refute)) return null
+        val mover = after.pieceAt(refute.from)
+        if (mover != null && mover.pieceType == PAWN && refute.to == left) {
+            if (refute.promotion != 0) return "guards ${sq(left)}, where your pawn queens"
+            return "guards ${sq(left)} against your pawn"
+        }
+        val struck = after.copy(withStack = false)
+        struck.push(refute)
+        val king = struck.king(struck.turn)
+        if (king != null && struck.isCheck()) {
+            for (checker in squaresOf(struck.checkersMask())) {
+                if (between(checker, king) and BB_SQUARES[left] != BB_EMPTY) return "shields their king"
+            }
+        }
+        if (refute.to == left) return "guards ${sq(left)}"
+        val taken = after.pieceAt(refute.to)
+        if (taken != null &&
+            refute.to in before.attacks(left) &&
+            now != null &&
+            now.pieceAt(refute.to) == taken
+        ) {
+            // Named where it stands now: a pawn that gets there later in the line is no fact yet.
+            return "defends their ${named(after, refute.to)}"
+        }
+        return null
+    }
+
+    /**
+     * The analysis's declined recapture (from the best line) whose recapturing piece has another
+     * job, in words: the overloaded defender the line turns on. Of several, the one after the
+     * capture that takes the most: the rook the line wins on b8, not the pawn it takes on f7 on
+     * the way.
+     */
+    fun defence(board: Board, defences: List<Line>, best: List<String>): Defence? {
+        // `sorted(..., key=-value)`: stable, as Python's sort is.
+        for (d in defences.sortedByDescending { capturedValue(board, it.moves, best) }) {
+            val moves = d.moves.map { Move.fromUci(it) }
+            val cut = d.moves.indices.firstOrNull { i -> i >= best.size || d.moves[i] != best[i] }
+            // The recapture is the opponent's move, after a capture of the player's.
+            if (cut == null || cut == 0 || cut % 2 == 0) continue
+            val before = board.copy(withStack = false)
+            // python-chess's `push` asserts a piece on the square a move leaves: a line that does
+            // not follow from the board is passed over.
+            var follows = true
+            for (move in moves.take(cut)) {
+                if (before.pieceTypeAt(move.from) == 0) {
+                    follows = false
+                    break
+                }
+                before.push(move)
+            }
+            if (!follows) continue
+            val recapture = moves[cut]
+            if (!before.isLegal(recapture)) continue
+            val piece = before.pieceAt(recapture.from)
+            // A king has no second job to give up: "it also shields their king".
+            if (piece == null || piece.pieceType == KING) continue
+            // Named as the board shows them now: the piece that would take back on its square, and
+            // something of theirs on the square it would take back on -- never a square the line
+            // only reaches later, which is no fact yet and may be the first move's own.
+            val nowPiece = board.pieceAt(recapture.from)
+            val nowTarget = board.pieceAt(recapture.to)
+            if (nowPiece != piece ||
+                nowTarget == null ||
+                nowTarget.colour == board.turn ||
+                recapture.to != moves[cut - 1].to
+            ) {
+                continue
+            }
+            val refute = if (cut + 1 < moves.size) moves[cut + 1] else null
+            val duty = duty(before, recapture, refute, board)
+            if (duty == null || refute == null) continue
+            val recaptureSan = before.san(recapture)
+            val after = before.copy(withStack = false)
+            after.push(recapture)
+            val cannot = "${NAMES.getValue(piece.pieceType)} on ${sq(recapture.from)} cannot take " +
+                "back on ${sq(recapture.to)}"
+            return Defence(
+                said = "Their $cannot: it also $duty",
+                clause = "their $cannot",
+                square = sq(recapture.from),
+                target = sq(recapture.to),
+                lesson = "${IdeaWords.PATTERN_NAMES.getValue("overloading")}: " +
+                    IdeaWords.PATTERN_WHY.getValue("overloading"),
+                ask = "Which of their pieces has two jobs?",
+                line = "if $recaptureSan, ${after.san(refute)}",
+            )
+        }
+        return null
+    }
+
+    /** `idea.VALUES`: pawns' worth, the king not counted. */
+    private val VALUES = mapOf(PAWN to 1, KNIGHT to 3, BISHOP to 3, ROOK to 5, QUEEN to 9)
+
+    /** What the player's capture before a defence's recapture takes, in pawns. */
+    private fun capturedValue(board: Board, moves: List<String>, best: List<String>): Int {
+        val cut = moves.indices.firstOrNull { i -> i >= best.size || moves[i] != best[i] }
+        if (cut == null || cut == 0) return 0
+        val at = board.copy(withStack = false)
+        for (uci in moves.take(cut - 1)) {
+            // `push_uci` refuses what is not a move, or not a legal one.
+            val move = Move.fromUciOrNull(uci) ?: return 0
+            if (!move.isNull && !at.isLegal(move)) return 0
+            at.push(move)
+        }
+        val taken = at.pieceAt(Move.fromUci(moves[cut - 1]).to)
+        return if (taken != null) VALUES[taken.pieceType] ?: 0 else 0
     }
 
     /**

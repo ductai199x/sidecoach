@@ -99,6 +99,12 @@ class Analysis(
      * capture, then the engine's best play after it, scored from the side to move's view.
      */
     val traps: List<Line> = emptyList(),
+    /**
+     * The recaptures the best line declines ([com.sidecoach.analysis.Defences]): each from the
+     * root, the line up to the player's capture, the recapture, then the engine's best play
+     * after it, scored from the side to move's view.
+     */
+    val defences: List<Line> = emptyList(),
     val tags: List<MotifTag> = emptyList(),
     val opening: String? = null,
     /**

@@ -320,6 +320,7 @@ class CoachSessionTest {
                         onlyMove = a.getBoolean("only_move"),
                         threats = strings(a.getJSONArray("threats")),
                         traps = lines(a.getJSONArray("traps")),
+                        defences = lines(a.getJSONArray("defences")),
                         tags = tags(a.getJSONArray("tags")),
                         opening = if (a.isNull("opening")) null else a.getString("opening"),
                         inBook = a.getBoolean("in_book"),

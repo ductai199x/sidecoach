@@ -36,21 +36,40 @@ object Traps {
     const val TRAPS_READ = 2
 
     /**
-     * The captures that look like they win something -- the exchange on the square nets
-     * material, recaptures played out -- that are not among the good lines, the most tempting
-     * first.
+     * The captures that look like they win something, that are not among the good lines, the
+     * most tempting first: the best line's own later captures played at once -- the right idea
+     * in the wrong order, the natural mistake (Tai's chess.com puzzle, 2026-09-24: 2.Qxb8? Qd2+
+     * before 2.exf7+ Kh8 3.Qxb8) -- then those whose exchange on the square nets material,
+     * recaptures played out.
      */
     fun tempting(board: Board, lines: List<Line>): List<Move> {
         if (lines.isEmpty()) return emptyList()
         val good = lines.filter { it.moves.isNotEmpty() && !worse(it, lines[0]) }.map { it.moves[0] }.toSet()
+        val early = ArrayList<Move>()
+        val best = lines[0].moves
+        val first = if (best.isNotEmpty()) best[0].substring(2, 4) else ""
+        // `moves[2:6:2]`: the player's second and third moves of the line.
+        for (k in 2 until minOf(6, best.size) step 2) {
+            val uci = best[k]
+            val move = Move.fromUciOrNull(uci) ?: break
+            // On a square of its own: one on the first move's square is the same capture with
+            // another piece, which says where the first move goes.
+            if (board.isLegal(move) &&
+                board.isCapture(move) &&
+                uci !in good &&
+                uci.substring(2, 4) != first
+            ) {
+                early.add(move)
+            }
+        }
         val found = ArrayList<Pair<Int, Move>>()
         for (move in board.legalMoves()) {
-            if (!board.isCapture(move) || move.uci() in good) continue
+            if (!board.isCapture(move) || move.uci() in good || move in early) continue
             val gain = Exchange.exchange(board, move)
             if (gain > 0) found.add(gain to move)
         }
         // A stable sort, most first, as `found.sort(key=lambda item: -item[0])`.
-        return found.sortedByDescending { it.first }.map { it.second }
+        return early + found.sortedByDescending { it.first }.map { it.second }
     }
 
     /**

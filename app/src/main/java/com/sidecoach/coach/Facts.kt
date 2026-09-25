@@ -788,7 +788,7 @@ fun factsFromAnalysis(
             if (trap != null) break
         }
     }
-    if (trap != null && idea.target != null && trap.startsWith("Not yet")) {
+    if (trap != null && idea.target != null && trap.startsWith("Not yet") && plain == null) {
         key = null  // the trap says it: the target can be won, but not at once
     }
     val parts = ArrayList<String>()
@@ -854,6 +854,33 @@ fun factsFromAnalysis(
     ) {
         why = Story.moveWhy(board, idea, threatMove) ?: why
     }
+    // Why the obvious defence fails ([Story.defence]): the recapture the line does not play, and
+    // the other job of the piece that would make it -- the overloaded defender, said in place of
+    // "a loose piece" when the loose piece was only half the story (Tai's chess.com puzzles,
+    // 2026-09-24: "you can win their queen" read as a lie beside fxg3, and a rook on f8 that had
+    // to stop f8=Q was "not defended at all").
+    val held = if (tacticalGoal && !forced && analysis.defences.isNotEmpty() && idea.goal != "mate") {
+        Story.defence(board, analysis.defences, if (lines.isNotEmpty()) lines[0].moves else emptyList())
+    } else {
+        null
+    }
+    var defended: String? = null
+    if (held != null) {
+        val loose = idea.blow?.name == "hangingPiece"
+        val known = key
+        if (known == null || (loose && (held.square in known || held.target in known))) {
+            // The loose piece was half the story: the defender is there, with another job.
+            key = held.said
+            principle = held.lesson
+            question = held.ask
+            why = why?.let { Regex("the \\w+ on [a-h][1-8] is loose").replace(it) { held.clause } }
+        } else {
+            defended = held.said
+            principle = if (!principle.isNullOrEmpty()) principle else held.lesson
+        }
+        nudge = held.ask
+        why = why?.let { "$it; ${held.line}" }
+    }
     if (forced) {
         // One legal move: the rest of the reading is the move's, not a hint.
         tacticalGoal = false
@@ -876,6 +903,7 @@ fun factsFromAnalysis(
     if (!pawn.isNullOrEmpty()) parts.add(pawn)
     if (!prize.isNullOrEmpty() && !prizeLast) parts.add(prize)
     if (!key.isNullOrEmpty()) parts.add(key)
+    if (!defended.isNullOrEmpty() && !forced) parts.add(defended)
     if (!how.isNullOrEmpty()) parts.add(how)
     if (!prize.isNullOrEmpty() && prizeLast) parts.add(prize)
     if (!principle.isNullOrEmpty() && !key.isNullOrEmpty()) parts.add(principle)

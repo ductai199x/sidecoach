@@ -51,6 +51,10 @@ six puzzles of `tests/test_story.py` are recorded whole, with their hints and wh
 story check holds; and a few traps are made by hand for the ranking, the wrong piece to take
 back with, and the balance lost.
 
+Since desktop a1f7f81 the traps searched beside an analysis come with the recaptures its best
+line declines (`analysis/defences.py`), and the two puzzles of `tests/test_story.py` on why the
+obvious defence fails are recorded as `_hints_with` builds them.
+
 Every case's lessons are also said as the move-by-move lesson says them, with the position and
 the move played (`lesson_template(..., board=, played=)`): every legal capture onto the better
 move's square by another piece (the right capture with the other piece), and the first legal
@@ -74,6 +78,7 @@ sys.path.insert(0, str(DESKTOP / "src"))
 
 import chess  # noqa: E402
 
+from sidecoach.analysis.defences import defence_lines  # noqa: E402
 from sidecoach.analysis.engine import Engine  # noqa: E402
 from sidecoach.analysis.motifs import tags_for_position  # noqa: E402
 from sidecoach.analysis.openings import OpeningBook  # noqa: E402
@@ -183,6 +188,35 @@ STORY_TESTS = [
             (["g4g5", "e7f7", "g5f6", "f7f6", "f4e3", "g6g5", "h4g5", "f6g5", "f3f4"], 0.512),
         ],
         (),
+    ),
+]
+
+# `tests/test_story.py` (desktop a1f7f81): why the obvious defence fails, the Analysis as
+# `_hints_with` builds it -- decisive, one move, the declined recaptures and the traps given:
+# (name, fen, [(line, score)], [(defence, score, mate)], [(trap, score, mate)]).
+DEFENCE_STORY_TESTS = [
+    (
+        "Qxg3: why the obvious recapture fails is the lesson",
+        "2kr1b1r/ppq2p2/2p1pp2/8/2B5/3P2Q1/PPPB1PP1/R4RK1 b - - 1 1",
+        [
+            (["c7g3", "f1e1", "g3h4", "g1f1", "h4g4", "f1g1"], 0.975),
+            (["f8d6", "f2f4", "f7f5", "f1f3", "c7b6", "g3f2"], 0.267),
+        ],
+        [(["c7g3", "f2g3", "f8c5", "d3d4", "c5d4", "f1f2", "d4f2"], 0.931, None)],
+        [],
+    ),
+    (
+        "Qxb8: a defender with two jobs is not a loose piece",
+        "1r3rk1/pp3ppp/2pQP3/1P1pP1q1/3Nn3/6P1/P5KP/2R2R2 w - - 1 2",
+        [
+            (["e6f7", "g8h8", "d6b8", "g5d2", "g2h1", "d2b4"], 0.975),
+            (["d6c7", "g5d2", "g2h1", "f7e6", "d4e6"], 0.261),
+        ],
+        [
+            (["e6f7", "f8f7", "d6b8", "g5d8", "b8d8", "f7f8", "d8f8"], 1.0, 3),
+            (["e6f7", "g8h8", "d6b8", "f8b8", "f7f8q", "b8f8", "f1f8"], 1.0, 2),
+        ],
+        [(["d6b8", "g5d2", "g2h1", "f8b8", "d4f3"], 0.09, None)],
     ),
 ]
 
@@ -546,6 +580,17 @@ def analysis_json(analysis: Analysis) -> dict:
                 "mate": line.mate,
             }
             for line in analysis.traps
+        ],
+        # The recaptures the best line declines (desktop a1f7f81).
+        "defences": [
+            {
+                "moves": list(line.moves),
+                "depth": line.depth,
+                "expected_score": line.expected_score,
+                "score_cp": line.score_cp,
+                "mate": line.mate,
+            }
+            for line in analysis.defences
         ],
         "tags": [
             {"name": tag.name, "squares": list(tag.squares), "move": tag.move}
@@ -1150,10 +1195,16 @@ def plan_category(facts: D.PositionFacts) -> str:
 
 
 def with_traps(engine: Engine | None, board: chess.Board, analysis: Analysis) -> Analysis:
-    """The analysis with the traps the annotator would search for it."""
+    """The analysis with the traps and the declined recaptures the annotator would search for
+    it, in the order it searches them (`defence_lines` beside `trap_lines`, desktop a1f7f81)."""
     if engine is None:
         return analysis
-    return analysis.model_copy(update={"traps": trap_lines(engine, board, analysis.lines)})
+    return analysis.model_copy(
+        update={
+            "traps": trap_lines(engine, board, analysis.lines),
+            "defences": defence_lines(engine, board, analysis.lines),
+        }
+    )
 
 
 def opening_cases(book: OpeningBook | None) -> list[tuple[chess.Board, Analysis]]:
@@ -1231,26 +1282,56 @@ def main() -> None:
         cases.append(case_for(board, analysis, deep=booked % 6 == 0, source="opening"))
         booked += 1
 
-    # `tests/test_story.py`: the six puzzles read by hand, their hints and the story checks.
-    stories = []
-    for name, fen, story_lines, threats in STORY_TESTS:
-        board = chess.Board(fen)
-        analysis = Analysis(
-            game_id="",
-            fen=fen,
-            ply=0,
-            lines=[Line(moves=moves, depth=18, expected_score=score) for moves, score in story_lines],
-            decisive=False,
-            only_move=False,
-            threats=list(threats),
+    # `tests/test_story.py`: the six puzzles read by hand, and the two of why the obvious
+    # defence fails (desktop a1f7f81), their hints and the story checks.
+    told_stories = [
+        (
+            name,
+            fen,
+            Analysis(
+                game_id="",
+                fen=fen,
+                ply=0,
+                lines=[Line(moves=moves, depth=18, expected_score=score) for moves, score in story_lines],
+                decisive=False,
+                only_move=False,
+                threats=list(threats),
+            ),
         )
+        for name, fen, story_lines, threats in STORY_TESTS
+    ] + [
+        (
+            name,
+            fen,
+            Analysis(
+                game_id="",
+                fen=fen,
+                ply=0,
+                lines=[Line(moves=moves, depth=18, expected_score=score) for moves, score in story_lines],
+                decisive=True,
+                only_move=True,
+                defences=[
+                    Line(moves=moves, depth=14, expected_score=score, mate=mate)
+                    for moves, score, mate in made_defences
+                ],
+                traps=[
+                    Line(moves=moves, depth=14, expected_score=score, mate=mate)
+                    for moves, score, mate in made_traps
+                ],
+            ),
+        )
+        for name, fen, story_lines, made_defences, made_traps in DEFENCE_STORY_TESTS
+    ]
+    stories = []
+    for name, fen, analysis in told_stories:
+        board = chess.Board(fen)
         facts = F.facts_from_analysis(board, analysis, user=board.turn)
         texts = {
             "idea": idea_template(facts),
             "focus": focus_template(facts),
             "move": move_template(facts),
         }
-        pv = [chess.Move.from_uci(u) for u in story_lines[0][0]]
+        pv = [chess.Move.from_uci(u) for u in analysis.lines[0].moves]
         checks, _ = story_checks(board, pv, IDEA.read(board, analysis), texts)
         assert all(checks.values()), (name, checks)
         stories.append(

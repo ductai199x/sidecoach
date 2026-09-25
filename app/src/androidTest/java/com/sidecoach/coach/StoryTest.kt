@@ -19,9 +19,11 @@ import org.junit.runner.RunWith
  * case -- six Lichess puzzles read by hand, with the engine's lines as the app's settings saw
  * them. Each asserts what the test asserts, and that the three hints are the desktop's word for
  * word, as recorded with the desktop's story checks (`tools/puzzles/story_checks.py`, desktop
- * tooling), which all hold on each. Then the traps made by hand: their ranking ([Situation.
- * rankedTraps]: on the target, into mate, the worst) and their words with and without the best
- * move -- the wrong piece to take back with, the balance lost.
+ * tooling), which all hold on each; and desktop a1f7f81's two, why the obvious defence fails
+ * ([Story.defence]), with the declined recaptures and the traps the test gives. Then the traps
+ * made by hand: their ranking ([Situation.rankedTraps]: on the target, into mate, the worst) and
+ * their words with and without the best move -- the wrong piece to take back with, the balance
+ * lost.
  */
 @RunWith(AndroidJUnit4::class)
 class StoryTest {
@@ -58,9 +60,11 @@ class StoryTest {
                 fen = fen,
                 ply = 0,
                 lines = lines(o.getJSONArray("lines")),
-                decisive = false,
-                onlyMove = false,
+                decisive = o.getBoolean("decisive"),
+                onlyMove = o.getBoolean("only_move"),
                 threats = strings(o.getJSONArray("threats")),
+                traps = lines(o.getJSONArray("traps")),
+                defences = lines(o.getJSONArray("defences")),
             )
             val facts = factsFromAnalysis(board, analysis, user = board.turn)
             val texts = mapOf(
@@ -123,6 +127,31 @@ class StoryTest {
         val (texts, _) = hints("TzhLp")
         assertTrue(texts.getValue("move"), "takes their pawn on h5" in texts.getValue("move"))
         assertTrue("?" in texts.getValue("focus"))
+    }
+
+    @Test
+    fun whyTheObviousRecaptureFailsIsTheLesson() {
+        // Tai's chess.com puzzle, 2026-09-24: 1...Qxg3 and White does not take back -- 2.fxg3
+        // Bc5+ loses more. "You can win their queen" alone read as a lie beside fxg3.
+        val (texts, _) = hints("Qxg3")
+        val idea = texts.getValue("idea")
+        assertTrue(idea, "Their pawn on f2 cannot take back on g3: it also shields their king" in idea)
+        assertTrue(idea, "An overloaded defender" in idea)
+        assertTrue(texts.getValue("focus"), "Which of their pieces has two jobs?" in texts.getValue("focus"))
+        assertTrue(texts.getValue("move"), "if fxg3, Bc5+" in texts.getValue("move"))
+    }
+
+    @Test
+    fun aDefenderWithTwoJobsIsNotALoosePiece() {
+        // Tai's chess.com puzzle, 2026-09-24: 2.exf7+ Kh8 3.Qxb8 wins the rook because the rook
+        // on f8 must stop f8=Q; "a loose piece: nothing defends it" was the wrong lesson, and
+        // 2.Qxb8? at once (Qd2+) was the natural mistake, unwarned.
+        val (texts, _) = hints("Qxb8")
+        val idea = texts.getValue("idea")
+        assertTrue(idea, "Their rook on f8 cannot take back on b8: it also guards f8, where your pawn queens" in idea)
+        assertTrue(idea, "loose" !in idea && "no defender" !in idea)
+        assertTrue(idea, "Not yet: their rook on b8 can be won, but Qxb8 at once runs into Qd2+" in idea)
+        assertTrue(texts.getValue("move"), "if Rxb8, f8=Q+" in texts.getValue("move"))
     }
 
     @Test

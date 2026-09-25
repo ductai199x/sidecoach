@@ -129,6 +129,8 @@ def main() -> None:
                     # The captures that look free and are not (desktop fc30fa7), and whether the
                     # game is still in the book there.
                     "traps": [line_json(t) for t in analysis.traps],
+                    # The recaptures the best line declines (desktop a1f7f81).
+                    "defences": [line_json(t) for t in analysis.defences],
                     "in_book": analysis.in_book,
                 })
             games.append({"name": name, "plies": plies, "answers": recording.answers})
@@ -141,9 +143,11 @@ def main() -> None:
     tags = sorted({t["name"] for g in games for p in g["plies"] for t in p["move_tags"]})
     calls = sum(len(a) for g in games for a in g["answers"].values())
     traps = sum(len(p["traps"]) for g in games for p in g["plies"])
+    defences = sum(len(p["defences"]) for g in games for p in g["plies"])
     booked = sum(1 for g in games for p in g["plies"] if p["in_book"])
     print(f"{sum(len(g['plies']) for g in games)} plies, {calls} engine answers; "
-          f"labels {labels}; move tags {tags}; {traps} traps, {booked} plies in book")
+          f"labels {labels}; move tags {tags}; {traps} traps, {defences} defences, "
+          f"{booked} plies in book")
     for g in games:
         print(g["name"], [p["opening"] for p in g["plies"]][-1], [p["label"] for p in g["plies"]])
 

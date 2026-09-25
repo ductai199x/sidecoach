@@ -429,6 +429,13 @@ object Situation {
         val reply = Move.fromUciOrNull(trap.moves[1]) ?: return null
         if (!after.isLegal(reply)) return null
         val replySan = after.san(reply)
+        // Their reply, unless it would say where the solution goes: a reply onto the first move's
+        // square, empty now, or written as the first move is ("after Rxh6 e5" where the solution
+        // is e5; "after Qxf7 Rxf7" where it is Rxf7). The trap is said without it.
+        val shows = best != null && (
+            replySan == board.san(best) ||
+                (reply.to == best.to && board.pieceAt(best.to) == null)
+            )
         val given = whatItGives(board, trap)
         // A capture that comes out ahead or even in material, with no mate, attack or lost game
         // behind it, is a lesser move, not a trap (19...Bxf2 Qxf2 won the exchange and 21.Qxf2
@@ -453,13 +460,16 @@ object Situation {
         val what = NAMES.getValue(taken.pieceType)
         if (best != null && best != capture && best.to == capture.to) {
             // The same piece, taken with the wrong one of yours.
-            return "Take it with the right piece: $san looks natural, but after $san $replySan, $tail"
+            val afterIt = if (shows) san else "$san $replySan"
+            return "Take it with the right piece: $san looks natural, but after $afterIt, $tail"
         }
         if (target != null && capture.to == target) {
+            val runs = if (shows) "a reply" else replySan
             return "Not yet: their ${named(board, target)} can be won, but $san at once runs into " +
-                "$replySan, and $tail"
+                "$runs, and $tail"
         }
-        return "$san looks like it wins a $what, but it is a trap: after $san $replySan, $tail"
+        val afterIt = if (shows) san else "$san $replySan"
+        return "$san looks like it wins a $what, but it is a trap: after $afterIt, $tail"
     }
 
     /**

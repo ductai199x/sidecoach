@@ -19,7 +19,8 @@ import java.io.File
  * The annotator with its collaborators held to `sidecoach/analysis/annotator.py`: four real
  * games, each played on one board so the moves that led to every position come along, and
  * every ply's label, severity, loss, best line, move tags, position tags, opening, decisive
- * and only-move calls and threats compared with what the desktop's annotator said
+ * and only-move calls, threats, traps and declined recaptures compared with what the desktop's
+ * annotator said
  * (`tools/make_annotator_fixtures.py`). The engine is scripted from the desktop's recording
  * of the real Stockfish, so what is compared is the annotator itself.
  */
@@ -99,6 +100,7 @@ class AnnotatorParityTest {
         val games = data.getJSONArray("games")
         var plies = 0
         var traps = 0
+        var defences = 0
         for (g in 0 until games.length()) {
             val game = games.getJSONObject(g)
             val name = game.getString("name")
@@ -136,14 +138,16 @@ class AnnotatorParityTest {
                 assertEquals("$where only move", want.getBoolean("only_move"), analysis.onlyMove)
                 assertEquals("$where threats", strings(want.getJSONArray("threats")), analysis.threats)
                 assertEquals("$where traps", recordedLines(want.getJSONArray("traps")), analysis.traps)
+                assertEquals("$where defences", recordedLines(want.getJSONArray("defences")), analysis.defences)
                 assertEquals("$where in book", want.getBoolean("in_book"), analysis.inBook)
                 traps += analysis.traps.size
+                defences += analysis.defences.size
                 plies++
             }
         }
         assertEquals("every engine call was one the desktop made", emptyList<String>(), engine.missed)
         assertEquals(64, plies)
-        android.util.Log.i("sidecoach.analysis", "annotator parity: $plies plies, $traps traps")
+        android.util.Log.i("sidecoach.analysis", "annotator parity: $plies plies, $traps traps, $defences defences")
     }
 
     private fun recordedLines(array: JSONArray): List<Line> = (0 until array.length()).map { i ->
