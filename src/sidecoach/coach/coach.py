@@ -1488,6 +1488,9 @@ class Coach:
         self._mistakes = 0  # the player's mistakes this game, for ELICIT_EVERY
         # When the coach last asked what the player saw, and whether they answered.
         self._elicit_asked: float | None = None
+        # A question asked before the engine had looked at the position on the board: it is
+        # answered the moment the analysis lands (see `ask`).
+        self._pending_ask: tuple[str, float] | None = None
         self._elicit_answered = False
 
     # Lifecycle
@@ -1578,12 +1581,28 @@ class Coach:
         if self._elicit_asked is not None and ts - self._elicit_asked <= ELICIT_ANSWER_S:
             self._elicit_answered = True
         position = self._current
+        if (
+            position is not None
+            and position.facts is None
+            and self.user_to_move
+            and not self.finished
+        ):
+            # The engine is still looking at the position on the board: said so, and
+            # answered the moment its analysis lands -- never from an older position's
+            # (Tai, 2026-09-24: a hint pressed as a puzzle appeared got "I have not seen
+            # enough of this game yet to say. Give me a move or two.").
+            if self._pending_ask is None:
+                self._queue_plain(
+                    Trigger.USER_ASK, "One moment -- still looking at this position.", ts
+                )
+            self._pending_ask = (text, ts)
+            return
         if position is None or position.facts is None:
             position = self._latest_with_facts()
         if position is None or position.facts is None:
             self._queue_plain(
                 Trigger.USER_ASK,
-                "I have not seen enough of this game yet to say. Give me a move or two.",
+                "I have not seen a position to talk about yet.",
                 ts,
             )
             return
@@ -1750,8 +1769,10 @@ class Coach:
         self.conversation.new_game(event, profile=self._profile_lines())
         self._mistakes = 0
         self._elicit_asked, self._elicit_answered = None, False
+        self._pending_ask = None
         self.finished = False
         self._current = self.positions[0]
+        self.policy.restart()
         self.policy.new_position(0, ts, user_to_move=self.user_to_move)
         self._clock_peak_ms = None
         self.policy.set_remaining(None)
@@ -1863,6 +1884,8 @@ class Coach:
     def _on_move(self, event: MovePlayed, ts: float) -> None:
         if event.by_user and event.think_ms is not None:
             self._think_s.append(event.think_ms / 1000.0)
+        if event.by_user:
+            self._pending_ask = None  # they played on: the question is answered by the move
         self.board = chess.Board(event.fen_after)
         self.moves[event.ply] = event
         self.conversation.move(event)
@@ -1919,6 +1942,8 @@ class Coach:
         self.positions = {0: _Position(ply=0, board=self.board.copy())}
         self.moves = {}
         self._current = self.positions[0]
+        self._pending_ask = None
+        self.policy.restart()
         self.policy.new_position(0, ts, user_to_move=self.user_to_move)
 
     def _on_analysis(self, event: Analysis, ts: float) -> None:
@@ -1932,13 +1957,39 @@ class Coach:
             position.board, event, last_move=position.last_move, user=self.user_colour
         )
         self.conversation.analysed(event, position.facts)
+        if position is self._current and self._pending_ask is not None:
+            text, _asked = self._pending_ask
+            self._pending_ask = None
+            self.ask(text, ts)
+            return
         if position is self._current and self.user_to_move:
-            decisive = event.decisive and not self._obvious_recapture(position, event)
+            decisive = (
+                event.decisive
+                and not self._obvious_recapture(position, event)
+                and not self._carrying_out(position)
+            )
             trigger = self.policy.on_position_analysed(event.ply, decisive=decisive)
             if trigger is not None:
                 level = position.disclosure.apply(Unlock.DECISIVE) or position.disclosure.level
                 self.policy.said(position.ply, ts)
                 self._speak(trigger, position, level, ts)
+
+    def _carrying_out(self, position: _Position) -> bool:
+        """The player's last move and the reply to it are the first two moves of the engine's
+        line from a decisive position: they found the idea and are playing it out, so a
+        question about the next step asks what they already know (Tai's desktop, 2026-09-24:
+        after Qd1+ Rxd1 Rxd1+ Qe1, "You can mate in one move ... Which check leaves their king
+        no square at all?", heard as the puzzle's hint). An opponent who leaves the line
+        keeps the question."""
+        own = self.moves.get(position.ply - 1)
+        reply = self.moves.get(position.ply)
+        before = self.positions.get(position.ply - 2)
+        if own is None or reply is None or not own.by_user or before is None:
+            return False
+        analysis = before.analysis
+        if analysis is None or not analysis.decisive or not analysis.lines:
+            return False
+        return list(analysis.lines[0].moves[:2]) == [own.uci, reply.uci]
 
     def _obvious_recapture(self, position: _Position, event: Analysis) -> bool:
         """The opponent just took something and the engine's move takes back on the same

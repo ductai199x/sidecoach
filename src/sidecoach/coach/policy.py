@@ -98,6 +98,13 @@ class InterjectionPolicy:
         self._since = ts
         self._user_to_move = user_to_move
 
+    def restart(self) -> None:
+        """A new game, or a position adopted: move numbers start again, so the decisive stretch
+        pointed at in the last one says nothing about this one. A puzzle's first position was
+        skipped as part of the previous puzzle's stretch, which ended at a higher ply (Tai's
+        desktop, 2026-09-24: the mate in three was never asked, only hinted 45 s later)."""
+        self._last_decisive_ply = None
+
     def set_remaining(self, remaining_ms: int | None) -> None:
         """The user's clock, when the screen shows one."""
         self._remaining_ms = remaining_ms

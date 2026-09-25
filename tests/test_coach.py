@@ -661,12 +661,140 @@ def test_a_reread_of_the_board_is_a_message_and_the_numbering_restarts() -> None
     assert "4... d6 by the opponent" in _current_move_message(_given(provider))
 
 
-def test_asking_before_anything_is_analysed_gets_an_honest_answer() -> None:
+def test_asking_before_the_engine_has_looked_is_answered_when_it_has() -> None:
+    """A question asked before the engine has looked at the position on the board is told
+    to wait a moment and answered when the analysis lands, never from an older position
+    (Tai, 2026-09-24: a hint pressed as a puzzle appeared got "I have not seen enough of
+    this game yet to say. Give me a move or two.")."""
     coach, _ = _coach([])
     _start(coach)
-    coach.ask("what should I play", 1.0)
+    coach.ask("hint", 1.0)
     out = _messages(coach)
-    assert len(out) == 1 and "not seen enough" in out[0].text
+    assert [m.text for m in out] == ["One moment -- still looking at this position."]
+    coach.ask("hint", 1.5)  # asked again while waiting: one "moment" is enough
+    assert _messages(coach) == []
+    start = chess.Board()
+    coach.on_event(
+        Analysis(
+            game_id="g",
+            fen=start.fen(),
+            ply=0,
+            lines=[
+                Line(moves=["e2e4", "e7e5", "g1f3"], depth=18, expected_score=0.55),
+                Line(moves=["d2d4", "d7d5"], depth=18, expected_score=0.54),
+            ],
+            decisive=False,
+            only_move=False,
+        ),
+        3.0,
+    )
+    answered = _messages(coach)
+    assert answered and all(m.trigger is Trigger.USER_ASK for m in answered)
+    assert "One moment" not in answered[0].text
+
+
+# The puzzle of Tai's desktop, 2026-09-24: Black to move, 1...Qd1+ 2.Rxd1 Rxd1+ 3.Qe1 Rxe1#.
+QD1 = "2kr2nr/2p5/2p1p1pp/Q3Pp2/3R4/P3P3/1Pq2PPP/R1B3K1 b - - 1 1"
+QD1_LINE = ["c2d1", "d4d1", "d8d1", "a5e1", "d1e1"]
+
+
+def _puzzle(coach: Coach, fen: str = QD1) -> chess.Board:
+    coach.on_event(
+        GameStarted(game_id="g", user_side=Side.BLACK, start_fen=fen, kind="position"), 0.0
+    )
+    return chess.Board(fen)
+
+
+def _analysed(
+    coach: Coach, board: chess.Board, ply: int, line: list[str], ts: float, mate: int | None
+) -> None:
+    coach.on_event(
+        Analysis(
+            game_id="g",
+            fen=board.fen(),
+            ply=ply,
+            lines=[
+                Line(moves=line, depth=18, expected_score=1.0, mate=mate),
+                Line(moves=["h6h5"], depth=18, expected_score=0.1),
+            ],
+            decisive=True,
+            only_move=True,
+        ),
+        ts,
+    )
+
+
+def _played(coach: Coach, board: chess.Board, ply: int, uci: str, by_user: bool, ts: float) -> None:
+    move = chess.Move.from_uci(uci)
+    before = board.fen()
+    san = board.san(move)
+    board.push(move)
+    coach.on_event(
+        MovePlayed(
+            game_id="g",
+            ply=ply,
+            san=san,
+            uci=uci,
+            fen_before=before,
+            fen_after=board.fen(),
+            by_user=by_user,
+        ),
+        ts,
+    )
+
+
+def _hint_then(coach: Coach, board: chess.Board) -> None:
+    """The puzzle appears, the player presses Hint before the engine has looked, and the
+    hint comes when it has: no puzzle question was asked, as on Tai's desktop."""
+    coach.ask("hint", 0.5)
+    _analysed(coach, board, 0, QD1_LINE, 1.0, 3)
+    got = _messages(coach)
+    assert got and all(m.trigger is Trigger.USER_ASK for m in got)
+
+
+def test_no_new_question_while_the_player_plays_out_the_line_they_found() -> None:
+    """After 1...Qd1+ 2.Rxd1 Rxd1+ 3.Qe1 the coach asked "You can mate in one move ...
+    Which check leaves their king no square at all?" -- a fresh question in the middle of
+    the combination the player was carrying out (Tai's desktop, 2026-09-24)."""
+    coach, _ = _coach([])
+    board = _puzzle(coach)
+    _hint_then(coach, board)
+    for ply, uci in enumerate(QD1_LINE[:4], start=1):
+        _played(coach, board, ply, uci, ply % 2 == 1, 2.0 + ply)
+        if ply % 2 == 0:
+            _analysed(coach, board, ply, QD1_LINE[ply:], 2.5 + ply, (5 - ply) // 2)
+    asked = [m.text for m in _messages(coach) if m.trigger is Trigger.DECISIVE_QUESTION]
+    assert asked == [], asked
+
+
+def test_an_opponent_who_leaves_the_line_brings_the_question_back() -> None:
+    coach, _ = _coach([])
+    board = _puzzle(coach)
+    _hint_then(coach, board)
+    _played(coach, board, 1, "c2d1", True, 3.0)
+    _played(coach, board, 2, "a5e1", False, 4.0)  # blocks instead of taking: off the line
+    _analysed(coach, board, 2, ["d1e1"], 4.5, 1)
+    asked = [m for m in _messages(coach) if m.trigger is Trigger.DECISIVE_QUESTION]
+    assert len(asked) == 1
+
+
+def test_the_next_puzzle_gets_its_question_after_a_long_one() -> None:
+    """The decisive stretch pointed at in one puzzle said nothing about the next: move
+    numbers start again, and a new puzzle's first position fell inside the last one's
+    stretch, so its question was never asked (Tai's desktop, 2026-09-24)."""
+    from sidecoach.events import Resync
+
+    coach, _ = _coach([])
+    board = _puzzle(coach, "6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1")
+    for ply, uci in enumerate(["g8f8", "a1a2", "f8e7", "a2a3"], start=1):
+        _played(coach, board, ply, uci, ply % 2 == 1, float(ply))
+    _analysed(coach, board, 4, ["e7d6", "a3a6"], 5.0, None)
+    assert [m.trigger for m in _messages(coach)] == [Trigger.DECISIVE_QUESTION]
+    coach.on_event(
+        Resync(game_id="g", fen=QD1, reason="position adopted after 30 unexplained cells"), 20.0
+    )
+    _analysed(coach, chess.Board(QD1), 0, QD1_LINE, 21.0, 3)
+    assert [m.trigger for m in _messages(coach)] == [Trigger.DECISIVE_QUESTION]
 
 
 def test_clock_scales_the_policy_and_a_new_game_resets_it() -> None:
