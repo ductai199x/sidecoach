@@ -1,9 +1,12 @@
 """A game played through the live coach's own code from its cached facts.
 
-Each game is replayed through a real Coach -- the same Conversation, disclosure machine,
-policy and directives the panel runs -- with the model replaced by a capture: every request
-the coach would have sent is one item (a coach-initiated moment), and at chosen plies the
-player's questions are put to it, each of those a request too (a user-ask item). The
+Each game is replayed through a real Coach, built as the app builds it (coach_build.py:
+the shipped system prompt with C and the rating, the app's settings, the claims check) --
+the same Conversation, disclosure machine, policy and directives the panel runs, the
+events in the order the live pipeline sends them -- with the model replaced by a capture:
+every request the coach would have sent is one item (a coach-initiated moment), and at
+chosen plies the player's questions are put to it, each of those a request too (a user-ask
+item). The
 coach's own turns in the history are the templates it falls back on, so the history is
 deterministic and free of model calls. An item holds exactly what a request holds --
 the system message, the messages, the directive (the sampling format is added when the
@@ -31,6 +34,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from coach_build import build_coach  # noqa: E402
+from judge import request_fields  # noqa: E402
 from taxonomy import (  # noqa: E402
     ABOUT_LAST_MOVE,
     CLASSES,
@@ -42,10 +47,10 @@ from taxonomy import (  # noqa: E402
     required,
 )
 
+from sidecoach.coach import coach as coach_module  # noqa: E402
 from sidecoach.coach.coach import Coach, CoachMessage, Spoken, _Request  # noqa: E402
 from sidecoach.coach.facts import material_text  # noqa: E402
 from sidecoach.coach.outcome import line_outcome  # noqa: E402
-from sidecoach.coach.policy import InterjectionPolicy, PolicySettings  # noqa: E402
 from sidecoach.events import (  # noqa: E402
     Analysis,
     GameEnded,
@@ -58,7 +63,23 @@ from sidecoach.events import (  # noqa: E402
 
 FACTS = ROOT / "data" / "eval" / "facts"
 MASTERS = ROOT / "data" / "eval" / "masters"
-STUCK_SECONDS = 30
+# How long past the coach's own stuck time the player keeps thinking, for a stuck hint.
+STUCK_PAST = 15
+
+# What the annotator has put on every Analysis since the first hint became a lesson on the
+# position: the traps (fc30fa7), the book (fc30fa7), the declined recaptures (a1f7f81), a
+# quiet best move's threat (29ae423). Facts computed before them give the coach a first hint
+# without its trap, its overloaded defender, its quiet threat or its opening theory.
+ANALYSIS_FIELDS = ("traps", "in_book", "defences", "threatens")
+
+
+def facts_current(facts: dict) -> list[str]:
+    """The Analysis fields a facts file lacks (empty: made by the current annotator)."""
+    analyses = [facts.get("start_analysis") or {}] + [
+        s["analysis"] for s in facts.get("script", []) if s.get("analysis")
+    ][:3]
+    return [f for f in ANALYSIS_FIELDS if not all(f in a for a in analyses)]
+
 
 # The player's questions, by where they fit. Each user-to-move position gets at most one
 # question; the rotation keeps the classes balanced across a game.
@@ -82,14 +103,21 @@ class Capture:
     fallbacks; with one (`inner`, the speaker's own speak_now) the model answers and its
     words go into the history, as they do live."""
 
-    def __init__(self, inner=None) -> None:
+    def __init__(self, inner=None, speaker=None) -> None:
         self.inner = inner
+        # The speaker whose failures are counted: a call that raised is told apart from a
+        # reply the checks refused (both end in the template).
+        self.speaker = speaker
         self.requests: list[_Request] = []
         self.spoken: list[Spoken] = []
+        self.call_errors: list[int] = []
 
     def __call__(self, request: _Request) -> Spoken:
+        errors = 0
         if self.inner is not None:
+            before = getattr(self.speaker, "failures", 0)
             spoken = self.inner(request)
+            errors = getattr(self.speaker, "failures", 0) - before
         else:
             message = CoachMessage(
                 text=request.fallback,
@@ -103,12 +131,24 @@ class Capture:
             spoken = Spoken(message=message, level=request.level, problems=["captured"], attempts=0)
         self.requests.append(request)
         self.spoken.append(spoken)
+        self.call_errors.append(errors)
         return spoken
 
 
-def reply_record(item_id: str, cls_id: str, spoken: Spoken) -> dict[str, Any]:
-    """What the model said for one moment, in the shape generate.py writes for a reply."""
+def reply_record(
+    item_id: str, cls_id: str, spoken: Spoken, *, call_errors: int = 0, template_only: bool = False
+) -> dict[str, Any]:
+    """What the model said for one moment, and how it came to be said:
+
+    model_failed   the template spoke because the model never gave text -- its calls
+                   raised or came back empty. Not the model's work: never scored.
+    fallback_used  the template spoke (model_failed, or the checks refused every reply)
+    template_only  no call was made (a fast game)
+    call_errors    how many of its calls raised
+    """
     calls = spoken.calls
+    spoke_template = bool(spoken.problems) and not spoken.streamed
+    silent = bool(calls) and all(not (c.raw or "").strip() for c in calls)
     return {
         "id": item_id,
         "class": cls_id,
@@ -118,6 +158,9 @@ def reply_record(item_id: str, cls_id: str, spoken: Spoken) -> dict[str, Any]:
         "passed": sum(c.passed for c in calls),
         "problems": spoken.problems,
         "fallback_used": bool(spoken.problems),
+        "model_failed": spoke_template and (silent or (not calls and call_errors > 0)),
+        "template_only": template_only and not calls,
+        "call_errors": call_errors,
         "attempts": spoken.attempts,
         "verified": spoken.verified,
         "repaired": spoken.repaired,
@@ -335,12 +378,17 @@ class CachedEngine:
     names: the same question gets the same lines on every rebuild, and Stockfish runs
     only for a position it has not seen."""
 
-    def __init__(self, cache: dict[str, list[dict]] | None = None) -> None:
+    def __init__(
+        self, cache: dict[str, list[dict]] | None = None, threads: int | None = None
+    ) -> None:
         self.cache: dict[str, list[dict]] = dict(cache) if cache is not None else {}
         if cache is None and ENGINE_CACHE.exists():
             self.cache = json.loads(ENGINE_CACHE.read_text(encoding="utf-8"))
         self.new: dict[str, list[dict]] = {}
         self._engine = None
+        # The app's named-move engine has half the engine's threads (cli._named_engine);
+        # one keeps a check run off the other cores.
+        self.threads = threads
 
     def _open(self):
         if self._engine is None:
@@ -351,8 +399,8 @@ class CachedEngine:
             path = require_stockfish(settings)
             self._engine = Engine(
                 path=path,
-                threads=2,
-                hash_mb=64,
+                threads=self.threads or max(1, settings.engine.threads // 2),
+                hash_mb=min(128, settings.engine.hash_mb),
                 multipv=3,
                 pv_plies=settings.engine.pv_plies,
                 score_model=settings.engine.score_model,
@@ -388,42 +436,53 @@ def build_game(
     engine: CachedEngine | None = None,
     *,
     provider=None,
+    ledger=None,
     system: str | None = None,
-    draft_check=None,
-    summarise_every: int = 0,
+    summarise_every: int | None = None,
     summariser=None,
     stop_after_ply: int | None = None,
-    compact_record: bool = False,
+    compact_record: bool | None = None,
+    version: str | None = None,
+    requests_out: list[dict[str, Any]] | None = None,
+    settings=None,
 ) -> list[dict[str, Any]]:
     """The game played through the coach, moment by moment: every request the coach made
     of its model as an item (the harness as it stood, the class, the required facts, the
     master's note). With a `provider` the model answers each moment and its words go
-    forward into the harness of the next; each item then carries its "reply"."""
+    forward into the harness of the next; each item then carries its "reply".
+
+    The coach is the app's (coach_build.build_coach); `system`, `summarise_every`,
+    `compact_record` and `summariser` override the app's for an experiment only. A paid
+    `provider` needs the `ledger` (or comes Metered). `version` (stamp.code_version) is
+    written on every item. `requests_out`, when given, receives every request the coach
+    made -- items are only those of a known class -- with what a cost estimate needs."""
     facts = json.loads(facts_path.read_text(encoding="utf-8"))
     game = facts["name"]
-    # The coach's own templates draw their wording from the global random module; seeded
-    # per game, a rebuilt corpus renders the same histories and keeps its replies valid.
+    # The templates draw their wording from the coach's bags (seeded below) and some from
+    # the global random module; both seeded per game, a rebuilt corpus renders the same
+    # histories and keeps its replies valid.
     random.seed(f"sidecoach-eval:{game}")
     # The questions the player really asked, by the ply they came at (after the game, at
     # the last ply); put to the coach verbatim, before any synthetic question at that ply.
     live_by_ply: dict[int, list[dict]] = {}
     for a in facts.get("asks", []):
         live_by_ply.setdefault(a["ply"], []).append(a)
-    coach = Coach(
-        provider=provider,  # type: ignore[arg-type] -- None: the capture answers instead
-        policy=InterjectionPolicy(PolicySettings(stuck_seconds=STUCK_SECONDS)),
+    coach = build_coach(
+        provider,
+        ledger=ledger,
+        settings=settings,
         engine=engine,
-        draft_check=draft_check,
+        seed=f"sidecoach-eval:{game}",
+        system=system,
         summarise_every=summarise_every,
         summariser=summariser,
         compact_record=compact_record,
-    )  # type: ignore[arg-type]
-    coach.sync_summaries = True
-    if system is not None:
-        coach.system = system
-    capture = Capture(coach.speaker.speak_now if provider is not None else None)
+    )
+    capture = Capture(
+        coach.speaker.speak_now if provider is not None else None, speaker=coach.speaker
+    )
     coach.speaker.speak_now = capture  # type: ignore[method-assign]
-    coach.sync_claims = True
+    stuck_after = coach.policy.settings.stuck_seconds + STUCK_PAST
     items: list[dict[str, Any]] = []
     key_counts: dict[str, int] = {}
     seen = 0
@@ -443,7 +502,12 @@ def build_game(
         live: bool = False,
     ) -> None:
         nonlocal seen
-        for request, spoken in zip(capture.requests[seen:], capture.spoken[seen:], strict=True):
+        for request, spoken, errors in zip(
+            capture.requests[seen:],
+            capture.spoken[seen:],
+            capture.call_errors[seen:],
+            strict=True,
+        ):
             m = moment_for(coach, request, named=named, result=result)
             if kind == "coach":
                 best_played = bool(m.last_best_san) and m.last_best_san == m.last_san
@@ -452,14 +516,35 @@ def build_game(
                 )
             else:
                 cls_id = kind
+            directive_text = str(request.messages[-1]["content"]) if request.messages else ""
+            if requests_out is not None:
+                requests_out.append(
+                    {
+                        "game": game,
+                        "ply": request.ply,
+                        "trigger": request.trigger.value,
+                        "class": cls_id,
+                        "system": request.system,
+                        "user": directive_text,
+                        "template_only": request.template_only,
+                        "routine": request.routine,
+                    }
+                )
             if cls_id is None or cls_id not in CLASSES:
                 continue
             cls = CLASSES[cls_id]
-            reqs = required(cls, m)
+            # A figure is required only where the directive lets the coach say one: the
+            # lesson after a move is told "Do not quote the cost or any number".
+            no_numbers = getattr(coach_module, "NO_NUMBERS", None)
+            reqs = required(
+                cls,
+                m,
+                question=question,
+                numbers_allowed=not (no_numbers and no_numbers in directive_text),
+            )
             # A quick follow-up ("They asked what to play and have just been shown that it
             # is Nf3...") is asked only for the idea; the move or line it must not restate
             # is not required of it.
-            directive_text = str(request.messages[-1]["content"]) if request.messages else ""
             if "have just been shown" in directive_text:
                 reqs = [f for f in reqs if f.key not in ("candidate", "line")]
             # The engine's word on a move they named is spoken first, as the coach's own
@@ -501,10 +586,19 @@ def build_game(
                     },
                     "moment": as_json(m),
                     "reference": note_for_item,
+                    # What the coach's own checks read on the request, so the judge's are
+                    # the same: what the reply must name, the boards a statement may be
+                    # true on, the move just assessed and its assessment.
+                    **request_fields(request),
+                    "commit": version,
                     **(
                         {
                             "reply": reply_record(
-                                f"{source}/{game}/{key}-{key_counts[key]}", cls_id, spoken
+                                f"{source}/{game}/{key}-{key_counts[key]}",
+                                cls_id,
+                                spoken,
+                                call_errors=errors,
+                                template_only=request.template_only,
                             )
                         }
                         if provider is not None
@@ -516,7 +610,10 @@ def build_game(
 
     user_side = Side.WHITE if facts["user_side"] == "white" else Side.BLACK
     coach.on_event(GameStarted(game_id=game, user_side=user_side, start_fen=facts["start_fen"]), ts)
-    coach.on_event(Analysis.model_validate(facts["start_analysis"]), ts)
+    # The engine's events carry the game's id as the facts were computed ("fischer-001-...",
+    # the name's slash made a dash); the coach drops an event of another game (a0b7dbb), so
+    # they carry this game's id, as the live pipeline's do.
+    coach.on_event(Analysis.model_validate({**facts["start_analysis"], "game_id": game}), ts)
     drain()
     take("coach", None)
     ply_annotation = annotations or {}
@@ -572,9 +669,12 @@ def build_game(
             by_user=step["by_user"],
             think_ms=step.get("think_ms"),
         )
+        # In the order the live pipeline sends them: the verdict on the move comes about a
+        # second before the analysis of the position it led to (analysis/annotator.py), so
+        # the lesson after a move is built without that analysis, as it is live.
         coach.on_event(move, ts)
-        coach.on_event(Analysis.model_validate(step["analysis"]), ts)
-        coach.on_event(MoveAssessment.model_validate(step["assessment"]), ts)
+        coach.on_event(MoveAssessment.model_validate({**step["assessment"], "game_id": game}), ts)
+        coach.on_event(Analysis.model_validate({**step["analysis"], "game_id": game}), ts)
         drain()
         note = ply_annotation.get(step["ply"])
         take("coach", None, reference=note)
@@ -621,7 +721,7 @@ def build_game(
             drain()
             take(cls_id, q, named=named)
         elif user_turns % ASK_EVERY == 1 and rng.random() < 0.25:
-            ts += STUCK_SECONDS + 15
+            ts += stuck_after
             coach.tick(ts)
             drain()
             take("coach", None)

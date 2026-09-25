@@ -2,10 +2,16 @@
 judge for what needs reading.
 
 Per reply:
-  leak          deterministic: the coach's own leak_check at the item's level
+  leak          deterministic: the coach's own checks (Speaker._problems) beyond the kinds
+                below: its leak check with its own exemptions, the answer given away
   board         deterministic: the board-claim checker (a piece said to attack what it
-                does not, a pin that is not there)
-  form          deterministic: sentence count, the closing question where required, empty
+                does not, a pin that is not there), along the request's own frames
+  form          deterministic: the length and closing question the item's own directive
+                asks for, read as the coach reads them (directive_limits); empty
+  rules         deterministic: the owner's rules after a move, the coach's `restated`
+                (opening with the move just played, saying what it plainly did, a figure)
+  verdict       deterministic: the verdict word or cost said of the move just assessed
+  floor         deterministic: what the reply must name, as its template does (omitted)
   completeness  judge: the share of the required facts the reply mentions (Eq. 4, tau)
   correctness   judge: of the required facts it mentions, the share stated right (Eq. 4, Q)
   claim_support judge: the reply is first split into atomic claims (one checkable statement
@@ -18,14 +24,21 @@ Per reply:
   idea_in_facts judge, same items: is that point stated, in any words, in the evidence
                 the coach had -- if not, the miss is a gap in the facts, not the coach's
 
-Every judge call is written to the ledger (data/eval/usage/) with its token counts and
-the run stops at the token budget.
+The record the judge holds a reply to is the message the coach was given, verbatim, with
+the facts, boards and effects derived beside it. A reply the model never wrote (its call
+failed; no call was made) is not judged. The floor arm (`floor=True`) judges the template
+the same way, save the model's form.
 
-Used by icr_play.py; every check is one call at reasoning effort none, on the ledger.
+Every judge call is checked against the ledger's budget first (BudgetExceeded stops the
+run) and written to the ledger (data/eval/usage/) with its tokens and dollars. A 4xx
+refusal other than 429 is not retried.
+
+Used by icr_play.py and parity.py; every check is one call at reasoning effort none.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -43,17 +56,26 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from taxonomy import sentence_count  # noqa: E402
+import stamp  # noqa: E402
 
 from sidecoach.cli import _draft_check  # noqa: E402
-from sidecoach.coach.coach import _after_best, _Request  # noqa: E402
+from sidecoach.coach import coach as coach_module  # noqa: E402
+from sidecoach.coach.coach import (  # noqa: E402
+    LENGTH_SLACK,
+    Speaker,
+    _after_best,
+    _Request,
+    _sentence_total,
+    directive_limits,
+    omitted,
+)
 from sidecoach.coach.conversation import IDEA_LEVEL_WORDS  # noqa: E402
-from sidecoach.coach.disclosure import PositionFacts, leak_check  # noqa: E402
+from sidecoach.coach.disclosure import PositionFacts  # noqa: E402
 from sidecoach.coach.effects import effects_text  # noqa: E402
 from sidecoach.coach.facts import ascii_board  # noqa: E402
 from sidecoach.coach.inventory import inventory_lines  # noqa: E402
 from sidecoach.coach.named import disclosed_frames  # noqa: E402
-from sidecoach.events import DisclosureLevel, Trigger  # noqa: E402
+from sidecoach.events import DisclosureLevel, MoveAssessment, Trigger  # noqa: E402
 
 JUDGMENTS = ROOT / "data" / "eval" / "judgments"
 USAGE = ROOT / "data" / "eval" / "usage.jsonl"
@@ -106,77 +128,157 @@ BINARY_SYSTEM = (
 )
 
 
-class Ledger:
-    """Every paid call on the record, with a budget that stops the run."""
+# Dollars per million tokens -- prompt, cached prompt, completion -- when the app's settings
+# give none (llm.price_*): gpt-5.6-luna's.
+DEFAULT_PRICES = (0.20, 0.02, 1.20)
 
-    def __init__(self, run: str, purpose: str, model: str, budget_tokens: int) -> None:
+
+def settings_prices() -> tuple[float, float, float]:
+    """The prices per million tokens (prompt, cached prompt, completion): the app's settings
+    (llm.price_prompt_per_m, price_cached_per_m, price_completion_per_m), else
+    DEFAULT_PRICES. For a run on another provider the environment overrides them:
+    PRICE_IN_PER_M, PRICE_CACHED_PER_M, PRICE_OUT_PER_M (or the older DASHSCOPE_PRICE_IN_PER_M
+    and DASHSCOPE_PRICE_OUT_PER_M)."""
+    prompt, cached, completion = DEFAULT_PRICES
+    try:
+        from sidecoach.config import load_settings
+
+        llm = load_settings().llm
+        prompt = llm.price_prompt_per_m if llm.price_prompt_per_m is not None else prompt
+        cached = llm.price_cached_per_m if llm.price_cached_per_m is not None else cached
+        completion = (
+            llm.price_completion_per_m if llm.price_completion_per_m is not None else completion
+        )
+    except Exception:  # noqa: BLE001 -- no settings file: the defaults
+        pass
+
+    def env(*names: str, default: float) -> float:
+        for name in names:
+            value = os.environ.get(name)
+            if value:
+                return float(value)
+        return default
+
+    return (
+        env("PRICE_IN_PER_M", "DASHSCOPE_PRICE_IN_PER_M", default=prompt),
+        env("PRICE_CACHED_PER_M", default=cached),
+        env("PRICE_OUT_PER_M", "DASHSCOPE_PRICE_OUT_PER_M", default=completion),
+    )
+
+
+class BudgetExceeded(BaseException):  # noqa: N818 -- the name says what happened
+    """The run's budget is spent: raised before the call that would go past it.
+
+    A BaseException on purpose. The coach's Speaker, its claims extractor and its
+    named-move planner each catch Exception around a model call and would turn this into a
+    template and play on, calling again at every moment; this passes through them all and
+    stops the run where it stands."""
+
+
+class Ledger:
+    """Every paid call on the record -- tokens and dollars -- with a budget that is checked
+    before each call and stops the run (BudgetExceeded) once it is spent.
+
+    The budget is in dollars (`budget_usd`), in tokens (`budget_tokens`, the older form), or
+    both. Calls in flight when the budget is reached still complete: the overshoot is at
+    most one call per worker."""
+
+    def __init__(
+        self,
+        run: str,
+        purpose: str,
+        model: str,
+        budget_tokens: int | None = None,
+        *,
+        budget_usd: float | None = None,
+        prices: tuple[float, float, float] | None = None,
+    ) -> None:
         self.run, self.purpose, self.model = run, purpose, model
         self.budget = budget_tokens
+        self.budget_usd = budget_usd
         self.calls = 0
         self.prompt = 0
         self.cached = 0  # of the prompt tokens, the ones served from the prefix cache
         self.completion = 0
-        self.price_in = float(os.environ.get("DASHSCOPE_PRICE_IN_PER_M", "0") or 0)
-        self.price_out = float(os.environ.get("DASHSCOPE_PRICE_OUT_PER_M", "0") or 0)
-        self.price_cached = float(os.environ.get("PRICE_CACHED_PER_M", "0") or 0)
-        self._lock = threading.Lock()
+        self.usd = 0.0
+        self.price_in, self.price_cached, self.price_out = prices or settings_prices()
+        self.stopped: str | None = None
+        self._lock = threading.RLock()
         USAGE_MINE.parent.mkdir(parents=True, exist_ok=True)
 
     @property
     def total(self) -> int:
         return self.prompt + self.completion
 
-    def cost(self) -> float | None:
-        if not (self.price_in or self.price_out):
-            return None
-        fresh = self.prompt - self.cached
+    def call_cost(self, prompt: int, cached: int, completion: int) -> float:
+        """Dollars for one call's tokens."""
         return (
-            fresh / 1e6 * self.price_in
-            + self.cached / 1e6 * (self.price_cached or self.price_in)
-            + self.completion / 1e6 * self.price_out
+            (prompt - cached) / 1e6 * self.price_in
+            + cached / 1e6 * self.price_cached
+            + completion / 1e6 * self.price_out
         )
 
-    def record(self, item_id: str, stats: dict[str, Any], elapsed: float) -> None:
+    def cost(self) -> float:
+        return self.usd
+
+    def check(self) -> None:
+        """Before a paid call: raise BudgetExceeded when the budget is spent."""
+        with self._lock:
+            if self.stopped is None and self.over_budget():
+                self.stopped = f"budget reached: {self.summary()}"
+            if self.stopped is not None:
+                raise BudgetExceeded(self.stopped)
+
+    def record(
+        self, item_id: str, stats: dict[str, Any], elapsed: float, *, model: str | None = None
+    ) -> float:
+        """One call's tokens, and its dollars, on the record; returns the dollars."""
         p = int(stats.get("prompt_tokens") or 0)
         c = int(stats.get("completion_tokens") or 0)
         cached = int(stats.get("cached_tokens") or 0)
+        usd = self.call_cost(p, cached, c)
         with self._lock:
             self.calls += 1
             self.prompt += p
             self.cached += cached
             self.completion += c
-        with self._lock, USAGE_MINE.open("a", encoding="utf-8") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "ts": time.time(),
-                        "run": self.run,
-                        "purpose": self.purpose,
-                        "model": self.model,
-                        "item": item_id,
-                        "prompt_tokens": p,
-                        "cached_tokens": cached,
-                        "completion_tokens": c,
-                        "elapsed_s": round(elapsed, 2),
-                    }
+            self.usd += usd
+            with USAGE_MINE.open("a", encoding="utf-8") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "ts": time.time(),
+                            "run": self.run,
+                            "purpose": self.purpose,
+                            "model": model or self.model,
+                            "item": item_id,
+                            "prompt_tokens": p,
+                            "cached_tokens": cached,
+                            "completion_tokens": c,
+                            "usd": round(usd, 6),
+                            "elapsed_s": round(elapsed, 2),
+                        }
+                    )
+                    + "\n"
                 )
-                + "\n"
-            )
+        return usd
 
     def over_budget(self) -> bool:
-        return self.total >= self.budget
+        if self.budget_usd is not None and self.usd >= self.budget_usd:
+            return True
+        return self.budget is not None and self.total >= self.budget
 
     def summary(self) -> str:
-        cost = self.cost()
-        money = (
-            f", about ${cost:.2f}"
-            if cost is not None
-            else " (set DASHSCOPE_PRICE_IN_PER_M / _OUT_PER_M for a dollar figure)"
-        )
+        limits = []
+        if self.budget_usd is not None:
+            limits.append(f"${self.budget_usd:.2f}")
+        if self.budget is not None:
+            limits.append(f"{self.budget:,} tokens")
         return (
             f"{self.calls} calls, {self.prompt:,} prompt ({self.cached:,} cached) + "
-            f"{self.completion:,} completion = {self.total:,} tokens of a {self.budget:,} "
-            f"budget{money}"
+            f"{self.completion:,} completion = {self.total:,} tokens, ${self.usd:.4f}"
+            + (f" of a budget of {' / '.join(limits)}" if limits else " (no budget)")
+            + f" at ${self.price_in}/{self.price_cached}/{self.price_out} per M"
         )
 
 
@@ -201,8 +303,38 @@ def lifetime_usage() -> dict[str, int]:
 # ---- the request an item holds ------------------------------------------------------
 
 
+# The request's fields corpus.build_game stores on an item as they are (a tuple of moves or
+# squares), when the coach's _Request has them: what the reply must name, and the moves
+# that would give the answer away now (af1bae2). Looked up by name, as the coach changes.
+REQUEST_TUPLES = ("must_name", "now_answer")
+
+
+def request_fields(request: _Request) -> dict[str, Any]:
+    """What an item keeps of the coach's request, for its checks to be rebuilt as the coach
+    ran them (corpus.build_game writes it; request_for reads it back)."""
+    out: dict[str, Any] = {
+        "frames": [b.fen() for b in request.frames],
+        "played_san": request.played_san,
+        "assessment": (
+            request.assessment.model_dump(mode="json") if request.assessment is not None else None
+        ),
+        "routine": request.routine,
+        "template_only": request.template_only,
+    }
+    for name in REQUEST_TUPLES:
+        if hasattr(request, name):
+            out[name] = list(getattr(request, name))
+    return out
+
+
 def request_for(item: dict, system: str) -> _Request:
-    return _Request(
+    """The coach's request for an item, as the coach built it: what corpus.build_game stored
+    of it (the frames the draft checker reads along, what the reply must name, the move just
+    assessed and its assessment), so the checks here are the coach's own."""
+    assessment = item.get("assessment")
+    names = {f.name for f in dataclasses.fields(_Request)}
+    extra: dict[str, Any] = {n: tuple(item.get(n) or ()) for n in REQUEST_TUPLES if n in names}
+    request = _Request(
         trigger=Trigger(item["trigger"]),
         level=DisclosureLevel[item["level"]],
         system=system,
@@ -217,7 +349,13 @@ def request_for(item: dict, system: str) -> _Request:
         disclosed=_disclosed(item),
         candidates=item.get("candidates", 4),
         played=frozenset(_played_sans(item)),
+        played_san=item.get("played_san"),
+        assessment=MoveAssessment.model_validate(assessment) if assessment else None,
+        routine=bool(item.get("routine")),
+        template_only=bool(item.get("template_only")),
+        frames=[chess.Board(fen) for fen in item.get("frames") or ()],
     )
+    return dataclasses.replace(request, **extra) if extra else request
 
 
 _PREFERRED = re.compile(r"(?:the )?engine preferred (?:\d+\.(?:\.\.)? )?([A-Za-z0-9=+#-]+)")
@@ -263,54 +401,94 @@ def _level_words(level: DisclosureLevel) -> str:
     }[level]
 
 
-_PIECE_WORDS = {"K": "king", "Q": "queen", "R": "rook", "B": "bishop", "N": "knight"}
+def directive_of(item: dict) -> str:
+    """The task the coach was given for this item: the request's text after '# Task'."""
+    content = str(item["messages"][-1]["content"]) if item.get("messages") else ""
+    return content.rsplit("# Task", 1)[-1]
 
 
-def deterministic(item: dict, reply: str, draft_check) -> dict[str, Any]:
-    facts = PositionFacts.model_validate(item["moment"]["facts"])
-    level = DisclosureLevel[item["level"]]
+def form_problems(item: dict, reply: str) -> tuple[dict[str, Any], list[str]]:
+    """The length and the closing question the item's own directive asks for, read as the
+    coach's Speaker reads them (`directive_limits`, the same slack): the form, and what the
+    reply breaks of it."""
+    limit, wants_question = directive_limits(directive_of(item))
+    sentences = _sentence_total(reply)
+    problems: list[str] = []
+    if limit is not None and sentences > limit + LENGTH_SLACK:
+        problems.append(f"too long: {sentences} sentences, {limit} asked for")
+    if wants_question is True and not reply.rstrip().endswith("?"):
+        problems.append("no closing question")
+    if wants_question is False and reply.rstrip().endswith("?"):
+        problems.append("a question where the task allows none")
+    form = {"sentences": sentences, "limit": limit, "question": wants_question}
+    return form, problems
+
+
+def deterministic(item: dict, reply: str, draft_check, *, floor: bool = False) -> dict[str, Any]:
+    """The checks code can decide, each as the coach itself runs it on the request as it
+    built it (request_for):
+
+    board    the board-claim checker along the request's own frames (a move of the game's
+             history named as such is no claim about the board), and the owner of every
+             piece named with a square
+    form     the length and closing question the item's directive asks for (not applied
+             with `floor`: the template is not asked to keep the model's form; what it
+             breaks of it is kept under form["directive_only"])
+    rules    the owner's rules after a move (the coach's `restated`: the move just played
+             opened with or said back, a figure nobody asked for)
+    verdict  the verdict word or cost said of the move just assessed, against its
+             assessment (the coach's `_verdict_problems`)
+    floor    what the reply must name, as its template does (the coach's `omitted`)
+    leak     everything else the coach's own Speaker._problems flags: its disclosure leak
+             check with its own exemptions, the answer given away, and any check the coach
+             adds later -- the judge is never more lenient than the coach
+    coach    the coach's own Speaker._problems, whole, for the audit
+    """
     board = chess.Board(item["fen"])
-    # The checks exactly as the coach runs them: what the player said and the moves of
-    # the game so far are not leaks; the board check has the frames along the engine's
-    # line, and a move of the game's history named as such is not a claim about the board.
     request = request_for(item, item["system"])
-    # As the coach's own check: the piece a played move moved, the material line and
-    # the opening's name are not hints at the piece to move.
-    moved = {_PIECE_WORDS.get(san[0], "pawn") for san in request.played if san and san[0] != "O"}
-    extra = [item["moment"].get("material") or "", item["moment"].get("opening") or ""]
-    said = " ".join(
-        filter(
-            None,
-            [
-                item.get("question"),
-                request.disclosed,
-                *sorted(request.played),
-                *sorted(moved),
-                *extra,
-            ],
-        )
-    )
-    leaks = [f"withheld {x}" for x in leak_check(reply, facts, level, said=said or None)]
+    speaking = bool(reply.strip())
     board_problems: list[str] = []
-    if draft_check and reply:
+    drafted: list[str] = []
+    if draft_check and speaking:
         for problem in draft_check(reply, board, _after_best(request)):
             if problem.split(":", 1)[0].strip() in request.played:
                 continue
-            board_problems.append(problem)
-    board_problems += owner_problems(reply, item)
-    form: dict[str, Any] = {"sentences": sentence_count(reply)}
-    fm = item.get("form") or {}
+            drafted.append(problem)
+    board_problems = drafted + owner_problems(reply, item)
+    form, directive_form = form_problems(item, reply)
     problems: list[str] = []
-    if not reply.strip():
+    if not speaking:
         problems.append("empty")
-    if fm.get("max_sentences") and form["sentences"] > fm["max_sentences"] + 2:
-        problems.append(f"{form['sentences']} sentences, {fm['max_sentences']} allowed")
-    if fm.get("ends_with_question") is True and not reply.rstrip().endswith("?"):
-        problems.append("no closing question")
-    if fm.get("ends_with_question") is False and reply.rstrip().endswith("?"):
-        problems.append("ends with a question where none was wanted")
+    if floor:
+        form["directive_only"] = directive_form
+    else:
+        problems += directive_form
     form["problems"] = problems
-    return {"leak": leaks, "board": board_problems, "form": form}
+    # The coach's own rules, looked up by name: the coach is still changing, and a check it
+    # drops is one the judge must not keep on its own.
+    restated = getattr(coach_module, "restated", None)
+    verdict_problems = getattr(coach_module, "_verdict_problems", None)
+    rules = list(restated(reply, request)) if restated is not None and speaking else []
+    verdict = list(verdict_problems(reply, request)) if verdict_problems and speaking else []
+    left_out = omitted(reply, request.must_name) if speaking else None
+    coach_checks = (
+        Speaker(None, draft_check=draft_check)._problems(reply, request)  # type: ignore[arg-type]
+        if speaking
+        else []
+    )
+    classified = set(directive_form) | set(rules) | set(verdict) | set(drafted)
+    if left_out:
+        classified.add(left_out)
+    leaks = [p for p in coach_checks if p not in classified]
+    return {
+        "leak": leaks,
+        "board": board_problems,
+        "form": form,
+        "rules": rules,
+        "verdict": verdict,
+        "floor": [left_out] if left_out else [],
+        "coach": coach_checks,
+    }
 
 
 _OWNED = re.compile(
@@ -515,20 +693,7 @@ def evidence_block(item: dict, *, with_reference: bool = True) -> str:
         )
     if f.get("only_move"):
         facts.append("only move: yes -- one move holds, the rest lose ground")
-    for key in (
-        "phase",
-        "nature",
-        "theme",
-        "plan",
-        "region",
-        "piece",
-        "tactic",
-        "threats",
-        "ideas",
-        "candidates",
-        "line",
-        "focus",
-    ):
+    for key in _fact_keys(f, players=facts_before or _players_facts(f)):
         val = f.get(key)
         if val in (None, "", [], False):
             continue
@@ -536,7 +701,7 @@ def evidence_block(item: dict, *, with_reference: bool = True) -> str:
             val = [threat_words(chess.Board(item["fen"]), str(v)) for v in val]
         if isinstance(val, list):
             val = ", ".join(str(v) for v in val)
-        facts.append(f"{key}: {val}")
+        facts.append(f"{_FACT_WORDS.get(key, key)}: {val}")
     if facts:
         owner = (
             "the position the last move was played from (the player's, before the move)"
@@ -549,25 +714,15 @@ def evidence_block(item: dict, *, with_reference: bool = True) -> str:
         # facts of the position it was played from are the ones the move is judged by.
         fb = m["facts_before"]
         before = []
-        for key in (
-            "nature",
-            "theme",
-            "plan",
-            "region",
-            "piece",
-            "tactic",
-            "threats",
-            "ideas",
-            "candidates",
-            "line",
-            "focus",
-        ):
+        for key in _fact_keys(fb, players=True):
+            if key == "phase":
+                continue
             val = fb.get(key)
             if val in (None, "", [], False):
                 continue
             if isinstance(val, list):
                 val = ", ".join(str(v) for v in val)
-            before.append(f"{key}: {val}")
+            before.append(f"{_FACT_WORDS.get(key, key)}: {val}")
         if before:
             lines.append(
                 "Facts for the position the last move was played from (the player's, before"
@@ -615,6 +770,17 @@ def evidence_block(item: dict, *, with_reference: bool = True) -> str:
                 "The coach's own last turn, spoken from the facts above: "
                 + said[-1].strip().removeprefix("YOU (the coach) said: ").strip(chr(34))
             )
+    # Everything the coach was shown, as it was shown: the game so far, the position and its
+    # sheet, the position they faced, the task with the template's lesson as its floor and
+    # what the move allowed. A reply that says what its message says is supported; the
+    # lines above re-render only parts of it, and the parts they missed -- the first hint,
+    # the faced sheet, the floor -- made true replies read as fabrications (the audit).
+    shown = str(item["messages"][-1]["content"]) if item.get("messages") else ""
+    if shown:
+        lines.append(
+            "The message the coach was given, verbatim -- all of it is part of the record:\n"
+            "<<<\n" + shown + "\n>>>"
+        )
     lines.append("Required facts: " + json.dumps(item["required"], ensure_ascii=False))
     if with_reference and item.get("reference"):
         lines.append(
@@ -622,6 +788,46 @@ def evidence_block(item: dict, *, with_reference: bool = True) -> str:
             + item["reference"][:2500]
         )
     return "\n".join(lines)
+
+
+# The facts the record lists, in reading order. The first hint's parts are the player's
+# own (to the player, as it stands): they are listed only for the player's position, as
+# the coach's sheet shows them only there.
+_FACT_KEYS = (
+    "phase",
+    "nature",
+    "goal",
+    "theme",
+    "mechanism",
+    "plan",
+    "region",
+    "piece",
+    "target",
+    "tactic",
+    "why",
+    "threats",
+    "ideas",
+    "candidates",
+    "line",
+    "focus",
+)
+_PLAYERS_KEYS = ("stakes", "key", "trap", "choices", "situation")
+_FACT_WORDS = {
+    "key": "key fact",
+    "choices": "good moves",
+    "situation": "the first hint in the board's own words",
+    "why": "why the best move works",
+}
+
+
+def _players_facts(f: dict) -> bool:
+    """Whether a fact bundle is the player's (their move to find), not the opponent's."""
+    user = str(f.get("user_side") or "").lower()
+    return not user or user == str(f.get("side_to_move") or "").lower()
+
+
+def _fact_keys(f: dict, *, players: bool) -> tuple[str, ...]:
+    return _FACT_KEYS + (_PLAYERS_KEYS if players else ())
 
 
 def threat_words(board: chess.Board, san: str) -> str:
@@ -1085,6 +1291,9 @@ def score(
         or bool(det["board"])
         or bool(unsupported)
         or "empty" in det["form"]["problems"]
+        # The owner's rules after a move, and a verdict or cost stated against the record.
+        or bool(det.get("rules"))
+        or bool(det.get("verdict"))
     )
     # An answer to a different question is no answer.
     if relevance is not None and relevance < 0.5:
@@ -1101,6 +1310,10 @@ def score(
         "failures": failures,
         "leak": bool(det["leak"]),
         "board": bool(det["board"]),
+        "rules": bool(det.get("rules")),
+        "verdict_wrong": bool(det.get("verdict")),
+        # Said less than the template: the better move, or the key fact's square, left out.
+        "floor_omitted": bool(det.get("floor")),
         "form_ok": not det["form"]["problems"],
         "relevance": relevance,
         # A master's point, when the item has one: whether the reply made it, and whether
@@ -1109,7 +1322,7 @@ def score(
         "idea_match": idea["match"] if idea else None,
         "idea_in_facts": idea["in_facts"] if idea else None,
         "idea_where": idea["where"] if idea else None,
-        "pass": not hard and not det["form"]["problems"],
+        "pass": not hard and not det["form"]["problems"] and not det.get("floor"),
     }
 
 
@@ -1118,18 +1331,34 @@ class JudgeFailed(RuntimeError):
     parsed): not a judgment. The reply is left unjudged for a later pass, never scored."""
 
 
+_STATUS = re.compile(r"^(\d{3}):")
+
+
+def refused_for_good(exc: BaseException) -> bool:
+    """A request the server refused as it stands -- a 4xx other than 429 (bad request, too
+    long, no access): asking again costs time and changes nothing."""
+    found = _STATUS.match(str(exc))
+    return found is not None and found.group(1).startswith("4") and found.group(1) != "429"
+
+
 def _chat_with_backoff(provider, system: str, messages, ledger: Ledger, item_id: str, **kw):
-    """One judge call, retried on a refused request (a 429 or a timeout) with a growing
-    pause: a rate limit must cost time, never a verdict."""
+    """One judge call, the budget checked first (BudgetExceeded stops the run), retried on a
+    refused request (a 429, a 5xx or a timeout) with a growing pause: a rate limit must cost
+    time, never a verdict. A 4xx other than 429 is not retried: JudgeFailed at once."""
+    from providers import spec_of
+
     last: Exception | None = None
     for attempt in range(5):
+        ledger.check()
         t0 = time.time()
         try:
             completion = provider.chat(system, messages, **kw)
-            ledger.record(item_id, completion.stats, time.time() - t0)
+            ledger.record(item_id, completion.stats, time.time() - t0, model=spec_of(provider))
             return completion
         except Exception as exc:  # noqa: BLE001
             last = exc
+            if refused_for_good(exc):
+                raise JudgeFailed(f"{item_id}: refused: {str(exc)[:200]}") from exc
             pause = (15 if "429" in str(exc) else 5) * (attempt + 1)
             print(
                 f"  [{item_id}] call refused ({str(exc)[:80]}); retry {attempt + 1} in {pause}s",
@@ -1234,8 +1463,12 @@ def _relevance(item: dict, reply: str) -> float | None:
     return 1.0
 
 
-_RECORD_LINE = re.compile(r"^(\d+\.(?:\.\.)? \S+) \((the player|the opponent)\): ([a-z]+)")
-_LAST_MOVE = re.compile(r"^(\d+\.(?:\.\.)? \S+) by (the player|the opponent): ([a-z]+)")
+# The record's lines with their numbers and labels ("13. Qe2 (the player): inaccuracy"), for
+# the review's ground truth. Named apart from _RECORD_LINE above, which reads the bare move:
+# under the same name this one replaced it, the played moves came out as "13. Qe2", and a
+# move of the game named in a review was faulted as unplayable (the eval audit, 2026-09-25).
+_RECORD_LABEL_LINE = re.compile(r"^(\d+\.(?:\.\.)? \S+) \((the player|the opponent)\): ([a-z]+)")
+_LAST_MOVE_LABEL = re.compile(r"^(\d+\.(?:\.\.)? \S+) by (the player|the opponent): ([a-z]+)")
 
 
 _SLIP_LINE = re.compile(
@@ -1273,7 +1506,7 @@ def record_from_harness(item: dict) -> list[str]:
     text = str(item["messages"][-1]["content"]) if item.get("messages") else ""
     out = []
     for line in text.splitlines():
-        found = _RECORD_LINE.match(line) or _LAST_MOVE.match(line)
+        found = _RECORD_LABEL_LINE.match(line) or _LAST_MOVE_LABEL.match(line)
         if found:
             out.append(f"{found.group(1)} ({found.group(2)}, {found.group(3)})")
     return out
@@ -1331,6 +1564,9 @@ def _required_words(fact: dict) -> str:
         "named verdict": "the verdict on the move the player named",
         "strong moves": "how many of the player's moves were strong",
         "lost worst": "the move where the player lost the most ground",
+        "stakes": "what is at stake (how many moves hold, what even the next best costs)",
+        "key fact": "the key fact on the board",
+        "trap": "the trap (a capture that looks free and is not)",
     }
     return words.get(key) or key
 
@@ -1767,14 +2003,22 @@ def code_check(text: str, item: dict) -> bool | None:
 
 
 def judge_one(
-    item: dict, rec: dict, provider, ledger: Ledger, draft_check, *, thinking: bool
+    item: dict,
+    rec: dict,
+    provider,
+    ledger: Ledger,
+    draft_check,
+    *,
+    thinking: bool,
+    floor: bool = False,
 ) -> dict:
     """Deterministic checks; the reply split into atomic claims; then one binary question
     per check, answered without reasoning: does the record state each claim; does the
     reply give each required fact, and the right value; does it answer the question. A
     tactical claim is put to the board checker as well, which rules either way. Raises
-    JudgeFailed when the decomposition never parses, so a failed call is never a judgment."""
-    det = deterministic(item, rec["reply"], draft_check)
+    JudgeFailed when the decomposition never parses, so a failed call is never a judgment.
+    `floor`: the reply is the template (the floor arm), not held to the model's form."""
+    det = deterministic(item, rec["reply"], draft_check, floor=floor)
     verdict: dict[str, Any] | None = None
     claims: list[str] = []
     reply = rec["reply"]
@@ -1989,6 +2233,8 @@ def judge_one(
         "class": item["class"],
         "source": item["source"],
         "level": item["level"],
+        "arm": "floor" if floor else "ai",
+        "status": "template" if floor else reply_status(rec),
         "reply": reply,
         "raw_candidates": rec.get("raw", ""),
         "problems": rec.get("problems", []),
@@ -1999,6 +2245,24 @@ def judge_one(
         "judge_raw": "",
         "scores": score(item, det, verdict, claims),
     }
+
+
+def reply_status(rec: dict) -> str:
+    """How a reply came to be, from its record (corpus.reply_record):
+
+    model          the model's reply, through the coach's checks
+    rejected       the checks refused what the model wrote; the template spoke
+    model_failed   the call failed or came back empty; the template spoke -- not the
+                   model's work: never judged, reported
+    template_only  no call at all (a fast game); the template spoke -- never judged
+    """
+    if rec.get("model_failed"):
+        return "model_failed"
+    if rec.get("template_only"):
+        return "template_only"
+    if rec.get("fallback_used"):
+        return "rejected"
+    return "model"
 
 
 _BINARY: dict[int, Any] = {}
@@ -2024,38 +2288,62 @@ def judge_all(
     thinking: bool,
     quiet: bool = False,
     workers: int = 8,
+    floor: bool = False,
+    reuse_stale: bool = False,
 ) -> list[dict]:
-    """Judge every reply not yet judged under `run`, `workers` calls in flight; returns all
-    judgments for `replies`. The budget is checked before each call is submitted."""
+    """Judge every reply not yet judged under `run`, `workers` calls in flight; returns the
+    judgments of `replies`. A judgment made by other code than this is refused
+    (stamp.StaleData) unless `reuse_stale`. A reply the model never wrote -- its call
+    failed, or no call was made -- is not judged: it is counted and reported. The budget is
+    checked before every call; when it is spent, what was not started is cancelled and
+    BudgetExceeded goes up to the runner. `floor`: the replies are the templates."""
+    version = stamp.code_version()
     out_dir = JUDGMENTS / run
     out_dir.mkdir(parents=True, exist_ok=True)
     done: dict[str, dict] = {}
     for path in out_dir.glob("*.jsonl"):
         for line in path.open(encoding="utf-8"):
             rec = json.loads(line)
+            stamp.check(
+                rec.get("commit"),
+                f"the judgment of {rec['id']} under {run}",
+                reuse_stale=reuse_stale,
+                current=version,
+            )
             done[rec["id"]] = rec
     draft_check = _draft_check()
     n = 0
     lock = threading.Lock()
-    todo = [r for r in replies if r["id"] not in done]
+    skipped: dict[str, int] = {}
+    todo = []
+    for r in replies:
+        status = "template" if floor else reply_status(r)
+        if status in ("model_failed", "template_only"):
+            skipped[status] = skipped.get(status, 0) + 1
+            continue
+        if r["id"] not in done:
+            todo.append(r)
+    if skipped:
+        print(
+            "  not judged (the model did not write them): "
+            + ", ".join(f"{v} {k}" for k, v in sorted(skipped.items())),
+            flush=True,
+        )
+    failed = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {}
-        for rec in todo:
-            if ledger.over_budget():
-                print("budget reached; not submitting more", flush=True)
-                break
-            futures[
-                pool.submit(
-                    judge_one,
-                    items[rec["id"]],
-                    rec,
-                    provider,
-                    ledger,
-                    draft_check,
-                    thinking=thinking,
-                )
-            ] = rec
-        failed = 0
+        futures = {
+            pool.submit(
+                judge_one,
+                items[rec["id"]],
+                rec,
+                provider,
+                ledger,
+                draft_check,
+                thinking=thinking,
+                floor=floor,
+            ): rec
+            for rec in todo
+        }
         bar = tqdm(
             total=len(futures),
             desc=f"judge {run}",
@@ -2064,26 +2352,37 @@ def judge_all(
             mininterval=5,
             disable=False,
         )
-        for fut in as_completed(futures):
-            rec = futures[fut]
-            bar.update(1)
-            try:
-                judged = fut.result()
-            except Exception as exc:  # noqa: BLE001
-                failed += 1
-                if failed <= 5:
-                    print(
-                        f"  judge failed on {rec['id']}: {type(exc).__name__}: {str(exc)[:160]}",
-                        flush=True,
+        try:
+            for fut in as_completed(futures):
+                rec = futures[fut]
+                bar.update(1)
+                try:
+                    judged = fut.result()
+                except Exception as exc:  # noqa: BLE001 -- BudgetExceeded is not an Exception
+                    failed += 1
+                    if failed <= 5:
+                        print(
+                            f"  judge failed on {rec['id']}: {type(exc).__name__}:"
+                            f" {str(exc)[:160]}",
+                            flush=True,
+                        )
+                    continue
+                judged["commit"] = version
+                item = items[rec["id"]]
+                with lock:
+                    out_path = (
+                        out_dir / f"{item['source']}__{item['game'].replace('/', '__')}.jsonl"
                     )
-                continue
-            item = items[rec["id"]]
-            with lock:
-                out_path = out_dir / f"{item['source']}__{item['game'].replace('/', '__')}.jsonl"
-                with out_path.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(judged, ensure_ascii=False) + "\n")
-                done[rec["id"]] = judged
-                n += 1
+                    with out_path.open("a", encoding="utf-8") as f:
+                        f.write(json.dumps(judged, ensure_ascii=False) + "\n")
+                    done[rec["id"]] = judged
+                    n += 1
+        except BudgetExceeded:
+            for fut in futures:
+                fut.cancel()
+            bar.close()
+            print(f"  {n} judged before the budget ran out; {ledger.summary()}", flush=True)
+            raise
         bar.close()
     if failed:
         print(

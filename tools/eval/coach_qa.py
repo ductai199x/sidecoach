@@ -6,11 +6,16 @@ this guarded piece hanging?" (no). We run the whole coach -- parse the claim, ve
 -- and a stance grader (agree / disagree / unclear) checks the reply against the known truth.
 Every exchange is printed so the grades can be read back.
 
-Run:  uv run python tools/eval/coach_qa.py [n_puzzles]
+The coach is the app's (coach_build.py; no engine for the moves a player names). A model
+other than none is only called through the ledger, checked against --budget-usd first; a
+failed grading call raises, never becomes UNCLEAR.
+
+Run:  uv run python tools/eval/coach_qa.py [n_puzzles] --budget-usd 0.5
 """
 
 from __future__ import annotations
 
+import argparse
 import csv
 import random
 import sys
@@ -18,34 +23,33 @@ from pathlib import Path
 
 import chess
 
-from sidecoach.analysis.annotator import GameAnnotator
-from sidecoach.analysis.engine import Engine
-from sidecoach.analysis.score import Thresholds
-from sidecoach.cli import _claims_check, _draft_check, _load_book, _load_tagger
-from sidecoach.coach.coach import Coach
-from sidecoach.coach.facts import facts_from_analysis
-from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
-from sidecoach.config import load_settings, require_stockfish
-from sidecoach.events import GameStarted, Side
-from sidecoach.llm.factory import make_provider
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from coach_build import build_coach  # noqa: E402
+from coach_games import metered_provider  # noqa: E402
+from judge import BudgetExceeded  # noqa: E402
+
+from sidecoach.analysis.annotator import GameAnnotator  # noqa: E402
+from sidecoach.analysis.engine import Engine  # noqa: E402
+from sidecoach.analysis.score import Thresholds  # noqa: E402
+from sidecoach.cli import _load_book, _load_tagger  # noqa: E402
+from sidecoach.coach.facts import facts_from_analysis  # noqa: E402
+from sidecoach.config import load_settings, require_stockfish  # noqa: E402
+from sidecoach.events import GameStarted, Side  # noqa: E402
 
 _PIECE = {chess.KNIGHT: "knight", chess.BISHOP: "bishop", chess.ROOK: "rook", chess.QUEEN: "queen"}
 
 
 def grade(provider, claim: str, truth: bool, reply: str) -> str:
-    """AGREE / DISAGREE / UNCLEAR: what stance the coach's reply took on the claim."""
+    """AGREE / DISAGREE / UNCLEAR: what stance the coach's reply took on the claim. A failed
+    call raises: a grade the model never gave is not UNCLEAR."""
     system = (
         "You judge whether a chess coach's reply agrees with, disagrees with (corrects), or is "
         "unclear about a student's claim. Answer with exactly one word: AGREE, DISAGREE, "
         "or UNCLEAR."
     )
     user = f'Student claim: "{claim}"\n\nCoach reply: "{reply}"\n\nOne word:'
-    try:
-        out = provider.chat(
-            system, [{"role": "user", "content": user}], max_tokens=8, temperature=0.0
-        )
-    except Exception:  # noqa: BLE001
-        return "UNCLEAR"
+    out = provider.chat(system, [{"role": "user", "content": user}], max_tokens=8, temperature=0.0)
     text = out.text.upper()
     for word in ("DISAGREE", "AGREE", "UNCLEAR"):
         if word in text:
@@ -96,9 +100,25 @@ def cases(board: chess.Board, solution: chess.Move, facts):
 
 
 def main() -> int:
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else 6
+    ap = argparse.ArgumentParser()
+    ap.add_argument("n", nargs="?", type=int, default=6, help="how many puzzles")
+    ap.add_argument("--budget-usd", type=float, help="required for any model but none")
+    args = ap.parse_args()
     s = load_settings()
-    provider = make_provider(s.llm)
+    provider, ledger = metered_provider(s, args.budget_usd, "coach_qa")
+    if ledger is None:
+        raise SystemExit("coach_qa grades the replies with the model: llm.provider is none")
+    try:
+        return run(args.n, s, provider)
+    except BudgetExceeded as exc:
+        print(f"stopped: {exc}")
+        return 2
+    finally:
+        if ledger is not None:
+            print(ledger.summary())
+
+
+def run(n: int, s, provider) -> int:
     eng = Engine(path=require_stockfish(s), threads=8, hash_mb=512, multipv=4, max_seconds=2.5)
     ann = GameAnnotator(
         engine=eng,
@@ -140,12 +160,7 @@ def main() -> int:
                 f" | themes {row['Themes'][:50]}"
             )
             for claim, truth in cases(b, sol, f):
-                coach = Coach(
-                    provider,
-                    policy=InterjectionPolicy(PolicySettings(stuck_seconds=30)),
-                    draft_check=_draft_check(),
-                    claims=_claims_check(provider),
-                )
+                coach = build_coach(provider, settings=s)
                 coach.on_event(GameStarted(game_id="g", user_side=us, start_fen=b.fen()), 0.0)
                 coach.on_event(a, 0.0)
                 coach.ask(claim, 10.0)

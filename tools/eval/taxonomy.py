@@ -21,6 +21,7 @@ from typing import Any
 
 import chess
 
+from sidecoach.coach.coach import _ASK_AIM
 from sidecoach.coach.disclosure import PositionFacts
 from sidecoach.events import DisclosureLevel
 
@@ -100,19 +101,21 @@ class Class:
     no_names_below: DisclosureLevel | None = DisclosureLevel.MOVE
 
 
-def _loss_words(loss: float) -> str:
+def _loss_words(loss: float, *, figure: bool = True) -> str:
     """The cost of a move as the reply should convey it, with the honest number: a 0.06
-    loss was required as "about a tenth", and the writer wrote "6%, roughly a tenth"."""
+    loss was required as "about a tenth", and the writer wrote "6%, roughly a tenth".
+    Without `figure` the words alone: where the coach is told to quote no number (the lesson
+    after a move, NO_NUMBERS), a figure is not what the reply owes."""
     if loss < 0.005:
         return "nothing"
-    pct = f"about {round(loss * 100)}% of the game"
+    pct = f" (about {round(loss * 100)}% of the game)" if figure else ""
     if loss < 0.05:
-        return f"a little ({pct})"
+        return f"a little{pct}"
     if loss < 0.15:
-        return f"a good deal ({pct})"
+        return f"a good deal{pct}"
     if loss < 0.35:
-        return f"a lot ({pct})"
-    return f"the game, or close to it ({pct})"
+        return f"a lot{pct}"
+    return f"the game, or close to it{pct}"
 
 
 def _plural(label: str, n: int) -> str:
@@ -135,9 +138,21 @@ def _eval_words(score: float) -> str:
 
 
 def _level_fact(m: Moment) -> list[Fact]:
-    """What the level must give about the position the player faces: the goal and the
-    pattern (idea), the target and the piece (focus), the move, the line."""
+    """What the level must give about the position the player faces: the first hint's
+    stakes, key fact and trap (idea) -- or, where the facts have no first hint, the goal
+    and the pattern -- the target and the piece (focus), the move, the line."""
     f = m.facts
+    if m.level <= DisclosureLevel.IDEA and f.situation:
+        # The first hint is a lesson on the position (Tai, 2026-09-24): what is at stake,
+        # the key fact named on the board, the trap. The directive asks for exactly these,
+        # and the template -- the floor -- says them.
+        first = [
+            Fact(key, value, "sense")
+            for key, value in (("stakes", f.stakes), ("key_fact", f.key), ("trap", f.trap))
+            if value
+        ]
+        if first:
+            return first
     if m.level <= DisclosureLevel.IDEA:
         out = [Fact("goal", f.goal, "sense")] if f.goal else []
         if f.theme or f.plan:
@@ -155,8 +170,13 @@ def _level_fact(m: Moment) -> list[Fact]:
     return [Fact("line", " ".join(f.line), "named")] if f.line else []
 
 
-def required(cls: Class, m: Moment) -> list[Fact]:
-    """What the answer must contain, given the moment and the level in force."""
+def required(
+    cls: Class, m: Moment, *, question: str | None = None, numbers_allowed: bool = True
+) -> list[Fact]:
+    """What the answer must contain, given the moment and the level in force. `question`
+    is what the player asked (a question about what to aim for gets the hint's facts, as
+    the coach answers it with the hint); `numbers_allowed` is False where the coach's
+    directive forbids a figure (the cost is then owed in words only)."""
     f = m.facts
     out: list[Fact] = []
     if cls.id in ("verdict", "verdict_weaker"):
@@ -166,7 +186,7 @@ def required(cls: Class, m: Moment) -> list[Fact]:
         if cls.id == "verdict_weaker" and m.last_best_san:
             out.append(Fact("better_move", m.last_best_san, "named"))
     elif cls.id in ("lesson", "ask_last_move"):
-        out.append(Fact("cost", _loss_words(m.last_loss or 0.0), "words"))
+        out.append(Fact("cost", _loss_words(m.last_loss or 0.0, figure=numbers_allowed), "words"))
         if m.last_best_san:
             out.append(Fact("better_move", m.last_best_san, "named"))
         # The idea is the one of the position the move was played from: for a lesson that
@@ -179,11 +199,17 @@ def required(cls: Class, m: Moment) -> list[Fact]:
         if fb.tactic and m.level >= DisclosureLevel.FOCUS:
             out.append(Fact("tactic", fb.tactic, "sense"))
     elif cls.id in ("decisive_question", "stuck_hint", "ask_hint"):
-        out.extend(_level_fact(m) if cls.id != "decisive_question" else [])
+        # The decisive moment's word is the first hint too (IDEA_DIRECTIVE), no longer a bare
+        # orienting question.
+        out.extend(_level_fact(m))
     elif cls.id == "ask_move" or cls.id == "ask_line":
         out.extend(_level_fact(m))
     elif cls.id == "ask_plan":
-        if m.level >= DisclosureLevel.IDEA and (f.plan or f.theme):
+        if question and _ASK_AIM.search(question):
+            # "What should I be aiming for?" is answered with the hint at its rung (parity
+            # pass 2, 2026-09-25).
+            out.extend(_level_fact(m))
+        elif m.level >= DisclosureLevel.IDEA and (f.plan or f.theme):
             out.append(Fact("plan", f.plan or f.theme or "", "sense"))
         else:
             out.extend(_level_fact(m))

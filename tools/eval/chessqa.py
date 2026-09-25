@@ -51,7 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from chessqa_prompt_utils import PromptConfig, format_prompt, get_context  # noqa: E402
 from judge import JudgeFailed, Ledger, _chat_with_backoff  # noqa: E402
-from providers import coach_provider  # noqa: E402
+from providers import provider_for  # noqa: E402
 
 from sidecoach.analysis.annotator import GameAnnotator  # noqa: E402
 from sidecoach.analysis.engine import Engine  # noqa: E402
@@ -424,15 +424,18 @@ def run(
     if not todo:
         return
     ledger = Ledger(f"chessqa-{config}", "chessqa", tag or model, budget)
+    # Raw providers: every call below goes through _chat_with_backoff, which checks the
+    # ledger's budget first and records the call after.
     if model == "openai":
-        provider = coach_provider(f"openai:{openai_model or 'gpt-5.6-luna'}@{effort or ''}")
+        spec = f"openai:{openai_model or 'gpt-5.6-luna'}@{effort or ''}"
+        provider = provider_for(spec, timeout_s=300)
     elif model == "local" and local_model:
         from sidecoach.config import LLMSettings
         from sidecoach.llm.factory import make_provider
 
         provider = make_provider(LLMSettings(provider="local", model=local_model), timeout_s=600)
     else:
-        provider = coach_provider(model)
+        provider = provider_for(model, timeout_s=300)
         if effort and hasattr(provider, "extra_body"):
             # DashScope passes reasoning_effort into the Qwen3.8 template (low / medium / xhigh).
             setattr(  # noqa: B010 -- a provider attribute the type does not declare

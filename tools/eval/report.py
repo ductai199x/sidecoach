@@ -42,6 +42,13 @@ def aggregate(recs: list[dict]) -> dict:
         "leak": _mean([1.0 if x["leak"] else 0.0 for x in s]),
         "board": _mean([1.0 if x["board"] else 0.0 for x in s]),
         "form": _mean([1.0 if x["form_ok"] else 0.0 for x in s]),
+        # The owner's rules after a move (restated), a verdict or cost against the record, and
+        # the floor: what the reply had to name, as its template does, left out.
+        "rules": _mean([1.0 if x.get("rules") else 0.0 for x in s]),
+        "verdict_wrong": _mean([1.0 if x.get("verdict_wrong") else 0.0 for x in s]),
+        "floor_omitted": _mean([1.0 if x.get("floor_omitted") else 0.0 for x in s]),
+        # The template spoke because the coach's checks refused every reply the model wrote.
+        "rejected": _mean([1.0 if r.get("status") == "rejected" else 0.0 for r in recs]),
         "relevance": _mean([x["relevance"] for x in s]),
         # Over the items with a master's note: the point made; the point in the facts; the
         # point made where the facts had it (what the coach could have done).
@@ -76,6 +83,10 @@ def table(title: str, groups: dict[str, dict[str, dict]], runs: list[str]) -> li
         "fabrication",
         "leak",
         "form",
+        "rules",
+        "verdict_wrong",
+        "floor_omitted",
+        "rejected",
         "relevance",
         "idea",
         "idea_in_facts",

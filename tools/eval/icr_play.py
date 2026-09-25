@@ -15,8 +15,23 @@ to C in the system prompt; repeat.
   judgments under run <name>-rN
 
   uv run python tools/eval/icr_play.py --coach openai:gpt-5.6-luna@medium
-      --judge openai:gpt-5.6-luna@medium
+      --judge openai:gpt-5.6-luna@medium --experimental-c
       --writer openai:gpt-5.6-luna@medium --games 6 --rounds 4 --demos-per-round 5 --name icr-play
+
+The coach is the app's (coach_build.py): the shipped system prompt with its C and the
+rating, the app's settings. Only --experimental-c puts another C in the system prompt (the
+run's demonstrations, --pool-from, --distil); without it the run is an evaluation of the
+coach as shipped and adds no demonstrations.
+
+Money: every call is on the ledger and checked against --budget-usd before it is made
+(BudgetExceeded stops the run); --dry-run plays the games with no model and prints what a
+round would cost. Run names and item directories carry the code's version
+(stamp.code_version); what another version made is refused unless --reuse-stale. A moment
+whose coach call failed is not judged (it is counted); --floor judges each moment's template
+too and writes the parity report (parity.py).
+
+  uv run python tools/eval/icr_play.py --source bots --games 8 --rounds 1 \
+      --moments-per-game 5 --floor --budget-usd 2 --name parity-pilot [--dry-run]
 """
 
 from __future__ import annotations
@@ -26,7 +41,9 @@ import json
 import random
 import re
 import sys
+import threading
 import time
+from collections import Counter
 from collections.abc import Collection
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -37,22 +54,39 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from corpus import ENGINE_CACHE, FACTS, MASTERS, CachedEngine, build_game  # noqa: E402
+import estimate  # noqa: E402
+import parity  # noqa: E402
+import stamp  # noqa: E402
+from corpus import (  # noqa: E402
+    ENGINE_CACHE,
+    FACTS,
+    MASTERS,
+    CachedEngine,
+    build_game,
+    facts_current,
+)
 from judge import (  # noqa: E402
+    BINARY_SYSTEM,
+    BudgetExceeded,
     JudgeFailed,
     Ledger,
     deterministic,
+    directive_of,
     evidence_block,
     judge_all,
     judge_one,
     parse_judgment,
+    reply_status,
+    settings_prices,
 )  # noqa: E402
 from pool import C_HEADER, JARGON, Pool, facts_gap, failure_score  # noqa: E402
-from providers import Metered, coach_provider, judge_provider  # noqa: E402
+from providers import coach_provider, judge_provider  # noqa: E402
 from report import aggregate  # noqa: E402
 
 from sidecoach.cli import _draft_check  # noqa: E402
 from sidecoach.coach import prompt as coach_prompt  # noqa: E402
+from sidecoach.coach.coach import directive_limits  # noqa: E402
+from sidecoach.config import load_settings  # noqa: E402
 
 WRITER_SYSTEM = (
     "You write the reply a chess coach should have given, beside a club player, in the "
@@ -79,13 +113,14 @@ WRITER_SYSTEM = (
 
 
 def _form_words(item: dict) -> str:
-    fm = item.get("form") or {}
+    """The form the item's own directive asks for, as the coach reads it."""
+    limit, question = directive_limits(directive_of(item))
     form = []
-    if fm.get("max_sentences"):
-        form.append(f"at most {fm['max_sentences']} sentences")
-    if fm.get("ends_with_question") is True:
+    if limit:
+        form.append(f"at most {limit} sentences")
+    if question is True:
         form.append("ending with one question")
-    if fm.get("ends_with_question") is False:
+    if question is False:
         form.append("no question")
     return ", ".join(form) or "two to four sentences"
 
@@ -112,7 +147,14 @@ def _check(item: dict, reply: str, draft_check) -> list[str]:
     """The checks a coach draft gets, plus the writer's own: no sheet jargon, no question
     in place of an answer."""
     det = deterministic(item, reply, draft_check)
-    problems = det["leak"] + det["board"] + det["form"]["problems"]
+    problems = (
+        det["leak"]
+        + det["board"]
+        + det["form"]["problems"]
+        + det["rules"]
+        + det["verdict"]
+        + det["floor"]
+    )
     if jargon := JARGON.findall(reply):
         problems.append("the sheet's own words: " + ", ".join(sorted({j.lower() for j in jargon})))
     first = reply.strip().split(" ")[0].rstrip(",") if reply.strip() else ""
@@ -158,6 +200,7 @@ def write_demo(
     note = ""
     problems_seen: list[str] = []
     for _attempt in range(2):
+        ledger.check()
         t0 = time.time()
         try:
             completion = writer.chat(
@@ -259,47 +302,82 @@ def heldout_games() -> set[str]:
     }
 
 
+# Where each source's facts are: the master games (data/eval/facts/masters), or the Nova bot
+# games (data/eval/facts/bots, tools/bots), the only facts made by the current annotator as
+# of 2026-09-25. `--facts-dir` points a source elsewhere (e.g. masters_v3 once rebuilt).
+SOURCES = {"masters": "masters", "bots": "bots"}
+
+
 def masters(
-    *, heldout: bool = False, only: set[str] | None = None
+    *,
+    heldout: bool = False,
+    only: set[str] | None = None,
+    source: str = "masters",
+    facts_dir: Path | None = None,
 ) -> list[tuple[Path, dict[int, str]]]:
-    """Every master game with the book's notes by ply: the training games, or the held-out;
-    `only` restricts to those stems."""
+    """Every game of a source with the book's notes by ply (masters only): the training
+    games, or the held-out; `only` restricts to those stems. The bot games have no held-out
+    split: they are all training games."""
     out = []
-    held = heldout_games()
-    for path in sorted((FACTS / "masters").glob("*.json")):
+    held = heldout_games() if source == "masters" else set()
+    folder = facts_dir or FACTS / SOURCES[source]
+    for path in sorted(folder.glob("*.json")):
         if (path.stem in held) != heldout:
             continue
         if only is not None and path.stem not in only:
             continue
-        book, stem = path.stem.split("__", 1)
-        notes = MASTERS / book / f"{stem}.json"
         annotations = {}
-        if notes.exists():
-            m = json.loads(notes.read_text(encoding="utf-8"))
-            annotations = {p["ply"]: p["annotation"] for p in m["plies"] if p.get("annotation")}
+        if source == "masters" and "__" in path.stem:
+            book, stem = path.stem.split("__", 1)
+            notes = MASTERS / book / f"{stem}.json"
+            if notes.exists():
+                m = json.loads(notes.read_text(encoding="utf-8"))
+                annotations = {p["ply"]: p["annotation"] for p in m["plies"] if p.get("annotation")}
         out.append((path, annotations))
     return out
 
 
+def stale_facts(games: list[tuple[Path, dict[int, str]]]) -> list[str]:
+    """The games whose facts the current annotator did not make (corpus.facts_current)."""
+    out = []
+    for path, _ in games:
+        missing = facts_current(json.loads(path.read_text(encoding="utf-8")))
+        if missing:
+            out.append(f"{path.stem} (no {', '.join(missing)})")
+    return out
+
+
 def run_games(
-    icr: Path, total: int, heldout_share: float, seed: int
+    icr: Path,
+    total: int,
+    heldout_share: float,
+    seed: int,
+    *,
+    source: str = "masters",
+    facts_dir: Path | None = None,
+    write: bool = True,
 ) -> tuple[list[str], list[str]]:
     """The run's games, chosen once and kept in games.json: `total` games, a `heldout_share`
     of them from the held-out split, the rest from the training split, both drawn at
-    random with `seed`."""
+    random with `seed` (the same games for the same seed; `write` False, the dry run, keeps
+    nothing)."""
     path = icr / "games.json"
     if path.exists():
         d = json.loads(path.read_text(encoding="utf-8"))
         return d["train"], d["heldout"]
     rng = random.Random(f"{seed}:games")
-    train_all = [p.stem for p, _ in masters()]
-    held_all = [p.stem for p, _ in masters(heldout=True)]
+    train_all = [p.stem for p, _ in masters(source=source, facts_dir=facts_dir)]
+    held_all = [p.stem for p, _ in masters(heldout=True, source=source, facts_dir=facts_dir)]
+    if not held_all:
+        heldout_share = 0.0
     rng.shuffle(train_all)
     rng.shuffle(held_all)
     n_held = max(1, round(total * heldout_share))
     held = sorted(held_all[:n_held])
     train = sorted(train_all[: total - len(held)])
-    path.write_text(json.dumps({"train": train, "heldout": held}, indent=1), encoding="utf-8")
+    if write:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"train": train, "heldout": held}, indent=1), encoding="utf-8")
     return train, held
 
 
@@ -407,6 +485,7 @@ def distil(pool, writer, ledger: Ledger) -> str:
             f'The right reply: "{d["reply"]}"'
         )
     content = "\n\n".join(parts) + "\n\nWrite the lessons."
+    ledger.check()
     t0 = time.time()
     completion = writer.chat(
         DISTIL_SYSTEM,
@@ -521,69 +600,105 @@ def sample_moments(
 def play_round(
     games: list[tuple[Path, dict[int, str]]],
     seed: int,
-    system: str,
+    system: str | None,
     provider,
     workers: int,
     out_dir: Path,
     *,
-    summarise_every: int,
+    source: str = "masters",
+    ledger: Ledger | None = None,
+    summarise_every: int | None = None,
     summariser=None,
     stop_after: dict[str, int] | None = None,
-    compact_record: bool = False,
+    compact_record: bool | None = None,
+    version: str | None = None,
+    reuse_stale: bool = False,
+    requests_out: list[dict] | None = None,
+    engine_threads: int | None = None,
 ) -> list[dict]:
-    """Every game through the coach with the model answering; the items with their replies."""
-    out_dir.mkdir(parents=True, exist_ok=True)
+    """Every game through the coach with the model answering; the items with their replies.
+
+    `system` None is the coach's shipped prompt. A game already played into `out_dir` is
+    read back, refused when another version of the code played it (unless `reuse_stale`).
+    With no `provider` (the dry run) the templates answer, nothing is written, and every
+    request goes to `requests_out`. BudgetExceeded stops the round: the games not started
+    are cancelled and it goes up to the runner."""
+    version = version or stamp.code_version()
+    dry = provider is None
+    if not dry:
+        out_dir.mkdir(parents=True, exist_ok=True)
     engine_cache: dict[str, list[dict]] = (
         json.loads(ENGINE_CACHE.read_text(encoding="utf-8")) if ENGINE_CACHE.exists() else {}
     )
-    draft_check = _draft_check()
+    cache_lock = threading.Lock()
     items: list[dict] = []
     bar = tqdm(total=len(games), desc="play", unit="game", file=sys.stderr, mininterval=5)
 
     def one(path: Path, annotations: dict[int, str]) -> list[dict]:
         done = out_dir / f"{path.stem}.jsonl"
-        if done.exists():
-            return [json.loads(line) for line in done.open(encoding="utf-8")]
-        engine = CachedEngine(engine_cache)
+        if not dry and done.exists():
+            kept = [json.loads(line) for line in done.open(encoding="utf-8")]
+            for it in kept:
+                stamp.check(it.get("commit"), f"{done}", reuse_stale=reuse_stale, current=version)
+            return kept
+        engine = CachedEngine(engine_cache, threads=engine_threads)
         t0 = time.time()
+        requests: list[dict] = []
         try:
             rng = random.Random(f"{seed}:masters/{path.stem}")
             built = build_game(
-                "masters",
+                source,
                 path,
                 rng,
                 annotations,
                 engine,
                 provider=provider,
+                ledger=ledger,
                 system=system,
-                draft_check=draft_check,
                 summarise_every=summarise_every,
                 summariser=summariser,
                 stop_after_ply=None if stop_after is None else stop_after.get(path.stem),
                 compact_record=compact_record,
+                version=version,
+                requests_out=requests,
             )
         finally:
             engine.close()
+            with cache_lock:
+                engine_cache.update(engine.new)
+        if requests_out is not None:
+            with cache_lock:
+                requests_out.extend(requests)
         wall = round(time.time() - t0, 1)
         for it in built:
             it["game_wall_s"] = wall
-        with done.open("w", encoding="utf-8") as f:
-            for it in built:
-                f.write(json.dumps(it, ensure_ascii=False) + "\n")
+        if not dry:
+            with done.open("w", encoding="utf-8") as f:
+                for it in built:
+                    f.write(json.dumps(it, ensure_ascii=False) + "\n")
         return built
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(one, path, ann): path for path, ann in games}
-        for fut in as_completed(futures):
-            path = futures[fut]
-            try:
-                items += fut.result()
-            except Exception as exc:  # noqa: BLE001
-                print(f"  {path.stem} failed: {type(exc).__name__}: {exc}", flush=True)
-            bar.update(1)
-            bar.set_postfix(game=path.stem[:24])
+        try:
+            for fut in as_completed(futures):
+                path = futures[fut]
+                try:
+                    items += fut.result()
+                except stamp.StaleData:
+                    raise
+                except Exception as exc:  # noqa: BLE001 -- BudgetExceeded is not an Exception
+                    print(f"  {path.stem} failed: {type(exc).__name__}: {exc}", flush=True)
+                bar.update(1)
+                bar.set_postfix(game=path.stem[:24])
+        except (BudgetExceeded, stamp.StaleData):
+            for fut in futures:
+                fut.cancel()
+            bar.close()
+            raise
     bar.close()
-    ENGINE_CACHE.write_text(json.dumps(engine_cache, indent=0), encoding="utf-8")
+    if not dry:
+        ENGINE_CACHE.write_text(json.dumps(engine_cache, indent=0), encoding="utf-8")
     items.sort(key=lambda it: (it["game"], it["ply"], it["id"]))
     return items
 
@@ -633,20 +748,75 @@ def main() -> None:
     ap.add_argument(
         "--demos-per-round",
         type=int,
-        default=3,
+        default=0,
         choices=[0, 1, 2, 3, 4, 5],
-        help="the worst moments that become demonstrations each round, at most one per class",
+        help=(
+            "the worst moments that become demonstrations each round, at most one per class "
+            "(needs --experimental-c)"
+        ),
+    )
+    ap.add_argument(
+        "--experimental-c",
+        action="store_true",
+        help=(
+            "put the run's own C (its demonstrations, --pool-from, --distil) in the system "
+            "prompt instead of the shipped one: ICR training and C experiments only"
+        ),
     )
     ap.add_argument("--epsilon", type=float, default=0.01)
-    ap.add_argument("--workers", type=int, default=5, help="games played at once")
+    ap.add_argument("--workers", type=int, default=8, help="games played at once")
     ap.add_argument("--judge-workers", type=int, default=8)
-    ap.add_argument("--budget-tokens", type=int, default=60_000_000)
+    ap.add_argument(
+        "--budget-usd",
+        type=float,
+        required=True,
+        help="the most the run may spend, in dollars, checked before every call",
+    )
+    ap.add_argument("--budget-tokens", type=int, default=None, help="a token cap as well")
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="play the games with no model and print what a round would cost; call nothing",
+    )
+    ap.add_argument(
+        "--floor",
+        action="store_true",
+        help="judge each judged moment's template too and write the parity report",
+    )
+    ap.add_argument(
+        "--reuse-stale",
+        action="store_true",
+        help="read items and judgments another version of the code made",
+    )
+    ap.add_argument(
+        "--source",
+        choices=sorted(SOURCES),
+        default="masters",
+        help="the games: the master games or the Nova bot games",
+    )
+    ap.add_argument("--facts-dir", type=Path, help="the source's facts from another directory")
+    ap.add_argument(
+        "--stale-facts",
+        action="store_true",
+        help="play facts the current annotator did not make (no traps, defences, threats)",
+    )
+    ap.add_argument(
+        "--engine-threads",
+        type=int,
+        default=None,
+        help="Stockfish threads for a named move not in the cache (default: the app's)",
+    )
     ap.add_argument("--seed", type=int, default=7)
-    ap.add_argument("--summarise-every", type=int, default=20)
+    ap.add_argument(
+        "--summarise-every",
+        type=int,
+        default=None,
+        help="fold the dialogue every N plies (an experiment; default: the app's setting)",
+    )
     ap.add_argument(
         "--summariser",
-        default="openai:gpt-5.6-luna@none",
-        help="the model that folds the dialogue (a rewrite: low effort)",
+        default=None,
+        help="the model that folds the dialogue (default: the coach's own, as in the app)",
     )
     ap.add_argument("--reset", action="store_true", help="empty C before round 1")
     ap.add_argument(
@@ -680,24 +850,117 @@ def main() -> None:
     ap.add_argument(
         "--compact-record",
         action="store_true",
-        help="the harness's record compacted: sound moves nobody spoke after as a move list",
+        default=None,
+        help="the harness's record compacted (an experiment; default: the app's setting)",
     )
     ap.add_argument(
         "--tag", default="", help="a name for this evaluation's directory (held-out runs)"
     )
     args = ap.parse_args()
+    try:
+        run(args)
+    except BudgetExceeded as exc:
+        print(f"\nstopped: {exc}", flush=True)
+        raise SystemExit(2) from None
+    except stamp.StaleData as exc:
+        print(f"\nrefused: {exc}", flush=True)
+        raise SystemExit(3) from None
 
+
+def dry_run(
+    args: argparse.Namespace,
+    games: list[tuple[Path, dict[int, str]]],
+    system: str | None,
+    rounds: int,
+) -> None:
+    """What a round costs, with the games played by the templates and nothing called: the
+    coach's requests sized as they are, the judge's records sized on the moments a round
+    would judge (and their templates, with --floor)."""
+    requests: list[dict] = []
+    items = play_round(
+        games,
+        args.seed,
+        system,
+        None,
+        min(args.workers, 2),
+        Path(),
+        source=args.source,
+        summarise_every=args.summarise_every,
+        compact_record=args.compact_record,
+        requests_out=requests,
+        engine_threads=args.engine_threads,
+    )
+    prices = settings_prices()
+    requests.sort(key=lambda r: (r["game"], r["ply"]))
+    coach = estimate.coach_estimate(requests, prices)
+    judged = sample_moments(items, args.moments_per_game, args.seed * 1000 + 1)
+
+    def record(it: dict) -> str:
+        return BINARY_SYSTEM + evidence_block(it, with_reference=False) + (it.get("fallback") or "")
+
+    judge = estimate.judge_estimate(judged, prices, record_of=record)
+    floor = estimate.judge_estimate(judged, prices, record_of=record) if args.floor else None
+    by_trigger = Counter(r["trigger"] for r in requests if not r.get("template_only"))
+    print(
+        f"dry run, {len(games)} games: {len(requests)} coach requests"
+        f" ({', '.join(f'{v} {k}' for k, v in by_trigger.most_common())}),"
+        f" {len(judged)} moments judged a round; prices ${prices[0]}/{prices[1]}/{prices[2]}"
+        " per M (prompt/cached/completion)",
+        flush=True,
+    )
+    print(f"  coach: {coach.line()}")
+    print(f"  judge: {judge.line()}")
+    if floor is not None:
+        print(f"  floor: {floor.line()}")
+    total = coach.add(judge).add(floor) if floor is not None else coach.add(judge)
+    print(
+        f"  a round: ~${total.usd:.2f}; {rounds} round(s): ~${total.usd * rounds:.2f}"
+        f" (budget ${args.budget_usd:.2f}). Assumptions: estimate.py.",
+        flush=True,
+    )
+
+
+def run(args: argparse.Namespace) -> None:
+    version = stamp.code_version()
+    if args.demos_per_round and not args.experimental_c:
+        raise SystemExit("--demos-per-round puts demonstrations in C: pass --experimental-c")
+    if (args.pool_from or args.distil or args.reset) and not args.experimental_c:
+        raise SystemExit("--pool-from, --distil and --reset change C: pass --experimental-c")
+    # The dry run keeps nothing: no directory, no games.json, no pool.
+    keep = not args.dry_run
     icr = ROOT / "data" / "eval" / args.name
-    icr.mkdir(parents=True, exist_ok=True)
-    train_stems, held_stems = run_games(icr, args.games, args.heldout_share, args.seed)
-    games = masters(heldout=args.heldout, only=set(held_stems if args.heldout else train_stems))
+    if keep:
+        icr.mkdir(parents=True, exist_ok=True)
+    train_stems, held_stems = run_games(
+        icr,
+        args.games,
+        args.heldout_share,
+        args.seed,
+        source=args.source,
+        facts_dir=args.facts_dir,
+        write=keep,
+    )
+    games = masters(
+        heldout=args.heldout,
+        only=set(held_stems if args.heldout else train_stems),
+        source=args.source,
+        facts_dir=args.facts_dir,
+    )
     if args.game:
         games = [g for g in games if g[0].stem in set(args.game)]
     print(
-        f"{len(games)} {'held-out' if args.heldout else 'training'} games of {len(train_stems)}"
-        f" + {len(held_stems)}: {', '.join(p.stem for p, _ in games)}",
+        f"{len(games)} {'held-out' if args.heldout else 'training'} {args.source} games of"
+        f" {len(train_stems)} + {len(held_stems)}: {', '.join(p.stem for p, _ in games)};"
+        f" code {version}",
         flush=True,
     )
+    stale = stale_facts(games)
+    if stale and not args.stale_facts:
+        raise SystemExit(
+            f"{len(stale)} games' facts were made before the annotator's traps, defences and "
+            f"threats (e.g. {stale[0]}): the coach would not be the app's. Rebuild them "
+            "(facts_parallel.py), use --source bots, or pass --stale-facts."
+        )
     if args.heldout:
         # An evaluation: its own directory under the run, its own run names, the C it is
         # given (--pool-from <run>[:C-round-N] or the run's own C) and never a change to
@@ -711,7 +974,8 @@ def main() -> None:
             + (("-" + args.tag) if args.tag else "")
         )
         out = icr / "heldout" / tag
-        out.mkdir(parents=True, exist_ok=True)
+        if keep:
+            out.mkdir(parents=True, exist_ok=True)
         demos = []
         if args.pool_from:
             src, _, snapshot = args.pool_from.partition(":")
@@ -726,8 +990,9 @@ def main() -> None:
         pool = Pool(demos, out / "pool.json")
         if args.condense:
             apply_condense(pool, args.condense)
-        pool.save()
-        run_prefix = f"{args.name}-heldout-{tag}"
+        if keep:
+            pool.save()
+        run_prefix = f"{args.name}-heldout-{tag}-{version}"
         icr = out
     else:
         pool = Pool.load(icr / "pool.json")
@@ -736,26 +1001,59 @@ def main() -> None:
                 Pool.load(ROOT / "data" / "eval" / args.pool_from / "pool.json").demos,
                 icr / "pool.json",
             )
-            pool.save()
         elif args.reset:
             pool.demos = []
+        if keep and (args.pool_from or args.reset):
             pool.save()
-        run_prefix = args.name
+        run_prefix = f"{args.name}-{version}"
+    settings = load_settings()
+    persona = (settings.coach.persona, (settings.profile.rating_low, settings.profile.rating_high))
+
+    def system_for(lessons: str) -> str | None:
+        """The system prompt of a round: the coach's shipped one (None) unless the run
+        tries its own C, which then stands in for the shipped lessons."""
+        if not args.experimental_c:
+            return None
+        if not lessons:
+            return pool.system_text(persona=persona[0], rating=persona[1])
+        base = coach_prompt.system_message(
+            with_corrections=False, persona=persona[0], rating=persona[1]
+        )
+        return (
+            base
+            + "\n\n"
+            + LESSONS_HEADER
+            + lessons
+            + (("\n\n" + C_HEADER + pool.text()) if pool.demos else "")
+        )
+
+    lessons_path = icr / "lessons.md"
+    if args.dry_run:
+        known = (
+            lessons_path.read_text(encoding="utf-8")
+            if args.heldout and args.distil and lessons_path.exists()
+            else ""
+        )
+        dry_run(args, games, system_for(known), args.rounds - args.start_round + 1)
+        return
     judge, thinking = judge_provider(args.judge)
-    ledger = Ledger(args.name, "icr", judge.model, args.budget_tokens)
-    writer = (
-        judge
-        if args.writer == args.judge
-        else Metered(judge_provider(args.writer)[0], ledger, "writer")
+    ledger = Ledger(
+        f"{args.name}-{version}",
+        "icr",
+        judge.model,
+        args.budget_tokens,
+        budget_usd=args.budget_usd,
     )
+    # The writer's calls are checked against the budget and recorded where they are made
+    # (write_demo, distil): a Metered writer was recorded twice.
+    writer = judge if args.writer == args.judge else judge_provider(args.writer)[0]
     provider = coach_provider(args.coach, ledger)
-    summariser = coach_provider(args.summariser, ledger) if args.summarise_every else None
+    summariser = coach_provider(args.summariser, ledger, "summariser") if args.summariser else None
     draft_check = _draft_check()
     demonstrated = {d["id"] for d in pool.demos}
     previous: dict[str, dict] | None = None
     lessons = ""
     if args.heldout and args.distil:
-        lessons_path = icr / "lessons.md"
         if lessons_path.exists():
             lessons = lessons_path.read_text(encoding="utf-8")
         else:
@@ -768,23 +1066,19 @@ def main() -> None:
         pool.demos = keep
     for r in range(args.start_round, args.rounds + 1):
         run = f"{run_prefix}-r{r}"
-        system = pool.system_text()
-        if lessons:
-            base = coach_prompt.system_message(with_corrections=False)
-            system = (
-                base
-                + "\n\n"
-                + LESSONS_HEADER
-                + lessons
-                + (("\n\n" + C_HEADER + pool.text()) if pool.demos else "")
-            )
+        system = system_for(lessons)
         print(
-            f"\n== round {r}: C has {len(pool.demos)} demonstrations (~{pool.tokens()} tokens);"
-            f" run {run}",
+            f"\n== round {r}: "
+            + (
+                f"an experimental C, {len(pool.demos)} demonstrations (~{pool.tokens()} tokens)"
+                if system is not None
+                else "the shipped system prompt"
+            )
+            + f"; run {run}",
             flush=True,
         )
         t0 = time.time()
-        catalogue_path = icr / "catalogue.json"
+        catalogue_path = icr / f"catalogue-{version}.json"
         catalogue = (
             json.loads(catalogue_path.read_text(encoding="utf-8"))
             if catalogue_path.exists()
@@ -799,10 +1093,15 @@ def main() -> None:
                 system,
                 provider,
                 args.workers,
-                icr / f"items-r{r}",
+                icr / f"items-{version}-r{r}",
+                source=args.source,
+                ledger=ledger,
                 summarise_every=args.summarise_every,
                 summariser=summariser,
                 compact_record=args.compact_record,
+                engine_threads=args.engine_threads,
+                version=version,
+                reuse_stale=args.reuse_stale,
             )
             if not args.heldout:
                 catalogue_path.write_text(json.dumps(catalogue_of(items)), encoding="utf-8")
@@ -834,11 +1133,16 @@ def main() -> None:
                 system,
                 provider,
                 args.workers,
-                icr / f"items-r{r}",
+                icr / f"items-{version}-r{r}",
+                source=args.source,
+                ledger=ledger,
                 summarise_every=args.summarise_every,
                 summariser=summariser,
                 stop_after=stop_after,
                 compact_record=args.compact_record,
+                engine_threads=args.engine_threads,
+                version=version,
+                reuse_stale=args.reuse_stale,
             )
             judged_items = [it for it in items if it["id"] in wanted_ids and it.get("reply")]
             if len(judged_items) < len(wanted_ids):
@@ -847,13 +1151,25 @@ def main() -> None:
                     " the replay",
                     flush=True,
                 )
-        replies = [it["reply"] for it in judged_items]
-        fallbacks = sum(1 for it in items if it.get("reply") and it["reply"]["fallback_used"])
+        # How each reply came to be: the model's own, the template after the checks refused
+        # the model, the template after the call failed (never judged), no call at all.
+        statuses = Counter(reply_status(it["reply"]) for it in items if it.get("reply"))
+        judged_statuses = Counter(reply_status(it["reply"]) for it in judged_items)
         print(
-            f"  {len(items)} moments, {len(replies)} to judge, in {time.time() - t0:.0f}s;"
-            f" fallbacks {fallbacks}",
+            f"  {len(items)} moments in {time.time() - t0:.0f}s: "
+            + ", ".join(f"{v} {k}" for k, v in statuses.most_common())
+            + f"; drawn to judge: {len(judged_items)} ("
+            + ", ".join(f"{v} {k}" for k, v in judged_statuses.most_common())
+            + ")",
             flush=True,
         )
+        if statuses.get("model_failed"):
+            print(
+                f"  {statuses['model_failed']} moments where the coach's call failed: not"
+                " judged; read the log before trusting this round",
+                flush=True,
+            )
+        replies = [it["reply"] for it in judged_items]
         by_id = {it["id"]: it for it in items}
         judgments = judge_all(
             by_id,
@@ -864,7 +1180,30 @@ def main() -> None:
             thinking=thinking,
             quiet=True,
             workers=args.judge_workers,
+            reuse_stale=args.reuse_stale,
         )
+        if args.floor:
+            own = [j for j in judgments if j.get("status", "model") == "model"]
+            floor = parity.judge_floor(
+                by_id,
+                [j["id"] for j in own],
+                run,
+                judge,
+                ledger,
+                thinking=thinking,
+                workers=args.judge_workers,
+                reuse_stale=args.reuse_stale,
+            )
+            rows = parity.pair(by_id, own, floor)
+            left_out = parity.excluded(replies)
+            path = parity.write_report(run, rows, left_out)
+            outcomes = Counter(row["outcome"] for row in rows)
+            print(
+                "  parity: "
+                + ", ".join(f"{k} {outcomes.get(k, 0)}" for k in parity.OUTCOMES)
+                + f" -> {path}",
+                flush=True,
+            )
         agg = aggregate(judgments)
         print(
             f"  scores: pass {agg['pass']:.2f} completeness {agg['completeness']:.2f}"
@@ -967,6 +1306,8 @@ def main() -> None:
                     "unwritten": unwritten,
                     "facts_gaps": gaps,
                     "ledger": ledger.summary(),
+                    "commit": version,
+                    "run": run,
                 },
                 indent=1,
                 ensure_ascii=False,

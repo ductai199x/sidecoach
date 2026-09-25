@@ -4,32 +4,54 @@ Drives the real Coach with the real LLM, engine and tagger off the truth.pgn (no
 emitting the same events the live pipeline does. The user is White (nosegazm) in every
 recording. Output: for each coach message, the ply, the move in play, the trigger, the
 disclosure level, the text, and whether any check flagged the draft.
+
+The coach is the app's (coach_build.py; no engine for the moves a player names). A model
+other than none is only called through the ledger, checked against --budget-usd first.
+
+Run:  uv run python tools/eval/coach_games.py [game-label] --budget-usd 1
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
+import time
 from pathlib import Path
 
 import chess
 import chess.pgn
 
-from sidecoach.analysis.annotator import GameAnnotator
-from sidecoach.analysis.engine import Engine
-from sidecoach.analysis.score import Thresholds
-from sidecoach.cli import _draft_check, _load_book, _load_tagger
-from sidecoach.coach.coach import Coach
-from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
-from sidecoach.config import load_settings, require_stockfish
-from sidecoach.events import (
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from coach_build import build_coach  # noqa: E402
+from judge import BudgetExceeded, Ledger  # noqa: E402
+from providers import Metered, spec_of  # noqa: E402
+
+from sidecoach.analysis.annotator import GameAnnotator  # noqa: E402
+from sidecoach.analysis.engine import Engine  # noqa: E402
+from sidecoach.analysis.score import Thresholds  # noqa: E402
+from sidecoach.cli import _load_book, _load_tagger  # noqa: E402
+from sidecoach.config import load_settings, require_stockfish  # noqa: E402
+from sidecoach.events import (  # noqa: E402
     GameStarted,
     MovePlayed,
     Side,
 )
-from sidecoach.llm.factory import make_provider
+from sidecoach.llm.factory import make_provider  # noqa: E402
 
 DEPTH = 12
 CAP = 2.0
+
+
+def metered_provider(settings, budget_usd: float | None, run: str):
+    """The app's model on a ledger (None when it is the offline coach)."""
+    provider = make_provider(settings.llm)
+    if getattr(provider, "offline", False):
+        return provider, None
+    if budget_usd is None:
+        raise SystemExit(f"{provider.name} costs money: give --budget-usd")
+    ledger = Ledger(f"{run}-{int(time.time())}", run, spec_of(provider), budget_usd=budget_usd)
+    return Metered(provider, ledger), ledger
 
 
 def coach_one(path: Path, engine: Engine, provider, settings, label: str) -> None:
@@ -47,11 +69,7 @@ def coach_one(path: Path, engine: Engine, provider, settings, label: str) -> Non
     assert game is not None, f"{path}: no game in the PGN"
     board = game.board()
     gid = label
-    coach = Coach(
-        provider,
-        policy=InterjectionPolicy(PolicySettings(stuck_seconds=30)),
-        draft_check=_draft_check(),
-    )
+    coach = build_coach(provider, settings=settings)
     # facts per ply, for context in the report
     facts_by_ply: dict[int, object] = {}
 
@@ -103,11 +121,12 @@ def coach_one(path: Path, engine: Engine, provider, settings, label: str) -> Non
             ),
             ts,
         )
+        # The live pipeline's order: the verdict before the analysis of the position after.
+        if by_user:
+            coach.on_event(assessment, ts)
         coach.on_event(analysis, ts)
         if (ply + 1) in coach.positions:
             facts_by_ply[ply + 1] = coach.positions[ply + 1].facts
-        if by_user:
-            coach.on_event(assessment, ts)
         drain()
 
     s = coach.speaker
@@ -119,23 +138,33 @@ def coach_one(path: Path, engine: Engine, provider, settings, label: str) -> Non
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("only", nargs="?", help="only the recordings whose label has this")
+    ap.add_argument("--budget-usd", type=float, help="required for any model but none")
+    args = ap.parse_args()
     settings = load_settings()
-    provider = make_provider(settings.llm)
+    provider, ledger = metered_provider(settings, args.budget_usd, "coach_games")
     engine = Engine(
         path=require_stockfish(settings), threads=8, hash_mb=512, multipv=4, max_seconds=CAP
     )
     games = sorted(Path("data/recordings").glob("g*/truth.pgn"))
-    only = sys.argv[1] if len(sys.argv) > 1 else None
-    with engine:
-        for pgn in games:
-            label = pgn.parent.name
-            if only and only not in label:
-                continue
-            print("#" * 78)
-            print(f"# {label}")
-            print("#" * 78)
-            coach_one(pgn, engine, provider, settings, label)
-            sys.stdout.flush()
+    try:
+        with engine:
+            for pgn in games:
+                label = pgn.parent.name
+                if args.only and args.only not in label:
+                    continue
+                print("#" * 78)
+                print(f"# {label}")
+                print("#" * 78)
+                coach_one(pgn, engine, provider, settings, label)
+                sys.stdout.flush()
+    except BudgetExceeded as exc:
+        print(f"stopped: {exc}")
+        return 2
+    finally:
+        if ledger is not None:
+            print(ledger.summary())
     return 0
 
 

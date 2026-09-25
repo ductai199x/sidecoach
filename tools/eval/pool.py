@@ -86,9 +86,11 @@ class Pool:
     def tokens(self) -> int:
         return int(len(self.text()) / 3.6)
 
-    def system_text(self) -> str:
-        """The system message with all of C: the coach's prompt without the shipped
-        lessons, then the demonstrations."""
-        base = prompt.system_message(with_corrections=False)
+    def system_text(
+        self, *, persona: str | None = None, rating: tuple[int, int] | None = None
+    ) -> str:
+        """The system message with all of C: the coach's prompt (the app's persona and
+        rating) without the shipped lessons, then the demonstrations."""
+        base = prompt.system_message(with_corrections=False, persona=persona, rating=rating)
         c = self.text()
         return base + ("\n\n" + C_HEADER + c if c else "")

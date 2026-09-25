@@ -7,8 +7,13 @@ next moment's input carries it.
 The output has two parts: the transcript (every move, numbered as the harness numbers it,
 with what the coach said after it), then the harness as it stood at the chosen moves.
 
+The coach is the app's (coach_build.py), the events come in the live pipeline's order, and
+a model other than none is only called through the ledger, checked against --budget-usd
+before every call.
+
   uv run python tools/eval/playthrough.py --game mammoth__080-kasparov-karpov --side white
-      --coach openai:gpt-5.6-luna@medium --dump 12,30,50 > data/eval/playthrough-x.md
+      --coach openai:gpt-5.6-luna@medium --budget-usd 0.5 --dump 12,30,50 \
+      > data/eval/playthrough-x.md
 """
 
 from __future__ import annotations
@@ -26,12 +31,14 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from providers import coach_provider  # noqa: E402
+from coach_build import build_coach, coach_config  # noqa: E402
+from corpus import STUCK_PAST, CachedEngine  # noqa: E402
+from judge import BudgetExceeded, Ledger  # noqa: E402
+from providers import coach_provider, is_offline  # noqa: E402
 
-from sidecoach.cli import _draft_check  # noqa: E402
 from sidecoach.coach import prompt  # noqa: E402
 from sidecoach.coach.coach import Coach  # noqa: E402
-from sidecoach.coach.policy import InterjectionPolicy, PolicySettings  # noqa: E402
+from sidecoach.config import load_settings  # noqa: E402
 from sidecoach.events import (  # noqa: E402
     Analysis,
     GameEnded,
@@ -42,7 +49,6 @@ from sidecoach.events import (  # noqa: E402
 )
 
 FACTS = ROOT / "data" / "eval" / "facts" / "masters"
-STUCK_SECONDS = 30
 
 
 def numbered(step: dict) -> str:
@@ -64,28 +70,55 @@ def main() -> None:
     ap.add_argument(
         "--stuck-every", type=int, default=5, help="the player is stuck on every Nth of their turns"
     )
-    ap.add_argument("--no-corrections", action="store_true", help="an empty C")
+    ap.add_argument(
+        "--no-corrections", action="store_true", help="an empty C (an experiment, not the app)"
+    )
     ap.add_argument(
         "--summarise-every",
         type=int,
-        default=0,
-        help="fold the earlier dialogue into a summary every N plies (0 = off)",
+        default=None,
+        help="fold the earlier dialogue every N plies (an experiment; default: the app's)",
     )
     ap.add_argument(
-        "--summariser", default="openai:gpt-5.6-luna@none", help="the model that folds the dialogue"
+        "--summariser",
+        default=None,
+        help="the model that folds the dialogue (default: the coach's own, as in the app)",
+    )
+    ap.add_argument(
+        "--budget-usd",
+        type=float,
+        default=None,
+        help="the most the play-through may spend; required for any model but none",
     )
     args = ap.parse_args()
+    ledger = None
+    if not is_offline(args.coach):
+        if args.budget_usd is None:
+            raise SystemExit("a model costs money: give --budget-usd (or --coach none)")
+        ledger = Ledger(
+            f"playthrough-{args.game}-{args.side}",
+            "playthrough",
+            args.coach,
+            budget_usd=args.budget_usd,
+        )
     t_start = time.time()
-    transcript, dumps, coach = play(
-        args.game,
-        args.side,
-        args.coach,
-        stuck_every=args.stuck_every,
-        dump={int(x) for x in args.dump.split(",") if x.strip()},
-        no_corrections=args.no_corrections,
-        summarise_every=args.summarise_every,
-        summariser=args.summariser,
-    )
+    try:
+        transcript, dumps, coach = play(
+            args.game,
+            args.side,
+            args.coach,
+            stuck_every=args.stuck_every,
+            dump={int(x) for x in args.dump.split(",") if x.strip()},
+            no_corrections=args.no_corrections,
+            summarise_every=args.summarise_every,
+            summariser=args.summariser,
+            ledger=ledger,
+        )
+    except BudgetExceeded as exc:
+        raise SystemExit(f"stopped: {exc}") from None
+    print(coach_config(coach), file=sys.stderr)
+    if ledger is not None:
+        print(ledger.summary(), file=sys.stderr)
     print(f"# Play-through: {args.game}, coaching {args.side}, coach {args.coach}\n")
     print("# Transcript\n\n```")
     print("\n".join(transcript))
@@ -119,30 +152,47 @@ def play(
     stuck_every: int = 5,
     dump: Collection[int] = (),
     no_corrections: bool = False,
-    summarise_every: int = 0,
-    summariser: str = "openai:gpt-5.6-luna@none",
+    summarise_every: int | None = None,
+    summariser: str | None = None,
     on_coach: Callable[[Coach], None] | None = None,
+    ledger: Ledger | None = None,
+    engine: CachedEngine | None = None,
 ) -> tuple[list[str], list[tuple[str, str]], Coach]:
     """The game through the coach: the transcript's lines, the harness at the dumped
     plies, and the coach itself (for its conversation and its speaker's counts).
-    `on_coach` sees the coach before the game starts (dump_prompts.py records its
-    requests there)."""
+    The coach is the app's (coach_build.build_coach); a model other than none needs the
+    `ledger`. `no_corrections`, `summarise_every` and `summariser` are experiments on top.
+    `engine` answers the moves a player names (a CachedEngine by default: Stockfish opens
+    only on a position it has not seen). `on_coach` sees the coach before the game starts
+    (dump_prompts.py records its requests there)."""
     facts = load_facts(game)
     moves = [s for s in facts["script"] if s["kind"] == "move"]
     side = Side.WHITE if side_name == "white" else Side.BLACK
     user_colour = chess.WHITE if side == Side.WHITE else chess.BLACK
     dump_at = set(dump)
 
-    provider = coach_provider(coach_kind)
-    coach = Coach(
+    settings = load_settings()
+    provider = coach_provider(coach_kind, ledger)
+    engine = engine if engine is not None else CachedEngine()
+    coach = build_coach(
         provider,
-        policy=InterjectionPolicy(PolicySettings(stuck_seconds=STUCK_SECONDS)),
-        draft_check=_draft_check(),
+        ledger=ledger,
+        settings=settings,
+        engine=engine,
+        seed=f"sidecoach-eval:{game}:{side_name}",
+        system=(
+            prompt.system_message(
+                with_corrections=False,
+                persona=settings.coach.persona,
+                rating=(settings.profile.rating_low, settings.profile.rating_high),
+            )
+            if no_corrections
+            else None
+        ),
         summarise_every=summarise_every,
-        summariser=coach_provider(summariser) if summarise_every else None,
+        summariser=coach_provider(summariser, ledger, "summariser") if summariser else None,
     )
-    coach.sync_summaries = True
-    coach.system = prompt.system_message(with_corrections=not no_corrections)
+    stuck_after = coach.policy.settings.stuck_seconds + STUCK_PAST
     if on_coach is not None:
         on_coach(coach)
     gid = game
@@ -178,8 +228,10 @@ def play(
             ),
             ts,
         )
-        coach.on_event(Analysis.model_validate({**step["analysis"], "game_id": gid}), ts)
+        # The live pipeline's order: the verdict on the move about a second before the
+        # analysis of the position it led to (analysis/annotator.py).
         coach.on_event(MoveAssessment.model_validate({**step["assessment"], "game_id": gid}), ts)
+        coach.on_event(Analysis.model_validate({**step["analysis"], "game_id": gid}), ts)
         label = step["assessment"].get("label") or step["assessment"]["severity"]
         transcript.append(
             f"{numbered(step):14s} ({'the player' if by_user else 'the opponent'}, {label})"
@@ -188,7 +240,7 @@ def play(
         if not by_user and step is not moves[-1]:
             own_turns += 1
             if own_turns % stuck_every == 0:
-                ts += STUCK_SECONDS + 15
+                ts += stuck_after
                 coach.tick(ts)
                 said("the player is stuck")
             if own_turns % (stuck_every * 2) == 3:

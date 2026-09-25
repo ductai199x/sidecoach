@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from judge import Ledger  # noqa: E402
+from judge import BudgetExceeded, Ledger  # noqa: E402
 from providers import Metered  # noqa: E402
 
 from sidecoach import cli  # noqa: E402
@@ -217,7 +217,10 @@ def main() -> None:
         "--show-record", type=int, default=1, help="print the record for the first N"
     )
     args = parser.parse_args()
-    run(args.provider, args.seed, args.budget_tokens, args.show_record)
+    try:
+        run(args.provider, args.seed, args.budget_tokens, args.show_record)
+    except BudgetExceeded as exc:  # checked before every call, through the coach's own
+        raise SystemExit(f"stopped: {exc}") from None
 
 
 if __name__ == "__main__":
