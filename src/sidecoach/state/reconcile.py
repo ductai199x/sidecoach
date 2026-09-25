@@ -1092,7 +1092,13 @@ class Reconciler:
         if soft > self.resync_max_soft:
             self._resync_candidate = None
             return []
-        placement = self._placement(obs).board_fen()
+        # Held as a view: the pieces and the squares the site highlights, which a move
+        # starting changes first (`pipeline._view`).
+        placement = (
+            self._placement(obs).board_fen()
+            + "|"
+            + ",".join(chess.square_name(sq) for sq in sorted(highlighted_squares(obs)))
+        )
         if self._resync_candidate and self._resync_candidate[0] == placement:
             self._resync_candidate = (
                 placement,

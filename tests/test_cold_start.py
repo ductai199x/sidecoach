@@ -91,6 +91,28 @@ def test_cold_start_reads_a_rendered_mid_game_board(
     assert not _squares_off(board, truth), f"cold read off on {_squares_off(board, truth)}"
 
 
+@pytest.mark.parametrize("theme", ["green", "brown"])
+def test_asked_to_reread_a_board_with_a_piece_left_selected(tmp_path: Path, theme: str) -> None:
+    """Tai's desktop, 2026-09-24: a knight left selected put chess.com's legal-move dots on
+    the empty squares it could go to, the dots read as unknown, and every "Re-read the
+    screen" was refused. Asked for, a dot is the empty square it is; a read nobody asked
+    for still treats it as no evidence."""
+    cache = ThemeCache(tmp_path)
+    _warm(cache, theme, Side.WHITE)
+    truth = chess.Board(MIDGAME)
+    knight = chess.F3  # the side to move's knight: dots on its empty destinations
+    frame = synthetic_board(board=truth, theme=theme, coordinates=True, selected=knight)
+    cold = GamePipeline(cache=cache)
+    events = cold.cold_start(frame, GEOM)
+    assert any(isinstance(e, GameStarted) for e in events), "the dots blocked the re-read"
+    assert cold.reconciler is not None
+    assert not _squares_off(cold.reconciler.board, truth)
+    # Nobody asked: the same frame is not taken on its own.
+    auto = GamePipeline(cache=cache)
+    assert auto._cold_read(frame, GEOM, None) is None
+    assert auto._cold_read(frame, GEOM, None, asked=True) is not None
+
+
 def test_cold_start_refuses_a_rendered_board_caught_mid_move(tmp_path: Path) -> None:
     cache = ThemeCache(tmp_path)
     _warm(cache, "green", Side.WHITE)

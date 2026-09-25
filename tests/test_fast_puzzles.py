@@ -88,3 +88,38 @@ def test_a_turned_board_is_not_adopted_while_a_piece_slides_in() -> None:
     f.show(_frame(board, solver, highlight=move), 3)
     assert f.rec.board.board_fen() == board.board_fen()
     assert f.rec.board.move_stack and f.rec.board.move_stack[-1].uci() == "h4f2"
+
+
+def test_the_next_puzzle_is_not_adopted_as_its_setup_move_lights_up() -> None:
+    # Tai's desktop, 2026-09-24 (dump 20260924-165745): the next puzzle, turned round, was
+    # read twice with White's queen still on d1 -- the second time with d1 and b1 already lit
+    # for the setup move Qd1-b1 -- and adopted then. The highlight said White had just moved,
+    # so Black was to move, the queen's arrival on b1 could not be explained, and the record
+    # invented 1...Qxh7 2.Qb1 2...Qh6. The two reads must show the same view: the same
+    # pieces and the same lit squares.
+    f = _Feed(10.0)
+    f.show(_frame(chess.Board(), chess.WHITE), 3)
+    board = chess.Board("2k5/7N/3p3q/1n2p2P/4P3/3P4/2P1KPP1/3Q1B1R w - - 0 1")
+    solver = chess.BLACK
+    setup = chess.Move.from_uci("d1b1")
+    f.show(_frame(board, solver), 4)  # the puzzle, nothing lit yet
+    f.show(_frame(board, solver, highlight=setup), 3)  # lit, the queen not yet off d1
+    for progress in (0.35, 0.8):
+        f.show(
+            _frame(
+                board,
+                solver,
+                highlight=setup,
+                animating=(setup.from_square, setup.to_square, progress),
+            )
+        )
+    board.push(setup)
+    f.show(_frame(board, solver, highlight=setup), 6)
+    assert f.rec.board.board_fen() == board.board_fen()
+    assert f.rec.board.turn == chess.BLACK, "the solver is to move"
+    # The fork the puzzle is about, recorded as the solver's move and nothing else.
+    fork = board.push_uci("b5c3")
+    f.show(_frame(board, solver, highlight=fork), 6)
+    assert f.rec.board.board_fen() == board.board_fen()
+    played = [m.uci() for m in f.rec.board.move_stack]
+    assert played[-1] == "b5c3" and "h6h7" not in played, played

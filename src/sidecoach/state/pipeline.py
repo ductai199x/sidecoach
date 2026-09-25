@@ -34,6 +34,7 @@ from sidecoach.vision.pieces import (
     CellReading,
     ThemeModel,
     looks_like_start_position,
+    mark_on_empty,
     orientation_from_start,
     start_shaped,
 )
@@ -132,6 +133,30 @@ def clock_observation(reading: ClockReading | None, bottom: Side) -> ClockObserv
 
 # A board read cold: the set that read it, the side at the bottom, the readings, the placement.
 _ColdRead = tuple[ThemeModel, Side, Readings, chess.Board]
+# What a read shows: the placement and the squares the site highlights.
+_View = tuple[str, frozenset[chess.Square]]
+
+
+def _highlighted(readings: Readings, bottom: Side) -> frozenset[chess.Square]:
+    """The squares the site marks as its last move (or a selection), not a red mark."""
+    return frozenset(
+        square_at(row, col, bottom)
+        for row in range(8)
+        for col in range(8)
+        if readings[row][col].highlighted and readings[row][col].tint != "red"
+    )
+
+
+def _view(read: _ColdRead) -> _View:
+    """A board is adopted only once every read that confirms it shows the same view: the
+    same pieces and the same highlighted squares. A site's move lights its squares before
+    the piece leaves, so a read taken as the next puzzle's setup move began matched the one
+    before it square for square; the board was adopted with the piece still on its origin,
+    the highlight said the other side had just moved, and the setup move that followed
+    could not be explained (Tai's desktop, 2026-09-24: 1...Qxh7 2.Qb1 invented, dump
+    20260924-165745)."""
+    _model, bottom, readings, placement = read
+    return placement.board_fen(), _highlighted(readings, bottom)
 
 
 @dataclass
@@ -162,7 +187,7 @@ class GamePipeline:
     # The automatic cold start: when it was last tried, and the placement it read then
     # with how many times it has read the same and when it last did.
     _cold_tried: float | None = None
-    _cold_candidate: tuple[str, int, float] | None = None
+    _cold_candidate: tuple[_View, int, float] | None = None
     # The last cold read and what it was read from (the lock and the side told), so pixels
     # that have not changed are not read again; since when no cold read has succeeded on
     # this lock, and whether the person has been told.
@@ -173,7 +198,7 @@ class GamePipeline:
     _start_checked: tuple[Region, float] | None = None
     # The other side the labels last said was at the bottom of an unexplained board, and when.
     # The side the labels say, when, and the position then read that way round.
-    _flip_seen: tuple[Side, float, str | None] | None = None
+    _flip_seen: tuple[Side, float, _View | None] | None = None
     # The last screen state emitted, so a ScreenStateChanged fires only on a transition.
     _screen_state: ScreenState = ScreenState.UNKNOWN
     # When a dialog-sized cover first appeared over a live game's board, or None; and
@@ -583,7 +608,7 @@ class GamePipeline:
         # move caught mid-slide at the phone's two frames a second, and nothing after it was
         # recorded (Tai, 2026-09-24: "sometimes there is no move list whatsoever").
         read = self._reread(labelled) or self._cold_read(frame, geometry, labelled)
-        placed = read[3].board_fen() if read is not None else None
+        placed = _view(read) if read is not None else None
         if placed is None or placed != seen[2]:
             self._flip_seen = (labelled, ts, placed)
             return []
@@ -763,7 +788,12 @@ class GamePipeline:
         return None
 
     def _cold_read(
-        self, frame: np.ndarray, geometry: BoardGeometry, bottom: Side | None
+        self,
+        frame: np.ndarray,
+        geometry: BoardGeometry,
+        bottom: Side | None,
+        *,
+        asked: bool = False,
     ) -> tuple[ThemeModel, Side, Readings, chess.Board] | None:
         """The board read cold from the theme cache: a cached recogniser for its colours,
         the orientation (`bottom`, or the coordinate labels), the readings and the
@@ -788,7 +818,7 @@ class GamePipeline:
             if side is None:
                 continue  # coordinates off, or not this set's; the caller may say the side
             readings = model.classify_frame(frame, geometry)
-            placement = self._placement_from_readings(readings, side)
+            placement = self._placement_from_readings(readings, side, asked=asked)
             if placement is None or Reconciler._adopt_placement(placement) is None:
                 continue
             fit = _fit(readings)
@@ -832,16 +862,16 @@ class GamePipeline:
             # Nothing read cleanly this time; the candidate stands until it expires.
             return self._cold_notice(frame, geometry, ts)
         self._cold_since = None
-        fen = read[3].board_fen()
+        view = _view(read)
         candidate = self._cold_candidate
         if (
             candidate is not None
-            and candidate[0] == fen
+            and candidate[0] == view
             and ts - candidate[2] <= COLD_START_EXPIRE_S
         ):
-            candidate = (fen, candidate[1] + 1, ts)
+            candidate = (view, candidate[1] + 1, ts)
         else:
-            candidate = (fen, 1, ts)
+            candidate = (view, 1, ts)
         self._cold_candidate = candidate
         if candidate[1] < COLD_START_HOLD:
             return []
@@ -902,7 +932,7 @@ class GamePipeline:
         (the panel's flip control); otherwise it is read from the coordinate labels. Returns the
         GameStarted, or [] when no cached theme matches or the orientation cannot be determined.
         """
-        read = self._cold_read(frame, geometry, bottom)
+        read = self._cold_read(frame, geometry, bottom, asked=True)
         if read is None:
             return []
         return self._adopt_cold(*read, ts=ts)
@@ -918,12 +948,7 @@ class GamePipeline:
         reconciler = Reconciler(bottom=bottom, user_side=bottom)
         # The site's last-move highlight, for what a cold read cannot know: a pawn that has
         # just advanced two squares, and whose move it is (`reconcile.last_move_seen`).
-        highlighted = frozenset(
-            square_at(row, col, bottom)
-            for row in range(8)
-            for col in range(8)
-            if readings[row][col].highlighted and readings[row][col].tint != "red"
-        )
+        highlighted = _highlighted(readings, bottom)
         events = reconciler.start_from(placement, ts, highlighted)
         if not events:
             return []  # the placement is not a legal position; adopt nothing
@@ -940,7 +965,9 @@ class GamePipeline:
         return events
 
     @staticmethod
-    def _placement_from_readings(readings: Readings, bottom: Side) -> chess.Board | None:
+    def _placement_from_readings(
+        readings: Readings, bottom: Side, *, asked: bool = False
+    ) -> chess.Board | None:
         """The classified board as a bare placement, or None unless it is a fully quiet,
         fully readable position with both kings on it.
 
@@ -951,11 +978,21 @@ class GamePipeline:
         be a settled piece or a settled empty with no hover and no unreadable cell -- the
         same quiet-board bar the reconciler holds a commit to -- or the read is refused and
         the caller retries on the next frame.
+
+        `asked`: the player asked for this read ("Re-read the screen"), so a mark on an empty
+        square -- a legal-move dot around a piece left selected -- is the empty square it is
+        (`mark_on_empty`), as long as nothing on the board is being dragged. Reads nobody
+        asked for keep treating it as no evidence: a phone may draw no outline around a
+        dragged piece, and a drag held still must not be adopted.
         """
+        if asked and any(reading.hover for row in readings for reading in row):
+            return None
         board = chess.Board(None)
         for row in range(8):
             for col in range(8):
                 reading = readings[row][col]
+                if asked and mark_on_empty(reading):
+                    continue
                 if reading.hover or reading.kind == "unknown" or not reading.settled:
                     return None  # a piece in flight, or a cell that cannot be read cleanly
                 if reading.kind == "piece":

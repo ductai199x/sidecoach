@@ -639,6 +639,7 @@ def render_board(
     labels: float | None = None,
     dialog: float | None = None,
     badges: bool = True,
+    drag_outline: bool = True,
 ) -> None:
     """Render `board`. `dragging` = (origin, hovered square, dx, dy): the origin's piece is
     drawn over the hovered square displaced by (dx, dy) cells, under a hover outline.
@@ -649,6 +650,9 @@ def render_board(
     the rank and file labels; `style` is the piece set; `texture` gives the squares a
     wood grain; `selected` is a piece the user has clicked, its square highlighted and
     its legal moves hinted; `check` draws the red glow under a king in check.
+
+    `drag_outline=False` draws a drag the way chess.com's phone app does: the piece under
+    the finger and no outline round the square it is over.
 
     `premoves` are queues the user has set up while the opponent thinks, drawn the way
     chess.com draws them: every square of a queue is tinted red, the piece is drawn at
@@ -763,13 +767,14 @@ def render_board(
         piece = board.piece_at(origin)
         r, c = row_col(over, bottom)
         inset = max(1, cell // 32)
-        cv2.rectangle(
-            frame,
-            (x0 + c * cell + inset, y0 + r * cell + inset),
-            (x0 + (c + 1) * cell - 1 - inset, y0 + (r + 1) * cell - 1 - inset),
-            (255, 255, 255),
-            max(2, cell // 20),
-        )
+        if drag_outline:
+            cv2.rectangle(
+                frame,
+                (x0 + c * cell + inset, y0 + r * cell + inset),
+                (x0 + (c + 1) * cell - 1 - inset, y0 + (r + 1) * cell - 1 - inset),
+                (255, 255, 255),
+                max(2, cell // 20),
+            )
         if piece is not None:
             draw_piece(
                 frame,
@@ -900,6 +905,7 @@ def synthetic_board(
     labels: float | None = None,
     dialog: float | None = None,
     badges: bool = True,
+    drag_outline: bool = True,
 ) -> np.ndarray:
     """A board on a busy background. `pieces=False` renders an empty board; `theme` names
     the square colours (see THEMES) unless `light` and `dark` are given; `style` the piece
@@ -938,6 +944,7 @@ def synthetic_board(
         labels=labels,
         dialog=dialog,
         badges=badges,
+        drag_outline=drag_outline,
     )
     return frame
 

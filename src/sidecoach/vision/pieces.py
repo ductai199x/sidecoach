@@ -245,6 +245,22 @@ class CellReading:
     drawn: bool = False
 
 
+def mark_on_empty(reading: CellReading) -> bool:
+    """A little drawn on an empty square and nothing more: a legal-move dot, a label -- less
+    than the smallest piece covers, no arrow over it, no drag outline on it, nothing hiding
+    it. It is no evidence while pieces move (a dot is read as unknown for that: see
+    `_classify`), but a board read on the player's word counts it as the empty square it
+    is: a piece left selected put dots on five squares, and "Re-read the screen" failed
+    every time (Tai's desktop, 2026-09-24, dump 20260924-165745)."""
+    return (
+        reading.kind == "unknown"
+        and not reading.drawn
+        and not reading.hover
+        and not reading.covered
+        and reading.fg_fraction < PIECE_MIN_FRACTION
+    )
+
+
 def _reading(
     sil: Silhouette,
     kind: Kind,
