@@ -3,10 +3,12 @@
 #   powershell -ExecutionPolicy Bypass -File tools\install.ps1 -Serial emulator-5554
 #   powershell -ExecutionPolicy Bypass -File tools\install.ps1 -Serial 100.111.75.60:5555
 #
-# The serial is required: never whichever device adb picks. It refuses while the capture
-# service runs -- a coaching session is live on that device, and an install kills it -- unless
-# -Force. The debug build is the one the phone runs (gradlew :app:installDebug); the engine's
-# network is pushed by tools\test.ps1 for the test APK, and the app fetches its own.
+# The serial is required: never whichever device adb picks. It refuses a version that differs
+# from the desktop's (the desktop's scripts\bump_version.py sets both), a device that is absent
+# or offline, and one where the capture service runs -- a coaching session is live there, and an
+# install kills it -- unless -Force. The debug build is the one the phone runs (gradlew
+# :app:installDebug); the engine's network is pushed by tools\test.ps1 for the test APK, and the
+# app fetches its own.
 
 param(
     [Parameter(Mandatory = $true)][string]$Serial,
@@ -17,6 +19,20 @@ $ErrorActionPreference = "Stop"
 $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 $root = Split-Path -Parent $PSScriptRoot
 
+# One version for every platform: a phone build that disagrees with the desktop beside it is
+# refused (Tai, 2026-09-25: synced "even though sometimes we update only 1").
+$gradle = Get-Content (Join-Path $root "app\build.gradle.kts") -Raw
+$phone = [regex]::Match($gradle, 'versionName = "([^"]+)"').Groups[1].Value
+$pyproject = Join-Path (Split-Path -Parent $root) "chess-coaching-companion\pyproject.toml"
+if (Test-Path $pyproject) {
+    $desktop = [regex]::Match((Get-Content $pyproject -Raw), '(?m)^version = "([^"]+)"').Groups[1].Value
+    if ($phone -ne $desktop) {
+        throw "the phone is $phone and the desktop ${desktop}: run the desktop's scripts\bump_version.py <version>"
+    }
+} else {
+    Write-Host "no desktop repo beside this one: the versions are not checked"
+}
+
 $state = ((& $adb -s $Serial get-state 2>&1) -join " ").Trim()
 if ($state -ne "device") { throw "$Serial is not connected ($state)" }
 
@@ -25,7 +41,7 @@ if (-not $Force -and $services -match "CaptureService") {
     throw "a coaching session is running on $Serial (CaptureService): not installing over it. Stop it first, or -Force."
 }
 
-Write-Host "building and installing on $Serial..."
+Write-Host "building and installing $phone on $Serial..."
 $env:ANDROID_SERIAL = $Serial
 & (Join-Path $root "gradlew.bat") -p $root -q :app:installDebug --console=plain
 if ($LASTEXITCODE -ne 0) { throw "the install failed" }
