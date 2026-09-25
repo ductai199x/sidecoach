@@ -29,6 +29,7 @@ from sidecoach.analysis import exchange, positional
 from sidecoach.coach import idea as idea_of
 from sidecoach.coach import idea_words
 from sidecoach.coach.idea import Idea
+from sidecoach.events import Line
 
 _NAMES = {
     chess.PAWN: "pawn",
@@ -123,6 +124,140 @@ def plain_capture(board: chess.Board, idea: Idea) -> Plain | None:
         nudge="Before you take, look at what can take back: is it safe?",
         why=f"{board.san(first)} takes their {name}: {reason}{_forcing_reply(board, idea)}",
     )
+
+
+@dataclass(frozen=True)
+class Defence:
+    """Why the obvious defence fails: the recapture the best line does not play, and what
+    the piece that would take back is also doing (`analysis/defences.py`)."""
+
+    said: str  # "Their pawn on f2 cannot take back on g3: it also shields their king"
+    clause: str  # at the move rung: "their pawn on f2 cannot take back on g3"
+    square: str  # where that piece stands: "f2"
+    target: str  # the square it would take back on: "g3"
+    lesson: str  # the overloaded defender's lesson
+    ask: str  # the second hint's question
+    line: str  # at the move rung: "if fxg3, Bc5+"
+
+
+def _duty(
+    before: chess.Board,
+    recapture: chess.Move,
+    refute: chess.Move | None,
+    now: chess.Board | None = None,
+) -> str | None:
+    """What the piece that would take back is also doing, read off what the refutation does
+    with the square it would leave: guards the square a pawn queens on, shields its king
+    from a check through that square, guards the square, or defends the piece the refutation
+    takes. None when the refutation uses none of that."""
+    if refute is None or refute.to_square == recapture.to_square:
+        # Taking the piece that took back is the square being guarded twice, not a second
+        # job: "it also defends their queen on f5" of the queen that took on f5.
+        return None
+    left = recapture.from_square
+    after = before.copy(stack=False)
+    after.push(recapture)
+    if refute not in after.legal_moves:
+        return None
+    mover = after.piece_at(refute.from_square)
+    if mover is not None and mover.piece_type == chess.PAWN and refute.to_square == left:
+        if refute.promotion:
+            return f"guards {_sq(left)}, where your pawn queens"
+        return f"guards {_sq(left)} against your pawn"
+    struck = after.copy(stack=False)
+    struck.push(refute)
+    king = struck.king(struck.turn)
+    if king is not None and struck.is_check():
+        for checker in struck.checkers():
+            if left in chess.SquareSet(chess.between(checker, king)):
+                return "shields their king"
+    if refute.to_square == left:
+        return f"guards {_sq(left)}"
+    taken = after.piece_at(refute.to_square)
+    if (
+        taken is not None
+        and refute.to_square in before.attacks(left)
+        and now is not None
+        and now.piece_at(refute.to_square) == taken
+    ):
+        # Named where it stands now: a pawn that gets there later in the line is no fact yet.
+        return f"defends their {_named(after, refute.to_square)}"
+    return None
+
+
+def defence(board: chess.Board, defences: list[Line], best: list[str]) -> Defence | None:
+    """The analysis's declined recapture (from the best line) whose recapturing piece has
+    another job, in words: the overloaded defender the line turns on. Of several, the one
+    after the capture that takes the most: the rook the line wins on b8, not the pawn it takes
+    on f7 on the way."""
+    for d in sorted(defences, key=lambda d: -_captured_value(board, d.moves, best)):
+        moves = [chess.Move.from_uci(u) for u in d.moves]
+        cut = next((i for i, u in enumerate(d.moves) if i >= len(best) or u != best[i]), None)
+        if cut is None or cut == 0 or cut % 2 == 0:
+            continue  # the recapture is the opponent's move, after a capture of the player's
+        before = board.copy(stack=False)
+        try:
+            for move in moves[:cut]:
+                before.push(move)
+        except (AssertionError, ValueError):
+            continue
+        recapture = moves[cut]
+        if recapture not in before.legal_moves:
+            continue
+        piece = before.piece_at(recapture.from_square)
+        if piece is None or piece.piece_type == chess.KING:
+            continue  # a king has no second job to give up: "it also shields their king"
+        # Named as the board shows them now: the piece that would take back on its square,
+        # and something of theirs on the square it would take back on -- never a square the
+        # line only reaches later, which is no fact yet and may be the first move's own.
+        now_piece = board.piece_at(recapture.from_square)
+        now_target = board.piece_at(recapture.to_square)
+        if (
+            now_piece != piece
+            or now_target is None
+            or now_target.color == board.turn
+            or recapture.to_square != moves[cut - 1].to_square
+        ):
+            continue
+        refute = moves[cut + 1] if cut + 1 < len(moves) else None
+        duty = _duty(before, recapture, refute, board)
+        if duty is None or refute is None:
+            continue
+        recapture_san = before.san(recapture)
+        after = before.copy(stack=False)
+        after.push(recapture)
+        cannot = (
+            f"{_NAMES[piece.piece_type]} on {_sq(recapture.from_square)} cannot take "
+            f"back on {_sq(recapture.to_square)}"
+        )
+        return Defence(
+            said=f"Their {cannot}: it also {duty}",
+            clause=f"their {cannot}",
+            square=_sq(recapture.from_square),
+            target=_sq(recapture.to_square),
+            lesson=(
+                f"{idea_words.PATTERN_NAMES['overloading']}: "
+                f"{idea_words.PATTERN_WHY['overloading']}"
+            ),
+            ask="Which of their pieces has two jobs?",
+            line=f"if {recapture_san}, {after.san(refute)}",
+        )
+    return None
+
+
+def _captured_value(board: chess.Board, moves: list[str], best: list[str]) -> int:
+    """What the player's capture before a defence's recapture takes, in pawns."""
+    cut = next((i for i, u in enumerate(moves) if i >= len(best) or u != best[i]), None)
+    if cut is None or cut == 0:
+        return 0
+    at = board.copy(stack=False)
+    try:
+        for uci in moves[: cut - 1]:
+            at.push_uci(uci)
+    except (AssertionError, ValueError):
+        return 0
+    taken = at.piece_at(chess.Move.from_uci(moves[cut - 1]).to_square)
+    return idea_of.VALUES.get(taken.piece_type, 0) if taken is not None else 0
 
 
 def took_last(board: chess.Board) -> int:

@@ -663,3 +663,41 @@ def test_what_the_engine_says_of_a_withdrawn_move_is_not_passed_on(tmp_path: Pat
     assert [(e.ply, e.uci) for e in verdicts] == [(1, "e2e4"), (2, "e7e5"), (3, "f1c4")], verdicts
     analyses = [e for e in got if isinstance(e, Analysis)]
     assert all(e.ply <= 3 for e in analyses)
+
+
+# Tai's chess.com puzzle of 2026-09-24: 2.exf7+ Kh8 3.Qxb8, and the rook on f8 cannot take back.
+OVERLOADED = "1r3rk1/pp3ppp/2pQP3/1P1pP1q1/3Nn3/6P1/P5KP/2R2R2 w - - 1 2"
+OVERLOADED_LINE = ["e6f7", "g8h8", "d6b8", "g5d2", "g2h1", "d2b4"]
+
+
+def test_the_recaptures_a_line_declines_are_found_without_an_engine() -> None:
+    from sidecoach.analysis.defences import declined
+
+    board = chess.Board(OVERLOADED)
+    found = declined(board, Line(moves=OVERLOADED_LINE, depth=18, expected_score=0.975))
+    assert [(i, m.uci()) for i, m in found] == [(0, "f8f7"), (2, "f8b8")]
+    queen = chess.Board("2kr1b1r/ppq2p2/2p1pp2/8/2B5/3P2Q1/PPPB1PP1/R4RK1 b - - 1 1")
+    line = Line(moves=["c7g3", "f1e1", "g3h4"], depth=18, expected_score=0.975)
+    assert [(i, m.uci()) for i, m in declined(queen, line)] == [(0, "f2g3")]
+    taken_back = Line(moves=["c7g3", "f2g3", "f8c5"], depth=18, expected_score=0.94)
+    assert declined(queen, taken_back) == [], "the line takes back itself"
+
+
+def test_the_solution_played_out_of_order_is_the_first_temptation() -> None:
+    from sidecoach.analysis.traps import tempting
+
+    board = chess.Board(OVERLOADED)
+    lines = [Line(moves=OVERLOADED_LINE, depth=18, expected_score=0.975)]
+    assert tempting(board, lines)[0].uci() == "d6b8"
+
+
+@needs_engine
+def test_a_declined_recapture_is_played_out_by_the_engine(engine) -> None:  # noqa: ANN001
+    from sidecoach.analysis.defences import defence_lines
+
+    board = chess.Board(OVERLOADED)
+    lines = [Line(moves=OVERLOADED_LINE, depth=18, expected_score=0.975)]
+    defences = defence_lines(engine, board, lines, depth=12)
+    rook = [d for d in defences if d.moves[:4] == ["e6f7", "g8h8", "d6b8", "f8b8"]]
+    assert rook and rook[0].mate is not None and rook[0].mate > 0, defences
+    assert rook[0].moves[4].startswith("f7f8"), "the pawn queens where the rook stood"

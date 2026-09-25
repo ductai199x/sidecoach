@@ -38,21 +38,39 @@ class _Engine(Protocol):
 
 
 def tempting(board: chess.Board, lines: Sequence[Line]) -> list[chess.Move]:
-    """The captures that look like they win something -- the exchange on the square nets
-    material, recaptures played out -- that are not among the good lines, the most tempting
-    first."""
+    """The captures that look like they win something, that are not among the good lines,
+    the most tempting first: the best line's own later captures played at once -- the right
+    idea in the wrong order, the natural mistake (Tai's chess.com puzzle, 2026-09-24: 2.Qxb8?
+    Qd2+ before 2.exf7+ Kh8 3.Qxb8) -- then those whose exchange on the square nets
+    material, recaptures played out."""
     if not lines:
         return []
     good = {line.moves[0] for line in lines if line.moves and not _worse(line, lines[0])}
+    early: list[chess.Move] = []
+    first = lines[0].moves[0][2:4] if lines[0].moves else ""
+    for uci in lines[0].moves[2:6:2]:
+        try:
+            move = chess.Move.from_uci(uci)
+        except ValueError:
+            break
+        # On a square of its own: one on the first move's square is the same capture with
+        # another piece, which says where the first move goes.
+        if (
+            move in board.legal_moves
+            and board.is_capture(move)
+            and uci not in good
+            and uci[2:4] != first
+        ):
+            early.append(move)
     found: list[tuple[int, chess.Move]] = []
     for move in board.legal_moves:
-        if not board.is_capture(move) or move.uci() in good:
+        if not board.is_capture(move) or move.uci() in good or move in early:
             continue
         gain = exchange.exchange(board, move)
         if gain > 0:
             found.append((gain, move))
     found.sort(key=lambda item: -item[0])
-    return [move for _, move in found]
+    return early + [move for _, move in found]
 
 
 def trap_lines(

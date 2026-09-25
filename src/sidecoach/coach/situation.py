@@ -423,6 +423,13 @@ def trap_words(
     if reply not in after.legal_moves:
         return None
     reply_san = after.san(reply)
+    # Their reply, unless it would say where the solution goes: a reply onto the first move's
+    # square, empty now, or written as the first move is ("after Rxh6 e5" where the solution
+    # is e5; "after Qxf7 Rxf7" where it is Rxf7). The trap is said without it.
+    shows = best is not None and (
+        reply_san == board.san(best)
+        or (reply.to_square == best.to_square and board.piece_at(best.to_square) is None)
+    )
     given = _what_it_gives(board, trap)
     # A capture that comes out ahead or even in material, with no mate, attack or lost game
     # behind it, is a lesser move, not a trap (19...Bxf2 Qxf2 won the exchange and 21.Qxf2
@@ -457,16 +464,16 @@ def trap_words(
     what = _NAMES[taken.piece_type]
     if best is not None and best != capture and best.to_square == capture.to_square:
         # The same piece, taken with the wrong one of yours.
-        return (
-            f"Take it with the right piece: {san} looks natural, but after {san} {reply_san}, "
-            f"{tail}"
-        )
+        after_it = f"{san}" if shows else f"{san} {reply_san}"
+        return f"Take it with the right piece: {san} looks natural, but after {after_it}, {tail}"
     if target is not None and capture.to_square == target:
+        runs = "a reply" if shows else reply_san
         return (
             f"Not yet: their {_named(board, target)} can be won, but {san} at once runs into "
-            f"{reply_san}, and {tail}"
+            f"{runs}, and {tail}"
         )
-    return f"{san} looks like it wins a {what}, but it is a trap: after {san} {reply_san}, {tail}"
+    after_it = f"{san}" if shows else f"{san} {reply_san}"
+    return f"{san} looks like it wins a {what}, but it is a trap: after {after_it}, {tail}"
 
 
 TRAP_NET_PLIES = 8  # how far a trap's line is followed to see what it nets

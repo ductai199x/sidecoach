@@ -65,6 +65,7 @@ PATTERN_NAMES: dict[str, str] = {
     "deflection": "a deflection",
     "attraction": "a decoy",
     "hangingPiece": "a loose piece",
+    "overloading": "an overloaded defender",
 }
 
 # Why each pattern works, in general terms, naming none of the player's own pieces.
@@ -118,6 +119,7 @@ PATTERN_WHY: dict[str, str] = {
     "deflection": "a defender is pulled away from what it guards, and what it guarded falls",
     "attraction": "a piece is lured onto a square where it can be hit",
     "hangingPiece": "something of theirs is not defended at all",
+    "overloading": "one of their pieces has two jobs, and doing one gives up the other",
 }
 
 # What each preparation does, said of the moves before the blow.

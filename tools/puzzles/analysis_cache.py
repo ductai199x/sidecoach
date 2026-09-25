@@ -32,10 +32,16 @@ from sidecoach.events import Analysis  # noqa: E402
 CACHE_DIR = ROOT / "data/puzzles/analysis"
 # One Stockfish thread per worker, a small hash each: the positions are independent.
 WORKER_HASH_MB = 64
+# What an analysis holds beyond the engine's lines, by version: 2 added the recaptures the
+# best line declines (`analysis/defences.py`) and the solution played out of order among the
+# traps (`traps.tempting`). A cache of the version before is upgraded in place of a new
+# search: the lines are kept, only what the new version adds is searched.
+ANALYSIS_VERSION = 3  # 3: the solution out of order only on a square of its own
 
 
-def settings_key() -> str:
-    """The name of the cache file for the app's current engine settings."""
+def settings_key(version: int = ANALYSIS_VERSION) -> str:
+    """The name of the cache file for the app's current engine settings, and for what an
+    analysis holds (`ANALYSIS_VERSION`; the first had no number in the name)."""
     from sidecoach.analysis import engine as engine_module
     from sidecoach.config import find_stockfish, load_settings
 
@@ -52,6 +58,8 @@ def settings_key() -> str:
         "stockfish": path.name if path else None,
         "threads": 1,
     }
+    if version > 1:
+        parts["analysis"] = version
     digest = hashlib.sha1(json.dumps(parts, sort_keys=True).encode()).hexdigest()[:10]
     return f"d{s.depth}-pv{s.multipv}-{digest}"
 
@@ -104,12 +112,29 @@ def _init() -> None:
     )
 
 
-def _analyse(fen: str) -> tuple[str, str]:
+def _analyse(job: tuple[str, str | None]) -> tuple[str, str]:
+    """A position analysed: from scratch, or, given the previous version's analysis, only
+    what this version adds -- its lines kept, the traps and the declined recaptures searched."""
     import chess
 
+    from sidecoach.analysis.defences import defence_lines
+    from sidecoach.analysis.traps import trap_lines
+
+    fen, older = job
     assert _annotator is not None
     _annotator.reset()  # no position is another's history
-    event = _annotator.analysis_event("bench", chess.Board(fen), 0)
+    board = chess.Board(fen)
+    if older is None:
+        event = _annotator.analysis_event("bench", board, 0)
+    else:
+        event = Analysis.model_validate_json(older)
+        engine = _annotator.engine
+        event = event.model_copy(
+            update={
+                "traps": trap_lines(engine, board, event.lines),
+                "defences": defence_lines(engine, board, event.lines),
+            }
+        )
     return fen, event.model_dump_json()
 
 
@@ -122,7 +147,14 @@ def analyse_all(
     cached = load(key)
     wanted = list(dict.fromkeys(fens))
     missing = [fen for fen in wanted if fen not in cached]
+    older = load(settings_key(ANALYSIS_VERSION - 1)) if missing and ANALYSIS_VERSION > 1 else {}
+    jobs = [(fen, older[fen].model_dump_json() if fen in older else None) for fen in missing]
     if missing:
+        upgraded = sum(1 for _, text in jobs if text is not None)
+        if upgraded:
+            print(
+                f"cache: {upgraded} of {len(missing)} upgraded from version {ANALYSIS_VERSION - 1}"
+            )
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         n = workers or max(1, (os.cpu_count() or 4) - 2)
         started = time.monotonic()
@@ -135,7 +167,7 @@ def analyse_all(
             (CACHE_DIR / f"{key}.jsonl").open("a", encoding="utf-8") as out,
             mp.get_context("spawn").Pool(n, initializer=_init) as pool,
         ):
-            for fen, text in pool.imap_unordered(_analyse, missing, chunksize=2):
+            for fen, text in pool.imap_unordered(_analyse, jobs, chunksize=2):
                 out.write(json.dumps({"fen": fen, "analysis": json.loads(text)}) + "\n")
                 out.flush()
                 cached[fen] = Analysis.model_validate_json(text)

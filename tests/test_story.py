@@ -135,3 +135,88 @@ def test_a_piece_with_no_safe_square_is_taught_as_trapped() -> None:
     assert "A trapped piece" in texts["idea"]
     assert "no safe square" in texts["focus"]
     assert told
+
+
+def _hints_with(
+    fen: str, lines: list[tuple[list[str], float]], defences: list[Line], traps: list[Line] = ()
+) -> tuple[dict[str, str], bool]:
+    board = chess.Board(fen)
+    analysis = Analysis(
+        game_id="",
+        fen=fen,
+        ply=0,
+        lines=[Line(moves=moves, depth=18, expected_score=score) for moves, score in lines],
+        decisive=True,
+        only_move=True,
+        defences=defences,
+        traps=list(traps),
+    )
+    facts = facts_from_analysis(board, analysis, user=board.turn)
+    texts = {
+        "idea": idea_template(facts),
+        "focus": focus_template(facts),
+        "move": move_template(facts),
+    }
+    pv = [chess.Move.from_uci(u) for u in lines[0][0]]
+    checks, _ = story_checks(board, pv, idea_of.read(board, analysis), texts)
+    return texts, all(checks.values())
+
+
+def test_why_the_obvious_recapture_fails_is_the_lesson() -> None:
+    # Tai's chess.com puzzle, 2026-09-24: 1...Qxg3 and White does not take back -- 2.fxg3
+    # Bc5+ loses more. "You can win their queen" alone read as a lie beside fxg3.
+    texts, told = _hints_with(
+        "2kr1b1r/ppq2p2/2p1pp2/8/2B5/3P2Q1/PPPB1PP1/R4RK1 b - - 1 1",
+        [
+            (["c7g3", "f1e1", "g3h4", "g1f1", "h4g4", "f1g1"], 0.975),
+            (["f8d6", "f2f4", "f7f5", "f1f3", "c7b6", "g3f2"], 0.267),
+        ],
+        [
+            Line(
+                moves=["c7g3", "f2g3", "f8c5", "d3d4", "c5d4", "f1f2", "d4f2"],
+                depth=14,
+                expected_score=0.931,
+            )
+        ],
+    )
+    assert "Their pawn on f2 cannot take back on g3: it also shields their king" in texts["idea"]
+    assert "An overloaded defender" in texts["idea"]
+    assert "Which of their pieces has two jobs?" in texts["focus"]
+    assert "if fxg3, Bc5+" in texts["move"]
+    assert told
+
+
+def test_a_defender_with_two_jobs_is_not_a_loose_piece() -> None:
+    # Tai's chess.com puzzle, 2026-09-24: 2.exf7+ Kh8 3.Qxb8 wins the rook because the rook
+    # on f8 must stop f8=Q; "a loose piece: nothing defends it" was the wrong lesson, and
+    # 2.Qxb8? at once (Qd2+) was the natural mistake, unwarned.
+    texts, told = _hints_with(
+        "1r3rk1/pp3ppp/2pQP3/1P1pP1q1/3Nn3/6P1/P5KP/2R2R2 w - - 1 2",
+        [
+            (["e6f7", "g8h8", "d6b8", "g5d2", "g2h1", "d2b4"], 0.975),
+            (["d6c7", "g5d2", "g2h1", "f7e6", "d4e6"], 0.261),
+        ],
+        [
+            Line(
+                moves=["e6f7", "f8f7", "d6b8", "g5d8", "b8d8", "f7f8", "d8f8"],
+                depth=14,
+                expected_score=1.0,
+                mate=3,
+            ),
+            Line(
+                moves=["e6f7", "g8h8", "d6b8", "f8b8", "f7f8q", "b8f8", "f1f8"],
+                depth=14,
+                expected_score=1.0,
+                mate=2,
+            ),
+        ],
+        [Line(moves=["d6b8", "g5d2", "g2h1", "f8b8", "d4f3"], depth=14, expected_score=0.09)],
+    )
+    assert (
+        "Their rook on f8 cannot take back on b8: it also guards f8, where your pawn queens"
+        in (texts["idea"])
+    )
+    assert "loose" not in texts["idea"] and "no defender" not in texts["idea"]
+    assert "Not yet: their rook on b8 can be won, but Qxb8 at once runs into Qd2+" in texts["idea"]
+    assert "if Rxb8, f8=Q+" in texts["move"]
+    assert told

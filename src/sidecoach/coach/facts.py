@@ -771,7 +771,12 @@ def facts_from_analysis(
             )
             if trap is not None:
                 break
-    if trap is not None and idea.target is not None and trap.startswith("Not yet"):
+    if (
+        trap is not None
+        and idea.target is not None
+        and trap.startswith("Not yet")
+        and plain is None
+    ):
         key = None  # the trap says it: the target can be won, but not at once
     parts: list[str] = []
     forced = board.is_check() and board.legal_moves.count() == 1
@@ -842,6 +847,30 @@ def facts_from_analysis(
         and (why is None or re.fullmatch(rf"{re.escape(board.san(best))}: you win [^;]*", why))
     ):
         why = story.move_why(board, idea, threat_move) or why
+    # Why the obvious defence fails (`story.defence`): the recapture the line does not play,
+    # and the other job of the piece that would make it -- the overloaded defender, said in
+    # place of "a loose piece" when the loose piece was only half the story (Tai's chess.com
+    # puzzles, 2026-09-24: "you can win their queen" read as a lie beside fxg3, and a rook on
+    # f8 that had to stop f8=Q was "not defended at all").
+    held = (
+        story.defence(board, analysis.defences, lines[0].moves if lines else [])
+        if tactical_goal and not forced and analysis.defences and idea.goal != "mate"
+        else None
+    )
+    defended: str | None = None
+    if held is not None:
+        loose = idea.blow is not None and idea.blow.name == "hangingPiece"
+        if key is None or (loose and (held.square in key or held.target in key)):
+            # The loose piece was half the story: the defender is there, with another job.
+            key, principle, question = held.said, held.lesson, held.ask
+            if why is not None:
+                why = re.sub(r"the \w+ on [a-h][1-8] is loose", held.clause, why)
+        else:
+            defended = held.said
+            principle = principle or held.lesson
+        nudge = held.ask
+        if why is not None:
+            why = f"{why}; {held.line}"
     if forced:
         # One legal move: the rest of the reading is the move's, not a hint.
         tactical_goal, key, principle, trap = False, None, None, None
@@ -866,6 +895,8 @@ def facts_from_analysis(
         parts.append(prize)
     if key:
         parts.append(key)
+    if defended and not forced:
+        parts.append(defended)
     if how:
         parts.append(how)
     if prize and prize_last:

@@ -23,6 +23,7 @@ from typing import Protocol
 import chess
 
 from sidecoach.analysis import exchange, motifs
+from sidecoach.analysis.defences import defence_lines
 from sidecoach.analysis.engine import Engine
 from sidecoach.analysis.score import (
     Thresholds,
@@ -84,6 +85,7 @@ class Measured:
     only_move: bool
     threats: list[str] = field(default_factory=list)
     traps: list[Line] = field(default_factory=list)
+    defences: list[Line] = field(default_factory=list)
 
     @property
     def depth(self) -> int:
@@ -174,6 +176,11 @@ class GameAnnotator:
             # The captures that look free and are not, beside the threats: what the first
             # hint warns of ("the knight on g4 is bait"), searched only when not hurried.
             traps=trap_lines(self.engine, board, lines) if self.with_threats and not hurry else [],
+            # And the recaptures the best line declines, with what refutes them: why the
+            # obvious defence fails is the lesson ("the pawn on f2 cannot take back").
+            defences=(
+                defence_lines(self.engine, board, lines) if self.with_threats and not hurry else []
+            ),
         )
         self._cache[key] = measured
         return measured
@@ -195,6 +202,7 @@ class GameAnnotator:
             only_move=measured.only_move,
             threats=measured.threats,
             traps=measured.traps,
+            defences=measured.defences,
             tags=self._position_tags(board, measured),
             opening=self._opening(board),
             in_book=self._in_book(board),

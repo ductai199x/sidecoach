@@ -194,6 +194,10 @@ class Analysis(Event):
     # The captures that look free and are not (`analysis/traps.py`): each the capture, then
     # the engine's best play after it, scored from the side to move's view.
     traps: list[Line] = Field(default_factory=list)
+    # The recaptures the best line declines (`analysis/defences.py`): each from the root, the
+    # line up to the player's capture, the recapture, then the engine's best play after it,
+    # scored from the side to move's view.
+    defences: list[Line] = Field(default_factory=list)
     tags: list[MotifTag] = Field(default_factory=list)
     opening: str | None = None
     # The game is still in the opening book at this position (`opening` is the deepest line
