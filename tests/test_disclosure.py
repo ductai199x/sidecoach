@@ -131,3 +131,15 @@ def test_leak_check_allows_squares_and_pieces_the_user_named() -> None:
     assert leak_check("Your knight is well placed.", facts(), L.QUESTION, said=said) == []
     # An answer square the user did not name is still withheld.
     assert "square g5" in leak_check("Look at g5.", facts(), L.QUESTION, said=said)
+
+
+def test_the_record_and_other_pieces_of_a_kind_are_no_leak() -> None:
+    """A move said with its number is the record (the review names "17. Ng5" where ground was
+    lost); a pawn on another square than the one to move is a fact, not the hint (the eval
+    audit's gate, 2026-09-25)."""
+    assert leak_check("You lost the most ground at 17. Ng5 (mistake).", facts(), L.IDEA) == []
+    f = facts()
+    f.piece = "the player's pawn on e4"
+    assert leak_check("They threaten Ne6, attacking the pawn on d2.", f, L.IDEA) == []
+    assert "piece pawn" in leak_check("Your pawn on e4 is the one.", f, L.IDEA)
+    assert "piece pawn" in leak_check("Think about your pawn.", f, L.IDEA)

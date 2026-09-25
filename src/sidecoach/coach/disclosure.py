@@ -217,6 +217,11 @@ _PIECE_WORD_CONTEXTS = re.compile(
     re.IGNORECASE,
 )
 
+# A move with its number in front: the game's record, not a move suggested.
+_NUMBERED_MOVE = re.compile(
+    r"\b\d+\.(?:\.\.)?\s*(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)[+#]?"
+)
+
 # A token is a bare square ("f7") or a SAN move ending in its destination square
 # ("Ng5", "Nxf7+", "exd5", "R1e1", "e8=Q"). Group 1 is the destination square.
 _SQUARE_TOKEN = re.compile(r"[KQRBN]?[a-h]?[1-8]?x?([a-h][1-8])(?:=[QRBN])?[+#]?[!?]*")
@@ -290,10 +295,13 @@ def leak_check(
         if item not in leaks:
             leaks.append(item)
 
+    # A move said with its number ("17. Rh1", "4... Nf6") is the record, not a suggestion:
+    # the review names the moves where ground was lost, and one may be the answer again.
+    moves_text = _NUMBERED_MOVE.sub(" ", text)
     if level < DisclosureLevel.MOVE:
         answer = {_TRAILING_MARKS.sub("", m) for m in [*facts.candidates, *facts.line[0::2]] if m}
         answer_squares = squares_in(" ".join(answer)) - allowed_squares
-        for token in _TOKEN_SPLIT.split(text):
+        for token in _TOKEN_SPLIT.split(moves_text):
             match = _SQUARE_TOKEN.fullmatch(token)
             if not match:
                 continue
@@ -309,10 +317,10 @@ def leak_check(
         shown = set(facts.candidates) | set(facts.threats)
         withheld_moves = [move for move in facts.line if move not in shown]
         withheld_squares = squares_in(" ".join(withheld_moves)) - allowed_squares
-        for square in sorted(squares_in(text) & withheld_squares):
+        for square in sorted(squares_in(moves_text) & withheld_squares):
             add(f"square {square}")
         for move in withheld_moves:
-            if re.search(rf"(?<![A-Za-z]){re.escape(move)}(?![A-Za-z0-9])", text):
+            if re.search(rf"(?<![A-Za-z]){re.escape(move)}(?![A-Za-z0-9])", moves_text):
                 add(f"move {move}")
 
     if level < DisclosureLevel.FOCUS and facts.piece:
@@ -347,11 +355,25 @@ def leak_check(
         for piece_word, square in set(re.findall(rf"({_PIECE})s? on ([a-h][1-8])", shown)):
             scrubbed = re.sub(rf"\b{piece_word}s? on {square}\b", " ", scrubbed)
         scrubbed = _PIECE_WORD_CONTEXTS.sub(" ", scrubbed)
+        # The piece to move is named when it is said on its own square, or as "your <piece>"
+        # with no square; another piece of that kind on another square ("attacks the pawn
+        # on d2" when the pawn to move is on e4) is a fact about the board, not the hint.
+        # Without a square on the sheet, any mention counts, as before.
+        piece_squares = squares_in(facts.piece)
         for piece_word in dict.fromkeys(re.findall(_PIECE, facts.piece.lower())):
             # "The king behind it", "their king runs out of squares": the word is in every
             # explanation of a pin or a mate, and says nothing about which piece to move.
             if piece_word in said_words or piece_word == "king":
                 continue
-            if re.search(rf"\b{re.escape(piece_word)}s?\b", scrubbed):
-                add(f"piece {piece_word}")
+            mention = re.compile(
+                rf"\b(your |my )?{re.escape(piece_word)}s?\b(?: (?:on|from) ([a-h][1-8]))?"
+            )
+            for found in mention.finditer(scrubbed):
+                if found.group(2) is not None:
+                    named = found.group(2) in piece_squares
+                else:
+                    named = found.group(1) is not None or not piece_squares
+                if named:
+                    add(f"piece {piece_word}")
+                    break
     return leaks
