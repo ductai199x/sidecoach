@@ -14,6 +14,7 @@ import com.sidecoach.chess.parseSquare
 import com.sidecoach.chess.squareName
 import com.sidecoach.chess.squareRank
 import com.sidecoach.events.Analysis
+import java.util.zip.CRC32
 
 /**
  * The idea of the best line ([Idea]) in the coach's words, one field per rung. A port of
@@ -137,7 +138,7 @@ object IdeaWords {
         "deflection" to "a defender is pulled away from what it guards, and what it guarded falls",
         "attraction" to "a piece is lured onto a square where it can be hit",
         "hangingPiece" to "something of theirs is not defended at all",
-        "overloading" to "one of their pieces has two jobs, and doing one gives up the other",
+        "overloading" to "one piece with two jobs cannot do both",
     )
 
     /** What each preparation does, said of the moves before the blow. */
@@ -315,6 +316,91 @@ object IdeaWords {
             return "you are winning: no trick is needed here, only good technique"
         }
         return null
+    }
+
+    /**
+     * The first hint's first words when the best line is a tactic: said as one to find (Tai,
+     * 2026-09-25: "if there's a tactic that results in a material or big positional gain, the
+     * coach should mention that there is tactics to be exploited in the first hint"). Three ways
+     * of saying each, chosen by the position ([opener]), so the same words do not open every hint.
+     */
+    private val TACTIC_LEADS = listOf(
+        "there is a tactic here that wins {what}",
+        "you have a tactic that wins {what}",
+        "this position has a tactic that wins {what}",
+    )
+    private val MATE_ONE_LEADS = listOf(
+        "there is a mate in one here",
+        "you can mate in one move",
+        "you have a mate in one",
+    )
+    private val MATE_LEADS = listOf(
+        "there is a forced mate in {n} here",
+        "you can force mate in {n}",
+        "you have a forced mate in {n}",
+    )
+    private val MATE_LONG_LEADS = listOf("there is a forced mate here", "you can force mate", "you have a forced mate")
+
+    /**
+     * The first hint's lead: what the best line is for ([goalWords], as [goal] or the caller made
+     * it), said as a tactic when [tactic] -- a line that wins material by force, not a piece simply
+     * left hanging or a recapture -- and a mate as one to find. [seed] picks the words
+     * ([openerSeed]).
+     */
+    fun opener(idea: Idea, goalWords: String?, tactic: Boolean, seed: Long): String? {
+        if (idea.goal == "mate" && goalWords != null && "mate" in goalWords) {
+            val n = idea.mateIn ?: 0
+            if (n == 1) return MATE_ONE_LEADS[(seed % MATE_ONE_LEADS.size).toInt()]
+            if (n <= 5) {
+                val lead = MATE_LEADS[(seed % MATE_LEADS.size).toInt()]
+                return lead.replace("{n}", NUMBER[n] ?: n.toString())
+            }
+            return MATE_LONG_LEADS[(seed % MATE_LONG_LEADS.size).toInt()]
+        }
+        if (!tactic || goalWords == null) return goalWords
+        if (goalWords.startsWith("you can win ")) {
+            var what = goalWords.substring("you can win ".length)
+            if (what == "material by force") what = "material"
+            return TACTIC_LEADS[(seed % TACTIC_LEADS.size).toInt()].replace("{what}", what)
+        }
+        if (idea.goal == "promote") return "there is a tactic here that gets a pawn through to promotion"
+        if (idea.goal == "combination") {
+            val score = idea.score ?: 0.0
+            if (score >= 0.8) {
+                return "there is a tactic here that gives up material, wins it back and leaves you winning"
+            }
+            if (score >= 0.62) {
+                return "there is a tactic here that gives up material, wins it back and leaves you " +
+                    "clearly better"
+            }
+            return "there is a tactic here that gives up material and wins it back"
+        }
+        return goalWords
+    }
+
+    /**
+     * What picks the opener's words: the position's placement and side to move, the same on every
+     * platform (the move counters are not read off a screen). `zlib.crc32`, which
+     * [java.util.zip.CRC32] computes the same, unsigned.
+     */
+    fun openerSeed(board: Board): Long {
+        val text = "${board.boardFen()} ${if (board.turn == WHITE) "w" else "b"}"
+        val crc = CRC32()
+        crc.update(text.toByteArray(Charsets.US_ASCII))
+        return crc.value
+    }
+
+    /**
+     * A pattern's lesson ([mechanism], a defence's) said of what the hint just named: "that's a
+     * fork: ..." after the two pieces one move hits; of a mate, an attack or a draw still to come,
+     * "it's a back-rank mate: ..."; "it takes two sacrifices: ...".
+     */
+    fun lesson(text: String?, idea: Idea): String? {
+        if (text.isNullOrEmpty()) return text
+        val head = text.substringBefore(":")
+        if (head.endsWith(" sacrifices")) return "it takes $text"
+        val lead = if (idea.goal in listOf("mate", "attack", "draw")) "it is" else "that is"
+        return "$lead $text"
     }
 
     /**

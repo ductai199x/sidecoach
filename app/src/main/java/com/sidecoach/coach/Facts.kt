@@ -674,7 +674,7 @@ fun factsFromAnalysis(
         key = Situation.defendKey(board, idea, best)
     } else if (idea.goal == "mate" || idea.goal == "attack") {
         key = Situation.mateKey(board, idea)
-        principle = IdeaWords.mechanism(idea)
+        principle = IdeaWords.lesson(IdeaWords.mechanism(idea), idea)
     } else if (tacticalGoal) {
         key = IdeaWords.target(idea, board)
         if (key != null && ":" !in key && " is " !in key && "," !in key) {
@@ -693,7 +693,7 @@ fun factsFromAnalysis(
         // The principle is the pattern's: a sacrifice on the way, with no pattern, is not what a
         // winning capture teaches (17.hxg4 was "a sacrifice").
         principle = if (idea.blow != null || idea.goal in listOf("mate", "combination", "attack", "promote")) {
-            IdeaWords.mechanism(idea)
+            IdeaWords.lesson(IdeaWords.mechanism(idea), idea)
         } else {
             null
         }
@@ -788,7 +788,7 @@ fun factsFromAnalysis(
             if (trap != null) break
         }
     }
-    if (trap != null && idea.target != null && trap.startsWith("Not yet") && plain == null) {
+    if (trap != null && idea.target != null && Situation.NOT_YET in trap && plain == null) {
         key = null  // the trap says it: the target can be won, but not at once
     }
     val parts = ArrayList<String>()
@@ -843,8 +843,9 @@ fun factsFromAnalysis(
     val toldHow = if (tacticalGoal && !forced && plain == null) Story.how(board, idea, threatMove) else null
     var how = toldHow?.said
     if (toldHow != null && !toldHow.lesson.isNullOrEmpty()) {
-        // The pattern the move carries, taught after it: "A trapped piece: ..."
-        how = "$how. ${toldHow.lesson.replaceFirstChar { it.uppercase() }}"
+        // The pattern the move carries, taught after it: "That's a trapped piece: ..."
+        val taught = IdeaWords.lesson(toldHow.lesson, idea)?.ifEmpty { null } ?: toldHow.lesson
+        how = "$how. ${taught.replaceFirstChar { it.uppercase() }}"
         nudge = toldHow.ask.ifEmpty { null } ?: nudge
     }
     if (tacticalGoal &&
@@ -871,12 +872,12 @@ fun factsFromAnalysis(
         if (known == null || (loose && (held.square in known || held.target in known))) {
             // The loose piece was half the story: the defender is there, with another job.
             key = held.said
-            principle = held.lesson
+            principle = IdeaWords.lesson(held.lesson, idea)
             question = held.ask
             why = why?.let { Regex("the \\w+ on [a-h][1-8] is loose").replace(it) { held.clause } }
         } else {
             defended = held.said
-            principle = if (!principle.isNullOrEmpty()) principle else held.lesson
+            principle = if (!principle.isNullOrEmpty()) principle else IdeaWords.lesson(held.lesson, idea)
         }
         nudge = held.ask
         why = why?.let { "$it; ${held.line}" }
@@ -892,22 +893,94 @@ fun factsFromAnalysis(
     }
     if (checker != null && !forced && checker != key) parts.add(checker)
     val lost = stakes != null && stakes.kind == "lost"
+    // A line that wins by force -- not one that starts by taking a piece simply left hanging or
+    // taking back ([Story.plainCapture]) -- is a tactic, and the first hint says there is one to
+    // find (Tai, 2026-09-25).
+    val isTactic = (
+        idea.goal in listOf("win", "combination") ||
+            (idea.goal == "promote" && (idea.blow != null || idea.sacrifices.isNotEmpty()))
+        ) && plain == null
     if (tacticalGoal ||
         (moveThreat != null && !lost) ||
         (idea.winning && stakesText.isNullOrEmpty())
     ) {
         var lead = goal
-        if (idea.goal == "plan" && idea.winning && moveThreat == null) lead = "you are winning"
+        if (idea.goal == "plan" && idea.winning && moveThreat == null) {
+            lead = "you are winning"
+        } else if (moveThreat == null) {
+            val seed = IdeaWords.openerSeed(board)
+            lead = IdeaWords.opener(idea, goal, tactic = isTactic, seed = seed)
+        }
         if (!lead.isNullOrEmpty()) parts.add(lead)
+    }
+    // Facts about the same piece or square said as one sentence, the way a coach links them.
+    var shownKey = key
+    if (held != null && !forced) {
+        val heldAsKey = key == held.said
+        val stops = held.stops
+
+        // The pawn the defender has to stop, named in `text`.
+        fun stopsIt(text: String?): Boolean =
+            text != null && stops != null && "pawn on $stops " in text && "queening" in text
+
+        val also = "${held.who} has to stop it, so it cannot also take back on ${held.target}"
+        val known = key
+        if (stopsIt(pawn)) {
+            // "Your pawn on e6 is two squares from queening, and their rook on f8 has to stop it,
+            // so it can't also take back on b8."
+            pawn = "$pawn, and $also"
+            shownKey = if (heldAsKey) null else known
+            defended = null
+        } else if (stopsIt(known) && !heldAsKey) {
+            shownKey = "$known, and $also"
+            defended = null
+        } else if (defended != null && known != null && known.endsWith("on ${held.target} is the target")) {
+            // "Their queen on g3 is the target, and their pawn on f2 can't take back there: it
+            // also shields their king."
+            shownKey = "$known, and ${held.who} cannot take back there: it also ${held.duty}"
+            defended = null
+        }
+    }
+    val keyShown = shownKey
+    val howSaid = how
+    if (!howSaid.isNullOrEmpty() &&
+        !keyShown.isNullOrEmpty() &&
+        keyShown.endsWith(" is the target") &&
+        howSaid.startsWith("The first move ")
+    ) {
+        // "Their queen on d3 is the target, and the first move attacks it."
+        val named = keyShown.substring(0, keyShown.length - " is the target".length)
+        var rest = howSaid.substring("The first move ".length)
+        val lowered = named[0].lowercaseChar() + named.substring(1)
+        rest = Regex("^(\\w+) ${Regex.escape(lowered)}\\b").replace(rest, "\$1 it")
+        if (", and " in rest.substringBefore(". ")) {
+            how = "The first move $rest"  // two "and"s in one sentence: said apart
+        } else {
+            shownKey = "$keyShown, and the first move $rest"
+            how = null
+        }
     }
     if (!pawn.isNullOrEmpty()) parts.add(pawn)
     if (!prize.isNullOrEmpty() && !prizeLast) parts.add(prize)
-    if (!key.isNullOrEmpty()) parts.add(key)
+    if (!shownKey.isNullOrEmpty()) parts.add(shownKey)
     if (!defended.isNullOrEmpty() && !forced) parts.add(defended)
     if (!how.isNullOrEmpty()) parts.add(how)
     if (!prize.isNullOrEmpty() && prizeLast) parts.add(prize)
     if (!principle.isNullOrEmpty() && !key.isNullOrEmpty()) parts.add(principle)
-    if (!trap.isNullOrEmpty()) parts.add(trap)
+    val warned = trap
+    if (!warned.isNullOrEmpty()) {
+        // The target named already (the piece, not only its square): the order is the lesson.
+        var told = warned
+        val target = idea.target
+        val prey = if (target != null) board.pieceAt(target) else null
+        if (prey != null && target != null) {
+            val named = "${IdeaWords.PIECE_NAMES.getValue(prey.pieceType)} on ${squareName(target)}"
+            if (named in parts.joinToString(" ")) told = Situation.inOrder(told)
+        }
+        if (parts.isEmpty()) told = Situation.firstSaid(told)
+        trap = told
+        parts.add(told)
+    }
     if (parts.isEmpty() && !forced && best != null) {
         // Nothing else to say: what they would do with a free move, or the piece doing least --
         // never a question that fits any position ("which of your pieces has no job right now?"
@@ -930,6 +1003,7 @@ fun factsFromAnalysis(
     ) {
         situationText += " $question"
     }
+    situationText = situationText?.let { if (it.isNotEmpty()) Situation.spoken(it) else it }
     // A quiet move's own reason, said at the move rung: the key fact it answers.
     if (why == null && !moveReason.isNullOrEmpty() && best != null) {
         why = "${board.san(best)}: ${moveReason[0].lowercaseChar() + moveReason.substring(1)}"

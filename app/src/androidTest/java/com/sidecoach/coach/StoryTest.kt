@@ -103,7 +103,7 @@ class StoryTest {
         // EcCX4: their queen gives check, and taking it is the point.
         val (texts, _) = hints("EcCX4")
         assertTrue(texts.getValue("idea"), "Their queen on c5 gives check" in texts.getValue("idea"))
-        assertTrue(texts.getValue("idea"), "The first move takes their queen on c5" in texts.getValue("idea"))
+        assertTrue(texts.getValue("idea"), "the first move takes their queen on c5" in texts.getValue("idea"))
     }
 
     @Test
@@ -117,7 +117,10 @@ class StoryTest {
     fun aWinWithNoPatternSaysHow() {
         // jlCZP, a zugzwang: never "their pawn on h5 is the target" and "you win two pawns" alone.
         val (texts, _) = hints("jlCZP")
-        assertTrue(texts.getValue("idea"), "The first move stops Ke5" in texts.getValue("idea"))
+        assertTrue(
+            texts.getValue("idea"),
+            "Their pawn on h5 is the target, and the first move stops Ke5." in texts.getValue("idea"),
+        )
         assertTrue(texts.getValue("move"), texts.getValue("move").startsWith("Kf4") && "and after" in texts.getValue("move"))
     }
 
@@ -135,8 +138,15 @@ class StoryTest {
         // Bc5+ loses more. "You can win their queen" alone read as a lie beside fxg3.
         val (texts, _) = hints("Qxg3")
         val idea = texts.getValue("idea")
-        assertTrue(idea, "Their pawn on f2 cannot take back on g3: it also shields their king" in idea)
-        assertTrue(idea, "An overloaded defender" in idea)
+        // Said as a coach speaks (Tai, 2026-09-25): a tactic to find, the target and the defender
+        // that cannot take back as one sentence, the pattern said of it.
+        assertTrue(idea, "tactic that wins their queen." in idea)
+        assertTrue(
+            idea,
+            "Their queen on g3 is the target, and their pawn on f2 can't take back there: it also " +
+                "shields their king. That's an overloaded defender: one piece with two jobs can't do " +
+                "both." in idea,
+        )
         assertTrue(texts.getValue("focus"), "Which of their pieces has two jobs?" in texts.getValue("focus"))
         assertTrue(texts.getValue("move"), "if fxg3, Bc5+" in texts.getValue("move"))
     }
@@ -148,9 +158,13 @@ class StoryTest {
         // 2.Qxb8? at once (Qd2+) was the natural mistake, unwarned.
         val (texts, _) = hints("Qxb8")
         val idea = texts.getValue("idea")
-        assertTrue(idea, "Their rook on f8 cannot take back on b8: it also guards f8, where your pawn queens" in idea)
+        assertTrue(
+            idea,
+            "Your pawn on e6 is two squares from queening, and their rook on f8 has to stop it, so it " +
+                "can't also take back on b8." in idea,
+        )
         assertTrue(idea, "loose" !in idea && "no defender" !in idea)
-        assertTrue(idea, "Not yet: their rook on b8 can be won, but Qxb8 at once runs into Qd2+" in idea)
+        assertTrue(idea, "Their rook on b8 can be won, but not at once: Qxb8 right away runs into Qd2+" in idea)
         assertTrue(texts.getValue("move"), "if Rxb8, f8=Q+" in texts.getValue("move"))
     }
 
@@ -181,7 +195,7 @@ class StoryTest {
                     if (bare.isNull(k)) null else bare.getString(k),
                     Situation.trapWords(board, trap, target, top),
                 )
-                if (said != null && said.startsWith("Take it with the right piece")) wrongPiece += 1
+                if (said != null && said.startsWith(Situation.RIGHT_PIECE)) wrongPiece += 1
             }
         }
         assertTrue("the wrong piece to take back with is said", wrongPiece > 0)
@@ -206,9 +220,9 @@ class StoryTest {
         )
         val facts = factsFromAnalysis(board, analysis, user = board.turn)
         assertEquals(
-            "You can win a queen for a bishop and a pawn. Their queen on h5 is the target. The first move attacks " +
-                "their queen on h5, and it has no safe square to go to. A trapped piece: one of their pieces has no " +
-                "safe square left, so an attack on it wins it.",
+            "This position has a tactic that wins a queen for a bishop and a pawn. Their queen on h5 is the " +
+                "target. The first move attacks it, and it has no safe square to go to. That's a trapped piece: " +
+                "one of their pieces has no safe square left, so an attack on it wins it.",
             ideaTemplate(facts),
         )
         assertEquals("Use your bishop on c8. Which of their pieces has no safe square left?", focusTemplate(facts))

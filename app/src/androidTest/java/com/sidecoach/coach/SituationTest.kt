@@ -47,7 +47,7 @@ class SituationTest {
         val trap = line(listOf("h3g4", "d8h4", "d1f3", "h4h2", "g1f1", "h2h1", "f1e2", "f8e8"), 0.45)
         val said = Situation.trapWords(board, trap, null, 0.60)
         assertNotNull(said)
-        assertTrue(said, said!!.startsWith("hxg4 looks like it wins a knight, but it is a trap: after hxg4 Qh4"))
+        assertTrue(said, said!!.startsWith("careful, though: hxg4 looks like it wins a knight, but after hxg4 Qh4"))
     }
 
     @Test
@@ -56,7 +56,8 @@ class SituationTest {
         val board = Board("r1b2rk1/2p2ppp/p2b4/1p6/3P3q/1BP2Q1P/PP3nP1/RNB1R1K1 w - - 0 16")
         val trap = line(listOf("f3a8", "f2h3", "g2h3", "h4e1", "g1g2", "e1e2", "g2g1", "e2h2"), 0.0, mate = -8)
         assertEquals(
-            "Not yet: their rook on a8 can be won, but Qxa8 at once runs into Nxh3+, and they have mate",
+            "their rook on a8 can be won, but not at once: Qxa8 right away runs into Nxh3+, and they " +
+                "have mate",
             Situation.trapWords(board, trap, parseSquare("a8"), 0.68),
         )
     }
@@ -77,7 +78,7 @@ class SituationTest {
         assertTrue(Traps.worse(trap, line(listOf("h1e4"), 0.06)))
         assertFalse(Traps.worse(line(listOf("h1e4"), 0.04), line(listOf("h1e4"), 0.06)))
         assertEquals(
-            "Kxh3 looks like it wins a bishop, but it is a trap: after Kxh3 Qf5+, they have mate",
+            "careful, though: Kxh3 looks like it wins a bishop, but after Kxh3 Qf5+, they have mate",
             Situation.trapWords(board, trap, null, 0.06),
         )
     }
@@ -214,6 +215,29 @@ class SituationTest {
         assertEquals("Their pawn on e7 is one move from winning material", facts.key)
         assertEquals(case.getJSONObject("facts").getString("key"), facts.key)
         assertFalse(facts.key!!.contains("e6"))  // the key names their piece, never the answer
+    }
+
+    @Test
+    fun theFirstHintIsSaidTheWayACoachSpeaks() {
+        // Tai, 2026-09-25: "make it sound a bit better and more natural". Contractions, except
+        // where the verb ends its clause.
+        assertEquals(
+            "It's Boden's mate. Their pawn can't take back, it isn't defended, and you're " +
+                "winning -- leave the knight where it is.",
+            Situation.spoken(
+                "It is Boden's mate. Their pawn cannot take back, it is not defended, and you are " +
+                    "winning -- leave the knight where it is.",
+            ),
+        )
+        // A trap said first has nothing to turn from; a target named already leaves the order.
+        assertEquals(
+            "careful: Nxe5 looks like it wins a pawn",
+            Situation.firstSaid("careful, though: Nxe5 looks like it wins a pawn"),
+        )
+        assertEquals(
+            "careful with the order, though: Qxb8 right away runs into Qd2+",
+            Situation.inOrder("their rook on b8 can be won, but not at once: Qxb8 right away runs into Qd2+"),
+        )
     }
 
     private fun lines(a: JSONArray): List<Line> = (0 until a.length()).map { k ->

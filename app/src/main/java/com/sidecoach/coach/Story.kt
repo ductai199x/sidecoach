@@ -155,6 +155,16 @@ object Story {
         val square: String,
         /** The square it would take back on: "g3". */
         val target: String,
+        /** "their pawn on f2". */
+        val who: String,
+        /** "shields their king". */
+        val duty: String,
+        /**
+         * The player's pawn it has to stop, where it stands now, when that is its other job: the
+         * first hint says the two as one ("your pawn on e6 is two squares from queening, and their
+         * rook on f8 has to stop it").
+         */
+        val stops: String?,
         /** The overloaded defender's lesson. */
         val lesson: String,
         /** The second hint's question. */
@@ -253,6 +263,18 @@ object Story {
             val recaptureSan = before.san(recapture)
             val after = before.copy(withStack = false)
             after.push(recapture)
+            var stops: String? = null
+            val runner = after.pieceAt(refute.from)
+            if (runner != null && runner.pieceType == PAWN && refute.to == recapture.from) {
+                val boards = arrayListOf(board.copy(withStack = false))
+                for (move in moves.take(cut)) {
+                    val nxt = boards.last().copy(withStack = false)
+                    nxt.push(move)
+                    boards.add(nxt)
+                }
+                val start = IdeaReader.origin(board, boards, cut, refute.from)
+                if (start != null && board.pieceTypeAt(start) == PAWN) stops = sq(start)
+            }
             val cannot = "${NAMES.getValue(piece.pieceType)} on ${sq(recapture.from)} cannot take " +
                 "back on ${sq(recapture.to)}"
             return Defence(
@@ -260,6 +282,9 @@ object Story {
                 clause = "their $cannot",
                 square = sq(recapture.from),
                 target = sq(recapture.to),
+                who = "their ${NAMES.getValue(piece.pieceType)} on ${sq(recapture.from)}",
+                duty = duty,
+                stops = stops,
                 lesson = "${IdeaWords.PATTERN_NAMES.getValue("overloading")}: " +
                     IdeaWords.PATTERN_WHY.getValue("overloading"),
                 ask = "Which of their pieces has two jobs?",

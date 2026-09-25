@@ -187,6 +187,33 @@ object Situation {
     }
 
     /**
+     * The first hint said as a coach speaks (Tai, 2026-09-25: "make it sound a bit better and more
+     * natural"): the contractions of speech. A verb that ends its clause stays whole ("where it
+     * is.", never "where it's."), so "is" and "are" contract only before a word.
+     */
+    private val CONTRACTIONS: List<Pair<Regex, String>> = listOf(
+        Regex("\\b([Cc])annot\\b") to "\$1an't",
+        Regex("\\b([Ww])ill not\\b") to "\$1on't",
+        Regex(
+            "\\b(is|are|was|were|does|do|did|has|have|had|could|would|should) not\\b",
+            RegexOption.IGNORE_CASE,
+        ) to "\$1n't",
+        Regex("\\b([Ii]t|[Tt]here|[Tt]hat|[Ww]hat) is (?=\\w)") to "\$1's ",
+        Regex("\\b([Yy]ou|[Tt]hey|[Ww]e) are (?=\\w)") to "\$1're ",
+        Regex("\\bI am\\b") to "I'm",
+    )
+
+    /**
+     * `text` with the contractions a coach speaks with: "it's a trap", "can't take back", "you're
+     * lost".
+     */
+    fun spoken(text: String): String {
+        var said = text
+        for ((pattern, short) in CONTRACTIONS) said = pattern.replace(said, short)
+        return said
+    }
+
+    /**
      * `text` as a sentence: a capital first (never on a pawn's move: "hxg4 looks..."), a stop
      * last.
      */
@@ -407,11 +434,12 @@ object Situation {
     const val WORSE = 0.4
 
     /**
-     * The capture that looks free and is not: "hxg4 looks like it wins a knight, but it is a
-     * trap: after hxg4 Qh4, they get a winning attack". When it takes what the best line wins
-     * later (`target`), the two are one lesson: "Not yet: their rook on a8 can be won, but Qxa8
-     * at once runs into Nxh3+, and they have mate" (16.Re2 in Capablanca-Marshall). `top` is the
-     * best move's expected score: a game already lost is not lost by the capture.
+     * The capture that looks free and is not: "careful, though: hxg4 looks like it wins a knight,
+     * but after hxg4 Qh4, they get a winning attack". When it takes what the best line wins later
+     * (`target`), the two are one lesson: "their rook on a8 can be won, but not at once: Qxa8 right
+     * away runs into Nxh3+, and they have mate" (16.Re2 in Capablanca-Marshall; [inOrder] when the
+     * hint has named the target already). `top` is the best move's expected score: a game already
+     * lost is not lost by the capture.
      */
     fun trapWords(
         board: Board,
@@ -461,16 +489,35 @@ object Situation {
         if (best != null && best != capture && best.to == capture.to) {
             // The same piece, taken with the wrong one of yours.
             val afterIt = if (shows) san else "$san $replySan"
-            return "Take it with the right piece: $san looks natural, but after $afterIt, $tail"
+            return "$RIGHT_PIECE, though: $san looks natural, but after $afterIt, $tail"
         }
         if (target != null && capture.to == target) {
             val runs = if (shows) "a reply" else replySan
-            return "Not yet: their ${named(board, target)} can be won, but $san at once runs into " +
+            return "their ${named(board, target)} can be won$NOT_YET$san right away runs into " +
                 "$runs, and $tail"
         }
         val afterIt = if (shows) san else "$san $replySan"
-        return "$san looks like it wins a $what, but it is a trap: after $afterIt, $tail"
+        return "careful, though: $san looks like it wins a $what, but after $afterIt, $tail"
     }
+
+    /**
+     * The trap that takes the target too soon, as [trapWords] says it: the target named, then the
+     * order ("their rook on b8 can be won, but not at once: Qxb8 right away runs into ...").
+     */
+    const val NOT_YET = ", but not at once: "
+    const val RIGHT_PIECE = "take back with the right piece"
+
+    /**
+     * A trap that takes the target too soon, where the hint has named the target already: the
+     * order alone ("careful with the order, though: Qxb8 right away runs into Qd2+").
+     */
+    fun inOrder(trap: String): String {
+        if (NOT_YET !in trap) return trap
+        return "careful with the order, though: " + trap.substringAfter(NOT_YET)
+    }
+
+    /** A trap said first, with nothing before it to turn from: "careful: ...". */
+    fun firstSaid(trap: String): String = trap.replaceFirst(", though: ", ": ")
 
     /**
      * What the line nets the side to move in material, in pawns, as it stands after their last
