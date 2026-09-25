@@ -31,6 +31,7 @@ import chess
 
 from sidecoach.coach import idea_words, situation
 from sidecoach.coach.annotations import annotations_for, mentions_in
+from sidecoach.coach.bag import Bags
 from sidecoach.coach.conversation import Conversation, PlyRecord
 from sidecoach.coach.disclosure import (
     Disclosure,
@@ -384,21 +385,29 @@ def _stale(reason: str, played: str | None) -> bool:
 RECENT_PLIES = 6
 
 
-def fresh(text: str, recent: str) -> str:
+def fresh(text: str, recent: str, opener: str | None = None) -> str:
     """`text` without what the coach said lately (`recent`, lower case): the "Keep this one"
     sentence, and the reason after " -- " in the first sentence. The verdict and the better
-    move always stay: that is news."""
+    move always stay: that is news. `opener` is what the first sentence opens with, the
+    verdict and the better move; the reason is what follows it."""
     said = recent.lower()
     sentences = re.split(r"(?<=[.?!])\s+", text.strip())
     if not sentences:
         return text
     first, rest = sentences[0], sentences[1:]
-    if " -- " in first:
-        # The last clause: an opener may carry its own ("Playable -- d4 was a little more
-        # precise -- your bishop on c1 is still shut in ...").
+    head, reason = first, ""
+    if opener is not None:
+        # An opener may carry its own " -- " ("Not that one -- Ng3 was better"): with no
+        # reason after it, the better move was taken for one and dropped when the same move
+        # had just been said (Nova bot games, 2026-09-25).
+        if first.lower().startswith(opener.lower() + " -- "):
+            head, reason = first[: len(opener)], first[len(opener) + 4 :]
+    elif " -- " in first:
+        # The last clause ("Playable -- d4 was a little more precise -- your bishop on c1 is
+        # still shut in ...").
         head, reason = first.rsplit(" -- ", 1)
-        if reason.rstrip(".").lower() in said:
-            first = head.rstrip(".") + "."
+    if reason and reason.rstrip(".").lower() in said:
+        first = head.rstrip(".") + "."
     kept = [s for s in rest if (rule := _kept(s)) is None or rule not in said]
     return " ".join([first, *kept])
 
@@ -811,6 +820,9 @@ class _Position:
     facts: PositionFacts | None = None
     disclosure: Disclosure = field(default_factory=Disclosure)
     last_move: str | None = None
+    # The first hint's wordings, peeked from the coach's bags as the facts were written and
+    # taken from them when the hint is said (`coach/bag.py`).
+    leads: dict[str, str] = field(default_factory=dict)
 
 
 # The game's pace: the user's last few think times. Under FAST_PACE_S a move, the game
@@ -1528,11 +1540,11 @@ class Coach:
         self._clock_peak_ms: int | None = None
         # The conversation is read from the caller's thread and from a claims check.
         self._lock = threading.RLock()
-        self._last_verdict: str | None = None
+        # Every wording drawn like a marble from a bag, each once before any comes again.
+        self._bags = Bags()
         # The kinds of lesson the last sound moves' words taught (verdicts.lesson).
         self._taught: deque[str] = deque(maxlen=TAUGHT_MEMORY)
         # The last template said from each rotating list, keyed by the list.
-        self._last_said: dict[str, str] = {}
         # What the game is (GameStarted.kind): a game from the start, or a position -- a
         # puzzle, an analysis board -- where the mating move gets no word and the end no
         # summary (Tai, 2026-09-20: a solved puzzle is left, not summed up); every other
@@ -1695,6 +1707,7 @@ class Coach:
         ) and not may_carry_claims(text)
         if canned:
             _, quick = self._instruction(Trigger.USER_ASK, position, level, text, (), None, None)
+            self._take_leads(position, quick)
             self._queue_plain(
                 Trigger.USER_ASK,
                 quick,
@@ -2016,9 +2029,16 @@ class Coach:
         if position is None or position.board.fen() != event.fen:
             return
         position.analysis = event
+        leads: dict[str, str] = {}
+
+        def peek(key: str, options: Sequence[str]) -> str:
+            leads[key] = self._bags.peek(key, options)
+            return leads[key]
+
         position.facts = facts_from_analysis(
-            position.board, event, last_move=position.last_move, user=self.user_colour
+            position.board, event, last_move=position.last_move, user=self.user_colour, pick=peek
         )
+        position.leads = leads
         self.conversation.analysed(event, position.facts)
         if position is self._current and self._pending_ask is not None:
             text, _asked = self._pending_ask
@@ -2138,9 +2158,8 @@ class Coach:
                     phase=before.facts.phase,
                     threats=before.facts.threats,
                     taught=tuple(self._taught),
-                    last=self._last_verdict,
+                    bags=self._bags,
                 )
-                self._last_verdict = text
                 if kind is not None:
                     self._taught.append(kind)
             else:
@@ -2185,13 +2204,10 @@ class Coach:
         return True
 
     def _verdict(self, label: str | None) -> str:
-        """The word of praise on a fine move, by its label and never the same as the last
-        one: a game of "Good. Good. Good." wears thin."""
-        phrases = VERDICTS.get(label or "", VERDICTS["good"])
-        choices = [p for p in phrases if p != self._last_verdict] or phrases
-        chosen = random.choice(choices)
-        self._last_verdict = chosen
-        return chosen
+        """The word of praise on a fine move, by its label, from the bag the local verdicts
+        draw from too: a game of "Good. Good. Good." wears thin."""
+        openers = OPENERS.get(label or "", OPENERS["good"])
+        return self._bags.draw(f"praise:{label or 'good'}", openers) + "."
 
     def set_providers(
         self,
@@ -2211,6 +2227,26 @@ class Coach:
             self.summariser = summariser or provider
             self.claims = claims
 
+    def _take_leads(self, position: _Position, template: str) -> None:
+        """The first hint's wordings taken from their bags once the hint is said: this turn's
+        template is the position's first hint, or holds it."""
+        facts = position.facts
+        if facts is not None and facts.situation and facts.situation in template:
+            for key, wording in position.leads.items():
+                self._bags.take(key, wording)
+            position.leads = {}
+
+    def _fresh_lesson(self, opener: str, lesson: Callable[[str], str]) -> str:
+        """`lesson`, opening with `opener`, written with the next rule-to-keep lead from its
+        bag, less what was said lately (`fresh`). The lead is taken from the bag only when the
+        lesson still says it: one with no rule to keep, or whose rule was said lately, leaves
+        it for the next."""
+        lead = self._bags.peek("keep", KEEP_LEADS)
+        text = fresh(lesson(lead), self._recently_said(), opener)
+        if f"{lead}:" in text.lower():
+            self._bags.take("keep", lead)
+        return text
+
     def _recently_said(self) -> str:
         """What the coach has said over the last RECENT_PLIES plies, as one text."""
         texts: list[str] = []
@@ -2223,13 +2259,6 @@ class Coach:
             elif entry.kind == "coach":
                 texts.append(entry.text)
         return " ".join(texts)
-
-    def _rotate(self, key: str, phrases: Sequence[str]) -> str:
-        """One of `phrases`, never the one said last under `key`."""
-        choices = [p for p in phrases if p != self._last_said.get(key)] or list(phrases)
-        chosen = random.choice(choices)
-        self._last_said[key] = chosen
-        return chosen
 
     def _opening_so_far(self) -> str | None:
         """The opening the game was in: the last name the book gave."""
@@ -2368,6 +2397,7 @@ class Coach:
             quick=quick,
             elicit=elicit,
         )
+        self._take_leads(position, fallback)
         if quick:
             # The template is already out as the quick answer; a model reply that fails the
             # checks adds nothing, rather than the same line a second time.
@@ -2545,17 +2575,18 @@ class Coach:
                     if left is not None and left.analysis is not None
                     else None
                 )
-                fallback = fresh(
-                    lesson_template(
+                opener = self._bags.draw("cost", COST_YOU).format(best=best)
+                fallback = self._fresh_lesson(
+                    opener,
+                    lambda lead: lesson_template(
                         facts,
                         best,
-                        self._rotate("cost", COST_YOU).format(best=best),
+                        opener,
                         board=position.board,
                         played=played.uci,
                         allowed=allowed,
-                        keep_lead=self._rotate("keep", KEEP_LEADS),
+                        keep_lead=lead,
                     ),
-                    self._recently_said(),
                 )
                 instruction = (
                     f"The player just played {played.san}, which was a {label}: it cost "
@@ -2596,9 +2627,8 @@ class Coach:
                     phase=facts.phase,
                     threats=facts.threats,
                     taught=tuple(self._taught),
-                    last=self._last_verdict,
+                    bags=self._bags,
                 )
-                self._last_verdict = fallback
                 meaning = {
                     "brilliant": "a sound sacrifice",
                     "great": "the one move that keeps the advantage, or the chance taken",
@@ -2632,7 +2662,7 @@ class Coach:
             elif assessment.severity in (Severity.MISTAKE, Severity.BLUNDER) or label == "miss":
                 # A mistake in blitz: the policy keeps it to the word after the move (no
                 # lesson), but the word says what the move was -- never "fine".
-                fallback = self._rotate("cost", COST_YOU).format(best=best) + "."
+                fallback = self._bags.draw("cost", COST_YOU).format(best=best) + "."
                 instruction = (
                     f"The player just played {played.san}, which was a {label}: {best} "
                     f"({better_words}) was better. It is a fast game: one or two sentences, no "
@@ -2640,16 +2670,17 @@ class Coach:
                 )
             else:
                 # The better move and what it does, when the sheet has it, is the lesson.
-                fallback = fresh(
-                    lesson_template(
+                opener = self._bags.draw("fine", FINE_TIGHTER).format(best=best)
+                fallback = self._fresh_lesson(
+                    opener,
+                    lambda lead: lesson_template(
                         facts,
                         best,
-                        self._rotate("fine", FINE_TIGHTER).format(best=best),
+                        opener,
                         board=position.board,
                         played=played.uci,
-                        keep_lead=self._rotate("keep", KEEP_LEADS),
+                        keep_lead=lead,
                     ),
-                    self._recently_said(),
                 )
                 instruction = (
                     f"The player just played {played.san}, which was fine but not the "
@@ -2826,15 +2857,12 @@ class Coach:
                     # The better move played out and the pattern to keep, as the lesson says
                     # it -- not "the idea was a pin" and nothing more.
                     # Asked about the move just taught, the lesson is not said twice.
-                    fallback += " " + fresh(
-                        lesson_template(
-                            facts,
-                            best,
-                            f"{best} was better",
-                            played=record.move.uci,
-                            keep_lead=self._rotate("keep", KEEP_LEADS),
+                    opener = f"{best} was better"
+                    fallback += " " + self._fresh_lesson(
+                        opener,
+                        lambda lead: lesson_template(
+                            facts, best, opener, played=record.move.uci, keep_lead=lead
                         ),
-                        self._recently_said(),
                     )
                 directive = (
                     f"They ask about the move they already played, {san}. Its verdict is in its "

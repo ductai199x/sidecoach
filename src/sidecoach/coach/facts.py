@@ -10,7 +10,7 @@ the notation a person reads.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import chess
 
@@ -472,6 +472,7 @@ def facts_from_analysis(
     last_move: str | None = None,
     in_book: bool = False,
     user: chess.Color | None = None,
+    pick: Callable[[str, Sequence[str]], str] | None = None,
 ) -> PositionFacts:
     """The fact bundle for `board`, which is the position `analysis` measured.
 
@@ -896,7 +897,7 @@ def facts_from_analysis(
             lead = "you are winning"
         elif move_threat is None:
             seed = idea_words.opener_seed(board)
-            lead = idea_words.opener(idea, goal, tactic=is_tactic, seed=seed)
+            lead = idea_words.opener(idea, goal, tactic=is_tactic, seed=seed, pick=pick)
         if lead:
             parts.append(lead)
     # Facts about the same piece or square said as one sentence, the way a coach links them.

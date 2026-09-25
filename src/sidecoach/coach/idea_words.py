@@ -10,6 +10,7 @@ position is not written here (Tai, 2026-09-23: "we want instructive comments, no
 from __future__ import annotations
 
 import zlib
+from collections.abc import Callable, Sequence
 
 import chess
 
@@ -307,26 +308,38 @@ _MATE_LEADS = (
 _MATE_LONG_LEADS = ("there is a forced mate here", "you can force mate", "you have a forced mate")
 
 
-def opener(idea: Idea, goal_words: str | None, *, tactic: bool, seed: int) -> str | None:
+def opener(
+    idea: Idea,
+    goal_words: str | None,
+    *,
+    tactic: bool,
+    seed: int,
+    pick: Callable[[str, Sequence[str]], str] | None = None,
+) -> str | None:
     """The first hint's lead: what the best line is for (`goal_words`, as `goal` or the
     caller made it), said as a tactic when `tactic` -- a line that wins material by force,
-    not a piece simply left hanging or a recapture -- and a mate as one to find. `seed` picks
-    the words (`opener_seed`)."""
+    not a piece simply left hanging or a recapture -- and a mate as one to find. `pick` (the
+    live coach's bags, `coach/bag.py`) draws the words, each once before any comes again;
+    without it `seed` picks them (`opener_seed`), the same every time for a position."""
+
+    def choose(key: str, leads: Sequence[str]) -> str:
+        return pick(key, leads) if pick is not None else leads[seed % len(leads)]
+
     if idea.goal == "mate" and goal_words is not None and "mate" in goal_words:
         n = idea.mate_in or 0
         if n == 1:
-            return _MATE_ONE_LEADS[seed % len(_MATE_ONE_LEADS)]
+            return choose("lead:mate-one", _MATE_ONE_LEADS)
         if n <= 5:
-            lead = _MATE_LEADS[seed % len(_MATE_LEADS)]
+            lead = choose("lead:mate", _MATE_LEADS)
             return lead.format(n=_NUMBER.get(n, str(n)))
-        return _MATE_LONG_LEADS[seed % len(_MATE_LONG_LEADS)]
+        return choose("lead:mate-long", _MATE_LONG_LEADS)
     if not tactic or goal_words is None:
         return goal_words
     if goal_words.startswith("you can win "):
         what = goal_words[len("you can win ") :]
         if what == "material by force":
             what = "material"
-        return _TACTIC_LEADS[seed % len(_TACTIC_LEADS)].format(what=what)
+        return choose("lead:tactic", _TACTIC_LEADS).format(what=what)
     if idea.goal == "promote":
         return "there is a tactic here that gets a pawn through to promotion"
     if idea.goal == "combination":

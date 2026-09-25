@@ -7,7 +7,7 @@ import chess
 
 from sidecoach.coach.coach import Coach, Trigger
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
-from sidecoach.coach.verdicts import MATE
+from sidecoach.coach.verdicts import MATE, OPENERS
 from sidecoach.config import LLMSettings
 from sidecoach.events import Analysis, Line, MovePlayed
 from sidecoach.llm.factory import make_provider
@@ -63,16 +63,45 @@ def test_a_typed_question_gets_the_hint_template() -> None:
 
 def test_the_templates_rotate_and_never_repeat_the_last() -> None:
     """Four decisive moments in one game got the same sentence four times (a master-game
-    pass, 2026-09-21): each list is drawn from without the last one said."""
-    from sidecoach.coach.coach import COST_YOU, FINE_TIGHTER
+    pass, 2026-09-21): each list is a bag, every wording once before any comes again (Tai,
+    2026-09-25), and never the last one said."""
+    from sidecoach.coach.coach import COST_YOU, FINE_TIGHTER, KEEP_LEADS
 
     coach = Coach(OfflineProvider(), policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
-    for key, options in (("cost", COST_YOU), ("fine", FINE_TIGHTER)):
-        said = [coach._rotate(key, options) for _ in range(40)]
+    for key, options in (("cost", COST_YOU), ("fine", FINE_TIGHTER), ("keep", KEEP_LEADS)):
+        said = [coach._bags.draw(key, options) for _ in range(len(options) * 8)]
         assert all(a != b for a, b in zip(said, said[1:], strict=False))
-        assert set(said) == set(options)
+        for start in range(0, len(said), len(options)):
+            assert sorted(said[start : start + len(options)]) == sorted(options)
+    # The praise on a fine move too, the same bag whether a lesson follows or not.
+    said = [coach._verdict("best") for _ in range(10)]
+    assert sorted(said[:5]) == sorted(o + "." for o in OPENERS["best"])
     # A list of one is said again, rather than nothing.
-    assert coach._rotate("one", ["only"]) == "only" and coach._rotate("one", ["only"]) == "only"
+    assert coach._bags.draw("one", ["only"]) == "only" == coach._bags.draw("one", ["only"])
+
+
+def test_the_first_hints_lead_is_drawn_when_the_hint_is_said() -> None:
+    """The first hint is written into every position's facts and said in few: its lead
+    ("There is a mate in one here") is peeked from its bag as it is written and taken only
+    when it is said, so the hints never asked for do not use up the bag."""
+    from sidecoach.coach.idea_words import _MATE_ONE_LEADS
+    from sidecoach.coach.situation import spoken
+
+    coach = Coach(OfflineProvider(), policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
+    _play_to_scholar(coach)
+    for ts in (7.0, 7.5):  # the engine's word twice over; nothing asked
+        coach.on_event(_mate_analysis(6, decisive=False), ts)
+    _messages(coach)
+    position = coach.positions[6]
+    lead = position.leads["lead:mate-one"]
+    assert sorted(coach._bags._bags["lead:mate-one"]) == sorted(_MATE_ONE_LEADS)
+    coach.ask("hint", 8.0)
+    out = _messages(coach)
+    assert len(out) == 1, out
+    assert out[0].text.lower().startswith(spoken(lead).lower()), (lead, out[0].text)
+    left = coach._bags._bags["lead:mate-one"]
+    assert lead not in left and len(left) == len(_MATE_ONE_LEADS) - 1
+    assert position.leads == {}
 
 
 def test_no_decisive_question_on_an_obvious_recapture() -> None:

@@ -26,6 +26,7 @@ from collections.abc import Sequence
 import chess
 
 from sidecoach.analysis import exchange, positional
+from sidecoach.coach.bag import Bags
 from sidecoach.coach.facts import describe_tactic
 from sidecoach.coach.situation import shut_in
 from sidecoach.events import MotifTag
@@ -197,20 +198,31 @@ def verdict(
     taught: Sequence[str] = (),
     last: str | None = None,
     rng: random.Random | None = None,
+    bags: Bags | None = None,
 ) -> tuple[str, str | None]:
-    """The sentence -- the praise for the label (never `last`'s), then what the move
-    teaches -- and the kind of lesson it taught, None when it is praise alone. Every draw
-    is a `choice`, the praise before the wording, so the phone's port draws the same."""
+    """The sentence -- the praise for the label, then what the move teaches -- and the kind
+    of lesson it taught, None when it is praise alone. With `bags` (the live coach's) every
+    wording is drawn from its bag, each once before any comes again (`coach/bag.py`);
+    without, a `choice` that is never `last`'s praise. The praise is drawn before the
+    wording, so the phone's port draws the same."""
     rng = rng or random.Random()
     found = lesson(board, move, tags, phase=phase, threats=threats, taught=taught)
     if found is not None and found[0] == "mate":
+        if bags is not None:
+            return bags.draw("mate", MATE), "mate"
         return rng.choice([m for m in MATE if m != last] or MATE), "mate"
     openers = OPENERS.get(label or "", OPENERS["good"])
-    # `last` is the previous sentence whole; its praise is what must not come again.
-    choices = [o for o in openers if last is None or not last.startswith(o)]
-    opener = rng.choice(choices or openers)
+    if bags is not None:
+        opener = bags.draw(f"praise:{label or 'good'}", openers)
+    else:
+        # `last` is the previous sentence whole; its praise is what must not come again.
+        choices = [o for o in openers if last is None or not last.startswith(o)]
+        opener = rng.choice(choices or openers)
     if found is None:
         return opener + ".", None
     kind, clauses = found
-    clause = rng.choice(clauses) if len(clauses) > 1 else clauses[0]
+    if bags is not None:
+        clause = bags.draw(f"clause:{kind}", clauses)
+    else:
+        clause = rng.choice(clauses) if len(clauses) > 1 else clauses[0]
     return f"{opener} -- {clause}.", kind

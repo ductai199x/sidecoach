@@ -495,6 +495,14 @@ def test_a_lesson_is_said_of_the_board_the_player_sees_and_not_twice() -> None:
     )
     assert fresh(text, said) == "Playable -- d4 was a little more precise."
     assert fresh(text, "Nice.") == text
+    opener = "Playable -- d4 was a little more precise"
+    assert fresh(text, said, opener) == opener + "."
+    # An opener with its own " -- " and no reason after it: the better move is not a reason,
+    # and stays when the same move was just said ("Not that one." -- Nova bot games).
+    opener = "Not that one -- Ng3 was better"
+    just = "That one cost you: Ng3 was better. After c6, they win a pawn."
+    assert fresh(opener + ".", just.lower(), opener) == opener + "."
+    assert fresh(f"{opener} -- it wins a pawn.", just + " It wins a pawn.", opener) == opener + "."
 
 
 def test_the_draft_checker_can_veto_a_false_claim() -> None:
