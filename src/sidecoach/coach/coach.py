@@ -683,6 +683,18 @@ def complete_sentences(text: str) -> str:
     return text[: ends[-1].end()].strip() if ends else ""
 
 
+# Markdown the model writes around words ("**Rc1**", "`e4`", "__now__") and at the start of a
+# line ("# ", "- ", "* "): the reply is spoken and shown as it is, and "?**" at its end failed
+# the closing-question check (the parity pilot, 2026-09-25).
+_EMPHASIS = re.compile(r"\*\*|__|`")
+_LINE_MARK = re.compile(r"(?m)^\s*(?:#{1,6}\s+|[-*]\s+(?=\S))")
+
+
+def plain(text: str) -> str:
+    """`text` without markdown: the emphasis marks and the line marks go, the words stay."""
+    return _LINE_MARK.sub("", _EMPHASIS.sub("", text))
+
+
 def _parse_candidates(raw: str) -> list[tuple[float, str]]:
     """The verbalized replies as (probability, text). A reply with no markers is one candidate.
 
@@ -690,7 +702,7 @@ def _parse_candidates(raw: str) -> list[tuple[float, str]]:
     another line is kept whole. A model that ignores the format still yields one usable reply.
     Every candidate is cut back to its last complete sentence.
     """
-    cleaned = _THINK_BLOCK.sub("", raw).strip()
+    cleaned = plain(_THINK_BLOCK.sub("", raw)).strip()
     markers = list(_VS_MARKER.finditer(cleaned))
     if not markers:
         cleaned = complete_sentences(_STRAY_MARKER.sub("", cleaned).strip())
@@ -762,7 +774,7 @@ class _FirstCandidate:
 
     def _candidate(self) -> tuple[str, bool]:
         """The first candidate's text so far, and whether it is complete."""
-        cleaned = _THINK_BLOCK.sub("", self.buffer)
+        cleaned = plain(_THINK_BLOCK.sub("", self.buffer))
         markers = list(_VS_MARKER.finditer(cleaned))
         if not markers:
             # No marker yet: the model may be writing one, or writing a bare reply.

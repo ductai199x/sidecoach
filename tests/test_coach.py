@@ -1994,3 +1994,18 @@ def test_figures_ordinals_captures_and_articles() -> None:
         "best",
         "a book move",
     ]
+
+
+def test_the_models_markdown_never_reaches_the_voice_or_the_checks() -> None:
+    """The parity pilot: "**Rc1** was better", and a closing question wrapped in ** failed
+    the question check twice, so the template spoke."""
+    from sidecoach.coach.coach import _parse_candidates, plain
+
+    assert (
+        plain("Their threat is **...f5**, on `e4`. **Why?**")
+        == "Their threat is ...f5, on e4. Why?"
+    )
+    assert plain("# Plan\n- push the pawn\n* trade") == "Plan\npush the pawn\ntrade"
+    assert _parse_candidates("**Rc1** was better. **Do you see why?**") == [
+        (1.0, "Rc1 was better. Do you see why?")
+    ]
