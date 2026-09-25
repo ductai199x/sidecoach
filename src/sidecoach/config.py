@@ -97,16 +97,6 @@ class EngineSettings(BaseModel):
             applies="now", label="Candidate lines", advanced=True, section="What it looks at"
         ),
     )
-    movetime_ms: int = Field(
-        default=300,
-        ge=50,
-        le=5000,
-        description="Time for the quick check of a position during play, in milliseconds, "
-        "before the full analysis follows.",
-        json_schema_extra=_extra(
-            applies="now", label="Live search time (ms)", advanced=True, section="What it looks at"
-        ),
-    )
     threads: int = Field(
         default=4,
         ge=1,

@@ -38,6 +38,13 @@
     ["llm", "AI Coach"], ["coach", "Coach"], ["voice", "Voice"], ["engine", "Analysis"],
     ["capture", "Screen"], ["profile", "You"], ["gpu", "GPU"], ["app", "App"],
   ];
+  // Only the tabs this machine has: the phone's schema leaves out what it does not honour
+  // (its GPU, its folders), and a tab with nothing in it is not shown.
+  const shownSections = $derived(
+    data
+      ? SECTIONS.filter(([id]) => (id === "app" ? inShell() || !!data!.schema.properties.data_dir : !!data!.schema.properties[id]))
+      : SECTIONS,
+  );
   // The AI Coach page shows the provider, then only what that provider needs: a field's
   // only_for (from the schema) names the providers it is shown for. The key for a custom
   // service is stored under one fixed name.
@@ -299,7 +306,7 @@
 
 <div class="settings">
   <nav class="secnav">
-    {#each SECTIONS as [id, label] (id)}
+    {#each shownSections as [id, label] (id)}
       <button class="secbtn" class:on={section === id} onclick={() => (section = id)}>{label}</button>
     {/each}
     <label class="ctl adv"><input type="checkbox" bind:checked={advanced} /> advanced</label>
@@ -321,19 +328,21 @@
       {:else}
         <p class="muted">The shell's own settings show in the desktop app.</p>
       {/if}
-      <div class="field">
-        <label for="data_dir">Data folder</label>
-        <input id="data_dir" type="text" value={values.data_dir} disabled={inShell()} oninput={(e) => (values.data_dir = e.currentTarget.value)} />
-        <p class="desc">{data.schema.properties.data_dir?.description}{inShell() ? " The app decides where." : ""}</p>
-      </div>
-      {#if advanced}
+      {#if data.schema.properties.data_dir}
+        <div class="field">
+          <label for="data_dir">Data folder</label>
+          <input id="data_dir" type="text" value={values.data_dir} disabled={inShell()} oninput={(e) => (values.data_dir = e.currentTarget.value)} />
+          <p class="desc">{data.schema.properties.data_dir?.description}{inShell() ? " The app decides where." : ""}</p>
+        </div>
+      {/if}
+      {#if advanced && data.schema.properties.tools_dir}
         <div class="field">
           <label for="tools_dir">Tools folder</label>
           <input id="tools_dir" type="text" value={values.tools_dir} oninput={(e) => (values.tools_dir = e.currentTarget.value)} />
           <p class="desc">{data.schema.properties.tools_dir?.description}</p>
         </div>
       {/if}
-      <p class="muted">Settings file: <code>{data.path}</code></p>
+      {#if data.path}<p class="muted">Settings file: <code>{data.path}</code></p>{/if}
     {:else}
       <h2>{SECTIONS.find(([id]) => id === section)?.[1]}</h2>
       {#if section === "llm"}

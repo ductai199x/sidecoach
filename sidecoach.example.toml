@@ -9,7 +9,6 @@ fps = 10
 [engine]
 # stockfish_path = "tools/stockfish/stockfish-windows-x86-64-universal.exe"
 multipv = 4
-movetime_ms = 300
 threads = 4
 hash_mb = 256
 
