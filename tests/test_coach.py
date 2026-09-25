@@ -460,8 +460,41 @@ def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
     )
     # The better move and what it does, and the pattern to keep.
     assert any(fallback.startswith(f.format(best="Qxf7#")) for f in FINE_TIGHTER)
-    assert "it is mate" in fallback and "Keep this one:" in fallback
+    from sidecoach.coach.coach import KEEP_LEADS
+
+    assert "it is mate" in fallback
+    assert any(f"{lead.capitalize()}:" in fallback for lead in KEEP_LEADS)
+    # Said once, the lesson is not said again a move later: the verdict and the better move
+    # stand alone (Nova bot games, 2026-09-25: 27% of lessons came again within three moves).
+    coach.conversation.coach_said(fallback)
+    _, again = coach._instruction(
+        Trigger.POST_MOVE, position, DisclosureLevel.LINE, None, (), good, played
+    )
+    assert any(again.startswith(f.format(best="Qxf7#")) for f in FINE_TIGHTER)
+    assert "it is mate" not in again
+    assert not any(f"{lead.capitalize()}:" in again for lead in KEEP_LEADS), again
     assert "Do not open with the move they played" in instruction
+
+
+def test_a_lesson_is_said_of_the_board_the_player_sees_and_not_twice() -> None:
+    from sidecoach.coach.coach import _stale, fresh
+
+    # 4.d3 had just let the bishop out: "still shut in behind the pawn on d2" was the
+    # position before the move (Nova bot games, 2026-09-25).
+    assert _stale("your bishop on c1 is still shut in behind the pawn on d2", "d2d3")
+    assert not _stale("your bishop on c1 is still shut in behind the pawn on d2", "b1c3")
+    # A line is about the moves to come, and stands.
+    assert not _stale("after Qg2, Rdg1, and the queen on g2 is trapped", "g2g3")
+    said = (
+        "That works, though d4 was a touch better -- your bishop on c1 is still shut in behind "
+        "the pawn on d2. The lesson to keep: the centre is where pieces have the most room."
+    )
+    text = (
+        "Playable -- d4 was a little more precise -- your bishop on c1 is still shut in behind "
+        "the pawn on d2. Worth remembering: the centre is where pieces have the most room."
+    )
+    assert fresh(text, said) == "Playable -- d4 was a little more precise."
+    assert fresh(text, "Nice.") == text
 
 
 def test_the_draft_checker_can_veto_a_false_claim() -> None:

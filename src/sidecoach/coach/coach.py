@@ -129,6 +129,15 @@ COST_YOU = [
     "That cost you something: {best} was the move",
     "Not that one -- {best} was better",
 ]
+# How the rule to keep is introduced, rotated like the openers (Tai, 2026-09-25: "there's a
+# lot of 'keep this one' ... it could use some variety"). The first is the templates' own.
+KEEP_LEADS = [
+    "keep this one",
+    "the lesson to keep",
+    "worth remembering",
+    "a rule to take with you",
+    "the thing to remember",
+]
 # The pattern to keep, said after a mistake that missed it: the rule of thumb, not the
 # position. Keyed by the pattern's name as the fact sheet gives it.
 PATTERN_LESSONS: dict[str, str] = {
@@ -298,11 +307,13 @@ def lesson_template(
     board: chess.Board | None = None,
     played: str | None = None,
     allowed: str | None = None,
+    keep_lead: str = KEEP_LEADS[0],
 ) -> str:
     """After a move that cost something: the better move, what it does, what the move made
     allowed, and the pattern to keep. `opener` is the rotated "That one cost you: {best} was
     better"; `board` and `played` (UCI) are the position the player faced and the move made,
-    and `allowed` what it let the opponent do (`idea_words.allowed`), when known."""
+    `allowed` what it let the opponent do (`idea_words.allowed`), when known, and `keep_lead`
+    how the rule to keep is introduced (`KEEP_LEADS`, rotated by the coach)."""
     text = opener
     why = facts.why or ""
     other_piece = _recapture(board, best, played)
@@ -314,7 +325,7 @@ def lesson_template(
             _sentence(text)
             + " "
             + _sentence(
-                "keep this one: when two pieces can take, ask which you want to keep where it is"
+                f"{keep_lead}: when two pieces can take, ask which you want to keep where it is"
             )
         )
     if why.startswith(best):
@@ -333,6 +344,8 @@ def lesson_template(
                 rest = f"it is {named}, " + (tail if tail.startswith("and ") else f"and {tail}")
             elif rest.startswith(_WHY_VERBS):
                 rest = "it " + rest  # "Nf2# was better -- it is mate", "-- it stops Nxd3"
+        if rest and _stale(rest, played):
+            rest = ""
         if rest:
             text += f" -- {rest}"
     text = _sentence(text)
@@ -345,8 +358,58 @@ def lesson_template(
     if keep is None and facts.plan and facts.mechanism:
         keep = facts.mechanism.split(": ", 1)[-1]
     if keep and not _said(keep, text):
-        text += " " + _sentence(f"keep this one: {keep}")
+        text += " " + _sentence(f"{keep_lead}: {keep}")
     return text
+
+
+def _stale(reason: str, played: str | None) -> bool:
+    """Whether a lesson's reason, read off the position the player faced, names a piece on a
+    square their move then left or landed on -- the position before it, not the one now: "d4
+    was a little more precise -- your bishop on c1 is still shut in behind the pawn on d2"
+    after 4.d3, which had just let it out (Nova bot games, 2026-09-25). A line ("after Qg2,
+    Rdg1, the queen on g2 is trapped") is about the moves to come, and stands."""
+    if played is None or reason.startswith("after "):
+        return False
+    try:
+        move = chess.Move.from_uci(played)
+    except ValueError:
+        return False
+    squares = (chess.square_name(move.from_square), chess.square_name(move.to_square))
+    return any(re.search(rf"\bon {sq}\b", reason) for sq in squares)
+
+
+# A lesson the player heard over this many plies (their last three moves) is not said again:
+# in amateur games "fine, but not the best" comes move after move, and the same "keep this
+# one" came with it -- 27% of them within three moves in twenty Nova bot games (2026-09-25).
+RECENT_PLIES = 6
+
+
+def fresh(text: str, recent: str) -> str:
+    """`text` without what the coach said lately (`recent`, lower case): the "Keep this one"
+    sentence, and the reason after " -- " in the first sentence. The verdict and the better
+    move always stay: that is news."""
+    said = recent.lower()
+    sentences = re.split(r"(?<=[.?!])\s+", text.strip())
+    if not sentences:
+        return text
+    first, rest = sentences[0], sentences[1:]
+    if " -- " in first:
+        # The last clause: an opener may carry its own ("Playable -- d4 was a little more
+        # precise -- your bishop on c1 is still shut in ...").
+        head, reason = first.rsplit(" -- ", 1)
+        if reason.rstrip(".").lower() in said:
+            first = head.rstrip(".") + "."
+    kept = [s for s in rest if (rule := _kept(s)) is None or rule not in said]
+    return " ".join([first, *kept])
+
+
+def _kept(sentence: str) -> str | None:
+    """The rule a "keep this one" sentence gives, in lower case, whichever lead it has."""
+    low = sentence.lower()
+    for lead in KEEP_LEADS:
+        if low.startswith(lead + ":"):
+            return low[len(lead) + 1 :].strip().rstrip(".")
+    return None
 
 
 def _said(keep: str, text: str) -> bool:
@@ -2148,6 +2211,19 @@ class Coach:
             self.summariser = summariser or provider
             self.claims = claims
 
+    def _recently_said(self) -> str:
+        """What the coach has said over the last RECENT_PLIES plies, as one text."""
+        texts: list[str] = []
+        plies = 0
+        for entry in reversed(list(self.conversation.entries)):
+            if entry.kind == "ply":
+                plies += 1
+                if plies > RECENT_PLIES:
+                    break
+            elif entry.kind == "coach":
+                texts.append(entry.text)
+        return " ".join(texts)
+
     def _rotate(self, key: str, phrases: Sequence[str]) -> str:
         """One of `phrases`, never the one said last under `key`."""
         choices = [p for p in phrases if p != self._last_said.get(key)] or list(phrases)
@@ -2469,13 +2545,17 @@ class Coach:
                     if left is not None and left.analysis is not None
                     else None
                 )
-                fallback = lesson_template(
-                    facts,
-                    best,
-                    self._rotate("cost", COST_YOU).format(best=best),
-                    board=position.board,
-                    played=played.uci,
-                    allowed=allowed,
+                fallback = fresh(
+                    lesson_template(
+                        facts,
+                        best,
+                        self._rotate("cost", COST_YOU).format(best=best),
+                        board=position.board,
+                        played=played.uci,
+                        allowed=allowed,
+                        keep_lead=self._rotate("keep", KEEP_LEADS),
+                    ),
+                    self._recently_said(),
                 )
                 instruction = (
                     f"The player just played {played.san}, which was a {label}: it cost "
@@ -2560,8 +2640,16 @@ class Coach:
                 )
             else:
                 # The better move and what it does, when the sheet has it, is the lesson.
-                fallback = lesson_template(
-                    facts, best, self._rotate("fine", FINE_TIGHTER).format(best=best)
+                fallback = fresh(
+                    lesson_template(
+                        facts,
+                        best,
+                        self._rotate("fine", FINE_TIGHTER).format(best=best),
+                        board=position.board,
+                        played=played.uci,
+                        keep_lead=self._rotate("keep", KEEP_LEADS),
+                    ),
+                    self._recently_said(),
                 )
                 instruction = (
                     f"The player just played {played.san}, which was fine but not the "
@@ -2737,7 +2825,17 @@ class Coach:
                 if best:
                     # The better move played out and the pattern to keep, as the lesson says
                     # it -- not "the idea was a pin" and nothing more.
-                    fallback += " " + lesson_template(facts, best, f"{best} was better")
+                    # Asked about the move just taught, the lesson is not said twice.
+                    fallback += " " + fresh(
+                        lesson_template(
+                            facts,
+                            best,
+                            f"{best} was better",
+                            played=record.move.uci,
+                            keep_lead=self._rotate("keep", KEEP_LEADS),
+                        ),
+                        self._recently_said(),
+                    )
                 directive = (
                     f"They ask about the move they already played, {san}. Its verdict is in its "
                     f"move message and is theirs in full: it was a {label} that cost {loss:.0%} "
