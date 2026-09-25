@@ -840,13 +840,21 @@ fun factsFromAnalysis(
     val prizeLast = plain != null
     // How a win with no named pattern comes about: what the first move does, and at the move
     // rung the line to it, never the result alone.
-    val toldHow = if (tacticalGoal && !forced && plain == null) Story.how(board, idea, threatMove) else null
+    val toldHow = if (tacticalGoal && !forced && plain == null) {
+        Story.how(board, idea, threatMove, if (analysis.threatens.isNotEmpty()) analysis.threatens[0] else null)
+    } else {
+        null
+    }
     var how = toldHow?.said
     if (toldHow != null && !toldHow.lesson.isNullOrEmpty()) {
         // The pattern the move carries, taught after it: "That's a trapped piece: ..."
         val taught = IdeaWords.lesson(toldHow.lesson, idea)?.ifEmpty { null } ?: toldHow.lesson
         how = "$how. ${taught.replaceFirstChar { it.uppercase() }}"
         nudge = toldHow.ask.ifEmpty { null } ?: nudge
+    } else if (toldHow != null && toldHow.ask.isNotEmpty() && !inCheck) {
+        // The second hint asks after what the first said the move is for: "which quiet move sets
+        // up a mate?" after "the first move is quiet, but it threatens mate".
+        nudge = toldHow.ask
     }
     if (tacticalGoal &&
         best != null &&
@@ -942,22 +950,29 @@ fun factsFromAnalysis(
         }
     }
     val keyShown = shownKey
+    val targetSaid = if (!keyShown.isNullOrEmpty() && keyShown.endsWith(" is the target")) {
+        Regex("[Tt]heir (\\w+) on [a-h][1-8]").matchEntire(keyShown.substring(0, keyShown.length - " is the target".length))
+    } else {
+        null
+    }
     val howSaid = how
-    if (!howSaid.isNullOrEmpty() &&
-        !keyShown.isNullOrEmpty() &&
-        keyShown.endsWith(" is the target") &&
-        howSaid.startsWith("The first move ")
-    ) {
-        // "Their queen on d3 is the target, and the first move attacks it."
-        val named = keyShown.substring(0, keyShown.length - " is the target".length)
-        var rest = howSaid.substring("The first move ".length)
-        val lowered = named[0].lowercaseChar() + named.substring(1)
-        rest = Regex("^(\\w+) ${Regex.escape(lowered)}\\b").replace(rest, "\$1 it")
-        if (", and " in rest.substringBefore(". ")) {
-            how = "The first move $rest"  // two "and"s in one sentence: said apart
-        } else {
-            shownKey = "$keyShown, and the first move $rest"
-            how = null
+    if (!howSaid.isNullOrEmpty() && !keyShown.isNullOrEmpty() && targetSaid != null) {
+        val their = "t" + keyShown.substring(1, keyShown.length - " is the target".length)  // "their rook on a1"
+        if (howSaid.startsWith("The first move ")) {
+            // "Their queen on d3 is the target, and the first move attacks it."
+            var rest = howSaid.substring("The first move ".length)
+            rest = Regex("^(\\w+) ${Regex.escape(their)}\\b").replace(rest, "\$1 it")
+            if ("," in rest.substringBefore(". ")) {
+                how = "The first move $rest"  // a clause of its own: said apart
+            } else {
+                shownKey = "$keyShown, and the first move $rest"
+                how = null
+            }
+        }
+        val now = how
+        if (now != null && their in now) {
+            // Named once: "... a check that also attacks the rook, which has no safe square".
+            how = now.replace(their, "the ${targetSaid.groupValues[1]}")
         }
     }
     if (!pawn.isNullOrEmpty()) parts.add(pawn)

@@ -353,6 +353,8 @@ def analysis_json(a: Any) -> dict[str, Any]:
         "traps": [line_json(one) for one in a.traps],
         # The recaptures the best line declines (desktop a1f7f81).
         "defences": [line_json(one) for one in a.defences],
+        # What a quiet best move threatens (desktop 29ae423).
+        "threatens": [line_json(one) for one in a.threatens],
         "tags": [{"name": t.name, "squares": list(t.squares), "move": t.move} for t in a.tags],
         "opening": a.opening,
         "in_book": a.in_book,

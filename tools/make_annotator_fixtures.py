@@ -131,6 +131,8 @@ def main() -> None:
                     "traps": [line_json(t) for t in analysis.traps],
                     # The recaptures the best line declines (desktop a1f7f81).
                     "defences": [line_json(t) for t in analysis.defences],
+                    # What a quiet best move threatens (desktop 29ae423).
+                    "threatens": [line_json(t) for t in analysis.threatens],
                     "in_book": analysis.in_book,
                 })
             games.append({"name": name, "plies": plies, "answers": recording.answers})
@@ -144,9 +146,11 @@ def main() -> None:
     calls = sum(len(a) for g in games for a in g["answers"].values())
     traps = sum(len(p["traps"]) for g in games for p in g["plies"])
     defences = sum(len(p["defences"]) for g in games for p in g["plies"])
+    threatens = sum(len(p["threatens"]) for g in games for p in g["plies"])
     booked = sum(1 for g in games for p in g["plies"] if p["in_book"])
     print(f"{sum(len(g['plies']) for g in games)} plies, {calls} engine answers; "
           f"labels {labels}; move tags {tags}; {traps} traps, {defences} defences, "
+          f"{threatens} threats of quiet moves, "
           f"{booked} plies in book")
     for g in games:
         print(g["name"], [p["opening"] for p in g["plies"]][-1], [p["label"] for p in g["plies"]])

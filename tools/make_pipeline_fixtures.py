@@ -31,6 +31,7 @@ sys.path.insert(0, str(DESKTOP / "src"))
 
 import chess  # noqa: E402
 import cv2  # noqa: E402
+import numpy as np  # noqa: E402
 
 from sidecoach.events import (  # noqa: E402
     BoardUnread,
@@ -45,6 +46,7 @@ from sidecoach.events import (  # noqa: E402
 )
 from sidecoach.replay.recording import ChangeGate, board_gate  # noqa: E402
 from sidecoach.state.pipeline import GamePipeline  # noqa: E402
+from sidecoach.vision import pieces  # noqa: E402
 from sidecoach.vision.squares import BoardGeometry  # noqa: E402
 from sidecoach.vision.theme_cache import ThemeCache  # noqa: E402
 from tests import synth  # noqa: E402
@@ -87,14 +89,16 @@ def event_json(event) -> str:
     return type(event).__name__
 
 
-def flatten_around(frame, pad_cells: float = 1.5):
+def flatten_around(frame, pad_cells: float = 1.5, where: tuple[int, int, int] = (X0, Y0, CELL)):
     """Everything well outside the board set to one colour: the board's own pixels are
-    untouched, and what is left compresses to a fraction of a busy background."""
-    pad = int(round(pad_cells * CELL))
-    x0 = max(0, X0 - pad)
-    y0 = max(0, Y0 - pad)
-    x1 = min(frame.shape[1], X0 + 8 * CELL + pad)
-    y1 = min(frame.shape[0], Y0 + 8 * CELL + pad)
+    untouched, and what is left compresses to a fraction of a busy background. `where` is the
+    board's left, top and cell."""
+    bx, by, cell = where
+    pad = int(round(pad_cells * cell))
+    x0 = max(0, bx - pad)
+    y0 = max(0, by - pad)
+    x1 = min(frame.shape[1], bx + 8 * cell + pad)
+    y1 = min(frame.shape[0], by + 8 * cell + pad)
     keep = frame[y0:y1, x0:x1].copy()
     frame[:, :] = (32, 32, 32)
     frame[y0:y1, x0:x1] = keep
@@ -434,6 +438,76 @@ def reread_selected(theme: str) -> list[dict]:
     ]
 
 
+# The phone's frame period (~9.6 frames a second), as `tests/test_slides.py` samples it, and
+# the test's frame: the board at (300, 120), 64 px cells, on 1280 by 800 -- at this tool's 50 px
+# the queen's slide never reads as a piece standing on a square, and the scenario would hold
+# nothing the rule is for.
+SLIDE_PERIOD = 0.104
+SLIDE_BOARD = dict(x0=300, y0=120, cell=64, width=1280, height=800, coordinates=True)
+
+
+def slides(
+    start: str, setup: str, moves: list[str], slide: float, power: float, phase: float
+) -> list[dict]:
+    """A puzzle played at the phone's ~9.6 frames a second, every move sliding for `slide`
+    seconds with progress `u ** power` and a faint three-layer trail, the site replying the
+    moment the solver's piece lands: desktop 8fadeda's `tests/test_slides.py`, frame for
+    frame, drawn on this tool's board. A frame that caught the rook near the centre of c7 read
+    as a rook standing there, and the next frame, the rook further on and the reply already
+    sliding, explained as the rook moving on (Tai, 2026-09-25: "I played Rxc1+ but it
+    misunderstood as Rc7"). Each state is one frame, its time given (`_ts`), drawn on the
+    test's own board (`SLIDE_BOARD`, `_where`)."""
+    board = chess.Board(start)
+    solver = not board.turn
+    bottom = synth.Side.WHITE if solver == chess.WHITE else synth.Side.BLACK
+    events = [(0.0, chess.Move.from_uci(setup))]
+    t = 3.0
+    for i, uci in enumerate(moves):
+        events.append((t, chess.Move.from_uci(uci)))
+        t += slide if i % 2 == 0 else 2.0
+    end = t + 1.5
+
+    def frame(b: chess.Board, side, **kw):  # noqa: ANN001, ANN202
+        return synth.synthetic_board(board=b, bottom=side, **SLIDE_BOARD, **kw)
+
+    def scene(time: float):  # noqa: ANN202
+        b = board.copy()
+        last = None
+        for t0, move in events:
+            if time < t0:
+                break
+            u = (time - t0) / slide
+            if u < 1.0:
+                p = u**power
+                sq = (move.from_square, move.to_square)
+                img = frame(b, bottom, highlight=move, animating=(*sq, p))
+                if p > 0.05:
+                    g1 = frame(b, bottom, highlight=move, animating=(*sq, max(0.0, p - 0.08)))
+                    g2 = frame(b, bottom, highlight=move, animating=(*sq, max(0.0, p - 0.16)))
+                    img = (
+                        0.70 * img.astype(np.float32)
+                        + 0.20 * g1.astype(np.float32)
+                        + 0.10 * g2.astype(np.float32)
+                    ).astype(np.uint8)
+                return img
+            b.push(move)
+            last = move
+        return frame(b, bottom, highlight=last)
+
+    where = (SLIDE_BOARD["x0"], SLIDE_BOARD["y0"], SLIDE_BOARD["cell"])
+    states: list[dict] = []
+    ts = 0.0
+    for _ in range(3):
+        ts += SLIDE_PERIOD
+        states.append({"_image": frame(chess.Board(), synth.Side.WHITE), "_ts": ts, "_where": where})
+    k = 0
+    while (time := phase + k * SLIDE_PERIOD) <= end:
+        ts += SLIDE_PERIOD
+        states.append({"_image": scene(time), "_ts": ts, "_where": where})
+        k += 1
+    return states
+
+
 SCENARIOS = {
     "mate-green": lambda: scholars_mate("green", "cburnett"),
     "resign-green": lambda: a_resignation("green", "cburnett"),
@@ -448,7 +522,34 @@ SCENARIOS = {
     "setup-lit-green": lambda: setup_lit("green"),
     "reread-selected-green": lambda: reread_selected("green"),
     "reread-selected-brown": lambda: reread_selected("brown"),
+    # Tai's phone puzzle: Rc1+ Rxc1 Rxc1+ Rxc1 Qxd5; Rxc1+ was recorded as Rc7.
+    "slide-rook-green": lambda: slides(
+        "2r3k1/pQ3p2/6p1/q6p/2r5/P4P2/1P4PP/1K1R3R w - - 0 1",
+        "b7d5",
+        ["c4c1", "d1c1", "c8c1", "h1c1", "a5d5"],
+        0.4,
+        2.0,
+        0.02,
+    ),
+    # The desktop dump's: Qd1+ Rxd1 Rxd1+ Qe1; Rxd1 was recorded as Rd3 and Rxd1.
+    "slide-queen-green": lambda: slides(
+        "2kr2nr/2p5/2p1p1pp/3QPp2/3R4/P3P3/1Pq2PPP/R1B3K1 w - - 0 1",
+        "d5a5",
+        ["c2d1", "d4d1", "d8d1", "a5e1"],
+        0.3,
+        2.0,
+        0.04,
+    ),
 }
+
+
+# Scenarios recorded with the landing rule the phone's recogniser uses: the centroid, the
+# desktop's documented alternative to its default phase correlation (`ThemeModel.fromEmbedding`
+# says why). The two read a slide's trail-blended frames differently -- the queen caught
+# mid-slide is still landing to one and landed to the other -- and these scenarios are about
+# the reconciler, not about that choice. Under either rule the desktop before 8fadeda invents
+# moves on them and the desktop after it does not.
+PHONE_LANDING = {"slide-rook-green", "slide-queen-green"}
 
 
 def run(name: str, states: list[dict]) -> dict:
@@ -465,13 +566,19 @@ def run(name: str, states: list[dict]) -> dict:
         repeat = state.pop("_repeat", 1)
         session = state.pop("_session", False)
         asked = state.pop("_asked", False)
+        # A frame drawn by the scenario itself, at the time it gives (`slides`).
+        given = state.pop("_image", None)
+        at = state.pop("_ts", None)
+        where = state.pop("_where", (X0, Y0, CELL))
         if session:
             pipeline = GamePipeline(cache=cache)
             gate = ChangeGate()
         # A state held for several frames is one file, named several times: what the
         # pipeline sees is the same pixels again, which is what a still board is; and a
         # board seen before is the file it was written to then.
-        image = flatten_around(synth.synthetic_board(**state))
+        image = flatten_around(
+            given if given is not None else synth.synthetic_board(**state), where=where
+        )
         digest = hashlib.sha1(image.tobytes()).hexdigest()
         if digest in WRITTEN:
             name_of, stored = WRITTEN[digest]
@@ -482,8 +589,9 @@ def run(name: str, states: list[dict]) -> dict:
             name_of = f"{name}/{index:03d}.png"
             WRITTEN[digest] = (name_of, stored)
         for i in range(repeat):
-            ts = frame_id / FPS
-            gate.region = board_gate(pipeline.board, WIDTH, HEIGHT)
+            ts = at if at is not None else frame_id / FPS
+            # The frame's own size, as the phone's test takes it: a scenario may draw its own.
+            gate.region = board_gate(pipeline.board, stored.shape[1], stored.shape[0])
             changed = gate.changed(stored, ts)
             events = pipeline.process(stored, ts, changed=changed, frame_id=frame_id)
             frame = {
@@ -525,7 +633,13 @@ def main() -> None:
     OUT.mkdir(parents=True)
     runs = []
     for name, build in SCENARIOS.items():
-        data = run(name, build())
+        landing = pieces.LANDING
+        if name in PHONE_LANDING:
+            pieces.LANDING = "centroid"
+        try:
+            data = run(name, build())
+        finally:
+            pieces.LANDING = landing
         moves = sum(
             1 for f in data["frames"] for line in f["events"] if line.startswith("MovePlayed")
         )

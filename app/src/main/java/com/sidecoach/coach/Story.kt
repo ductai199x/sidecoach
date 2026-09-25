@@ -14,6 +14,7 @@ import com.sidecoach.chess.QUEEN
 import com.sidecoach.chess.ROOK
 import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.between
+import com.sidecoach.chess.pawnAttacks
 import com.sidecoach.chess.square
 import com.sidecoach.chess.squareFile
 import com.sidecoach.chess.squareName
@@ -573,7 +574,7 @@ object Story {
      * walk that wins it (Lichess jlCZP, a zugzwang); "the first move attacks their rook on d8"
      * says how.
      */
-    fun how(board: Board, idea: Idea, threat: Move?): Effect? {
+    fun how(board: Board, idea: Idea, threat: Move?, aim: Line? = null): Effect? {
         if ((idea.goal != "win" && idea.goal != "combination") || idea.blow != null) return null
         val first = idea.first ?: return null
         if (idea.gainPly == 0 && board.isCapture(first)) return null  // the capture is the how
@@ -591,10 +592,204 @@ object Story {
             )
         if (!big) found = found.filter { !it.said.startsWith("takes their") }.ifEmpty { found }
         // "pushes your passed pawn" is the move itself, not how it wins.
+        val pushes = found.any { it.said.startsWith("pushes") }
         found = found.filter { !it.said.startsWith("pushes") }
-        if (found.isEmpty()) return null
+        if (found.isEmpty()) {
+            // A quiet move: what it threatens, else the bait or the passed pawn it sets going.
+            return aimHow(board, idea, aim) ?: quietHow(board, idea, pushes)
+        }
         val firstEffect = found[0]
         return Effect("The first move ${firstEffect.said}", firstEffect.ask, firstEffect.lesson)
+    }
+
+    private val MATE_IN = mapOf(2 to "two", 3 to "three", 4 to "four", 5 to "five")
+    private const val QUIET = "The first move is quiet, but it threatens"
+    private val HIT = Regex("attacks their (\\w+ on [a-h][1-8])(, and it has no safe square to go to)?")
+
+    /**
+     * How a quiet first move wins: what it threatens ([com.sidecoach.events.Analysis.threatens],
+     * the engine's best line for the player after the move and a free move for the opponent).
+     * "Their knight on c3 is the target" alone left the player to find a quiet move with nothing
+     * to go on (the 28 wins of the puzzle sample the story checks found bare, 2026-09-25); "the
+     * first move is quiet, but it threatens mate" is the lesson. Said by what the threat does -- a
+     * mate, a pawn that queens, a piece taken, a check that hits a piece too, material won --
+     * naming only what stands on the board now, never the move or where it goes.
+     */
+    fun aimHow(board: Board, idea: Idea, aim: Line?): Effect? {
+        val first = idea.first
+        if (aim == null || aim.moves.isEmpty() || first == null || !board.isLegal(first)) return null
+        val after = board.copy(withStack = false)
+        after.push(first)
+        if (after.isCheck()) return null
+        val passed = after.copy(withStack = false)
+        passed.push(Move.NULL)
+        val threat = Move.fromUciOrNull(aim.moves[0]) ?: return null
+        if (!passed.isLegal(threat)) return null
+        val mate = aim.mate
+        if (mate != null && mate > 0) {
+            val said = if (mate == 1) {
+                "$QUIET mate"
+            } else if (mate in MATE_IN) {
+                "$QUIET mate in ${MATE_IN.getValue(mate)}"
+            } else {
+                "$QUIET a mating attack"
+            }
+            return Effect(said, "Which quiet move sets up a mate?")
+        }
+        // A pawn of yours that queens along the threat.
+        val b = passed.copy(withStack = false)
+        for ((j, uci) in aim.moves.take(6).withIndex()) {
+            val move = Move.fromUci(uci)
+            if (!b.isLegal(move)) break
+            if (j % 2 == 0 && move.promotion != 0) {
+                return Effect("$QUIET to queen a pawn", "Which quiet move makes your pawn unstoppable?")
+            }
+            b.push(move)
+        }
+        val found = effects(passed, threat, null)
+        val check = found.any { it.said == "gives check" }
+        val taken = if (passed.isCapture(threat)) passed.pieceAt(threat.to) else null
+        if (taken != null &&
+            taken.pieceType != PAWN &&
+            taken.pieceType != KING &&
+            Exchange.exchange(passed, threat) > 0
+        ) {
+            return Effect(
+                "$QUIET to take their ${named(passed, threat.to)}",
+                "Which of their pieces would a quiet move put in danger?",
+            )
+        }
+        val hit = found.firstNotNullOfOrNull { HIT.matchEntire(it.said) }
+        if (hit != null && check) {
+            val tail = if (hit.groups[2] != null) ", which has no safe square left" else ""
+            return Effect(
+                "$QUIET a check that also attacks their ${hit.groupValues[1]}$tail",
+                "Which check could hit two things at once, once the way is ready?",
+            )
+        }
+        if (hit != null && hit.groups[2] != null) {
+            return Effect(
+                "$QUIET their ${hit.groupValues[1]}, which has no safe square left",
+                "Which of their pieces is short of squares?",
+            )
+        }
+        val net = lineNet(passed, aim.moves)
+        if (net >= 1) {
+            val what = if (net == 1) "a pawn" else "material"
+            val how = if (check) "a check that wins $what" else "to win $what"
+            return Effect("$QUIET $how", "What would you play next if they did nothing?")
+        }
+        // Nothing won yet within reach: the break or the check the move prepares.
+        val mover = passed.pieceAt(threat.from)
+        if (mover != null &&
+            mover.pieceType == PAWN &&
+            !passed.isCapture(threat) &&
+            squaresOf(pawnAttacks(passed.turn, threat.to)).any { sq ->
+                val target = passed.pieceAt(sq)
+                target != null && target.colour != passed.turn && target.pieceType == PAWN
+            }
+        ) {
+            return Effect("$QUIET a pawn break", "Which pawn break could a quiet move prepare?")
+        }
+        if (check) return Effect("$QUIET a check", "Which check could a quiet move prepare?")
+        return null
+    }
+
+    /**
+     * What [moves] net the side to move in material, in pawns, after their last reply within
+     * [plies].
+     */
+    private fun lineNet(board: Board, moves: List<String>, plies: Int = 6): Int {
+        val us = board.turn
+        val b = board.copy(withStack = false)
+
+        fun balance(): Int = b.pieceMap().values.sumOf { piece ->
+            (VALUES[piece.pieceType] ?: 0) * (if (piece.colour == us) 1 else -1)
+        }
+
+        val start = balance()
+        var net = 0
+        for ((j, uci) in moves.take(plies).withIndex()) {
+            val move = Move.fromUci(uci)
+            if (!b.isLegal(move)) break
+            b.push(move)
+            if (j % 2 == 1) net = balance() - start
+        }
+        return net
+    }
+
+    /**
+     * How a quiet first move wins when there is no threat to say ([aimHow]), read off the best
+     * line: the bait it sets -- the piece it moves is taken, and the next move takes the taker or
+     * what the taker had been guarding -- or the passed pawn it sets going, which costs them a
+     * piece to stop. Names only what stands on the board now, never the move.
+     */
+    fun quietHow(board: Board, idea: Idea, pushes: Boolean = false): Effect? {
+        val first = idea.first
+        val line = idea.line.toList()
+        if (first == null || line.isEmpty() || line[0] != first || !board.isLegal(first)) return null
+        val after = board.copy(withStack = false)
+        after.push(first)
+        if (line.size >= 3 && after.isLegal(line[1])) {
+            val reply = line[1]
+            val follow = line[2]
+            val taker = after.pieceAt(reply.from)
+            // The bait is what the first move itself puts where it can be taken.
+            if (after.isCapture(reply) &&
+                reply.to == first.to &&
+                taker != null &&
+                taker.pieceType != KING
+            ) {
+                val took = after.copy(withStack = false)
+                took.push(reply)
+                if (took.isLegal(follow) && took.isCapture(follow)) {
+                    val name = named(after, reply.from)
+                    if (follow.to == reply.to) {
+                        return Effect(
+                            "The first move sets a bait: if their $name takes, it is lost",
+                            "What could you offer that they cannot afford to take?",
+                        )
+                    }
+                    if (follow.to in after.attacks(reply.from)) {
+                        return Effect(
+                            "The first move sets a bait: if their $name takes, their " +
+                                "${named(after, follow.to)} loses its guard",
+                            "Which of their pieces is doing the guarding?",
+                        )
+                    }
+                }
+            }
+        }
+        // The passed pawn: pushed, or walked in behind by the king, and stopping it costs them.
+        val moved = board.pieceAt(first.from)
+        val runner = pushes || (
+            moved != null &&
+                moved.pieceType == KING &&
+                line.size >= 3 &&
+                pushesPasser(after, line[1], line[2])
+            )
+        val won = idea.won
+        if (runner && !won.isNullOrEmpty() && " for " in won) {
+            val cost = won.substringBefore(" for ").removePrefix("back ")
+            return Effect(
+                "The first move gets your passed pawn going, and stopping it costs them $cost",
+                "How far can your passed pawn go?",
+            )
+        }
+        return null
+    }
+
+    /** Whether [follow], after [reply], pushes a passed pawn of the side that played first. */
+    private fun pushesPasser(after: Board, reply: Move, follow: Move): Boolean {
+        if (!after.isLegal(reply)) return false
+        val b = after.copy(withStack = false)
+        b.push(reply)
+        val piece = b.pieceAt(follow.from)
+        return b.isLegal(follow) &&
+            piece != null &&
+            piece.pieceType == PAWN &&
+            !b.isCapture(follow) &&
+            isPassed(b, follow.from)
     }
 
     /**

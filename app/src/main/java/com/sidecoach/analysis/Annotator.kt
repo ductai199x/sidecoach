@@ -51,6 +51,7 @@ class Measured(
     val threats: List<String> = emptyList(),
     val traps: List<Line> = emptyList(),
     val defences: List<Line> = emptyList(),
+    val threatens: List<Line> = emptyList(),
 ) {
     /** How deep the search actually got, which the time cap can cut short. */
     val depth: Int get() = if (lines.isEmpty()) 0 else lines[0].depth
@@ -149,6 +150,8 @@ class GameAnnotator(
             // And the recaptures the best line declines, with what refutes them: why the obvious
             // defence fails is the lesson ("the pawn on f2 cannot take back").
             defences = if (withThreats && !hurry) Defences.defenceLines(engine, board, lines) else emptyList(),
+            // And what a quiet best move threatens: how it wins ("it threatens mate").
+            threatens = if (withThreats && !hurry) aimLines(engine, board, lines) else emptyList(),
         )
         cache[key] = measured
         return measured
@@ -177,6 +180,7 @@ class GameAnnotator(
             threats = measured.threats,
             traps = measured.traps,
             defences = measured.defences,
+            threatens = measured.threatens,
             tags = positionTags(board, measured),
             opening = opening(board),
             inBook = inBook(board),

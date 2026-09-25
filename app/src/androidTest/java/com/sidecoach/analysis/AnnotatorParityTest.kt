@@ -19,8 +19,8 @@ import java.io.File
  * The annotator with its collaborators held to `sidecoach/analysis/annotator.py`: four real
  * games, each played on one board so the moves that led to every position come along, and
  * every ply's label, severity, loss, best line, move tags, position tags, opening, decisive
- * and only-move calls, threats, traps and declined recaptures compared with what the desktop's
- * annotator said
+ * and only-move calls, threats, traps, declined recaptures and what a quiet move threatens
+ * compared with what the desktop's annotator said
  * (`tools/make_annotator_fixtures.py`). The engine is scripted from the desktop's recording
  * of the real Stockfish, so what is compared is the annotator itself.
  */
@@ -139,6 +139,7 @@ class AnnotatorParityTest {
                 assertEquals("$where threats", strings(want.getJSONArray("threats")), analysis.threats)
                 assertEquals("$where traps", recordedLines(want.getJSONArray("traps")), analysis.traps)
                 assertEquals("$where defences", recordedLines(want.getJSONArray("defences")), analysis.defences)
+                assertEquals("$where threatens", recordedLines(want.getJSONArray("threatens")), analysis.threatens)
                 assertEquals("$where in book", want.getBoolean("in_book"), analysis.inBook)
                 traps += analysis.traps.size
                 defences += analysis.defences.size

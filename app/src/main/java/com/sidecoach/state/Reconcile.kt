@@ -1,5 +1,6 @@
 package com.sidecoach.state
 
+import com.sidecoach.chess.BB_EMPTY
 import com.sidecoach.chess.BB_SQUARES
 import com.sidecoach.chess.BLACK
 import com.sidecoach.chess.Bitboard
@@ -189,6 +190,38 @@ internal fun adoptPlacement(
     return board to (validTurns.size > 1)
 }
 
+/**
+ * How long a premove queue, once its red tint is seen, is taken to be about: a queue executes one
+ * step for each of the opponent's replies, within a second or two.
+ */
+const val QUEUE_MEMORY_S = 3.0
+
+/**
+ * `reconcile.in_flight`: whether a story has a piece stop partway along a straight line and then
+ * go on the same way: a to x, and later x to y by that piece, x strictly between a and y. Seen on
+ * one frame, that is one move in flight, never two. Every site slides a moved piece in a straight
+ * line from its square to the next, and a frame that catches it near the centre of a square on
+ * its way reads as a piece standing there; the next frame, with the piece further on (or
+ * landed), then explains as the same piece moving on. Chess.com's phone app slides every move and
+ * cannot be told not to, speeding up as it goes, with a trail (Tai, 2026-09-25): "I played Rxc1+
+ * but it misunderstood as Rc7". Geometry alone, for every piece, both sides, any speed and any
+ * capture rate; the highlights are not read (they can be turned off, and section 5.3 of DESIGN.md
+ * keeps the reconciler free of them). A piece that returns to a square it left, or another piece
+ * moving next, is not in flight. The caller decides when the shape means flight
+ * ([Reconciler.flight]): a pawn pushed twice is two moves when each stood still to be seen.
+ */
+fun inFlight(moves: List<Move>): Boolean {
+    val landed = HashMap<Int, Move>()
+    for (move in moves) {
+        val came = landed.remove(move.from)
+        if (came != null && between(came.from, move.to) and BB_SQUARES[move.from] != BB_EMPTY) {
+            return true
+        }
+        landed[move.to] = move
+    }
+    return false
+}
+
 fun touchedSquares(board: Board, move: Move): MutableSet<Int> {
     val touched = mutableSetOf(move.from, move.to)
     if (board.isCastling(move)) {
@@ -309,6 +342,9 @@ class Reconciler(
     private var lastObs: Observation = Observation()
     private var tsValue = 0.0
     private var lastCommitTs: Double? = null
+
+    /** When a premove queue's red tint was last seen ([flight]). */
+    private var redTs: Double? = null
 
     val started: Boolean get() = startedFlag
     val finished: Boolean get() = finishedFlag
@@ -684,7 +720,11 @@ class Reconciler(
             reading.kind == Kind.PIECE && !reading.settled &&
                 !decoratedKing(squareAt(i / 8, i % 8, bottom == Side.WHITE), reading)
         }
-        var obs = unqueue(observe(readings))  // premove ghosts put back
+        val seen = observe(readings)
+        // A queue leaves its piece's real square red and empty; a checked king's red glow stands
+        // on a piece, and says nothing of a queue.
+        if (seen.values.any { it.tint == "red" && it.kind == Kind.EMPTY }) redTs = ts
+        var obs = unqueue(seen)  // premove ghosts put back
         if (obs.size < minReadableCells) {
             holdPending(true)
             return events
@@ -1337,11 +1377,31 @@ class Reconciler(
 
     val userColour: Boolean get() = if (userSide == Side.WHITE) WHITE else BLACK
 
-    /** The pending story from the latest position and the position it leads to. */
+    /**
+     * Whether [moves], the pending story or a story built on it, catch a piece in flight: the
+     * pending story seen on one frame only -- a piece that stood still on a square was seen there
+     * twice, which a slide never is -- no premove queue about, whose steps land one for each reply
+     * faster than any frame can witness them, and a piece stopping partway along its line and
+     * going on the same way ([inFlight]).
+     */
+    private fun flight(moves: List<Move>): Boolean {
+        val current = pending
+        val seenOnce = current == null || current.second < 2
+        val red = redTs
+        val queue = red != null && tsValue - red <= QUEUE_MEMORY_S
+        return seenOnce && !queue && inFlight(moves)
+    }
+
+    /**
+     * The pending story from the latest position and the position it leads to. A story with a
+     * piece in flight ([inFlight]) is nothing to build on: it settles, if it ever does, on frames
+     * of its own.
+     */
     private fun pendingStory(): Pair<List<Move>, Board>? {
         val current = pending ?: return null
         if (current.first.kind !in STORY_KEYS) return null
         val moves = current.first.moves
+        if (flight(moves)) return null
         val base = board.copy(withStack = false)
         for (move in moves) {
             if (!base.isLegal(move)) return null
@@ -1397,6 +1457,11 @@ class Reconciler(
             story = paths[0]
         }
         val combined = moves + story
+        if (flight(combined)) {
+            // The frame shows a piece of the pending story further along its own line: the story
+            // caught it in flight, and this frame is no second witness of it.
+            return null
+        }
         if (!highlightOk(obs, combined)) return null
         // A bot that answers within a frame or two and a queue that executes on every answer
         // make a chain that grows by two plies a picture and never shows the same picture long
@@ -1458,7 +1523,7 @@ class Reconciler(
         val reply = replies[0][0]
         if (!cellsClean(obs, touchedSquares(base, reply))) return null
         val combined = moves + reply
-        if (combined.size > maxChainPlies) return null
+        if (combined.size > maxChainPlies || flight(combined)) return null
         return settle(PendingKey("moves", null, combined), obs, commitMoves(combined))
     }
 

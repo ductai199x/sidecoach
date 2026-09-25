@@ -105,6 +105,11 @@ class Analysis(
      * after it, scored from the side to move's view.
      */
     val defences: List<Line> = emptyList(),
+    /**
+     * What the best move threatens when it is quiet ([com.sidecoach.analysis.aimLines]): the side
+     * to move's best line after it and a free move for the opponent, from that side's view.
+     */
+    val threatens: List<Line> = emptyList(),
     val tags: List<MotifTag> = emptyList(),
     val opening: String? = null,
     /**

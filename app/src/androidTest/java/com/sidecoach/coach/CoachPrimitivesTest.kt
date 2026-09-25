@@ -537,6 +537,7 @@ class CoachPrimitivesTest {
             threats = strings(o.getJSONArray("threats")),
             traps = linesFrom(o.getJSONArray("traps")),
             defences = linesFrom(o.getJSONArray("defences")),
+            threatens = linesFrom(o.getJSONArray("threatens")),
             tags = tags,
             opening = if (o.isNull("opening")) null else o.getString("opening"),
             inBook = o.getBoolean("in_book"),

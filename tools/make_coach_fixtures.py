@@ -53,7 +53,8 @@ back with, and the balance lost.
 
 Since desktop a1f7f81 the traps searched beside an analysis come with the recaptures its best
 line declines (`analysis/defences.py`), and the two puzzles of `tests/test_story.py` on why the
-obvious defence fails are recorded as `_hints_with` builds them.
+obvious defence fails are recorded as `_hints_with` builds them; since desktop 29ae423, with
+what a quiet best move threatens (`threats.aim_lines`), and the three quiet-move puzzles too.
 
 Every case's lessons are also said as the move-by-move lesson says them, with the position and
 the move played (`lesson_template(..., board=, played=)`): every legal capture onto the better
@@ -82,6 +83,7 @@ from sidecoach.analysis.defences import defence_lines  # noqa: E402
 from sidecoach.analysis.engine import Engine  # noqa: E402
 from sidecoach.analysis.motifs import tags_for_position  # noqa: E402
 from sidecoach.analysis.openings import OpeningBook  # noqa: E402
+from sidecoach.analysis.threats import aim_lines  # noqa: E402
 from sidecoach.analysis.traps import tempting, trap_lines  # noqa: E402
 from sidecoach.analysis.phase import phase_of  # noqa: E402
 from sidecoach.analysis.score import human_expected_score  # noqa: E402
@@ -191,9 +193,10 @@ STORY_TESTS = [
     ),
 ]
 
-# `tests/test_story.py` (desktop a1f7f81): why the obvious defence fails, the Analysis as
-# `_hints_with` builds it -- decisive, one move, the declined recaptures and the traps given:
-# (name, fen, [(line, score)], [(defence, score, mate)], [(trap, score, mate)]).
+# `tests/test_story.py` (desktop a1f7f81, 29ae423): the Analysis as `_hints_with` builds it --
+# decisive, one move, the declined recaptures, the traps and what a quiet move threatens given:
+# (name, fen, [(line, score)], [(defence, score, mate)], [(trap, score, mate)],
+# [(threat, score, mate)]).
 DEFENCE_STORY_TESTS = [
     (
         "Qxg3: why the obvious recapture fails is the lesson",
@@ -203,6 +206,7 @@ DEFENCE_STORY_TESTS = [
             (["f8d6", "f2f4", "f7f5", "f1f3", "c7b6", "g3f2"], 0.267),
         ],
         [(["c7g3", "f2g3", "f8c5", "d3d4", "c5d4", "f1f2", "d4f2"], 0.931, None)],
+        [],
         [],
     ),
     (
@@ -217,6 +221,53 @@ DEFENCE_STORY_TESTS = [
             (["e6f7", "g8h8", "d6b8", "f8b8", "f7f8q", "b8f8", "f1f8"], 1.0, 2),
         ],
         [(["d6b8", "g5d2", "g2h1", "f8b8", "d4f3"], 0.09, None)],
+        [],
+    ),
+    (
+        "06VoP: a quiet move is told by what it threatens",
+        "2rr2k1/5pp1/p1qp3p/4pP1N/1p6/1P4PK/PP5P/R2Q4 w - - 5 32",
+        [
+            (["d1g4", "g8f8", "g4g7", "f8e8", "g7g8", "e8e7", "f5f6", "e7e6"], 0.924),
+            (["d1f1"], 0.241),
+        ],
+        [],
+        [],
+        [(["g4g7"], 1.0, 1)],
+    ),
+    (
+        "05cb6: a quiet move that threatens a piece names it where it stands",
+        "r4rk1/p3pp1p/1p4p1/3P4/2P4b/1Q3R2/PP2N3/1q1K2R1 w - - 3 35",
+        [
+            (["d1d2", "b1e4", "f3f4", "e4e5", "f4h4", "e7e6", "b3c3", "e5c3"], 0.797),
+            (["e2c1", "a8c8", "g1g4", "h4f6", "f3f6", "e7f6", "b3c2", "b1c2"], 0.093),
+        ],
+        [],
+        [],
+        [(["g1b1", "e7e6", "b1h1", "a7a5", "h1h4", "a5a4"], 0.959, None)],
+    ),
+    (
+        "00pWF: a quiet pawn move threatens a break",
+        "8/8/p3k3/1p1pP3/5P2/1P3K2/8/8 b - - 1 53",
+        [
+            (
+                [
+                    "a6a5", "f3g4", "e6f7", "f4f5", "a5a4", "b3a4", "b5a4", "f5f6",
+                    "f7g6", "f6f7", "g6f7", "g4f5", "f7e7", "e5e6", "a4a3", "f5e5",
+                ],
+                0.874,
+            ),
+            (["b5b4"], 0.456),
+            (
+                [
+                    "e6f5", "b3b4", "a6a5", "b4a5", "b5b4", "f3e3", "b4b3", "e3d3",
+                    "b3b2", "d3c2", "f5e4",
+                ],
+                0.089,
+            ),
+        ],
+        [],
+        [],
+        [(["a5a4", "b3a4", "b5a4", "f3e3", "a4a3", "f4f5"], 0.872, None)],
     ),
 ]
 
@@ -591,6 +642,17 @@ def analysis_json(analysis: Analysis) -> dict:
                 "mate": line.mate,
             }
             for line in analysis.defences
+        ],
+        # What a quiet best move threatens (desktop 29ae423).
+        "threatens": [
+            {
+                "moves": list(line.moves),
+                "depth": line.depth,
+                "expected_score": line.expected_score,
+                "score_cp": line.score_cp,
+                "mate": line.mate,
+            }
+            for line in analysis.threatens
         ],
         "tags": [
             {"name": tag.name, "squares": list(tag.squares), "move": tag.move}
@@ -1195,14 +1257,16 @@ def plan_category(facts: D.PositionFacts) -> str:
 
 
 def with_traps(engine: Engine | None, board: chess.Board, analysis: Analysis) -> Analysis:
-    """The analysis with the traps and the declined recaptures the annotator would search for
-    it, in the order it searches them (`defence_lines` beside `trap_lines`, desktop a1f7f81)."""
+    """The analysis with the traps, the declined recaptures and what a quiet best move
+    threatens, as the annotator would search them for it, in its order (`trap_lines`,
+    `defence_lines` from desktop a1f7f81, `aim_lines` from 29ae423)."""
     if engine is None:
         return analysis
     return analysis.model_copy(
         update={
             "traps": trap_lines(engine, board, analysis.lines),
             "defences": defence_lines(engine, board, analysis.lines),
+            "threatens": aim_lines(engine, board, analysis.lines),
         }
     )
 
@@ -1318,9 +1382,13 @@ def main() -> None:
                     Line(moves=moves, depth=14, expected_score=score, mate=mate)
                     for moves, score, mate in made_traps
                 ],
+                threatens=[
+                    Line(moves=moves, depth=14, expected_score=score, mate=mate)
+                    for moves, score, mate in made_threats
+                ],
             ),
         )
-        for name, fen, story_lines, made_defences, made_traps in DEFENCE_STORY_TESTS
+        for name, fen, story_lines, made_defences, made_traps, made_threats in DEFENCE_STORY_TESTS
     ]
     stories = []
     for name, fen, analysis in told_stories:

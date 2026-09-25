@@ -19,8 +19,9 @@ import org.junit.runner.RunWith
  * case -- six Lichess puzzles read by hand, with the engine's lines as the app's settings saw
  * them. Each asserts what the test asserts, and that the three hints are the desktop's word for
  * word, as recorded with the desktop's story checks (`tools/puzzles/story_checks.py`, desktop
- * tooling), which all hold on each; and desktop a1f7f81's two, why the obvious defence fails
- * ([Story.defence]), with the declined recaptures and the traps the test gives. Then the traps
+ * tooling), which all hold on each; desktop a1f7f81's two, why the obvious defence fails
+ * ([Story.defence]), with the declined recaptures and the traps the test gives; and desktop
+ * 29ae423's three, a quiet move told by what it threatens ([Story.aimHow]). Then the traps
  * made by hand: their ranking ([Situation.rankedTraps]: on the target, into mate, the worst) and
  * their words with and without the best move -- the wrong piece to take back with, the balance
  * lost.
@@ -65,6 +66,7 @@ class StoryTest {
                 threats = strings(o.getJSONArray("threats")),
                 traps = lines(o.getJSONArray("traps")),
                 defences = lines(o.getJSONArray("defences")),
+                threatens = lines(o.getJSONArray("threatens")),
             )
             val facts = factsFromAnalysis(board, analysis, user = board.turn)
             val texts = mapOf(
@@ -166,6 +168,33 @@ class StoryTest {
         assertTrue(idea, "loose" !in idea && "no defender" !in idea)
         assertTrue(idea, "Their rook on b8 can be won, but not at once: Qxb8 right away runs into Qd2+" in idea)
         assertTrue(texts.getValue("move"), "if Rxb8, f8=Q+" in texts.getValue("move"))
+    }
+
+    @Test
+    fun aQuietMoveIsToldByWhatItThreatens() {
+        // The 28 wins of the puzzle sample whose first hint was "their X is the target" and no
+        // more (2026-09-25): a quiet first move's point is its threat, asked of the engine
+        // ([com.sidecoach.analysis.aimLines]). Lichess 06VoP: 32.Qg4, threatening Qxg7#.
+        val (texts, _) = hints("06VoP")
+        assertTrue(texts.getValue("idea"), "The first move is quiet, but it threatens mate." in texts.getValue("idea"))
+        assertTrue(texts.getValue("focus"), "Which quiet move sets up a mate?" in texts.getValue("focus"))
+    }
+
+    @Test
+    fun aQuietMoveThatThreatensAPieceNamesItWhereItStands() {
+        // Lichess 05cb6: in check, 35.Kd2 steps out and threatens Rxb1, their queen.
+        val (texts, _) = hints("05cb6")
+        assertTrue(
+            texts.getValue("idea"),
+            "The first move is quiet, but it threatens to take their queen on b1." in texts.getValue("idea"),
+        )
+    }
+
+    @Test
+    fun aQuietPawnMoveThreatensABreak() {
+        // Lichess 00pWF, a king and pawn ending: 53...a5, threatening a4 and a passed pawn.
+        val (texts, _) = hints("00pWF")
+        assertTrue(texts.getValue("idea"), "The first move is quiet, but it threatens a pawn break." in texts.getValue("idea"))
     }
 
     @Test
