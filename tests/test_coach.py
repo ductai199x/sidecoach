@@ -270,7 +270,7 @@ def test_feedback_after_the_users_move_may_say_everything_about_that_position() 
     coach, provider = _coach(
         [
             "Their king on e8 is nearly out of squares.",
-            "Bxf7+ was fine, but Qxf7 was mate on the spot. Do you see why?",
+            "Qxf7 was mate on the spot, sharper than the bishop. Do you see why?",
         ]
     )
     _play_to_scholar(coach)
@@ -1763,3 +1763,82 @@ def test_a_player_who_slows_down_in_a_fast_game_gets_the_model_back() -> None:
     assert coach.fast_pace and coach.user_to_move
     assert coach.fast_now(6.0 + 1.0), "a second into the position: still fast"
     assert not coach.fast_now(6.0 + FAST_PACE_S + 1), "thinking longer than the pace: slowed"
+
+
+def _after_move_request(fen: str, san: str, best_uci: str):  # noqa: ANN202
+    from sidecoach.coach.coach import _Request
+
+    board = chess.Board(fen)
+    facts = PositionFacts(fen=fen, side_to_move="white", phase="opening")
+    return _Request(
+        trigger=Trigger.POST_MISTAKE,
+        level=DisclosureLevel.LINE,
+        system="",
+        messages=[],
+        facts=facts,
+        board=board,
+        fallback="",
+        ply=7,
+        game_id="g",
+        played_san=san,
+        assessment=MoveAssessment(
+            game_id="g",
+            ply=7,
+            uci=board.parse_san(san).uci(),
+            expected_loss=0.2,
+            severity=Severity.MISTAKE,
+            best=[best_uci],
+            label=Label.MISTAKE,
+        ),
+    )
+
+
+def test_a_word_after_the_move_never_restates_it_nor_quotes_a_figure() -> None:
+    """The owner's rules after a move, checked in code (the eval audit, 2026-09-25): never
+    open with the move just played, never say what it plainly did unless the better move does
+    the same, and no figure in a remark nobody asked for."""
+    from sidecoach.coach.coach import restated
+
+    ruy = "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
+    trade = _after_move_request(ruy, "Bxc6", "e1g1")
+    assert restated("Bxc6 gives up the bishop pair.", trade) == [
+        "opens with Bxc6, the move just played"
+    ]
+    assert restated("Taking the knight on c6 gives up the bishop pair.", trade) == [
+        "says what Bxc6 plainly did: the capture on c6"
+    ]
+    assert restated("It cost you 15% of the game.", trade) == [
+        "a figure in a remark nobody asked for: say it in words"
+    ]
+    # The better move castles: saying so is the lesson, not a restatement.
+    assert restated("Castling first was better: the king is safe, the rook joins in.", trade) == []
+    # The better move takes on the same square with check: the words are about it.
+    miss = _after_move_request(SCHOLAR, "Bxf7+", "h5f7")
+    assert restated("Taking the pawn on f7 with check was right, but with the queen.", miss) == []
+
+
+def test_the_first_hint_sets_the_length_of_the_hint() -> None:
+    """ "Say at least this" and "two or three sentences" asked for both: a first hint that
+    runs longer sets the length (the eval audit, 2026-09-25)."""
+    from sidecoach.coach.coach import IDEA_DIRECTIVE, directive_limits, idea_directive
+
+    short = PositionFacts(fen=SCHOLAR, side_to_move="white", phase="opening", situation="A. B.")
+    assert idea_directive(short) == IDEA_DIRECTIVE
+    long = short.model_copy(update={"situation": "One. Two. Three. Four. Five."})
+    assert "Five sentences at most." in idea_directive(long)
+    assert directive_limits(idea_directive(long))[0] == 5
+    longest = short.model_copy(update={"situation": " ".join(["Yes."] * 9)})
+    assert directive_limits(idea_directive(longest))[0] == 6
+
+
+def test_the_draft_checker_sees_every_line_the_facts_were_read_from() -> None:
+    """A trap the template names ("Bxf7+ looks natural, but after Kxf7 ...") is a line from
+    the root: its boards are frames, so saying it is not faulted as unplayable."""
+    from sidecoach.coach.coach import _Position
+
+    analysis = _mate_analysis(6)
+    analysis.traps = [Line(moves=["c4f7", "e8e7"], depth=12, expected_score=0.4)]
+    position = _Position(ply=6, board=chess.Board(SCHOLAR), analysis=analysis)
+    frames = Coach._analysis_frames(position)
+    assert any(f.piece_at(chess.E7) == chess.Piece(chess.KING, chess.BLACK) for f in frames)
+    assert any(f.piece_at(chess.F7) == chess.Piece(chess.QUEEN, chess.WHITE) for f in frames)

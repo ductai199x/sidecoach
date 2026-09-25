@@ -475,6 +475,21 @@ IDEA_DIRECTIVE = (
     "something about this board. Never name the player's move or the square it goes to, and "
     "not which of their own pieces moves -- that is the next hint. Two or three sentences."
 )
+_LENGTH_WORDS = {4: "Four", 5: "Five", 6: "Six"}
+
+
+def idea_directive(facts: PositionFacts | None) -> str:
+    """IDEA_DIRECTIVE, its length the first hint's own when that runs past three sentences
+    (to six at most): "say at least this" and "two or three sentences" asked for both, and a
+    faithful reply was cut or sent back as too long (the eval audit, 2026-09-25)."""
+    n = _sentence_total(facts.situation) if facts is not None and facts.situation else 0
+    if n <= 3:
+        return IDEA_DIRECTIVE
+    return IDEA_DIRECTIVE.replace(
+        "Two or three sentences.", f"{_LENGTH_WORDS.get(n, 'Six')} sentences at most."
+    )
+
+
 FOCUS_DIRECTIVE = (
     "Name the piece to use, from the fact sheet, and ask the one question that leads from the "
     "first hint's key fact to the move. Do not name the move. One or two sentences."
@@ -746,7 +761,12 @@ class _FirstCandidate:
         # Sentence by sentence, only what a sentence can get wrong: the length, the closing
         # question and what the whole must name are the whole reply's.
         faults = [
-            f for f in faults if not f.startswith(("too long", "left out")) and "question" not in f
+            f
+            for f in faults
+            if not f.startswith(("too long", "left out"))
+            and "question" not in f
+            # Only the reply's first sentence can open it with the move.
+            and not (self.spoken and f.startswith("opens with"))
         ]
         if faults:
             self.problems = faults
@@ -922,6 +942,57 @@ def _names(text: str, item: str) -> bool:
         return item in squares_in(text)
     core = item.rstrip("+#")
     return re.search(rf"(?<![A-Za-z]){re.escape(core)}[+#]?(?![A-Za-z0-9])", text) is not None
+
+
+_NUMBER_SAID = re.compile(r"\d+(?:\.\d+)?\s*(?:%|per ?cent)|(?<![\w.])0\.\d+", re.IGNORECASE)
+_PLAIN_PIECE = {chess.PAWN: "pawn", chess.KNIGHT: "knight", chess.BISHOP: "bishop"}
+_PLAIN_PIECE |= {chess.ROOK: "rook", chess.QUEEN: "queen"}
+
+
+def restated(text: str, request: _Request) -> list[str]:
+    """What a word after the player's move says that they see on the board or did not ask
+    for (Tai, 2026-09-23 and 2026-09-19): opening with the move just played, what it plainly
+    did -- the capture, the check, the castling, the promotion -- unless the better move does
+    the same, and a figure in an unprompted remark. The templates never do; the model could,
+    and nothing checked it (the eval audit, 2026-09-25)."""
+    if request.trigger not in (Trigger.POST_MOVE, Trigger.POST_MISTAKE) or not request.played_san:
+        return []
+    played = request.played_san.rstrip("+#")
+    faults: list[str] = []
+    if re.match(rf"\W*{re.escape(played)}(?![A-Za-z0-9])", text):
+        faults.append(f"opens with {played}, the move just played")
+    if _NUMBER_SAID.search(text):
+        faults.append("a figure in a remark nobody asked for: say it in words")
+    try:
+        move = request.board.parse_san(request.played_san)
+    except ValueError:
+        return faults
+    better: chess.Move | None = None
+    if request.assessment is not None and request.assessment.best:
+        with contextlib.suppress(ValueError):
+            better = chess.Move.from_uci(request.assessment.best[0])
+    board = request.board
+    low = text.lower()
+    victim = board.piece_at(move.to_square)
+    if victim is not None and victim.piece_type in _PLAIN_PIECE:
+        square = chess.square_name(move.to_square)
+        took = r"\b(?:takes|taking|took|captures?|capturing|grabs?|grabbing)\s+(?:the|their|a)\s+"
+        took += rf"{_PLAIN_PIECE[victim.piece_type]}\s+on\s+{square}\b"
+        if re.search(took, low) and not (better is not None and better.to_square == move.to_square):
+            faults.append(f"says what {played} plainly did: the capture on {square}")
+    # What the better move does as well is the lesson, not a restatement.
+    legal = better is not None and better in board.legal_moves
+    better_castles = legal and board.is_castling(better)  # type: ignore[arg-type]
+    better_checks = legal and board.gives_check(better)  # type: ignore[arg-type]
+    better_promotes = better is not None and better.promotion is not None
+    if board.is_castling(move) and "castl" in low and not better_castles:
+        faults.append(f"says what {played} plainly did: castling")
+    says_check = re.search(r"\b(?:with|gives?|giving) (?:a )?check\b", low)
+    if board.gives_check(move) and says_check and not better_checks:
+        faults.append(f"says what {played} plainly did: the check")
+    if move.promotion and "promot" in low and not better_promotes:
+        faults.append(f"says what {played} plainly did: the promotion")
+    return faults
 
 
 def omitted(text: str, must_name: Sequence[str]) -> str | None:
@@ -1343,6 +1414,7 @@ class Speaker:
         left_out = omitted(text, request.must_name)
         if left_out:
             found.append(left_out)
+        found.extend(restated(text, request))
         if self.draft_check is not None:
             for problem in self.draft_check(text, request.board, _after_best(request)):
                 san = problem.split(":", 1)[0].strip()
@@ -2470,6 +2542,7 @@ class Coach:
                     f"least this, in your own words, and may say more: {fallback}"
                 )
             frames = self._frames_after(position, moved)
+        frames += self._analysis_frames(position)
         with self._lock:
             self.conversation.level = level
             harness = self.conversation.render()
@@ -2548,6 +2621,57 @@ class Coach:
             trigger is Trigger.USER_ASK and bool(_ASK_HINT.match(said) or _ASK_AIM.search(said))
         )
         return tuple(sorted(squares_in(template))) if hint else ()
+
+    @staticmethod
+    def _analysis_frames(position: _Position) -> list[chess.Board]:
+        """Boards along every line the facts were read from -- the engine's lines, the traps,
+        the recaptures the best line declines, what a quiet best move threatens, the
+        opponent's threats after a pass -- so a sentence the template itself says ("after
+        Rxa5, Kxf6 ...") is not faulted as unplayable when the model says it too (the eval
+        audit, 2026-09-25). The weaker lines only to four plies."""
+        analysis = position.analysis
+        if analysis is None:
+            return []
+        root = position.board
+        frames: list[chess.Board] = []
+
+        def walk(start: chess.Board, ucis: Sequence[str], limit: int) -> None:
+            board = start
+            for uci in ucis[:limit]:
+                try:
+                    move = chess.Move.from_uci(uci)
+                except ValueError:
+                    return
+                if move not in board.legal_moves:
+                    return
+                board = board.copy(stack=False)
+                board.push(move)
+                frames.append(board)
+
+        for i, line in enumerate(analysis.lines):
+            walk(root, line.moves, 8 if i == 0 else 4)
+        for line in [*analysis.traps, *analysis.defences]:
+            walk(root, line.moves, 8)
+        if not root.is_check():
+            passed = root.copy(stack=False)
+            passed.push(chess.Move.null())
+            for san in analysis.threats:
+                with contextlib.suppress(ValueError):
+                    after = passed.copy(stack=False)
+                    after.push(after.parse_san(san))
+                    frames.append(after)
+            if analysis.threatens and analysis.lines and analysis.lines[0].moves:
+                with contextlib.suppress(ValueError):
+                    best = chess.Move.from_uci(analysis.lines[0].moves[0])
+                    if best in root.legal_moves:
+                        quiet = root.copy(stack=False)
+                        quiet.push(best)
+                        if not quiet.is_check():
+                            quiet.push(chess.Move.null())
+                            for line in analysis.threatens:
+                                walk(quiet, line.moves, 8)
+                                walk(root, line.moves, 8)
+        return frames
 
     def _frames_after(self, position: _Position, played: MovePlayed) -> list[chess.Board]:
         """The board after the move just played, and along the engine's line from there: the
@@ -2668,9 +2792,9 @@ class Coach:
                 " ".join(self._review_lines[:4]),
             )
         if trigger is Trigger.DECISIVE_QUESTION:
-            return (IDEA_DIRECTIVE, idea_template(facts))
+            return (idea_directive(facts), idea_template(facts))
         if trigger is Trigger.STUCK:
-            directive = FOCUS_DIRECTIVE if level >= DisclosureLevel.FOCUS else IDEA_DIRECTIVE
+            directive = FOCUS_DIRECTIVE if level >= DisclosureLevel.FOCUS else idea_directive(facts)
             return (
                 "The player has been thinking for a while and is stuck. "
                 + directive
@@ -2899,7 +3023,7 @@ class Coach:
             elif level >= DisclosureLevel.FOCUS:
                 directive = (aim or "They asked for another hint. ") + FOCUS_DIRECTIVE
             else:
-                directive = (aim or "They asked for a hint. ") + IDEA_DIRECTIVE
+                directive = (aim or "They asked for a hint. ") + idea_directive(facts)
             directive += " Do not comment on anything said earlier." + (shown if quick else "")
         elif level >= DisclosureLevel.LINE and _ASK_LINE.search(said) and facts.line:
             directive = (
