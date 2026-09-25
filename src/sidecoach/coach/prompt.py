@@ -90,7 +90,7 @@ CONTRACT = (
     "player's side (0.5 is an equal game; a move that cost 0.10 gave up a tenth of a game; "
     "a move that cost nothing was as good as the best), the engine's preferred line, the "
     "material, what the move does on the board, what the better move would have done, and "
-    "the motifs in the move. Standing: who is better, in words, with Stockfish's number "
+    "the motifs in the move. Standing: who is better, in words, with the number "
     "named by side; it is the evaluation, and the only one. Engine lines: the engine's best "
     "continuations with their expected scores from the player's side, what each first move "
     "does and where each line leads, the best three first and then weaker ones with how far "

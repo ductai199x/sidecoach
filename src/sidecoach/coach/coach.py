@@ -1019,6 +1019,9 @@ def _names(text: str, item: str) -> bool:
     return re.search(rf"(?<![A-Za-z]){re.escape(core)}[+#]?(?![A-Za-z0-9])", text) is not None
 
 
+_ENGINE_NAMED = re.compile(r"\b(?:stockfish|the engine|engine's|an engine)\b", re.IGNORECASE)
+
+
 def figure_said(text: str) -> bool:
     """Whether `text` quotes a figure: any digit outside a move, a square or an ordinal ("the
     7th rank") -- "ahead by about 1.2 pawns" went through a check for percentages alone."""
@@ -1513,6 +1516,11 @@ class Speaker:
         found.extend(restated(text, request))
         if request.trigger in (Trigger.DECISIVE_QUESTION, Trigger.STUCK) and figure_said(text):
             found.append("a figure in a remark nobody asked for: say it in words")
+        # RULES 7: the coach speaks as the one who saw the game -- "Stockfish gives White
+        # about 0.8 pawns" came in seven of the pilot's answers.
+        asked_engine = re.search(r"stockfish|engine", request.user_text or "", re.I)
+        if _ENGINE_NAMED.search(text) and not asked_engine:
+            found.append("named the engine: say it as the coach who saw the game")
         if self.draft_check is not None:
             for problem in self.draft_check(text, request.board, _after_best(request)):
                 san = problem.split(":", 1)[0].strip()
@@ -1873,6 +1881,8 @@ class Coach:
         trigger = self.policy.tick(ts)
         if trigger is None or self._current is None or self._current.facts is None:
             return
+        if self._current.board.is_game_over():
+            return  # nothing to be stuck on: the game is over on the board
         level = self._current.disclosure.apply(Unlock.STUCK) or self._current.disclosure.level
         self.policy.said(self._current.ply, ts)
         self._speak(trigger, self._current, level, ts)
@@ -2736,6 +2746,13 @@ class Coach:
                 )
             frames = self._frames_after(position, moved)
         frames += self._analysis_frames(position)
+        # And the board before the last move played: an answer about it says what it took
+        # ("15...Qxe7 took your knight on e7"), which the board after it no longer shows.
+        with self._lock:
+            records = self.conversation.active_records()
+        if records:
+            with contextlib.suppress(ValueError):
+                frames.append(chess.Board(records[-1].move.fen_before))
         with self._lock:
             self.conversation.level = render_level
             harness = self.conversation.render()
@@ -3398,7 +3415,7 @@ class Coach:
                     f"They ask about the move they already played, {san}. Its verdict is in its "
                     f"move message and is theirs in full: it was {_rated(label)} that cost "
                     f"{loss:.0%} of the game"
-                    + (f", the engine preferred {best}" if best else "")
+                    + (f", {best} was better" if best else "")
                     + (f", and the idea was {idea}" if idea else "")
                     + ". Say that plainly -- the position it was played from is past, so "
                     "nothing about it is withheld; the disclosure level binds only the position "

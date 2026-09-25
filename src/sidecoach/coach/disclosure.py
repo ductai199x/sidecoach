@@ -379,26 +379,29 @@ def leak_check(
         # on d2" when the pawn to move is on e4) is a fact about the board, not the hint.
         # Without a square on the sheet, any mention counts, as before.
         piece_squares = squares_in(facts.piece)
-        # Once the square the answer goes to is said (the target, which the first hint may
-        # name), the piece that goes there is the rest of the answer: any mention of it
-        # counts ("take it with the queen", "the c-pawn should take it": the second audit).
-        answer_moves = [_TRAILING_MARKS.sub("", m) for m in facts.candidates[:3] if m]
-        dest_said = bool(squares_in(" ".join(answer_moves)) & squares_in(moves_text))
+        # The file of a pawn to move: "the c-pawn" names the pawn on c4.
+        piece_files = {sq[0] for sq in piece_squares}
+        # The piece that does it, said as the one that takes or goes ("take it with the queen",
+        # "capture with a pawn", "the c-pawn should take it": the second audit) -- not every
+        # mention of its kind: "the pawn on c3", "your pawn on h2" are the board (round 2
+        # refused four good replies for them).
         for piece_word in dict.fromkeys(re.findall(_PIECE, facts.piece.lower())):
             # "The king behind it", "their king runs out of squares": the word is in every
             # explanation of a pin or a mate, and says nothing about which piece to move.
             if piece_word in said_words or piece_word == "king":
                 continue
             mention = re.compile(
-                rf"\b(your |my )?{re.escape(piece_word)}s?\b(?: (?:on|from) ([a-h][1-8]))?"
+                rf"\b(your |my |with (?:the |a |your )?|(?:([a-h])-))?{re.escape(piece_word)}s?\b"
+                r"(?: (?:on|from) ([a-h][1-8]))?"
             )
             for found in mention.finditer(scrubbed):
-                if dest_said:
-                    named = True
-                elif found.group(2) is not None:
-                    named = found.group(2) in piece_squares
+                prefix, file_, square = found.group(1), found.group(2), found.group(3)
+                if square is not None:
+                    named = square in piece_squares
+                elif file_ is not None:
+                    named = file_ in piece_files or not piece_files
                 else:
-                    named = found.group(1) is not None or not piece_squares
+                    named = prefix is not None or not piece_squares
                 if named:
                     add(f"piece {piece_word}")
                     break

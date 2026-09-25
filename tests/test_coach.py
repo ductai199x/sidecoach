@@ -1114,7 +1114,7 @@ def test_material_is_always_from_the_users_side_and_the_review_draws_on_the_tall
     assert "do not infer the course of the game from the position" in directive
     harness = _harness(messages)
     assert "The player's moves so far (3 judged): 1 best, 1 book, 1 inaccuracy." in harness
-    assert "Ground lost at: 2. Qh5 (inaccuracy)" in harness
+    assert "Ground lost most at: 2. Qh5 (inaccuracy)" in harness
     assert "    EVENT: Game over: 1-0" in harness
     # Other ways of asking are reviews too, and when the model's review fails the checks
     # the template is the record, not "I have no line for this yet".
@@ -1242,7 +1242,7 @@ def test_a_question_about_the_last_move_gets_its_verdict_in_full() -> None:
     out = _messages(coach)
     directive = _directive(_given(provider))
     assert "They ask about the move they already played, Bxf7+" in directive
-    assert "cost 45% of the game" in directive and "the engine preferred Qxf7#" in directive
+    assert "cost 45% of the game" in directive and "Qxf7# was better" in directive
     assert "nothing about it is withheld" in directive
     # Spoken from the position the move was played from, with everything shown: naming
     # the better move is not a leak, as it is not in the lesson after a mistake.
@@ -2009,3 +2009,18 @@ def test_the_models_markdown_never_reaches_the_voice_or_the_checks() -> None:
     assert _parse_candidates("**Rc1** was better. **Do you see why?**") == [
         (1.0, "Rc1 was better. Do you see why?")
     ]
+
+
+def test_the_coach_never_names_the_engine_and_the_review_sees_the_costliest() -> None:
+    """Round 2: "Stockfish gives White about 0.8 pawns" in seven answers; the review saw only
+    the last six losses and named 52.Kh3 over the blunders at moves 19 and 24."""
+    from sidecoach.coach.coach import Speaker
+
+    request = _after_move_request(SCHOLAR, "Bxf7+", "h5f7")
+    speaker = Speaker(ScriptedProvider([]))
+    faults = speaker._problems("Qxf7 was better; Stockfish liked it more.", request)
+    assert "named the engine: say it as the coach who saw the game" in faults
+    request.user_text = "what does the engine say?"
+    assert "named the engine: say it as the coach who saw the game" not in speaker._problems(
+        "Qxf7 was better; the engine liked it more.", request
+    )

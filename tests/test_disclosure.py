@@ -162,3 +162,20 @@ def test_once_the_answers_square_is_said_its_piece_is_the_rest_of_the_answer() -
     assert "piece queen" in leak_check(
         "Their pawn on f7 is weak: take it with the queen.", f, L.IDEA
     )
+
+
+def test_the_piece_that_does_it_is_the_one_that_takes_not_every_one_of_its_kind() -> None:
+    """Round 2 refused four good replies for "the pawn on c3", "your pawn on h2" when the pawn
+    to move was elsewhere; "take it with the queen" and "the c-pawn should take it" name it."""
+    f = facts()
+    f.candidates = ["cxd5"]
+    f.piece = "the player's pawn on c4"
+    f.situation = "Their pawn on d5 can simply be taken."
+    for fine in (
+        "Their pawn on d5 can be taken; they threaten dxc3, taking the pawn on c3.",
+        "Ng4 is coming, attacking your pawn on h2.",
+    ):
+        assert leak_check(fine, f, L.IDEA) == [], fine
+    leaks = ("Take it with a pawn, not a piece.", "The c-pawn should take it.", "Use your pawn.")
+    for leak in leaks:
+        assert "piece pawn" in leak_check(leak, f, L.IDEA), leak

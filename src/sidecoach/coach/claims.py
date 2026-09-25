@@ -1314,13 +1314,19 @@ def _strategic_problems(text: str, board: chess.Board) -> list[tuple[str, str]]:
         theirs = any(p and p.piece_type == chess.PAWN and p.color != us for p in pawns)
         if kind == "open" and (ours or theirs):
             problems.append((match.group(0), f"the {letter}-file is not open; a pawn stands on it"))
-        elif kind == "halfopen" and ours:
-            problems.append(
-                (
-                    match.group(0),
-                    f"the {letter}-file is not half-open for you; you have a pawn there",
-                )
-            )
+        elif kind == "halfopen":
+            # Whose file it is, as the sentence says: "for you" or "your" is the player's,
+            # "their" or "the opponent's" theirs ("your opponent takes the half-open f-file":
+            # round 2 refused two good replies read as the player's); unsaid, either side's.
+            window = text[max(0, match.start() - 60) : match.end() + 20].lower()
+            if re.search(r"\bopponent|\btheir\b|\bfor them\b", window):
+                wrong, whose = theirs, "for them; they have a pawn there"
+            elif re.search(r"\byour?\b|\bfor you\b", window):
+                wrong, whose = ours, "for you; you have a pawn there"
+            else:
+                wrong, whose = ours and theirs, "for either side: both have a pawn there"
+            if wrong:
+                problems.append((match.group(0), f"the {letter}-file is not half-open {whose}"))
     for match in _PASSED.finditer(text):
         square_name = match.group("sq1") or match.group("sq2")
         letter = match.group("file1") or match.group("file2")

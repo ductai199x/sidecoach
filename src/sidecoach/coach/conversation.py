@@ -693,7 +693,7 @@ class Conversation:
         leaves no sign to guess."""
         score = top.expected_score if to_move == user_colour else 1.0 - top.expected_score
         words = standing_words(score, third_person=True)
-        text = f"{words[:1].upper()}{words[1:]} (Stockfish: "
+        text = f"{words[:1].upper()}{words[1:]} (by the numbers: "
         if top.mate is not None:
             n = abs(top.mate)
             winner = to_move if top.mate > 0 else not to_move
@@ -872,7 +872,7 @@ class Conversation:
         """The player's moves judged so far, as of `through`: the tally reads as the game
         went, and the last move's message holds the whole of it."""
         counts: dict[str, int] = {}
-        lost: list[str] = []
+        lost: list[tuple[float, str]] = []
         n = 0
         for record in self.judged_records():
             if self.records.index(record) > self.records.index(through):
@@ -887,13 +887,21 @@ class Conversation:
             )
             counts[label] = counts.get(label, 0) + 1
             if record.assessment.severity.value != "none":
-                lost.append(f"{self._numbered(record.move)} ({label})")
+                cost = record.assessment.expected_loss
+                lost.append((cost, f"{self._numbered(record.move)} ({label})"))
         if not n:
             return ""
         tally = ", ".join(f"{counts[k]} {k}" for k in LABEL_ORDER if k in counts)
         text = f"The player's moves so far ({n} judged): {tally}."
         if lost:
-            text += " Ground lost at: " + "; ".join(lost[-6:]) + "."
+            # The costliest three, then the latest: "how did I do?" is answered from where
+            # the game turned, and the last six alone named 39.Rb7 and 52.Kh3 over the
+            # blunders at moves 19 and 24 (round 2).
+            costliest = [m for _, m in sorted(lost, key=lambda x: -x[0])[:3]]
+            latest = [m for _, m in lost[-3:] if m not in costliest]
+            text += " Ground lost most at: " + "; ".join(costliest) + "."
+            if latest:
+                text += " Lately: " + "; ".join(latest) + "."
         # The opening the game was in, as the book last named it: it was shown only at
         # the ply where the name changed, and asked later the coach named one from memory.
         opening = self._opening_through(through)

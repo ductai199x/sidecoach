@@ -792,3 +792,11 @@ def test_draft_accepts_the_moves_and_placements_of_the_line_it_was_given() -> No
     # Without the frames a later move is not playable now, and the bishop is not on b5.
     flagged = {p.text for p in check_draft(text, start)}
     assert "Bb5" in flagged and "your bishop on b5" in flagged
+
+
+def test_a_half_open_file_is_read_as_whose_the_sentence_says() -> None:
+    """Round 2: "your opponent's best is Qf7, taking the half-open f-file" is theirs."""
+    board = chess.Board("4k3/8/8/8/8/8/5P2/4K3 w - - 0 1")  # a white pawn on f2 only
+    assert check_draft("Your opponent's rook takes the half-open f-file.", board) == []
+    assert check_draft("The f-file is half-open for you.", board)
+    assert check_draft("The half-open f-file is theirs to use.", board) == []
