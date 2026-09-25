@@ -1975,3 +1975,22 @@ def test_a_mistakes_lesson_waits_for_what_the_move_allowed() -> None:
     out = _messages(coach)
     assert [m.trigger for m in out] == [Trigger.POST_MISTAKE]
 
+
+def test_figures_ordinals_captures_and_articles() -> None:
+    """The second audit: "ahead by about 1.2 pawns" was no figure to the old check; "you took
+    on d5" and "that d5 pawn" said the capture back; "which was a inaccuracy"."""
+    from sidecoach.coach.coach import _rated, figure_said, restated
+
+    assert figure_said("You are ahead by about 1.2 pawns.")
+    assert figure_said("It cost you 15% of the game.")
+    assert not figure_said("Your rook on the 7th rank and Nf3 were strong.")
+    ruy = "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
+    trade = _after_move_request(ruy, "Bxc6", "e1g1")
+    assert restated("You took on c6, giving up the bishop pair.", trade)
+    assert restated("Winning that c6 knight gives up the bishop pair.", trade)
+    assert [_rated(x) for x in ("inaccuracy", "miss", "best", "book")] == [
+        "an inaccuracy",
+        "a miss",
+        "best",
+        "a book move",
+    ]

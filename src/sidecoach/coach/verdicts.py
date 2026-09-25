@@ -37,7 +37,7 @@ OPENERS: dict[str, list[str]] = {
     "book": ["Book", "Still theory", "Known territory"],
     "brilliant": ["Brilliant", "What a find", "Yes, that's the shot"],
     "great": ["Great move", "Yes, the one move that works", "That's it"],
-    "best": ["Best", "That's the move", "Spot on", "Exactly", "The engine agrees"],
+    "best": ["Best", "That's the move", "Spot on", "Exactly", "Just what the position wanted"],
     "excellent": ["Excellent", "Strong", "Very good", "Nice"],
     "good": ["Good", "Fine", "Solid", "Sound"],
 }

@@ -137,9 +137,28 @@ def test_the_record_and_other_pieces_of_a_kind_are_no_leak() -> None:
     """A move said with its number is the record (the review names "17. Ng5" where ground was
     lost); a pawn on another square than the one to move is a fact, not the hint (the eval
     audit's gate, 2026-09-25)."""
-    assert leak_check("You lost the most ground at 17. Ng5 (mistake).", facts(), L.IDEA) == []
+    record = ["17. Ng5"]
+    said = "You lost the most ground at 17. Ng5 (mistake)."
+    assert leak_check(said, facts(), L.IDEA, record=record) == []
+    # A number in front of the move to find is no exemption: "5. cxd5 wins it cleanly" was
+    # let through by any number at all (the second audit).
+    assert "move Ng5" in leak_check("5. Ng5 wins it cleanly.", facts(), L.IDEA, record=record)
+    assert "move Ng5" in leak_check(said, facts(), L.IDEA)
     f = facts()
     f.piece = "the player's pawn on e4"
     assert leak_check("They threaten Ne6, attacking the pawn on d2.", f, L.IDEA) == []
     assert "piece pawn" in leak_check("Your pawn on e4 is the one.", f, L.IDEA)
     assert "piece pawn" in leak_check("Think about your pawn.", f, L.IDEA)
+
+
+def test_once_the_answers_square_is_said_its_piece_is_the_rest_of_the_answer() -> None:
+    """The first hint may name the target's square even where the move goes; the piece that
+    goes there is then the answer ("take it with the queen": the second audit)."""
+    f = facts()
+    f.candidates = ["Qxf7"]
+    f.piece = "the player's queen on h5"
+    f.situation = "Their pawn on f7 is the target."
+    assert leak_check("Their pawn on f7 is weak.", f, L.IDEA) == []
+    assert "piece queen" in leak_check(
+        "Their pawn on f7 is weak: take it with the queen.", f, L.IDEA
+    )

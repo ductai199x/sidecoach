@@ -24,6 +24,7 @@ rungs before the move left each saying a sliver, and the slivers came out generi
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -217,10 +218,16 @@ _PIECE_WORD_CONTEXTS = re.compile(
     re.IGNORECASE,
 )
 
-# A move with its number in front: the game's record, not a move suggested.
+# A move with its number in front: the game's record when the game played it.
 _NUMBERED_MOVE = re.compile(
     r"\b\d+\.(?:\.\.)?\s*(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)[+#]?"
 )
+
+
+def numbered_key(text: str) -> str:
+    """A numbered move in one spelling: "17. Rh1+" and "17.Rh1" are "17.Rh1"."""
+    return re.sub(r"\s+", "", text).rstrip("+#")
+
 
 # A token is a bare square ("f7") or a SAN move ending in its destination square
 # ("Ng5", "Nxf7+", "exd5", "R1e1", "e8=Q"). Group 1 is the destination square.
@@ -241,15 +248,19 @@ def squares_in(text: str) -> set[str]:
 
 
 def leak_check(
-    text: str, facts: PositionFacts, level: DisclosureLevel, *, said: str | None = None
+    text: str,
+    facts: PositionFacts,
+    level: DisclosureLevel,
+    *,
+    said: str | None = None,
+    record: Collection[str] = (),
 ) -> list[str]:
     """Withheld items that `text` mentions. An empty list means the draft is clean.
 
-    Below MOVE the coach may not name any move at all, and may mention only squares that
-    occur in visible facts other than the FEN, such as the target's. The model will volunteer
-    moves on its own even when told not to, so this is not limited to the withheld facts.
-    From MOVE up only the withheld line is checked. Below FOCUS the word for the player's own
-    piece is checked as well -- their pieces, and what a line wins, are not it.
+    Below MOVE only the answer is withheld (see below); from MOVE up only the withheld
+    line. `record` is the game's moves as numbered in the record ("17. Rh1"). Below FOCUS
+    the word for the player's own piece is checked as well -- their pieces, and what a line
+    wins, are not it.
 
     `said` is what the user asked this turn: a square, piece word or move they named is theirs
     already, so confirming it back is not a leak and never faulted.
@@ -295,9 +306,14 @@ def leak_check(
         if item not in leaks:
             leaks.append(item)
 
-    # A move said with its number ("17. Rh1", "4... Nf6") is the record, not a suggestion:
-    # the review names the moves where ground was lost, and one may be the answer again.
-    moves_text = _NUMBERED_MOVE.sub(" ", text)
+    # A move of the game said with its number ("17. Rh1", "4... Nf6") is the record, not a
+    # suggestion: the review names the moves where ground was lost, and one may be the
+    # answer again. Only a numbered move the game actually played -- "5. cxd5 wins it" of
+    # the move to find was let through by any number at all (the second audit).
+    played = {numbered_key(m) for m in record}
+    moves_text = _NUMBERED_MOVE.sub(
+        lambda m: " " if numbered_key(m.group(0)) in played else m.group(0), text
+    )
     if level < DisclosureLevel.MOVE:
         answer = {_TRAILING_MARKS.sub("", m) for m in [*facts.candidates, *facts.line[0::2]] if m}
         answer_squares = squares_in(" ".join(answer)) - allowed_squares
@@ -315,7 +331,9 @@ def leak_check(
                 add(f"square {square}")
     elif level < DisclosureLevel.LINE:
         shown = set(facts.candidates) | set(facts.threats)
-        withheld_moves = [move for move in facts.line if move not in shown]
+        # The move's why names its continuation ("after Qf6, Bg2 ..."): what the level shows
+        # may be said.
+        withheld_moves = [m for m in facts.line if m not in shown and m not in allowed_moves]
         withheld_squares = squares_in(" ".join(withheld_moves)) - allowed_squares
         for square in sorted(squares_in(moves_text) & withheld_squares):
             add(f"square {square}")
@@ -360,6 +378,11 @@ def leak_check(
         # on d2" when the pawn to move is on e4) is a fact about the board, not the hint.
         # Without a square on the sheet, any mention counts, as before.
         piece_squares = squares_in(facts.piece)
+        # Once the square the answer goes to is said (the target, which the first hint may
+        # name), the piece that goes there is the rest of the answer: any mention of it
+        # counts ("take it with the queen", "the c-pawn should take it": the second audit).
+        answer_moves = [_TRAILING_MARKS.sub("", m) for m in facts.candidates[:3] if m]
+        dest_said = bool(squares_in(" ".join(answer_moves)) & squares_in(moves_text))
         for piece_word in dict.fromkeys(re.findall(_PIECE, facts.piece.lower())):
             # "The king behind it", "their king runs out of squares": the word is in every
             # explanation of a pin or a mate, and says nothing about which piece to move.
@@ -369,7 +392,9 @@ def leak_check(
                 rf"\b(your |my )?{re.escape(piece_word)}s?\b(?: (?:on|from) ([a-h][1-8]))?"
             )
             for found in mention.finditer(scrubbed):
-                if found.group(2) is not None:
+                if dest_said:
+                    named = True
+                elif found.group(2) is not None:
                     named = found.group(2) in piece_squares
                 else:
                     named = found.group(1) is not None or not piece_squares

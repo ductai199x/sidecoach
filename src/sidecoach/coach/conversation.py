@@ -57,8 +57,9 @@ from sidecoach.llm.base import ChatMessage
 # hint was a lesson -- told the model to say less than the template.
 IDEA_LEVEL_WORDS = (
     "the idea: what is at stake and the key fact on the board -- the pieces, squares and "
-    "their moves the facts name -- with the principle behind it; never the player's move, "
-    "the square it goes to, or which of their own pieces moves"
+    "their moves the facts name, the target's square too, even where the move goes -- with "
+    "the principle behind it; never the player's move itself, or which of their own pieces "
+    "makes it"
 )
 
 # The engine lines the harness shows: the best three, then three weaker ones, each to

@@ -457,8 +457,8 @@ NO_NUMBERS = (
 NOT_THE_MOVE = (
     "Do not open with the move they played, and do not say what it plainly did on the board "
     "-- what it took, the check, the castling, the promotion: they just played it and see it. "
-    "Say what it means instead: the idea behind it, the pattern to keep, the better move and "
-    "why."
+    "Say what it means instead: the idea behind it and the pattern to keep -- and, when there "
+    "was a better move, that move and why."
 )
 
 
@@ -472,9 +472,10 @@ IDEA_DIRECTIVE = (
     "the key fact on the board, named as the sheet names it -- the pieces, the squares, their "
     "threat, the target, the plan -- and the principle behind it in a clause, and the trap if "
     "the sheet gives one. Precise, never a principle on its own: every sentence says "
-    "something about this board. Never name the player's move or the square it goes to, and "
-    "not which of their own pieces moves -- that is the next hint -- though the moves the "
-    "sheet lists as all as good, when several are, may be named. Two or three sentences."
+    "something about this board. Never name the player's move, and not which of their own "
+    "pieces makes it -- that is the next hint; the target's square, as the sheet names it, "
+    "may be said even where the move goes, and the moves the sheet lists as all as good, "
+    "when several are, may be named. Two or three sentences."
 )
 _LENGTH_WORDS = {4: "Four", 5: "Five", 6: "Six"}
 
@@ -961,6 +962,8 @@ class _Request:
     # the answer there (its best move and line), which the reply must not give away -- a late
     # verdict's lesson said "and now Qxf7# is mate" (the runtime audit, 2026-09-25).
     now_answer: tuple[str, ...] = ()
+    # The game's moves as the record numbers them ("17. Rh1"): said so, they are history.
+    record: frozenset[str] = frozenset()
 
 
 def _after_best(request: _Request) -> list[chess.Board]:
@@ -988,6 +991,14 @@ def _after_best(request: _Request) -> list[chess.Board]:
     return frames + request.frames
 
 
+def _rated(label: str) -> str:
+    """A label as said of a move: "a mistake", "an inaccuracy", "a miss"; the good ones as
+    they are ("best", "excellent"), and theory as "a book move"."""
+    if label in ("inaccuracy", "mistake", "miss", "blunder"):
+        return ("an " if label[0] in "aeiou" else "a ") + label
+    return "a book move" if label == "book" else label
+
+
 def _names(text: str, item: str) -> bool:
     """Whether `text` names `item`: a square, or a move in SAN (with or without its mark)."""
     if re.fullmatch(r"[a-h][1-8]", item):
@@ -996,7 +1007,14 @@ def _names(text: str, item: str) -> bool:
     return re.search(rf"(?<![A-Za-z]){re.escape(core)}[+#]?(?![A-Za-z0-9])", text) is not None
 
 
-_NUMBER_SAID = re.compile(r"\d+(?:\.\d+)?\s*(?:%|per ?cent)|(?<![\w.])0\.\d+", re.IGNORECASE)
+def figure_said(text: str) -> bool:
+    """Whether `text` quotes a figure: any digit outside a move, a square or an ordinal ("the
+    7th rank") -- "ahead by about 1.2 pawns" went through a check for percentages alone."""
+    rest = _SAN.sub(" ", text)
+    rest = re.sub(r"\b\d+(?:st|nd|rd|th)\b", " ", rest)
+    return re.search(r"\d", rest) is not None
+
+
 _PLAIN_PIECE = {chess.PAWN: "pawn", chess.KNIGHT: "knight", chess.BISHOP: "bishop"}
 _PLAIN_PIECE |= {chess.ROOK: "rook", chess.QUEEN: "queen"}
 
@@ -1013,7 +1031,7 @@ def restated(text: str, request: _Request) -> list[str]:
     faults: list[str] = []
     if re.match(rf"\W*{re.escape(played)}(?![A-Za-z0-9])", text):
         faults.append(f"opens with {played}, the move just played")
-    if _NUMBER_SAID.search(text):
+    if figure_said(text):
         faults.append("a figure in a remark nobody asked for: say it in words")
     try:
         move = request.board.parse_san(request.played_san)
@@ -1028,8 +1046,10 @@ def restated(text: str, request: _Request) -> list[str]:
     victim = board.piece_at(move.to_square)
     if victim is not None and victim.piece_type in _PLAIN_PIECE:
         square = chess.square_name(move.to_square)
-        took = r"\b(?:takes|taking|took|captures?|capturing|grabs?|grabbing)\s+(?:the|their|a)\s+"
-        took += rf"{_PLAIN_PIECE[victim.piece_type]}\s+on\s+{square}\b"
+        name = _PLAIN_PIECE[victim.piece_type]
+        verb = r"\b(?:takes|taking|took|take|captures?|capturing|grabs?|grabbing|wins?|winning|won)"
+        took = rf"{verb}\s+(?:the|their|a|that)\s+(?:{name}\s+on\s+{square}|{square}\s+{name})\b"
+        took += rf"|\b(?:takes|taking|took|take)\s+on\s+{square}\b"
         if re.search(took, low) and not (better is not None and better.to_square == move.to_square):
             faults.append(f"says what {played} plainly did: the capture on {square}")
     # What the better move does as well is the lesson, not a restatement.
@@ -1448,7 +1468,9 @@ class Speaker:
         said = " ".join(filter(None, [request.user_text, request.disclosed]))
         found = [
             f"withheld {item}"
-            for item in leak_check(text, request.facts, request.level, said=said or None)
+            for item in leak_check(
+                text, request.facts, request.level, said=said or None, record=request.record
+            )
         ]
         found += [
             f"gives away {move} in the position they face now"
@@ -1477,6 +1499,8 @@ class Speaker:
         if left_out:
             found.append(left_out)
         found.extend(restated(text, request))
+        if request.trigger in (Trigger.DECISIVE_QUESTION, Trigger.STUCK) and figure_said(text):
+            found.append("a figure in a remark nobody asked for: say it in words")
         if self.draft_check is not None:
             for problem in self.draft_check(text, request.board, _after_best(request)):
                 san = problem.split(":", 1)[0].strip()
@@ -2739,6 +2763,7 @@ class Coach:
             must_name=must_name,
             frames=frames,
             now_answer=now_answer,
+            record=self._numbered_moves(),
         )
         self.speaker.submit(request)
 
@@ -2874,6 +2899,13 @@ class Coach:
                 board.push(step)
                 frames.append(board)
         return frames
+
+    def _numbered_moves(self) -> frozenset[str]:
+        """The moves played in the game so far as the record numbers them: "17. Rh1"."""
+        with self._lock:
+            return frozenset(
+                self.conversation._numbered(r.move) for r in self.conversation.judged_records()
+            )
 
     def _played_moves(self) -> frozenset[str]:
         """The moves played in the game so far, as SAN."""
@@ -3040,7 +3072,7 @@ class Coach:
                     ),
                 )
                 instruction = (
-                    f"The player just played {played.san}, which was a {label}: it cost "
+                    f"The player just played {played.san}, which was {_rated(label)}: it cost "
                     f"{loss:.0%} of the game. The better move was {best} ({better_words}). "
                     "Teach the difference from the fact sheet of the position they faced -- "
                     "its goal, its pattern, why the better move works, and what their move "
@@ -3059,8 +3091,9 @@ class Coach:
                     # said exactly that, every time.
                     fallback += " What were you expecting that move to do?"
                     instruction = (
-                        f"The player just played {played.san}, which was a {label}: it cost "
-                        f"{loss:.0%} of the game. The better move was {best} ({better_words}). "
+                        f"The player just played {played.san}, which was {_rated(label)}: it "
+                        f"cost {loss:.0%} of the game. The better move was {best} "
+                        f"({better_words}). "
                         "Teach the difference from the fact sheet of the position they faced "
                         "-- its goal, its pattern, why the better move works -- as a pattern "
                         "to remember, in three sentences at most, then -- instead of a check "
@@ -3115,7 +3148,7 @@ class Coach:
                 # lesson), but the word says what the move was -- never "fine".
                 fallback = self._bags.draw("cost", COST_YOU).format(best=best) + "."
                 instruction = (
-                    f"The player just played {played.san}, which was a {label}: {best} "
+                    f"The player just played {played.san}, which was {_rated(label)}: {best} "
                     f"({better_words}) was better. It is a fast game: one or two sentences, no "
                     f"lesson, no question. {NOT_THE_MOVE} {NO_NUMBERS}"
                 )
@@ -3279,7 +3312,7 @@ class Coach:
             verdict = their.assessment
             san = their.move.san
             label = verdict.label.value if verdict.label else verdict.severity.value
-            fallback = f"Their {san} was {label}."
+            fallback = f"Their {san} was {_rated(label)}."
             directive = (
                 f"They ask about the opponent's last move, {san}. It is in the record under "
                 f"'Last move' with its verdict ({label}) and what it does; all of that is theirs "
@@ -3348,8 +3381,8 @@ class Coach:
                     )
                 directive = (
                     f"They ask about the move they already played, {san}. Its verdict is in its "
-                    f"move message and is theirs in full: it was a {label} that cost {loss:.0%} "
-                    "of the game"
+                    f"move message and is theirs in full: it was {_rated(label)} that cost "
+                    f"{loss:.0%} of the game"
                     + (f", the engine preferred {best}" if best else "")
                     + (f", and the idea was {idea}" if idea else "")
                     + ". Say that plainly -- the position it was played from is past, so "
@@ -3357,6 +3390,14 @@ class Coach:
                     "they face now. Three sentences at most, then one question that checks they "
                     "see the pattern."
                 )
+        elif _ASK_MATERIAL.search(said) or _ASK_OPENING.search(said) or _ASK_EVAL.search(said):
+            # A plain question about the game as it stands: answered plainly, no question
+            # back (the generic answer's "point them ... with a question" asked one).
+            directive = (
+                "They asked a plain question about the game as it stands. Answer it from the "
+                "message -- the material, the opening, or who stands better, as it gives them "
+                "-- in one or two sentences, and no question."
+            )
         elif _ASK_THREAT.search(said):
             threats = facts.threats[:2]
             if threats:
