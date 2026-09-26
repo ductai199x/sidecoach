@@ -443,6 +443,7 @@ class Profiler:
             phase=ply.phase,
             left_book=left_book,
             clock_ms=ply.clock_ms,
+            missed_chance=ply.assessment.label is Label.MISS,
         )
         ply.cause, ply.motif, ply.placed = cause, motif, True
         loss = ply.assessment.expected_loss

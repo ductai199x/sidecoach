@@ -215,6 +215,23 @@ def test_a_tactic_allowed_is_a_missed_threat() -> None:
     assert (cause, motif) == (causes.MISSED_THREAT, "mate")
 
 
+def test_a_chance_let_go_with_a_tactic_on_the_board_is_the_tactic_never_considered() -> None:
+    """Even when the move also allowed one: the tactic-blind student was told it kept
+    missing their threats and wrote down the threat habit (the simulated students)."""
+    board = chess.Board()
+    move = chess.Move.from_uci("e2e4")
+    cause, motif = causes.classify(
+        board, move, available_tags=[FORK], allowed_tags=[FORK], missed_chance=True
+    )
+    assert (cause, motif) == (causes.NOT_CONSIDERED, "fork")
+    # Not a miss: the tactic allowed comes first, as before.
+    cause, _ = causes.classify(board, move, available_tags=[FORK], allowed_tags=[FORK])
+    assert cause == causes.MISSED_THREAT
+    # A mate allowed is the threat whatever else.
+    cause, _ = causes.classify(board, move, available_tags=[FORK], reply_mate=1, missed_chance=True)
+    assert cause == causes.MISSED_THREAT
+
+
 def test_a_piece_left_to_be_taken_is_a_missed_threat() -> None:
     # 1.e4 e5 2.Nf3 Qh4?? 3.Nxh4: the queen put where the knight takes it for nothing.
     board = chess.Board("rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2")

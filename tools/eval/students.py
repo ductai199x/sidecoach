@@ -1185,20 +1185,29 @@ def notebook_checks(notes: list[str], reader, ledger) -> tuple[dict[str, list[st
     )
     text = chat(reader, ledger, "You read notes carefully and literally.", ask, "exam-read")
     by_phase: dict[str, list[str]] = {p: [] for p in PHASES}
-    seen: set[int] = set()
+    for named, phase in per_note(text, len(notes)):
+        for p in PHASES:
+            if phase in ("any", p):
+                by_phase[p] += [c for c in named if c not in by_phase[p]]
+    return by_phase, text
+
+
+def per_note(text: str, n: int) -> list[tuple[list[str], str]]:
+    """The reader's answer note by note: the checks each note calls for and its phase, for
+    notes 1..n in order (a note it did not answer for calls for none)."""
+    out: dict[int, tuple[list[str], str]] = {}
     for line in text.splitlines():
         found = re.match(r"\s*(\d+)\s*[:.]\s*([^|]*)\|\s*([a-z]+)", line.lower())
         # Only the notes there are, each once: the reader split a one-note notebook at its
         # semicolon and answered for a note 2 with every check (2026-09-26).
         number = int(found.group(1)) if found else 0
-        if not found or not 1 <= number <= len(notes) or number in seen:
+        if not found or not 1 <= number <= n or number in out:
             continue
-        seen.add(number)
-        named = [c for c in CHECKS if re.search(rf"\b{c}\b", found.group(2))]
-        for p in PHASES:
-            if found.group(3) in ("any", p):
-                by_phase[p] += [c for c in named if c not in by_phase[p]]
-    return by_phase, text
+        out[number] = (
+            [c for c in CHECKS if re.search(rf"\b{c}\b", found.group(2))],
+            found.group(3),
+        )
+    return [out.get(i, ([], "any")) for i in range(1, n + 1)]
 
 
 def decide(

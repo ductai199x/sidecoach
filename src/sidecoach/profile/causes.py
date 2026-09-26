@@ -125,6 +125,7 @@ def classify(
     phase: str = "middlegame",
     left_book: bool = False,
     clock_ms: int | None = None,
+    missed_chance: bool = False,
 ) -> tuple[str, str | None]:
     """The cause and the motif of a mistake.
 
@@ -133,7 +134,13 @@ def classify(
     they could have played), `allowed_tags` those of the position after the move (what
     the opponent now has); `reply` is the opponent's best answer and `reply_mate` its
     mate distance; `left_book` says the move was the first out of theory; `clock_ms` the
-    player's clock when the move was made.
+    player's clock when the move was made; `missed_chance` that it let the opponent's
+    mistake go (a miss).
+
+    A miss with a tactic on the board is the tactic never considered, even when the move
+    also allowed one: the chance was the lesson. The simulated tactic-blind student, told
+    "what you kept missing: what their moves threatened" for its misses, wrote down the
+    threat habit and not its own (2026-09-26).
     """
     allowed = tactical(allowed_tags)
     available = tactical(available_tags)
@@ -144,6 +151,12 @@ def classify(
     after.push(move)
     if reply_mate is not None and reply_mate > 0:
         return MISSED_THREAT, allowed or "mate"
+    if (
+        missed_chance
+        and available is not None
+        and not (before.is_capture(move) or before.gives_check(move))
+    ):
+        return NOT_CONSIDERED, available
     if allowed is not None:
         return MISSED_THREAT, allowed
     if reply is not None:

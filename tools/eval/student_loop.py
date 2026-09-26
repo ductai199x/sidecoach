@@ -173,6 +173,42 @@ def cured(book: dict | None, habit: str) -> bool:
     return bool(book) and CURE[habit] in book["checks"].get("middlegame", [])
 
 
+def signals(s: dict, book: dict | None) -> dict:
+    """What a session's transcript and notebook say about the coaching, beside the exam:
+    how many notes carry the habit's cure (focus), whether the coach named the habit's
+    pattern, what the student found unclear, and how often a piece's moves were read out."""
+    import students
+    from habits import HABITS
+
+    from sidecoach.profile.causes import HABIT
+
+    notes = s["notes"]
+    per = students.per_note(book["said"], len(notes)) if book else []
+    focus = sum(CURE[s["habit"]] in checks for checks, _ in per)
+    words = HABIT[HABITS[s["habit"]].cause][0]
+    coach = [t["text"] for t in s["transcript"] if t["who"] == "coach"]
+    return {
+        "notes": len(notes),
+        "focus": focus,
+        "pattern": any(words in text for text in coach),
+        "unclear": len(s.get("unclear", [])),
+        "dumps": sum(" can go to " in text for text in coach),
+        "own": len(s.get("own_notes", [])),
+    }
+
+
+def signal_lines(name: str, runs: dict, books: dict, common: list[str]) -> list[str]:
+    rows = [signals(runs[s], books.get("\n".join(runs[s]["notes"]))) for s in common]
+    n = max(len(rows), 1)
+    return [
+        f"  {name:<14} notes carrying the cure {sum(r['focus'] for r in rows)}/"
+        f"{sum(r['notes'] for r in rows)}; pattern named in {sum(r['pattern'] for r in rows)}/"
+        f"{len(rows)} sessions; unclear {sum(r['unclear'] for r in rows) / n:.1f} a session;"
+        f" pieces read out {sum(r['dumps'] for r in rows) / n:.1f} a session; own notes"
+        f" {sum(r['own'] for r in rows)}"
+    ]
+
+
 # ---- compare -----------------------------------------------------------------------------------
 
 
@@ -203,6 +239,7 @@ def compare(base: str, cand: str, student: str) -> str:
             for s in common
         )
         lines.append(f"  {name:<14} notebooks with the habit's check: {cure}/{len(common)}")
+        lines += signal_lines(name, runs[name], books[name], common)
     by = {
         name: {(r["item"], r["notebook"].split(":", 1)[1]): r for r in rows[name]}
         for name in (base, cand)
@@ -232,6 +269,16 @@ def compare(base: str, cand: str, student: str) -> str:
     lines.append(
         f"  sessions (errors fixed): {cand} better {better}, worse {worse}, the same {same};"
         f" sign test p={mcnemar(worse, better):.3f}"
+    )
+    focus_better = focus_worse = 0
+    for sid in common:
+        a = signals(runs[base][sid], books[base].get("\n".join(runs[base][sid]["notes"])))
+        b = signals(runs[cand][sid], books[cand].get("\n".join(runs[cand][sid]["notes"])))
+        focus_better += b["focus"] > a["focus"]
+        focus_worse += b["focus"] < a["focus"]
+    lines.append(
+        f"  sessions (notes carrying the cure): {cand} more {focus_better}, fewer {focus_worse};"
+        f" sign test p={mcnemar(focus_worse, focus_better):.3f}"
     )
     return "\n".join(lines)
 
