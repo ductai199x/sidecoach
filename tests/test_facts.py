@@ -124,6 +124,27 @@ def test_describe_tactic_names_only_enemy_targets() -> None:
     assert describe_tactic(fork, "fork", ["e6", "d8", "f8"]) is None
 
 
+def test_in_check_the_question_is_the_check() -> None:
+    """ "A quiet improvement -- which of your pieces has no job right now?" was the hint at
+    the check positions of seven of ten AI sessions, and the students did not understand it
+    (the simulated students' round 4)."""
+    from sidecoach.coach.facts import IN_CHECK_NATURE, IN_CHECK_QUESTION
+
+    # 1.e4 e5 2.Nf3 d6 3.Bb5+: Black answers the check with the quiet ...c6.
+    fen = "rnbqkbnr/ppp2ppp/3p4/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 1 3"
+    analysis = Analysis(
+        game_id="g",
+        fen=fen,
+        ply=5,
+        lines=[Line(moves=["c7c6"], depth=12, expected_score=0.45)],
+        decisive=False,
+        only_move=False,
+    )
+    facts = facts_from_analysis(chess.Board(fen), analysis)
+    assert facts.question == IN_CHECK_QUESTION
+    assert facts.nature == IN_CHECK_NATURE
+
+
 def test_the_nature_of_the_best_move_is_forcing_or_quiet() -> None:
     """From the question level the sheet says whether the answer is a check, a capture or a
     promotion, or a quiet improving move: it names nothing, and it stops the stuck hint

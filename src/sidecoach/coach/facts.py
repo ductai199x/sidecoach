@@ -431,6 +431,12 @@ def _to_move(uci: str) -> chess.Move | None:
 # its first move is quiet: a discovered attack, a knight move that forks next.
 TACTIC_GAIN = 2
 # A quiet first move of a tactic the idea reader finds, by its goal.
+IN_CHECK_QUESTION = (
+    "You are in check: can you take the checking piece, block it, or must your king move -- "
+    "and which way out leaves you safest?"
+)
+IN_CHECK_NATURE = "a check to answer -- take the checking piece, block it, or move the king"
+
 _QUIET_TACTIC = {
     "win": "a tactic -- the best move is quiet, but the line after it wins material",
     "combination": "a tactic -- the best move is quiet, but the line after it wins material",
@@ -603,6 +609,13 @@ def facts_from_analysis(
     if mechanism is None and plan_kind in idea_words.PLAN_WHY:
         mechanism = f"{plan}: {idea_words.PLAN_WHY[plan_kind]}"
     question = idea_words.question(idea, plan_kind)
+    if board.is_check() and question in situation.ANY_POSITION:
+        # In check the question is the check: "a quiet improvement -- which of your pieces has
+        # no job right now?" was the hint in seven of ten AI sessions' check positions, and the
+        # students listed it among what they did not understand (round 4, 2026-09-26).
+        question = IN_CHECK_QUESTION
+        if nature is not None and nature.startswith("quiet"):
+            nature = IN_CHECK_NATURE
     target = idea_words.target(idea, board)
     nudge = idea_words.nudge(idea)
     why = idea_words.why(idea, board, describe_tactic)
