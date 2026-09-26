@@ -156,8 +156,9 @@ internal val MY_MOVE = Regex(
 
 /** A question about the opponent's threat. */
 internal val ASK_THREAT = Regex(
-    "\\b(?:what(?:'s| is| are) (?:their|the|his|her|my opponent's|the opponent's) threats?" +
+    "\\b(?:what(?:'s|s| is| are) (?:their|the|his|her|my opponent's|the opponent's) threats?" +
         "|what (?:do|does) (?:they|he|she|my opponent|the opponent) threaten" +
+        "|what (?:is|are|'s|'re) (?:they|he|she|my opponent|the opponent) (?:threatening|up to)" +
         "|is (?:there|anything) (?:a )?threat(?:ened)?|am i (?:in danger|threatened))\\b",
     RegexOption.IGNORE_CASE,
 )
@@ -202,9 +203,15 @@ fun questionPart(text: String): String {
     return asked.joinToString(" ").replace("…", "...")
 }
 
-/** Whether the user's words could state something about the board to check. */
+/**
+ * Whether the user's words could state something about the board to check. "What is he
+ * threatening?" states nothing: it is answered from the facts' threats, not examined as a named
+ * line (the examination read it back, question and move numbers, as the answer).
+ */
 fun mayCarryClaims(text: String): Boolean {
-    if (ASK_HINT.matchesAt(text, 0) || ASK_REVIEW.containsMatchIn(text)) return false
+    if (ASK_HINT.matchesAt(text, 0) || ASK_REVIEW.containsMatchIn(text) || ASK_THREAT.containsMatchIn(text)) {
+        return false
+    }
     return CLAIM_WORDS.containsMatchIn(text)
 }
 

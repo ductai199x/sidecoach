@@ -568,6 +568,11 @@ class CoachTest {
         for (said in listOf("what is their threat?", "what does my opponent threaten?", "am I in danger?")) {
             assertTrue(said, ASK_THREAT.containsMatchIn(said))
         }
+        // And as the pilot asked it, answered from the threats, never examined as a named line
+        // (desktop 653a473, whose commit names these three).
+        for (said in listOf("What is he threatening?", "what are they up to", "whats the threat")) {
+            assertTrue(said, ASK_THREAT.containsMatchIn(said) && !mayCarryClaims(said))
+        }
         val (coach, provider) = coach(listOf("Nothing is threatened right now."))
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
