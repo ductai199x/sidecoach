@@ -532,6 +532,7 @@ def analyse_named(
     planner: LLMProvider | None = None,
     depth: int = 14,
     static: bool = False,
+    pieces_board: chess.Board | None = None,
 ) -> list[str]:
     """The engine's word on what the player asked about: one line per probe, or none when
     their words name nothing to examine. The planner (a model) decides the probes; without
@@ -557,7 +558,10 @@ def analyse_named(
         best = before[0] if before else None
     for p in probes:
         if p.square is not None:
-            out.append(examine_piece(p, board, user_colour=user_colour))
+            # A piece or square is read on the board as it stands (`pieces_board`), even when
+            # the question is about the position a move was played from: "b5 is empty" was
+            # said with the player's bishop on b5 (the students' round 6).
+            out.append(examine_piece(p, pieces_board or board, user_colour=user_colour))
         elif engine is None:
             out.append(examine_static(p, board))
         else:

@@ -2768,6 +2768,9 @@ class Coach:
                 # Parsing their words into moves is no lesson: the routine effort, not
                 # the coach's (at medium it was a second model call's worth of waiting).
                 planner=self.speaker.routine_provider if self.engine is not None else None,
+                # Pieces and squares as the board stands now, whatever position the question
+                # is about.
+                pieces_board=self.board,
             )
         except Exception as exc:  # noqa: BLE001
             self.speaker.last_error = f"named analysis: {type(exc).__name__}: {exc}"

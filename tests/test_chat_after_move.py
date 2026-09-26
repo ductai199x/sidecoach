@@ -139,6 +139,40 @@ def test_an_answer_to_the_coachs_question_closes_it_without_another() -> None:
     assert not coach._answering_our_question("ok")
 
 
+def test_a_piece_asked_about_is_read_on_the_board_as_it_stands() -> None:
+    """Asked about their own last move, the coach answers from the position it was played
+    from -- but "b5 is empty" was said with the player's bishop on b5 (the students' round
+    6): pieces and squares are read on the board as it stands."""
+    from tests.test_coach import _messages
+
+    coach, _ = _coach([])
+    ucis = ["e2e4", "e7e5", "g1f3", "b8c6", "f1b5"]
+    _played(coach, ucis, mistake_at=5)
+    board = chess.Board()
+    for ply, uci in enumerate(ucis, 1):
+        board.push_uci(uci)
+        if ply >= 4:
+            coach.on_event(
+                Analysis(
+                    game_id="g",
+                    fen=board.fen(),
+                    ply=ply,
+                    lines=[
+                        Line(moves=["a7a6" if ply == 5 else "f1b5"], depth=12, expected_score=0.5)
+                    ],
+                    decisive=False,
+                    only_move=False,
+                    tags=[],
+                ),
+                ply + 0.7,
+            )
+    _messages(coach)
+    assert not coach.user_to_move
+    coach.ask("Is my bishop on b5 safe there?", 6.0)
+    said = " ".join(m.text for m in _messages(coach))
+    assert "Your bishop on b5" in said and "b5 is empty" not in said
+
+
 def test_chat_on_the_players_own_turn_is_about_the_position() -> None:
     coach, _ = _coach([])
     _played(coach, ["e2e4", "e7e5", "g1f3", "b8c6"], mistake_at=3)

@@ -53,7 +53,7 @@ HABIT: dict[str, tuple[str, str]] = {
         "checks your move would leave them",
     ),
     MISCALCULATED: (
-        "how the exchanges came out",
+        "captures and checks that came out behind",
         "before a capture or a check, follow it to where the exchanges stop and count what is left",
     ),
     NOT_CONSIDERED: (
