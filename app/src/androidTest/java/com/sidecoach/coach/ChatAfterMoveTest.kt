@@ -148,6 +148,30 @@ class ChatAfterMoveTest {
         )
     }
 
+    /**
+     * Asked about their own last move, the coach answers from the position it was played from
+     * -- but "b5 is empty" was said with the player's bishop on b5 (the students' round 6; desktop
+     * f85c2bf): pieces and squares are read on the board as it stands. The desktop's question
+     * ("Is my bishop on b5 safe there?") reaches the position before the move through
+     * `_asked_own_move` (f733318, not ported); on the phone a question about the last move
+     * ("was that a mistake ...") reaches it, and the desktop's own question is asked too.
+     */
+    @Test
+    fun aPieceAskedAboutIsReadOnTheBoardAsItStands() {
+        val (coach, _) = coach(emptyList())
+        val ucis = listOf("e2e4", "e7e5", "g1f3", "b8c6", "f1b5")
+        played(coach, ucis, mistakeAt = 5)
+        for (ply in 4..5) analysed(coach, ucis, ply, if (ply == 5) "a7a6" else "f1b5", 0.5, ply + 0.7)
+        messages(coach)
+        assertTrue(!coach.userToMove)
+        coach.ask("Was that a mistake, putting my bishop on b5?", 6.0)
+        var said = messages(coach).joinToString(" ") { it.text }
+        assertTrue(said, "the player's bishop on b5 stands there" in said && "b5 is empty" !in said)
+        coach.ask("Is my bishop on b5 safe there?", 7.0)
+        said = messages(coach).joinToString(" ") { it.text }
+        assertTrue(said, "the player's bishop on b5 stands there" in said && "b5 is empty" !in said)
+    }
+
     /** The directive of the last model call: the harness after its "# Task" line. */
     private fun directive(provider: ScriptedProvider): String {
         val messages = synchronized(provider.prompts) { provider.prompts.last().second }

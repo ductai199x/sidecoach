@@ -483,6 +483,7 @@ fun analyseNamed(
     plannedProbes: List<Probe>? = null,
     depth: Int = 14,
     static: Boolean = false,
+    piecesBoard: Board? = null,
 ): List<String> {
     var probes = plannedProbes ?: probesByWords(text, board)
     if ((board.turn != userColour && engine != null) || (engine == null && !static)) {
@@ -499,7 +500,10 @@ fun analyseNamed(
     }
     for (p in probes) {
         when {
-            p.square != null -> out.add(examinePiece(p, board, userColour))
+            // A piece or square is read on the board as it stands ([piecesBoard]), even when the
+            // question is about the position a move was played from: "b5 is empty" was said with
+            // the player's bishop on b5 (the students' round 6).
+            p.square != null -> out.add(examinePiece(p, piecesBoard ?: board, userColour))
             engine == null -> out.add(examineStatic(p, board))
             else -> out.add(examine(p, board, engine, best, userColour, level, depth))
         }

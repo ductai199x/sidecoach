@@ -53,7 +53,7 @@ object Causes {
                 "checks your move would leave them"
             ),
         MISCALCULATED to (
-            "how the exchanges came out" to
+            "captures and checks that came out behind" to
                 "before a capture or a check, follow it to where the exchanges stop and count what is left"
             ),
         NOT_CONSIDERED to (

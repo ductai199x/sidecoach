@@ -204,6 +204,21 @@ class NamedTest {
         assertTrue(said, "pass" !in said)
     }
 
+    /**
+     * A piece or square is read on the board as it stands, whatever position the question is
+     * about (desktop f85c2bf): the position before 3.Bb5 asked about, the board after it read.
+     */
+    @Test
+    fun aPieceIsReadOnTheBoardGiven() {
+        val before = Board(ITALIAN_START)
+        val now = before.copy()
+        now.push(now.parseSan("Bb5")!!)
+        val there = analyseNamed("is my bishop on b5 safe?", before, null, WHITE, DisclosureLevel.LINE, piecesBoard = now)
+        assertTrue(there.toString(), there.size == 1 && "the player's bishop on b5 stands there" in there[0])
+        val past = analyseNamed("is my bishop on b5 safe?", before, null, WHITE, DisclosureLevel.LINE)
+        assertTrue(past.toString(), past.size == 1 && "b5 is empty" in past[0])
+    }
+
     /** The stub the generator used: the same lines for the same position, read from the file. */
     private fun recorded(seen: JSONObject): EngineLike = EngineLike { board, _ ->
         val entry = seen.optJSONArray(board.fen()) ?: JSONArray()
