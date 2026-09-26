@@ -23,6 +23,9 @@ object Review {
     val GOOD = setOf("brilliant", "great", "best", "excellent")
     const val TURNING_POINTS = 3
 
+    /** Mistakes of one cause in a game that make a pattern worth naming. */
+    const val PATTERN_MIN = 2
+
     /** A judged move of the player's, as the profiler keeps it. */
     data class UserMove(
         val ply: Int,
@@ -110,9 +113,13 @@ object Review {
             }
         }
         val causes = LinkedHashMap<String, Double>()
+        val counts = LinkedHashMap<String, Int>()
         for (m in judged) {
             val cause = m.cause
-            if (m.severity in ERRORS && !cause.isNullOrEmpty()) causes[cause] = (causes[cause] ?: 0.0) + m.expectedLoss
+            if (m.severity in ERRORS && !cause.isNullOrEmpty()) {
+                causes[cause] = (causes[cause] ?: 0.0) + m.expectedLoss
+                counts[cause] = (counts[cause] ?: 0) + 1
+            }
         }
         val ordered = LinkedHashMap<String, Double>()
         for ((k, v) in causes.entries.map { it.key to Insights.round(it.value, 3) }.sortedBy { -it.second }) {
@@ -132,7 +139,37 @@ object Review {
             causes = ordered,
         )
         review.lines = linesFor(review, fullmoves)
+        val pattern = patternLine(counts, causes, judged.count { it.severity in ERRORS })
+        if (pattern != null) {
+            // Second, after the result: the offline review says the first four lines.
+            review.lines = review.lines.toMutableList().apply { add(1, pattern) }
+        }
         return review
+    }
+
+    /**
+     * What the player kept missing, when one cause is behind two or more of the game's
+     * mistakes, and the habit that answers it. The cause is the most frequent, the larger loss
+     * breaking a tie, the first seen among equals (Python's `max`).
+     */
+    fun patternLine(counts: Map<String, Int>, losses: Map<String, Double>, errors: Int): String? {
+        if (counts.isEmpty()) return null
+        var cause: String? = null
+        var n = 0
+        var loss = 0.0
+        for ((k, v) in counts) {
+            val l = losses[k] ?: 0.0
+            if (cause == null || v > n || (v == n && l > loss)) {
+                cause = k
+                n = v
+                loss = l
+            }
+        }
+        val found = cause ?: return null
+        if (n < PATTERN_MIN || !Causes.HABIT.containsKey(found)) return null
+        val (words, habit) = Causes.HABIT.getValue(found)
+        return "What you kept missing: $words -- $n of your $errors mistakes. " +
+            "The habit that fixes it: $habit."
     }
 
     private val ORDER = listOf(

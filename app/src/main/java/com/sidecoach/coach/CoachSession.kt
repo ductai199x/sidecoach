@@ -147,6 +147,25 @@ private val CLAIM_WORDS = Regex(
     RegexOption.IGNORE_CASE,
 )
 
+private val QUESTION_START = Regex(
+    "^(?:what|what's|whats|where|why|how|which|who|whose|is|isn't|are|can|could|should|" +
+        "would|will|does|do|did|was|were|am)\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+private val SENTENCE = Regex("[^.!?]+[.!?]*")
+
+/**
+ * The sentences of the player's words that ask something -- a "?", or a question's first word,
+ * as dictation leaves it -- or "" when none does.
+ */
+fun questionPart(text: String): String {
+    val sentences = SENTENCE.findAll(text.replace("...", "…")).map { it.value }
+    val asked = sentences.map { it.trim() }
+        .filter { it.endsWith("?") || QUESTION_START.containsMatchIn(it) }
+    return asked.joinToString(" ").replace("…", "...")
+}
+
 /** Whether the user's words could state something about the board to check. */
 fun mayCarryClaims(text: String): Boolean {
     if (ASK_HINT.matchesAt(text, 0) || ASK_REVIEW.containsMatchIn(text)) return false
@@ -401,8 +420,8 @@ class Coach(
             askProfile(text, ts)
             return
         }
-        val asked = elicitAsked
-        if (asked != null && ts - asked <= ELICIT_ANSWER_S) elicitAnswered = true
+        val elicitAt = elicitAsked
+        if (elicitAt != null && ts - elicitAt <= ELICIT_ANSWER_S) elicitAnswered = true
         var position = current
         if (position != null && position.facts == null && userToMove && !finished) {
             // The engine is still looking at the position on the board: said so, and answered
@@ -473,13 +492,23 @@ class Coach(
             )
         }
 
+        val asked = questionPart(text)
+        var shownExamination = false
+
         /**
          * The engine on what they asked about; its plain-words form goes out at once as the
-         * coach's turn (correct by construction), and the model builds on it.
+         * coach's turn (correct by construction), and the model builds on it. Only what a
+         * question names is said: named in a statement ("I see the fork now: Nf6 attacks the
+         * queen on e8 and the rook on d7") or before the question ("my rook on e1 stays active.
+         * Why is 12...h5 their best reply?"), the pieces and squares came back as the whole
+         * answer -- where each can go, what each attacks -- and the question went unanswered
+         * (the simulated students, 2026-09-26). Named in a statement they are still examined,
+         * for the model to check it by.
          */
         fun examined(): List<String> {
-            val found = namedAnalysis(text, where, level)
-            if (found.isNotEmpty()) {
+            val found = namedAnalysis(asked.ifEmpty { text }, where, level)
+            if (found.isNotEmpty() && asked.isNotEmpty()) {
+                shownExamination = true
                 queuePlain(
                     Trigger.USER_ASK,
                     found.joinToString(" ") { spoken(it) },
@@ -505,7 +534,7 @@ class Coach(
                 ts,
                 userText = text,
                 verdicts = verdicts,
-                quick = canned || verdicts.isNotEmpty(),
+                quick = canned || shownExamination,
             )
             return
         }
@@ -526,7 +555,7 @@ class Coach(
                 ts,
                 userText = text,
                 verdicts = verdicts,
-                quick = found.isNotEmpty(),
+                quick = shownExamination,
             )
         }
 
@@ -1392,10 +1421,12 @@ class Coach(
             return (
                 "The game is over. Sum it up from the review in the last message and the " +
                     "verdicts on the moves above, and from nothing else: the result, what went " +
-                    "well, and the one thing to work on -- the moment the game turned, the " +
-                    "better move there, and why it happened, in plain words. Three or four " +
-                    "sentences, no question. Do not infer the course of the game from the " +
-                    "position on the board."
+                    "well, and the one thing to work on. When the review says what they kept " +
+                    "missing, that is the thing: the pattern in plain words and the habit that " +
+                    "fixes it, as the review gives it, with the moment it cost most. Otherwise the " +
+                    "moment the game turned, the better move there, and why it happened, in plain " +
+                    "words. Three or four sentences, no question. Do not infer the course of the " +
+                    "game from the position on the board."
                 ) to reviewLines.take(4).joinToString(" ")
         }
         if (trigger == Trigger.DECISIVE_QUESTION) {
@@ -1632,8 +1663,13 @@ class Coach(
                     "moves in the messages above -- the labels, the tally in their last move's " +
                     "message, where they lost ground, how the material went -- and from nothing " +
                     "else: do not infer the course of the game from the position on the board. " +
-                    "Two or three sentences: what went well, the one thing to work on, in plain " +
-                    "words. If no move has a verdict yet, say you have not seen enough to say."
+                    "Two or three sentences: what went well -- how many of their moves were strong, " +
+                    "and their slips by kind, in the tally's numbers -- and the one thing to work " +
+                    "on: when the review says what they kept missing, that pattern in plain words " +
+                    "and the habit that fixes it, as the review gives it; otherwise the move the " +
+                    "tally lists first where ground was lost most, the better move there, and why, " +
+                    "in plain words. If no move has a verdict yet, say you have not seen enough to " +
+                    "say."
             // A review has a record to fall back on, not a line.
             fallback = reviewTemplate()
         } else if (ASK_HINT.matchesAt(said, 0)) {

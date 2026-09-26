@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.chess.Board
+import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.squareName
 import com.sidecoach.events.DisclosureLevel
 import com.sidecoach.events.Line
@@ -158,6 +159,28 @@ class NamedTest {
         assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
     }
 
+    /** `_Engine`: scripted lines keyed by the position's FEN board part. */
+    private fun scripted(lines: Map<String, List<Line>>) = EngineLike { board, _ -> lines[board.boardFen()] ?: emptyList() }
+
+    /**
+     * Searched again after it is played, the best move came back a hair off its own score:
+     * "12. Nc3: ... a hair behind the best (the best is Nc3)" (the simulated students; desktop
+     * 797094c).
+     */
+    @Test
+    fun theEnginesOwnBestMoveIsNeverBehindTheBest() {
+        val board = Board(ITALIAN_START)
+        val after = board.copy()
+        after.push(after.parseSan("Bb5")!!)
+        val engine = scripted(mapOf(after.boardFen() to listOf(Line(depth = 14, moves = listOf("a7a6"), expectedScore = 0.46))))
+        val best = Line(depth = 14, moves = listOf("f1b5"), expectedScore = 0.55)
+        val fact = examine(
+            parseProbe("your Bb5", listOf("Bb5"), board), board, engine, best,
+            userColour = WHITE, level = DisclosureLevel.LINE,
+        )
+        assertTrue(fact, "as good as the engine's best" in fact && "behind" !in fact)
+    }
+
     /** The stub the generator used: the same lines for the same position, read from the file. */
     private fun recorded(seen: JSONObject): EngineLike = EngineLike { board, _ ->
         val entry = seen.optJSONArray(board.fen()) ?: JSONArray()
@@ -198,5 +221,6 @@ class NamedTest {
 
     companion object {
         private const val TAG = "sidecoach.coach"
+        private const val ITALIAN_START = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"
     }
 }

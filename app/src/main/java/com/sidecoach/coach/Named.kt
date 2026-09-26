@@ -341,7 +341,13 @@ fun examine(
     }
     var tail = "after $played the expected score is ${"%.2f".format(score)} from the player's side"
     if (best != null) {
-        val gap = best.expectedScore - score
+        var gap = best.expectedScore - score
+        // The engine's own first move, searched again after it is played, comes back a hair
+        // off its first score: "12. Nc3: ... a hair behind the best (the best is Nc3)" (the
+        // simulated students, 2026-09-26). The best move is the best.
+        if (best.moves.isNotEmpty() && probe.parsed.size == 1 && probe.parsed[0].uci() == best.moves[0]) {
+            gap = 0.0
+        }
         if (gap > 0.005) {
             tail += ", ${"%.2f".format(gap)} behind the engine's best"
             if (level.value >= DisclosureLevel.LINE.value && best.moves.isNotEmpty()) {
