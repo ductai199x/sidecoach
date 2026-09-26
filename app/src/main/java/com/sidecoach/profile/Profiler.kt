@@ -359,6 +359,7 @@ class Profiler(
             phase = ply.phase,
             leftBook = leftBook,
             clockMs = ply.clockMs,
+            missedChance = assessment.label == Label.MISS,
         )
         ply.cause = cause
         ply.motif = motif

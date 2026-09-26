@@ -115,7 +115,13 @@ object Causes {
      * could have played), [allowedTags] those of the position after the move (what the
      * opponent now has); [reply] is the opponent's best answer and [replyMate] its mate
      * distance; [leftBook] says the move was the first out of theory; [clockMs] the player's
-     * clock when the move was made.
+     * clock when the move was made; [missedChance] that it let the opponent's mistake go (a
+     * miss).
+     *
+     * A miss with a tactic on the board is the tactic never considered, even when the move also
+     * allowed one: the chance was the lesson. The simulated tactic-blind student, told "what you
+     * kept missing: what their moves threatened" for its misses, wrote down the threat habit and
+     * not its own (2026-09-26).
      */
     fun classify(
         before: Board,
@@ -128,6 +134,7 @@ object Causes {
         phase: String = "middlegame",
         leftBook: Boolean = false,
         clockMs: Int? = null,
+        missedChance: Boolean = false,
     ): Pair<String, String?> {
         val allowed = tactical(allowedTags)
         val available = tactical(availableTags)
@@ -138,6 +145,12 @@ object Causes {
         val after = before.copy(withStack = false)
         after.push(move)
         if (replyMate != null && replyMate > 0) return MISSED_THREAT to (allowed ?: "mate")
+        if (missedChance &&
+            available != null &&
+            !(before.isCapture(move) || before.givesCheck(move))
+        ) {
+            return NOT_CONSIDERED to available
+        }
         if (allowed != null) return MISSED_THREAT to allowed
         if (reply != null) {
             val replyMove = Move.fromUciOrNull(reply)
