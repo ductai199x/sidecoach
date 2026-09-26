@@ -2201,3 +2201,17 @@ def test_the_coach_never_names_the_engine_and_the_review_sees_the_costliest() ->
     assert "named the engine: say it as the coach who saw the game" not in speaker._problems(
         "Qxf7 was better; the engine liked it more.", request
     )
+
+
+def test_a_legal_move_called_illegal_is_a_fault() -> None:
+    """The AI said "Qxf7+ is illegal here" and "Kf7 is illegal because f7 is controlled by
+    the King on e8" of legal moves (its own sessions, checked against the boards)."""
+    from sidecoach.coach.coach import false_illegal
+
+    board = chess.Board("2r3k1/4bpp1/p3p2p/qp1bn1NQ/8/1P1BB3/P4PPP/3R2K1 w - - 0 20")
+    assert false_illegal("No: Qxf7+ is illegal here.", board) == [
+        "Qxf7: called illegal, but it is a legal move here"
+    ]
+    # A claim inside a line is about a later position; a true one is no fault.
+    assert false_illegal("After Bh7+ Kh8, Qxf7+ is illegal.", board) == []
+    assert false_illegal("Qh4 is not legal: the pawn blocks it.", chess.Board()) == []

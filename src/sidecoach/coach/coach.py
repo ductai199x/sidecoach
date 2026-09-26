@@ -1096,6 +1096,32 @@ def _names(text: str, item: str) -> bool:
 _ENGINE_NAMED = re.compile(r"\b(?:stockfish|the engine|engine's|an engine)\b", re.IGNORECASE)
 
 
+_ILLEGAL_CLAIM = re.compile(
+    r"\b(O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)[+#]? (?:is|was) "
+    r"(?:not (?:a )?legal|illegal)"
+)
+
+
+def false_illegal(text: str, board: chess.Board) -> list[str]:
+    """A move the reply calls illegal that is legal for the side to move on the board it is
+    about. The AI said "O-O is not legal here because your opponent's bishop is still on
+    e2", "Qxf7+ is illegal here" and "Kf7 is illegal because f7 is controlled by the King
+    on e8" of legal moves (its own sessions, checked against the boards, 2026-09-26). A
+    claim inside a line ("after 22...Bxg5, 23.Bxg5 is illegal") is about a later position
+    and is left alone, as is a move of the side not to move."""
+    out: list[str] = []
+    for sentence in re.split(r"(?<=[.!?;])\s+", text):
+        for found in _ILLEGAL_CLAIM.finditer(sentence):
+            if "after" in sentence[: found.start()].lower():
+                continue
+            try:
+                board.parse_san(found.group(1))
+            except ValueError:
+                continue
+            out.append(f"{found.group(1)}: called illegal, but it is a legal move here")
+    return out
+
+
 def figure_said(text: str) -> bool:
     """Whether `text` quotes a figure: any digit outside a move, a square or an ordinal ("the
     7th rank") -- "ahead by about 1.2 pawns" went through a check for percentages alone."""
@@ -1658,6 +1684,7 @@ class Speaker:
                 if san in request.played:
                     continue  # a move of the game's history, named as such
                 found.append(problem)
+        found.extend(false_illegal(text, request.board))
         return list(dict.fromkeys(found))
 
     def _run(self) -> None:
