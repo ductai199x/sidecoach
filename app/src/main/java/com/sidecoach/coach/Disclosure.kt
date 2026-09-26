@@ -419,6 +419,7 @@ fun leakCheck(
             "stakes",
             "key",
             "trap",
+            "material",
         )) {
             val value = visible[key]
             if (value is String && value.isNotEmpty()) scrubbed = scrubbed.replace(value.lowercase(), " ")

@@ -162,8 +162,8 @@ object Situation {
     }
 
     /**
-     * A piece brought to a better square, counted: "Bf6: your bishop goes from 4 squares to 9".
-     * "The move is Bf6: centralising a piece" said nothing (Karpov-Ribli).
+     * A piece brought to a better square, counted: "Bf6: your bishop goes from four squares to
+     * nine". "The move is Bf6: centralising a piece" said nothing (Karpov-Ribli).
      */
     fun reachWhy(board: Board, move: Move): String? {
         val piece = board.pieceAt(move.from) ?: return null
@@ -175,8 +175,9 @@ object Situation {
         after.push(move)
         val later = popcount(after.attacksMask(move.to) and after.occupiedCo[own].inv())
         if (later <= before) return null
-        val was = if (before == 1) "1 square" else "$before squares"
-        return "${board.san(move)}: your ${NAMES.getValue(piece.pieceType)} goes from $was to $later"
+        val was = if (before == 1) "one square" else "${IdeaWords.inWords(before)} squares"
+        val name = NAMES.getValue(piece.pieceType)
+        return "${board.san(move)}: your $name goes from $was to ${IdeaWords.inWords(later)}"
     }
 
     private fun wing(sq: Int): String {
@@ -639,7 +640,8 @@ object Situation {
         if ((kind == "pushPasser" || kind == "passerPawnEnding") && piece.pieceType == PAWN) {
             val rank = squareRank(best.from)
             val toGo = if (us == WHITE) 7 - rank else rank
-            return "Your passed pawn on $frm is $toGo squares from queening"
+            val away = "${IdeaWords.inWords(toGo)} square${if (toGo != 1) "s" else ""}"
+            return "Your passed pawn on $frm is $away from queening"
         }
         if (kind == "rookBehindPasser") return "Your rook on $frm belongs behind a passed pawn, where it pushes it on"
         if (kind == "break") {

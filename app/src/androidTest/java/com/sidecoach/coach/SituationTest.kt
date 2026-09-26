@@ -157,7 +157,7 @@ class SituationTest {
             "Which pawn move covers e5?" to "f4: the pawn now covers e5",
             Situation.centreMove(board, Move.fromUci("f2f4")),
         )
-        assertEquals("Nc3: your knight goes from 2 squares to 5", Situation.reachWhy(board, Move.fromUci("b1c3")))
+        assertEquals("Nc3: your knight goes from two squares to five", Situation.reachWhy(board, Move.fromUci("b1c3")))
     }
 
     @Test

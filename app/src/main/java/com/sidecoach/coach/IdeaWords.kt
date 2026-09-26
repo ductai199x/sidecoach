@@ -39,6 +39,38 @@ object IdeaWords {
     )
     private val ORDINAL = mapOf(1 to "first", 2 to "second", 3 to "third", 4 to "fourth", 5 to "fifth")
 
+    /** Counts to thirty in words: a queen's squares, a pawn's way to queening. */
+    private val WORDS = listOf(
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
+    )
+
+    /** A count as a coach says it: "nine", "twenty-three". `idea_words.in_words`. */
+    fun inWords(n: Int): String {
+        if (n >= 0 && n < WORDS.size) return WORDS[n]
+        if (n in 21..29) return "twenty-${WORDS[n - 20]}"
+        return n.toString()
+    }
+
     /** The longest mate whose line the move rung reads out whole; past it, its first moves. */
     const val MATE_READ = 5
 

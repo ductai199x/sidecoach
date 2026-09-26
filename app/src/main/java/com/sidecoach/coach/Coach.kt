@@ -1142,7 +1142,7 @@ internal fun names(text: String, item: String): Boolean {
     return Regex("(?<![A-Za-z])" + Regex.escape(core) + "[+#]?(?![A-Za-z0-9])").containsMatchIn(text)
 }
 
-private val ORDINAL = Regex("\\b\\d+(?:st|nd|rd|th)\\b")
+private val ORDINAL = Regex("\\b\\d+(?:st|nd|rd|th)\\b|\\b[A-E]\\d\\d\\b")
 private val DIGIT = Regex("\\d")
 
 /**
