@@ -279,7 +279,9 @@ def _what_it_gives(board: chess.Board, line: Line) -> str | None:
         return None
     if first not in board.legal_moves or len(line.moves) < 2:
         return None
-    after = board.copy(stack=False)
+    # With the board's moves: a capture of the player's is the start of an exchange, and the
+    # piece taken back for it is not "given" (`idea.exchange_owed`).
+    after = board.copy()
     after.push(first)
     theirs = Analysis(
         game_id="",
@@ -299,7 +301,7 @@ def _what_it_gives(board: chess.Board, line: Line) -> str | None:
     idea = idea_of.read(after, theirs)
     if idea.goal == "mate":
         return "mate"
-    if idea.goal == "win" and idea.won and not idea.level:
+    if idea.goal == "win" and idea.won and not idea.level and not idea.back:
         return idea_words._yours(idea.won)
     if idea.goal == "attack" and idea.winning:
         return "a winning attack"

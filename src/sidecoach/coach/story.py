@@ -285,20 +285,6 @@ def _captured_value(board: chess.Board, moves: list[str], best: list[str]) -> in
     return idea_of.VALUES.get(taken.piece_type, 0) if taken is not None else 0
 
 
-def took_last(board: chess.Board) -> int:
-    """What their last move took, in pawns (0 when it took nothing or the board does not know
-    its moves): what the player wins next, up to that, is won back."""
-    if not board.move_stack:
-        return 0
-    before = board.copy()
-    last = before.pop()
-    if not before.is_capture(last):
-        return 0
-    if before.is_en_passant(last):
-        return exchange.VALUE.get(chess.PAWN, 1)
-    return exchange.VALUE.get(before.piece_type_at(last.to_square) or chess.PAWN, 0)
-
-
 def _took(board: chess.Board, square: chess.Square) -> bool:
     """Whether their last move captured on `square`, when the board knows its moves."""
     if not board.move_stack:

@@ -170,12 +170,52 @@ class Idea:
     sacrifices: tuple[tuple[int, str], ...] = ()
     winning: bool = False  # the engine calls the position won
     score: float | None = None  # the best line's expected score, for the player
+    # "win": what the line takes is mostly what the exchange in progress took from the player
+    # (`exchange_owed`) -- won back, not won: a knight taken back after they took one is a
+    # trade (Tai's puzzles, 2026-09-26: "you can win a knight" for 3.Nxh5 Rxh5).
+    back: bool = False
 
 
-def read(board: chess.Board, analysis: Analysis) -> Idea:
+def exchange_owed(board: chess.Board) -> dict[int, int]:
+    """The exchange the last move belongs to, from the side to move's view: the run of
+    captures that ends with the opponent's last move, counted per kind of piece -- how many
+    more of the side to move's it took than of the opponent's. Returned only when that leaves
+    the side to move owed material (they took last; it is the player's to take back): taking
+    it back is winning back, not winning. Empty when the last move took nothing or the board
+    does not know its moves (a position set up from a FEN)."""
+    if not board.move_stack:
+        return {}
+    us = board.turn
+    before = board.copy()
+    net: dict[int, int] = {}
+    while before.move_stack:
+        move = before.pop()
+        if not before.is_capture(move):
+            break
+        if before.is_en_passant(move):
+            victim = chess.PAWN
+        else:
+            victim = before.piece_type_at(move.to_square)
+            if victim is None:
+                break
+        # Popped, the board has the capturer to move: the opponent took one of the player's.
+        net[victim] = net.get(victim, 0) + (1 if before.turn != us else -1)
+    net = {kind: n for kind, n in net.items() if n}
+    return net if worth(net) > 0 else {}
+
+
+def worth(pieces: dict[int, int]) -> int:
+    """What a count of pieces by kind is worth, in pawns."""
+    return sum(VALUES.get(kind, 0) * n for kind, n in pieces.items())
+
+
+def read(board: chess.Board, analysis: Analysis, *, owed: dict[int, int] | None = None) -> Idea:
     """The idea of `analysis`'s best line from `board` (the position it measured), with
-    the sacrifices the player makes on the way to its point."""
-    idea = _read(board, analysis)
+    the sacrifices the player makes on the way to its point. `owed` is what the exchange in
+    progress took from the player (`exchange_owed`, read from the board's own moves when not
+    given): material the line takes up to that is won back, not won."""
+    owed = exchange_owed(board) if owed is None else owed
+    idea = _read(board, analysis, owed)
     if idea.first is None:
         return idea
     boards = [board.copy(stack=False)]
@@ -209,7 +249,7 @@ def read(board: chess.Board, analysis: Analysis) -> Idea:
     )
 
 
-def _read(board: chess.Board, analysis: Analysis) -> Idea:
+def _read(board: chess.Board, analysis: Analysis, owed: dict[int, int]) -> Idea:
     pv = _legal_prefix(board, analysis.lines[0].moves) if analysis.lines else []
     us = board.turn
     checks = sum(1 for move in board.legal_moves if board.gives_check(move))
@@ -268,16 +308,7 @@ def _read(board: chess.Board, analysis: Analysis) -> Idea:
     if analysis.lines[0].expected_score < GIFT_SCORE:
         reach = min(reach, _first_gift(boards, pv, reach))
     gain, at = line_gain(boards, pv, reach)
-    # The blow is what wins it: looked for up to where the line first wins that much, not
-    # where it has picked up the most (a fork five moves after the queen fell was named).
-    first_at = _first_reaching(boards, pv, at, min(gain, WIN_GAIN)) if gain > 0 else 0
-    at = first_at or at
-    blow, blow_at, preparation = _blow(boards, pv, at or min(len(pv), 6), None)
-    if blow is not None and blow_at > FAR_BLOW:
-        # A loose rook picked up on the fifth move is not the idea a player can see from
-        # here; the start of the line is (Tai's game g06, 2026-09-24).
-        blow, blow_at, preparation = None, 1, ()
-    winning = analysis.lines[0].expected_score >= WON
+    peak = at
     # A pawn of the player's reaching the seventh, or queening, anywhere in the line.
     seventh = 6 if us == chess.WHITE else 1
     # A pawn of the player's queening in the line; one reaching the seventh only in an
@@ -297,13 +328,39 @@ def _read(board: chess.Board, analysis: Analysis) -> Idea:
     )
     # A pawn is a win when the game is better for it; two pawns' worth always.
     better_for_it = analysis.lines[0].expected_score >= LEVEL
+    # What they just took counts against the line (`exchange_owed`): what it nets decides
+    # whether it wins, by the same rule as any win; a line that nets less only wins back.
+    net = gain - worth(owed)
+    back = (
+        bool(owed)
+        and gain > 0
+        and not (net >= WIN_GAIN or (net >= 1 and better_for_it and not queens))
+    )
+    # The blow is what wins it: looked for up to where the line first wins that much, not
+    # where it has picked up the most (a fork five moves after the queen fell was named). A
+    # net win is first won where the net is reached, past taking back what they took.
+    wins_at = worth(owed) + min(net, WIN_GAIN) if owed and not back else min(gain, WIN_GAIN)
+    first_at = _first_reaching(boards, pv, at, wins_at) if gain > 0 else 0
+    if owed and not back and first_at > 2 * FAR_BLOW:
+        # A net win first reached past the player's third move is the engine's line talking,
+        # not the point: taking back is ("you can win a queen for a rook and a bishop" of a
+        # queen given up on the fourteenth ply after 1...Nxe3 2.fxe3, Lichess 00LZf).
+        back = True
+        first_at = _first_reaching(boards, pv, at, min(gain, WIN_GAIN))
+    at = first_at or at
+    blow, blow_at, preparation = _blow(boards, pv, at or min(len(pv), 6), None)
+    if blow is not None and blow_at > FAR_BLOW:
+        # A loose rook picked up on the fifth move is not the idea a player can see from
+        # here; the start of the line is (Tai's game g06, 2026-09-24).
+        blow, blow_at, preparation = None, 1, ()
+    winning = analysis.lines[0].expected_score >= WON
     # A win the score denies: the engine calls the game level, the player is not behind,
     # and the material comes only down the line -- "you can win a knight and two pawns for a
     # bishop" was said at move 6 of the Ruy Lopez (Capablanca-Marshall, 2026-09-24).
     first_win = max(0, at - 1 if (at - 1) % 2 == 0 else at - 2) if gain > 0 else 0
     phantom = (
         not better_for_it
-        and _balance(board, us) >= 0
+        and _balance(board, us) + worth(owed) >= 0
         and first_win > 0
         and not (analysis.lines[0].mate is not None and analysis.lines[0].mate > 0)
     )
@@ -312,11 +369,18 @@ def _read(board: chess.Board, analysis: Analysis) -> Idea:
         # discovered check that nets a pawn into a won ending is still the point.
         # A line that stops on the player's capture: what takes back is counted as given,
         # as `line_gain` counts it ("you win the exchange", not "a rook", after Nxe1).
-        end = boards[at]
-        if at == len(pv) and at % 2 == 1 and _retaken(end, pv[at - 1].to_square):
-            end = end.copy(stack=False)
-            end.remove_piece_at(pv[at - 1].to_square)
-        won, target = _won(board, end, us, pv[:at], boards)
+        won, target = _won(board, _line_end(boards, pv, at), us, pv[:at], boards)
+        if back:
+            # Won back: the most valuable piece the line takes within the player's first
+            # FAR_BLOW moves ("their queen" where they took the queen and the line takes a
+            # bishop and then theirs); never one far down the line (00LZf's queen at ply 14).
+            near = min(peak, 2 * FAR_BLOW, len(pv))
+            won = _top_taken(board, _line_end(boards, pv, near), us) or won
+        elif owed:
+            # A net win, named net: where they took a bishop and the line takes a knight and
+            # two pawns, the win is two pawns (Tai, 2026-09-26: "it's not winning shit").
+            netted, where = _won(board, _line_end(boards, pv, at), us, pv[:at], boards, owed)
+            won, target = netted or won, where if netted else target
         # The player's move that first wins it: the last of theirs within `at` plies.
         gain_ply = max(0, at - 1 if (at - 1) % 2 == 0 else at - 2)
         return Idea(
@@ -326,6 +390,7 @@ def _read(board: chess.Board, analysis: Analysis) -> Idea:
             gain=gain,
             gain_ply=gain_ply,
             won=won,
+            back=back,
             blow=blow[1] if blow else None,
             blow_move=pv[blow[0]] if blow else None,
             blow_board=boards[blow[0]] if blow else None,
@@ -807,20 +872,26 @@ def _won(
     us: chess.Color,
     played: Sequence[chess.Move],
     boards: Sequence[chess.Board],
+    owed: dict[int, int] | None = None,
 ) -> tuple[str | None, chess.Square | None]:
     """What the line wins, in words ("their queen", "the exchange", "a rook for a knight"),
-    and where the most valuable piece it wins stands now."""
+    and where the most valuable piece it wins stands now; with `owed`, net of what the
+    exchange in progress took from the player."""
     them = not us
-    gained: dict[int, int] = {}
-    given: dict[int, int] = {}
-    for kind in _COUNTED:
-        net = (len(board.pieces(kind, them)) - len(end.pieces(kind, them))) - (
-            len(board.pieces(kind, us)) - len(end.pieces(kind, us))
-        )
-        if net > 0:
-            gained[kind] = net
-        elif net < 0:
-            given[kind] = -net
+    nets = {
+        kind: (len(board.pieces(kind, them)) - len(end.pieces(kind, them)))
+        - (len(board.pieces(kind, us)) - len(end.pieces(kind, us)))
+        - (owed or {}).get(kind, 0)
+        for kind in _COUNTED
+    }
+    if owed and nets[chess.KNIGHT] * nets[chess.BISHOP] < 0:
+        # Net of what they took, a knight for a bishop is a trade: "two pawns", not "a knight
+        # and two pawns for a bishop".
+        both = min(abs(nets[chess.KNIGHT]), abs(nets[chess.BISHOP]))
+        for kind in (chess.KNIGHT, chess.BISHOP):
+            nets[kind] -= both if nets[kind] > 0 else -both
+    gained = {kind: n for kind, n in nets.items() if n > 0}
+    given = {kind: -n for kind, n in nets.items() if n < 0}
     if not gained:
         return None, None
     top = max(gained, key=lambda kind: VALUES[kind])
@@ -834,6 +905,28 @@ def _won(
             target = origin(board, boards, i, move.to_square)
             break
     return _won_words(gained, given), target
+
+
+def _line_end(boards: Sequence[chess.Board], pv: Sequence[chess.Move], at: int) -> chess.Board:
+    """The board `at` plies into the line; a line that stops on the player's capture loses
+    the capturing piece where it can be taken back, as `line_gain` counts it ("you win the
+    exchange", not "a rook", after Nxe1)."""
+    end = boards[at]
+    if at == len(pv) and at % 2 == 1 and _retaken(end, pv[at - 1].to_square):
+        end = end.copy(stack=False)
+        end.remove_piece_at(pv[at - 1].to_square)
+    return end
+
+
+def _top_taken(board: chess.Board, end: chess.Board, us: chess.Color) -> str | None:
+    """The most valuable kind of the opponent's pieces the line takes, in words: "their
+    queen", "a rook", "a knight"."""
+    them = not us
+    taken = [k for k in _COUNTED if len(end.pieces(k, them)) < len(board.pieces(k, them))]
+    if not taken:
+        return None
+    top = max(taken, key=lambda kind: VALUES[kind])
+    return "their queen" if top == chess.QUEEN else f"a {_NAMES[top]}"
 
 
 def origin(

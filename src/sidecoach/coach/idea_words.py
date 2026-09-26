@@ -283,6 +283,12 @@ def goal(idea: Idea) -> str | None:
             "perpetual": "you can save the game: check after check, and they cannot escape",
             "stalemate": "you can save the game with a stalemate",
         }.get(idea.draw or "", "you can hold the game: the same position comes round again")
+    if idea.goal == "win" and idea.back:
+        # Taking back what they just took: never "you can win a knight" for a trade.
+        what = idea.won or "material"
+        if idea.score is not None and idea.score < 0.4:
+            return f"you can win back {what}, though you stay worse"
+        return f"you can win back {what}"
     if idea.goal == "win" and idea.level:
         # Winning it back, not winning: the engine calls the game level after it.
         what = idea.won or "material"
@@ -976,7 +982,7 @@ def allowed(board: chess.Board, analysis: Analysis, played: str) -> str | None:
             return after + f"{first.rstrip('#')} is mate"
         n = _NUMBER.get(idea.mate_in, str(idea.mate_in))
         return after + f"they have mate in {n}, starting with {first}"
-    if idea.goal == "win" and idea.won and not idea.level:
+    if idea.goal == "win" and idea.won and not idea.level and not idea.back:
         won = _yours(idea.won)
         if idea.gain_ply == 0:
             return after + f"{first} wins {won}"

@@ -447,7 +447,9 @@ def nature_of(board: chess.Board, best: chess.Move, line: Sequence[str] = ()) ->
     whose best move, a quiet knight move, uncovered a rook on the queen."""
     if board.is_capture(best) or board.gives_check(best) or best.promotion:
         return "forcing -- the answer is a check, a capture or a promotion"
-    if line and _line_gain(board, line) >= TACTIC_GAIN:  # counted as the idea counts it
+    # Counted as the idea counts it, net of what they just took (`idea.exchange_owed`).
+    owed = idea_of.worth(idea_of.exchange_owed(board))
+    if line and _line_gain(board, line) - owed >= TACTIC_GAIN:
         return "a tactic -- the best move is quiet, but the line after it wins material"
     return "quiet -- no tactic to find; the move improves your position"
 
@@ -605,18 +607,6 @@ def facts_from_analysis(
     nudge = idea_words.nudge(idea)
     why = idea_words.why(idea, board, describe_tactic)
     goal = idea_words.goal(idea)
-    # Material won right after they took some, while behind, is won back (an equality
-    # puzzle's recapture) -- never "win back a queen" after they took a pawn.
-    taken = story.took_last(board)
-    if (
-        goal
-        and goal.startswith("you can win ")
-        and "back" not in goal
-        and " for " not in goal
-        and idea.down
-        and 0 < idea.gain <= taken + 1
-    ):
-        goal = "you can win back " + goal[len("you can win ") :]
     if move_threat is not None and best is not None:
         won = plans.THREAT_GOAL_WON if idea.winning else plans.THREAT_GOAL
         goal = won[move_threat.kind]
@@ -766,7 +756,7 @@ def facts_from_analysis(
     # not taking back -- and 23.exd5? Re8 in Polugaevsky-Nezhmetdinov is the lesson.
     recapture = (
         idea.goal == "win"
-        and idea.down
+        and (idea.down or idea.back)
         and best is not None
         and board.is_capture(best)
         and best.to_square == idea.target
