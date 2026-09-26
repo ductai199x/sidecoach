@@ -506,7 +506,9 @@ class Conversation {
         val (head, body) = linesBlock(record, board, colour, level)
         out.add("Engine lines $head".trimEnd() to body.joinToString("\n"))
         val facts = factsLines(record, board, colour, level)
-        if (facts.isNotEmpty()) {
+        // Over the board, the game is over: a first hint for the mated position ("their queen on
+        // b7 gives check") is noise beside the review.
+        if (facts.isNotEmpty() && !board.isGameOver()) {
             out.add("Facts (${factsOwner(userToMove)})" to facts.joinToString("\n"))
         }
         if (userToMove && level.value < DisclosureLevel.MOVE.value) {
@@ -766,8 +768,10 @@ class Conversation {
         val level = if (userToMove) wanted else DisclosureLevel.LINE
         val visible = visibleFacts(facts, level)
         if (!userToMove) {
-            // The first hint is the player's: said of the opponent's move it reads as theirs.
-            visible.remove("situation")
+            // The hints are for the side to move: on the opponent's turn the first hint and the
+            // two questions are the opponent's, and labelled "to the player" the model asked the
+            // player the opponent's question (parity pass 2, 2026-09-25).
+            for (key in listOf("situation", "question", "nudge")) visible.remove(key)
         }
         val side = if (userToMove) "player" else "opponent"
         val out = ArrayList<String>()
@@ -787,11 +791,26 @@ class Conversation {
      */
     fun facedText(facts: PositionFacts, board: Board): String {
         val visible = visibleFacts(facts, DisclosureLevel.LINE)
-        return factLines(visible, board, "player").joinToString("\n")
+        // The hint's questions were for finding the move; the lesson is on the move made.
+        for (key in listOf("question", "nudge")) visible.remove(key)
+        return factLines(visible, board, "player", past = true).joinToString("\n")
     }
 
-    /** The sheet's lines for [visible], in reading order, in the third person for [side]. */
-    private fun factLines(visible: Map<String, Any?>, board: Board, side: String): List<String> {
+    /**
+     * The sheet's lines for [visible], in reading order, in the third person for [side]; [past]
+     * for a position the player has moved from.
+     */
+    private fun factLines(
+        visible: Map<String, Any?>,
+        board: Board,
+        side: String,
+        past: Boolean = false,
+    ): List<String> {
+        val names = if (past) {
+            FACT_NAMES + ("situation" to "the first hint for that position (to the player, as it stood)")
+        } else {
+            FACT_NAMES
+        }
         val out = ArrayList<String>()
         for (key in FACT_KEYS) {
             val value = visible[key]
@@ -800,7 +819,7 @@ class Conversation {
             ) {
                 continue
             }
-            val name = FACT_NAMES[key] ?: key.replace("_", " ")
+            val name = names[key] ?: key.replace("_", " ")
             if (value == true) {
                 out.add("$name: yes")
             } else if (key == "ideas") {
@@ -1067,6 +1086,8 @@ class Conversation {
             "question" to "a question that sets them looking (to the player, as it stands)",
             "nudge" to "a question from the target to the move (to the player, as it stands)",
             "why" to "the move and what it does",
+            // Whose: the other side's moves, were the side to move to pass.
+            "threats" to "what the other side threatens, if the side to move passed",
         )
 
         /** The facts addressed to the player, kept in the second person. */

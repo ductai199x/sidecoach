@@ -367,6 +367,39 @@ class CoachTest {
         assertTrue(faced, "goal: the player can mate in one move" in faced)
         assertTrue("The lesson in the board's own words" in directiveOf(messages))
         assertEquals(emptyList<String>(), coach.spoken.last().problems)
+        // The hints' questions are for the side to move: never on the opponent's sheet, where
+        // labelled "to the player" they were the opponent's; nor on the faced sheet, a position
+        // already moved from (parity pass 2; desktop 2219e11).
+        val now = currentMoveMessage(messages).substringBefore("# The position they faced")
+        assertTrue(now, "(to the player, as it stands)" !in now.substringAfter("## Facts"))
+        assertTrue(faced, "a question that sets them looking" !in faced)
+        // Asked why it was bad, the answer is taught from the same position, and names the move.
+        coach.ask("why was that bad?", 12.0)
+        messages(coach)
+        val asked = given(provider).last().content
+        assertTrue(asked, "# The position they faced, before Bxf7+" in asked)
+        val said = coach.spoken.last().message.text
+        assertTrue(said, said.isNotEmpty() && "Qxf7" in said)
+    }
+
+    /**
+     * "What should I be aiming for?" earns the hint's rung, and its template -- the first hint, a
+     * lesson on the position -- goes out at once, as for a bare hint; the model builds on it with
+     * the hint's directive, not the generic answer (parity pass 2, 2026-09-25; desktop 2219e11).
+     */
+    @Test
+    fun aQuestionAboutThePlanIsAnsweredByTheFirstHintAtOnce() {
+        val (coach, provider) = coach(listOf("The king on e8 has one square left. Which check takes it away?"))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        assertEquals(emptyList<CoachMessage>(), messages(coach))
+        coach.ask("what should I be aiming for here?", 8.0)
+        val out = messages(coach)
+        assertTrue(out[0].text, out[0].level == DisclosureLevel.IDEA && "e8" in out[0].text)
+        val directive = directiveOf(given(provider, 0))
+        assertTrue(directive, "They asked what to aim for" in directive)
+        assertTrue(directive, "Give the first hint as a short lesson" in directive)
+        assertTrue(directive, "be honest about their own claim" !in directive)
     }
 
     /** `_bishop_check_instead_of_mate`: the user plays Bxf7+ where Qxf7 was mate, and it is judged. */

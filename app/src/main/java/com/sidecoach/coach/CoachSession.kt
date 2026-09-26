@@ -523,7 +523,11 @@ class Coach(
         // two answers to "what should I be aiming for?" was noise.
         val canned = (
             unlock == Unlock.ASK_MOVE || unlock == Unlock.ASK_LINE ||
-                ASK_HINT.matchesAt(text, 0)
+                ASK_HINT.matchesAt(text, 0) ||
+                // The first hint is now the lesson a question about the plan asks for (the
+                // stakes, the key fact, the principle), no longer "what is your opponent's most
+                // dangerous idea?": it goes out at once, as for a bare hint.
+                ASK_AIM.containsMatchIn(text)
             ) && !mayCarryClaims(text)
         if (canned) {
             val quick = instruction(
@@ -1448,17 +1452,22 @@ class Coach(
         var directive = "${levelLine(level, position)}$instructionText"
         var faced = ""
         var frames: List<Board> = emptyList()
-        if (played != null && (trigger == Trigger.POST_MOVE || trigger == Trigger.POST_MISTAKE)) {
+        var moved = if (trigger == Trigger.POST_MOVE || trigger == Trigger.POST_MISTAKE) played else null
+        if (moved == null && trigger == Trigger.USER_ASK && ASK_LAST_MOVE.containsMatchIn(userText ?: "")) {
+            val own = lastOwnMove()
+            if (own != null && own.move.ply == position.ply + 1) moved = own.move
+        }
+        if (moved != null) {
             // The lesson after a move is taught from the position the player faced, which the
             // record keeps as one line: its sheet goes with the request, and the template's
             // lesson as the floor (parity pass, 2026-09-25).
             val sheet = synchronized(lock) { conversation.facedText(position.facts!!, position.board) }
-            if (sheet.isNotEmpty()) faced = "\n\n# The position they faced, before ${played.san}\n$sheet"
+            if (sheet.isNotEmpty()) faced = "\n\n# The position they faced, before ${moved.san}\n$sheet"
             if (mustName.isNotEmpty() && fallback.isNotEmpty()) {
                 directive += "\n\nThe lesson in the board's own words, all of it true -- your reply says at " +
                     "least this, in your own words, and may say more: $fallback"
             }
-            frames = framesAfter(position, played)
+            frames = framesAfter(position, moved)
         }
         val messages: List<ChatMessage>
         synchronized(lock) {
@@ -1521,13 +1530,24 @@ class Coach(
         userText: String?,
     ): List<String> {
         if (template.isEmpty()) return emptyList()
+        val said = userText ?: ""
+        var trigger = trigger
+        var assessment = assessment
+        var played = played
+        if (trigger == Trigger.USER_ASK && ASK_LAST_MOVE.containsMatchIn(said)) {
+            // "Why was that bad?": the lesson on their last move, as after it.
+            val own = lastOwnMove()
+            if (own == null || own.move.ply != position.ply + 1) return emptyList()
+            trigger = Trigger.POST_MISTAKE
+            assessment = own.assessment
+            played = own.move
+        }
         if (trigger == Trigger.POST_MOVE || trigger == Trigger.POST_MISTAKE) {
             if (assessment == null || played == null || assessment.best.isEmpty()) return emptyList()
             val move = Move.fromUciOrNull(assessment.best[0]) ?: return emptyList()
             val best = position.board.san(move)
             return if (best != played.san && names(template, best)) listOf(best) else emptyList()
         }
-        val said = userText ?: ""
         val hint = trigger == Trigger.DECISIVE_QUESTION || trigger == Trigger.STUCK || (
             trigger == Trigger.USER_ASK && (ASK_HINT.matchesAt(said, 0) || ASK_AIM.containsMatchIn(said))
             )
@@ -1933,15 +1953,19 @@ class Coach(
                     "say."
             // A review has a record to fall back on, not a line.
             fallback = reviewTemplate()
-        } else if (ASK_HINT.matchesAt(said, 0)) {
+        } else if (ASK_HINT.matchesAt(said, 0) || ASK_AIM.containsMatchIn(said)) {
             // A bare "hint" carries no claim to be honest about; treated as one, the model
             // answered its own last message as if the player had said it. Two hints, then the
-            // answer: the rung decides what the hint may give.
+            // answer: the rung decides what the hint may give. A question about what to aim
+            // for is answered by the same hint: the generic answer ("be honest about their own
+            // claim") gave the model no lesson to give (parity pass 2, 2026-09-25).
+            var aim = if (ASK_HINT.matchesAt(said, 0)) "" else "They asked what to aim for: answer with "
+            aim += if (aim.isNotEmpty()) "the hint at this rung. " else ""
             directive = when {
-                level.value >= DisclosureLevel.MOVE.value -> MOVE_DIRECTIVE
+                level.value >= DisclosureLevel.MOVE.value -> aim + MOVE_DIRECTIVE
                 level.value >= DisclosureLevel.FOCUS.value ->
-                    "They asked for another hint. $FOCUS_DIRECTIVE"
-                else -> "They asked for a hint. $IDEA_DIRECTIVE"
+                    aim.ifEmpty { "They asked for another hint. " } + FOCUS_DIRECTIVE
+                else -> aim.ifEmpty { "They asked for a hint. " } + IDEA_DIRECTIVE
             } + " Do not comment on anything said earlier." + (if (quick) shown else "")
         } else if (level.value >= DisclosureLevel.LINE.value &&
             ASK_LINE.containsMatchIn(said) && facts.line.isNotEmpty()
