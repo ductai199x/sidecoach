@@ -327,6 +327,10 @@ here on."
 - repairing the claim in place;
 - a stronger model, outside the budget.
 
+**Decision (Tai, 19:55): the claim reader stays off.** At about a cent a game on top of the
+coach's own cent or so, it would double the cost of a game. `coach/draft_claims.py` stays in
+the tree, unwired (`Speaker.claim_reader` is None), and is not ported to the phone.
+
 ## Next, if wanted
 
 Scale the exemplars to 30-50 from the already-judged training moments: round 1's 400
