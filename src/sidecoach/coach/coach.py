@@ -481,7 +481,9 @@ IDEA_DIRECTIVE = (
 # the excellence rubric found it used in half the lessons that had one (2026-09-25).
 TIE_TO_THE_GAME = (
     "If the game so far shows an earlier moment of the same kind -- the same threat, the same "
-    "pattern, a lesson you already gave -- tie this one to it in a clause."
+    "pattern, a lesson you already gave -- tie this one to it in a clause, naming that moment "
+    "by its move as the record gives it (as with 6...Bg4). Only a moment the record shows: if "
+    "there is none, say nothing of earlier moments."
 )
 _LENGTH_WORDS = {4: "Four", 5: "Five", 6: "Six"}
 
