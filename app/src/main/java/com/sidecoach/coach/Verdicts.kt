@@ -209,7 +209,9 @@ fun praiseFor(label: String?, last: String?): List<String> {
  * from its bag, each once before any comes again ([Bags]); without, [pick] makes every draw, one
  * that is never [last]'s praise, as the desktop's `rng.choice` does. The praise is drawn before
  * the wording. [plain] leaves out the wordings that name a term of art (a player below 1400:
- * [JARGON]).
+ * [JARGON]); [strong] (1800 and up) the principles -- "rooks belong on open files" was what the
+ * strong simulated students most often said they already knew -- keeping the tactics, which are
+ * the board's own.
  */
 fun verdict(
     board: Board,
@@ -223,8 +225,10 @@ fun verdict(
     pick: (List<String>) -> String = { it[Random.nextInt(it.size)] },
     bags: Bags? = null,
     plain: Boolean = false,
+    strong: Boolean = false,
 ): Pair<String, String?> {
-    val found = lesson(board, move, tags, phase, threats, taught)
+    var found = lesson(board, move, tags, phase, threats, taught)
+    if (strong && found != null && found.first in PRINCIPLES) found = null
     if (found != null && found.first == "mate") {
         if (bags != null) return bags.draw("mate", MATE) to "mate"
         return pick(MATE.filter { it != last }.ifEmpty { MATE }) to "mate"

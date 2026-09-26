@@ -40,6 +40,23 @@ class VerdictsTest {
         assertTrue(rich.toString(), rich.any { "prophylaxis" in it })
     }
 
+    /**
+     * The strong simulated students most often said they already knew "rooks belong on open
+     * files" (75 times): from 1800 the praise stands alone (desktop 6d9ba6f).
+     */
+    @Test
+    fun aPlayerOf1800AndUpHearsNoTextbookPrinciple() {
+        // ...Rg8 takes the open g-file: the lesson is takeFile.
+        val board = Board(TAKE_FILE)
+        val move = Move.fromUci("h8g8")
+        var (text, kind) = verdict(board, move, "good", phase = "opening", pick = { it[1 % it.size] }, strong = true)
+        assertTrue(text, kind == null && "rook" !in text)
+        val rich = verdict(board, move, "good", phase = "opening", pick = { it[1 % it.size] })
+        text = rich.first
+        kind = rich.second
+        assertTrue(text, kind == "takeFile")
+    }
+
     companion object {
         // From the coach fixture's positions: an endgame where Kf4 is prophylaxis (their Ke5
         // threatened), and an opening where ...Rg8 takes the open file.

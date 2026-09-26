@@ -60,6 +60,9 @@ const val MAX_TOKENS = 220
 /** The top of the rating band below which the templates say no term of art ([JARGON]). */
 const val PLAIN_BELOW = 1400
 
+/** The bottom of the rating band from which the templates add no textbook rule to a lesson. */
+const val STRONG_FROM = 1800
+
 /**
  * After every this-many mistakes the lesson ends by asking what the player saw: a
  * self-report the profile keeps beside the mistake (DESIGN 5.6, "sparingly"). One that goes
@@ -290,7 +293,8 @@ private fun recapture(board: Board?, best: String, played: String?): String? {
  * and the pattern to keep. `opener` is the rotated "That one cost you: {best} was better";
  * `board` and `played` (UCI) are the position the player faced and the move made, `allowed`
  * what it let the opponent do ([IdeaWords.allowed]), when known, and `keepLead` how the rule to
- * keep is introduced ([KEEP_LEADS], rotated by the coach).
+ * keep is introduced ([KEEP_LEADS], rotated by the coach). `strong` (a player of 1800 and up)
+ * leaves the rule out: the concrete point is the lesson.
  */
 fun lessonTemplate(
     facts: PositionFacts,
@@ -300,6 +304,7 @@ fun lessonTemplate(
     played: String? = null,
     allowed: String? = null,
     keepLead: String = KEEP_LEADS[0],
+    strong: Boolean = false,
 ): String {
     var text = opener
     val why = facts.why ?: ""
@@ -307,6 +312,7 @@ fun lessonTemplate(
     if (otherPiece != null) {
         text += " -- $otherPiece"
         if (!allowed.isNullOrEmpty()) text = templateSentence(text) + " " + allowed
+        if (strong) return templateSentence(text)
         return templateSentence(text) + " " +
             templateSentence("$keepLead: when two pieces can take, ask which you want to keep where it is")
     }
@@ -339,7 +345,7 @@ fun lessonTemplate(
     if (keep == null && !facts.plan.isNullOrEmpty() && !facts.mechanism.isNullOrEmpty()) {
         keep = facts.mechanism.split(": ", limit = 2).last()
     }
-    if (!keep.isNullOrEmpty() && !said(keep, text)) text += " " + templateSentence("$keepLead: $keep")
+    if (!keep.isNullOrEmpty() && !strong && !said(keep, text)) text += " " + templateSentence("$keepLead: $keep")
     return text
 }
 

@@ -129,6 +129,13 @@ private val ASK_EVAL = Regex(
     RegexOption.IGNORE_CASE,
 )
 
+/** What a move cost, asked in so many words: only then is the figure said. */
+private val ASK_COST = Regex(
+    "\\b(?:how much (?:did|does) (?:it|that|this|my move)\\s*(?:\\w+\\s*)?cost|what did (?:it|that) " +
+        "cost|how (?:bad|costly) was (?:it|that|my move)|how much (?:did|have) i lose)\\b",
+    RegexOption.IGNORE_CASE,
+)
+
 /** A bare request for a hint, with nothing claimed: "hint", "give me a hint", "a clue". */
 private val ASK_HINT = Regex(
     "^\\W*(?:(?:give me |i need |can i have |i want |any |another |one more )?(?:a |an |some )?" +
@@ -195,6 +202,17 @@ fun unlockFor(text: String, board: Board, candidates: List<String>): Unlock? {
         if (board.san(move) in candidates) return Unlock.USER_NAMED_MOVE
     }
     return null
+}
+
+/**
+ * A label as said of a move: "a mistake", "an inaccuracy", "a miss"; the good ones as they are
+ * ("best", "excellent"), and theory as "a book move". `coach._rated`.
+ */
+private fun rated(label: String): String {
+    if (label in listOf("inaccuracy", "mistake", "miss", "blunder")) {
+        return (if (label[0] in "aeiou") "an " else "a ") + label
+    }
+    return if (label == "book") "a book move" else label
 }
 
 /** A SAN move described in words, or the SAN itself if the board cannot play it. */
@@ -271,6 +289,12 @@ class Coach(
 
     /** A player below 1400 hears no term of art in the templates ([JARGON]). */
     var plainWords: Boolean = rating != null && rating.second < PLAIN_BELOW
+
+    /**
+     * A player of 1800 and up hears no textbook rule: the strong simulated students listed about
+     * 4.5 a session they already knew ("rooks belong on open files", 75 times).
+     */
+    var strongPlayer: Boolean = rating != null && rating.first >= STRONG_FROM
 
     /**
      * Run the claims check on the caller's thread (replay and evaluation) instead of a
@@ -1034,6 +1058,7 @@ class Coach(
                     taught = taught.toList(),
                     bags = bags,
                     plain = plainWords,
+                    strong = strongPlayer,
                 )
                 if (kind != null) {
                     taught.addLast(kind)
@@ -1582,6 +1607,7 @@ class Coach(
                         played = played.uci,
                         allowed = allowed,
                         keepLead = lead,
+                        strong = strongPlayer,
                     )
                 }
                 instructionText =
@@ -1624,6 +1650,7 @@ class Coach(
                     taught = taught.toList(),
                     bags = bags,
                     plain = plainWords,
+                    strong = strongPlayer,
                 ).first
                 val meaning = when (label) {
                     "brilliant" -> "a sound sacrifice"
@@ -1675,6 +1702,7 @@ class Coach(
                         board = position.board,
                         played = played.uci,
                         keepLead = lead,
+                        strong = strongPlayer,
                     )
                 }
                 instructionText =
@@ -1864,20 +1892,35 @@ class Coach(
                         "verdict was $label, and it cost nothing. Tell them so plainly, in one " +
                         "or two sentences, and do not invent a fault. No question."
             } else {
-                fallback = "It cost you ${percent(loss)} of the game."
+                // What it cost only when they ask: "It cost you 22% of the game." opened every
+                // answer, and Tai had said the figure is for when he asks (2026-09-20).
+                val askedCost = ASK_COST.containsMatchIn(said)
+                fallback = if (askedCost) "It cost you ${percent(loss)} of the game." else ""
                 if (best.isNotEmpty()) {
                     // The better move played out and the pattern to keep, as the lesson says it
                     // -- not "the idea was a pin" and nothing more.
                     // Asked about the move just taught, the lesson is not said twice.
                     val opener = "$best was better"
-                    fallback += " " + freshLesson(opener) { lead ->
-                        lessonTemplate(facts, best, opener, played = lastOwn.move.uci, keepLead = lead)
+                    fallback = (if (fallback.isNotEmpty()) "$fallback " else "") + freshLesson(opener) { lead ->
+                        lessonTemplate(
+                            facts,
+                            best,
+                            opener,
+                            played = lastOwn.move.uci,
+                            keepLead = lead,
+                            strong = strongPlayer,
+                        )
                     }
+                }
+                if (fallback.isEmpty()) fallback = "That was ${rated(label)}."
+                val cost = if (askedCost) {
+                    " that cost ${percent(loss)} of the game -- they asked, so say it"
+                } else {
+                    " (what it cost is not theirs to hear unless they ask: no figures)"
                 }
                 directive =
                     "They ask about the move they already played, $san. Its verdict is in its " +
-                        "move message and is theirs in full: it was a $label that cost " +
-                        "${percent(loss)} of the game" +
+                        "move message and is theirs in full: it was a $label$cost" +
                         (if (best.isNotEmpty()) ", the engine preferred $best" else "") +
                         (if (idea.isNotEmpty()) ", and the idea was $idea" else "") +
                         ". Say that plainly -- the position it was played from is past, so " +

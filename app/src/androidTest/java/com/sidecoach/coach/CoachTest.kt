@@ -43,7 +43,9 @@ class CoachTest {
     /** Answers from a script, and remembers every prompt it was given. */
     private class ScriptedProvider(replies: List<String>) : LLMProvider {
         override val name = "scripted"
-        private val replies = ArrayDeque(replies)
+
+        /** What it says next; a test may set them afresh, as the desktop's `provider.replies = ...`. */
+        val replies = ArrayDeque(replies)
         val prompts = ArrayList<Pair<String, List<ChatMessage>>>()
 
         override fun healthcheck(): Pair<Boolean, String> = true to "scripted"
@@ -266,6 +268,99 @@ class CoachTest {
         onlyMove = true,
         tags = listOf(MotifTag(name = "mateIn1", squares = listOf("f7", "e8"), move = "h5f7")),
     )
+
+    /** The directive of the last model call: the harness after its "# Task" line. */
+    private fun directive(provider: ScriptedProvider): String {
+        val messages = synchronized(provider.prompts) { provider.prompts.last().second }
+        assertEquals(1, messages.size)
+        return messages[0].content.substringAfterLast("# Task\n")
+    }
+
+    /** `_bishop_check_instead_of_mate`: the user plays Bxf7+ where Qxf7 was mate, and it is judged. */
+    private fun bishopCheckInsteadOfMate(coach: Coach) {
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 7.0)
+        messages(coach)
+        val board = Board(SCHOLAR)
+        val move = board.parseSan("Bxf7+")!!
+        board.push(move)
+        coach.onEvent(
+            MovePlayed(
+                gameId = "g",
+                ply = 7,
+                san = "Bxf7+",
+                uci = move.uci(),
+                fenBefore = SCHOLAR,
+                fenAfter = board.fen(),
+                byUser = true,
+            ),
+            10.0,
+        )
+        coach.onEvent(
+            MoveAssessment(
+                gameId = "g",
+                ply = 7,
+                uci = move.uci(),
+                expectedLoss = 0.45,
+                severity = Severity.BLUNDER,
+                best = listOf("h5f7"),
+                label = Label.MISS,
+            ),
+            11.0,
+        )
+        messages(coach)
+    }
+
+    /**
+     * "Why was that bad?" is about a position that is past: the directive states the verdict,
+     * the move the engine preferred and the idea, and says nothing is withheld -- and what it
+     * cost only when they ask it: "It cost you 22% of the game." opened every answer, and Tai
+     * had said the figure is for when he asks (2026-09-20; desktop 6d9ba6f). The phone's
+     * directive names the better move as "the engine preferred Qxf7#" (the desktop's "Qxf7# was
+     * better" came with commits not ported).
+     */
+    @Test
+    fun aQuestionAboutTheLastMoveGetsItsVerdictWithoutTheFigure() {
+        val (coach, provider) = coach(listOf("...", "..."))
+        bishopCheckInsteadOfMate(coach)
+        synchronized(provider.replies) {
+            provider.replies.clear()
+            provider.replies.addAll(listOf("", ""))
+        }
+        coach.ask("why was that bad?", 12.0)
+        val out = messages(coach)
+        val directive = directive(provider)
+        assertTrue(directive, "They ask about the move they already played, Bxf7+" in directive)
+        assertTrue(directive, "the engine preferred Qxf7#" in directive)
+        assertTrue(directive, "nothing about it is withheld" in directive)
+        assertTrue(directive, "45%" !in directive && "no figures" in directive)
+        // Spoken from the position the move was played from, with everything shown.
+        assertTrue(out.isNotEmpty() && out.last().level == DisclosureLevel.LINE)
+        assertEquals(SCHOLAR, out.last().fen)
+        // The fallback is the verdict itself, not a hint -- and without the figure.
+        assertTrue(out.last().text, out.last().text.startsWith("Qxf7# was better"))
+    }
+
+    /**
+     * Asked what it cost, the figure is said (desktop 6d9ba6f). The desktop's "how much did that
+     * cost me?" reaches the answer about the last move through `_asked_own_move` (f733318, not
+     * ported); on the phone the question about the last move carries it.
+     */
+    @Test
+    fun whatAMoveCostIsSaidWhenTheyAskIt() {
+        val (coach, provider) = coach(listOf("...", "..."))
+        bishopCheckInsteadOfMate(coach)
+        synchronized(provider.replies) {
+            provider.replies.clear()
+            provider.replies.addAll(listOf("", ""))
+        }
+        coach.ask("was that a mistake? how much did it cost me?", 12.0)
+        val out = messages(coach)
+        val directive = directive(provider)
+        assertTrue(directive, "cost 45% of the game -- they asked" in directive)
+        assertTrue(out.isNotEmpty())
+        assertTrue(out.last().text, out.last().text.startsWith("It cost you 45% of the game. Qxf7# was better"))
+    }
 
     @Test
     fun inBlitzAMistakeGetsAWordThatDoesNotCallItFine() {

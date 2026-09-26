@@ -219,6 +219,19 @@ class NamedTest {
         assertTrue(past.toString(), past.size == 1 && "b5 is empty" in past[0])
     }
 
+    /**
+     * "they would answer 9... Bxg2 10. Kxg2 Qd7 11. d5 Na6 12. Nc3 O-O" came before every answer
+     * the AI then gave in words: aloud, the reply's first two moves (desktop 6d9ba6f).
+     */
+    @Test
+    fun aLineSaidAloudIsItsFirstReply() {
+        val fact = "Engine on your Qc3, which the player asked about: after 6... Qc3 the expected score " +
+            "is 0.45 from the player's side, 0.05 behind the engine's best; the opponent's reply " +
+            "would be 7. Nf3 Nd7 8. Rc1 Qa5 9. d4; what Qc3 does: attacks the pawn on d3."
+        val said = spoken(fact)
+        assertTrue(said, "they would answer 7. Nf3 Nd7;" in said && "Rc1" !in said)
+    }
+
     /** The stub the generator used: the same lines for the same position, read from the file. */
     private fun recorded(seen: JSONObject): EngineLike = EngineLike { board, _ ->
         val entry = seen.optJSONArray(board.fen()) ?: JSONArray()

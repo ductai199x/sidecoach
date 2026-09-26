@@ -458,8 +458,32 @@ fun spoken(fact: String): String {
         .replace(", better than the engine's first line", ", better than the engine's first choice")
     body = body.replace("the opponent's reply would be", "they would answer")
         .replace("the engine then plays", "then the engine plays")
+    // Said aloud, a line is its first reply: "they would answer 9... Bxg2 10. Kxg2 Qd7 11. d5 Na6
+    // 12. Nc3 O-O 13. a3 h6" came before every answer the AI then gave in words (the simulated
+    // students' transcripts, 2026-09-26). The whole line stays in the fact. (The desktop makes
+    // this substitution twice over; the second finds every line already cut, so once is the
+    // same.)
+    body = Regex("(they would answer|then the engine plays) ([^;]+)").replace(body) { mm ->
+        "${mm.groupValues[1]} ${firstMoves(mm.groupValues[2], 2)}"
+    }
     body = Regex("what (\\S+) does: ").replace(body) { mm -> mm.groupValues[1] + " " }
     return "$label: $body"
+}
+
+private val MOVE_NUMBERED = Regex("^\\d+\\.")
+
+/** The first [n] moves of a SAN line, with their move numbers: "9... Bxg2 10. Kxg2". */
+private fun firstMoves(line: String, n: Int): String {
+    val out = ArrayList<String>()
+    var moves = 0
+    for (token in line.split(Regex("\\s+")).filter { it.isNotEmpty() }) {
+        out.add(token)
+        if (!MOVE_NUMBERED.containsMatchIn(token)) {
+            moves += 1
+            if (moves >= n) break
+        }
+    }
+    return out.joinToString(" ")
 }
 
 private fun gapWords(gap: Double): String = when {
