@@ -318,3 +318,38 @@ def test_the_compact_record_drops_stale_nods_and_runs_sound_moves_together() -> 
     pending = convo.foldable(2)
     assert [e.text for _, e in pending] == ['"what now?"', "An answer."]
     assert NOD_PLIES == 6
+
+
+def test_a_capture_the_engine_takes_back_is_said_as_such_before_the_position_is_read() -> None:
+    """Qxe5 takes their queen and Rxe5 takes back: with the new position not yet analysed,
+    the engine's own line for the move names the recapture. Without it "up a queen for a
+    pawn" was said, and the model called the queen trade a queen won (the dev audit,
+    2026-09-26)."""
+    from sidecoach.coach.conversation import PlyRecord
+
+    before = chess.Board("1r5r/pbp3p1/5nkp/4Qq2/8/2N2P2/PP2R1PP/R1B3K1 b - - 6 19")
+    move = before.parse_san("Qxe5")
+    after = before.copy()
+    after.push(move)
+    record = PlyRecord(
+        move=MovePlayed(
+            game_id="g",
+            ply=38,
+            san="Qxe5",
+            uci=move.uci(),
+            fen_before=before.fen(),
+            fen_after=after.fen(),
+            by_user=True,
+        ),
+        assessment=MoveAssessment(
+            game_id="g",
+            ply=38,
+            uci=move.uci(),
+            expected_loss=0.0,
+            severity=Severity.NONE,
+            best=[move.uci(), "e2e5", "h8e8"],
+            label=Label.GREAT,
+        ),
+    )
+    found = Conversation._expected_recapture(record, before, after)
+    assert found is not None and found[0] == "Rxe5"

@@ -686,11 +686,20 @@ class Conversation:
         """When the move was a capture and the engine's reply takes back on the same
         square: that reply in SAN, and the board after it."""
         analysis = record.analysis
-        if analysis is None or not analysis.lines or not analysis.lines[0].moves:
+        best = record.assessment.best if record.assessment is not None else []
+        if analysis is not None and analysis.lines and analysis.lines[0].moves:
+            expected = analysis.lines[0].moves[0]
+        elif len(best) > 1 and best[0] == record.move.uci:
+            # The position's own analysis not in yet: the engine's line for the move played
+            # names the reply. Without it "up a queen for a pawn" was said of a queen about to
+            # be taken back, and the model called the queen trade a queen won (the dev audit,
+            # 2026-09-26).
+            expected = best[1]
+        else:
             return None
         try:
             played = chess.Move.from_uci(record.move.uci)
-            reply = chess.Move.from_uci(analysis.lines[0].moves[0])
+            reply = chess.Move.from_uci(expected)
         except ValueError:
             return None
         if not board_before.is_capture(played) or reply not in board_after.legal_moves:

@@ -46,6 +46,62 @@ def _amount(diff: int) -> str:
     return f"material worth {n} pawns"
 
 
+_ORDER = (chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN)
+_NAMES = {
+    chess.QUEEN: "queen",
+    chess.ROOK: "rook",
+    chess.BISHOP: "bishop",
+    chess.KNIGHT: "knight",
+    chess.PAWN: "pawn",
+}
+_COUNT = {1: "a", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}
+
+
+def _pieces_said(counts: dict[chess.PieceType, int]) -> str:
+    """ "a rook and two pawns"."""
+    parts = [
+        f"{_COUNT.get(n, str(n))} {_NAMES[kind]}{'s' if n > 1 else ''}"
+        for kind in _ORDER
+        if (n := counts.get(kind, 0)) > 0
+    ]
+    if not parts:
+        return ""
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + f" and {parts[-1]}"
+
+
+def _trade(board: chess.Board, after: chess.Board, us: chess.Color, diff: int) -> str:
+    """What the line takes and gives, piece by piece: "the exchange: a rook for a bishop",
+    "a knight and a pawn". A sum in pawns' worth said a rook for a bishop as "two pawns",
+    and the model added the two pawns to the exchange (the test audit, 2026-09-26). The
+    pawns' worth stands where a pawn promotes, when the pieces no longer add up."""
+    them = not us
+    lost: dict[chess.Color, dict[chess.PieceType, int]] = {}
+    for colour in (us, them):
+        counts = {}
+        for kind in _ORDER:
+            change = len(board.pieces(kind, colour)) - len(after.pieces(kind, colour))
+            if change < 0:
+                return _amount(diff)  # a piece made on the way: the sum, not the pieces
+            counts[kind] = change
+        lost[colour] = counts
+    won, given = lost[them], lost[us]
+    for kind in _ORDER:  # like for like is no gain
+        n = min(won[kind], given[kind])
+        won[kind] -= n
+        given[kind] -= n
+    for a, b in ((chess.BISHOP, chess.KNIGHT), (chess.KNIGHT, chess.BISHOP)):
+        n = min(won[a], given[b])  # a bishop for a knight is a trade too
+        won[a] -= n
+        given[b] -= n
+    taken, paid = _pieces_said(won), _pieces_said(given)
+    if not taken:
+        return _amount(diff)
+    minors = given[chess.BISHOP] + given[chess.KNIGHT]
+    if taken == "a rook" and minors == 1 and not given[chess.PAWN]:
+        return f"the exchange: a rook for {paid}"
+    return f"{taken} for {paid}" if paid else taken
+
+
 def play_out(
     board: chess.Board, moves: list[str]
 ) -> tuple[chess.Board, int, dict[chess.Color, bool]]:
@@ -79,9 +135,9 @@ def line_outcome(board: chess.Board, moves: list[str], user_colour: chess.Color)
     parts: list[str] = []
     diff = _material(after, us) - _material(board, us)
     if diff > 0:
-        parts.append(f"the player wins {_amount(diff)}")
+        parts.append(f"the player wins {_trade(board, after, us, diff)}")
     elif diff < 0:
-        parts.append(f"the player gives up {_amount(diff)}")
+        parts.append(f"the player gives up {_trade(board, after, them, -diff)}")
     new_ours = _passed(after, us) - _passed(board, us)
     new_theirs = _passed(after, them) - _passed(board, them)
     if new_ours:

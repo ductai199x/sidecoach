@@ -96,8 +96,12 @@ THEMES: tuple[tuple[str, str], ...] = (
     ("exposedKing", "your opponent's exposed king"),
     ("attackingF2F7", "the weak point next to the king"),
     ("promotion", "a passed pawn"),
-    ("advancedPawn", "a passed pawn"),
-    ("xRayAttack", "a piece attacked through another"),
+    # A pawn on the sixth or seventh rank, passed or not: "a passed pawn" was said of b6+
+    # with their pawn on b7 in front (the test audit, 2026-09-26).
+    ("advancedPawn", "a pawn deep in their half"),
+    # "A piece attacked through another" was read as "attacks your knight through another
+    # piece" of a direct attack; the x-ray is the attack running on past its target.
+    ("xRayAttack", "an x-ray: the attack runs on through one piece to the one behind it"),
     ("interference", "a line that can be cut"),
     ("clearance", "a square that can be cleared"),
 )

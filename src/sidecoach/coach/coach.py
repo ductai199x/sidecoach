@@ -98,9 +98,9 @@ ELICIT_EVERY = 3
 ELICIT_ANSWER_S = 60.0
 # The word on a move by its label (Tai, 2026-09-20). LOCAL: written from the board, no
 # model -- theory, the engine's own move, and an excellent one (as strong as the best).
-# EXCITING: great and brilliant, the model at its full effort with some delight, since
-# they are rare and worth a real sentence. A good move was a little behind the best, and
-# the model names the better one.
+# EXCITING: great and brilliant -- local too since 2026-09-26 (the model's delight carried a
+# false claim in 18% of them); still a full-effort call when the move is not the engine's
+# own. A good move was a little behind the best, and the model names the better one.
 LOCAL = frozenset({"book", "best", "excellent"})
 EXCITING = frozenset({"great", "brilliant"})
 
@@ -2795,7 +2795,10 @@ class Coach:
             best = before.facts.candidates[0] if before.facts.candidates else None
             routine = best is None or best == move.san or _local(event.label)
             blitz = self.policy.time_control is TimeControl.BLITZ
-            local = routine and not _exciting(event.label) and (self.local_verdicts or blitz)
+            # A great or brilliant move too: the model's delight carried a false claim in 18%
+            # of them (the locked test set's audit, 2026-09-26), and the board's sentence
+            # scored as high -- Tai's own rule of 2026-09-20 (coach/verdicts.py).
+            local = routine and (self.local_verdicts or blitz)
             if not local:
                 self._speak(
                     trigger,
