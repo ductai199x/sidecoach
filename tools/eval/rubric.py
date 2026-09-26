@@ -4,8 +4,10 @@ The criteria are in tools/eval/rubric.toml, for the owner to edit: each one yes/
 about a reply against the record of its moment, asked for the classes it applies to (and,
 for `only_if = "ends_with_question"`, only when the reply ends with a question -- decided in
 code). The judge sees the record as its evidence already is (judge.evidence_block: the
-message the coach was given, save the coach's own earlier words, with the facts beside it),
-then the reply, then the one question; effort none, up to three votes that stop once two
+message the coach was given, the coach's own earlier words marked as evidence only of what
+it said -- which is what the "connection" criterion's link to a lesson already given needs
+-- with the facts beside it), then the reply, then the one question; effort none, up to
+three votes that stop once two
 agree, every call budget-checked on the ledger. A call that fails or an answer that is not
 yes or no is not a verdict: the criterion is counted as failed and not scored.
 
@@ -47,6 +49,7 @@ import estimate  # noqa: E402
 import judge as judge_module  # noqa: E402
 import stamp  # noqa: E402
 from judge import (  # noqa: E402
+    COACH_WORDS_RULE,
     BudgetExceeded,
     JudgeFailed,
     Ledger,
@@ -73,8 +76,7 @@ _ELICIT = re.compile(
 RUBRIC_SYSTEM = (
     "You judge one reply a chess coach gave a player at one moment of their game, against "
     "the record of that moment. Answer the question with one word, yes or no, and nothing "
-    "else. Nothing the coach itself said earlier in the game is evidence: its earlier turns "
-    "are left out of the record."
+    "else. " + COACH_WORDS_RULE
 )
 
 

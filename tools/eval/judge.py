@@ -121,25 +121,47 @@ DECOMPOSE_SYSTEM = (
     'in JSON only: {"claims": [str]}'
 )
 
+# What the coach's own earlier words are evidence of, for every question put to the judge
+# about the record (the vote, the preference, the rubric). They were left out entirely (the
+# second audit: a claim the model made once was "stated by the record" ever after), and then
+# every true tie to "a lesson you already gave" read as unsupported (quality round 1, __004
+# p038). So they are in the record, marked, and good only for what the coach said.
+COACH_WORDS_RULE = (
+    "The coach's own earlier words are in the record, each marked 'the coach's earlier "
+    "words'. They are evidence only of what the coach said before: a statement that the "
+    "coach said, taught or pointed something out earlier is supported by them. They are "
+    "never evidence of a fact about the board, the moves or the verdicts: such a statement "
+    "is supported only by the rest of the record."
+)
+
 BINARY_SYSTEM = (
     "You answer one question about a chess coach's reply and the record of the game. When "
     "the question asks yes or no, answer with that one word only, no explanation. When it "
-    "asks for the reply's atomic claims, answer in JSON only. Nothing the coach itself said "
-    "earlier in the game is evidence: its earlier turns are left out of the record, and a "
-    "statement is supported only by what the rest of the record states."
+    "asks for the reply's atomic claims, answer in JSON only. " + COACH_WORDS_RULE
 )
 
 # A turn of the coach's own in the message it was given, and the folded dialogue: both are
-# the coach's words, which a claim cannot be supported by (the second eval audit: a claim
-# the model made once was "stated by the record" ever after).
-_COACH_TURN = re.compile(r"^(\s*YOU \(the coach\) said: ).*$", re.MULTILINE)
-_SUMMARY = re.compile(r"^(Earlier dialogue, summarised: ).*$", re.MULTILINE)
-_LEFT_OUT = "(left out: the coach's own words are not evidence)"
+# the coach's words.
+_COACH_TURN = re.compile(r"^(\s*YOU \(the coach\) said)(: .*)$", re.MULTILINE)
+_SUMMARY = re.compile(r"^(Earlier dialogue, summarised)(: .*)$", re.MULTILINE)
+_COACH_MARK = " [the coach's earlier words: evidence only of what the coach said]"
+_SUMMARY_MARK = " [the coach's and the player's earlier words: evidence only of what was said]"
+_LEFT_OUT = ": (left out)"
+
+
+def mark_coach_words(text: str) -> str:
+    """`text` with every turn of the coach's own, and the folded dialogue, marked as the
+    coach's earlier words (COACH_WORDS_RULE says what they are evidence of)."""
+    text = _COACH_TURN.sub(lambda m: m.group(1) + _COACH_MARK + m.group(2), text)
+    return _SUMMARY.sub(lambda m: m.group(1) + _SUMMARY_MARK + m.group(2), text)
 
 
 def without_coach_words(text: str) -> str:
-    """`text` with every turn of the coach's own, and the folded dialogue, left out."""
-    return _SUMMARY.sub(r"\g<1>" + _LEFT_OUT, _COACH_TURN.sub(r"\g<1>" + _LEFT_OUT, text))
+    """`text` with every turn of the coach's own, and the folded dialogue, left out: for
+    what code reads off the record as fact (the threats it gives), where a word of the
+    coach's is no source at all."""
+    text = _COACH_TURN.sub(lambda m: m.group(1) + _LEFT_OUT, text)
+    return _SUMMARY.sub(lambda m: m.group(1) + _LEFT_OUT, text)
 
 
 # Dollars per million tokens -- prompt, cached prompt, completion -- when the app's settings
@@ -751,10 +773,10 @@ def evidence_block(item: dict, *, with_reference: bool = True) -> str:
         lines.append(
             "The moves that lost ground, as the coach's message states them: " + " | ".join(slips)
         )
-    # What the player said here; the coach's own earlier words are not evidence.
-    said = [x for x in said_here(item) if not _COACH_TURN.match(x)]
+    # What was said here, the coach's own words marked (COACH_WORDS_RULE).
+    said = [mark_coach_words(x) for x in said_here(item)]
     if said:
-        lines.append("Already said at this position by the player: " + " | ".join(said))
+        lines.append("Already said at this position: " + " | ".join(said))
     facts = []
     if f.get("decisive"):
         facts.append(
@@ -825,15 +847,15 @@ def evidence_block(item: dict, *, with_reference: bool = True) -> str:
             lines.append(line)
     # Everything the coach was shown, as it was shown -- the game so far, the position and its
     # sheet, the position they faced, the task with the template's lesson as its floor and
-    # what the move allowed -- save its own earlier words. A reply that says what its message
-    # says is supported; the
-    # lines above re-render only parts of it, and the parts they missed -- the first hint,
-    # the faced sheet, the floor -- made true replies read as fabrications (the audit).
+    # what the move allowed -- its own earlier words marked as evidence only of what it said
+    # (COACH_WORDS_RULE). A reply that says what its message says is supported; the lines
+    # above re-render only parts of it, and the parts they missed -- the first hint, the
+    # faced sheet, the floor -- made true replies read as fabrications (the audit).
     shown = str(item["messages"][-1]["content"]) if item.get("messages") else ""
     if shown:
         lines.append(
-            "The message the coach was given, verbatim save the coach's own earlier words --"
-            " all of it is part of the record:\n<<<\n" + without_coach_words(shown) + "\n>>>"
+            "The message the coach was given, verbatim, the coach's own earlier words marked"
+            " -- all of it is part of the record:\n<<<\n" + mark_coach_words(shown) + "\n>>>"
         )
     lines.append("Required facts: " + json.dumps(item["required"], ensure_ascii=False))
     if with_reference and item.get("reference"):

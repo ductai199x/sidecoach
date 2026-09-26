@@ -229,14 +229,48 @@ def test_an_item_keeps_the_request_the_coach_built(tmp_path):
     assert "%" not in cost["value"]
 
 
-def test_the_judges_record_holds_the_whole_request_save_the_coachs_words(tmp_path):
+def test_the_judges_record_holds_the_whole_request_the_coachs_words_marked(tmp_path):
     item = _lesson(_build(tmp_path))
     record = judge.evidence_block(item, with_reference=False)
     shown = item["messages"][-1]["content"]
-    assert judge.without_coach_words(shown) in record
+    assert judge.mark_coach_words(shown) in record
     said = [x for x in shown.splitlines() if "YOU (the coach) said: " in x]
     assert said, "the lesson's message carries the coach's word on 1. e4"
-    assert not any(x.strip() in record for x in said)
+    assert not any(x.strip() in record for x in said)  # never unmarked
+    words = said[0].split("said: ", 1)[1]
+    assert f"evidence only of what the coach said]: {words}" in record
+
+
+def test_a_tie_to_a_lesson_already_given_has_its_evidence_in_the_record():
+    # quality-r1 __004 p038: "the same lesson appeared when your Bishop needed to leave attack
+    # earlier" -- at move 9 the coach had said Bc4 was better, getting the bishop out of
+    # danger. The record keeps those words, marked: the vote can see the lesson was given.
+    fen = "r1bqk2r/1ppp1ppp/p1n2n2/4p3/B3P3/5N2/PPPP1PPP/RNBQ1RK1 w kq - 0 6"
+    sheet = (
+        "# Game so far\n"
+        "8... a6 (the opponent): inaccuracy, cost 0.06\n"
+        "9. Bxc6 (the player): inaccuracy, cost 0.09; engine preferred Bc4 (gets the bishop"
+        " out of attack).\n"
+        '    YOU (the coach) said: "Playable, but Bc4 was a little more precise: it stops axb5'
+        ' and gets your bishop out of danger."\n'
+        "\n# Position now\n..."
+    )
+    item = _position_item(fen, sheet)
+    item.update(required=[], trigger="user_ask", level="LINE", question="why was that bad?")
+    item["class"] = "ask_last_move"
+    record = judge.evidence_block(item, with_reference=False)
+    assert "it stops axb5 and gets your bishop out of danger" in record
+    assert "[the coach's earlier words: evidence only of what the coach said]" in record
+    # The same record for the rubric, whose "connection" criterion asks about such a tie.
+    import rubric  # pyright: ignore[reportMissingImports]
+
+    reply = "Move the attacked piece first -- the same lesson as when your bishop left attack."
+    rubric_record = rubric.record_of(item, reply)
+    assert "gets your bishop out of danger" in rubric_record
+    assert judge.COACH_WORDS_RULE in rubric_record
+    # A threat the coach once named is still no threat the record gives.
+    item["messages"][0]["content"] += '\n    YOU (the coach) said: "They threaten Nxe4."'
+    assert "Nxe4" not in judge.known_threats(item)
 
 
 # ---- B4, B5, M3: the judge checks as the coach checks --------------------------------
@@ -551,7 +585,7 @@ def test_the_version_follows_only_what_shapes_a_reply():
         assert not any(w.startswith(f"src/sidecoach/{elsewhere}") for w in stamp.WATCHED)
 
 
-def test_the_coachs_own_words_are_not_evidence():
+def test_the_coachs_own_words_are_evidence_only_of_what_it_said():
     harness = (
         "# Game so far\n1. e4 (the player): best\n"
         '    YOU (the coach) said: "Their queen on d8 is trapped."\n'
@@ -559,10 +593,24 @@ def test_the_coachs_own_words_are_not_evidence():
         "Earlier dialogue, summarised: the coach said the queen was lost.\n"
         "# Task\nAnswer."
     )
+    marked = judge.mark_coach_words(harness)
+    assert (
+        "YOU (the coach) said [the coach's earlier words: evidence only of what the coach"
+        ' said]: "Their queen on d8 is trapped."' in marked
+    )
+    assert "summarised [the coach's and the player's earlier words" in marked
+    assert 'PLAYER said: "why?"' in marked
+    # Every question put to the judge says what those words are evidence of.
+    import rubric  # pyright: ignore[reportMissingImports]
+
+    for system in (judge.BINARY_SYSTEM, parity.PREFER_SYSTEM, rubric.RUBRIC_SYSTEM):
+        assert judge.COACH_WORDS_RULE in system
+    assert "never evidence of a fact about the board, the moves or the verdicts" in (
+        judge.COACH_WORDS_RULE
+    )
+    # What code reads off the record as fact still reads none of them.
     cleaned = judge.without_coach_words(harness)
     assert "trapped" not in cleaned and "queen was lost" not in cleaned
-    assert 'PLAYER said: "why?"' in cleaned and "YOU (the coach) said:" in cleaned
-    assert "Nothing the coach itself said earlier in the game is evidence" in judge.BINARY_SYSTEM
 
 
 def test_the_claims_check_runs_at_the_routine_effort(monkeypatch):
@@ -715,7 +763,8 @@ def test_the_preference_shows_the_record_and_both_replies_in_a_seeded_order():
     system, user, first = parity.prefer_prompt(
         item, "AI.", "Template.", seed=7001, rating=(1000, 1400)
     )
-    assert "An old word of the coach" not in system and "The lesson." in system
+    assert "The lesson." in system
+    assert 'evidence only of what the coach said]: "An old word of the coach."' in system
     assert "rated about 1000 to 1400" in user and user.endswith("Answer A or B.")
     assert ('Reply A:\n"""\nAI.' in user) == first
     assert parity.ai_first("m1", 7001) == first  # the same coin every time

@@ -56,6 +56,7 @@ import judge as judge_module  # noqa: E402
 import stamp  # noqa: E402
 from judge import (  # noqa: E402
     BINARY_SYSTEM,
+    COACH_WORDS_RULE,
     BudgetExceeded,
     JudgeFailed,
     Ledger,
@@ -63,9 +64,9 @@ from judge import (  # noqa: E402
     binary_judge,
     evidence_block,
     judge_all,
+    mark_coach_words,
     reply_status,
     settings_prices,
-    without_coach_words,
 )
 from providers import judge_provider  # noqa: E402
 
@@ -90,8 +91,7 @@ LEFT_OUT_WORDS = {
 
 PREFER_SYSTEM = (
     "You compare two replies a chess coach could give at one moment of a game. Answer with "
-    "one letter, A or B, and nothing else. Nothing the coach itself said earlier in the game "
-    "is evidence: its earlier turns are left out of the record."
+    "one letter, A or B, and nothing else. " + COACH_WORDS_RULE
 )
 
 
@@ -120,10 +120,10 @@ def prefer_prompt(
     item: dict, ai_reply: str, template: str, *, seed: int, rating: tuple[int, int] | None = None
 ) -> tuple[str, str, bool]:
     """(system, user message, whether the AI is A): the record -- the message the coach was
-    given, save its own earlier words -- in the system prompt, the two replies and the
-    question in the user message."""
+    given, its own earlier words marked (judge.COACH_WORDS_RULE) -- in the system prompt,
+    the two replies and the question in the user message."""
     shown = str(item["messages"][-1]["content"]) if item.get("messages") else ""
-    system = PREFER_SYSTEM + "\n\nThe record:\n<<<\n" + without_coach_words(shown) + "\n>>>"
+    system = PREFER_SYSTEM + "\n\nThe record:\n<<<\n" + mark_coach_words(shown) + "\n>>>"
     first = ai_first(item["id"], seed)
     a, b = (ai_reply, template) if first else (template, ai_reply)
     user = (
