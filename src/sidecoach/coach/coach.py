@@ -3436,7 +3436,9 @@ class Coach:
             directive = (
                 "They asked a plain question about the game as it stands. Answer it from the "
                 "message -- the material, the opening, or who stands better, as it gives them "
-                "-- in one or two sentences, and no question."
+                "-- in one or two sentences, and no question. The material in the Material "
+                "line's own words: what it is now, and after the expected recapture when the "
+                "line gives one; never count the pieces yourself."
             )
         elif _ASK_THREAT.search(said):
             threats = facts.threats[:2]
