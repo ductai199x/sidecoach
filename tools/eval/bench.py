@@ -509,17 +509,23 @@ def _judgments(run: str) -> dict[str, dict]:
 
 
 def _excellence(run: str, arm: str) -> dict[str, float]:
-    """Each reply's rubric score: the mean yes of the criteria answered."""
-    from judge import JUDGMENTS
+    """Each reply's rubric score: the mean yes of the rubric's current criteria answered for
+    it. The store appends a line each time answers are added, so a reply's answers are
+    merged across its lines (the last line alone scored every template 1.00), and an answer
+    to a question since reworded or dropped is left out."""
+    import rubric
 
-    folder = JUDGMENTS / (f"{run}-rubric" + ("-floor" if arm == "floor" else ""))
+    criteria = {c.key: c for c in rubric.load_rubric()}
+    kept = rubric.load_answers(run, arm, reuse_stale=True)
     out: dict[str, float] = {}
-    for path in folder.glob("*.jsonl"):
-        for line in path.open(encoding="utf-8"):
-            rec = json.loads(line)
-            yes = [a.get("yes") for a in rec["answers"].values() if a.get("yes") is not None]
-            if yes:
-                out[rec["id"]] = sum(1.0 for y in yes if y) / len(yes)
+    for rid, answers in kept.items():
+        yes = [
+            a["yes"]
+            for key, a in answers.items()
+            if key in criteria and a.get("q") == criteria[key].qhash and a.get("yes") is not None
+        ]
+        if yes:
+            out[rid] = sum(1.0 for y in yes if y) / len(yes)
     return out
 
 

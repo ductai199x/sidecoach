@@ -135,6 +135,64 @@ re-judge only what failed.
 question needs words and the side, lists must say they are complete. Semantic is the
 category ICR targets.
 
+## The coach benchmark (2026-09-25)
+
+Why it exists: the quality rounds before it drew 40 moments at a time from five 1300-level games. Those were the games being tuned on, with no held-out set, and nothing was paired between versions. So no change could be shown to generalise (Tai: "each round is different...so how tf are you able to know if what you change is stable").
+
+**Method** (`tools/eval/bench.py`):
+- **Games:** Nova against Nova at 800, 1200, 1600, 2000 and 2500, 12 games a level, the coached side alternating. The coach's rating is set to each game's level.
+- **Split by game:** 6 games per level for dev (tuning) and 6 for test (locked), frozen in `data/eval/bench/manifest.json`.
+- **Moments:** fixed and paired. 150 on dev and 300 on test, balanced by level and by family (after a move, hints, answers).
+- **Cheap runs:** only the drawn moments call the model; the history before each is the templates'.
+- **Statistics:** rates with 95% intervals by level and family; versions compared paired (McNemar, bootstrap).
+
+**The judge, proven before any number is trusted:**
+- Two independent labellers (Claude, blind to the judge) labelled 80 replies (60 AI, 20 templates) for false claims, required facts and every rubric answer. They checked board claims with python-chess.
+- Every disagreement with the judge was adjudicated by hand (6 labels corrected; `data/eval/gold/bench-dev-base-adjudication.jsonl`).
+- The judge was fixed against two thirds of the labels ("tune"). Its accuracy was then measured on the third it never saw ("confirm").
+
+Fixes along the way:
+- A claim grounded in the reply's own words is always judged; 142 had been dropped unjudged.
+- The balance is read of the side the claim names.
+- Required facts the record decides are decided in code: the cost, counts, a named move or square.
+- Tone questions reworded.
+- Two question criteria no longer asked: 80% agreement, reworded twice.
+
+| Held out (confirm) | Agreement |
+|---|---|
+| required facts | 22/22 |
+| gushing, scolding, hedging | 26/26 each |
+| actionable | 14/14 |
+| question can be answered from the board | 12/12 |
+| why | 12/14 (lenient twice) |
+| transfer | 12/14 (lenient twice) |
+| false fabrication flags | 0 |
+| **false claims caught** | **0 of 4** |
+
+**Known blind spot:** subtly false explanations of engine lines. Examples:
+- "the point of a4 is to take away the bishop's last safe square" (it had none already);
+- "Rad8 keeps the b- and e-files open" (they are not open yet);
+- "the check forces your rook to f7" (other moves exist).
+
+The labellers found 5 in 60 AI replies, 4 of them answers to "show me the line". A stricter vote wording caught none and faulted 10 true claims, so it was not adopted: a no-reasoning yes/no vote cannot tell "forces" from "is followed by". The fix belongs at the source (the line directive) and in the labelling protocol.
+
+**Dev baseline** (`bench-dev-base-g4`, code 83dc1c3, 150 moments):
+
+| | AI | Template |
+|---|---|---|
+| pass | 0.99 [0.95, 1.00] | 0.95 [0.89, 0.97] |
+| completeness | 0.95 [0.93, 0.97] | |
+| excellence | 0.99 [0.98, 1.00] | 0.86 [0.82, 0.89] |
+| preferred over the template | 95 of 110 | |
+
+- **Levels:** no level differs outside the intervals.
+- **What the numbers leave out:**
+  - the line-explanation errors (about 1 AI reply in 12 per the gold set);
+  - the pitch to the player's level, which no criterion asks.
+- The rubric is near its ceiling for the AI, so it will not show further gains. The next measures are the fabrication rate by labelling, and the simulated students' outcomes.
+
+**Spend:** $2.02 of the $2.50 Tai approved. Coach $0.24, judge $0.81, rubric $0.69, then regrinds, rubric fills and the vote trial.
+
 ## Next, if wanted
 
 Scale the exemplars to 30-50 from the already-judged training moments: round 1's 400
