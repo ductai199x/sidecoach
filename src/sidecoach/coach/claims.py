@@ -1314,10 +1314,11 @@ _FILES_OPEN = re.compile(
 )
 # A file said to have no pawns: "the g-file has no pawns" of a half-open file with a pawn on
 # g6 (the pilot of 2026-09-26: the sheet said "takes the half-open g-file").
+# "No pawns of yours on it" is a half-open file, and true of one: only a file said to have no
+# pawns at all is checked.
 _FILE_EMPTY = re.compile(
-    r"\bthe\s+(?P<file>[a-h])-file\s+(?:has\s+no\s+pawns|is\s+(?:empty|clear\s+of\s+pawns|"
-    r"free\s+of\s+pawns|pawnless))\b"
-    r"|\bno\s+pawns\s+(?:on|in)\s+the\s+(?P<file2>[a-h])-file\b",
+    r"\bthe\s+(?P<file>[a-h])-file\s+(?:has\s+no\s+pawns(?!\s+of\b)|is\s+(?:empty|"
+    r"clear\s+of\s+pawns|free\s+of\s+pawns|pawnless))\b",
     re.IGNORECASE,
 )
 _SAN_CHECK = re.compile(
@@ -1414,7 +1415,7 @@ def _line_problems(
                 )
             )
     for match in _FILE_EMPTY.finditer(text):
-        letter = (match.group("file") or match.group("file2")).lower()
+        letter = match.group("file").lower()
         index = ord(letter) - ord("a")
         if not any(
             all(f.piece_type_at(sq) != chess.PAWN for sq in _file_squares(index)) for f in frames

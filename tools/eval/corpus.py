@@ -187,6 +187,8 @@ def reply_record(
         "candidates": sum(c.candidates for c in calls),
         "passed": sum(c.passed for c in calls),
         "problems": spoken.problems,
+        # What the reply gave away of the answer: logged, never refused (Speaker._leaks).
+        "leaks": getattr(spoken, "leaks", []),
         "fallback_used": bool(spoken.problems),
         "model_failed": spoke_template and (silent or (not calls and call_errors > 0)),
         "template_only": template_only and not calls,

@@ -522,6 +522,9 @@ def test_what_a_line_forces_or_keeps_open_is_checked() -> None:
     problems = check_draft("The g-file has no pawns, so use it.", g6, us=chess.WHITE)
     assert [p.reason for p in problems] == ["the g-file has a pawn on it"]
     assert check_draft("The d-file has no pawns, so use it.", g6, us=chess.WHITE) == []
+    # "No pawns of yours on it" is a half-open file: the template says it, and it is true.
+    half = "Rg2 was better -- the g-file has no pawns of yours on it."
+    assert check_draft(half, g6, us=chess.WHITE) == []
 
 
 def test_your_is_the_player_on_the_opponents_turn() -> None:
