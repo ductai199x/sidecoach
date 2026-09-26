@@ -590,7 +590,7 @@ class Conversation {
             val better = sanLine(boardBefore, assessment.best, limit = 4)
             if (better.isNotEmpty()) {
                 val leads = lineOutcome(boardBefore, assessment.best.take(LINE_PLIES), colour)
-                val notes = lineNotes(boardBefore, assessment.best, limit = 4)
+                val notes = lineNotes(boardBefore, assessment.best, limit = 4, player = colour)
                 parts.add(
                     "the engine preferred $better" +
                         (if (leads.isNotEmpty()) " -> $leads" else "") +
@@ -720,7 +720,7 @@ class Conversation {
             )
             if (index == 0) {
                 // The best line move by move, computed: what a line may be explained by.
-                val notes = lineNotes(board, line.moves, limit = limit)
+                val notes = lineNotes(board, line.moves, limit = limit, player = colour)
                 if (notes.isNotEmpty()) out.add("     move by move: $notes")
             }
         }

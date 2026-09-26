@@ -180,6 +180,46 @@ class ClaimsTest {
         assertEquals(emptyList<DraftProblem>(), checkDraft(half, g6, us = white))
     }
 
+    /**
+     * The locked test set's audit (2026-09-26): false claims the checker now catches, each beside
+     * the true sentence it must not fault (desktop 4365dfa).
+     */
+    @Test
+    fun theTestAuditsFalseClaimsAreCaughtAndTheirTrueTwinsPass() {
+        val white = com.sidecoach.chess.WHITE
+        val black = com.sidecoach.chess.BLACK
+        // "Qf2+ drives the King to h3": Kh1 was legal too; judged on Qf2+'s own frame.
+        val box = Board("6k1/5pp1/p2p4/1p3Pb1/2p1r1q1/P1P1p3/1P5K/4R3 b - - 1 48")
+        val after = ArrayList<Board>()
+        val line = box.copy()
+        for (san in listOf("Qh4+", "Kg2", "Qf2+", "Kh3", "Rh4#")) {
+            line.push(line.parseSan(san)!!)
+            after.add(line.copy())
+        }
+        var problems = checkDraft("Qf2+ drives the King to h3.", box, after = after, us = black)
+        assertTrue(problems.toString(), problems.isNotEmpty() && "nothing forces the king to h3" in problems[0].reason)
+        // "Kh8 is the only king move" where four were legal; "the only move that keeps your edge"
+        // is the stakes, and is not checked.
+        val q = Board("8/6k1/8/8/3Q4/8/5PPP/6K1 b - - 0 1") // Qd4+ given: the king has five
+        problems = checkDraft("After the check, Kh7 is the only king move.", q, us = white)
+        assertTrue(
+            problems.toString(),
+            problems.isNotEmpty() && problems[0].reason == "Kh7 is not the only king move: others are legal",
+        )
+        assertEquals(emptyList<DraftProblem>(), checkDraft("Kh7 was the only move that keeps it level.", q, us = white))
+        // "Ne4 ... but it allows exf6" where exf6 cannot follow Ne4; across clauses, not judged.
+        val n = Board("r1bqkb1r/pppp1ppp/2n2n2/4P3/2B5/8/PPPP1PPP/RNBQK1NR b KQkq - 0 4")
+        problems = checkDraft("Ne4 attacks f2, but it allows exf6.", n, us = black)
+        assertTrue(problems.toString(), problems.isNotEmpty() && "exf6 cannot be played after Ne4" in problems[0].reason)
+        val fine = "After Nd5, Bxd5 wins a pawn, while your move allowed exf6."
+        assertEquals(emptyList<DraftProblem>(), checkDraft(fine, n, us = black))
+        // "Your queen checks" with no queen; "it took your bishop" is the story, not checked.
+        val none = Board("k7/8/8/8/8/8/8/K5R1 b - - 0 1")
+        problems = checkDraft("Your queen checks the king.", none, us = black)
+        assertTrue(problems.toString(), problems.isNotEmpty() && problems[0].reason == "you have no queen")
+        assertEquals(emptyList<DraftProblem>(), checkDraft("That exchange took your bishop.", none, us = black))
+    }
+
     /** The stub the generator used: the same lines for the same position, read from the file. */
     private fun recorded(seen: JSONObject): ClaimEngine = ClaimEngine { board, _ ->
         val entry = seen.optJSONArray(board.fen()) ?: JSONArray()

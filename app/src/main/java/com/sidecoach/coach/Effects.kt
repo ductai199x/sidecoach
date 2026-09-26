@@ -249,9 +249,12 @@ fun effectsText(board: Board, move: Move, limit: Int = 3, hazards: Boolean = tru
  * Asked to explain a line, the model gave its moves purposes the board denies: "the check
  * forced the King away" where a block was legal, "Rad8 keeps the b- and e-files open" where
  * both held pawns (the bench's gold labels, 2026-09-25: 4 of the 5 false claims were in
- * explanations of lines). The notes are what a line may be explained by.
+ * explanations of lines). The notes are what a line may be explained by. With [player], each
+ * move says whose it is ("the player's Qxa7", "the opponent's c3"): without it the model gave
+ * the player the opponent's moves and the reverse (the test audit, 2026-09-26: "advancing b4"
+ * of their pawn, "your queen checks" of theirs).
  */
-fun lineNotes(board: Board, moves: List<String>, limit: Int = 8): String {
+fun lineNotes(board: Board, moves: List<String>, limit: Int = 8, player: Boolean? = null): String {
     val current = board.copy(withStack = false)
     val out = ArrayList<String>()
     for (text in moves.take(limit)) {
@@ -268,14 +271,21 @@ fun lineNotes(board: Board, moves: List<String>, limit: Int = 8): String {
             if (legal.size == 1) {
                 notes.add("the only legal move")
             } else if (legal.all { current.pieceTypeAt(it.from) == KING }) {
-                notes.add("only a king move gets out of check")
+                // The king moves named: "only a king move gets out of check" was read as "Kh8 is
+                // the only king move" where there were four (the test audit, 2026-09-26).
+                val sans = legal.map { current.san(it) }.sorted()
+                val listed = sans.dropLast(1).joinToString(", ") + " or ${sans.last()}"
+                notes.add("the king must move: $listed")
             } else {
                 notes.add("one of ${legal.size} ways out of check")
             }
         }
         val does = effectsText(current, move, hazards = false)
         if (does.isNotEmpty()) notes.add(does)
-        val san = current.san(move)
+        var san = current.san(move)
+        if (player != null) {
+            san = (if (current.turn == player) "the player's " else "the opponent's ") + san
+        }
         out.add(if (notes.isNotEmpty()) "$san (${notes.joinToString("; ")})" else san)
         current.push(move)
     }

@@ -1020,8 +1020,16 @@ private fun sentence(reason: String): String {
 
 private const val COLOUR_WORDS = "your|their|the opponent's|opponent's|white's|black's|white|black"
 private const val PIECE_WORD = "king|queen|rook|bishop|knight|pawn"
+
+// Words a coach puts between the owner and the piece: "your isolated pawn on g2".
+private const val PIECE_ADJECTIVES =
+    "(?:(?:isolated|passed|backward|doubled|loose|hanging|pinned|trapped|advanced|extra|" +
+        "lone|last|remaining|undefended|defended|attacked|active|passive|bad|good|" +
+        "light-squared|dark-squared|central|strong|weak|exposed|stranded|" +
+        "overloaded)\\s+){0,2}"
 private val PIECE_ON = Regex(
-    "\\b(?:(?<colour>$COLOUR_WORDS)\\s+)?(?<piece>$PIECE_WORD)s?\\s+(?:on|at)\\s+" +
+    "\\b(?:(?<colour>$COLOUR_WORDS)\\s+)?$PIECE_ADJECTIVES(?<piece>$PIECE_WORD)s?" +
+        "\\s+(?:on|at)\\s+" +
         "(?<square>[a-h][1-8])\\b",
     RegexOption.IGNORE_CASE,
 )
@@ -1046,6 +1054,14 @@ private val TACTIC = Regex(
         "(?:(?:is|was|are|were)\\s+(?:now\\s+)?|,\\s*(?:which\\s+)?(?:is|was)\\s+|now\\s+)?" +
         "(?<state>pinned|hanging|undefended|unprotected|loose|en\\s*prise|trapped|safe|" +
         "forks?|forking|skewers?|skewering)",
+    RegexOption.IGNORE_CASE,
+)
+
+// The same states said before the piece: "targeting the loose rook on e4" of a rook the pawn on
+// f5 defends (the test audit, 2026-09-26).
+private val STATE_FIRST = Regex(
+    "\\b(?:(?<colour>$COLOUR_WORDS)\\s+)?(?<state>loose|hanging|undefended|unprotected|" +
+        "pinned|trapped)\\s+(?<piece>$PIECE_WORD)\\s+(?:on|at)\\s+(?<square>[a-h][1-8])\\b",
     RegexOption.IGNORE_CASE,
 )
 
@@ -1235,6 +1251,9 @@ fun checkDraft(
     after: List<Board> = emptyList(),
     us: Boolean? = null,
 ): List<DraftProblem> {
+    // The model writes curly apostrophes ("your opponent’s bishop"); the patterns spell them
+    // straight, and read that way a flipped owner went unchecked (the test audit, 2026-09-26).
+    val text = straightQuotes(text)
     val problems = ArrayList<DraftProblem>()
     val seen = HashSet<String>()
     val frames = listOf(board) + after
@@ -1261,7 +1280,7 @@ fun checkDraft(
         }
     }
 
-    for (match in TACTIC.findAll(text)) {
+    for (match in TACTIC.findAll(text) + STATE_FIRST.findAll(text)) {
         val square = match.groups["square"]!!.value
         val state = match.groups["state"]!!.value
         val present = frames.map {
@@ -1296,13 +1315,15 @@ fun checkDraft(
 // King away" where a block was legal, "the check on d6 forces your rook onto f7" where other
 // moves were: 2 of the 5 false claims the bench's labellers found (2026-09-25).
 private val FORCE_KING = Regex(
-    "\\bforc(?:e|es|ed|ing)\\s+(?<colour>your|their|the|his|white's|black's)\\s+king\\s+" +
+    "\\b(?:forc(?:e|es|ed|ing)|driv(?:e|es|ing)|drove)\\s+" +
+        "(?<colour>your|their|the|his|white's|black's)\\s+king\\s+" +
         "(?:away|back|out|off|to\\s+move|to\\s+step\\s+aside|to\\s+(?<square>[a-h][1-8]))\\b" +
         "|\\b(?<colour2>your|their)\\s+king\\s+(?:has\\s+to|must|is\\s+forced\\s+to)\\s+move\\b",
     RegexOption.IGNORE_CASE,
 )
 private val FORCE_ONTO = Regex(
-    "\\bforc(?:e|es|ed|ing)\\s+(?<colour>your|their|the|his|white's|black's)\\s+" +
+    "\\b(?:forc(?:e|es|ed|ing)|driv(?:e|es|ing)|drove)\\s+" +
+        "(?<colour>your|their|the|his|white's|black's)\\s+" +
         "(?<piece>queen|rook|bishop|knight|pawn)\\s+(?:back\\s+)?(?:onto|to|into)\\s+" +
         "(?<square>[a-h][1-8])\\b",
     RegexOption.IGNORE_CASE,
@@ -1326,11 +1347,45 @@ private val FILE_EMPTY = Regex(
         "clear\\s+of\\s+pawns|free\\s+of\\s+pawns|pawnless))\\b",
     RegexOption.IGNORE_CASE,
 )
+
+/** A move in SAN, as the draft checks read one (`claims._SAN`). */
+private const val DRAFT_SAN =
+    "(?:O-O(?:-O)?|[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h](?:x[a-h])?[1-8])(?:=[QRBN])?[+#]?"
+
+// Only the move itself as the subject: "Ne4 allows exf6", "Ne4 saves the knight, but it allows
+// exf6" -- read across clauses ("after Rb8, Rxa5 wins, while your move allowed fxe6") the
+// subject was another move (the precision sweep, 2026-09-26).
+private val ALLOWS = Regex(
+    "\\b(?<first>$DRAFT_SAN)(?![\\w=])(?:[^.;!?,]{0,50}?,?\\s+but\\s+it|\\s+it|)\\s+" +
+        "(?:allows|allowed|lets|runs\\s+into|ran\\s+into|invites|invited)\\s+" +
+        "(?<reply>$DRAFT_SAN)(?![\\w=])",
+)
+
+// A piece named by its owner alone: "your queen checks" where the player had none. Only with a
+// present action ("your queen checks"): a piece named in the game's story ("it took your
+// bishop") is gone from the frames and true (the precision sweep).
+private val OWNED = Regex(
+    "\\b(?<colour>your|their)\\s+(?<piece>queen|rook|bishop|knight)s?\\s+" +
+        "(?:checks?|gives\\s+check|attacks|pins|forks|skewers|mates|takes|captures)\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+// Only the unqualified claims: the only king move, the only legal move, the only move out of
+// check. "The only move that keeps your edge" is the stakes, and true (the sweep).
+private val ONLY_MOVE = Regex(
+    "\\b(?<san>$DRAFT_SAN)(?![\\w=])\\s+(?:is|was)\\s+the\\s+only\\s+" +
+        "(?:(?<king>king\\s+)move\\b|legal\\s+move\\b|move\\s+out\\s+of\\s+(?:the\\s+)?check\\b)",
+)
 private val SAN_CHECK = Regex(
     "\\b(?:[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h](?:x[a-h])?[1-8])(?:=[QRBN])?\\+",
 )
 private val SENTENCE_BREAK = Regex("(?<=[.!?])\\s+")
 private val FILE_LETTER = Regex("\\b([a-h])-")
+
+/** [text] with curly apostrophes and quotes made straight. `claims.straight_quotes`. */
+fun straightQuotes(text: String): String = text.replace("’", "'").replace("‘", "'")
+
+private fun legalSan(board: Board, san: String): Boolean = board.parseSan(san) != null
 
 /** The side a colour word names: "your" is [us]; "the" and "his" either side (null). */
 private fun sideOf(word: String?, us: Boolean): Boolean? {
@@ -1345,12 +1400,19 @@ private fun sideOf(word: String?, us: Boolean): Boolean? {
 }
 
 /**
- * The frames where [side] (either, when null) is in check: those given, and those after a check
- * the sentence names ("Rh4+"), played where it is legal. `claims._checked_frames`.
+ * The frames where [side] (either, when null) is in check. When the sentence names a check
+ * ("Rh4+"), those after it, played where it is legal -- only those: "Qf2+ drives the King to
+ * h3" was borne out by some other check of the line (the test audit); else every frame in
+ * check. `claims._checked_frames`.
  */
 private fun checkedFrames(text: String, frames: List<Board>, side: Boolean?): List<Board> {
-    val out = frames.filter { it.isCheck() && (side == null || it.turn == side) }.toMutableList()
-    for (token in SAN_CHECK.findAll(text).map { it.value }) {
+    val named = SAN_CHECK.findAll(text).map { it.value }.toList()
+    val out = if (named.isNotEmpty()) {
+        ArrayList()
+    } else {
+        frames.filter { it.isCheck() && (side == null || it.turn == side) }.toMutableList()
+    }
+    for (token in named) {
         for (frame in frames) {
             val move = frame.parseSan(token) ?: continue
             val after = frame.copy(withStack = false)
@@ -1373,12 +1435,32 @@ private fun lineProblems(text: String, frames: List<Board>, us: Boolean): List<P
             val side = sideOf(match.groups["colour"]?.value ?: match.groups["colour2"]?.value, us)
             val checked = checkedFrames(sentenceText, frames, side)
             if (checked.isEmpty()) continue
-            if (checked.any { f -> f.legalMoves().all { f.pieceTypeAt(it.from) == KING } }) continue
-            problems.add(
-                match.value to
-                    "the check does not force the king to move: it can be blocked " +
-                    "or the checking piece taken",
-            )
+            val to = match.groups["square"]?.value
+            val reason: String
+            if (to == null) {
+                if (checked.any { f ->
+                        val legal = f.legalMoves()
+                        legal.isNotEmpty() && legal.all { f.pieceTypeAt(it.from) == KING }
+                    }
+                ) {
+                    continue
+                }
+                reason = "the check does not force the king to move: it can be blocked " +
+                    "or the checking piece taken"
+            } else {
+                // "Forces the King to h6" where Kf6 was legal too (the test audit).
+                val target = parseSquare(to.lowercase())
+                if (checked.any { f ->
+                        val legal = f.legalMoves()
+                        legal.isNotEmpty() &&
+                            legal.all { f.pieceTypeAt(it.from) == KING && it.to == target }
+                    }
+                ) {
+                    continue
+                }
+                reason = "nothing forces the king to ${to.lowercase()}: other moves are legal there"
+            }
+            problems.add(match.value to reason)
         }
         for (match in FORCE_ONTO.findAll(sentenceText)) {
             val side = sideOf(match.groups["colour"]?.value, us)
@@ -1396,6 +1478,43 @@ private fun lineProblems(text: String, frames: List<Board>, us: Boolean): List<P
                 match.value to "nothing forces the $piece to $squareText: other moves are legal there",
             )
         }
+    }
+    for (match in OWNED.findAll(text)) {
+        val side = sideOf(match.groups["colour"]?.value, us)
+        val piece = match.groups["piece"]!!.value.lowercase()
+        val kind = PIECE_WORDS[piece]
+        if (side == null || kind == null || kind == KING) continue
+        if (frames.any { it.pieces(kind, side).isNotEmpty() }) continue
+        val whose = if (side == us) "you have" else "they have"
+        problems.add(match.value to "$whose no $piece")
+    }
+    for (match in ONLY_MOVE.findAll(text)) {
+        val san = match.groups["san"]!!.value
+        val kingOnly = !match.groups["king"]?.value.isNullOrEmpty()
+        val where = frames.filter { legalSan(it, san) }
+        if (where.isEmpty()) continue
+        fun alone(frame: Board): Boolean {
+            var moves = frame.legalMoves()
+            if (kingOnly) moves = moves.filter { frame.pieceTypeAt(it.from) == KING }
+            return moves.size == 1
+        }
+        if (where.any { alone(it) }) continue
+        val kind = if (kingOnly) "king move" else "move"
+        problems.add(match.value to "$san is not the only $kind: others are legal")
+    }
+    for (match in ALLOWS.findAll(text)) {
+        val first = match.groups["first"]!!.value
+        val reply = match.groups["reply"]!!.value
+        val playedOn = ArrayList<Board>()
+        for (frame in frames) {
+            val move = frame.parseSan(first) ?: continue
+            val after = frame.copy(withStack = false)
+            after.push(move)
+            playedOn.add(after)
+        }
+        if (playedOn.isEmpty()) continue // a move of some other moment: the move check has it
+        if (playedOn.any { legalSan(it, reply) }) continue
+        problems.add(match.value to "$reply cannot be played after $first: it does not allow it")
     }
     for (match in FILE_EMPTY.findAll(text)) {
         val letter = match.groups["file"]!!.value.lowercase()

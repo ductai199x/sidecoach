@@ -613,6 +613,29 @@ class CoachTest {
     }
 
     /**
+     * The material, the opening by name, who stands better: the template says them exactly and
+     * no model is called (the locked test set, 2026-09-26: the model once gave the material after
+     * a recapture as the material now). A judgement or a why still goes to the model (desktop
+     * 4365dfa).
+     */
+    @Test
+    fun aQuestionOnlyAboutAFactIsAnsweredByTheTemplate() {
+        for (said in listOf("who's up material?", "what opening is this?", "am I winning?")) {
+            assertTrue(said, factQuestion(said))
+        }
+        for (said in listOf("how is my opening?", "why am I losing?", "am I winning? what should I do?")) {
+            assertFalse(said, factQuestion(said))
+        }
+        val (coach, provider) = coach(listOf("The model's words."))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        coach.ask("who's up material?", 8.0)
+        val out = messages(coach)
+        assertTrue(out.toString(), out.isNotEmpty() && out.last().text.startsWith("Material:"))
+        assertEquals(emptyList<Pair<String, List<ChatMessage>>>(), provider.prompts)
+    }
+
+    /**
      * The sheet's threats are the side NOT to move's: on the opponent's turn, the player's own.
      * "What are they threatening?" there is answered with their best move now (desktop 2ec1747).
      */

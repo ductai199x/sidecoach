@@ -126,8 +126,8 @@ private val ASK_OPPONENT_MOVE = Regex(
 )
 private val ASK_EVAL = Regex(
     "\\b(?:am i (?:winning|losing|better|worse|ok|okay|in trouble)|who'?s (?:better|winning)|" +
-        "how am i doing|is this (?:position )?good for me|what'?s the (?:eval|evaluation|score)|" +
-        "how bad is it|am i lost)\\b",
+        "how am i doing|is this (?:position )?good for me|" +
+        "what(?:'?s| is) the (?:eval|evaluation|score)|how bad is it|am i lost)\\b",
     RegexOption.IGNORE_CASE,
 )
 
@@ -207,6 +207,48 @@ fun questionPart(text: String): String {
     val asked = sentences.map { it.trim() }
         .filter { it.endsWith("?") || QUESTION_START.containsMatchIn(it) }
     return asked.joinToString(" ").replace("…", "...")
+}
+
+/** The opening asked for by name ("what opening is this?"), not judged ("how is my opening?"). */
+private val OPENING_FACT = Regex(
+    "\\b(?:what|which)(?:'s| is| was)? (?:the |this |my )?opening\\b|" +
+        "\\bis (?:this|it|that) (?:still )?(?:theory|book)\\b|\\bname of (?:the |this )?opening\\b",
+    RegexOption.IGNORE_CASE,
+)
+private val FACT_OTHER_WORDS = Regex(
+    "\\b(?:why|how come|what should|what do i|explain|plan)\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+/**
+ * Whether the words ask only for a fact the record holds whole -- the material, the opening, who
+ * stands better -- which the template says exactly. The model added nothing there (the locked
+ * test set, 2026-09-26: excellence 1.00 for the templates on all three) and once gave the
+ * material after a recapture as the material now; answered by the template, no call is made.
+ * `coach.fact_question`.
+ */
+fun factQuestion(text: String): Boolean {
+    if (!(ASK_MATERIAL.containsMatchIn(text) || OPENING_FACT.containsMatchIn(text) ||
+            ASK_EVAL.containsMatchIn(text))
+    ) {
+        return false
+    }
+    val others = ASK_HINT.matchesAt(text, 0) ||
+        ASK_AIM.containsMatchIn(text) ||
+        ASK_THREAT.containsMatchIn(text) ||
+        ASK_MOVE.containsMatchIn(text) ||
+        ASK_LINE.containsMatchIn(text) ||
+        ASK_LAST_MOVE.containsMatchIn(text) ||
+        ASK_OPPONENT_MOVE.containsMatchIn(text) ||
+        ASK_REVIEW.containsMatchIn(text) ||
+        ASK_COST.containsMatchIn(text) ||
+        FACT_OTHER_WORDS.containsMatchIn(text) ||
+        SAN.containsMatchIn(text)
+    // Only the words beyond the question itself can carry a claim: "winning" in "am I winning?"
+    // is the question.
+    var rest = text
+    for (pattern in listOf(ASK_MATERIAL, OPENING_FACT, ASK_EVAL)) rest = pattern.replace(rest, " ")
+    return !others && !mayCarryClaims(rest)
 }
 
 /**
@@ -600,6 +642,24 @@ class Coach(
                 now = true,
                 recordNow = true,
             )
+        }
+
+        if (!canned && factQuestion(text)) {
+            // The material, the opening, the standing: said by the template, exactly.
+            val answer = instruction(
+                Trigger.USER_ASK, where, level, text, emptyList(), null, null
+            ).second
+            queuePlain(
+                Trigger.USER_ASK,
+                answer,
+                ts,
+                ply = where.ply,
+                level = level,
+                fen = where.board.fen(),
+                now = true,
+                recordNow = true,
+            )
+            return
         }
 
         val asked = questionPart(text)
@@ -2289,7 +2349,7 @@ class Coach(
         ) {
             // The line move by move, computed: the only reasons a move of it may be given (4 of
             // the 5 false claims the bench's labellers found were in these answers).
-            val notes = lineNotes(position.board, facts.line)
+            val notes = lineNotes(position.board, facts.line, player = userColour)
             val byMove = if (notes.isNotEmpty()) {
                 " The line move by move, as the board gives it: $notes. Explain it only from " +
                     "these notes: a move 'forces' something only where a note says it is the " +

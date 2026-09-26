@@ -1009,6 +1009,10 @@ def case_for(
         "line_notes": E.line_notes(board, list(analysis.lines[0].moves))
         if analysis.lines
         else None,
+        # The same, each move said as the player's or the opponent's (desktop 4365dfa).
+        "line_notes_player": E.line_notes(board, list(analysis.lines[0].moves), player=us)
+        if analysis.lines
+        else None,
         "effects": [
             {
                 "move": m.uci(),

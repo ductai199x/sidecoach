@@ -210,6 +210,19 @@ DRAFTS = [
     "There are no pawns on the d-file.",
     # "No pawns of yours on it" is a half-open file, left alone (desktop ba861d6).
     "The b-file has no pawns of yours on it.",
+    # The test audit's families (desktop 4365dfa): curly quotes, an adjective before the piece,
+    # the state said first, a king driven to a square, the only move, what a move allows, and
+    # a piece named by its owner alone.
+    "Your opponent’s bishop on c4 is loose.",
+    "Your isolated pawn on d4 needs a defender.",
+    "Aim at the loose rook on a1.",
+    "Qh5+ drives the king to e7.",
+    "Kf8 is the only king move.",
+    "Nxe5 is the only legal move.",
+    "Nf3 allows e5.",
+    "Bc4 develops, but it allows Nxe4.",
+    "Your queen checks the king.",
+    "Their rook attacks the pawn.",
 ]
 
 
