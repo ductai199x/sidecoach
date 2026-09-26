@@ -565,6 +565,33 @@ private val JSON_OBJECT = Regex("\\{.*\\}", RegexOption.DOT_MATCHES_ALL)
 
 internal val SAN = Regex("\\b(O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?)\\b")
 
+private val ILLEGAL_CLAIM = Regex(
+    "\\b(O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)[+#]? (?:is|was) " +
+        "(?:not (?:a )?legal|illegal)",
+)
+private val CLAUSE_END = Regex("(?<=[.!?;])\\s+")
+
+/**
+ * A move the reply calls illegal that is legal for the side to move on the board it is about.
+ * The AI said "O-O is not legal here because your opponent's bishop is still on e2", "Qxf7+ is
+ * illegal here" and "Kf7 is illegal because f7 is controlled by the King on e8" of legal moves
+ * (its own sessions, checked against the boards, 2026-09-26). A claim inside a line ("after
+ * 22...Bxg5, 23.Bxg5 is illegal") is about a later position and is left alone, as is a move of
+ * the side not to move. `coach.false_illegal`.
+ */
+fun falseIllegal(text: String, board: Board): List<String> {
+    val out = ArrayList<String>()
+    for (sentence in text.split(CLAUSE_END)) {
+        for (found in ILLEGAL_CLAIM.findAll(sentence)) {
+            if ("after" in sentence.substring(0, found.range.first).lowercase()) continue
+            val san = found.groupValues[1]
+            if (board.parseSan(san) == null) continue
+            out.add("$san: called illegal, but it is a legal move here")
+        }
+    }
+    return out
+}
+
 /**
  * Faults in what a reply says of the move just assessed: a "best" that was not, a slip word
  * for a sound move, a cost that is not the recorded one.
@@ -1463,6 +1490,7 @@ class Speaker(
                 found.add(problem)
             }
         }
+        found.addAll(falseIllegal(text, request.board))
         return found
     }
 

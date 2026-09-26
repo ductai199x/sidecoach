@@ -669,6 +669,22 @@ class CoachTest {
         assertTrue("passed pawns" !in coach.conversation.render())
     }
 
+    /**
+     * The AI said "Qxf7+ is illegal here" and "Kf7 is illegal because f7 is controlled by the King
+     * on e8" of legal moves (its own sessions, checked against the boards; desktop 403e675).
+     */
+    @Test
+    fun aLegalMoveCalledIllegalIsAFault() {
+        val board = Board("2r3k1/4bpp1/p3p2p/qp1bn1NQ/8/1P1BB3/P4PPP/3R2K1 w - - 0 20")
+        assertEquals(
+            listOf("Qxf7: called illegal, but it is a legal move here"),
+            falseIllegal("No: Qxf7+ is illegal here.", board),
+        )
+        // A claim inside a line is about a later position; a true one is no fault.
+        assertEquals(emptyList<String>(), falseIllegal("After Bh7+ Kh8, Qxf7+ is illegal.", board))
+        assertEquals(emptyList<String>(), falseIllegal("Qh4 is not legal: the pawn blocks it.", Board()))
+    }
+
     companion object {
         // 1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6??: white to move, Qxf7 mates.
         private const val SCHOLAR = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
