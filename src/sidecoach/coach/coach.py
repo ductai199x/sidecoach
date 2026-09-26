@@ -477,6 +477,12 @@ IDEA_DIRECTIVE = (
     "may be said even where the move goes, and the moves the sheet lists as all as good, "
     "when several are, may be named. Two or three sentences."
 )
+# The game so far, used: an earlier moment of the same kind is the coach's best material, and
+# the excellence rubric found it used in half the lessons that had one (2026-09-25).
+TIE_TO_THE_GAME = (
+    "If the game so far shows an earlier moment of the same kind -- the same threat, the same "
+    "pattern, a lesson you already gave -- tie this one to it in a clause."
+)
 _LENGTH_WORDS = {4: "Four", 5: "Five", 6: "Six"}
 
 
@@ -3110,7 +3116,7 @@ class Coach:
                     "its goal, its pattern, why the better move works, and what their move "
                     "missed or allowed -- as a pattern to remember, in three sentences at "
                     "most, then ask one question that checks they see it. "
-                    f"{NOT_THE_MOVE} {NO_NUMBERS}"
+                    f"{TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_NUMBERS}"
                 )
                 if allowed:
                     instruction += f" What {played.san} allowed, from the engine's line: {allowed}."
@@ -3202,7 +3208,8 @@ class Coach:
                     f"The player just played {played.san}, which was fine but not the "
                     f"strongest: {best} ({better_words}) was better, by a little. One or two "
                     "sentences: that it was fine, then the better move and the idea behind it "
-                    f"as a lesson to keep. No lecture, no question. {NOT_THE_MOVE} {NO_NUMBERS}"
+                    f"as a lesson to keep. No lecture, no question. {TIE_TO_THE_GAME} "
+                    f"{NOT_THE_MOVE} {NO_NUMBERS}"
                 )
             return instruction, fallback
         # An explicit ask. The player's words are already the last message of the
@@ -3420,7 +3427,7 @@ class Coach:
                     + ". Say that plainly -- the position it was played from is past, so "
                     "nothing about it is withheld; the disclosure level binds only the position "
                     "they face now. Three sentences at most, then one question that checks they "
-                    "see the pattern."
+                    f"see the pattern. {TIE_TO_THE_GAME}"
                 )
         elif _ASK_MATERIAL.search(said) or _ASK_OPENING.search(said) or _ASK_EVAL.search(said):
             # A plain question about the game as it stands: answered plainly, no question

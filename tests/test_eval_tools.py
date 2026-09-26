@@ -785,14 +785,18 @@ def test_the_rubric_file_reads_as_criteria():
 
     criteria = rubric.load_rubric(rating=(1000, 1400))
     keys = [c.key for c in criteria]
-    assert keys == ["why", "transfer", "question", "economy", "connection", "actionable", "tone"]
+    # "economy" is gone (Tai, 2026-09-25): conciseness is the prompt's and the length check's.
+    assert keys == ["why", "transfer", "question", "connection", "actionable", "tone"]
     by = {c.key: c for c in criteria}
-    assert "rated about 1000 to 1400" in by["economy"].question
-    assert by["economy"].applies("ask_material", "Level.")  # "*": every class
+    assert by["tone"].applies("ask_material", "Level.")  # "*": every class
     assert not by["connection"].applies("stuck_hint", "Look at e5.")
-    # The question criterion is asked only of a reply that ends with a question.
+    # The question criterion is asked only of a reply that ends with a question -- and not
+    # of "what were you expecting?", the coach listening rather than teaching.
     assert by["question"].applies("lesson", "Nf3 was better. Which piece guards e5?")
     assert not by["question"].applies("lesson", "Nf3 was better.")
+    assert not by["question"].applies(
+        "lesson", "Nf3 was better. What were you expecting that move to do?"
+    )
 
 
 def test_a_rubric_file_with_a_repeated_key_or_an_unknown_condition_is_refused(tmp_path):

@@ -2,7 +2,8 @@
 # tools/eval/rubric.py asks each criterion as one yes/no question about a reply against the
 # record of its moment, for the classes in `applies_to` ("*" is every class). Edit freely:
 # an edited question is asked again on the next run (answers are kept per question), an
-# unchanged one is never paid for twice.
+# unchanged one is never paid for twice. (Removed 2026-09-25, Tai: "wasted words" -- conciseness is
+# tuned by the prompt and the length check, not a judge's question.)
 #
 #   key         a short name, for the report
 #   question    one yes/no question to the judge; {low} and {high} are the player's rating
@@ -35,11 +36,6 @@ applies_to = [
     "ask_last_move",
 ]
 only_if = "ends_with_question"
-
-[[criterion]]
-key = "economy"
-question = "Is every sentence useful to a player rated about {low} to {high} -- no filler, no repetition, nothing they would not understand?"
-applies_to = ["*"]
 
 [[criterion]]
 key = "connection"

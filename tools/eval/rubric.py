@@ -66,6 +66,9 @@ EVAL = ROOT / "data" / "eval"
 REPORTS = EVAL / "rubric"
 VOTES = 3  # at most; the asking stops once two agree
 ONLY_IF = ("ends_with_question",)
+_ELICIT = re.compile(
+    r"\bwhat (?:were|was) you (?:expecting|hoping|trying)|\bwhat did you expect", re.IGNORECASE
+)
 
 RUBRIC_SYSTEM = (
     "You judge one reply a chess coach gave a player at one moment of their game, against "
@@ -92,7 +95,10 @@ class Criterion:
         if "*" not in self.applies_to and cls not in self.applies_to:
             return False
         if self.only_if == "ends_with_question":
-            return reply.rstrip().endswith("?")
+            # "What were you expecting that move to do?" asks what the player thought, for the
+            # profile: the coach listening, not a question that teaches.
+            last = re.split(r"(?<=[.!])\s+", reply.strip())[-1]
+            return reply.rstrip().endswith("?") and not _ELICIT.search(last)
         return True
 
 
