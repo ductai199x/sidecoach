@@ -231,6 +231,19 @@ fun moveTemplate(facts: PositionFacts): String {
     return "The move is ${facts.candidates[0]}."
 }
 
+/**
+ * What the opponent threatens when it is their move: their best move now and what it does on the
+ * board, read from the position as it stands (no pass: they are to move). `coach.their_move_now`.
+ */
+fun theirMoveNow(board: Board, facts: PositionFacts): String {
+    if (facts.candidates.isEmpty()) return "It's their move; I have no read on it yet."
+    val san = facts.candidates[0]
+    val move = board.parseSan(san) ?: return "It's their move; I have no read on it yet."
+    val does = effectsText(board, move, hazards = false)
+    if (does.isNotEmpty()) return "It's their move, and their best is $san ($does)."
+    return "It's their move, and their best is a quiet one, $san: it takes nothing at once."
+}
+
 fun lineTemplate(facts: PositionFacts): String {
     if (facts.line.isEmpty()) return "I have no line for this yet."
     val text = "The line is ${facts.line.joinToString(" ")}."
@@ -1358,9 +1371,18 @@ const val REPAIR_SYSTEM =
         "the engine preferred, the idea) -- the form stays (a closing question stays a closing " +
         "question), the voice stays; add nothing. Answer in JSON only: {\"reply\": str}"
 
-/** What the draft checker does: `claims.checkDraft` over the board and the line's frames. */
+/**
+ * The board check over a draft: the text, the board, the boards along the best line, and the
+ * player's colour (whose "your"); the problems, one line each. `claims.checkDraft` over them.
+ */
 fun interface DraftCheck {
-    fun check(text: String, board: Board, after: List<Board>): List<String>
+    fun check(text: String, board: Board, after: List<Board>, us: Boolean?): List<String>
+}
+
+/** The side the coach speaks to, from the facts: whose "your" a draft means. `coach._player`. */
+internal fun player(facts: PositionFacts): Boolean? {
+    val side = facts.userSide ?: return null
+    return if (side == "white") WHITE else !WHITE
 }
 
 /**
@@ -1795,7 +1817,7 @@ class Speaker(
             found.add("named the engine: say it as the coach who saw the game")
         }
         if (draftCheck != null) {
-            for (problem in draftCheck.check(text, request.board, afterBest(request))) {
+            for (problem in draftCheck.check(text, request.board, afterBest(request), player(request.facts))) {
                 val san = problem.substringBefore(":").trim()
                 if (san in request.played) continue // a move of the game's history, named as such
                 found.add(problem)

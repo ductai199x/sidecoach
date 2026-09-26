@@ -52,8 +52,8 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
             Coach(
                 model,
                 policy = InterjectionPolicy(settings.policy()),
-                draftCheck = { text, board, after ->
-                    checkDraft(text, board, after).map { "${it.text}: ${it.reason}" }
+                draftCheck = { text, board, after, us ->
+                    checkDraft(text, board, after, us).map { "${it.text}: ${it.reason}" }
                 },
                 // The claims in their words are parsed at the routine effort: at medium every ask with
                 // a claim waited on a second full model call first (the runtime audit, 2026-09-25).

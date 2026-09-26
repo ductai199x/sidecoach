@@ -386,9 +386,13 @@ def assessment_json(a: Any) -> dict[str, Any]:
     }
 
 
-def draft_check(text: str, board: chess.Board, after=()) -> list[str]:
-    """The board check over the coach's draft, exactly as cli._draft_check wires it."""
-    return [f"{item.text}: {item.reason}" for item in check_draft(text, board, after=after)]
+def draft_check(text: str, board: chess.Board, after=(), us=None) -> list[str]:
+    """The board check over the coach's draft, exactly as cli._draft_check wires it: since
+    desktop 2ec1747 with the player's colour, whose "your" (None from an older coach)."""
+    found = check_draft(text, board, after=after) if us is None else check_draft(
+        text, board, after=after, us=us
+    )
+    return [f"{item.text}: {item.reason}" for item in found]
 
 
 # The Blackburne Shilling trap: 4. Nxe5? and 5. Nxf7?? lose to the queen's raid and a mate.

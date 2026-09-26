@@ -612,6 +612,41 @@ class CoachTest {
         )
     }
 
+    /**
+     * The sheet's threats are the side NOT to move's: on the opponent's turn, the player's own.
+     * "What are they threatening?" there is answered with their best move now (desktop 2ec1747).
+     */
+    @Test
+    fun theirThreatOnTheirTurnIsTheirBestMoveNotThePlayers() {
+        val (coach, provider) = coach(listOf("", ""))
+        start(coach, Pieces.Side.BLACK)
+        val board = Board()
+        for ((i, san) in listOf("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6").withIndex()) {
+            val ply = i + 1
+            val move = board.parseSan(san)!!
+            val before = board.fen()
+            board.push(move)
+            coach.onEvent(
+                MovePlayed(
+                    gameId = "g",
+                    ply = ply,
+                    san = san,
+                    uci = move.uci(),
+                    fenBefore = before,
+                    fenAfter = board.fen(),
+                    byUser = ply % 2 == 0,
+                ),
+                ply.toDouble(),
+            )
+        }
+        assertFalse(coach.userToMove)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        coach.ask("what are they threatening?", 8.0)
+        val out = messages(coach)
+        assertTrue(directiveOf(given(provider, 0)), "it is the opponent's move" in directiveOf(given(provider, 0)))
+        assertTrue(out.toString(), out.isNotEmpty() && out.last().text.startsWith("It's their move, and their best is Qxf7#"))
+    }
+
     /** Their own move is theirs even after the reply, and a threat gets its answer (af1bae2). */
     @Test
     fun theirOwnMoveIsTheirsEvenAfterTheReplyAndAThreatGetsItsAnswer() {

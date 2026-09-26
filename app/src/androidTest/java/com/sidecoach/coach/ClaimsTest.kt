@@ -125,6 +125,20 @@ class ClaimsTest {
         assertTrue(checkDraft("The half-open f-file is theirs to use.", board).isEmpty())
     }
 
+    /**
+     * On the opponent's turn "your" is still the player being coached: read as the side to move,
+     * "your knight on f3" was flagged false and a true draft thrown away (desktop 2ec1747).
+     */
+    @Test
+    fun yourIsThePlayerOnTheOpponentsTurn() {
+        // test_claims' ITALIAN with Black, the opponent, to move; the player is White.
+        val board = Board("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 4")
+        assertTrue(checkDraft("Your knight on f3 eyes e5.", board, us = com.sidecoach.chess.WHITE).isEmpty())
+        val problems = checkDraft("Your knight on c6 defends e5.", board, us = com.sidecoach.chess.WHITE)
+        assertTrue(problems.toString(), problems.isNotEmpty() && problems[0].reason == "the knight on c6 is your opponent's, not yours")
+        assertTrue(checkDraft("Their knight on c6 defends e5.", board, us = com.sidecoach.chess.WHITE).isEmpty())
+    }
+
     /** The stub the generator used: the same lines for the same position, read from the file. */
     private fun recorded(seen: JSONObject): ClaimEngine = ClaimEngine { board, _ ->
         val entry = seen.optJSONArray(board.fen()) ?: JSONArray()

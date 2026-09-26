@@ -159,8 +159,8 @@ class CoachSessionTest {
             var claimIndex = 0
             val coach = Coach(
                 provider,
-                draftCheck = { draft, board, after ->
-                    checkDraft(draft, board, after).map { "${it.text}: ${it.reason}" }
+                draftCheck = { draft, board, after, us ->
+                    checkDraft(draft, board, after, us).map { "${it.text}: ${it.reason}" }
                 },
                 claims = { _, _, _ -> claimVerdicts[claimIndex++ % claimVerdicts.size] },
                 verifier = verifier,

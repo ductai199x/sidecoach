@@ -1748,7 +1748,9 @@ class Coach(
         }
         if (facts == null) return emptyList()
         if (trigger == Trigger.USER_ASK && ASK_THREAT.containsMatchIn(said)) {
-            return facts.threats.filter { names(template, it) }
+            // On the opponent's turn their threat is their best move now (theirMoveNow).
+            val theirs = if (position.board.turn != userColour) facts.candidates.take(1) else facts.threats
+            return theirs.filter { names(template, it) }
         }
         val hint = trigger == Trigger.DECISIVE_QUESTION || trigger == Trigger.STUCK || (
             trigger == Trigger.USER_ASK && (ASK_HINT.matchesAt(said, 0) || ASK_AIM.containsMatchIn(said))
@@ -2474,6 +2476,16 @@ class Coach(
                     "$material. Never count the pieces yourself."
             }
             directive = plainly
+        } else if (ASK_THREAT.containsMatchIn(said) && position.board.turn != userColour) {
+            // The opponent is to move: their threat is their best move now. The sheet's threats
+            // are the side NOT to move's -- the player's own -- and answered from them, "what are
+            // they threatening?" got the player's threat (the code review, 2026-09-26).
+            fallback = theirMoveNow(position.board, facts)
+            directive =
+                "They ask what the opponent threatens, and it is the opponent's move: say what " +
+                    "the opponent's best move now is and what it does, from the engine lines (the " +
+                    "opponent's move) -- not 'what the other side threatens', which is the player's " +
+                    "own threat. One or two sentences, no question. " + NO_FIGURES
         } else if (ASK_THREAT.containsMatchIn(said)) {
             val threats = facts.threats.take(2)
             fallback = if (threats.isNotEmpty()) {

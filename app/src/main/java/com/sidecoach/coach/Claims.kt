@@ -1219,19 +1219,26 @@ private fun tacticProblem(board: Board, squareName: String, rawState: String): S
 /**
  * Everything concrete in a coach draft that the board contradicts. Empty means clean.
  *
- * A "<piece> on <square>" phrase must match the board, colour word included ("your" is
- * the side to move). A tactic claimed of such a piece (pinned, hanging, safe, a fork, a
+ * A "<piece> on <square>" phrase must match the board, colour word included ("your" is [us],
+ * the player being coached, the side to move when not given: on the opponent's turn "your
+ * knight on f3" is the player's, and read as the side to move's it was flagged false -- the
+ * code review, 2026-09-26). A tactic claimed of such a piece (pinned, hanging, safe, a fork, a
  * skewer) must hold on the board, or on one of the [after] positions, which are the boards
  * along the best line: a fork the best move creates is real even though the current board
  * does not show it yet. A move must be playable on one of the frames: legal now, legal
  * for the opponent after a pass (a coach may name a threat), or legal further along the
  * line the coach was given. Bare squares are never flagged; a coach may point at one.
  */
-fun checkDraft(text: String, board: Board, after: List<Board> = emptyList()): List<DraftProblem> {
+fun checkDraft(
+    text: String,
+    board: Board,
+    after: List<Board> = emptyList(),
+    us: Boolean? = null,
+): List<DraftProblem> {
     val problems = ArrayList<DraftProblem>()
     val seen = HashSet<String>()
     val frames = listOf(board) + after
-    val us = board.turn
+    val us = us ?: board.turn
 
     fun add(phrase: String, reason: String) {
         if (seen.add(phrase)) problems.add(DraftProblem(text = phrase, reason = reason))
@@ -1280,7 +1287,7 @@ fun checkDraft(text: String, board: Board, after: List<Board> = emptyList()): Li
         val reasons = frames.map { moveProblem(it, san) }
         if (reasons.all { it != null }) add(match.value, reasons[0] ?: "")
     }
-    for ((phrase, reason) in strategicProblems(text, board)) add(phrase, reason)
+    for ((phrase, reason) in strategicProblems(text, board, us)) add(phrase, reason)
     return problems
 }
 
@@ -1311,8 +1318,8 @@ private val YOURS_SAID = Regex("\\byour?\\b|\\bfor you\\b")
  * said passed that an enemy pawn still holds up. Only clear, checkable contradictions are
  * flagged; a fuzzy claim (space, king safety, activity) is left alone.
  */
-private fun strategicProblems(text: String, board: Board): List<Pair<String, String>> {
-    val us = board.turn
+private fun strategicProblems(text: String, board: Board, us: Boolean? = null): List<Pair<String, String>> {
+    val us = us ?: board.turn
     val problems = ArrayList<Pair<String, String>>()
     for (match in OPEN_FILE.findAll(text)) {
         val kind = (match.groups["k1"]?.value ?: match.groups["k2"]!!.value)
