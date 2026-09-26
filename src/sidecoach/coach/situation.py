@@ -188,6 +188,34 @@ def spoken(text: str) -> str:
     return text
 
 
+# The most sentences a first hint says. Past it, the details of the pattern go first, the
+# least telling first: a second pattern in the line, the quiet first move, the in-between
+# move, which move the blow comes on. The stakes, the prize, the key fact, the pattern and
+# why it works, a sacrifice on the way, and the question stay (the first hint ran to seven,
+# eight, ten sentences when every detail stacked up: the real-game review, 2026-09-26).
+FIRST_HINT_SENTENCES = 5
+_DETAILS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"There is (?:a|an) [^.?!]* in it too\.",
+        r"It starts with a quiet move: no check and no capture, but a threat they cannot meet\.",
+        r"On the way comes an in-between move: a check before taking back\.",
+        r"It comes on your \w+ move(?:, once [^.?!]*)?\.",
+    )
+)
+_SENTENCE_END = re.compile(r"(?<=[.?!])\s+(?=[A-Z])")
+
+
+def within_budget(text: str, budget: int = FIRST_HINT_SENTENCES) -> str:
+    """`text` with the pattern's details dropped, least telling first, until it says at most
+    `budget` sentences -- or none is left to drop."""
+    for detail in _DETAILS:
+        if len(_SENTENCE_END.split(text.strip())) <= budget:
+            break
+        text = re.sub(r"\s{2,}", " ", detail.sub("", text)).strip()
+    return text
+
+
 def sentence(text: str) -> str:
     """`text` as a sentence: a capital first (never on a pawn's move: "hxg4 looks..."), a
     stop last."""

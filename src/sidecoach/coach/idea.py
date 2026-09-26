@@ -348,7 +348,8 @@ def _read(board: chess.Board, analysis: Analysis, owed: dict[int, int]) -> Idea:
         back = True
         first_at = _first_reaching(boards, pv, at, min(gain, WIN_GAIN))
     at = first_at or at
-    blow, blow_at, preparation = _blow(boards, pv, at or min(len(pv), 6), None)
+    gained = _gained_kinds(board, _line_end(boards, pv, at) if at else boards[-1], us)
+    blow, blow_at, preparation = _blow(boards, pv, at or min(len(pv), 6), None, gained=gained)
     if blow is not None and blow_at > FAR_BLOW:
         # A loose rook picked up on the fifth move is not the idea a player can see from
         # here; the start of the line is (Tai's game g06, 2026-09-24).
@@ -795,10 +796,14 @@ def _blow(
     upto: int,
     mate: int | None,
     allowed: Sequence[str] | None = None,
+    *,
+    gained: frozenset[chess.PieceType] = frozenset(),
 ) -> tuple[tuple[int, MotifTag] | None, int, tuple[str, ...]]:
     """The most telling tactic of the player's moves in `pv[:upto]`, the later one of two
     alike (the point, not the preparation); which of the player's moves carries it; and what
-    the moves before it do to prepare it."""
+    the moves before it do to prepare it. `gained`: the kinds of piece the line nets; a
+    tactic whose own move takes one of them, worth more than what it aims at, is not the
+    point (`_capture_is_the_point`)."""
     best: tuple[tuple[int, int], int, MotifTag] | None = None
     tagged: dict[int, list[MotifTag]] = {}
     for i in range(0, max(upto, 1), 2):
@@ -813,6 +818,8 @@ def _blow(
                 continue
             targeted = tag.name in motifs.TARGETED
             if mate is None and targeted and not motifs.pays_off(boards, pv, i, tag):
+                continue
+            if mate is None and targeted and _capture_is_the_point(boards[i], pv[i], tag, gained):
                 continue
             if mate is None and tag.name in PREPARATION and i + 2 >= upto:
                 # A decoy or a deflection prepares what a later move cashes in: on the last
@@ -831,6 +838,51 @@ def _blow(
             if other.name in PREPARATION and other.name not in preparation:
                 preparation.append(other.name)
     return (ply, tag), ply // 2 + 1, tuple(preparation)
+
+
+def _capture_is_the_point(
+    board: chess.Board, move: chess.Move, tag: MotifTag, gained: frozenset[chess.PieceType]
+) -> bool:
+    """Whether the move takes more than the tactic it carries aims at, and what it takes is
+    what the line wins (`gained`, the kinds it nets): a capture of a queen that also forks a
+    bishop and a pawn wins the queen by taking it, not by the fork ("That's a fork" beside a
+    queen won on c2 whose targets were c1, h2 and a4: 35...Nxf5 in Johner-Nimzowitsch). A
+    queen taken back is no win, and the pin that nets the rook after it stays the point.
+    Kings are not counted: a check is no material target."""
+    if not board.is_capture(move):
+        return False
+    taken = board.piece_type_at(move.to_square) or chess.PAWN  # en passant: a pawn
+    if taken not in gained:
+        return False
+    after = board.copy(stack=False)
+    after.push(move)
+    aims = max(
+        (
+            VALUES.get(piece.piece_type, 0)
+            for name in tag.squares
+            if (square := chess.parse_square(name)) not in (move.from_square, move.to_square)
+            and (piece := after.piece_at(square)) is not None
+            and piece.color == after.turn
+            and piece.piece_type != chess.KING
+        ),
+        default=0,
+    )
+    return VALUES.get(taken, 0) > aims
+
+
+def _gained_kinds(
+    board: chess.Board, end: chess.Board, us: chess.Color
+) -> frozenset[chess.PieceType]:
+    """The kinds of piece the line nets from `board` to `end`: taken from them more than
+    they took of the player's."""
+    them = not us
+    return frozenset(
+        kind
+        for kind in _COUNTED
+        if (len(board.pieces(kind, them)) - len(end.pieces(kind, them)))
+        - (len(board.pieces(kind, us)) - len(end.pieces(kind, us)))
+        > 0
+    )
 
 
 def _first_reaching(

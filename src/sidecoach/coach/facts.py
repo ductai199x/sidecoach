@@ -1015,7 +1015,7 @@ def facts_from_analysis(
     ):
         situation_text += " " + question
     if situation_text:
-        situation_text = situation.spoken(situation_text)
+        situation_text = situation.spoken(situation.within_budget(situation_text))
     # A quiet move's own reason, said at the move rung: the key fact it answers.
     if why is None and move_reason and best is not None:
         why = f"{board.san(best)}: {move_reason[0].lower() + move_reason[1:]}"

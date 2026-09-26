@@ -169,3 +169,28 @@ def test_the_first_hint_is_said_the_way_a_coach_speaks() -> None:
         )
         == "careful with the order, though: Qxb8 right away runs into Qd2+"
     )
+
+
+def test_a_long_first_hint_drops_the_details_first() -> None:
+    """Ten sentences when every detail stacked up (Anderssen-Kieseritzky, move 20): past the
+    budget the second pattern, the quiet start, the in-between move and the timing go, the
+    least telling first; the prize, the key fact, the pattern, a sacrifice and the question
+    stay."""
+    text = (
+        "You're in check but winning. Their queen on a1 gives check. This position has a "
+        "tactic that wins a bishop. The prize is their bishop on c8. Their rook on a8 and "
+        "their king on e8: one move can hit both after your first move. That is a fork: one "
+        "piece attacks two of theirs at once. It comes on your second move, once a line has "
+        "been cleared. There is a discovered attack in it too. It starts with a quiet move: "
+        "no check and no capture, but a threat they cannot meet. Which two of their pieces "
+        "could one of yours hit at once?"
+    )
+    short = situation.within_budget(text, budget=8)
+    assert "in it too" not in short and "quiet move" not in short
+    assert "It comes on your second move" in short, "dropped only as far as the budget"
+    assert "The prize is their bishop on c8." in short and short.endswith("hit at once?")
+    shortest = situation.within_budget(text, budget=5)
+    assert "It comes on your" not in shortest and "The prize is" in shortest
+    sacrifice = "That is a fork: two at once. It comes on your third move, after a sacrifice."
+    assert situation.within_budget(sacrifice, budget=1) == sacrifice, "a sacrifice is said"
+    assert situation.within_budget("One. Two.", budget=5) == "One. Two."

@@ -196,3 +196,30 @@ def test_the_tactic_named_is_true_on_its_board() -> None:
         "Rxe1, and after Rxe1, Nd3+, and the knight on d3 forks the king on c1 and the rook "
         "on e1; you win the exchange"
     )
+
+
+def test_a_queen_won_by_taking_it_is_not_won_by_the_fork_the_capture_makes() -> None:
+    """35...Nxf5 in Johner-Nimzowitsch: Ng4+ pulls the pinned bishop off the diagonal and
+    Qxc2+ takes the queen, forking a bishop, a pawn and the king as it does. "That's a fork"
+    beside a queen won on c2 whose targets were c1, h2 and a4 was false: the pin is it."""
+    fen = "6rk/5prq/1p1p1n2/p1pP1B1p/P1P2P1n/2P1R1P1/2Q4K/2B2NR1 b - - 0 35"
+    idea = read(fen, "Ng4+ Bxg4 Qxc2+ Re2 Qxc1 Ne3", score=0.96)
+    assert idea.goal == "win" and idea.won == "a queen for a knight"
+    assert idea.blow is not None and idea.blow.name == "pin"
+
+
+def test_a_queen_taken_back_leaves_the_pin_the_point() -> None:
+    """The capture is the point only of what the line wins: a queen taken back after they
+    took one is not, and the pin that nets the rook after it stays the blow."""
+    from sidecoach.coach.idea import _capture_is_the_point
+    from sidecoach.events import MotifTag
+
+    board = chess.Board("6rk/5prq/1p1p1n2/p1pP1B1p/P1P2P1n/2P1R1P1/2Q4K/2B2NR1 b - - 0 35")
+    for san in ("Ng4+", "Bxg4"):
+        board.push_san(san)
+    move = board.parse_san("Qxc2+")
+    fork = MotifTag(name="fork", squares=["c2", "c1", "h2", "a4"])
+    assert _capture_is_the_point(board, move, fork, frozenset({chess.QUEEN}))
+    assert not _capture_is_the_point(board, move, fork, frozenset({chess.ROOK}))
+    rook = MotifTag(name="fork", squares=["c2", "e3", "h2"])  # a rook aimed at: worth less
+    assert _capture_is_the_point(board, move, rook, frozenset({chess.QUEEN}))
