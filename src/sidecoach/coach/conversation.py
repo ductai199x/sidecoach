@@ -156,6 +156,25 @@ class PlyRecord:
     superseded: bool = False  # before a re-read of the board: the move list restarted
 
 
+_PLACED_PIECE = re.compile(r"\b(king|queen|rook|bishop|knight|pawn) on ([a-h][1-8])\b")
+_PIECE_TYPES = {
+    "king": chess.KING,
+    "queen": chess.QUEEN,
+    "rook": chess.ROOK,
+    "bishop": chess.BISHOP,
+    "knight": chess.KNIGHT,
+    "pawn": chess.PAWN,
+}
+
+
+def _gone(text: str, board: chess.Board) -> bool:
+    """Whether `text` names a piece on a square that no longer holds that piece on `board`."""
+    for word, square in _PLACED_PIECE.findall(text.lower()):
+        if board.piece_type_at(chess.parse_square(square)) != _PIECE_TYPES[word]:
+            return True
+    return False
+
+
 @dataclass
 class Entry:
     """One message of the conversation. A ply entry renders itself from its record until it
@@ -853,7 +872,8 @@ class Conversation:
         "nudge": "a question from the target to the move (to the player, as it stands)",
         "why": "the move and what it does",
         # Whose: the other side's moves, were the side to move to pass.
-        "threats": "what the other side threatens, if the side to move passed",
+        # Named per side in `_fact_lines`: whose threats, and at what moment.
+        "threats": "threats",
     }
     # The facts addressed to the player, kept in the second person.
     _TO_THE_PLAYER = ("question", "nudge", "situation")
@@ -910,23 +930,34 @@ class Conversation:
         beyond = {key: value for key, value in every.items() if key not in shown}
         return self._fact_lines(beyond, board, "player")
 
-    def faced_text(self, facts: PositionFacts, board: chess.Board) -> str:
+    def faced_text(
+        self, facts: PositionFacts, board: chess.Board, after: chess.Board | None = None
+    ) -> str:
         """The facts of the position the player faced before their move, all of them (it is
         past): the lesson after the move is taught from them, and the record keeps only one
-        line for that position."""
+        line for that position. With `after`, the board once the move (and the reply the
+        engine expects) is played: an idea about a piece that no longer stands there is left
+        out -- "the opponent's backward d-pawn on d6 is a lasting target" beside Qxc5 dxc5
+        was said as "preserving your lasting target on d6" (the test audit, 2026-09-26)."""
         visible = visible_facts(facts, DisclosureLevel.LINE)
         # The hint's questions were for finding the move; the lesson is on the move made.
         for key in ("question", "nudge"):
             visible.pop(key, None)
+        if after is not None and visible.get("ideas"):
+            visible["ideas"] = [i for i in visible["ideas"] if not _gone(str(i), after)]
         lines = self._fact_lines(visible, board, "player", past=True)
         return "\n".join([position_text(board, legal=False), *lines])
 
     def _fact_lines(
         self, visible: dict, board: chess.Board, side: str, *, past: bool = False
-    ) -> list[str]:
+    ) -> list[str]:  # noqa: C901
         """The sheet's lines for `visible`, in reading order, in the third person for `side`;
         `past` for a position the player has moved from."""
         names = self._FACT_NAMES
+        if side == "opponent":
+            # Their best move now, not the player's: "axb4 meets the player's idea" was taken
+            # into the player's better line (the dev audit, 2026-09-26).
+            names = {**names, "why": "the opponent's best move now and what it does"}
         if past:
             names = {
                 **names,
@@ -944,15 +975,29 @@ class Conversation:
                 out.append("ideas:")
                 out.extend(f"  - {third_person(str(v), side=side)}" for v in value)
             elif key == "threats":
-                # A threat is the opponent's move if the side to move passed; what it does
-                # is computed on that position, so the coach can say it in words.
+                # A threat is the other side's move if the side to move passed; what it does
+                # is computed on that position. Named with its owner and moment: "what the
+                # other side threatens" was read as the opponent's where it was the player's
+                # ("your opponent's queen ... e5" of the player's own e5), and a threat as
+                # something a move stopped ("Rae1 before they can use Re3": the test audit).
+                owner, mover = (
+                    ("the opponent's", "the player")
+                    if side == "player"
+                    else ("the player's", "the opponent")
+                )
                 out.append(
-                    f"{name}: " + ", ".join(self._threat_words(board, str(v)) for v in value)
+                    f"{owner} threats, if {mover} passed: "
+                    + ", ".join(f"{owner} {self._threat_words(board, str(v))}" for v in value)
                 )
             elif isinstance(value, list):
                 out.append(f"{name}: " + ", ".join(str(v) for v in value))
             elif key in self._TO_THE_PLAYER:
                 out.append(f"{name}: {value}")
+            elif key == "target" and "free square" in str(value):
+                # The king's free squares as it stands: taken as what a move left them ("Qb4
+                # leaves only e4 and e5" where Qb4 took e4 away: the test audit, 2026-09-26).
+                said = third_person(str(value), side=side)
+                out.append(f"{name}: {said} (as it stands, before any move)")
             else:
                 out.append(f"{name}: {third_person(str(value), side=side)}")
         return out

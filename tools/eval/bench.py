@@ -449,9 +449,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         # template's since 4365dfa (coach.fact_question): no model reply comes back for it,
         # and it is left out of the run (Tai's $3 cap day, 2026-09-26).
         answered = [
-            m
-            for m in moments
-            if tuple(m["key"]) in got or m["class"] not in TEMPLATE_CLASSES
+            m for m in moments if tuple(m["key"]) in got or m["class"] not in TEMPLATE_CLASSES
         ]
         for m in answered:
             it = got.get(tuple(m["key"]))

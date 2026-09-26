@@ -98,9 +98,9 @@ ELICIT_EVERY = 3
 ELICIT_ANSWER_S = 60.0
 # The word on a move by its label (Tai, 2026-09-20). LOCAL: written from the board, no
 # model -- theory, the engine's own move, and an excellent one (as strong as the best).
-# EXCITING: great and brilliant -- local too since 2026-09-26 (the model's delight carried a
-# false claim in 18% of them); still a full-effort call when the move is not the engine's
-# own. A good move was a little behind the best, and the model names the better one.
+# EXCITING: great and brilliant, the model at its full effort with some delight, since
+# they are rare and worth a real sentence (Tai, 2026-09-26: they go through the API). A good
+# move was a little behind the best, and the model names the better one.
 LOCAL = frozenset({"book", "best", "excellent"})
 EXCITING = frozenset({"great", "brilliant"})
 
@@ -2279,14 +2279,28 @@ class Coach:
         # "hint", the move or the line. A question about the plan earns the hint's level
         # but not its template -- "What is your opponent's most dangerous idea?" as the
         # first of two answers to "what should I be aiming for?" was noise.
-        canned = (
-            unlock in (Unlock.ASK_MOVE, Unlock.ASK_LINE)
-            or bool(_ASK_HINT.match(text))
-            # The first hint is now the lesson a question about the plan asks for (the
-            # stakes, the key fact, the principle), no longer "what is your opponent's most
-            # dangerous idea?": it goes out at once, as for a bare hint.
-            or bool(_ASK_AIM.search(text))
-        ) and not may_carry_claims(text)
+        # The move or the line asked for, or asked about where it is already open: "what
+        # happens after the best move?" at the line level is the line, though it unlocks
+        # nothing (the harness check of the test audit, 2026-09-26).
+        exact = unlock in (Unlock.ASK_MOVE, Unlock.ASK_LINE) or (
+            (level >= DisclosureLevel.LINE and _ASK_LINE.search(text) is not None)
+            or (level >= DisclosureLevel.MOVE and _ASK_MOVE.search(text) is not None)
+        )
+        # A claim to check needs something named: "what happens after the best move?" names
+        # no move or square, whatever its words.
+        named = may_carry_claims(text) and bool(
+            _SAN.search(text) or re.search(r"\b[a-h][1-8]\b", text)
+        )
+        canned = (exact and not named) or (
+            (
+                bool(_ASK_HINT.match(text))
+                # The first hint is now the lesson a question about the plan asks for (the
+                # stakes, the key fact, the principle), no longer "what is your opponent's most
+                # dangerous idea?": it goes out at once, as for a bare hint.
+                or bool(_ASK_AIM.search(text))
+            )
+            and not may_carry_claims(text)
+        )
         if canned:
             _, quick = self._instruction(Trigger.USER_ASK, position, level, text, (), None, None)
             self._take_leads(position, quick)
@@ -2304,7 +2318,7 @@ class Coach:
                 record_now=True,
             )
 
-        if canned and unlock in (Unlock.ASK_MOVE, Unlock.ASK_LINE) and not _ASKS_WHY.search(text):
+        if canned and exact and not _ASKS_WHY.search(text):
             # The move or the line, asked for bare: the template has said it, each move with
             # what it does, computed. The model's explanations of moves and lines carried a
             # false claim in a quarter to a third of its answers, and the rubric scored the
@@ -2830,10 +2844,10 @@ class Coach:
             best = before.facts.candidates[0] if before.facts.candidates else None
             routine = best is None or best == move.san or _local(event.label)
             blitz = self.policy.time_control is TimeControl.BLITZ
-            # A great or brilliant move too: the model's delight carried a false claim in 18%
-            # of them (the locked test set's audit, 2026-09-26), and the board's sentence
-            # scored as high -- Tai's own rule of 2026-09-20 (coach/verdicts.py).
-            local = routine and (self.local_verdicts or blitz)
+            # Great and brilliant moves get the model's delight (Tai, 2026-09-26 18:57: "They
+            # need to go through the api"), though its delight carried a false claim in 18% of
+            # them on the locked test set: the draft checks stand guard over it.
+            local = routine and not _exciting(event.label) and (self.local_verdicts or blitz)
             if not local:
                 self._speak(
                     trigger,
@@ -3241,8 +3255,24 @@ class Coach:
             # The lesson after a move is taught from the position the player faced, which the
             # record keeps as one line: its sheet goes with the request, and the template's
             # lesson as the floor (parity pass, 2026-09-25).
+            after = self._frames_after(position, moved)[:2]
+            if (
+                len(after) == 1
+                and assessment is not None
+                and len(assessment.best) > 1
+                and assessment.best[0] == moved.uci
+            ):
+                # The new position not yet read: the engine's own line names the reply.
+                with contextlib.suppress(ValueError):
+                    reply = chess.Move.from_uci(assessment.best[1])
+                    if reply in after[0].legal_moves:
+                        replied = after[0].copy(stack=False)
+                        replied.push(reply)
+                        after.append(replied)
             with self._lock:
-                sheet = self.conversation.faced_text(position.facts, position.board)
+                sheet = self.conversation.faced_text(
+                    position.facts, position.board, after[-1] if after else None
+                )
             if sheet:
                 faced = f"\n\n# The position they faced, before {moved.san}\n{sheet}"
             if must_name and fallback:
@@ -4114,8 +4144,8 @@ class Coach:
             directive = (
                 "They ask what the opponent threatens, and it is the opponent's move: say what "
                 "the opponent's best move now is and what it does, from the engine lines (the "
-                "opponent's move) -- not 'what the other side threatens', which is the player's "
-                "own threat. One or two sentences, no question. " + NO_FIGURES
+                "opponent's move) -- not 'the player's threats', which are the player's own. "
+                "One or two sentences, no question. " + NO_FIGURES
             )
         elif _ASK_THREAT.search(said):
             threats = facts.threats[:2]
@@ -4126,8 +4156,8 @@ class Coach:
                 fallback = "Nothing is threatened right now: no move of theirs wins anything."
             directive = (
                 "They ask what the opponent threatens. Say it as the facts give it -- each threat "
-                "they list, at most two: the move and what it does, from 'what the other side "
-                "threatens' -- or, when the facts list "
+                "they list, at most two: the move and what it does, from 'the opponent's "
+                "threats' -- or, when the facts list "
                 "none, say plainly that nothing is threatened. One or two sentences, no question. "
                 + NO_FIGURES
             )

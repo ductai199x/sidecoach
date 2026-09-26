@@ -395,6 +395,12 @@ def stakes_words(board: chess.Board, stakes: Stakes, opening: str | None) -> str
     kind = stakes.kind
     if kind == "check":
         if stakes.legal == 1:
+            # And whether it saves anything: "only one legal move" of a mated king was read
+            # as "only one move holds; otherwise you are mated" (the test audit, 2026-09-26).
+            if stakes.top < LOST:
+                return (
+                    "You're in check, and there is only one legal move -- it does not save the game"
+                )
             return "You're in check, and there is only one legal move"
         if stakes.good == 1 and stakes.next_line is not None:
             if stakes.top >= WON:

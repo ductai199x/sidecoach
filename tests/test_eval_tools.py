@@ -716,7 +716,7 @@ def _position_item(fen: str, sheet: str, **facts) -> dict:
 def test_a_threat_the_facts_give_is_supported():
     # bots/...__004/p032: "your opponent threatens ...h5", h5 among the facts' threats.
     fen = "2kr3r/1pp1q1pp/p1bp1b2/4p3/2PP4/6NP/PP3PP1/R1BQR1K1 w - - 1 17"
-    sheet = "what the other side threatens, if the side to move passed: h5"
+    sheet = "the opponent's threats, if the player passed: the opponent's h5"
     item = _position_item(fen, sheet, threats=["h5"])
     assert judge.code_check("your opponent threatens ...h5", item) is True
     assert judge.code_check("Your opponent threatens ...c4", item) is None  # not given

@@ -205,19 +205,25 @@ def test_a_good_move_goes_to_the_model_which_names_the_better_one() -> None:
     assert texts[0].split(" -- ")[0].rstrip(".") in OPENERS["excellent"]
 
 
-def test_a_great_or_brilliant_move_gets_the_boards_own_sentence() -> None:
-    """The engine's own move rated great or brilliant: the board's sentence, no model call.
-    The model's delight carried a false claim in 18% of them on the locked test set, and
-    the board's sentence scored as high (2026-09-26; Tai's rule of 2026-09-20: "if I made
-    the best move or great move, we can synthesize the response without hitting the API")."""
+def test_a_great_or_brilliant_move_gets_the_models_delight() -> None:
+    """Rare and worth a real sentence: the model at its full effort, told to show some
+    delight; the board's own line stands in if the reply fails (Tai, 2026-09-26: great and
+    brilliant moves go through the API)."""
     from sidecoach.events import Label
     from tests.test_coach import _coach
 
-    for label in (Label.GREAT, Label.BRILLIANT):
-        coach, provider = _coach(["[p=1.0] Yes -- the one move, and it ends the game."])
-        texts = _played(coach, provider, "Qxf7#", label, loss=0.0)
-        assert len(texts) == 1 and texts[0] in MATE, texts
-        assert provider.prompts == [], "no model call"
+    coach, provider = _coach(["[p=1.0] Yes -- the one move, and it ends the game."])
+    texts = _played(coach, provider, "Qxf7#", Label.GREAT, loss=0.0)
+    assert texts == ["Yes -- the one move, and it ends the game."]
+    assert len(provider.prompts) == 1
+    directive = provider.prompts[0][1][-1]["content"]
+    assert "Show some delight" in directive and "great" in directive
+    assert "Do not open with the move they played" in directive
+    assert coach.speaker.provider is provider, "the main model, not the routine copy"
+    # The reply failing, the board's own line stands in: the mate.
+    coach, provider = _coach(["", ""])
+    texts = _played(coach, provider, "Qxf7#", Label.BRILLIANT, loss=0.0)
+    assert len(texts) == 1 and texts[0] in MATE
 
 
 def test_a_player_below_1400_hears_no_term_of_art(monkeypatch) -> None:

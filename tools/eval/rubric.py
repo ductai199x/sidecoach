@@ -131,7 +131,10 @@ def _names_move(reply: str, move: str) -> bool:
 
 # What the move a question is about does, as the request gives it: the threat's effect in
 # brackets on the sheet ("h5 (attacks the knight on g4)"), the last move's "What Ra8 does:".
-_THREAT_EFFECT = re.compile(r"what the other side threatens[^\n]*:\s*\S+ \(")
+_THREAT_EFFECT = re.compile(
+    r"(?:what the other side threatens|threats, if the (?:player|opponent) passed)[^\n]*:\s*"
+    r"(?:the (?:player|opponent)'s )?\S+ \("
+)
 _MOVE_EFFECT = re.compile(r"^What \S+ does: ", re.M)
 
 
