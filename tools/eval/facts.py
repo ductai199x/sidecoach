@@ -232,6 +232,16 @@ def sources(kind: str) -> list[tuple[str, dict]]:
                         f"{d.name}: cannot tell the user's side from {white} / {black}"
                     )
                 out.append((d.name, game_from_pgn(d / "truth.pgn", side)))
+    elif kind == "bench":
+        # The benchmark's games (tools/eval/bench.py): one file a level, the coached side in
+        # each game's own header.
+        for path in sorted((ROOT / "data" / "bench" / "games").glob("*.pgn")):
+            with path.open(encoding="utf-8") as fh:
+                i = 0
+                while (game := chess.pgn.read_game(fh)) is not None:
+                    side = game.headers.get("CoachedSide", "white")
+                    out.append((f"{path.stem}__{i:03d}", game_from_game(game, side)))
+                    i += 1
     elif kind == "bots":
         # Both sides are coached (the sweep plays each); White is the facts' nominal user.
         for path in sorted((ROOT / "data" / "bots" / "games").glob("*.pgn")):

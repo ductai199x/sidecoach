@@ -76,11 +76,11 @@ def main() -> None:
     import facts as F
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("source", choices=["masters", "recordings", "bots"])
+    ap.add_argument("source", choices=["masters", "recordings", "bots", "bench"])
     ap.add_argument("--workers", type=int, default=20)
     ap.add_argument("--limit", type=int)
     args = ap.parse_args()
-    folder = "bots" if args.source == "bots" else f"{args.source}_v2"
+    folder = args.source if args.source in ("bots", "bench") else f"{args.source}_v2"
     out = ROOT / "data" / "eval" / "facts" / folder
     out.mkdir(parents=True, exist_ok=True)
     todo = F.sources(args.source)

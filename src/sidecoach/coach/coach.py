@@ -39,6 +39,7 @@ from sidecoach.coach.disclosure import (
     Unlock,
     leak_check,
     squares_in,
+    visible_facts,
 )
 from sidecoach.coach.facts import describe_move, facts_from_analysis, standing_words
 from sidecoach.coach.named import EngineLike as NamedEngine
@@ -1536,8 +1537,10 @@ class Speaker:
         said = " ".join(filter(None, [request.user_text, request.disclosed]))
         # What the sheet says the threats do ("Ne6 (uncovers an attack on the pawn on d2)")
         # is shown to the model: a piece named there is the threat, not the hint.
-        threat_words = " ".join(
-            Conversation._threat_words(request.board, t) for t in request.facts.threats
+        threat_words = (
+            " ".join(Conversation._threat_words(request.board, t) for t in request.facts.threats)
+            if visible_facts(request.facts, request.level).get("threats")
+            else ""
         )
         found = [
             f"withheld {item}"
@@ -2707,7 +2710,11 @@ class Coach:
             return now
         then = f"it is {then}" if then.startswith("level") else then
         if self.user_to_move and level < DisclosureLevel.MOVE:
-            return now
+            # Both halves, the recapture unnamed: which piece takes back is the question, and
+            # "once you take back" does not answer it. Said as the material now alone, the
+            # answer to "am I up material?" was the vaguer and the more misleading (Tai,
+            # 2026-09-25: "a vague coach is worse than no coach at all").
+            return f"{now} -- and once you take back, {then}"
         whose = "your" if self.user_to_move else "their"
         return f"{now} -- and after {whose} recapture {recapture}, {then}"
 
@@ -3244,7 +3251,8 @@ class Coach:
                         f"cost {loss:.0%} of the game. The better move was {best} "
                         f"({better_words}). "
                         "Teach the difference from the fact sheet of the position they faced "
-                        "-- its goal, its pattern, why the better move works -- as a pattern "
+                        "-- its goal, its pattern and the tactic when the sheet names one, why "
+                        "the better move works -- as a pattern "
                         "to remember, in three sentences at most, then -- instead of a check "
                         "question -- ask, in one short question of your own, what they "
                         f"expected their move to do. {NOT_THE_MOVE} {NO_NUMBERS}"

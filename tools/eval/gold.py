@@ -5,7 +5,11 @@ A gold file is written by hand, one line per reply read:
   data/eval/gold/<name>.jsonl
     {"id": "<item id>", "arm": "ai" | "floor",
      "false_claims": ["<a claim of the reply that is false or unsupported>", ...],
+     "facts": {"better_move": true, "idea": false, ...},
      "rubric": {"why": true, "transfer": false, "no_hedging": null, ...}}
+
+`facts` says, for each required fact of the item (its `required` keys), whether the reply
+states it: the judge's completeness is a vote too, and checked like the rest.
 
 `false_claims` empty means the reply states nothing false; a rubric value of null is not
 labelled. The comparison reads a run's judgments (<run>, <run>-floor) and its rubric answers
@@ -68,6 +72,7 @@ def load_gold(path: Path) -> list[dict]:
             raise ValueError(f"{path.name}:{n}: arm must be ai or floor")
         row.setdefault("arm", "ai")
         row.setdefault("false_claims", [])
+        row.setdefault("facts", {})
         row.setdefault("rubric", {})
         rows.append(row)
     return rows
@@ -90,6 +95,7 @@ def same_claim(label: str, judged: str) -> bool:
 @dataclass
 class Comparison:
     claims: Counter = field(default_factory=Counter)
+    facts: Counter = field(default_factory=Counter)
     rubric: dict[str, Counter] = field(default_factory=dict)
     lines: list[str] = field(default_factory=list)
 
@@ -127,6 +133,23 @@ def compare(gold: list[dict], run: str) -> Comparison:
                 out.lines += [head]
                 out.lines += [f"  - label faults, judge passed: {c}" for c in missed]
                 out.lines += [f"  - judge faulted, label passes: {c}" for c in extra]
+        stated = {
+            x["key"]: x.get("mentioned")
+            for x in (j.get("verdict") or {}).get("required", [])
+            if isinstance(x, dict) and "key" in x
+        }
+        for key, want in (row.get("facts") or {}).items():
+            if want is None:
+                continue
+            got = stated.get(key)
+            if got is None:
+                out.facts["not judged"] += 1
+            elif bool(got) == want:
+                out.facts["agree"] += 1
+            else:
+                kind = "judge false fail" if want else "judge false pass"
+                out.facts[kind] += 1
+                out.lines.append(f"- {rid} ({arm}) fact {key}: {kind}: {j['reply']}")
         kept = answers[arm].get(rid, {})
         for key, want in (row.get("rubric") or {}).items():
             if want is None:
@@ -161,6 +184,16 @@ def summary(comp: Comparison, run: str, gold: str) -> str:
         )
         + "."
     )
+    if comp.facts:
+        f = comp.facts
+        lines.append(
+            "Required facts: "
+            + ", ".join(
+                f"{k} {f.get(k, 0)}"
+                for k in ("agree", "judge false fail", "judge false pass", "not judged")
+            )
+            + "."
+        )
     if comp.rubric:
         lines += [
             "",
@@ -175,6 +208,66 @@ def summary(comp: Comparison, run: str, gold: str) -> str:
     if comp.lines:
         lines += ["", "## Where they differ", "", *comp.lines]
     return "\n".join(lines) + "\n"
+
+
+# ---- the packet a labeller reads ------------------------------------------------------------
+
+
+def packets(items: dict[str, dict], n_ai: int, n_floor: int, seed: int = 2509) -> list[dict]:
+    """The replies to label, for a blind labeller: `n_ai` of the model's replies, spread
+    evenly over the benchmark's levels and families (by class when an item has no bench
+    tag), and the templates of `n_floor` of the same moments. Each with what the labeller
+    needs and nothing of the judge's: the whole request, the required facts, and the rubric
+    questions that apply to that reply. Two thirds are marked "tune" (the judge is fixed
+    against them) and one third "confirm" (held out: the judge's accuracy is measured there).
+    """
+    import random
+
+    criteria = rubric.load_rubric()
+    rng = random.Random(seed)
+    groups: dict[tuple, list[dict]] = {}
+    for it in sorted(items.values(), key=lambda x: x["id"]):
+        reply = (it.get("reply") or {}).get("reply")
+        if not reply or (it.get("reply") or {}).get("fallback_used"):
+            continue
+        tag = it.get("bench") or {}
+        key = (tag.get("level"), tag.get("family")) if tag else (None, it["class"])
+        groups.setdefault(key, []).append(it)
+    for members in groups.values():
+        rng.shuffle(members)
+    chosen: list[dict] = []
+    order = sorted(groups, key=str)
+    while len(chosen) < n_ai and any(groups[k] for k in order):
+        for k in order:
+            if groups[k] and len(chosen) < n_ai:
+                chosen.append(groups[k].pop())
+    with_template = [it for it in chosen if (it.get("fallback") or "").strip()]
+    floor = rng.sample(with_template, min(n_floor, len(with_template)))
+    out: list[dict] = []
+    for arm, picked in (("ai", chosen), ("floor", floor)):
+        for n, it in enumerate(picked):
+            reply = it["reply"]["reply"] if arm == "ai" else it["fallback"]
+            request = rubric.request_of(it)
+            out.append(
+                {
+                    "id": it["id"],
+                    "arm": arm,
+                    "part": "confirm" if n % 3 == 2 else "tune",
+                    "class": it["class"],
+                    "level": (it.get("bench") or {}).get("level"),
+                    "question": it.get("question"),
+                    "reply": reply,
+                    "required": it.get("required") or [],
+                    "criteria": [
+                        {"key": c.key, "question": c.question}
+                        for c in criteria
+                        if c.code is None and c.applies(it["class"], reply, request)
+                    ],
+                    "fen": it.get("fen"),
+                    "request": request,
+                }
+            )
+    return out
 
 
 # ---- judging a run again --------------------------------------------------------------------
@@ -251,9 +344,27 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--budget-usd", type=float)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument(
+        "--packet",
+        type=Path,
+        help="write the replies to label (blind: nothing of the judge's) to this JSONL",
+    )
+    ap.add_argument("--n-ai", type=int, default=60)
+    ap.add_argument("--n-floor", type=int, default=20)
+    ap.add_argument("--part", choices=["tune", "confirm"], help="compare on these labels only")
     args = ap.parse_args()
 
     run = args.run
+    if args.packet:
+        items = rubric.load_items(args.items or rubric.items_dir(run))
+        rows = packets(items, args.n_ai, args.n_floor)
+        args.packet.parent.mkdir(parents=True, exist_ok=True)
+        with args.packet.open("w", encoding="utf-8") as fh:
+            for row in rows:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        parts = Counter((r["arm"], r["part"]) for r in rows)
+        print(f"wrote {len(rows)} replies to label to {args.packet}: {dict(parts)}")
+        return
     if args.rejudge:
         if args.budget_usd is None:
             raise SystemExit("--rejudge calls the judge: give --budget-usd")
@@ -291,7 +402,10 @@ def main() -> None:
         path = Path(args.gold)
         if not path.exists():
             path = GOLD / f"{args.gold}.jsonl"
-        print(summary(compare(load_gold(path), run), run, path.stem))
+        gold = load_gold(path)
+        if args.part:
+            gold = [g for g in gold if g.get("part", "tune") == args.part]
+        print(summary(compare(gold, run), run, f"{path.stem} ({args.part or 'all'})"))
 
 
 if __name__ == "__main__":

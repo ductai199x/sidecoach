@@ -262,18 +262,20 @@ def _capture_game(coach) -> None:
     )
 
 
-def test_the_material_is_said_now_and_after_the_recapture_when_it_gives_nothing_away() -> None:
+def test_the_material_is_said_whole_now_and_after_the_recapture() -> None:
     coach, _ = _coach([])
     _capture_game(coach)
     position = coach.positions[4]
     directive, template = coach._instruction(
         Trigger.USER_ASK, position, DisclosureLevel.IDEA, "am I up material?", (), None, None
     )
-    # Before the move rung the recapture is the player's move to find: the material now,
-    # only ("once you take back" pointed at the answer where the choice of piece was the
-    # whole question: the pre-spend audit, 2026-09-25).
-    assert template == "Material: you are down a pawn."
-    assert "in these terms: you are down a pawn." in directive
+    # Before the move rung both halves, the recapture unnamed: which piece takes back is the
+    # question, and "once you take back" does not answer it -- the material now alone was
+    # the vaguer answer (Tai, 2026-09-25: "a vague coach is worse than no coach at all").
+    assert template == "Material: you are down a pawn -- and once you take back, it is level."
+    assert "in these terms: you are down a pawn -- and once you take back, it is level." in (
+        directive
+    )
     _, template = coach._instruction(
         Trigger.USER_ASK, position, DisclosureLevel.MOVE, "am I up material?", (), None, None
     )

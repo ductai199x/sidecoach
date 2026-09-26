@@ -115,18 +115,26 @@ class Capture:
     fallbacks; with one (`inner`, the speaker's own speak_now) the model answers and its
     words go into the history, as they do live."""
 
-    def __init__(self, inner=None, speaker=None) -> None:
+    def __init__(self, inner=None, speaker=None, only: set[tuple] | None = None) -> None:
         self.inner = inner
         # The speaker whose failures are counted: a call that raised is told apart from a
         # reply the checks refused (both end in the template).
         self.speaker = speaker
+        # The moments the model answers (`moment_key`), when not every one: the rest are
+        # answered by their templates, the history the benchmark's moments are asked in
+        # (tools/eval/bench.py).
+        self.only = only
         self.requests: list[_Request] = []
         self.spoken: list[Spoken] = []
         self.call_errors: list[int] = []
+        self.keys: list[tuple] = []
+        self._seen: dict[tuple, int] = {}
 
     def __call__(self, request: _Request) -> Spoken:
         errors = 0
-        if self.inner is not None:
+        key = moment_key(request, self._seen)
+        self.keys.append(key)
+        if self.inner is not None and (self.only is None or key in self.only):
             before = getattr(self.speaker, "failures", 0)
             spoken = self.inner(request)
             errors = getattr(self.speaker, "failures", 0) - before
@@ -145,6 +153,16 @@ class Capture:
         self.spoken.append(spoken)
         self.call_errors.append(errors)
         return spoken
+
+
+def moment_key(request: _Request, seen: dict[tuple, int]) -> tuple:
+    """A moment's identity as the play-through reaches it: the ply, the trigger, what the
+    player said (digest) and how many times the same came before in the game -- the same in
+    every run of the same games, whatever the coach answered before."""
+    digest = hashlib.sha1((request.user_text or "").encode()).hexdigest()[:6]
+    base = (request.ply, request.trigger.value, digest)
+    seen[base] = seen.get(base, 0) + 1
+    return (*base, seen[base])
 
 
 def reply_record(
@@ -462,6 +480,7 @@ def build_game(
     version: str | None = None,
     requests_out: list[dict[str, Any]] | None = None,
     settings=None,
+    only: set[tuple] | None = None,
 ) -> list[dict[str, Any]]:
     """The game played through the coach, moment by moment: every request the coach made
     of its model as an item (the harness as it stood, the class, the required facts, the
@@ -496,7 +515,9 @@ def build_game(
         compact_record=compact_record,
     )
     capture = Capture(
-        coach.speaker.speak_now if provider is not None else None, speaker=coach.speaker
+        coach.speaker.speak_now if provider is not None else None,
+        speaker=coach.speaker,
+        only=only,
     )
     coach.speaker.speak_now = capture  # type: ignore[method-assign]
     stuck_after = coach.policy.settings.stuck_seconds + STUCK_PAST
@@ -519,10 +540,11 @@ def build_game(
         live: bool = False,
     ) -> None:
         nonlocal seen
-        for request, spoken, errors in zip(
+        for request, spoken, errors, mkey in zip(
             capture.requests[seen:],
             capture.spoken[seen:],
             capture.call_errors[seen:],
+            capture.keys[seen:],
             strict=True,
         ):
             m = moment_for(coach, request, named=named, result=result)
@@ -614,6 +636,7 @@ def build_game(
                     # true on, the move just assessed and its assessment.
                     **request_fields(request),
                     "commit": version,
+                    "moment_key": list(mkey),
                     **(
                         {
                             "reply": reply_record(
@@ -624,7 +647,7 @@ def build_game(
                                 template_only=request.template_only,
                             )
                         }
-                        if provider is not None
+                        if provider is not None and (only is None or mkey in only)
                         else {}
                     ),
                 }

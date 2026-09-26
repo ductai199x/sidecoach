@@ -164,6 +164,23 @@ def test_once_the_answers_square_is_said_its_piece_is_the_rest_of_the_answer() -
     )
 
 
+def test_the_first_hints_own_piece_said_in_other_words_is_no_leak() -> None:
+    """The first hint says "the first move takes your bishop out of danger": a paraphrase of
+    it was refused and the bare template spoke (the benchmark's smoke run, 2026-09-25). What
+    the sheet says at this level may be said in other words; the piece is still withheld
+    where the sheet never names it."""
+    f = facts()
+    f.candidates = ["Bd3"]
+    f.piece = "the player's bishop on b5"
+    f.situation = (
+        "There's a tactic here that wins a pawn. The first move takes your bishop out of danger."
+    )
+    fine = "Your first move takes your bishop out of danger, and it wins a pawn."
+    assert leak_check(fine, f, L.IDEA) == []
+    f.situation = "There's a tactic here that wins a pawn."
+    assert "piece bishop" in leak_check(fine, f, L.IDEA)
+
+
 def test_what_their_threat_goes_after_is_the_threat_not_the_hint() -> None:
     """Asked for the threat, the coach says the move and what it does, as the sheet does:
     "g5, attacking your queen on c3" was refused while the queen was the piece to move (the

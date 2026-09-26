@@ -214,6 +214,7 @@ def gaps(item: dict, criteria: list) -> list[str]:
             "named as the sheet names it",
             "give the move",
             "the move and what it does",
+            "as the fact sheet names them",
         )
     ):
         out.append("check must name: applied, never stated")

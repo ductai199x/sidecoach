@@ -300,6 +300,9 @@ def leak_check(
         else set()
     )
     allowed_squares |= said_squares
+    # And the squares the sheet shows beyond the facts' words: a threat "attacks the knight on
+    # e7" may be said though e7 is where the answer goes (the benchmark's draw, 2026-09-25).
+    allowed_squares |= squares_in(shown)
     # The moves the visible facts name -- their threat, the trap, the moves that are all as
     # good -- are said in the open; never the one the player is to find.
     allowed_moves: set[str] = set()
@@ -407,6 +410,13 @@ def leak_check(
             # "The king behind it", "their king runs out of squares": the word is in every
             # explanation of a pin or a mate, and says nothing about which piece to move.
             if piece_word in said_words or piece_word == "king":
+                continue
+            # The sheet itself names the player's piece of this kind at this level ("the first
+            # move takes your bishop out of danger"): said in other words, it is no leak -- a
+            # paraphrase of the first hint was refused for it, and the bare template spoke
+            # (the benchmark's smoke run, 2026-09-25; Tai: "a vague coach is worse than no
+            # coach at all").
+            if re.search(rf"\byour {piece_word}s?\b", on_sheet):
                 continue
             mention = re.compile(
                 rf"\b(your |my |with (?:the |a |your )?|(?:([a-h])-))?{re.escape(piece_word)}s?\b"
