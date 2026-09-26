@@ -2320,13 +2320,18 @@ class Coach:
         to check the reply against, else the review's own sentences."""
         if event.game_id != self.game_id:
             return
+        lines = list(event.lines)
+        if self.strong_player:
+            # The pattern and its count, not the textbook habit: a 2000 player was told "bring
+            # your King to the middle and push your passed pawns" (the AI's sessions).
+            lines = [re.sub(r" The habit that fixes it: .*$", "", line) for line in lines]
         with self._lock:
-            self.conversation.review(event.lines)
+            self.conversation.review(lines)
         position = self._latest_with_facts()
-        if position is None or not event.lines:
-            self._queue_plain(Trigger.REVIEW, " ".join(event.lines[:4]), ts, record_now=True)
+        if position is None or not lines:
+            self._queue_plain(Trigger.REVIEW, " ".join(lines[:4]), ts, record_now=True)
             return
-        self._review_lines = list(event.lines)
+        self._review_lines = lines
         self._speak(Trigger.REVIEW, position, DisclosureLevel.LINE, ts)
 
     def _on_evidence(self, event: ProfileEvidence, ts: float) -> None:
@@ -2961,7 +2966,9 @@ class Coach:
         if kept:
             n, cause = max(kept)
             words, habit = HABIT[cause]
-            text += f" What you keep missing: {words}, {n} times. The habit that fixes it: {habit}."
+            text += f" What you keep missing: {words}, {n} times."
+            if not self.strong_player:
+                text += f" The habit that fixes it: {habit}."
         if lost:
             # The three that cost the most, told in the order they were played.
             worst = sorted(sorted(lost, key=lambda t: -t[0])[:3], key=lambda t: t[1])

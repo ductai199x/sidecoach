@@ -1528,6 +1528,34 @@ def test_a_cause_that_comes_back_is_named_with_the_habit_that_fixes_it() -> None
     assert "what their moves threatened" in strong and "look at what" not in strong
 
 
+def test_a_strong_players_review_names_the_pattern_without_the_textbook_habit() -> None:
+    """A 2000 player was told "you kept missing endgame technique: bring your King to the
+    middle and push your passed pawns" (the AI's sessions, 2026-09-26)."""
+    from sidecoach.events import GameReview
+
+    coach, _ = _coach([])
+    coach.strong_player = True
+    _start(coach)
+    pattern = (
+        "What you kept missing: endgame technique -- 2 of your 3 mistakes. The habit that fixes "
+        "it: in the endgame, bring your king to the middle and push your passed pawns."
+    )
+    coach.on_event(
+        GameReview(
+            game_id="g",
+            user_side=Side.WHITE,
+            result="1-0",
+            moves=40,
+            lines=["You played white and won in 40 moves.", pattern],
+        ),
+        1.0,
+    )
+    said = " ".join(m.text for m in _messages(coach))
+    assert "endgame technique -- 2 of your 3 mistakes." in said and "passed pawns" not in said
+    # What the model is shown of the review says it the same way.
+    assert "passed pawns" not in coach.conversation.render()
+
+
 def test_the_review_is_spoken_from_the_profiles_facts_and_the_next_game_knows_the_player() -> None:
     """The game ends and the profile's review arrives: it joins the conversation as a
     message of its own and the coach sums it up through the model, the review's sentences
