@@ -102,6 +102,25 @@ class DisclosureTest {
     }
 
     /**
+     * The first hint says "the first move takes your bishop out of danger": a paraphrase of it was
+     * refused and the bare template spoke (the benchmark's smoke run, 2026-09-25). What the sheet
+     * says at this level may be said in other words; the piece is still withheld where the sheet
+     * never names it (desktop ac6b39e).
+     */
+    @Test
+    fun theFirstHintsOwnPieceSaidInOtherWordsIsNoLeak() {
+        var f = facts().copy(
+            candidates = listOf("Bd3"),
+            piece = "the player's bishop on b5",
+            situation = "There's a tactic here that wins a pawn. The first move takes your bishop out of danger.",
+        )
+        val fine = "Your first move takes your bishop out of danger, and it wins a pawn."
+        assertEquals(emptyList<String>(), leakCheck(fine, f, DisclosureLevel.IDEA))
+        f = f.copy(situation = "There's a tactic here that wins a pawn.")
+        assertTrue("piece bishop" in leakCheck(fine, f, DisclosureLevel.IDEA))
+    }
+
+    /**
      * Asked for the threat, the coach says the move and what it does, as the sheet does: "g5,
      * attacking your queen on c3" was refused while the queen was the piece to move (the smoke
      * run, 2026-09-25). Naming the queen as the one to use is still the hint (desktop 134b2ea).

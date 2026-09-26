@@ -344,18 +344,19 @@ class LinksTest {
     }
 
     @Test
-    fun theMaterialIsSaidNowAndAfterTheRecaptureWhenItGivesNothingAway() {
+    fun theMaterialIsSaidWholeNowAndAfterTheRecapture() {
         val (coach, _) = coach(emptyList())
         captureGame(coach)
         val position = coach.positions.getValue(4)
         val (directive, template) = coach.instruction(
             Trigger.USER_ASK, position, DisclosureLevel.IDEA, "am I up material?", emptyList(), null, null,
         )
-        // Before the move rung the recapture is the player's move to find: the material now, only
-        // ("once you take back" pointed at the answer where the choice of piece was the whole
-        // question: the pre-spend audit, 2026-09-25).
-        assertEquals("Material: you are down a pawn.", template)
-        assertTrue(directive, "in these terms: you are down a pawn." in directive)
+        // Before the move rung both halves, the recapture unnamed: which piece takes back is the
+        // question, and "once you take back" does not answer it -- the material now alone was the
+        // vaguer answer (Tai, 2026-09-25: "a vague coach is worse than no coach at all"; desktop
+        // ac6b39e).
+        assertEquals("Material: you are down a pawn -- and once you take back, it is level.", template)
+        assertTrue(directive, "in these terms: you are down a pawn -- and once you take back, it is level." in directive)
         val (_, moveRung) = coach.instruction(
             Trigger.USER_ASK, position, DisclosureLevel.MOVE, "am I up material?", emptyList(), null, null,
         )

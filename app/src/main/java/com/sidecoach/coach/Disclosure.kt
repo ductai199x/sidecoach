@@ -355,6 +355,9 @@ fun leakCheck(
         }
     }
     allowedSquares.addAll(saidSquares)
+    // And the squares the sheet shows beyond the facts' words: a threat "attacks the knight on e7"
+    // may be said though e7 is where the answer goes (the benchmark's draw, 2026-09-25).
+    allowedSquares.addAll(squaresIn(shown))
     // The moves the visible facts name -- their threat, the trap, the moves that are all as good
     // -- are said in the open; never the one the player is to find.
     val allowedMoves = HashSet<String>()
@@ -464,6 +467,12 @@ fun leakCheck(
             // "The king behind it", "their king runs out of squares": the word is in every
             // explanation of a pin or a mate, and says nothing about which piece to move.
             if (pieceWord in saidWords || pieceWord == "king") continue
+            // The sheet itself names the player's piece of this kind at this level ("the first
+            // move takes your bishop out of danger"): said in other words, it is no leak -- a
+            // paraphrase of the first hint was refused for it, and the bare template spoke (the
+            // benchmark's smoke run, 2026-09-25; Tai: "a vague coach is worse than no coach at
+            // all").
+            if (Regex("\\byour ${pieceWord}s?\\b").containsMatchIn(onSheet)) continue
             val mention = Regex(
                 "\\b(your |my |with (?:the |a |your )?|(?:([a-h])-))?${Regex.escape(pieceWord)}s?\\b" +
                     "(?: (?:on|from) ([a-h][1-8]))?"

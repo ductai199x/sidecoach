@@ -1732,7 +1732,12 @@ class Speaker(
             .filter { it.isNotEmpty() }.joinToString(" ")
         // What the sheet says the threats do ("Ne6 (uncovers an attack on the pawn on d2)") is
         // shown to the model: a piece named there is the threat, not the hint.
-        val threatWords = request.facts.threats.joinToString(" ") { Conversation.threatWords(request.board, it) }
+        val shownThreats = visibleFacts(request.facts, request.level)["threats"]
+        val threatWords = if (shownThreats is List<*> && shownThreats.isNotEmpty()) {
+            request.facts.threats.joinToString(" ") { Conversation.threatWords(request.board, it) }
+        } else {
+            ""
+        }
         val found = ArrayList<String>()
         for (item in leakCheck(
             text,

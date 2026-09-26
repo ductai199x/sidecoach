@@ -1467,7 +1467,13 @@ class Coach(
         val (now, recapture, thenWords) = found
         if (recapture == null || thenWords == null) return now
         val then = if (thenWords.startsWith("level")) "it is $thenWords" else thenWords
-        if (userToMove && level.value < DisclosureLevel.MOVE.value) return now
+        if (userToMove && level.value < DisclosureLevel.MOVE.value) {
+            // Both halves, the recapture unnamed: which piece takes back is the question, and
+            // "once you take back" does not answer it. Said as the material now alone, the answer
+            // to "am I up material?" was the vaguer and the more misleading (Tai, 2026-09-25: "a
+            // vague coach is worse than no coach at all").
+            return "$now -- and once you take back, $then"
+        }
         val whose = if (userToMove) "your" else "their"
         return "$now -- and after $whose recapture $recapture, $then"
     }
@@ -2040,8 +2046,9 @@ class Coach(
                         "The player just played ${played.san}, which was ${rated(label)}: it cost " +
                             "${percent(loss)} of the game. The better move was $best " +
                             "($betterWords). Teach the difference from the fact sheet of the " +
-                            "position they faced -- its goal, its pattern, why the better move " +
-                            "works -- as a pattern to remember, in three sentences at most, then " +
+                            "position they faced -- its goal, its pattern and the tactic when the " +
+                            "sheet names one, why the better move works -- as a pattern to " +
+                            "remember, in three sentences at most, then " +
                             "-- instead of a check question -- ask, in one short question of your " +
                             "own, what they expected their move to do. $NOT_THE_MOVE $NO_NUMBERS"
                 }
