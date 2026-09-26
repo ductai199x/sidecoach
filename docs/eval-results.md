@@ -218,9 +218,12 @@ Tai's finish line (2026-09-26), with a hard cap of $3 for the rest of the projec
 
 **E2 met (+0.13).**
 
-**The audit ($0).** Four labellers (Claude, python-chess) read all 298 replies, and every flag was read by hand.
+**The audit ($0).** Four labellers (Claude, python-chess) read all 298 replies. Every flag was then checked by hand against the board and the harness: 11 of them first, the other 19 only after Tai asked. This section first said all had been, which was not yet true.
 - Questions answered: 165 of 166 (**E3 met**).
-- False claims: 28 of 298 replies (9.4%). Two flags were rejected ("Excellent" said of a great move reads as praise).
+- False claims: 27 of 298 replies (9.1%) confirmed, plus 1 borderline (misleading advice, R220).
+  - Two flags were rejected: an echo of the sheet, and "Excellent" of a great move, which reads as praise.
+  - 5 of the 27 came from the note wording "only a king move gets out of check" (00894e0), read as "Kh8 is the only king move". The note lists the king moves since 4365dfa.
+  - 2 were started by our own sheet: a line outcome "wins two pawns" that meant the exchange's value, and a motif "attacked through another piece" of a direct attack.
 - The families:
   - sides mixed up in lines ("advancing b4" of their pawn, "your queen checks" of theirs);
   - "only move" and "forces the King to h6" where other moves were legal;
@@ -233,7 +236,11 @@ Tai's finish line (2026-09-26), with a hard cap of $3 for the rest of the projec
 - Lines now name the mover and list the king's moves.
 - Fact questions (the material, the opening by name, the standing) get the template, which is exact.
 - The draft check reads straight and curly quotes, adjectives, named checks' frames, "only king move", "allows", and state-before-piece. It catches 8 of the 30 flagged replies, and 18 new true flags across 9,832 stored replies.
-- A dev run (`bench-dev-final`, $0.30) audited the same way found 14 of 129 (11%): **no measurable change**.
+- A dev run (`bench-dev-final`, $0.30) was audited the same way, and all 14 flags were checked by hand:
+  - 10 of 129 (7.8%) are the model's own false claims;
+  - 2 more came from our sheet: the material given before a recapture without the recapture, and a "passed pawn" motif of a pawn that is not passed;
+  - 2 are borderline.
+  - No measurable change from the source fixes.
 - By class, over the 365 replies audited:
 
 | class | replies with a false claim |
@@ -248,7 +255,10 @@ Tai's finish line (2026-09-26), with a hard cap of $3 for the rest of the projec
 
 - The model's explanations of concrete sequences are where it is wrong.
 
-**Decision (d8c687c).** A bare "which move?" or "show me the line" gets the exact template: the line said move by move with what each does (`effects.line_spoken`), and no model call. There the rubric scored the templates as high as the model (1.00), so by Tai's rule the AI speaks only where it adds to the offline text. This removes about a third of the false claims by construction; the estimated rate is now about 7%.
+**Decision (d8c687c).** A bare "which move?" or "show me the line" gets the exact template: the line said move by move with what each does (`effects.line_spoken`), and no model call. There the rubric scored the templates as high as the model (1.00), so by Tai's rule the AI speaks only where it adds to the offline text. Counted on the hand-checked test flags:
+- the 5 note-caused errors are gone (4365dfa);
+- 7 of the other 22 were answers to a bare move or line, now exact;
+- that leaves 15 of 298, about 5%. This is an estimate, not a new run.
 
 **E1 is not met.** The rest are in the AI's core (lessons, hints, why-answers, great-move verdicts). There its explanations are the excellence and the errors at once.
 
