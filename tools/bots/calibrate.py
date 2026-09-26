@@ -14,6 +14,13 @@ blunders by the coach's own thresholds (`analysis.score.Thresholds`), so a bot's
 be chosen to match the band.
 
     uv run --no-sync python tools/bots/calibrate.py --per-band 600 --workers 8
+
+A level below the sample's bands (the students' 500) is played on the lowest band's
+positions as a fixed rating, hotter than it, and set against a target extrapolated from the
+bands (there is no human data under 800):
+
+    uv run --no-sync python tools/bots/calibrate.py --bands 800-1100 --as-rating 500 \
+        --temperatures 1.0,1.2,1.4,1.6 --workers 22
 """
 
 from __future__ import annotations
@@ -89,11 +96,12 @@ def _loss(board: chess.Board, move: chess.Move, best: float, cache: dict[str, fl
     return max(0.0, best - (1.0 - _score(after, cache)))
 
 
-def _measure(job: tuple[int, dict]) -> dict:
-    """One position: the human's loss, and Nova's at each temperature (SAMPLES draws each)."""
+def _measure(job: tuple[int, dict, tuple[float, ...], int | None]) -> dict:
+    """One position: the human's loss, and Nova's at each temperature (SAMPLES draws each),
+    as the row's player or as `as_rating`."""
     from nova import Style
 
-    seed, row = job
+    seed, row, temperatures, as_rating = job
     rng = random.Random(seed)
     board = chess.Board(row["fen"])
     cache: dict[str, float] = {}
@@ -106,15 +114,15 @@ def _measure(job: tuple[int, dict]) -> dict:
         "nova": {},
     }
     assert _policy is not None
-    style = Style(rating=row["rating"])
-    for t in TEMPERATURES:
+    style = Style(rating=as_rating if as_rating is not None else row["rating"])
+    for t in temperatures:
         probs = _policy.probabilities([board], [style], temperature=t)[0]
         drawn = rng.choices(list(probs), weights=list(probs.values()), k=SAMPLES)
         out["nova"][str(t)] = [_loss(board, m, best, cache) for m in drawn]
     return out
 
 
-def _sample(per_band: int, seed: int) -> list[dict]:
+def _sample(per_band: int, seed: int, bands: list[str] = BANDS) -> list[dict]:
     by_band: dict[str, list[dict]] = defaultdict(list)
     with SAMPLE.open(encoding="utf-8") as fh:
         for line in fh:
@@ -123,7 +131,7 @@ def _sample(per_band: int, seed: int) -> list[dict]:
                 by_band[row["band"]].append(row)
     rng = random.Random(seed)
     chosen: list[dict] = []
-    for band in BANDS:
+    for band in bands:
         rows = by_band[band]
         chosen += rng.sample(rows, min(per_band, len(rows)))
     return chosen
@@ -147,14 +155,24 @@ def main() -> None:
     parser.add_argument("--per-band", type=int, default=600)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--bands", default=",".join(BANDS), help="comma-separated bands")
+    parser.add_argument(
+        "--temperatures", default=",".join(str(t) for t in TEMPERATURES), help="comma-separated"
+    )
+    parser.add_argument("--as-rating", type=int, help="Nova plays as this rating, not the row's")
     args = parser.parse_args()
+    bands = [b for b in args.bands.split(",") if b]
+    temperatures = tuple(float(t) for t in args.temperatures.split(",") if t)
 
-    rows = _sample(args.per_band, args.seed)
+    rows = _sample(args.per_band, args.seed, bands)
     print(f"{len(rows)} positions ({args.per_band} a band, ply >= 10), depth {DEPTH}", flush=True)
     started = time.time()
     results: list[dict] = []
     with mp.Pool(args.workers, initializer=_init) as pool:
-        jobs = [(args.seed * 1_000_003 + i, row) for i, row in enumerate(rows)]
+        jobs = [
+            (args.seed * 1_000_003 + i, row, temperatures, args.as_rating)
+            for i, row in enumerate(rows)
+        ]
         for i, r in enumerate(pool.imap_unordered(_measure, jobs, chunksize=4), 1):
             results.append(r)
             if i % 200 == 0:
@@ -167,7 +185,7 @@ def main() -> None:
     print("\nexpected-score loss per move (thresholds: inaccuracy .04, mistake .10, blunder .28)")
     print(f"{'band':>10} {'who':>10} {'mean':>6} {'inacc+':>7} {'mist+':>6} {'blund':>6}")
     summary: dict[str, dict] = {}
-    for band in BANDS:
+    for band in bands:
         rs = [r for r in results if r["band"] == band]
         human = _stats([r["human"] for r in rs if r["human"] is not None])
         summary[band] = {"human": human}
@@ -175,7 +193,7 @@ def main() -> None:
             f"{band:>10} {'human':>10} {human['mean']:.3f} {human['inaccuracy+']:7.1%} "
             f"{human['mistake+']:6.1%} {human['blunder']:6.1%}"
         )
-        for t in TEMPERATURES:
+        for t in temperatures:
             nova = _stats([x for r in rs for x in r["nova"][str(t)]])
             summary[band][f"nova@{t}"] = nova
             print(
