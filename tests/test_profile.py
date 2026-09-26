@@ -232,6 +232,18 @@ def test_a_chance_let_go_with_a_tactic_on_the_board_is_the_tactic_never_consider
     assert cause == causes.MISSED_THREAT
 
 
+def test_a_capture_or_check_that_comes_out_behind_is_a_line_miscalculated() -> None:
+    """Even when the reply it allows wins material: the player began it. As a threat missed,
+    the greedy student heard "what their moves threatened" after every game."""
+    # 1.e4 e5 2.Nf3 Nc6 3.Bc4 Nd4 4.Nxe5?, allowing the fork ...Qg5.
+    board = chess.Board("r1bqkbnr/pppp1ppp/8/4p3/2BnP3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
+    cause, motif = causes.classify(board, chess.Move.from_uci("f3e5"), allowed_tags=[FORK])
+    assert (cause, motif) == (causes.MISCALCULATED, "fork")
+    # A mate allowed is still the threat.
+    cause, _ = causes.classify(board, chess.Move.from_uci("f3e5"), reply_mate=2)
+    assert cause == causes.MISSED_THREAT
+
+
 def test_a_piece_left_to_be_taken_is_a_missed_threat() -> None:
     # 1.e4 e5 2.Nf3 Qh4?? 3.Nxh4: the queen put where the knight takes it for nothing.
     board = chess.Board("rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2")

@@ -2147,7 +2147,13 @@ class Coach:
             # to know, not the player's to hear: "after pass, Kd1 is not a legal move" was
             # read out as the answer to "How does Qc7+ prevent Re8?" (the students).
             said = [f for f in found if "is not a legal move" not in f]
-            if said and asked:
+            # A move they propose in a statement ("I'll play Qd1, blocking the check") is
+            # examined aloud as a question about it would be: that is the answer. Without it
+            # the templates said the hint that had asked for it again, word for word, three
+            # times (the students' round 5); pieces and squares named in passing stay unsaid.
+            if not asked:
+                said = [f for f in said if "the expected score is" in f]
+            if said:
                 shown_examination = True
                 self._queue_plain(
                     Trigger.USER_ASK,
@@ -2767,6 +2773,18 @@ class Coach:
             self.speaker.last_error = f"named analysis: {type(exc).__name__}: {exc}"
             return []
 
+    def _said_since_move(self) -> list[str]:
+        """What the coach has said since the last move was played."""
+        with self._lock:
+            entries = list(self.conversation.entries)
+        out: list[str] = []
+        for entry in reversed(entries):
+            if entry.kind == "ply":
+                break
+            if entry.kind == "coach":
+                out.append(entry.text)
+        return out
+
     def _answering_our_question(self, said: str) -> bool:
         """Whether the player's words answer the question the coach just asked: its last
         turn ended with one, nothing has happened since, and their words ask nothing."""
@@ -2955,6 +2973,10 @@ class Coach:
             # The template is already out as the quick answer; a model reply that fails the
             # checks adds nothing, rather than the same line a second time.
             fallback, must_name = "", ()
+        elif trigger is Trigger.USER_ASK and fallback and fallback in self._said_since_move():
+            # Nor is anything the coach said since the last move said again word for word: a
+            # student's answer to the hint got the same hint back, three times (round 5).
+            fallback = ""
         # A reply about a position already moved from -- the lesson on a move, an answer
         # about it -- is rendered at the level of the position on the board now, and must not
         # give away the answer there (a verdict can land after the opponent has replied).

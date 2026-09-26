@@ -151,12 +151,15 @@ def classify(
     after.push(move)
     if reply_mate is not None and reply_mate > 0:
         return MISSED_THREAT, allowed or "mate"
-    if (
-        missed_chance
-        and available is not None
-        and not (before.is_capture(move) or before.gives_check(move))
-    ):
+    forcing = before.is_capture(move) or before.gives_check(move)
+    if missed_chance and available is not None and not forcing:
         return NOT_CONSIDERED, available
+    if forcing:
+        # A capture or a check that comes out behind is a line miscalculated, even when the
+        # reply it allows wins material: the player began it. Read as a threat missed, the
+        # greedy student heard "what you kept missing: what their moves threatened" after
+        # every game (the simulated students' round 5, 2026-09-26).
+        return MISCALCULATED, attempted or allowed or available
     if allowed is not None:
         return MISSED_THREAT, allowed
     if reply is not None:
@@ -168,8 +171,6 @@ def classify(
             return MISSED_THREAT, "hangingPiece"
     if attempted is not None:
         return MISCALCULATED, attempted
-    if before.is_capture(move) or before.gives_check(move):
-        return MISCALCULATED, available
     if available is not None:
         return NOT_CONSIDERED, available
     if phase == "endgame":

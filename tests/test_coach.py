@@ -1389,6 +1389,71 @@ def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> No
     assert "Name no move the messages do not give" in directive
 
 
+def test_a_move_proposed_in_a_statement_is_examined_aloud_and_nothing_is_said_twice() -> None:
+    """ "I'll play Qd1, blocking the check" answered the templates' hint, and got the hint
+    back word for word, three times (the students' round 5): a move proposed is examined
+    aloud as a question about it is; and a template already said since the last move is not
+    said again."""
+    from sidecoach.events import Line
+
+    class FakeEngine:
+        def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+            if board.turn == chess.WHITE:
+                return [Line(moves=["f1b5"], depth=14, expected_score=0.55)]
+            return [Line(moves=["f8c5", "d2d3"], depth=14, expected_score=0.48)]
+
+    from sidecoach.llm.offline import OfflineProvider
+
+    def italian(coach: Coach) -> None:
+        _start(coach)
+        board = chess.Board()
+        for ply, san in enumerate(("e4", "e5", "Nf3", "Nc6"), start=1):
+            move = board.parse_san(san)
+            before = board.fen()
+            board.push(move)
+            coach.on_event(
+                MovePlayed(
+                    game_id="g",
+                    ply=ply,
+                    san=san,
+                    uci=move.uci(),
+                    fen_before=before,
+                    fen_after=board.fen(),
+                    by_user=(ply % 2 == 1),
+                ),
+                float(ply),
+            )
+        coach.on_event(
+            Analysis(
+                game_id="g",
+                fen=board.fen(),
+                ply=4,
+                lines=[Line(moves=["f1b5"], depth=12, expected_score=0.55)],
+                decisive=False,
+                only_move=False,
+                tags=[],
+            ),
+            5.0,
+        )
+        _messages(coach)
+
+    # The planner reads their words into a probe (first call); the model answers (second).
+    coach, _ = _coach(['{"probes": [{"label": "your Bc4", "moves": ["Bc4"]}]}', "[p=1.0] Fine."])
+    coach.engine = FakeEngine()
+    italian(coach)
+    coach.ask("I'll play Bc4 and aim at f7.", 6.0)
+    out = [m.text for m in _messages(coach)]
+    assert out and out[0].startswith("your Bc4: after 3. Bc4 it is about equal")
+    # Offline, a statement naming no move gets the template once, and not again.
+    coach = Coach(OfflineProvider(), policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
+    italian(coach)
+    coach.ask("I think my position is fine.", 7.0)
+    first = [m.text for m in _messages(coach)]
+    coach.ask("I think my position is fine.", 8.0)
+    again = [m.text for m in _messages(coach)]
+    assert first and not set(again) & set(first)
+
+
 def test_a_cause_that_comes_back_is_named_with_the_habit_that_fixes_it() -> None:
     """Each lesson taught its own moment and a principle of its own, and the threat-blind
     student's notebook held five unrelated rules (the simulated students, 2026-09-26): the
