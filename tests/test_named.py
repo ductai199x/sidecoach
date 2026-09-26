@@ -88,6 +88,25 @@ def test_examine_reports_the_score_the_gap_the_reply_and_the_effects() -> None:
     assert "0.03 behind the engine's best (Bb5)" in at_line
 
 
+def test_the_engines_own_best_move_is_never_behind_the_best() -> None:
+    """Searched again after it is played, the best move came back a hair off its own score:
+    "12. Nc3: ... a hair behind the best (the best is Nc3)" (the simulated students)."""
+    board = chess.Board(ITALIAN_START)
+    after = board.copy()
+    after.push_san("Bb5")
+    engine = _Engine({after.board_fen(): [Line(depth=14, moves=["a7a6"], expected_score=0.46)]})
+    best = Line(depth=14, moves=["f1b5"], expected_score=0.55)
+    fact = examine(
+        parse_probe("your Bb5", ["Bb5"], board),
+        board,
+        engine,
+        best,
+        user_colour=chess.WHITE,
+        level=DisclosureLevel.LINE,
+    )
+    assert "as good as the engine's best" in fact and "behind" not in fact
+
+
 def test_spoken_puts_the_same_facts_in_plain_words() -> None:
     fact = (
         "Engine on your Bc4, which the player asked about: after 3. Bc4 the expected score is 0.52 "

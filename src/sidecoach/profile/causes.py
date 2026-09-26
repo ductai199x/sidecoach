@@ -42,6 +42,43 @@ CAUSES: tuple[str, ...] = (
     TIME_PRESSURE,
 )
 
+# Each cause as the player hears it, and the habit that answers it: what the review says
+# when one cause keeps coming back. Asked "What do I keep missing?", the reviews named the
+# move that cost most and never the pattern -- the simulated students' threat-blind player
+# heard "you lost the most ground at 12. Re1" and wrote five unrelated rules (2026-09-26).
+HABIT: dict[str, tuple[str, str]] = {
+    MISSED_THREAT: (
+        "what their moves threatened",
+        "before each move, look at what their last move attacks, and at the captures and "
+        "checks your move would leave them",
+    ),
+    MISCALCULATED: (
+        "how the exchanges came out",
+        "before a capture or a check, follow it to where the exchanges stop and count what is left",
+    ),
+    NOT_CONSIDERED: (
+        "the winning moves you had",
+        "before each move, look at every check, capture and attack you have first -- one of "
+        "them may win material",
+    ),
+    POSITIONAL: (
+        "where your pieces belonged",
+        "when nothing is under attack, find your worst-placed piece and give it a better square",
+    ),
+    OPENING_GAP: (
+        "the opening's basics",
+        "in the opening, get your knights and bishops out and castle before going after anything",
+    ),
+    ENDGAME: (
+        "endgame technique",
+        "in the endgame, bring your king to the middle and push your passed pawns",
+    ),
+    TIME_PRESSURE: (
+        "the clock",
+        "play the easy moves quickly and keep your time for the hard ones",
+    ),
+}
+
 # A mistake with less than this on the clock defaults to time pressure.
 TIME_PRESSURE_MS = 10_000
 

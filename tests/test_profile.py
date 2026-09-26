@@ -351,6 +351,40 @@ def test_the_review_tallies_and_finds_the_turning_points() -> None:
     assert "Most ground went to missed opponent threat (0.40)." in text
 
 
+def test_a_cause_behind_two_mistakes_is_named_second_with_the_habit_that_fixes_it() -> None:
+    """Asked "What do I keep missing?", the reviews named the move that cost most and never
+    the pattern (the simulated students, 2026-09-26). Second, after the result, so the
+    offline review's first four lines carry it."""
+    after_e4 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+
+    def missed(ply: int, loss: float, cause: str = causes.MISSED_THREAT) -> UserMove:
+        return _user_move(
+            ply, "Qh5", "d1h5", after_e4, label="mistake", severity="mistake",
+            expected_loss=loss, cause=cause,
+        )  # fmt: skip
+
+    def review(moves: list[UserMove]):
+        return build_review(
+            game_id="g",
+            user_side=Side.WHITE,
+            result="0-1",
+            reason=None,
+            opening="King's Pawn",
+            moves=moves,
+            fullmoves=30,
+        )
+
+    lines = review([missed(3, 0.2), missed(9, 0.1), missed(15, 0.3, causes.POSITIONAL)]).lines
+    assert lines[1] == (
+        "What you kept missing: what their moves threatened -- 2 of your 3 mistakes. The habit"
+        " that fixes it: before each move, look at what their last move attacks, and at the"
+        " captures and checks your move would leave them."
+    )
+    # One mistake of each kind is no pattern.
+    lines = review([missed(3, 0.2), missed(15, 0.3, causes.POSITIONAL)]).lines
+    assert not any(line.startswith("What you kept missing") for line in lines)
+
+
 def test_a_clean_game_says_so() -> None:
     review = build_review(
         game_id="g",

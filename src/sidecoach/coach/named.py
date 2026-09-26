@@ -379,6 +379,11 @@ def examine(
     parts.append(f"after {played} the expected score is {score:.2f} from the player's side")
     if best is not None:
         gap = best.expected_score - score
+        # The engine's own first move, searched again after it is played, comes back a hair
+        # off its first score: "12. Nc3: ... a hair behind the best (the best is Nc3)" (the
+        # simulated students, 2026-09-26). The best move is the best.
+        if best.moves and len(probe.parsed) == 1 and probe.parsed[0].uci() == best.moves[0]:
+            gap = 0.0
         if gap > 0.005:
             parts[-1] += f", {gap:.2f} behind the engine's best"
             if level >= DisclosureLevel.LINE and best.moves:

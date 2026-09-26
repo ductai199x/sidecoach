@@ -15,11 +15,13 @@ import chess
 
 from sidecoach.analysis.score import game_accuracy
 from sidecoach.events import GameReview, PhaseSummary, Side, TurningPoint
+from sidecoach.profile.causes import HABIT
 from sidecoach.profile.insights import motif_words
 
 ERRORS = ("mistake", "blunder")
 GOOD = ("brilliant", "great", "best", "excellent")
 TURNING_POINTS = 3
+PATTERN_MIN = 2  # mistakes of one cause in a game that make a pattern worth naming
 
 
 @dataclass
@@ -113,9 +115,11 @@ def build_review(
         if (items := by_phase.get(phase))
     ]
     causes: dict[str, float] = defaultdict(float)
+    counts: Counter[str] = Counter()
     for m in judged:
         if m.severity in ERRORS and m.cause:
             causes[m.cause] += m.expected_loss
+            counts[m.cause] += 1
     ordered = dict(sorted(((k, round(v, 3)) for k, v in causes.items()), key=lambda kv: -kv[1]))
     review = GameReview(
         game_id=game_id,
@@ -131,7 +135,26 @@ def build_review(
         causes=ordered,
     )
     review.lines = lines_for(review, fullmoves)
+    pattern = pattern_line(counts, causes, sum(1 for m in judged if m.severity in ERRORS))
+    if pattern:
+        # Second, after the result: the offline review says the first four lines.
+        review.lines.insert(1, pattern)
     return review
+
+
+def pattern_line(counts: Counter[str], losses: dict[str, float], errors: int) -> str | None:
+    """What the player kept missing, when one cause is behind two or more of the game's
+    mistakes, and the habit that answers it."""
+    if not counts:
+        return None
+    cause, n = max(counts.items(), key=lambda kv: (kv[1], losses.get(kv[0], 0.0)))
+    if n < PATTERN_MIN or cause not in HABIT:
+        return None
+    words, habit = HABIT[cause]
+    return (
+        f"What you kept missing: {words} -- {n} of your {errors} mistakes. "
+        f"The habit that fixes it: {habit}."
+    )
 
 
 def lines_for(review: GameReview, fullmoves: int) -> list[str]:

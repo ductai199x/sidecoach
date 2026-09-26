@@ -1789,6 +1789,23 @@ _CLAIM_WORDS = re.compile(
 )
 
 
+_QUESTION_START = re.compile(
+    r"^(?:what|what's|whats|where|why|how|which|who|whose|is|isn't|are|can|could|should|"
+    r"would|will|does|do|did|was|were|am)\b",
+    re.I,
+)
+
+
+def question_part(text: str) -> str:
+    """The sentences of the player's words that ask something -- a "?", or a question's
+    first word, as dictation leaves it -- or "" when none does."""
+    sentences = re.findall(r"[^.!?]+[.!?]*", text.replace("...", "…"))
+    asked = [
+        s.strip() for s in sentences if s.strip().endswith("?") or _QUESTION_START.match(s.strip())
+    ]
+    return " ".join(asked).replace("…", "...")
+
+
 def may_carry_claims(text: str) -> bool:
     """Whether the user's words could state something about the board to check. "What is he
     threatening?" states nothing: it is answered from the facts' threats, not examined as a
@@ -2101,11 +2118,22 @@ class Coach:
                 record_now=True,
             )
 
+        asked = question_part(text)
+        shown_examination = False
+
         def examined() -> list[str]:
             """The engine on what they asked about; its plain-words form goes out at once
-            as the coach's turn (correct by construction), and the model builds on it."""
-            found = self._named_analysis(text, position, level)
-            if found:
+            as the coach's turn (correct by construction), and the model builds on it.
+            Only what a question names is said: named in a statement ("I see the fork now:
+            Nf6 attacks the queen on e8 and the rook on d7") or before the question ("my
+            rook on e1 stays active. Why is 12...h5 their best reply?"), the pieces and
+            squares came back as the whole answer -- where each can go, what each attacks
+            -- and the question went unanswered (the simulated students, 2026-09-26).
+            Named in a statement they are still examined, for the model to check it by."""
+            nonlocal shown_examination
+            found = self._named_analysis(asked or text, position, level)
+            if found and asked:
+                shown_examination = True
                 self._queue_plain(
                     Trigger.USER_ASK,
                     " ".join(spoken_examination(f) for f in found),
@@ -2129,7 +2157,7 @@ class Coach:
                 ts,
                 user_text=text,
                 verdicts=verdicts,
-                quick=canned or bool(verdicts),
+                quick=canned or shown_examination,
             )
             return
 
@@ -2148,7 +2176,7 @@ class Coach:
                 ts,
                 user_text=text,
                 verdicts=verdicts,
-                quick=bool(found),
+                quick=shown_examination,
             )
 
         if self.sync_claims:
@@ -3235,9 +3263,12 @@ class Coach:
             return (
                 "The game is over. Sum it up from the review in the last message and the "
                 "verdicts on the moves above, and from nothing else: the result, what went "
-                "well, and the one thing to work on -- the moment the game turned, the better "
-                "move there, and why it happened, in plain words. Three or four sentences, no "
-                "question. Do not infer the course of the game from the position on the board.",
+                "well, and the one thing to work on. When the review says what they kept "
+                "missing, that is the thing: the pattern in plain words and the habit that "
+                "fixes it, as the review gives it, with the moment it cost most. Otherwise the "
+                "moment the game turned, the better move there, and why it happened, in plain "
+                "words. Three or four sentences, no question. Do not infer the course of the "
+                "game from the position on the board.",
                 " ".join(self._review_lines[:4]),
             )
         if trigger is Trigger.DECISIVE_QUESTION:
@@ -3468,9 +3499,11 @@ class Coach:
                 "else: do not infer the course of the game from the position on the board. "
                 "Two or three sentences: what went well -- how many of their moves were strong, "
                 "and their slips by kind, in the tally's numbers -- and the one thing to work "
-                "on: the move the tally lists first where ground was lost most, the better "
-                "move there, and why, in plain words. If no move has a verdict yet, say you "
-                "have not seen enough to say."
+                "on: when the review says what they kept missing, that pattern in plain words "
+                "and the habit that fixes it, as the review gives it; otherwise the move the "
+                "tally lists first where ground was lost most, the better move there, and why, "
+                "in plain words. If no move has a verdict yet, say you have not seen enough to "
+                "say."
             )
             # A review has a record to fall back on, not a line.
             fallback = self._review_template()
