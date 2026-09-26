@@ -313,20 +313,6 @@ object Story {
         return if (taken != null) VALUES[taken.pieceType] ?: 0 else 0
     }
 
-    /**
-     * What their last move took, in pawns (0 when it took nothing or the board does not know its
-     * moves): what the player wins next, up to that, is won back.
-     */
-    fun tookLast(board: Board): Int {
-        if (board.moveStack.isEmpty()) return 0
-        val before = board.copy()
-        val last = before.pop()
-        if (!before.isCapture(last)) return 0
-        if (before.isEnPassant(last)) return Exchange.VALUE[PAWN]
-        val kind = before.pieceTypeAt(last.to)
-        return Exchange.VALUE[if (kind == 0) PAWN else kind]
-    }
-
     /** Whether their last move captured on `square`, when the board knows its moves. */
     private fun took(board: Board, square: Int): Boolean {
         if (board.moveStack.isEmpty()) return false

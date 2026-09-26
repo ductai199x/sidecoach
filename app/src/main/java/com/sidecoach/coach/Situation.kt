@@ -291,7 +291,9 @@ object Situation {
     private fun whatItGives(board: Board, line: Line): String? {
         val first = line.moves.getOrNull(0)?.let { Move.fromUciOrNull(it) } ?: return null
         if (!board.isLegal(first) || line.moves.size < 2) return null
-        val after = board.copy(withStack = false)
+        // With the board's moves: a capture of the player's is the start of an exchange, and the
+        // piece taken back for it is not "given" ([IdeaReader.exchangeOwed]).
+        val after = board.copy()
         after.push(first)
         val theirs = Analysis(
             gameId = "",
@@ -310,7 +312,7 @@ object Situation {
         )
         val idea = IdeaReader.read(after, theirs)
         if (idea.goal == "mate") return "mate"
-        if (idea.goal == "win" && !idea.won.isNullOrEmpty() && !idea.level) return IdeaWords.yours(idea.won)
+        if (idea.goal == "win" && !idea.won.isNullOrEmpty() && !idea.level && !idea.back) return IdeaWords.yours(idea.won)
         if (idea.goal == "attack" && idea.winning) return "a winning attack"
         if (idea.goal == "promote") return "a new queen"
         if (idea.goal == "convert") return "a won ending"

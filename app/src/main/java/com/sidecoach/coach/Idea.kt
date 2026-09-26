@@ -121,6 +121,12 @@ data class Idea(
     val winning: Boolean = false,
     /** The best line's expected score, for the player. */
     val score: Double? = null,
+    /**
+     * "win": what the line takes is mostly what the exchange in progress took from the player
+     * ([IdeaReader.exchangeOwed]) -- won back, not won: a knight taken back after they took one
+     * is a trade (Tai's puzzles, 2026-09-26: "you can win a knight" for 3.Nxh5 Rxh5).
+     */
+    val back: Boolean = false,
 )
 
 object IdeaReader {
@@ -267,11 +273,46 @@ object IdeaReader {
     }
 
     /**
-     * The idea of `analysis`'s best line from `board` (the position it measured), with the
-     * sacrifices the player makes on the way to its point.
+     * The exchange the last move belongs to, from the side to move's view: the run of captures
+     * that ends with the opponent's last move, counted per kind of piece -- how many more of the
+     * side to move's it took than of the opponent's. Returned only when that leaves the side to
+     * move owed material (they took last; it is the player's to take back): taking it back is
+     * winning back, not winning. Empty when the last move took nothing or the board does not
+     * know its moves (a position set up from a FEN). `idea.exchange_owed`.
      */
-    fun read(board: Board, analysis: Analysis): Idea {
-        val idea = readLine(board, analysis)
+    fun exchangeOwed(board: Board): Map<Int, Int> {
+        if (board.moveStack.isEmpty()) return emptyMap()
+        val us = board.turn
+        val before = board.copy()
+        val net = LinkedHashMap<Int, Int>()
+        while (before.moveStack.isNotEmpty()) {
+            val move = before.pop()
+            if (!before.isCapture(move)) break
+            val victim: Int
+            if (before.isEnPassant(move)) {
+                victim = PAWN
+            } else {
+                victim = before.pieceTypeAt(move.to)
+                if (victim == 0) break
+            }
+            // Popped, the board has the capturer to move: the opponent took one of the player's.
+            net[victim] = (net[victim] ?: 0) + (if (before.turn != us) 1 else -1)
+        }
+        val owed = net.filterValues { it != 0 }
+        return if (worth(owed) > 0) owed else emptyMap()
+    }
+
+    /** What a count of pieces by kind is worth, in pawns. `idea.worth`. */
+    fun worth(pieces: Map<Int, Int>): Int = pieces.entries.sumOf { (kind, n) -> value(kind) * n }
+
+    /**
+     * The idea of `analysis`'s best line from `board` (the position it measured), with the
+     * sacrifices the player makes on the way to its point. [owed] is what the exchange in
+     * progress took from the player ([exchangeOwed], read from the board's own moves when not
+     * given): material the line takes up to that is won back, not won.
+     */
+    fun read(board: Board, analysis: Analysis, owed: Map<Int, Int>? = null): Idea {
+        val idea = readLine(board, analysis, owed ?: exchangeOwed(board))
         if (idea.first == null) return idea
         val pv = idea.line
         val boards = boardsOf(board, pv)
@@ -303,7 +344,7 @@ object IdeaReader {
     }
 
     /** `idea._read`: the goal, the blow and the target, before the sacrifices are counted. */
-    private fun readLine(board: Board, analysis: Analysis): Idea {
+    private fun readLine(board: Board, analysis: Analysis, owed: Map<Int, Int>): Idea {
         val pv = if (analysis.lines.isNotEmpty()) legalPrefix(board, analysis.lines[0].moves) else emptyList()
         val us = board.turn
         val checks = board.legalMoves().count { board.givesCheck(it) }
@@ -362,19 +403,7 @@ object IdeaReader {
         // open the king).
         if (analysis.lines[0].expectedScore < GIFT_SCORE) reach = minOf(reach, firstGift(boards, pv, reach))
         var (gain, at) = lineGain(boards, pv, reach)
-        // The blow is what wins it: looked for up to where the line first wins that much, not
-        // where it has picked up the most (a fork five moves after the queen fell was named).
-        val firstAt = if (gain > 0) firstReaching(boards, pv, at, minOf(gain, WIN_GAIN)) else 0
-        at = if (firstAt != 0) firstAt else at
-        var (blow, blowAt, preparation) = findBlow(boards, pv, if (at != 0) at else minOf(pv.size, 6), null)
-        if (blow != null && blowAt > FAR_BLOW) {
-            // A loose rook picked up on the fifth move is not the idea a player can see from
-            // here; the start of the line is (Tai's game g06, 2026-09-24).
-            blow = null
-            blowAt = 1
-            preparation = emptyList()
-        }
-        val winning = analysis.lines[0].expectedScore >= WON
+        val peak = at
         // A pawn of the player's reaching the seventh, or queening, anywhere in the line.
         val seventh = if (us == WHITE) 6 else 1
         // A pawn of the player's queening in the line; one reaching the seventh only in an
@@ -395,13 +424,41 @@ object IdeaReader {
         }
         // A pawn is a win when the game is better for it; two pawns' worth always.
         val betterForIt = analysis.lines[0].expectedScore >= LEVEL
+        // What they just took counts against the line ([exchangeOwed]): what it nets decides
+        // whether it wins, by the same rule as any win; a line that nets less only wins back.
+        val net = gain - worth(owed)
+        var back = owed.isNotEmpty() &&
+            gain > 0 &&
+            !(net >= WIN_GAIN || (net >= 1 && betterForIt && !queens))
+        // The blow is what wins it: looked for up to where the line first wins that much, not
+        // where it has picked up the most (a fork five moves after the queen fell was named). A
+        // net win is first won where the net is reached, past taking back what they took.
+        val winsAt = if (owed.isNotEmpty() && !back) worth(owed) + minOf(net, WIN_GAIN) else minOf(gain, WIN_GAIN)
+        var firstAt = if (gain > 0) firstReaching(boards, pv, at, winsAt) else 0
+        if (owed.isNotEmpty() && !back && firstAt > 2 * FAR_BLOW) {
+            // A net win first reached past the player's third move is the engine's line talking,
+            // not the point: taking back is ("you can win a queen for a rook and a bishop" of a
+            // queen given up on the fourteenth ply after 1...Nxe3 2.fxe3, Lichess 00LZf).
+            back = true
+            firstAt = firstReaching(boards, pv, at, minOf(gain, WIN_GAIN))
+        }
+        at = if (firstAt != 0) firstAt else at
+        var (blow, blowAt, preparation) = findBlow(boards, pv, if (at != 0) at else minOf(pv.size, 6), null)
+        if (blow != null && blowAt > FAR_BLOW) {
+            // A loose rook picked up on the fifth move is not the idea a player can see from
+            // here; the start of the line is (Tai's game g06, 2026-09-24).
+            blow = null
+            blowAt = 1
+            preparation = emptyList()
+        }
+        val winning = analysis.lines[0].expectedScore >= WON
         // A win the score denies: the engine calls the game level, the player is not behind,
         // and the material comes only down the line -- "you can win a knight and two pawns for
         // a bishop" was said at move 6 of the Ruy Lopez (Capablanca-Marshall, 2026-09-24).
         val firstWin = if (gain > 0) maxOf(0, if ((at - 1) % 2 == 0) at - 1 else at - 2) else 0
         val topMate = analysis.lines[0].mate
         val phantom = !betterForIt &&
-            balance(board, us) >= 0 &&
+            balance(board, us) + worth(owed) >= 0 &&
             firstWin > 0 &&
             !(topMate != null && topMate > 0)
         if (!phantom && (gain >= WIN_GAIN || (gain >= 1 && betterForIt && !queens))) {
@@ -409,12 +466,22 @@ object IdeaReader {
             // discovered check that nets a pawn into a won ending is still the point. A line
             // that stops on the player's capture: what takes back is counted as given, as
             // `lineGain` counts it ("you win the exchange", not "a rook", after Nxe1).
-            var end = boards[at]
-            if (at == pv.size && at % 2 == 1 && retaken(end, pv[at - 1].to)) {
-                end = end.copy(withStack = false)
-                end.removePieceAt(pv[at - 1].to)
+            var (won, target) = wonBy(board, lineEnd(boards, pv, at), us, pv.subList(0, at), boards)
+            if (back) {
+                // Won back: the most valuable piece the line takes within the player's first
+                // FAR_BLOW moves ("their queen" where they took the queen and the line takes a
+                // bishop and then theirs); never one far down the line (00LZf's queen at ply 14).
+                val near = minOf(peak, 2 * FAR_BLOW, pv.size)
+                won = topTaken(board, lineEnd(boards, pv, near), us) ?: won
+            } else if (owed.isNotEmpty()) {
+                // A net win, named net: where they took a bishop and the line takes a knight and
+                // two pawns, the win is two pawns (Tai, 2026-09-26: "it's not winning shit").
+                val (netted, where) = wonBy(board, lineEnd(boards, pv, at), us, pv.subList(0, at), boards, owed)
+                if (netted != null) {
+                    won = netted
+                    target = where
+                }
             }
-            val (won, target) = wonBy(board, end, us, pv.subList(0, at), boards)
             // The player's move that first wins it: the last of theirs within `at` plies.
             val gainPly = maxOf(0, if ((at - 1) % 2 == 0) at - 1 else at - 2)
             return Idea(
@@ -424,6 +491,7 @@ object IdeaReader {
                 gain = gain,
                 gainPly = gainPly,
                 won = won,
+                back = back,
                 blow = blow?.second,
                 blowMove = if (blow != null) pv[blow.first] else null,
                 blowBoard = if (blow != null) boards[blow.first] else null,
@@ -920,7 +988,8 @@ object IdeaReader {
 
     /**
      * What the line wins, in words ("their queen", "the exchange", "a rook for a knight"), and
-     * where the most valuable piece it wins stands now.
+     * where the most valuable piece it wins stands now; with [owed], net of what the exchange in
+     * progress took from the player.
      */
     private fun wonBy(
         board: Board,
@@ -928,17 +997,30 @@ object IdeaReader {
         us: Boolean,
         played: List<Move>,
         boards: List<Board>,
+        owed: Map<Int, Int>? = null,
     ): Pair<String?, Int?> {
         val them = !us
+        val nets = LinkedHashMap<Int, Int>()
+        for (kind in IDEA_COUNTED) {
+            nets[kind] = (board.pieces(kind, them).size - end.pieces(kind, them).size) -
+                (board.pieces(kind, us).size - end.pieces(kind, us).size) -
+                (owed?.get(kind) ?: 0)
+        }
+        if (!owed.isNullOrEmpty() && nets.getValue(KNIGHT) * nets.getValue(BISHOP) < 0) {
+            // Net of what they took, a knight for a bishop is a trade: "two pawns", not "a knight
+            // and two pawns for a bishop".
+            val both = minOf(abs(nets.getValue(KNIGHT)), abs(nets.getValue(BISHOP)))
+            for (kind in intArrayOf(KNIGHT, BISHOP)) {
+                nets[kind] = nets.getValue(kind) - if (nets.getValue(kind) > 0) both else -both
+            }
+        }
         val gained = LinkedHashMap<Int, Int>()
         val given = LinkedHashMap<Int, Int>()
-        for (kind in IDEA_COUNTED) {
-            val net = (board.pieces(kind, them).size - end.pieces(kind, them).size) -
-                (board.pieces(kind, us).size - end.pieces(kind, us).size)
-            if (net > 0) {
-                gained[kind] = net
-            } else if (net < 0) {
-                given[kind] = -net
+        for ((kind, n) in nets) {
+            if (n > 0) {
+                gained[kind] = n
+            } else if (n < 0) {
+                given[kind] = -n
             }
         }
         if (gained.isEmpty()) return null to null
@@ -956,6 +1038,34 @@ object IdeaReader {
             }
         }
         return wonWords(gained, given) to target
+    }
+
+    /**
+     * The board `at` plies into the line; a line that stops on the player's capture loses the
+     * capturing piece where it can be taken back, as [lineGain] counts it ("you win the
+     * exchange", not "a rook", after Nxe1).
+     */
+    private fun lineEnd(boards: List<Board>, pv: List<Move>, at: Int): Board {
+        var end = boards[at]
+        if (at == pv.size && at % 2 == 1 && retaken(end, pv[at - 1].to)) {
+            end = end.copy(withStack = false)
+            end.removePieceAt(pv[at - 1].to)
+        }
+        return end
+    }
+
+    /**
+     * The most valuable kind of the opponent's pieces the line takes, in words: "their queen",
+     * "a rook", "a knight".
+     */
+    private fun topTaken(board: Board, end: Board, us: Boolean): String? {
+        val them = !us
+        val taken = IDEA_COUNTED.filter { end.pieces(it, them).size < board.pieces(it, them).size }
+        if (taken.isEmpty()) return null
+        // max() over the list: the first of the most valuable, in `_COUNTED` order.
+        var top = taken.first()
+        for (kind in taken) if (value(kind) > value(top)) top = kind
+        return if (top == QUEEN) "their queen" else "a ${NAMES.getValue(top)}"
     }
 
     /** Where the piece standing on `square` at `ply` stood at the start, followed back. */

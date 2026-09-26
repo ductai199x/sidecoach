@@ -450,7 +450,9 @@ fun natureOf(board: Board, best: Move, line: List<String> = emptyList()): String
     if (board.isCapture(best) || board.givesCheck(best) || best.promotion != 0) {
         return "forcing -- the answer is a check, a capture or a promotion"
     }
-    if (line.isNotEmpty() && lineGain(board, line) >= TACTIC_GAIN) {  // counted as the idea counts it
+    // Counted as the idea counts it, net of what they just took ([IdeaReader.exchangeOwed]).
+    val owed = IdeaReader.worth(IdeaReader.exchangeOwed(board))
+    if (line.isNotEmpty() && lineGain(board, line) - owed >= TACTIC_GAIN) {
         return "a tactic -- the best move is quiet, but the line after it wins material"
     }
     return "quiet -- no tactic to find; the move improves your position"
@@ -609,19 +611,6 @@ fun factsFromAnalysis(
     var nudge = IdeaWords.nudge(idea)
     var why = IdeaWords.why(idea, board, IdeaWords.Describe(::describeTactic))
     var goal = IdeaWords.goal(idea)
-    // Material won right after they took some, while behind, is won back (an equality puzzle's
-    // recapture) -- never "win back a queen" after they took a pawn.
-    val taken = Story.tookLast(board)
-    if (!goal.isNullOrEmpty() &&
-        goal.startsWith("you can win ") &&
-        "back" !in goal &&
-        " for " !in goal &&
-        idea.down &&
-        idea.gain > 0 &&
-        idea.gain <= taken + 1
-    ) {
-        goal = "you can win back " + goal.substring("you can win ".length)
-    }
     if (moveThreat != null && best != null) {
         val won = if (idea.winning) Plans.THREAT_GOAL_WON else Plans.THREAT_GOAL
         goal = won.getValue(moveThreat.kind)
@@ -773,7 +762,7 @@ fun factsFromAnalysis(
     // the wrong piece to take back with is a trap -- every other capture is worse only for not
     // taking back -- and 23.exd5? Re8 in Polugaevsky-Nezhmetdinov is the lesson.
     val recapture = idea.goal == "win" &&
-        idea.down &&
+        (idea.down || idea.back) &&
         best != null &&
         board.isCapture(best) &&
         best.to == idea.target

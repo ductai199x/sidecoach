@@ -276,6 +276,12 @@ object IdeaWords {
                 else -> "you can hold the game: the same position comes round again"
             }
         }
+        if (idea.goal == "win" && idea.back) {
+            // Taking back what they just took: never "you can win a knight" for a trade.
+            val what = idea.won ?: "material"
+            if (idea.score != null && idea.score < 0.4) return "you can win back $what, though you stay worse"
+            return "you can win back $what"
+        }
         if (idea.goal == "win" && idea.level) {
             // Winning it back, not winning: the engine calls the game level after it.
             val what = idea.won ?: "material"
@@ -982,7 +988,7 @@ object IdeaWords {
             val n = NUMBER[idea.mateIn] ?: idea.mateIn.toString()
             return after + "they have mate in $n, starting with $first"
         }
-        if (idea.goal == "win" && !idea.won.isNullOrEmpty() && !idea.level) {
+        if (idea.goal == "win" && !idea.won.isNullOrEmpty() && !idea.level && !idea.back) {
             val won = yours(idea.won)
             if (idea.gainPly == 0) return after + "$first wins $won"
             if (idea.gainPly > LATER_READ) return after + "they win $won a few moves on, starting with $first"
