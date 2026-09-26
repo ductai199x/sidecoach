@@ -649,6 +649,15 @@ def main() -> None:
     else:
         chosen = sample_moments(with_reply, args.moments_per_game, seed)
     pairable, left_out = sort_out(chosen)
+    # The AI arm is every reply the model wrote, quick follow-ups included (judged, not
+    # paired: they have no template of their own); a template spoken in its place is not.
+    judged_here = [
+        it
+        for it in chosen
+        if not (it.get("reply") or {}).get("fallback_used")
+        and not (it.get("reply") or {}).get("model_failed")
+    ]
+    pair_ids = {it["id"] for it in pairable}
     print(
         f"{len(chosen)} moments (seed {seed}), {len(pairable)} to pair; not paired:"
         f" {dict(left_out) or 'none'}",
@@ -664,7 +673,7 @@ def main() -> None:
                 + (it.get("fallback") or "")
             )
 
-        todo_ai = [it for it in pairable if it["id"] not in judged_ids]
+        todo_ai = [it for it in judged_here if it["id"] not in judged_ids]
         cost = estimate.judge_estimate(todo_ai, prices, record_of=record).add(
             estimate.judge_estimate(pairable, prices, record_of=record)
         )
@@ -689,7 +698,7 @@ def main() -> None:
         # arm's text already.
         ai = judge_all(
             items,
-            [it["reply"] for it in pairable],
+            [it["reply"] for it in judged_here],
             args.run,
             judge,
             ledger,
@@ -701,7 +710,7 @@ def main() -> None:
         ai = [j for j in ai if j.get("status", "model") == "model"]
         floor = judge_floor(
             items,
-            [j["id"] for j in ai],
+            [j["id"] for j in ai if j["id"] in pair_ids],
             args.run,
             judge,
             ledger,
