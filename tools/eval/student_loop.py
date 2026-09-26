@@ -187,6 +187,7 @@ def signals(s: dict, book: dict | None) -> dict:
     focus = sum(CURE[s["habit"]] in checks for checks, _ in per)
     words = HABIT[HABITS[s["habit"]].cause][0]
     coach = [t["text"] for t in s["transcript"] if t["who"] == "coach"]
+    closed, carried = question_threads(s["transcript"])
     return {
         "notes": len(notes),
         "focus": focus,
@@ -194,7 +195,32 @@ def signals(s: dict, book: dict | None) -> dict:
         "unclear": len(s.get("unclear", [])),
         "dumps": sum(" can go to " in text for text in coach),
         "own": len(s.get("own_notes", [])),
+        "closed": closed,
+        "carried": carried,
     }
+
+
+def question_threads(transcript: list[dict]) -> tuple[int, int]:
+    """(closed, carried on): each answer the student gave to a question of the coach's, and
+    whether the coach's reply to it closed the question or asked another (the AI coach asked
+    a new question after every answer and resolved none, 2026-09-26)."""
+    closed = carried = 0
+    said = [t for t in transcript if t["who"] in ("coach", "you")]
+    for k, e in enumerate(said):
+        if e["who"] != "you" or "?" in e["text"] or k == 0:
+            continue
+        asked = said[k - 1]
+        if asked["who"] != "coach" or not asked["text"].rstrip().endswith("?"):
+            continue
+        reply = []
+        for x in said[k + 1 :]:
+            if x["who"] != "coach" or x["ply"] != e["ply"]:
+                break
+            reply.append(x["text"])
+        if reply:
+            carried += reply[-1].rstrip().endswith("?")
+            closed += not reply[-1].rstrip().endswith("?")
+    return closed, carried
 
 
 def signal_lines(name: str, runs: dict, books: dict, common: list[str]) -> list[str]:
@@ -205,7 +231,10 @@ def signal_lines(name: str, runs: dict, books: dict, common: list[str]) -> list[
         f"{sum(r['notes'] for r in rows)}; pattern named in {sum(r['pattern'] for r in rows)}/"
         f"{len(rows)} sessions; unclear {sum(r['unclear'] for r in rows) / n:.1f} a session;"
         f" pieces read out {sum(r['dumps'] for r in rows) / n:.1f} a session; own notes"
-        f" {sum(r['own'] for r in rows)}"
+        f" {sum(r['own'] for r in rows)}",
+        f"  {name:<14} answers to the coach's questions: closed"
+        f" {sum(r['closed'] for r in rows)}, answered with another question"
+        f" {sum(r['carried'] for r in rows)}",
     ]
 
 
@@ -412,6 +441,7 @@ def session_cmd(run_name: str, args: argparse.Namespace, budget: float) -> list[
         str(args.batch),
         "--replicates",
         str(args.replicates),
+        *(["--only", *args.only] if args.only else []),
         "--workers",
         str(args.workers),
         "--budget-usd",
@@ -445,7 +475,7 @@ def cmd_round(args: argparse.Namespace) -> None:
         print(f"  {base} sessions done ({time.time() - t0:.0f} s)", flush=True)
         runs.append(base)
     exam = [PY, str(TOOLS / "students.py"), "exam", "--student", args.student]
-    run([*exam, "--arms", ",".join(runs), "--workers", "16", "--budget-usd", "1.00"], log)
+    run([*exam, "--arms", ",".join(runs), "--workers", "16", "--budget-usd", "2.00"], log)
     print(f"  exams done ({time.time() - t0:.0f} s)", flush=True)
     text = digest(cand, args.student)
     (LOOP / f"{cand}-digest.md").write_text(text, "utf-8")
@@ -486,6 +516,7 @@ def main() -> None:
     r.add_argument("--budget-usd", type=float, default=0.5, help="for each run of sessions")
     r.add_argument("--workers", type=int, default=10)
     r.add_argument("--replicates", type=int, default=2, help="students for each session")
+    r.add_argument("--only", nargs="*", help="only the sessions whose names hold one of these")
     c = sub.add_parser("compare")
     c.add_argument("base")
     c.add_argument("cand")
