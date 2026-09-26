@@ -812,12 +812,16 @@ def run_session(
     from sidecoach.profile.store import Store
 
     profiler = Profiler(Store(None), ts=0.0, puzzles=None)
-    played = [play_coached(facts, coach, student, profiler) for facts in games]
-    results = "; ".join(
-        f"game {i}: {_result_words(p['result'], p['colour'])}" for i, p in enumerate(played, 1)
-    )
-    notebook = student.notebook(results)
-    engine.close()
+    # The engine is closed however the session ends: two sessions stopped by the budget left
+    # their Stockfish running, and the finished run never exited (2026-09-26).
+    try:
+        played = [play_coached(facts, coach, student, profiler) for facts in games]
+        results = "; ".join(
+            f"game {i}: {_result_words(p['result'], p['colour'])}" for i, p in enumerate(played, 1)
+        )
+        notebook = student.notebook(results)
+    finally:
+        engine.close()
     return {
         "game": sid,
         "games": [p["game"] for p in played],
@@ -987,10 +991,15 @@ def cmd_session(args: argparse.Namespace) -> None:
         raise SystemExit("a paid run needs --budget-usd")
     out = OUT / "runs" / args.run
     out.mkdir(parents=True, exist_ok=True)
+    # A replicate is the same games with another draw of the student (its temperament and
+    # its words): the notebook varies more from one student to the next than from one coach
+    # to the next, and a round's thirty sessions left a gain of a position a session at
+    # p=0.10 (2026-09-26).
     todo = [
-        (sid, paths)
+        (sid + (f"@{r}" if r else ""), paths)
         for sid, paths in sessions_of(args.batch)
-        if not (out / f"{sid}.json").exists()
+        for r in range(args.replicates)
+        if not (out / f"{sid}{f'@{r}' if r else ''}.json").exists()
         and (not args.only or any(k in sid for k in args.only))
     ]
     print(f"{len(todo)} sessions to run -> {out.relative_to(ROOT)}", flush=True)
@@ -1474,6 +1483,7 @@ def main() -> None:
     s.add_argument("--workers", type=int, default=4)
     s.add_argument("--only", nargs="*", help="only the games whose names hold one of these")
     s.add_argument("--batch", type=int, default=0, help="the batch of games to coach")
+    s.add_argument("--replicates", type=int, default=1, help="students for each session")
     e = sub.add_parser("exam")
     e.add_argument("--student", default="local")
     e.add_argument("--arms", default="none,off,gold")

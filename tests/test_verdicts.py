@@ -223,3 +223,22 @@ def test_a_great_or_brilliant_move_gets_the_models_delight() -> None:
     coach, provider = _coach(["", ""])
     texts = _played(coach, provider, "Qxf7#", Label.BRILLIANT, loss=0.0)
     assert len(texts) == 1 and texts[0] in MATE
+
+
+def test_a_player_below_1400_hears_no_term_of_art(monkeypatch) -> None:
+    """The simulated 800-rated student listed "prophylaxis: stop their plan before pushing
+    your own" among what it did not understand; every principle keeps a plain wording."""
+    from sidecoach.coach import verdicts
+
+    for kind, words in PRINCIPLES.items():
+        assert any(not verdicts.JARGON.search(w) for w in words), kind
+    clauses = list(PRINCIPLES["prophylaxis"])
+    monkeypatch.setattr(verdicts, "lesson", lambda *a, **k: ("prophylaxis", clauses))
+    move = chess.Move.from_uci("e2e4")
+    said = {
+        verdict(chess.Board(), move, "good", rng=random.Random(i), plain=True)[0]
+        for i in range(20)
+    }
+    assert not any("prophylaxis" in s for s in said)
+    rich = {verdict(chess.Board(), move, "good", rng=random.Random(i))[0] for i in range(40)}
+    assert any("prophylaxis" in s for s in rich)

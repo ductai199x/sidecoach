@@ -21,6 +21,7 @@ second's wait; this is free and immediate, and every word of it is true of the b
 from __future__ import annotations
 
 import random
+import re
 from collections.abc import Sequence
 
 import chess
@@ -120,6 +121,12 @@ PRINCIPLES: dict[str, tuple[str, str]] = {
 }
 
 
+# The terms of art in the wordings above: said to a player below 1400, the simulated
+# 800-rated student listed "prophylaxis: stop their plan before pushing your own" among the
+# things it did not understand (2026-09-26).
+JARGON = re.compile(r"\b(?:prophylaxis|outpost|pawn storm)\b", re.I)
+
+
 def _threat(board: chess.Board, threats: Sequence[str]) -> chess.Move | None:
     """The opponent's first threat (the fact sheet's SAN, read after a pass), or None."""
     if not threats or board.is_check():
@@ -199,12 +206,14 @@ def verdict(
     last: str | None = None,
     rng: random.Random | None = None,
     bags: Bags | None = None,
+    plain: bool = False,
 ) -> tuple[str, str | None]:
     """The sentence -- the praise for the label, then what the move teaches -- and the kind
     of lesson it taught, None when it is praise alone. With `bags` (the live coach's) every
     wording is drawn from its bag, each once before any comes again (`coach/bag.py`);
     without, a `choice` that is never `last`'s praise. The praise is drawn before the
-    wording, so the phone's port draws the same."""
+    wording, so the phone's port draws the same. `plain` leaves out the wordings that name
+    a term of art (a player below 1400: `JARGON`)."""
     rng = rng or random.Random()
     found = lesson(board, move, tags, phase=phase, threats=threats, taught=taught)
     if found is not None and found[0] == "mate":
@@ -221,6 +230,8 @@ def verdict(
     if found is None:
         return opener + ".", None
     kind, clauses = found
+    if plain:
+        clauses = [c for c in clauses if not JARGON.search(c)] or clauses
     if bags is not None:
         clause = bags.draw(f"clause:{kind}", clauses)
     else:

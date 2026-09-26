@@ -103,6 +103,42 @@ def test_what_a_question_names_is_examined_aloud_and_what_a_statement_names_is_n
     assert any("Your knight on f3 can go to" in m.text for m in _messages(coach))
 
 
+def test_an_answer_to_the_coachs_question_closes_it_without_another() -> None:
+    """Every answer to the coach's question had earned a new question and none was resolved
+    (the simulated students: "what Nc4 was expected to do was asked but not answered")."""
+    from tests.test_coach import _directive, _given, _messages
+
+    coach, provider = _coach(["You have it: the knight was loose.", "Right."])
+    _played(coach, ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "f3g5"], mistake_at=7)
+    board = chess.Board()
+    for uci in ("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "f3g5"):
+        board.push_uci(uci)
+    coach.on_event(
+        Analysis(
+            game_id="g",
+            fen=board.fen(),
+            ply=7,
+            lines=[Line(moves=["d7d5"], depth=12, expected_score=0.45)],
+            decisive=False,
+            only_move=False,
+            tags=[],
+        ),
+        7.5,
+    )
+    _messages(coach)
+    with coach._lock:
+        coach.conversation.coach_said("What were you expecting that move to do?")
+    assert coach._answering_our_question("I wanted to attack f7 with the knight.")
+    assert not coach._answering_our_question("Why is that bad?")
+    coach.ask("I wanted to attack f7 with the knight.", 8.0)
+    _messages(coach)
+    directive = _directive(_given(provider))
+    assert "They are answering the question you just asked" in directive
+    assert "then one question" not in directive
+    # Once answered, the thread is closed: words after the coach's reply answer nothing.
+    assert not coach._answering_our_question("ok")
+
+
 def test_chat_on_the_players_own_turn_is_about_the_position() -> None:
     coach, _ = _coach([])
     _played(coach, ["e2e4", "e7e5", "g1f3", "b8c6"], mistake_at=3)

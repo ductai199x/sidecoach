@@ -270,6 +270,19 @@ def compare(base: str, cand: str, student: str) -> str:
         f"  sessions (errors fixed): {cand} better {better}, worse {worse}, the same {same};"
         f" sign test p={mcnemar(worse, better):.3f}"
     )
+    # The positions of one notebook stand or fall together (the notebook either has the
+    # cure or not): the honest test is on the sessions' differences, their signs flipped.
+    for kind in ("errors", "controls"):
+        diffs = [
+            s_cand[sid][kind][0] - s_base[sid][kind][0]
+            for sid in common
+            if s_cand[sid][kind][1] == s_base[sid][kind][1]
+        ]
+        mean, p = sign_flip(diffs)
+        lines.append(
+            f"  sessions paired ({kind}): mean difference {mean:+.2f} positions a session,"
+            f" sign-flip p={p:.3f} (n={len(diffs)})"
+        )
     focus_better = focus_worse = 0
     for sid in common:
         a = signals(runs[base][sid], books[base].get("\n".join(runs[base][sid]["notes"])))
@@ -281,6 +294,29 @@ def compare(base: str, cand: str, student: str) -> str:
         f" sign test p={mcnemar(focus_worse, focus_better):.3f}"
     )
     return "\n".join(lines)
+
+
+def sign_flip(diffs: list[int], draws: int = 20000) -> tuple[float, float]:
+    """The mean of paired differences and its two-sided p by random sign flips (exact
+    enumeration for up to 16 non-zero differences)."""
+    import itertools
+    import random
+
+    if not diffs:
+        return 0.0, 1.0
+    observed = abs(sum(diffs))
+    nonzero = [abs(d) for d in diffs if d]
+    if len(nonzero) <= 16:
+        sums = [
+            abs(sum(s * d for s, d in zip(signs, nonzero, strict=True)))
+            for signs in itertools.product((1, -1), repeat=len(nonzero))
+        ]
+        return sum(diffs) / len(diffs), sum(s >= observed for s in sums) / len(sums)
+    rng = random.Random(0)
+    hits = sum(
+        abs(sum(d if rng.random() < 0.5 else -d for d in nonzero)) >= observed for _ in range(draws)
+    )
+    return sum(diffs) / len(diffs), (hits + 1) / (draws + 1)
 
 
 def cmd_compare(args: argparse.Namespace) -> None:
@@ -374,6 +410,8 @@ def session_cmd(run_name: str, args: argparse.Namespace, budget: float) -> list[
         args.student,
         "--batch",
         str(args.batch),
+        "--replicates",
+        str(args.replicates),
         "--workers",
         str(args.workers),
         "--budget-usd",
@@ -447,6 +485,7 @@ def main() -> None:
     r.add_argument("--baseline", help="the commit whose coach the candidate is tested against")
     r.add_argument("--budget-usd", type=float, default=0.5, help="for each run of sessions")
     r.add_argument("--workers", type=int, default=10)
+    r.add_argument("--replicates", type=int, default=2, help="students for each session")
     c = sub.add_parser("compare")
     c.add_argument("base")
     c.add_argument("cand")

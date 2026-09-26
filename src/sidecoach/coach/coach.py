@@ -80,6 +80,8 @@ from sidecoach.profile.causes import HABIT
 from sidecoach.profile.insights import motif_words
 
 MAX_TOKENS = 220
+# The top of the rating band below which the templates say no term of art (verdicts.JARGON).
+PLAIN_BELOW = 1400
 # After every this-many mistakes the lesson ends by asking what the player saw: a
 # self-report the profile keeps beside the mistake (DESIGN 5.6, "sparingly"). One that
 # goes unanswered is the last of the game: a player with the mic off heard "did you miss
@@ -1906,6 +1908,8 @@ class Coach:
         # one, a named move is only checked against the candidates the facts hold.
         self.engine = engine
         self.system = system_message(persona=persona, rating=rating)
+        # A player below 1400 hears no term of art in the templates (verdicts.JARGON).
+        self.plain_words = rating is not None and rating[1] < PLAIN_BELOW
         # Run the claims check on the caller's thread (replay and evaluation) instead of a
         # worker: live it is threaded so a button press never stalls the pipeline.
         self.sync_claims = False
@@ -2625,6 +2629,7 @@ class Coach:
                     threats=before.facts.threats,
                     taught=tuple(self._taught),
                     bags=self._bags,
+                    plain=self.plain_words,
                 )
                 if kind is not None:
                     self._taught.append(kind)
@@ -2761,6 +2766,23 @@ class Coach:
         except Exception as exc:  # noqa: BLE001
             self.speaker.last_error = f"named analysis: {type(exc).__name__}: {exc}"
             return []
+
+    def _answering_our_question(self, said: str) -> bool:
+        """Whether the player's words answer the question the coach just asked: its last
+        turn ended with one, nothing has happened since, and their words ask nothing."""
+        if question_part(said):
+            return False
+        with self._lock:
+            entries = list(self.conversation.entries)
+        # Their words themselves, when ask() has recorded them already, are not the thread.
+        if entries and entries[-1].kind == "ask":
+            entries = entries[:-1]
+        for entry in reversed(entries):
+            if entry.kind == "coach":
+                return entry.text.rstrip().endswith("?")
+            if entry.kind != "note":
+                return False
+        return False
 
     def _last_own_move(self, *, mine: bool = False) -> PlyRecord | None:
         """The player's own move, when it is the last move played and has its verdict. Once
@@ -3409,6 +3431,7 @@ class Coach:
                     threats=facts.threats,
                     taught=tuple(self._taught),
                     bags=self._bags,
+                    plain=self.plain_words,
                 )
                 meaning = {
                     "brilliant": "a sound sacrifice",
@@ -3531,6 +3554,16 @@ class Coach:
         shown = (
             " Your last turn above is the quick answer they have already been shown; build on "
             "it, do not repeat it."
+        )
+        # Their words answer the question the coach just asked: the thread is closed, not
+        # carried on with another question. Every answer had earned a new question and none
+        # was resolved -- the students' "what Nc4 was expected to do was asked but not
+        # answered" (2026-09-26).
+        answering = self._answering_our_question(said)
+        close = (
+            " They are answering the question you just asked, your last turn above: say first, "
+            "plainly and from the facts, whether they have it right; if they do not, give the "
+            "answer yourself in a sentence. Ask nothing more -- this closes that question."
         )
         if _ASK_REVIEW.search(said):
             # An overall verdict comes from the tally in "Game so far", never from an
@@ -3729,9 +3762,13 @@ class Coach:
                         if allowed
                         else ""
                     )
-                    + " Three sentences at most, then one question that makes them find on "
-                    "the board something your reply has not said. Name moves bare, never with "
-                    "a move number in front. "
+                    + (
+                        close + " Three sentences at most."
+                        if answering
+                        else " Three sentences at most, then one question that makes them find "
+                        "on the board something your reply has not said."
+                    )
+                    + " Name moves bare, never with a move number in front. "
                     f"{TIE_TO_THE_GAME}"
                 )
         elif _ASK_MATERIAL.search(said) or _ASK_OPENING.search(said) or _ASK_EVAL.search(said):
@@ -3778,8 +3815,10 @@ class Coach:
                 "or line they named is given above, that analysis is theirs to hear in full: "
                 "the score after it, how far behind the best, the reply, what the move does. "
                 "Only the engine's better move or line is withheld: never reveal that unless "
-                "the sheet lists it, but do point them toward the right idea with a question. "
-                "What you already said in this position is under 'Said here': do not say it "
-                "again in other words; give them something it did not."
+                "the sheet lists it, but do point them toward the right idea"
+                + (" in words." if answering else " with a question.")
+                + " What you already said in this position is under 'Said here': do not say "
+                "it again in other words; give them something it did not."
+                + (close if answering else "")
             )
         return f"{checks}{directive}", fallback
