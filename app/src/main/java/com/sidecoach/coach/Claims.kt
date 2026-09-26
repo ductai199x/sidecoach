@@ -1319,10 +1319,11 @@ private val FILES_OPEN = Regex(
 )
 // A file said to have no pawns: "the g-file has no pawns" of a half-open file with a pawn on g6
 // (the pilot of 2026-09-26: the sheet said "takes the half-open g-file").
+// "No pawns of yours on it" is a half-open file, and true of one: only a file said to have no
+// pawns at all is checked.
 private val FILE_EMPTY = Regex(
-    "\\bthe\\s+(?<file>[a-h])-file\\s+(?:has\\s+no\\s+pawns|is\\s+(?:empty|clear\\s+of\\s+pawns|" +
-        "free\\s+of\\s+pawns|pawnless))\\b" +
-        "|\\bno\\s+pawns\\s+(?:on|in)\\s+the\\s+(?<file2>[a-h])-file\\b",
+    "\\bthe\\s+(?<file>[a-h])-file\\s+(?:has\\s+no\\s+pawns(?!\\s+of\\b)|is\\s+(?:empty|" +
+        "clear\\s+of\\s+pawns|free\\s+of\\s+pawns|pawnless))\\b",
     RegexOption.IGNORE_CASE,
 )
 private val SAN_CHECK = Regex(
@@ -1397,7 +1398,7 @@ private fun lineProblems(text: String, frames: List<Board>, us: Boolean): List<P
         }
     }
     for (match in FILE_EMPTY.findAll(text)) {
-        val letter = (match.groups["file"]?.value ?: match.groups["file2"]!!.value).lowercase()
+        val letter = match.groups["file"]!!.value.lowercase()
         val index = letter[0] - 'a'
         if (frames.none { f -> fileSquares(index).all { f.pieceTypeAt(it) != PAWN } }) {
             problems.add(match.value to "the $letter-file has a pawn on it")

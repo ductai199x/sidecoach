@@ -208,6 +208,8 @@ DRAFTS = [
     # A file said to have no pawns (desktop cc06e83).
     "The g-file has no pawns, so use it.",
     "There are no pawns on the d-file.",
+    # "No pawns of yours on it" is a half-open file, left alone (desktop ba861d6).
+    "The b-file has no pawns of yours on it.",
 ]
 
 

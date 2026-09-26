@@ -174,6 +174,10 @@ class ClaimsTest {
         problems = checkDraft("The g-file has no pawns, so use it.", g6, us = white)
         assertEquals(listOf("the g-file has a pawn on it"), problems.map { it.reason })
         assertEquals(emptyList<DraftProblem>(), checkDraft("The d-file has no pawns, so use it.", g6, us = white))
+        // "No pawns of yours on it" is a half-open file: the template says it, and it is true
+        // (desktop ba861d6).
+        val half = "Rg2 was better -- the g-file has no pawns of yours on it."
+        assertEquals(emptyList<DraftProblem>(), checkDraft(half, g6, us = white))
     }
 
     /** The stub the generator used: the same lines for the same position, read from the file. */
