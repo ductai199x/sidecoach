@@ -9,28 +9,56 @@
 #   question    one yes/no question to the judge; {low} and {high} are the player's rating
 #               band from the app's settings (about 1000 to 1400)
 #   applies_to  the item classes it is asked for (tools/eval/taxonomy.py), or ["*"]
-#   only_if     optional: "ends_with_question" -- asked only when the reply ends with a
-#               question (decided in code; otherwise not asked and not scored)
+#   only_if     optional, decided in code; otherwise not asked and not scored:
+#                 "ends_with_question" -- only when the reply ends with a question
+#                 "has_links" -- only when the coach's request lists earlier moments of the
+#                 same pattern ("# Earlier in this game")
+#   code        optional: the criterion is decided in code by this rule (rubric.CODE_RULES),
+#               never by the judge; the question then only says what the rule checks
+#
+# Made more checkable after round 3 (2026-09-25): a question the judge can answer from the
+# reply alone, and nothing held against a reply for what its task did not ask.
 
 [[criterion]]
 key = "why"
-question = "Does the reply explain why concretely on this board -- what a move or a threat does to specific pieces or squares -- rather than only naming a label or a principle?"
+question = "Does the reply name at least one specific piece, square or move of this position (or of the move just played) and say what it does, threatens or allows?"
 applies_to = [
     "lesson", "verdict_weaker", "stuck_hint", "decisive_question", "ask_hint", "ask_plan",
-    "verdict", "ask_last_move", "ask_opponent_move", "ask_threat", "ask_eval", "ask_named_move",
+    "ask_last_move", "ask_opponent_move", "ask_threat", "ask_named_move",
 ]
+# A threat or the opponent's move: only when the request says what the move does.
+only_if = "effect_given"
 
 [[criterion]]
 key = "transfer"
-question = "Does the reply give the player an idea they can reuse in other games -- a pattern or rule of thumb tied to this position -- and not a generic platitude?"
+question = "Does the reply state a pattern or rule of thumb the player can use in other games?"
 applies_to = [
     "lesson", "verdict_weaker", "stuck_hint", "decisive_question", "ask_hint", "ask_plan",
     "ask_last_move",
 ]
 
+# The closing question, one fact at a time (Tai, 2026-09-18: one atomic fact a question).
 [[criterion]]
-key = "question"
-question = "The reply asks a question. Can the player answer it by looking at this board, does it move them toward the idea, and has the reply not already answered it?"
+key = "question_board"
+question = "The reply ends with a question. Can the player answer that question by looking at the board?"
+applies_to = [
+    "lesson", "verdict_weaker", "stuck_hint", "decisive_question", "ask_hint", "ask_plan",
+    "ask_last_move",
+]
+only_if = "ends_with_question"
+
+[[criterion]]
+key = "question_idea"
+question = "The reply ends with a question. Does answering that question lead the player to the idea the reply teaches?"
+applies_to = [
+    "lesson", "verdict_weaker", "stuck_hint", "decisive_question", "ask_hint", "ask_plan",
+    "ask_last_move",
+]
+only_if = "ends_with_question"
+
+[[criterion]]
+key = "question_open"
+question = "The reply ends with a question. Is the answer to that question something the reply itself does not already state?"
 applies_to = [
     "lesson", "verdict_weaker", "stuck_hint", "decisive_question", "ask_hint", "ask_plan",
     "ask_last_move",
@@ -39,8 +67,10 @@ only_if = "ends_with_question"
 
 [[criterion]]
 key = "connection"
-question = "Where the record gives a link to the player's game so far -- an earlier moment, a recurring mistake, their stated plan -- does the reply use it? If the record gives no such link, answer yes."
+question = "Does the reply name the move of at least one of the earlier moments of the same pattern its request listed? (Decided in code: rubric.names_a_link.)"
 applies_to = ["lesson", "verdict_weaker", "ask_last_move", "ask_game_so_far"]
+only_if = "has_links"
+code = "names_a_link"
 
 [[criterion]]
 key = "actionable"
@@ -50,7 +80,18 @@ applies_to = [
     "ask_game_so_far",
 ]
 
+# The tone, one fact at a time.
 [[criterion]]
-key = "tone"
-question = "Is the tone encouraging and honest -- no gushing, no scolding, no hedging?"
+key = "no_gushing"
+question = "Is the reply free of over-the-top praise?"
+applies_to = ["*"]
+
+[[criterion]]
+key = "no_scolding"
+question = "Is the reply free of blame or harsh words about the player?"
+applies_to = ["*"]
+
+[[criterion]]
+key = "no_hedging"
+question = "Is the reply free of hedging words -- maybe, perhaps, it might be -- about what it states?"
 applies_to = ["*"]

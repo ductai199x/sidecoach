@@ -49,7 +49,13 @@ _NAMES = {
     chess.QUEEN: "queen",
     chess.KING: "king",
 }
-_NUMBER = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}
+# Counts in words to twenty: a digit in the first hint is a figure the coach may not quote
+# ("you have 10 checks": the pre-spend audit, 2026-09-25).
+_NUMBER = {
+    2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine",
+    10: "ten", 11: "eleven", 12: "twelve", 13: "thirteen", 14: "fourteen", 15: "fifteen",
+    16: "sixteen", 17: "seventeen", 18: "eighteen", 19: "nineteen", 20: "twenty",
+}  # fmt: skip
 _PAWN_MOVE = re.compile(r"[a-h](x[a-h])?[1-8]")
 
 # The second hint's question for the best move's own idea, when the idea reader has none:

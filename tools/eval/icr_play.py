@@ -799,6 +799,12 @@ def main() -> None:
         help="play the games with no model and print what a round would cost; call nothing",
     )
     ap.add_argument(
+        "--dump-items",
+        type=Path,
+        help="with --dry-run: write the drawn moments (JSONL, the template as the reply) here, "
+        "to read what the round would judge -- tools/eval/align.py reads them",
+    )
+    ap.add_argument(
         "--floor",
         action="store_true",
         help="judge each judged moment's template too and write the parity report",
@@ -921,6 +927,12 @@ def dry_run(
     prices = settings_prices()
     seed = parity.round_seed(args.seed, args.start_round)
     judged = sample_moments(items, args.moments_per_game, seed)
+    if args.dump_items:
+        args.dump_items.parent.mkdir(parents=True, exist_ok=True)
+        with args.dump_items.open("w", encoding="utf-8") as out:
+            for it in judged:
+                out.write(json.dumps(it) + "\n")
+        print(f"{len(judged)} drawn moments written to {args.dump_items}", flush=True)
     stop_after = stops(catalogue_of(items), {it["id"] for it in judged})
     played = [r for r in requests if r["ply"] <= stop_after.get(r["game"].replace("/", "__"), -1)]
     played.sort(key=lambda r: (r["game"], r["ply"]))

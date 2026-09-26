@@ -5,6 +5,7 @@ the game here is three plies written by hand."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import random
 import sys
@@ -227,6 +228,19 @@ def test_an_item_keeps_the_request_the_coach_built(tmp_path):
     # The lesson's cost is owed in words: its directive forbids figures.
     cost = next(f for f in item["required"] if f["key"] == "cost")
     assert "%" not in cost["value"]
+    # The sets the coach's checks read travel too: the record's numbered moves (the leak
+    # check's exemption) and the earlier moves a lesson may not name.
+    assert request.record and request.record == frozenset(item["record"])
+    assert item["unlisted"] is not None and request.unlisted == frozenset(item["unlisted"])
+
+
+def test_every_request_field_a_check_reads_travels_through_the_item():
+    # The judge re-runs the coach's checks on the request rebuilt from an item: a field of
+    # the coach's _Request neither carried nor rebuilt makes that run not the coach's (the
+    # record and the earlier moves were missing until 2026-09-25).
+    carried = set(judge.REQUEST_TUPLES) | set(judge.REQUEST_SETS) | set(judge.REQUEST_OPTIONAL_SETS)
+    fields = {f.name for f in dataclasses.fields(judge._Request)}
+    assert fields - carried - judge.REQUEST_REBUILT == set()
 
 
 def test_the_judges_record_holds_the_whole_request_the_coachs_words_marked(tmp_path):
@@ -835,17 +849,30 @@ def test_the_rubric_file_reads_as_criteria():
     criteria = rubric.load_rubric(rating=(1000, 1400))
     keys = [c.key for c in criteria]
     # "economy" is gone (Tai, 2026-09-25): conciseness is the prompt's and the length check's.
-    assert keys == ["why", "transfer", "question", "connection", "actionable", "tone"]
+    # One atomic fact a question (Tai, 2026-09-18): the question and the tone split in three.
+    assert keys == [
+        "why",
+        "transfer",
+        "question_board",
+        "question_idea",
+        "question_open",
+        "connection",
+        "actionable",
+        "no_gushing",
+        "no_scolding",
+        "no_hedging",
+    ]
     by = {c.key: c for c in criteria}
-    assert by["tone"].applies("ask_material", "Level.")  # "*": every class
+    assert by["no_hedging"].applies("ask_material", "Level.")  # "*": every class
     assert not by["connection"].applies("stuck_hint", "Look at e5.")
-    # The question criterion is asked only of a reply that ends with a question -- and not
+    # The question criteria are asked only of a reply that ends with a question -- and not
     # of "what were you expecting?", the coach listening rather than teaching.
-    assert by["question"].applies("lesson", "Nf3 was better. Which piece guards e5?")
-    assert not by["question"].applies("lesson", "Nf3 was better.")
-    assert not by["question"].applies(
-        "lesson", "Nf3 was better. What were you expecting that move to do?"
-    )
+    for key in ("question_board", "question_idea", "question_open"):
+        assert by[key].applies("lesson", "Nf3 was better. Which piece guards e5?")
+        assert not by[key].applies("lesson", "Nf3 was better.")
+        assert not by[key].applies(
+            "lesson", "Nf3 was better. What were you expecting that move to do?"
+        )
 
 
 def test_a_rubric_file_with_a_repeated_key_or_an_unknown_condition_is_refused(tmp_path):
@@ -890,15 +917,15 @@ def test_the_rubric_asks_each_question_once_and_scores_the_replies(tmp_path, mon
     asked = model.calls
     assert not failed and asked > 0
     ai_keys = set(answers["ai"][item["id"]])
-    assert "question" in ai_keys and "tone" in ai_keys  # the AI reply ends with a question
-    assert "question" not in answers["floor"][item["id"]]  # the template does not
+    assert "question_open" in ai_keys and "no_hedging" in ai_keys  # it ends with a question
+    assert "question_open" not in answers["floor"][item["id"]]  # the template does not
     # Asked again: nothing to pay for.
     rubric.run_rubric("run", tasks, criteria, model, ledger, workers=1)
     assert model.calls == asked
     # An edited question is asked again, and only it.
     edited = [
         rubric.Criterion(c.key, c.question + " Be strict.", c.applies_to, c.only_if)
-        if c.key == "tone"
+        if c.key == "no_hedging"
         else c
         for c in criteria
     ]
@@ -906,9 +933,9 @@ def test_the_rubric_asks_each_question_once_and_scores_the_replies(tmp_path, mon
     assert model.calls == asked + 2 * 2  # two replies, two votes each
     kept = {arm: rubric.load_answers("run", arm, reuse_stale=False) for arm in ("ai", "floor")}
     rows = rubric.scores_of(tasks, edited, kept)
-    assert rows[0]["excellence"] is not None and rows[0]["answers"]["tone"] is True
+    assert rows[0]["excellence"] is not None and rows[0]["answers"]["no_hedging"] is True
     text = rubric.report("run", rows, edited, failed)
-    assert "| tone |" in text and "Excellence" in text
+    assert "| no_hedging |" in text and "Excellence" in text
 
 
 def test_the_rubric_finds_a_runs_items_and_judges_the_models_own_replies(tmp_path, monkeypatch):
@@ -939,3 +966,230 @@ def test_the_rubric_finds_a_runs_items_and_judges_the_models_own_replies(tmp_pat
     work = [("R" * 8000, 3)]
     est = estimate.repeated_record_estimate(work, PRICES, votes=2)
     assert est.calls == 6 and est.cached == pytest.approx(5 * estimate._tokens("R" * 8000))
+
+
+# ---- the judge, spot on: claims grounded in the reply's words ---------------------------
+
+
+def _claim(claim: str, quote: str) -> dict:
+    return {"claim": claim, "quote": quote}
+
+
+def test_a_claim_made_out_of_advice_is_dropped():
+    # Round 3: "keep the pieces active" read as "The pieces are active", "look for forcing
+    # checks or captures" as "Re6+ is a forcing capture".
+    reply = (
+        "Nf3 was better: it guards e5. Castle first, then keep the pieces active, and look "
+        "for forcing checks or captures. Which piece is loose?"
+    )
+    kept, quotes, dropped = judge.ground_claims(
+        [
+            _claim("Nf3 guards e5", "it guards e5"),
+            _claim("The pieces are active", "keep the pieces active"),
+            _claim("Re6+ is a forcing capture", "look for forcing checks or captures"),
+            _claim("The knight on c6 is loose", "Which piece is loose?"),
+            _claim("The knight on f3 guards d4", "the knight guards d4"),  # not the reply's words
+            _claim("Nf3 keeps e5 guarded", "Nf3 keeps e5 safe"),  # paraphrased: still judged
+        ],
+        reply,
+    )
+    assert kept == ["Nf3 guards e5", "Nf3 keeps e5 guarded"]
+    assert quotes == ["it guards e5", "Nf3 keeps e5 safe"]
+    why = {d["claim"]: d["why"] for d in dropped}
+    assert why["The pieces are active"] == "advice"
+    assert why["Re6+ is a forcing capture"] == "advice"
+    assert why["The knight on c6 is loose"] == "a question"
+    # A quote that is not word for word no longer leaves a claim unjudged; this one still
+    # names a piece the reply never does.
+    assert why["The knight on f3 guards d4"] == "not the reply's own"
+
+
+@pytest.mark.parametrize(
+    ("reply", "quote", "why"),
+    [
+        ("Don't leave the rook on e7 hanging.", "leave the rook on e7 hanging", "advice"),
+        ("Never trade the bishop on g7.", "trade the bishop on g7", "advice"),
+        ("Do not take on e5 yet.", "take on e5 yet", "advice"),
+        ("So move the queen off d1 now.", "move the queen off d1 now", "advice"),
+        # The statement before a question is judged; only the question's own clause is not
+        # (the pre-spend audit, 2026-09-25: 13 of 30 statements were dropped unjudged).
+        (
+            "Their knight on d5 is loose, so what attacks it?",
+            "their knight on d5 is loose",
+            None,
+        ),
+        ("Their knight on d5 is loose, so what attacks it?", "what attacks it?", "a question"),
+        (
+            "Their knight on d5 is loose; which of yours can hit it?",
+            "their knight on d5 is loose",
+            None,
+        ),
+        ("Which piece is loose?", "which piece is loose?", "a question"),
+        ("Nothing defends their rook, doesn't it look loose?", "nothing defends their rook", None),
+        ("Their knight on d5 \u2014 it \u2019s loose.", "their knight on d5 - it 's loose", None),
+        # "Remember that X" states X; a noun is no order; an order with its object is advice.
+        ("Remember that your king on g1 has no luft.", "your king on g1 has no luft", None),
+        ("Check is coming on g7.", "check is coming on g7", None),
+        ("Keep your rooks connected.", "keep your rooks connected", "advice"),
+    ],
+)
+def test_advice_and_questions_are_told_from_statements(reply, quote, why):
+    reply_n = judge.normalise(reply)
+    assert judge.advice_or_question(judge.normalise(quote), reply_n) == why
+
+
+def test_a_claim_in_the_old_form_still_reads():
+    # A judgment cached before quotes: its claims are bare strings, checked the old way.
+    kept, quotes, dropped = judge.ground_claims(
+        ["Nf3 guards e5", "the endgame"], "Nf3 was better: it guards e5."
+    )
+    assert kept == ["Nf3 guards e5"] and quotes == [None]
+    assert dropped == [{"claim": "the endgame", "quote": None, "why": "nothing identified"}]
+
+
+def test_the_vote_counts_a_plain_inference_as_supported():
+    question = judge.support_question("This is no longer opening theory")
+    assert "following plainly from what it states" in question
+    assert "Answer no only if it is absent from the record or contradicted by it" in question
+    assert question.endswith('Statement: "This is no longer opening theory"')
+    assert judge.COACH_WORDS_RULE in judge.BINARY_SYSTEM
+    assert '"quote"' in judge.DECOMPOSE_SYSTEM
+
+
+# ---- the rubric, more checkable: connection decided in code ------------------------------
+
+
+def test_connection_is_decided_in_code_from_the_requests_earlier_moments():
+    import rubric  # pyright: ignore[reportMissingImports]
+
+    request = (
+        "# Position now\n...\n\n# Earlier in this game\n"
+        "- At Bg4 (their move): the same pin on your knight.\n"
+        "- At Nxe5+ (your move): the same fork.\n\n# Task\nThe lesson."
+    )
+    assert rubric.earlier_moments(request) == ["Bg4", "Nxe5+"]
+    assert rubric.names_a_link("Like after Bg4, the pin costs you the knight.", request)
+    assert rubric.names_a_link("As with Nxe5, the fork wins material.", request)  # no mark
+    assert not rubric.names_a_link("Watch the pin on your knight.", request)
+    assert rubric.earlier_moments("# Task\nThe lesson.") == []
+    by = {c.key: c for c in rubric.load_rubric(rating=(1000, 1400))}
+    connection = by["connection"]
+    assert connection.code == "names_a_link" and connection.only_if == "has_links"
+    assert connection.applies("lesson", "Any reply.", request)
+    assert not connection.applies("lesson", "Any reply.", "# Task\nThe lesson.")  # not asked
+    # One atomic fact a question: what the task asked is the alignment check's (align.py),
+    # never a condition the judge weighs.
+    assert by["actionable"].question == (
+        "Does the reply leave the player something concrete to look for or do next?"
+    )
+    assert "name at least one specific piece" in by["why"].question
+
+
+def test_the_rubric_never_calls_the_judge_for_a_criterion_code_decides(tmp_path, monkeypatch):
+    import rubric  # pyright: ignore[reportMissingImports]
+
+    monkeypatch.setattr(judge, "JUDGMENTS", tmp_path / "judgments")
+    item = _lesson(_build(tmp_path))
+    item["messages"] = [
+        {
+            "role": "user",
+            "content": item["messages"][-1]["content"]
+            + "\n\n# Earlier in this game\n- At Bg4 (their move): the same pin.",
+        }
+    ]
+    reply = "Nf3 was better, as after Bg4: develop before the pin comes."
+    tasks = [rubric.Task("ai", item, reply)]
+    connection = next(c for c in rubric.load_rubric(rating=(1000, 1400)) if c.key == "connection")
+    model = FakeModel("no")
+    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
+    answers, failed = rubric.run_rubric("run", tasks, [connection], model, ledger, workers=1)
+    assert model.calls == 0 and not failed
+    assert answers["ai"][item["id"]]["connection"]["yes"] is True
+    cost, questions = rubric.estimate_of(tasks, [connection], {}, PRICES)
+    assert questions == 0 and cost.calls == 0
+
+
+# ---- the gold set ----------------------------------------------------------------------
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+
+def test_the_judge_is_compared_with_hand_labels(tmp_path, monkeypatch):
+    import gold  # pyright: ignore[reportMissingImports]
+    import report  # pyright: ignore[reportMissingImports]
+
+    monkeypatch.setattr(judge, "JUDGMENTS", tmp_path)
+    monkeypatch.setattr(report, "JUDGMENTS", tmp_path)
+
+    def judged(i: str, unsupported: list[str]) -> dict:
+        return {
+            "id": i,
+            "class": "lesson",
+            "reply": f"reply {i}",
+            "scores": {"unsupported": [f"{u} -- no" for u in unsupported]},
+        }
+
+    _write_jsonl(
+        tmp_path / "run" / "g.jsonl",
+        [
+            judged("clean", []),
+            judged("caught", ["The c-file leads into Black's position"]),
+            judged("false-fail", ["This is no longer opening theory"]),
+            judged("false-pass", []),
+        ],
+    )
+    _write_jsonl(
+        tmp_path / "run-rubric" / "g.jsonl",
+        [{"id": "clean", "answers": {"why": {"q": "x", "yes": False, "reply": "r"}}}],
+    )
+    labels = tmp_path / "gold.jsonl"
+    _write_jsonl(
+        labels,
+        [
+            {
+                "id": "clean",
+                "arm": "ai",
+                "false_claims": [],
+                "rubric": {"why": True, "no_hedging": None},
+            },
+            {"id": "caught", "false_claims": ["the c-file leads into Black's position"]},
+            {"id": "false-fail", "false_claims": []},
+            {"id": "false-pass", "false_claims": ["Qxb7 wins a pawn"]},
+            {"id": "missing", "false_claims": []},
+        ],
+    )
+    comp = gold.compare(gold.load_gold(labels), "run")
+    assert comp.claims["agree"] == 2
+    assert comp.claims["judge false fail"] == 1 and comp.claims["judge false pass"] == 1
+    assert comp.claims["not judged"] == 1
+    assert comp.rubric["why"]["judge false fail"] == 1
+    text = gold.summary(comp, "run", "gold")
+    assert "judge faulted, label passes: This is no longer opening theory" in text
+    assert "label faults, judge passed: Qxb7 wins a pawn" in text
+    assert gold.same_claim(
+        "the c-file leads into Black's position", "The c-file leads into Black's position"
+    )
+
+
+def test_a_rejudge_covers_the_runs_own_moments(tmp_path, monkeypatch):
+    import gold  # pyright: ignore[reportMissingImports]
+    import rubric  # pyright: ignore[reportMissingImports]
+
+    monkeypatch.setattr(judge, "JUDGMENTS", tmp_path / "judgments")
+    items = _build(
+        tmp_path,
+        provider=FakeModel("Nf3 was better."),
+        ledger=judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES),
+    )
+    folder = tmp_path / "items"
+    _write_jsonl(folder / "g.jsonl", items)
+    lesson = _lesson(items)
+    _write_jsonl(tmp_path / "judgments" / "run" / "g.jsonl", [{"id": lesson["id"]}])
+    _write_jsonl(tmp_path / "judgments" / "run-floor" / "g.jsonl", [{"id": lesson["id"]}])
+    p = gold.plan("run", folder, floor=True, with_rubric=True)
+    assert [r["id"] for r in p.ai] == [lesson["id"]] and p.floor == [lesson["id"]]
+    parts = gold.estimate_of(p, rubric.load_rubric(rating=(1000, 1400)))
+    assert set(parts) >= {"AI arm", "floor arm"} and all(e.usd >= 0 for e in parts.values())

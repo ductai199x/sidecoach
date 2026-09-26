@@ -24,6 +24,7 @@ The `Coach` owns one of these per game and asks it for the messages of every req
 
 from __future__ import annotations
 
+import contextlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -557,15 +558,11 @@ class Conversation:
         move = record.move
         assessment = record.assessment
         board_after = chess.Board(move.fen_after)
-        material = material_text(board_after, user_colour)
-        recapture = self._expected_recapture(record, board_before, board_after)
-        if recapture is not None:
+        material, san, then = self._material_words(record, board_before, board_after, user_colour)
+        if san is not None:
             # A capture the engine expects to be answered: "up a knight" after Nxe6 was
             # read as a knight won, and the coach said so, with dxe6 to come.
-            san, then = recapture
-            material += (
-                f" before the expected recapture {san}, then {material_text(then, user_colour)}"
-            )
+            material += f" before the expected recapture {san}, then {then}"
         if assessment is None:
             return f"verdict not in yet. Material: {material}."
         label = assessment.label.value if assessment.label else assessment.severity.value
@@ -620,6 +617,38 @@ class Conversation:
             )
             text += f" Motifs in the move: {named}."
         return text
+
+    def _material_words(
+        self,
+        record: PlyRecord,
+        board_before: chess.Board,
+        board_after: chess.Board,
+        user_colour: chess.Color,
+    ) -> tuple[str, str | None, str | None]:
+        """The material after the move, to the player; and when the engine expects the
+        capture taken back, the recapture (SAN) and the material after it."""
+        material = material_text(board_after, user_colour)
+        recapture = self._expected_recapture(record, board_before, board_after)
+        if recapture is None:
+            return material, None, None
+        san, then = recapture
+        return material, san, material_text(then, user_colour)
+
+    def material_now(self) -> tuple[str, str | None, str | None] | None:
+        """The material as the game stands, as the record's last move gives it: now, and
+        the expected recapture with the material after it (`_material_words`). None before
+        the first move."""
+        active = self.active_records()
+        if not active:
+            return None
+        record = active[-1]
+        user_colour = chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
+        return self._material_words(
+            record,
+            chess.Board(record.move.fen_before),
+            chess.Board(record.move.fen_after),
+            user_colour,
+        )
 
     @staticmethod
     def _expected_recapture(
@@ -927,6 +956,77 @@ class Conversation:
     def judged_records(self) -> list[PlyRecord]:
         """Every move that was played and judged, across re-reads, for the tally."""
         return [r for r in self.records if not r.withdrawn]
+
+    def same_idea(self, key: str, before_ply: int, limit: int = 2) -> list[str]:
+        """The player's moves before `before_ply` played in a position with the very same
+        idea -- the pattern or the plan its facts name, `key` -- the latest `limit` of them,
+        one line each: the move, how it went, and what the coach said after it. Book moves
+        are theory, not a pattern found. The only earlier moments a lesson may tie itself to:
+        told to find its own in the record, the model misremembered them (quality rounds 2
+        and 3, 2026-09-25)."""
+        active = self.active_records()
+        lines: list[str] = []
+        for i, record in enumerate(active):
+            move = record.move
+            if i == 0 or move.ply >= before_ply or not move.by_user:
+                continue
+            faced = active[i - 1]
+            if faced.move.ply != move.ply - 1 or faced.facts is None:
+                continue
+            if (faced.facts.theme or faced.facts.plan) != key:
+                continue
+            a = record.assessment
+            if a is None or (a.label is not None and a.label.value == "book"):
+                continue
+            label = a.label.value if a.label else a.severity.value
+            better = ""
+            if a.best and a.best[0] != move.uci:
+                try:
+                    better = chess.Board(move.fen_before).san(chess.Move.from_uci(a.best[0]))
+                except ValueError:
+                    better = ""
+            if not better:
+                how = f"{label} -- the player found it"
+            elif a.severity is Severity.NONE:
+                how = f"{label}; {better} was better"
+            else:
+                rated = ("an " if label[0] in "aeiou" else "a ") + label
+                how = f"{rated}; {better} was better"
+            line = f"- At {move.san} (the player's move): {how}."
+            said = self._said_after(record)
+            if said:
+                line += f'\n    YOU (the coach) said: "{said}"'
+            lines.append(line)
+        return lines[-limit:]
+
+    def _said_after(self, record: PlyRecord) -> str:
+        """The coach's first words after `record`'s move, before the next move: "" if none."""
+        after = False
+        for entry in self.entries:
+            if entry.kind == "ply":
+                if after:
+                    return ""
+                after = entry.record is record
+            elif after and entry.kind == "ask":
+                return ""
+            elif after and entry.kind == "coach" and entry.text:
+                return entry.text
+        return ""
+
+    def moves_before(self, ply: int) -> frozenset[str]:
+        """The moves of the game before `ply` (SAN) -- those played and those the verdicts
+        preferred -- that name a piece, a capture or castling: a pawn's step reads the same
+        as a square, and a reply names squares for what stands on them."""
+        out: set[str] = set()
+        for record in self.active_records():
+            if record.move.ply >= ply:
+                continue
+            out.add(record.move.san)
+            a = record.assessment
+            if a is not None and a.best:
+                with contextlib.suppress(ValueError):
+                    out.add(chess.Board(record.move.fen_before).san(chess.Move.from_uci(a.best[0])))
+        return frozenset(m for m in out if not re.fullmatch(r"[a-h][1-8](?:=[QRBN])?[+#]?", m))
 
     def _record_before(self, record: PlyRecord) -> PlyRecord | None:
         active = self.active_records()

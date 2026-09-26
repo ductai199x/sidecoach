@@ -196,7 +196,8 @@ def test_a_good_move_goes_to_the_model_which_names_the_better_one() -> None:
     assert texts == ["Fine, but Qxf7# was there: the mate."]
     assert len(provider.prompts) == 1, "the model, for the better move"
     directive = provider.prompts[0][1][-1]["content"]
-    assert "fine but not the strongest" in directive and "Qxf7#" in directive
+    # The label said, which the judge asks the sense of: "fine" alone was said of inaccuracies.
+    assert "which was good: playable, not the strongest" in directive and "Qxf7#" in directive
     assert "Do not open with the move they played" in directive
     coach, provider = _coach(["never used"])
     texts = _played(coach, provider, "Nc3", Label.EXCELLENT)

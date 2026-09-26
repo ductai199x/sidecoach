@@ -117,8 +117,12 @@ DECOMPOSE_SYSTEM = (
     "claim of kind 3. A statement is a claim only when what it is about is identified: a "
     "move by name, a piece with its square or its owner and square, a side, a count, the "
     "opening; leave out a statement about 'the rook', 'a piece', 'the attack' when the "
-    "reply does not say which. If the reply makes no claim, return an empty list. Answer "
-    'in JSON only: {"claims": [str]}'
+    "reply does not say which. Advice, an instruction or a question is never turned into a "
+    "claim: 'keep the pieces active' is not the claim 'the pieces are active', and 'look "
+    "for forcing checks or captures' is not the claim 'Re6+ is a forcing capture'. With each "
+    "claim give its quote: the exact words of the reply it comes from, copied character for "
+    "character, as short as the claim allows. If the reply makes no claim, return an empty "
+    'list. Answer in JSON only: {"claims": [{"claim": str, "quote": str}]}'
 )
 
 # What the coach's own earlier words are evidence of, for every question put to the judge
@@ -383,6 +387,40 @@ def lifetime_usage() -> dict[str, int]:
 # squares), when the coach's _Request has them: what the reply must name, and the moves
 # that would give the answer away now (af1bae2). Looked up by name, as the coach changes.
 REQUEST_TUPLES = ("must_name", "now_answer")
+# Sets of moves: the game's moves as the record numbers them (the leak check's exemption),
+# and the earlier moves a reply may not name, None where the directive has no place for a
+# link (`unlisted_links`). Neither travelled before 2026-09-25, so the judge's re-run of the
+# coach's checks was not the coach's.
+REQUEST_SETS = ("record",)
+REQUEST_OPTIONAL_SETS = ("unlisted",)
+# The request's fields an item does not carry by name: rebuilt from the item's own (the
+# messages, the facts, the board, the question, what was disclosed, the record's moves),
+# stored above, or read by no check. Every other field must be carried: the round-trip test
+# fails on a new one until it is (tests/test_eval_tools.py).
+REQUEST_REBUILT = frozenset(
+    {
+        "trigger",
+        "level",
+        "system",
+        "messages",
+        "facts",
+        "board",
+        "fallback",
+        "ply",
+        "game_id",
+        "user_text",
+        "disclosed",
+        "annotations",
+        "candidates",
+        "played",
+        "played_san",
+        "assessment",
+        "stream_to",
+        "routine",
+        "template_only",
+        "frames",
+    }
+)
 
 
 def request_fields(request: _Request) -> dict[str, Any]:
@@ -400,6 +438,13 @@ def request_fields(request: _Request) -> dict[str, Any]:
     for name in REQUEST_TUPLES:
         if hasattr(request, name):
             out[name] = list(getattr(request, name))
+    for name in REQUEST_SETS:
+        if hasattr(request, name):
+            out[name] = sorted(getattr(request, name))
+    for name in REQUEST_OPTIONAL_SETS:
+        if hasattr(request, name):
+            value = getattr(request, name)
+            out[name] = None if value is None else sorted(value)
     return out
 
 
@@ -410,6 +455,12 @@ def request_for(item: dict, system: str) -> _Request:
     assessment = item.get("assessment")
     names = {f.name for f in dataclasses.fields(_Request)}
     extra: dict[str, Any] = {n: tuple(item.get(n) or ()) for n in REQUEST_TUPLES if n in names}
+    extra |= {n: frozenset(item.get(n) or ()) for n in REQUEST_SETS if n in names}
+    extra |= {
+        n: None if item.get(n) is None else frozenset(item[n])
+        for n in REQUEST_OPTIONAL_SETS
+        if n in names
+    }
     request = _Request(
         trigger=Trigger(item["trigger"]),
         level=DisclosureLevel[item["level"]],
@@ -1226,13 +1277,15 @@ _HEDGED = re.compile(r"\b(could|might|may|potentially|possibly|perhaps)\b", re.I
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 
-def _is_claim_of(claim: str, reply: str) -> bool:
+def _is_claim_of(claim: str, reply: str, *, questions: bool = True) -> bool:
     """Whether the decomposition's claim is the reply's own. Every move, square and piece
     word in it must appear in the reply (at effort none the decomposition wrote 'your
     h-pawn on h2 is under attack' and 'Re8+ creates a two-layer attack' from the record,
-    for replies that named neither); a claim whose words come from a question sentence
-    is not a claim ('...while keeping your King safe?'); a hedge (could, might) that
-    names no move is not a fact."""
+    for replies that named neither); with `questions`, a claim whose words come from a
+    question sentence is not a claim ('...while keeping your King safe?') -- for a claim
+    without a quote only: a quoted one is placed by its clause (advice_or_question), and the
+    statement before a question ("Their rook on e7 is undefended -- which piece can take
+    it?") is judged; a hedge (could, might) that names no move is not a fact."""
     low = reply.lower()
     for san in _SAN_IN_TEXT.findall(claim):
         core = san.rstrip("+#")
@@ -1246,7 +1299,7 @@ def _is_claim_of(claim: str, reply: str) -> bool:
     ):
         return False
     words = {w for w in re.findall(r"[a-z][a-z'-]{3,}", claim.lower()) if w not in _CLAIM_STOP}
-    if words:
+    if words and questions:
         best, best_hit = None, 0
         for sentence in _SENTENCE_SPLIT.split(reply.strip()):
             hit = len(words & set(re.findall(r"[a-z][a-z'-]{3,}", sentence.lower())))
@@ -1299,10 +1352,12 @@ def _identified(claim: str) -> bool:
     """Whether a claim is about something the record could identify: a move, a square, a
     piece, a count, a side, the standing, a named theme. "You played a strong game overall"
     is an appraisal the decomposition should have left out; it is dropped, not voted on.
-    So is a claim under three words ("The endgame"), and a piece named with no square,
-    no move and no material or tactical word ("bringing your King toward a secure
-    endgame square")."""
-    if len(claim.split()) < 3:
+    So is a claim under three words that names no move ("The endgame" -- but "Qxf7+ wins"
+    is a claim: the pre-spend audit, 2026-09-25), and a piece named with no square, no
+    move and no material or tactical word ("bringing your King toward a secure endgame
+    square")."""
+    names_move = any(not re.fullmatch(r"[a-h][1-8]", x) for x in _SAN_IN_TEXT.findall(claim))
+    if len(claim.split()) < 3 and not names_move:
         return False
     if _IDENTIFIED.search(claim) is None:
         return False
@@ -1316,6 +1371,302 @@ def _identified(claim: str) -> bool:
         and not has_place
         and not _MATERIAL_WORD.search(claim)
         and not re.search(r"\d", claim)
+    )
+
+
+# ---- claims grounded in the reply's own words -----------------------------------------
+#
+# Round 3 of the quality work found the split inventing claims out of advice: "keep the
+# pieces active" came back as "The pieces are active", "look for forcing checks or captures"
+# as "Re6+ is a forcing capture". Each claim now comes with the words of the reply it was
+# read from, and code keeps it only when those words are in the reply and are a statement.
+
+_DASHES = re.compile(r"[\u2010-\u2015\u2212]|--")
+_SINGLE_QUOTES = re.compile(r"[\u2018\u2019\u201a\u201b\u2032`]")
+_DOUBLE_QUOTES = re.compile(r"[\u201c\u201d\u201e\u201f\u2033]")
+_SPACES = re.compile(r"\s+")
+
+# A clause that opens with one of these is advice or an instruction, not a statement.
+IMPERATIVES = frozenset(
+    [
+        "keep",
+        "look",
+        "use",
+        "find",
+        "take",
+        "move",
+        "remember",
+        "avoid",
+        "watch",
+        "try",
+        "consider",
+        "check",
+        "bring",
+        "make",
+        "put",
+        "get",
+        "go",
+        "play",
+        "think",
+        "ask",
+        "answer",
+        "stop",
+        "meet",
+        "spot",
+        "count",
+        "see",
+        "notice",
+        "prefer",
+        "choose",
+        "give",
+        "let",
+        "start",
+        "aim",
+        "improve",
+        "push",
+        "trade",
+        "attack",
+        "defend",
+        "protect",
+        "hold",
+        "hit",
+        "follow",
+    ]  # fmt: skip
+)
+_NEGATED_ORDER = ("don't", "dont", "never", "always")
+# Words that join a clause to the one before and are skipped to find its first word.
+_JOINERS = frozenset({"so", "then", "and", "but", "or"})
+# The word after an imperative that makes the clause advice: its object, or where it points
+# ("check the knight", "look at e5", "keep your rooks connected"). Anything else and the word
+# is a noun or the clause states something: "Check is coming on g7", "attack wins here".
+_OBJECT_START = frozenset(
+    [
+        "your",
+        "the",
+        "a",
+        "an",
+        "every",
+        "all",
+        "each",
+        "whether",
+        "if",
+        "for",
+        "what",
+        "which",
+        "how",
+        "it",
+        "them",
+        "this",
+        "these",
+        "those",
+        "any",
+        "some",
+        "out",
+        "up",
+        "at",
+        "with",
+        "to",
+        "into",
+        "over",
+        "back",
+        "first",
+        "one",
+        "two",
+        "both",
+        "their",
+        "my",
+        "his",
+        "her",
+        "its",
+        "our",
+        "more",
+        "forward",
+        "ahead",
+        "around",
+        "carefully",
+        "quickly",
+        "calmly",
+        "twice",
+        "again",
+        "before",
+        "after",
+        "away",
+        "down",
+    ]  # fmt: skip
+)
+# After "remember", "notice", "see", "keep in mind", "note": what follows is stated by the
+# reply ("remember that your king is still in the centre"), and is judged.
+_EMBEDS = ("that ", "how ", "in mind that ", "in mind how ", "why ")
+# A question's own clause opens with one of these ("-- which piece can take it?").
+_INTERROGATIVE = frozenset(
+    [
+        "which",
+        "what",
+        "where",
+        "how",
+        "why",
+        "who",
+        "whom",
+        "whose",
+        "when",
+        "can",
+        "could",
+        "do",
+        "does",
+        "did",
+        "is",
+        "are",
+        "was",
+        "were",
+        "should",
+        "would",
+        "will",
+        "shall",
+        "may",
+        "might",
+        "have",
+        "has",
+        "had",
+        "doesn't",
+        "isn't",
+        "aren't",
+        "wasn't",
+        "don't",
+        "can't",
+        "won't",
+        "wouldn't",
+        "shouldn't",
+        "couldn't",
+        "hasn't",
+        "haven't",
+        "didn't",
+    ]  # fmt: skip
+)
+_CLAUSE_OPENING = re.compile(
+    r"(?:^|[,;:]\s*|\s+-{1,2}\s+|\s+(?=(?:so|and|but|then)\s))"
+    r"(?:(?:so|and|but|then)\s+)?([a-z']+)"
+)
+
+
+def _question_clause(sentence: str) -> int:
+    """Where the question of a sentence that ends with "?" begins: the last clause that opens
+    with an interrogative ("Their rook on e7 is undefended -- which piece can take it?"), or
+    the sentence's start when none does."""
+    at = 0
+    for found in _CLAUSE_OPENING.finditer(sentence):
+        if found.group(1) in _INTERROGATIVE:
+            at = found.start(1)
+    return at
+
+
+def normalise(text: str) -> str:
+    """Text as a quote is compared with the reply: one kind of dash, of quote mark and of
+    space, and no case."""
+    text = _DASHES.sub("-", text)
+    text = _SINGLE_QUOTES.sub("'", text)
+    text = _DOUBLE_QUOTES.sub('"', text)
+    return _SPACES.sub(" ", text).strip().casefold()
+
+
+def advice_or_question(quote: str, reply: str) -> str | None:
+    """Why the clause `quote` (normalised, found in the normalised `reply`) is certainly no
+    statement, or None: judged. Only what is certain is left unjudged, since a claim left
+    out is a fabrication never looked at (the pre-spend audit, 2026-09-25: 13 of 30 test
+    sentences were dropped wrongly):
+
+    "a question" when the quote lies in the question's own clause of a sentence that ends
+    with "?" -- not the statement before it ("Their rook on e7 is undefended -- which piece
+    can take it?"); "advice" when its clause opens with an imperative and its object ("keep
+    your rooks connected"), or with "don't", "do not", "never", "always" -- not "remember
+    that ..." (what follows is stated) and not a noun ("Check is coming on g7")."""
+    start = reply.find(quote.rstrip("?"))
+    if start < 0:
+        return None
+    end = re.search(r"[.!?]", reply[start + len(quote.rstrip("?")) :])
+    if (end is not None and end.group(0) == "?") or (end is None and quote.endswith("?")):
+        sentence_start = max(reply.rfind(ch, 0, start) for ch in ".!?") + 1
+        stop = start + len(quote.rstrip("?")) + (end.start() if end is not None else 0)
+        sentence = reply[sentence_start:stop]
+        lead = len(sentence) - len(sentence.lstrip())
+        if start >= sentence_start + lead + _question_clause(sentence.lstrip()):
+            return "a question"
+    head = reply[:start]
+    cut = max(head.rfind(ch) for ch in ".!?;:,")
+    dash = head.rfind(" - ")
+    if dash >= 0:
+        cut = max(cut, dash + 2)
+    words = re.findall(r"[a-z']+", (reply[cut + 1 : start] + " " + quote))
+    while words and words[0] in _JOINERS:
+        words = words[1:]
+    if not words:
+        return None
+    first = words[0]
+    second = words[1] if len(words) > 1 else ""
+    if first in _NEGATED_ORDER or (first == "do" and second == "not"):
+        return "advice"
+    if first in IMPERATIVES:
+        rest = " ".join(words[1:5]) + " "
+        if rest.startswith(_EMBEDS):
+            return None  # "remember that your king is in the centre": stated, and judged
+        if second in _OBJECT_START:
+            return "advice"
+    return None
+
+
+def ground_claims(entries: list, reply: str) -> tuple[list[str], list[str | None], list[dict]]:
+    """The claims kept from the split, their quotes, and the ones dropped with why.
+
+    A claim with a quote is kept only when the quote is in the reply (dashes, quote marks
+    and spaces aside) and is a statement -- not advice, an instruction or a question. A
+    claim in the old form (a bare string: a judgment cached before quotes) has no quote to
+    check. Every claim must then pass the older filters: it names something the record could
+    identify, and every move, square and piece in it is the reply's own."""
+    reply_n = normalise(reply)
+    kept: list[str] = []
+    quotes: list[str | None] = []
+    dropped: list[dict] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            claim, quote = str(entry.get("claim") or ""), entry.get("quote")
+            quote = "" if quote is None else str(quote)
+        else:
+            claim, quote = str(entry), None
+        if not claim.strip():
+            continue
+        if quote is not None:
+            # A quote missing or not word for word in the reply leaves the claim to the vote:
+            # the split paraphrases ("the knight" for "your knight"), and a claim dropped
+            # for it was a fabrication never looked at (the pre-spend audit, 2026-09-25).
+            q = normalise(quote).strip(" \"'")
+            core = q.replace("...", "\u2026").rstrip(".,;:!").strip()
+            reply_q = reply_n.replace("...", "\u2026")
+            why = (
+                advice_or_question(core, reply_q) if core and core.rstrip("?") in reply_q else None
+            )
+            if why:
+                dropped.append({"claim": claim, "quote": quote, "why": why})
+                continue
+        if not _identified(claim):
+            dropped.append({"claim": claim, "quote": quote, "why": "nothing identified"})
+            continue
+        if not _is_claim_of(claim, reply, questions=quote is None):
+            dropped.append({"claim": claim, "quote": quote, "why": "not the reply's own"})
+            continue
+        kept.append(claim)
+        quotes.append(quote)
+    return kept, quotes, dropped
+
+
+def support_question(claim: str) -> str:
+    """The vote on one claim. "Does the record state this" failed plain inferences ("the
+    c-file leads into Black's position", "this is no longer opening theory"): a claim that
+    follows plainly from the record is supported; no only when absent or contradicted."""
+    return (
+        "Is this supported by the record -- stated there in any words, or following plainly "
+        "from what it states (ordinary chess usage of a stated fact counts: a rook on an open "
+        "file 'gets into the opponent's position', a position well past the opening 'is no "
+        "longer opening theory')? Answer no only if it is absent from the record or "
+        f'contradicted by it. Statement: "{claim}"'
     )
 
 
@@ -2305,6 +2656,8 @@ def judge_one(
     det = deterministic(item, rec["reply"], draft_check, floor=floor)
     verdict: dict[str, Any] | None = None
     claims: list[str] = []
+    quotes: list[str | None] = []
+    dropped: list[dict] = []
     reply = rec["reply"]
     # The judge never reasons: every call -- the split into claims, each vote, the board
     # checker's extractor, the master's point -- is the no-reasoning provider.
@@ -2337,11 +2690,7 @@ def judge_one(
             parsed = None
         if parsed is None:
             raise JudgeFailed(f"{rec['id']}: the decomposition never parsed: {raw[:120]!r}")
-        claims = [
-            str(c)
-            for c in parsed.get("claims", [])
-            if str(c).strip() and _identified(str(c)) and _is_claim_of(str(c), reply)
-        ]
+        claims, quotes, dropped = ground_claims(list(parsed.get("claims", [])), reply)
         binary = provider
         # Each claim: does the record state it (or does it follow from the move itself)?
         marked: list[dict] = []
@@ -2351,13 +2700,7 @@ def judge_one(
                 answer = decided
                 why = "by the record's tally or loss: " + ("right" if decided else "wrong")
             else:
-                answer = _yes_no(
-                    binary,
-                    ledger,
-                    rec["id"],
-                    record,
-                    f'Does the record state this, in these or other words? Statement: "{text}"',
-                )
+                answer = _yes_no(binary, ledger, rec["id"], record, support_question(text))
                 why = "yes" if answer else ("no" if answer is False else "not judged")
             c: dict[str, Any] = {
                 "n": n,
@@ -2525,6 +2868,10 @@ def judge_one(
         "fallback_used": rec.get("fallback_used", False),
         "deterministic": det,
         "claims": claims,
+        # The words of the reply each claim was read from, and the claims the split made
+        # that code dropped (no such words, advice, a question), with why.
+        "quotes": quotes,
+        "dropped_claims": dropped,
         "verdict": verdict,
         "judge_raw": "",
         "scores": score(item, det, verdict, claims),

@@ -23,6 +23,7 @@ import chess
 
 from sidecoach.coach.coach import _ASK_AIM
 from sidecoach.coach.disclosure import PositionFacts
+from sidecoach.coach.facts import standing_words
 from sidecoach.events import DisclosureLevel
 
 
@@ -124,19 +125,47 @@ def _plural(label: str, n: int) -> str:
     """'1 miss', '2 misses', '3 mistakes'."""
     if n == 1:
         return label
+    if label.endswith("y"):
+        return label[:-1] + "ies"  # "4 inaccuracies"
     return label + ("es" if label == "miss" else "s")
 
 
 def _eval_words(score: float) -> str:
-    if score >= 0.85:
-        return "winning"
-    if score >= 0.62:
-        return "better"
-    if score > 0.38:
-        return "about equal"
-    if score > 0.15:
-        return "worse"
-    return "losing"
+    """Who stands better, in the words the Standing line gives the model (standing_words):
+    the judge's own bands (winning from 0.85) required "better" of a reply that said
+    "winning" as the Standing line did at 0.82 (the pre-spend audit, 2026-09-25)."""
+    words = standing_words(score)
+    return words.removeprefix("you are ").removeprefix("it is ")
+
+
+# Contractions, the same on both sides: "you're a knight up" says "you are a knight up".
+_CONTRACTIONS = (
+    ("can't", "can not"),
+    ("cannot", "can not"),
+    ("won't", "will not"),
+    ("n't", " not"),
+    ("'re", " are"),
+    ("'ve", " have"),
+    ("'ll", " will"),
+    ("it's", "it is"),
+    ("that's", "that is"),
+    ("there's", "there is"),
+    ("here's", "here is"),
+    ("what's", "what is"),
+    ("i'm", "i am"),
+)
+
+
+def _plain(text: str) -> str:
+    t = text.lower().replace("\u2019", "'")
+    for short, full in _CONTRACTIONS:
+        t = t.replace(short, full)
+    return " ".join(re.sub(r"[^a-z0-9#+=]+", " ", t).split())
+
+
+def said_in(value: str, text: str) -> bool:
+    """Whether `text` says `value` word for word, contractions and punctuation aside."""
+    return bool(value) and _plain(value) in _plain(text)
 
 
 def _level_fact(m: Moment) -> list[Fact]:
@@ -147,12 +176,17 @@ def _level_fact(m: Moment) -> list[Fact]:
     if m.level <= DisclosureLevel.IDEA and f.situation:
         # The first hint is a lesson on the position (Tai, 2026-09-24): what is at stake,
         # the key fact named on the board, the trap. The directive asks for exactly these,
-        # and the template -- the floor -- says them.
+        # and the template -- the floor -- says them: each as the sheet's first hint says it.
+        # A tactic's first hint leads with its goal ("You can win a knight") in place of the
+        # stakes, which the sheet then never shows: required anyway, no reply could meet it
+        # (16 of 111 first-hint parts, the pre-spend audit, 2026-09-25).
         first = [
             Fact(key, value, "sense")
             for key, value in (("stakes", f.stakes), ("key_fact", f.key), ("trap", f.trap))
-            if value
+            if value and said_in(value, f.situation)
         ]
+        if f.stakes and not said_in(f.stakes, f.situation) and f.goal:
+            first.insert(0, Fact("goal", f.goal, "sense"))
         if first:
             return first
     if m.level <= DisclosureLevel.IDEA:
@@ -194,7 +228,7 @@ def required(
         # The idea is the one of the position the move was played from: for a lesson that
         # is the item's own facts; for a question asked after the move, facts_before.
         fb = m.facts_before if cls.id == "ask_last_move" and m.facts_before is not None else f
-        idea = fb.theme or fb.plan or (fb.ideas[0] if fb.ideas else "")
+        idea = fb.theme or fb.plan or ""
         if idea:
             out.append(Fact("idea", idea, "sense"))
         # At full disclosure the tactic itself -- what forks or pins what -- is the lesson.
@@ -221,10 +255,12 @@ def required(
         if m.material:
             out.append(Fact("material", m.material, "sense"))
     elif cls.id == "ask_threat":
-        if m.level >= DisclosureLevel.MOVE and f.threats:
-            out.extend(Fact(f"threat_{i}", t, "named") for i, t in enumerate(f.threats[:3], 1))
+        # The threats, at any rung: the sheet shows them from the idea rung on, and the coach
+        # answers "what's the threat?" with them, at most two -- never with the first hint.
+        if f.threats:
+            out.extend(Fact(f"threat_{i}", t, "named") for i, t in enumerate(f.threats[:2], 1))
         else:
-            out.extend(_level_fact(m))
+            out.append(Fact("threat", "nothing is threatened", "sense"))
     elif cls.id == "ask_named_move":
         if m.named_san:
             if m.named_rank == 1:
@@ -248,7 +284,7 @@ def required(
         out.append(Fact("move", m.last_san or "", "sense"))
         out.append(Fact("label", m.last_label or "", "sense"))
         if m.level >= DisclosureLevel.MOVE and f.threats:
-            out.extend(Fact(f"threat_{i}", t, "named") for i, t in enumerate(f.threats[:3], 1))
+            out.extend(Fact(f"threat_{i}", t, "named") for i, t in enumerate(f.threats[:2], 1))
     elif cls.id == "ask_game_so_far":
         # One yes-or-no each: how many moves were strong, each kind of slip and its count,
         # each move where ground was lost, the opening.
@@ -288,8 +324,6 @@ def required(
                     ),
                 )[1]
             out.append(Fact("lost_worst", worst, "named"))
-        if m.opening:
-            out.append(Fact("opening", m.opening, "named"))
     elif cls.id == "ask_opening":
         if m.opening:
             out.append(Fact("opening", m.opening, "named"))

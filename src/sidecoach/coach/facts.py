@@ -430,6 +430,14 @@ def _to_move(uci: str) -> chess.Move | None:
 # A line whose play-out gains this much material (in pawns' worth) is a tactic even when
 # its first move is quiet: a discovered attack, a knight move that forks next.
 TACTIC_GAIN = 2
+# A quiet first move of a tactic the idea reader finds, by its goal.
+_QUIET_TACTIC = {
+    "win": "a tactic -- the best move is quiet, but the line after it wins material",
+    "combination": "a tactic -- the best move is quiet, but the line after it wins material",
+    "mate": "a tactic -- the best move is quiet, but the line after it mates",
+    "promote": "a tactic -- the best move is quiet, but the line after it queens a pawn",
+    "attack": "a tactic -- the best move is quiet, but the attack after it wins",
+}
 
 
 def nature_of(board: chess.Board, best: chess.Move, line: Sequence[str] = ()) -> str:
@@ -584,6 +592,11 @@ def facts_from_analysis(
     nature: str | None = None
     if best is not None:
         nature = nature_of(board, best, lines[0].moves if lines else ())
+        # The nature agrees with the idea: a tactic the idea reader finds -- a pawn won back,
+        # a mate -- under TACTIC_GAIN was "quiet -- no tactic to find" beside "You have a
+        # tactic that wins back a pawn" (the pre-spend audit, 2026-09-25).
+        if tactical and nature.startswith("quiet"):
+            nature = _QUIET_TACTIC.get(idea.goal, _QUIET_TACTIC["win"])
     mechanism = idea_words.mechanism(idea)
     if mechanism is None and plan_kind in idea_words.PLAN_WHY:
         mechanism = f"{plan}: {idea_words.PLAN_WHY[plan_kind]}"

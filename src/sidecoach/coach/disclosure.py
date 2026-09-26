@@ -211,8 +211,16 @@ _PIECE_WORD_CONTEXTS = re.compile(
     rf"|(?:their|opponent's|the opponent's|enemy) {_PIECE}s?"
     rf"|(?:wins?|winning|won|trap|traps|trapped|lose|loses|losing) (?:a |an |the |their |two )?"
     rf"{_PIECE}s?"
-    r"|(?:checks?|attacks?|takes|took|captures?d?|removes?d?|hits?) (?:your|their|the|my) "
-    rf"{_PIECE} on [a-h][1-8]"
+    r"|(?:check(?:s|ing|ed)?|attack(?:s|ing|ed)?|takes|taking|took|captur(?:es?|ing|ed)"
+    r"|remov(?:es?|ing|ed)|hit(?:s|ting)?|threaten(?:s|ing|ed)?|win(?:s|ning)?|won"
+    r"|pin(?:s|ning|ned)?|fork(?:s|ing|ed)?|skewer(?:s|ing|ed)?|go(?:es|ing)? after) "
+    rf"(?:your|their|the|my) {_PIECE} on [a-h][1-8]"
+    # What their threat goes after, said without its square: "g5 attacks your queen" is the
+    # threat the sheet gives, not the move to find -- never "take your queen" or "attack
+    # with your queen" (the smoke run, 2026-09-25).
+    r"|(?:attack(?:s|ing|ed)?|threaten(?:s|ing|ed)?|hit(?:s|ting)?|pin(?:s|ning|ned)?"
+    r"|fork(?:s|ing|ed)?|skewer(?:s|ing|ed)?|go(?:es|ing)? after) (?:your|the|my) "
+    rf"{_PIECE}s?\b(?! to\b)"
     rf"|(?:your|their|my|the) {_PIECE} on [a-h][1-8] (?:is|was|remains|stays) (?:in )?"
     r"(?:check|attacked|under attack|hanging|loose|defended|undefended|pinned)",
     re.IGNORECASE,
@@ -254,6 +262,7 @@ def leak_check(
     *,
     said: str | None = None,
     record: Collection[str] = (),
+    shown: str = "",
 ) -> list[str]:
     """Withheld items that `text` mentions. An empty list means the draft is clean.
 
@@ -263,7 +272,9 @@ def leak_check(
     wins, are not it.
 
     `said` is what the user asked this turn: a square, piece word or move they named is theirs
-    already, so confirming it back is not a leak and never faulted.
+    already, so confirming it back is not a leak and never faulted. `shown` is what the sheet
+    shows beyond the facts' own words -- what the threats do -- whose pieces on their squares
+    are facts about the board, like the facts'.
 
     Below MOVE only the answer is withheld (Tai, 2026-09-25: "leaking is not a criminal
     offense ... it's useful to point out in precise manner the plan (yours or opponent's) or
@@ -330,10 +341,16 @@ def leak_check(
             elif square in answer_squares and square not in said_squares:
                 add(f"square {square}")
     elif level < DisclosureLevel.LINE:
-        shown = set(facts.candidates) | set(facts.threats)
+        visible_moves = {_TRAILING_MARKS.sub("", m) for m in [*facts.candidates, *facts.threats]}
         # The move's why names its continuation ("after Qf6, Bg2 ..."): what the level shows
-        # may be said.
-        withheld_moves = [m for m in facts.line if m not in shown and m not in allowed_moves]
+        # may be said -- compared without check marks, as `allowed_moves` holds them ("Rc6+"
+        # was withheld while the sheet gave it: the pre-spend audit, 2026-09-25).
+        withheld_moves = [
+            m
+            for m in facts.line
+            if _TRAILING_MARKS.sub("", m) not in visible_moves
+            and _TRAILING_MARKS.sub("", m) not in allowed_moves
+        ]
         withheld_squares = squares_in(" ".join(withheld_moves)) - allowed_squares
         for square in sorted(squares_in(moves_text) & withheld_squares):
             add(f"square {square}")
@@ -370,8 +387,9 @@ def leak_check(
         # A piece the visible facts name on its square, said in other words ("their pawn on
         # b5 is about to take your bishop on a4" for "winning your bishop on a4"), is the
         # fact, not a hint at the piece to move.
-        shown = " ".join(str(v) for v in visible.values() if isinstance(v, str)).lower()
-        for piece_word, square in set(re.findall(rf"({_PIECE})s? on ([a-h][1-8])", shown)):
+        on_sheet = " ".join([*(str(v) for v in visible.values() if isinstance(v, str)), shown])
+        on_sheet = on_sheet.lower()
+        for piece_word, square in set(re.findall(rf"({_PIECE})s? on ([a-h][1-8])", on_sheet)):
             scrubbed = re.sub(rf"\b{piece_word}s? on {square}\b", " ", scrubbed)
         scrubbed = _PIECE_WORD_CONTEXTS.sub(" ", scrubbed)
         # The piece to move is named when it is said on its own square, or as "your <piece>"

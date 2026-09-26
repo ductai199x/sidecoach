@@ -62,16 +62,100 @@ from judge import (  # noqa: E402
 from parity import is_quick  # noqa: E402
 from providers import judge_provider  # noqa: E402
 
+from sidecoach.coach.coach import _names  # noqa: E402
 from sidecoach.config import load_settings  # noqa: E402
 
 RUBRIC = Path(__file__).with_name("rubric.toml")
 EVAL = ROOT / "data" / "eval"
 REPORTS = EVAL / "rubric"
 VOTES = 3  # at most; the asking stops once two agree
-ONLY_IF = ("ends_with_question",)
+# When a criterion is asked at all (decided in code): the reply ends with a question; the
+# coach's request listed earlier moments of the same pattern to tie to.
+ONLY_IF = ("ends_with_question", "has_links", "effect_given")
 _ELICIT = re.compile(
     r"\bwhat (?:were|was) you (?:expecting|hoping|trying)|\bwhat did you expect", re.IGNORECASE
 )
+
+# The section of the coach's request that lists earlier moments of the same pattern, one a
+# line: "- At Bg4 (their move): ...".
+EARLIER = "# Earlier in this game"
+_AT = re.compile(r"^-\s+At\s+([^\s(,:;]+)")
+
+
+def request_of(item: dict) -> str:
+    """The request the coach was given for an item: its last message."""
+    return str(item["messages"][-1]["content"]) if item.get("messages") else ""
+
+
+def earlier_moments(request: str) -> list[str]:
+    """The moves of the moments the request's "# Earlier in this game" lists (SAN, marks
+    kept as written); empty when it has no such section."""
+    if EARLIER not in request:
+        return []
+    section = request.split(EARLIER, 1)[1]
+    moves: list[str] = []
+    for line in section.splitlines()[1:]:
+        if line.startswith("#"):
+            break
+        found = _AT.match(line.strip())
+        if found:
+            moves.append(found.group(1).rstrip(".,"))
+    return moves
+
+
+# A pawn's step reads as a square: named as a move only where no word before it makes it
+# one ("your pawn on e4", "to e4", "the e4-pawn") -- but "as at e5", "like after e5" are the
+# link (the pre-spend audit, 2026-09-25).
+_AS_SQUARE = re.compile(
+    r"(?:\b(?:on|to|from|at|onto|into|of|the|pawn|knight|bishop|rook|queen|king)\s+)$", re.I
+)
+_AS_LINK = re.compile(r"\b(?:as|like|same as)\s+(?:at|with|after|on|in)\s+$", re.I)
+# Castling said in words: "when you castled".
+_CASTLED = re.compile(r"\bcastl(?:e|ed|es|ing)\b", re.I)
+
+
+def _names_move(reply: str, move: str) -> bool:
+    """Whether `reply` names `move` as a move: a piece move, capture or castling as its SAN
+    token; a pawn's step only where it stands as a move, not as a square."""
+    core = move.rstrip("+#")
+    if core.startswith("O-O") and _CASTLED.search(reply):
+        return True
+    if not re.fullmatch(r"[a-h][1-8](?:=[QRBN])?", core):
+        return _names(reply, core)
+    for found in re.finditer(rf"(?<![A-Za-z0-9]){re.escape(core)}(?![A-Za-z0-9-])", reply):
+        before = reply[: found.start()]
+        if _AS_LINK.search(before) or not _AS_SQUARE.search(before):
+            return True
+    return False
+
+
+# What the move a question is about does, as the request gives it: the threat's effect in
+# brackets on the sheet ("h5 (attacks the knight on g4)"), the last move's "What Ra8 does:".
+_THREAT_EFFECT = re.compile(r"what the other side threatens[^\n]*:\s*\S+ \(")
+_MOVE_EFFECT = re.compile(r"^What \S+ does: ", re.M)
+
+
+def effect_given(cls: str, request: str) -> bool:
+    """Whether the request says what the move the answer is about does: for a threat, its
+    effect on the sheet; for the opponent's last move, its "What ... does" line. Any other
+    class: yes."""
+    if cls == "ask_threat":
+        return bool(_THREAT_EFFECT.search(request))
+    if cls == "ask_opponent_move":
+        now = request.split("# Position now", 1)[-1]
+        return bool(_MOVE_EFFECT.search(now.split("## Standing", 1)[0]))
+    return True
+
+
+def names_a_link(reply: str, request: str) -> bool:
+    """Connection, decided in code: the reply names the move of at least one earlier moment
+    the request listed, as a move (`_names_move`)."""
+    return any(_names_move(reply, move) for move in earlier_moments(request))
+
+
+# The criteria decided in code, by the name a rubric file gives them (`code = "..."`): the
+# judge is never called for them.
+CODE_RULES = {"names_a_link": names_a_link}
 
 RUBRIC_SYSTEM = (
     "You judge one reply a chess coach gave a player at one moment of their game, against "
@@ -86,14 +170,18 @@ class Criterion:
     question: str
     applies_to: tuple[str, ...]
     only_if: str | None = None
+    # The code rule that decides it (CODE_RULES), or None: the judge is asked.
+    code: str | None = None
 
     @property
     def qhash(self) -> str:
-        """The question's wording, short: an answer is kept for this wording only."""
-        return hashlib.sha1(self.question.encode()).hexdigest()[:10]
+        """The question's wording (and its code rule), short: an answer is kept for this
+        wording only."""
+        return hashlib.sha1((self.question + "|" + (self.code or "")).encode()).hexdigest()[:10]
 
-    def applies(self, cls: str, reply: str) -> bool:
-        """Whether the criterion is asked of this reply (decided in code)."""
+    def applies(self, cls: str, reply: str, request: str = "") -> bool:
+        """Whether the criterion is asked of this reply (decided in code); `request` is the
+        coach's request, for `has_links`."""
         if "*" not in self.applies_to and cls not in self.applies_to:
             return False
         if self.only_if == "ends_with_question":
@@ -101,7 +189,16 @@ class Criterion:
             # profile: the coach listening, not a question that teaches.
             last = re.split(r"(?<=[.!])\s+", reply.strip())[-1]
             return reply.rstrip().endswith("?") and not _ELICIT.search(last)
+        if self.only_if == "has_links":
+            return bool(earlier_moments(request))
+        if self.only_if == "effect_given":
+            return effect_given(cls, request)
         return True
+
+    def decide(self, reply: str, request: str) -> bool:
+        """The answer of a criterion decided in code."""
+        assert self.code is not None
+        return CODE_RULES[self.code](reply, request)
 
 
 def load_rubric(path: Path = RUBRIC, rating: tuple[int, int] | None = None) -> list[Criterion]:
@@ -114,9 +211,12 @@ def load_rubric(path: Path = RUBRIC, rating: tuple[int, int] | None = None) -> l
         only_if = raw.get("only_if")
         if only_if is not None and only_if not in ONLY_IF:
             raise ValueError(f"{path.name}: {key}: only_if must be one of {ONLY_IF}")
+        code = raw.get("code")
+        if code is not None and code not in CODE_RULES:
+            raise ValueError(f"{path.name}: {key}: code must be one of {sorted(CODE_RULES)}")
         applies = tuple(str(x) for x in raw.get("applies_to") or ["*"])
         question = str(raw["question"]).replace("{low}", str(low)).replace("{high}", str(high))
-        out.append(Criterion(key, question, applies, only_if))
+        out.append(Criterion(key, question, applies, only_if, code))
     keys = [c.key for c in out]
     if len(set(keys)) != len(keys):
         raise ValueError(f"{path.name}: a key is used twice: {keys}")
@@ -269,10 +369,11 @@ def todo_of(task: Task, criteria: list[Criterion], kept: dict[str, dict]) -> lis
     """The criteria still to ask of a task: those that apply and have no answer for this
     wording of the question and this reply."""
     reply = _sha(task.reply)
+    request = request_of(task.item)
     return [
         c
         for c in criteria
-        if c.applies(task.item["class"], task.reply)
+        if c.applies(task.item["class"], task.reply, request)
         and not (kept.get(c.key, {}).get("q") == c.qhash and kept[c.key].get("reply") == reply)
     ]
 
@@ -300,7 +401,11 @@ def run_rubric(
         new: dict[str, dict] = {}
         for c in todo_of(task, criteria, kept):
             try:
-                yes = ask(binary, ledger, task.id, system, c.question)
+                yes = (
+                    c.decide(task.reply, request_of(task.item))
+                    if c.code
+                    else ask(binary, ledger, task.id, system, c.question)
+                )
             except JudgeFailed as exc:
                 with lock:
                     failed[c.key] += 1
@@ -355,7 +460,7 @@ def scores_of(
             if k in by_key
             and v.get("q") == by_key[k].qhash
             and v.get("reply") == reply
-            and by_key[k].applies(t.item["class"], t.reply)
+            and by_key[k].applies(t.item["class"], t.reply, request_of(t.item))
         }
         out.append(
             {
@@ -479,7 +584,10 @@ def estimate_of(
     """What the questions not yet answered would cost, and how many there are."""
     work: list[tuple[str, int]] = []
     for t in tasks:
-        n = len(todo_of(t, criteria, answers.get(t.arm, {}).get(t.id, {})))
+        # The criteria decided in code cost nothing.
+        n = len(
+            [c for c in todo_of(t, criteria, answers.get(t.arm, {}).get(t.id, {})) if not c.code]
+        )
         if n:
             work.append((record_of(t.item, t.reply), n))
     return estimate.repeated_record_estimate(work, prices), sum(n for _, n in work)

@@ -367,6 +367,10 @@ def pair(items: dict[str, dict], ai: list[dict], floor: list[dict]) -> list[dict
                 "coverage": coverage(item, a["reply"]),
                 "ai_fails": _fails(a),
                 "floor_fails": _fails(f),
+                # The claims code left unjudged, by why: counted in the report, so a drop
+                # rule that eats statements shows (the pre-spend audit, 2026-09-25).
+                "ai_dropped": [d.get("why", "") for d in a.get("dropped_claims") or ()],
+                "floor_dropped": [d.get("why", "") for d in f.get("dropped_claims") or ()],
             }
         )
     return rows
@@ -434,6 +438,13 @@ def summary(
         else "drawn as the AI arm's judgments were"
     )
     lines.append(f"{n} moments judged in both arms ({drawn}).")
+    for arm in ("ai", "floor"):
+        dropped = Counter(why for r in rows for why in r.get(f"{arm}_dropped") or ())
+        if dropped:
+            said = ", ".join(f"{k} {v}" for k, v in dropped.most_common())
+            lines.append(
+                f"Claims left unjudged in the {arm} arm: {sum(dropped.values())} ({said})."
+            )
     lines += [
         "",
         "| arm | pass | completeness |",

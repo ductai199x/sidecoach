@@ -1826,9 +1826,11 @@ def test_the_first_hint_sets_the_length_of_the_hint() -> None:
     assert idea_directive(short) == IDEA_DIRECTIVE
     long = short.model_copy(update={"situation": "One. Two. Three. Four. Five."})
     assert "Five sentences at most." in idea_directive(long)
-    assert directive_limits(idea_directive(long))[0] == 5
+    # One more for the question the directive offers on top ("then, if you like, one
+    # question"), which it does not require.
+    assert directive_limits(idea_directive(long)) == (6, None)
     longest = short.model_copy(update={"situation": " ".join(["Yes."] * 9)})
-    assert directive_limits(idea_directive(longest))[0] == 6
+    assert directive_limits(idea_directive(longest)) == (7, None)
 
 
 def test_the_draft_checker_sees_every_line_the_facts_were_read_from() -> None:

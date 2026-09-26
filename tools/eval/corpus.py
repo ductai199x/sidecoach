@@ -74,7 +74,7 @@ ANALYSIS_FIELDS = ("traps", "in_book", "defences", "threatens")
 
 
 # What a quick follow-up is not asked again: the template already said it.
-QUICK_NOT_REQUIRED = frozenset({"candidate", "line", "stakes", "key_fact", "trap"})
+QUICK_NOT_REQUIRED = frozenset({"candidate", "line", "stakes", "goal", "key_fact", "trap"})
 
 
 def quick_followup(request: _Request, directive: str) -> bool:
@@ -566,8 +566,8 @@ def build_game(
             # A quick follow-up -- the template already spoken as the answer ("They asked
             # what to play and have just been shown that it is Nf3...", "the quick answer
             # they have already been shown; build on it, do not repeat it") -- is asked only
-            # to build on it: the move, the line, and the first hint's stakes, key fact and
-            # trap it already said are not required again.
+            # to build on it: the move, the line, and the first hint's stakes (or the goal in
+            # their place), key fact and trap it already said are not required again.
             if quick:
                 reqs = [f for f in reqs if f.key not in QUICK_NOT_REQUIRED]
             # The engine's word on a move they named is spoken first, as the coach's own
