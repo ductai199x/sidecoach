@@ -484,6 +484,21 @@ const val IDEA_DIRECTIVE =
         "the sheet gives one. Precise, never a principle on its own: every sentence says " +
         "something about this board. Never name the player's move or the square it goes to, and " +
         "not which of their own pieces moves -- that is the next hint. Two or three sentences."
+private val LENGTH_WORDS = mapOf(4 to "Four", 5 to "Five", 6 to "Six")
+
+/**
+ * [IDEA_DIRECTIVE], its length the first hint's own when that runs past three sentences (to six
+ * at most): "say at least this" and "two or three sentences" asked for both, and a faithful reply
+ * was cut or sent back as too long (the eval audit, 2026-09-25). `coach.idea_directive`.
+ */
+fun ideaDirective(facts: PositionFacts?): String {
+    val n = if (facts != null && !facts.situation.isNullOrEmpty()) sentenceTotal(facts.situation) else 0
+    if (n <= 3) return IDEA_DIRECTIVE
+    return IDEA_DIRECTIVE.replace(
+        "Two or three sentences.", "${LENGTH_WORDS[n] ?: "Six"} sentences at most."
+    )
+}
+
 const val FOCUS_DIRECTIVE =
     "Name the piece to use, from the fact sheet, and ask the one question that leads from the " +
         "first hint's key fact to the move. Do not name the move. One or two sentences."
@@ -831,7 +846,9 @@ class FirstCandidate(
         // Sentence by sentence, only what a sentence can get wrong: the length, the closing
         // question and what the whole must name are the whole reply's.
         faults = faults.filter {
-            !it.startsWith("too long") && !it.startsWith("left out") && !it.contains("question")
+            !it.startsWith("too long") && !it.startsWith("left out") && !it.contains("question") &&
+                // Only the reply's first sentence can open it with the move.
+                !(spoken.isNotEmpty() && it.startsWith("opens with"))
         }
         if (faults.isNotEmpty()) {
             problems = faults
@@ -1066,6 +1083,73 @@ internal fun names(text: String, item: String): Boolean {
     if (SQUARE_ITEM.matches(item)) return item in squaresIn(text)
     val core = item.trimEnd('+', '#')
     return Regex("(?<![A-Za-z])" + Regex.escape(core) + "[+#]?(?![A-Za-z0-9])").containsMatchIn(text)
+}
+
+private val NUMBER_SAID = Regex("\\d+(?:\\.\\d+)?\\s*(?:%|per ?cent)|(?<![\\w.])0\\.\\d+", RegexOption.IGNORE_CASE)
+private val PLAIN_PIECE = mapOf(
+    com.sidecoach.chess.PAWN to "pawn",
+    com.sidecoach.chess.KNIGHT to "knight",
+    com.sidecoach.chess.BISHOP to "bishop",
+    com.sidecoach.chess.ROOK to "rook",
+    com.sidecoach.chess.QUEEN to "queen",
+)
+private val SAYS_CHECK = Regex("\\b(?:with|gives?|giving) (?:a )?check\\b")
+
+/**
+ * What a word after the player's move says that they see on the board or did not ask for (Tai,
+ * 2026-09-23 and 2026-09-19): opening with the move just played, what it plainly did -- the
+ * capture, the check, the castling, the promotion -- unless the better move does the same, and a
+ * figure in an unprompted remark. The templates never do; the model could, and nothing checked
+ * it (the eval audit, 2026-09-25). `coach.restated`.
+ */
+internal fun restated(text: String, request: CoachRequest): List<String> {
+    val playedSan = request.playedSan
+    if ((request.trigger != Trigger.POST_MOVE && request.trigger != Trigger.POST_MISTAKE) ||
+        playedSan.isNullOrEmpty()
+    ) {
+        return emptyList()
+    }
+    val played = playedSan.trimEnd('+', '#')
+    val faults = ArrayList<String>()
+    if (Regex("^\\W*" + Regex.escape(played) + "(?![A-Za-z0-9])").containsMatchIn(text)) {
+        faults.add("opens with $played, the move just played")
+    }
+    if (NUMBER_SAID.containsMatchIn(text)) {
+        faults.add("a figure in a remark nobody asked for: say it in words")
+    }
+    val board = request.board
+    val move = board.parseSan(playedSan) ?: return faults
+    val assessment = request.assessment
+    val better = if (assessment != null && assessment.best.isNotEmpty()) {
+        Move.fromUciOrNull(assessment.best[0])
+    } else {
+        null
+    }
+    val low = text.lowercase()
+    val victim = board.pieceAt(move.to)
+    if (victim != null && victim.pieceType in PLAIN_PIECE) {
+        val square = squareName(move.to)
+        val took = "\\b(?:takes|taking|took|captures?|capturing|grabs?|grabbing)\\s+(?:the|their|a)\\s+" +
+            "${PLAIN_PIECE.getValue(victim.pieceType)}\\s+on\\s+$square\\b"
+        if (Regex(took).containsMatchIn(low) && !(better != null && better.to == move.to)) {
+            faults.add("says what $played plainly did: the capture on $square")
+        }
+    }
+    // What the better move does as well is the lesson, not a restatement.
+    val legal = better != null && board.isLegal(better)
+    val betterCastles = legal && board.isCastling(better!!)
+    val betterChecks = legal && board.givesCheck(better!!)
+    val betterPromotes = better != null && better.promotion != 0
+    if (board.isCastling(move) && "castl" in low && !betterCastles) {
+        faults.add("says what $played plainly did: castling")
+    }
+    if (board.givesCheck(move) && SAYS_CHECK.containsMatchIn(low) && !betterChecks) {
+        faults.add("says what $played plainly did: the check")
+    }
+    if (move.promotion != 0 && "promot" in low && !betterPromotes) {
+        faults.add("says what $played plainly did: the promotion")
+    }
+    return faults
 }
 
 /**
@@ -1519,6 +1603,7 @@ class Speaker(
         }
         val leftOut = omitted(text, request.mustName)
         if (leftOut != null) found.add(leftOut)
+        found.addAll(restated(text, request))
         if (draftCheck != null) {
             for (problem in draftCheck.check(text, request.board, afterBest(request))) {
                 val san = problem.substringBefore(":").trim()

@@ -1469,6 +1469,7 @@ class Coach(
             }
             frames = framesAfter(position, moved)
         }
+        frames = frames + analysisFrames(position)
         val messages: List<ChatMessage>
         synchronized(lock) {
             conversation.level = level
@@ -1552,6 +1553,60 @@ class Coach(
             trigger == Trigger.USER_ASK && (ASK_HINT.matchesAt(said, 0) || ASK_AIM.containsMatchIn(said))
             )
         return if (hint) squaresIn(template).sorted() else emptyList()
+    }
+
+    /**
+     * Boards along every line the facts were read from -- the engine's lines, the traps, the
+     * recaptures the best line declines, what a quiet best move threatens, the opponent's threats
+     * after a pass -- so a sentence the template itself says ("after Rxa5, Kxf6 ...") is not
+     * faulted as unplayable when the model says it too (the eval audit, 2026-09-25). The weaker
+     * lines only to four plies. `coach._analysis_frames`.
+     */
+    internal fun analysisFrames(position: CoachPosition): List<Board> {
+        val analysis = position.analysis ?: return emptyList()
+        val root = position.board
+        val frames = ArrayList<Board>()
+
+        fun walk(start: Board, ucis: List<String>, limit: Int) {
+            var board = start
+            for (uci in ucis.take(limit)) {
+                val move = Move.fromUciOrNull(uci) ?: return
+                if (!board.isLegal(move)) return
+                board = board.copy(withStack = false)
+                board.push(move)
+                frames.add(board)
+            }
+        }
+
+        for ((i, line) in analysis.lines.withIndex()) walk(root, line.moves, if (i == 0) 8 else 4)
+        for (line in analysis.traps + analysis.defences) walk(root, line.moves, 8)
+        if (!root.isCheck()) {
+            val passed = root.copy(withStack = false)
+            passed.push(Move.NULL)
+            for (san in analysis.threats) {
+                val after = passed.copy(withStack = false)
+                val threat = after.parseSan(san) ?: continue
+                after.push(threat)
+                frames.add(after)
+            }
+            if (analysis.threatens.isNotEmpty() && analysis.lines.isNotEmpty() &&
+                analysis.lines[0].moves.isNotEmpty()
+            ) {
+                val best = Move.fromUciOrNull(analysis.lines[0].moves[0])
+                if (best != null && root.isLegal(best)) {
+                    val quiet = root.copy(withStack = false)
+                    quiet.push(best)
+                    if (!quiet.isCheck()) {
+                        quiet.push(Move.NULL)
+                        for (line in analysis.threatens) {
+                            walk(quiet, line.moves, 8)
+                            walk(root, line.moves, 8)
+                        }
+                    }
+                }
+            }
+        }
+        return frames
     }
 
     /**
@@ -1682,11 +1737,11 @@ class Coach(
                 ) to reviewLines.take(4).joinToString(" ")
         }
         if (trigger == Trigger.DECISIVE_QUESTION) {
-            return IDEA_DIRECTIVE to ideaTemplate(facts)
+            return ideaDirective(facts) to ideaTemplate(facts)
         }
         if (trigger == Trigger.STUCK) {
             val directive =
-                if (level.value >= DisclosureLevel.FOCUS.value) FOCUS_DIRECTIVE else IDEA_DIRECTIVE
+                if (level.value >= DisclosureLevel.FOCUS.value) FOCUS_DIRECTIVE else ideaDirective(facts)
             return (
                 "The player has been thinking for a while and is stuck. " +
                     directive +
@@ -1965,7 +2020,7 @@ class Coach(
                 level.value >= DisclosureLevel.MOVE.value -> aim + MOVE_DIRECTIVE
                 level.value >= DisclosureLevel.FOCUS.value ->
                     aim.ifEmpty { "They asked for another hint. " } + FOCUS_DIRECTIVE
-                else -> aim.ifEmpty { "They asked for a hint. " } + IDEA_DIRECTIVE
+                else -> aim.ifEmpty { "They asked for a hint. " } + ideaDirective(facts)
             } + " Do not comment on anything said earlier." + (if (quick) shown else "")
         } else if (level.value >= DisclosureLevel.LINE.value &&
             ASK_LINE.containsMatchIn(said) && facts.line.isNotEmpty()

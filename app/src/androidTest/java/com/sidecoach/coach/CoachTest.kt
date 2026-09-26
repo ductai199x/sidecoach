@@ -4,6 +4,11 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
+import com.sidecoach.chess.BLACK
+import com.sidecoach.chess.KING
+import com.sidecoach.chess.Piece
+import com.sidecoach.chess.QUEEN
+import com.sidecoach.chess.parseSquare
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.CoachMessage
 import com.sidecoach.events.DisclosureLevel
@@ -356,7 +361,8 @@ class CoachTest {
         val (coach, provider) = coach(
             listOf(
                 "Their king on e8 is nearly out of squares.",
-                "Bxf7+ was fine, but Qxf7 was mate on the spot. Do you see why?",
+                // Never opening with the move just played (desktop f25217c).
+                "Qxf7 was mate on the spot, sharper than the bishop. Do you see why?",
             )
         )
         bishopCheckInsteadOfMate(coach)
@@ -808,6 +814,99 @@ class CoachTest {
         // A claim inside a line is about a later position; a true one is no fault.
         assertEquals(emptyList<String>(), falseIllegal("After Bh7+ Kh8, Qxf7+ is illegal.", board))
         assertEquals(emptyList<String>(), falseIllegal("Qh4 is not legal: the pawn blocks it.", Board()))
+    }
+
+    /** `_after_move_request`: a lesson's request on [fen] after [san], the engine preferring [bestUci]. */
+    private fun afterMoveRequest(fen: String, san: String, bestUci: String): CoachRequest {
+        val board = Board(fen)
+        return CoachRequest(
+            trigger = Trigger.POST_MISTAKE,
+            level = DisclosureLevel.LINE,
+            system = "",
+            messages = emptyList(),
+            facts = PositionFacts(fen = fen, sideToMove = "white", phase = "opening"),
+            board = board,
+            fallback = "",
+            ply = 7,
+            gameId = "g",
+            playedSan = san,
+            assessment = MoveAssessment(
+                gameId = "g",
+                ply = 7,
+                uci = board.parseSan(san)!!.uci(),
+                expectedLoss = 0.2,
+                severity = Severity.MISTAKE,
+                best = listOf(bestUci),
+                label = Label.MISTAKE,
+            ),
+        )
+    }
+
+    /**
+     * The owner's rules after a move, checked in code (the eval audit, 2026-09-25): never open
+     * with the move just played, never say what it plainly did unless the better move does the
+     * same, and no figure in a remark nobody asked for (desktop f25217c).
+     */
+    @Test
+    fun aWordAfterTheMoveNeverRestatesItNorQuotesAFigure() {
+        val ruy = "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
+        val trade = afterMoveRequest(ruy, "Bxc6", "e1g1")
+        assertEquals(listOf("opens with Bxc6, the move just played"), restated("Bxc6 gives up the bishop pair.", trade))
+        assertEquals(
+            listOf("says what Bxc6 plainly did: the capture on c6"),
+            restated("Taking the knight on c6 gives up the bishop pair.", trade),
+        )
+        assertEquals(
+            listOf("a figure in a remark nobody asked for: say it in words"),
+            restated("It cost you 15% of the game.", trade),
+        )
+        // The better move castles: saying so is the lesson, not a restatement.
+        assertEquals(
+            emptyList<String>(),
+            restated("Castling first was better: the king is safe, the rook joins in.", trade),
+        )
+        // The better move takes on the same square with check: the words are about it.
+        val miss = afterMoveRequest(SCHOLAR, "Bxf7+", "h5f7")
+        assertEquals(emptyList<String>(), restated("Taking the pawn on f7 with check was right, but with the queen.", miss))
+    }
+
+    /**
+     * "Say at least this" and "two or three sentences" asked for both: a first hint that runs
+     * longer sets the length (the eval audit, 2026-09-25; desktop f25217c).
+     */
+    @Test
+    fun theFirstHintSetsTheLengthOfTheHint() {
+        val short = PositionFacts(fen = SCHOLAR, sideToMove = "white", phase = "opening", situation = "A. B.")
+        assertEquals(IDEA_DIRECTIVE, ideaDirective(short))
+        val long = short.copy(situation = "One. Two. Three. Four. Five.")
+        assertTrue("Five sentences at most." in ideaDirective(long))
+        assertEquals(5, directiveLimits(ideaDirective(long)).first)
+        val longest = short.copy(situation = List(9) { "Yes." }.joinToString(" "))
+        assertEquals(6, directiveLimits(ideaDirective(longest)).first)
+    }
+
+    /**
+     * A trap the template names ("Bxf7+ looks natural, but after Kxf7 ...") is a line from the
+     * root: its boards are frames, so saying it is not faulted as unplayable (desktop f25217c).
+     */
+    @Test
+    fun theDraftCheckerSeesEveryLineTheFactsWereReadFrom() {
+        val base = mateAnalysis(6)
+        val analysis = Analysis(
+            gameId = base.gameId,
+            fen = base.fen,
+            ply = base.ply,
+            lines = base.lines,
+            decisive = base.decisive,
+            onlyMove = base.onlyMove,
+            traps = listOf(Line(moves = listOf("c4f7", "e8e7"), depth = 12, expectedScore = 0.4)),
+            tags = base.tags,
+        )
+        val position = CoachPosition(ply = 6, board = Board(SCHOLAR), analysis = analysis)
+        val (coach, _) = coach(emptyList())
+        val frames = coach.analysisFrames(position)
+        assertTrue(frames.any { it.pieceAt(parseSquare("e7")) == Piece(KING, BLACK) })
+        assertTrue(frames.any { it.pieceAt(parseSquare("f7")) == Piece(QUEEN, WHITE) })
     }
 
     companion object {
