@@ -224,6 +224,36 @@ object Situation {
     }
 
     /**
+     * The most sentences a first hint says. Past it, the details of the pattern go first, the
+     * least telling first: a second pattern in the line, the quiet first move, the in-between
+     * move, which move the blow comes on. The stakes, the prize, the key fact, the pattern and
+     * why it works, a sacrifice on the way, and the question stay (the first hint ran to seven,
+     * eight, ten sentences when every detail stacked up: the real-game review, 2026-09-26).
+     */
+    const val FIRST_HINT_SENTENCES = 5
+    private val DETAILS = listOf(
+        "There is (?:a|an) [^.?!]* in it too\\.",
+        "It starts with a quiet move: no check and no capture, but a threat they cannot meet\\.",
+        "On the way comes an in-between move: a check before taking back\\.",
+        "It comes on your \\w+ move(?:, once [^.?!]*)?\\.",
+    ).map { Regex(it) }
+    private val HINT_SENTENCE_END = Regex("(?<=[.?!])\\s+(?=[A-Z])")
+    private val SPACES = Regex("\\s{2,}")
+
+    /**
+     * [text] with the pattern's details dropped, least telling first, until it says at most
+     * [budget] sentences -- or none is left to drop. `situation.within_budget`.
+     */
+    fun withinBudget(text: String, budget: Int = FIRST_HINT_SENTENCES): String {
+        var out = text
+        for (detail in DETAILS) {
+            if (out.trim().split(HINT_SENTENCE_END).size <= budget) break
+            out = SPACES.replace(detail.replace(out, ""), " ").trim()
+        }
+        return out
+    }
+
+    /**
      * `text` as a sentence: a capital first (never on a pawn's move: "hxg4 looks..."), a stop
      * last.
      */

@@ -1041,7 +1041,7 @@ fun factsFromAnalysis(
     ) {
         situationText += " $question"
     }
-    situationText = situationText?.let { if (it.isNotEmpty()) Situation.spoken(it) else it }
+    situationText = situationText?.let { if (it.isNotEmpty()) Situation.spoken(Situation.withinBudget(it)) else it }
     // A quiet move's own reason, said at the move rung: the key fact it answers.
     if (why == null && !moveReason.isNullOrEmpty() && best != null) {
         why = "${board.san(best)}: ${moveReason[0].lowercaseChar() + moveReason.substring(1)}"

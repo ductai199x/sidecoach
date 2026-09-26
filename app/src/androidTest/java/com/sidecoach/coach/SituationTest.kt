@@ -241,6 +241,32 @@ class SituationTest {
         )
     }
 
+    /**
+     * Ten sentences when every detail stacked up (Anderssen-Kieseritzky, move 20): past the budget
+     * the second pattern, the quiet start, the in-between move and the timing go, the least
+     * telling first; the prize, the key fact, the pattern, a sacrifice and the question stay
+     * (desktop c08a1bc).
+     */
+    @Test
+    fun aLongFirstHintDropsTheDetailsFirst() {
+        val text = "You're in check but winning. Their queen on a1 gives check. This position has a " +
+            "tactic that wins a bishop. The prize is their bishop on c8. Their rook on a8 and " +
+            "their king on e8: one move can hit both after your first move. That is a fork: one " +
+            "piece attacks two of theirs at once. It comes on your second move, once a line has " +
+            "been cleared. There is a discovered attack in it too. It starts with a quiet move: " +
+            "no check and no capture, but a threat they cannot meet. Which two of their pieces " +
+            "could one of yours hit at once?"
+        val short = Situation.withinBudget(text, budget = 8)
+        assertFalse(short, "in it too" in short || "quiet move" in short)
+        assertTrue("dropped only as far as the budget", "It comes on your second move" in short)
+        assertTrue(short, "The prize is their bishop on c8." in short && short.endsWith("hit at once?"))
+        val shortest = Situation.withinBudget(text, budget = 5)
+        assertTrue(shortest, "It comes on your" !in shortest && "The prize is" in shortest)
+        val sacrifice = "That is a fork: two at once. It comes on your third move, after a sacrifice."
+        assertEquals("a sacrifice is said", sacrifice, Situation.withinBudget(sacrifice, budget = 1))
+        assertEquals("One. Two.", Situation.withinBudget("One. Two.", budget = 5))
+    }
+
     private fun lines(a: JSONArray): List<Line> = (0 until a.length()).map { k ->
         val l = a.getJSONObject(k)
         Line(

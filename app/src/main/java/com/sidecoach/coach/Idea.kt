@@ -13,6 +13,7 @@ import com.sidecoach.chess.PAWN
 import com.sidecoach.chess.QUEEN
 import com.sidecoach.chess.ROOK
 import com.sidecoach.chess.WHITE
+import com.sidecoach.chess.parseSquare
 import com.sidecoach.chess.squareDistance
 import com.sidecoach.chess.squareFile
 import com.sidecoach.chess.squareRank
@@ -443,7 +444,10 @@ object IdeaReader {
             firstAt = firstReaching(boards, pv, at, minOf(gain, WIN_GAIN))
         }
         at = if (firstAt != 0) firstAt else at
-        var (blow, blowAt, preparation) = findBlow(boards, pv, if (at != 0) at else minOf(pv.size, 6), null)
+        val gained = gainedKinds(board, if (at != 0) lineEnd(boards, pv, at) else boards.last(), us)
+        var (blow, blowAt, preparation) = findBlow(
+            boards, pv, if (at != 0) at else minOf(pv.size, 6), null, gained = gained,
+        )
         if (blow != null && blowAt > FAR_BLOW) {
             // A loose rook picked up on the fifth move is not the idea a player can see from
             // here; the start of the line is (Tai's game g06, 2026-09-24).
@@ -903,7 +907,9 @@ object IdeaReader {
     /**
      * The most telling tactic of the player's moves in `pv[:upto]`, the later one of two alike
      * (the point, not the preparation); which of the player's moves carries it; and what the
-     * moves before it do to prepare it.
+     * moves before it do to prepare it. [gained]: the kinds of piece the line nets; a tactic
+     * whose own move takes one of them, worth more than what it aims at, is not the point
+     * ([captureIsThePoint]).
      */
     private fun findBlow(
         boards: List<Board>,
@@ -911,6 +917,7 @@ object IdeaReader {
         upto: Int,
         mate: Int?,
         allowed: List<String>? = null,
+        gained: Set<Int> = emptySet(),
     ): Triple<Pair<Int, MotifTag>?, Int, List<String>> {
         var bestRank = 0
         var bestNegPly = 0
@@ -927,6 +934,7 @@ object IdeaReader {
                 if (allowed != null && tag.name !in allowed) continue
                 val targeted = tag.name in Motifs.TARGETED
                 if (mate == null && targeted && !Motifs.paysOff(boards, pv, i, tag)) continue
+                if (mate == null && targeted && captureIsThePoint(boards[i], pv[i], tag, gained)) continue
                 if (mate == null && tag.name in PREPARATION && i + 2 >= upto) {
                     // A decoy or a deflection prepares what a later move cashes in: on the last
                     // of the player's moves before the win it explains what comes after it (the
@@ -951,6 +959,43 @@ object IdeaReader {
             }
         }
         return Triple(ply to tag, ply / 2 + 1, preparation)
+    }
+
+    /**
+     * Whether the move takes more than the tactic it carries aims at, and what it takes is what
+     * the line wins ([gained], the kinds it nets): a capture of a queen that also forks a bishop
+     * and a pawn wins the queen by taking it, not by the fork ("That's a fork" beside a queen won
+     * on c2 whose targets were c1, h2 and a4: 35...Nxf5 in Johner-Nimzowitsch). A queen taken
+     * back is no win, and the pin that nets the rook after it stays the point. Kings are not
+     * counted: a check is no material target. `idea._capture_is_the_point`.
+     */
+    internal fun captureIsThePoint(board: Board, move: Move, tag: MotifTag, gained: Set<Int>): Boolean {
+        if (!board.isCapture(move)) return false
+        val taken = board.pieceAt(move.to)?.pieceType ?: PAWN // en passant: a pawn
+        if (taken !in gained) return false
+        val after = board.copy(withStack = false)
+        after.push(move)
+        var aims = 0
+        for (name in tag.squares) {
+            val square = parseSquare(name)
+            if (square == move.from || square == move.to) continue
+            val piece = after.pieceAt(square) ?: continue
+            if (piece.colour != after.turn || piece.pieceType == KING) continue
+            aims = maxOf(aims, value(piece.pieceType))
+        }
+        return value(taken) > aims
+    }
+
+    /**
+     * The kinds of piece the line nets from [board] to [end]: taken from them more than they took
+     * of the player's. `idea._gained_kinds`.
+     */
+    private fun gainedKinds(board: Board, end: Board, us: Boolean): Set<Int> {
+        val them = !us
+        return IDEA_COUNTED.filter { kind ->
+            (board.pieces(kind, them).size - end.pieces(kind, them).size) -
+                (board.pieces(kind, us).size - end.pieces(kind, us).size) > 0
+        }.toSet()
     }
 
     /** The first ply, to `upto`, at which the line has won `target` or more. */
