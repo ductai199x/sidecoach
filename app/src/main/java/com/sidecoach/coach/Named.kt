@@ -340,7 +340,11 @@ fun examine(
         1.0 - lines[0].expectedScore
     }
     var tail = "after $played the expected score is ${"%.2f".format(score)} from the player's side"
-    if (best != null) {
+    // Their move first ("if they take on b4") is the player passing, which is no move of theirs:
+    // measured against the best it came out "after pass axb4 you are losing, a serious step down
+    // from the best (the best is Bxc3)" (the simulated students).
+    val passing = probe.parsed.isNotEmpty() && probe.parsed[0].isNull
+    if (best != null && !passing) {
         var gap = best.expectedScore - score
         // The engine's own first move, searched again after it is played, comes back a hair
         // off its first score: "12. Nc3: ... a hair behind the best (the best is Nc3)" (the
@@ -438,7 +442,12 @@ fun spoken(fact: String): String {
     var body = m.groups["body"]!!.value.trim()
     body = Regex("^after (.+?) the expected score is (\\d\\.\\d\\d) from the player's side")
         .replace(body) { mm ->
-            "after ${mm.groupValues[1]} ${standingWords(mm.groupValues[2].toDouble())}"
+            if (mm.groupValues[1].startsWith("pass ")) {
+                "if they got to play ${mm.groupValues[1].substring(5)} now, " +
+                    standingWords(mm.groupValues[2].toDouble())
+            } else {
+                "after ${mm.groupValues[1]} ${standingWords(mm.groupValues[2].toDouble())}"
+            }
         }
     body = Regex(", (\\d\\.\\d\\d) behind the engine's best(?: \\(([^)]+)\\))?")
         .replace(body) { mm ->

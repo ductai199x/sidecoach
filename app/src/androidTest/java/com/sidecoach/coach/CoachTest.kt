@@ -12,6 +12,7 @@ import com.sidecoach.events.Line
 import com.sidecoach.events.MotifTag
 import com.sidecoach.events.MoveAssessment
 import com.sidecoach.events.MovePlayed
+import com.sidecoach.events.ProfileEvidence
 import com.sidecoach.events.Resync
 import com.sidecoach.events.Severity
 import com.sidecoach.events.Trigger
@@ -19,6 +20,7 @@ import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.Completion
 import com.sidecoach.llm.LLMProvider
 import com.sidecoach.llm.OfflineProvider
+import com.sidecoach.profile.Causes
 import com.sidecoach.vision.Pieces
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -397,6 +399,37 @@ class CoachTest {
         val left = coach.bags.left("lead:mate-one")
         assertTrue(lead !in left && left.size == IdeaWords.MATE_ONE_LEADS.size - 1)
         assertEquals(emptyMap<String, String>(), position.leads)
+    }
+
+    /**
+     * Each lesson taught its own moment and a principle of its own, and the threat-blind
+     * student's notebook held five unrelated rules (the simulated students, 2026-09-26): the
+     * second mistake of one cause in the session says the pattern, and every second one after
+     * (desktop e7b5915).
+     */
+    @Test
+    fun aCauseThatComesBackIsNamedWithTheHabitThatFixesIt() {
+        val (coach, _) = coach(emptyList())
+        start(coach)
+
+        fun placed(ply: Int, cause: String, gameId: String = "g"): List<String> {
+            coach.onEvent(
+                ProfileEvidence(gameId = gameId, ply = ply, phase = "middlegame", expectedLoss = 0.2, cause = cause),
+                ply.toDouble(),
+            )
+            return messages(coach).map { it.text }
+        }
+
+        assertEquals(emptyList<String>(), placed(9, Causes.MISSED_THREAT))
+        assertEquals(emptyList<String>(), placed(13, Causes.POSITIONAL))
+        assertEquals(emptyList<String>(), placed(21, Causes.MISSED_THREAT, gameId = "old")) // another game's
+        val second = placed(25, Causes.MISSED_THREAT)
+        assertTrue(second.toString(), second.size == 1 && "twice now" in second[0])
+        assertTrue(second[0], "what their moves threatened" in second[0])
+        assertTrue(second[0], "look at what their last move attacks" in second[0])
+        assertEquals(emptyList<String>(), placed(31, Causes.MISSED_THREAT))
+        val fourth = placed(37, Causes.MISSED_THREAT)
+        assertTrue(fourth.toString(), "4 times now" in fourth[0])
     }
 
     companion object {

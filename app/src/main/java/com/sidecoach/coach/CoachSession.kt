@@ -16,6 +16,7 @@ import com.sidecoach.events.GameStarted
 import com.sidecoach.events.insightWords
 import com.sidecoach.events.MoveAssessment
 import com.sidecoach.events.MovePlayed
+import com.sidecoach.events.ProfileEvidence
 import com.sidecoach.events.ProfileSnapshot
 import com.sidecoach.events.PuzzleOutcome
 import com.sidecoach.events.Recommendation
@@ -27,6 +28,7 @@ import com.sidecoach.events.Takeback
 import com.sidecoach.events.Trigger
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.LLMProvider
+import com.sidecoach.profile.Causes
 import com.sidecoach.vision.Pieces
 
 /**
@@ -324,6 +326,12 @@ class Coach(
     private var reviewLines: List<String> = emptyList()
 
     /**
+     * The causes of the session's mistakes, from the player model: the pattern is said when
+     * one comes back ([onEvidence]). Counted in the order first seen, as a Counter keeps them.
+     */
+    private val causesSeen = LinkedHashMap<String, Int>()
+
+    /**
      * The record's question-answerer, set by whoever owns the store; the answers it gave,
      * with their queries, for the panel's log.
      */
@@ -373,6 +381,7 @@ class Coach(
             is Recommendation -> onRecommendation(event, ts)
             is PuzzleOutcome -> onPuzzleOutcome(event, ts)
             is GameReview -> onReview(event, ts)
+            is ProfileEvidence -> onEvidence(event, ts)
             is ProfileSnapshot -> profile = event
             is ScreenStateChanged -> {
                 val covered = event.state == ScreenState.COVERED
@@ -507,11 +516,15 @@ class Coach(
          */
         fun examined(): List<String> {
             val found = namedAnalysis(asked.ifEmpty { text }, where, level)
-            if (found.isNotEmpty() && asked.isNotEmpty()) {
+            // A probe the planner made of their words that is no legal move is the model's to
+            // know, not the player's to hear: "after pass, Kd1 is not a legal move" was read
+            // out as the answer to "How does Qc7+ prevent Re8?" (the students).
+            val said = found.filter { "is not a legal move" !in it }
+            if (said.isNotEmpty() && asked.isNotEmpty()) {
                 shownExamination = true
                 queuePlain(
                     Trigger.USER_ASK,
-                    found.joinToString(" ") { spoken(it) },
+                    said.joinToString(" ") { spoken(it) },
                     ts,
                     ply = where.ply,
                     level = level,
@@ -681,6 +694,38 @@ class Coach(
         }
         reviewLines = event.lines.toList()
         speak(Trigger.REVIEW, position, DisclosureLevel.LINE, ts)
+    }
+
+    /**
+     * A mistake of the player's placed by the player model. When its cause is behind an earlier
+     * mistake of the session's too, the pattern is said -- the second time, and every second
+     * time after -- with the habit that answers it, right after the lesson on the move. Each
+     * lesson taught its own moment and a principle of its own, and the threat-blind student's
+     * notebook held five unrelated rules, none of them the habit (the simulated students,
+     * 2026-09-26). Said from the model's cause, no model call.
+     */
+    private fun onEvidence(event: ProfileEvidence, ts: Double) {
+        val cause = event.cause
+        if (event.gameId != gameId || cause == null || !Causes.HABIT.containsKey(cause)) return
+        val n = (causesSeen[cause] ?: 0) + 1
+        causesSeen[cause] = n
+        if (n < 2 || n % 2 != 0) return
+        val (words, habit) = Causes.HABIT.getValue(cause)
+        val times = when (n) {
+            2 -> "twice"
+            3 -> "three times"
+            else -> "$n times"
+        }
+        val text = bags.draw(
+            "pattern:$cause",
+            listOf(
+                "That is $times now: $words. The habit to build: $habit.",
+                "This keeps happening -- $words, $times now. The habit that fixes it: $habit.",
+                "Notice the pattern: $words, $times now. So, $habit.",
+            ),
+        )
+        synchronized(lock) { conversation.note("The pattern, told to the player: $text") }
+        queuePlain(Trigger.POST_MISTAKE, text, ts, recordNow = true)
     }
 
     /**
@@ -1237,6 +1282,16 @@ class Coach(
         }
         val good = listOf("brilliant", "great", "best", "excellent").sumOf { counts[it] ?: 0 }
         var text = "$good of your ${judged.size} moves were best or excellent."
+        // What they keep missing, from the session's causes, before the game has a review.
+        val kept = causesSeen.entries
+            .filter { (cause, n) -> n >= 2 && Causes.HABIT.containsKey(cause) }
+            .map { (cause, n) -> n to cause }
+        if (kept.isNotEmpty()) {
+            // Python's max over (n, cause): the count, then the cause's name.
+            val (n, cause) = kept.maxWith(compareBy<Pair<Int, String>>({ it.first }, { it.second }))
+            val (words, habit) = Causes.HABIT.getValue(cause)
+            text += " What you keep missing: $words, $n times. The habit that fixes it: $habit."
+        }
         if (lost.isNotEmpty()) {
             // The three that cost the most, told in the order they were played.
             val worst = lost.sortedByDescending { it.first }.take(3).sortedBy { it.second }
@@ -1665,8 +1720,9 @@ class Coach(
                     "else: do not infer the course of the game from the position on the board. " +
                     "Two or three sentences: what went well -- how many of their moves were strong, " +
                     "and their slips by kind, in the tally's numbers -- and the one thing to work " +
-                    "on: when the review says what they kept missing, that pattern in plain words " +
-                    "and the habit that fixes it, as the review gives it; otherwise the move the " +
+                    "on: when the review, or the pattern already told them, says what they keep " +
+                    "missing, that pattern in plain words and the habit that fixes it, as given; " +
+                    "otherwise the move the " +
                     "tally lists first where ground was lost most, the better move there, and why, " +
                     "in plain words. If no move has a verdict yet, say you have not seen enough to " +
                     "say."

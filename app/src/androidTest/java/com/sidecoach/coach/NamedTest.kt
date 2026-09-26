@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.chess.Board
+import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.squareName
 import com.sidecoach.events.DisclosureLevel
@@ -179,6 +180,28 @@ class NamedTest {
             userColour = WHITE, level = DisclosureLevel.LINE,
         )
         assertTrue(fact, "as good as the engine's best" in fact && "behind" !in fact)
+    }
+
+    /**
+     * "if they take on b4" is the player passing, no move of theirs: it came out "after pass axb4
+     * you are losing, a serious step down from the best (the best is Bxc3)" (desktop e7b5915).
+     */
+    @Test
+    fun theirMoveFirstIsNotMeasuredAgainstTheBestAndIsSaidAsTheirMove() {
+        val board = Board(ITALIAN_START)
+        val after = board.copy()
+        after.push(Move.NULL)
+        after.push(after.parseSan("Nd4")!!)
+        val engine = scripted(mapOf(after.boardFen() to listOf(Line(depth = 14, moves = listOf("d2d3"), expectedScore = 0.40))))
+        val best = Line(depth = 14, moves = listOf("f1b5"), expectedScore = 0.55)
+        val fact = examine(
+            parseProbe("if they play Nd4", listOf("pass", "Nd4"), board), board, engine, best,
+            userColour = WHITE, level = DisclosureLevel.LINE,
+        )
+        assertTrue(fact, "best" !in fact)
+        val said = spoken(fact)
+        assertTrue(said, said.startsWith("if they play Nd4: if they got to play Nd4 now, "))
+        assertTrue(said, "pass" !in said)
     }
 
     /** The stub the generator used: the same lines for the same position, read from the file. */
