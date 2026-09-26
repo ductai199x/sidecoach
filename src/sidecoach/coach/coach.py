@@ -21,7 +21,7 @@ import random
 import re
 import statistics
 import threading
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -63,6 +63,7 @@ from sidecoach.events import (
     Label,
     MoveAssessment,
     MovePlayed,
+    ProfileEvidence,
     ProfileSnapshot,
     PuzzleOutcome,
     Recommendation,
@@ -75,6 +76,7 @@ from sidecoach.events import (
     Trigger,
 )
 from sidecoach.llm.base import ChatMessage, LLMProvider
+from sidecoach.profile.causes import HABIT
 from sidecoach.profile.insights import motif_words
 
 MAX_TOKENS = 220
@@ -1939,6 +1941,9 @@ class Coach:
         # game just ended, for the coach's summary.
         self.profile: ProfileSnapshot | None = None
         self._review_lines: list[str] = []
+        # The causes of the session's mistakes, from the player model: the pattern is said
+        # when one comes back (`_on_evidence`).
+        self._causes_seen: Counter[str] = Counter()
         # The record's question-answerer (profile/ask.py), set by whoever owns the store;
         # the answers it gave, with their queries, for the panel's log.
         self.profile_ask: Callable[[str], Any] | None = None
@@ -1997,6 +2002,8 @@ class Coach:
             self._on_puzzle_outcome(event, ts)
         elif isinstance(event, GameReview):
             self._on_review(event, ts)
+        elif isinstance(event, ProfileEvidence):
+            self._on_evidence(event, ts)
         elif isinstance(event, ProfileSnapshot):
             self.profile = event
         elif isinstance(event, ScreenStateChanged):
@@ -2132,11 +2139,15 @@ class Coach:
             Named in a statement they are still examined, for the model to check it by."""
             nonlocal shown_examination
             found = self._named_analysis(asked or text, position, level)
-            if found and asked:
+            # A probe the planner made of their words that is no legal move is the model's
+            # to know, not the player's to hear: "after pass, Kd1 is not a legal move" was
+            # read out as the answer to "How does Qc7+ prevent Re8?" (the students).
+            said = [f for f in found if "is not a legal move" not in f]
+            if said and asked:
                 shown_examination = True
                 self._queue_plain(
                     Trigger.USER_ASK,
-                    " ".join(spoken_examination(f) for f in found),
+                    " ".join(spoken_examination(f) for f in said),
                     ts,
                     ply=position.ply,
                     level=level,
@@ -2285,6 +2296,33 @@ class Coach:
             return
         self._review_lines = list(event.lines)
         self._speak(Trigger.REVIEW, position, DisclosureLevel.LINE, ts)
+
+    def _on_evidence(self, event: ProfileEvidence, ts: float) -> None:
+        """A mistake of the player's placed by the player model. When its cause is behind
+        an earlier mistake of the session's too, the pattern is said -- the second time, and
+        every second time after -- with the habit that answers it, right after the lesson on
+        the move. Each lesson taught its own moment and a principle of its own, and the
+        threat-blind student's notebook held five unrelated rules, none of them the habit
+        (the simulated students, 2026-09-26). Said from the model's cause, no model call."""
+        if event.game_id != self.game_id or event.cause not in HABIT:
+            return
+        self._causes_seen[event.cause] += 1
+        n = self._causes_seen[event.cause]
+        if n < 2 or n % 2:
+            return
+        words, habit = HABIT[event.cause]
+        times = {2: "twice", 3: "three times"}.get(n, f"{n} times")
+        text = self._bags.draw(
+            f"pattern:{event.cause}",
+            (
+                f"That is {times} now: {words}. The habit to build: {habit}.",
+                f"This keeps happening -- {words}, {times} now. The habit that fixes it: {habit}.",
+                f"Notice the pattern: {words}, {times} now. So, {habit}.",
+            ),
+        )
+        with self._lock:
+            self.conversation.note(f"The pattern, told to the player: {text}")
+        self._queue_plain(Trigger.POST_MISTAKE, text, ts, record_now=True)
 
     def _on_recommendation(self, event: Recommendation, ts: float) -> None:
         """The practice the profile picked after the review: a line naming the motif and
@@ -2839,6 +2877,12 @@ class Coach:
                     lost.append((r.assessment.expected_loss, r.move.ply, numbered))
         good = sum(counts.get(k, 0) for k in ("brilliant", "great", "best", "excellent"))
         text = f"{good} of your {len(judged)} moves were best or excellent."
+        # What they keep missing, from the session's causes, before the game has a review.
+        kept = [(n, cause) for cause, n in self._causes_seen.items() if n >= 2 and cause in HABIT]
+        if kept:
+            n, cause = max(kept)
+            words, habit = HABIT[cause]
+            text += f" What you keep missing: {words}, {n} times. The habit that fixes it: {habit}."
         if lost:
             # The three that cost the most, told in the order they were played.
             worst = sorted(sorted(lost, key=lambda t: -t[0])[:3], key=lambda t: t[1])
@@ -3499,8 +3543,9 @@ class Coach:
                 "else: do not infer the course of the game from the position on the board. "
                 "Two or three sentences: what went well -- how many of their moves were strong, "
                 "and their slips by kind, in the tally's numbers -- and the one thing to work "
-                "on: when the review says what they kept missing, that pattern in plain words "
-                "and the habit that fixes it, as the review gives it; otherwise the move the "
+                "on: when the review, or the pattern already told them, says what they keep "
+                "missing, that pattern in plain words and the habit that fixes it, as given; "
+                "otherwise the move the "
                 "tally lists first where ground was lost most, the better move there, and why, "
                 "in plain words. If no move has a verdict yet, say you have not seen enough to "
                 "say."

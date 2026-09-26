@@ -107,6 +107,29 @@ def test_the_engines_own_best_move_is_never_behind_the_best() -> None:
     assert "as good as the engine's best" in fact and "behind" not in fact
 
 
+def test_their_move_first_is_not_measured_against_the_best_and_is_said_as_their_move() -> None:
+    """ "if they take on b4" is the player passing, no move of theirs: it came out "after
+    pass axb4 you are losing, a serious step down from the best (the best is Bxc3)"."""
+    board = chess.Board(ITALIAN_START)
+    after = board.copy()
+    after.push(chess.Move.null())
+    after.push_san("Nd4")
+    engine = _Engine({after.board_fen(): [Line(depth=14, moves=["d2d3"], expected_score=0.40)]})
+    best = Line(depth=14, moves=["f1b5"], expected_score=0.55)
+    fact = examine(
+        parse_probe("if they play Nd4", ["pass", "Nd4"], board),
+        board,
+        engine,
+        best,
+        user_colour=chess.WHITE,
+        level=DisclosureLevel.LINE,
+    )
+    assert "best" not in fact
+    said = spoken(fact)
+    assert said.startswith("if they play Nd4: if they got to play Nd4 now, ")
+    assert "pass" not in said
+
+
 def test_spoken_puts_the_same_facts_in_plain_words() -> None:
     fact = (
         "Engine on your Bc4, which the player asked about: after 3. Bc4 the expected score is 0.52 "

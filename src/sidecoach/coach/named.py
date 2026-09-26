@@ -377,7 +377,11 @@ def examine(
         return f"{head} the engine has nothing to say about the position after {played}."
     score = lines[0].expected_score if after.turn == user_colour else 1.0 - lines[0].expected_score
     parts.append(f"after {played} the expected score is {score:.2f} from the player's side")
-    if best is not None:
+    # Their move first ("if they take on b4") is the player passing, which is no move of
+    # theirs: measured against the best it came out "after pass axb4 you are losing, a
+    # serious step down from the best (the best is Bxc3)" (the simulated students).
+    passing = bool(probe.parsed) and probe.parsed[0] == chess.Move.null()
+    if best is not None and not passing:
         gap = best.expected_score - score
         # The engine's own first move, searched again after it is played, comes back a hair
         # off its first score: "12. Nc3: ... a hair behind the best (the best is Nc3)" (the
@@ -464,7 +468,11 @@ def spoken(fact: str) -> str:
     label, body = m.group("label"), m.group("body").strip()
     body = re.sub(
         r"^after (.+?) the expected score is (\d\.\d\d) from the player's side",
-        lambda mm: f"after {mm.group(1)} {_standing(float(mm.group(2)))}",
+        lambda mm: (
+            f"if they got to play {mm.group(1)[5:]} now, {_standing(float(mm.group(2)))}"
+            if mm.group(1).startswith("pass ")
+            else f"after {mm.group(1)} {_standing(float(mm.group(2)))}"
+        ),
         body,
     )
     body = re.sub(

@@ -1389,6 +1389,36 @@ def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> No
     assert "Name no move the messages do not give" in directive
 
 
+def test_a_cause_that_comes_back_is_named_with_the_habit_that_fixes_it() -> None:
+    """Each lesson taught its own moment and a principle of its own, and the threat-blind
+    student's notebook held five unrelated rules (the simulated students, 2026-09-26): the
+    second mistake of one cause in the session says the pattern, and every second one after."""
+    from sidecoach.events import ProfileEvidence
+    from sidecoach.profile import causes
+
+    coach, _ = _coach([])
+    _start(coach)
+
+    def placed(ply: int, cause: str, game_id: str = "g") -> list[str]:
+        coach.on_event(
+            ProfileEvidence(
+                game_id=game_id, ply=ply, phase="middlegame", expected_loss=0.2, cause=cause
+            ),
+            float(ply),
+        )
+        return [m.text for m in _messages(coach)]
+
+    assert placed(9, causes.MISSED_THREAT) == []
+    assert placed(13, causes.POSITIONAL) == []
+    assert placed(21, causes.MISSED_THREAT, game_id="old") == []  # another game's
+    second = placed(25, causes.MISSED_THREAT)
+    assert len(second) == 1 and "twice now" in second[0]
+    assert "what their moves threatened" in second[0]
+    assert "look at what their last move attacks" in second[0]
+    assert placed(31, causes.MISSED_THREAT) == []
+    assert "4 times now" in placed(37, causes.MISSED_THREAT)[0]
+
+
 def test_the_review_is_spoken_from_the_profiles_facts_and_the_next_game_knows_the_player() -> None:
     """The game ends and the profile's review arrives: it joins the conversation as a
     message of its own and the coach sums it up through the model, the review's sentences
