@@ -1969,7 +1969,7 @@ class Coach(
                         "its goal, its pattern, why the better move works, and what their move " +
                         "missed or allowed -- as a pattern to remember, in three sentences at " +
                         "most, then ask one question that checks they see it. " +
-                        "$NOT_THE_MOVE $NO_NUMBERS"
+                        "$TIE_TO_THE_GAME $NOT_THE_MOVE $NO_NUMBERS"
                 if (!allowed.isNullOrEmpty()) {
                     instructionText += " What ${played.san} allowed, from the engine's line: $allowed."
                 }
@@ -2061,7 +2061,8 @@ class Coach(
                     "The player just played ${played.san}, which was fine but not the " +
                         "strongest: $best ($betterWords) was better, by a little. One or two " +
                         "sentences: that it was fine, then the better move and the idea behind it " +
-                        "as a lesson to keep. No lecture, no question. $NOT_THE_MOVE $NO_NUMBERS"
+                        "as a lesson to keep. No lecture, no question. $TIE_TO_THE_GAME " +
+                        "$NOT_THE_MOVE $NO_NUMBERS"
             }
             return instructionText to fallback
         }
@@ -2335,13 +2336,16 @@ class Coach(
                         ". Say that plainly -- the position it was played from is past, so " +
                         "nothing about it is withheld; the disclosure level binds only the " +
                         "position they face now." +
-                        if (answering) {
-                            "$close Three sentences at most."
-                        } else if (followup) {
-                            follow
-                        } else {
-                            " Three sentences at most, then one question that checks they see the pattern."
-                        }
+                        (
+                            if (answering) {
+                                "$close Three sentences at most."
+                            } else if (followup) {
+                                follow
+                            } else {
+                                " Three sentences at most, then one question that checks they see the pattern."
+                            }
+                            ) +
+                        " $TIE_TO_THE_GAME"
                 if (followup && !asks) {
                     fallback = "" // a nod needs no template: nothing, rather than the lesson again
                 }

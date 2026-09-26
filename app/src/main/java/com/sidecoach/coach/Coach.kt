@@ -486,6 +486,14 @@ const val IDEA_DIRECTIVE =
         "pieces makes it -- that is the next hint; the target's square, as the sheet names it, " +
         "may be said even where the move goes, and the moves the sheet lists as all as good, " +
         "when several are, may be named. Two or three sentences."
+/**
+ * The game so far, used: an earlier moment of the same kind is the coach's best material, and
+ * the excellence rubric found it used in half the lessons that had one (2026-09-25).
+ */
+const val TIE_TO_THE_GAME =
+    "If the game so far shows an earlier moment of the same kind -- the same threat, the same " +
+        "pattern, a lesson you already gave -- tie this one to it in a clause."
+
 private val LENGTH_WORDS = mapOf(4 to "Four", 5 to "Five", 6 to "Six")
 
 /**
