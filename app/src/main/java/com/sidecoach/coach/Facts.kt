@@ -442,6 +442,16 @@ private fun toMove(uci: String): Move? = runCatching { Move.fromUci(uci) }.getOr
 const val TACTIC_GAIN = 2
 
 /**
+ * In check, the first hint's question and the nature of a quiet answer are the check: "a quiet
+ * improvement -- which of your pieces has no job right now?" was the hint in check positions,
+ * and the simulated students did not understand it (desktop 4cc6f11).
+ */
+const val IN_CHECK_QUESTION =
+    "You are in check: can you take the checking piece, block it, or must your king move -- " +
+        "and which way out leaves you safest?"
+const val IN_CHECK_NATURE = "a check to answer -- take the checking piece, block it, or move the king"
+
+/**
  * Whether the answer is forcing, a quiet move that wins material, or quiet, in the words the
  * sheet uses. `line` is the engine's line from `best` (UCI), played out to see whether it
  * wins material.
@@ -607,6 +617,13 @@ fun factsFromAnalysis(
         mechanism = "$plan: ${IdeaWords.PLAN_WHY.getValue(planKind)}"
     }
     var question: String? = IdeaWords.question(idea, planKind)
+    if (board.isCheck() && question in Situation.ANY_POSITION) {
+        // In check the question is the check: "a quiet improvement -- which of your pieces has
+        // no job right now?" was the hint in seven of ten AI sessions' check positions, and the
+        // students listed it among what they did not understand (round 4, 2026-09-26).
+        question = IN_CHECK_QUESTION
+        if (nature != null && nature.startsWith("quiet")) nature = IN_CHECK_NATURE
+    }
     var target = IdeaWords.target(idea, board)
     var nudge = IdeaWords.nudge(idea)
     var why = IdeaWords.why(idea, board, IdeaWords.Describe(::describeTactic))
