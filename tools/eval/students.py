@@ -222,7 +222,7 @@ def cmd_games(args: argparse.Namespace) -> None:
     games.mkdir(parents=True, exist_ok=True)
     EXAM_GAMES.mkdir(parents=True, exist_ok=True)
     student_jobs: dict[Path, list[tuple[str, int, int, int]]] = {}
-    for habit in HABITS:
+    for habit in args.habits or list(HABITS):
         for level in LEVELS:
             path = games / f"{habit}-L{level}.pgn"
             if path.exists() and not (args.force or args.redo == "students"):
@@ -337,6 +337,73 @@ def _exam_positions(job: tuple[str, int, str]) -> list[dict]:
     return out
 
 
+def _habit_positions(job: tuple[str, int, str, str, list[int]]) -> list[dict]:
+    """An exam game's positions at `plies` (read before without their candidates) read again
+    where `kind`'s habit could bite, candidates and all."""
+    from nova import temperature_for  # pyright: ignore[reportMissingImports]
+
+    game_id, level, pgn, kind, plies = job
+    assert _nova is not None and _evaluator is not None
+    game = chess.pgn.read_game(io.StringIO(pgn))
+    assert game is not None
+    board = game.board()
+    style, t = _style(level), temperature_for(level)
+    wanted, out, last_san = set(plies), [], None
+    for move in game.mainline_moves():
+        if board.ply() in wanted:
+            probs = _nova.probabilities([board], [style], temperature=t)[0]
+            s = situation(board, probs, _evaluator, need=HABITS[kind].on)
+            if s.live and s.candidates:
+                out.append(record(game_id, level, board, last_san, probs, s))
+        last_san = board.san(move)
+        board.push(move)
+    return out
+
+
+def add_to_exam(kind: str, workers: int) -> None:
+    """A habit's positions added to the frozen exam, its items left as they are: the exam
+    games' positions read before without their candidates are read again where the habit
+    could bite (POSITIONS keeps them), and ERRORS_PER_CELL of the habit's positions are drawn
+    at each level from the positions no item uses."""
+    exam = json.loads(EXAM.read_text("utf-8"))
+    if any(it["kind"] == kind for it in exam["items"]):
+        raise SystemExit(f"{kind} is in the exam already")
+    positions = exam_positions(workers)
+    bare: dict[str, list[int]] = defaultdict(list)
+    for p in positions:
+        if not p["candidates"]:
+            bare[p["game"]].append(p["ply"])
+    jobs = []
+    for level in LEVELS:
+        for i, game in enumerate(read_games(EXAM_GAMES / f"L{level}.pgn")):
+            gid = f"L{level}x{i:02d}"
+            if bare.get(gid):
+                jobs.append((gid, level, str(game), kind, bare[gid]))
+    t0 = time.time()
+    found: dict[tuple[str, int], dict] = {}
+    context = mp.get_context("spawn")
+    with context.Pool(workers, initializer=_init_worker) as pool:
+        for i, read in enumerate(pool.imap_unordered(_habit_positions, jobs), 1):
+            found.update({(p["game"], p["ply"]): p for p in read})
+            print(
+                f"  [{i}/{len(jobs)}] {len(found)} positions read again ({time.time() - t0:.0f} s)"
+            )
+    positions = [found.get((p["game"], p["ply"]), p) for p in positions]
+    POSITIONS.write_text("".join(json.dumps(p) + "\n" for p in positions), encoding="utf-8")
+    used = {(it["game"], it["ply"]) for it in exam["items"]}
+    free = [p for p in positions if (p["game"], p["ply"]) not in used]
+    added = [it for it in select_items(free, random.Random(f"{SEED}:{kind}")) if it["kind"] == kind]
+    exam["items"].extend(added)
+    exam.setdefault("added", []).append(
+        {"kind": kind, "drawn": time.strftime("%Y-%m-%d %H:%M"), "items": len(added)}
+    )
+    EXAM.write_text(json.dumps(exam), encoding="utf-8")
+    counts = defaultdict(int)
+    for it in added:
+        counts[it["level"]] += 1
+    print(f"{len(added)} {kind} positions added -> {EXAM.relative_to(ROOT)}: {dict(counts)}")
+
+
 def record(
     game_id: str,
     level: int,
@@ -377,7 +444,9 @@ def record(
 def position_situation(p: dict) -> Situation:
     """A stored position as the habits read it."""
     moves = [chess.Move.from_uci(c["uci"]) for c in p["candidates"]]
+    board = chess.Board(p["fen"])
     return Situation(
+        forcing=frozenset(m for m in moves if board.is_capture(m) or board.gives_check(m)),
         best=p["best"],
         probs={m: c["p"] for m, c in zip(moves, p["candidates"], strict=True)},
         scores={m: c["score"] for m, c in zip(moves, p["candidates"], strict=True)},
@@ -493,14 +562,19 @@ def bite_rates(positions: list[dict]) -> None:
             natural = [habit.natural(s) for s in bitten]
             share = len(bitten) / max(1, len(here))
             nova = sum(natural) / max(1, len(natural))
+            human = habit.human(level)
             parts.append(
                 f"{key} {share:.0%} ({40 * share:.1f} per 40), real players miss"
-                f" {habit.human(level):.0%}, Nova {nova:.0%}, the student {habit.student(nova):.0%}"
+                f" {'?' if human is None else f'{human:.0%}'}, Nova {nova:.0%}, the student"
+                f" {habit.student(nova):.0%}"
             )
         print(f"  L{level}: {len(here)} live positions; " + "; ".join(parts))
 
 
 def cmd_exam_draw(args: argparse.Namespace) -> None:
+    if args.add:
+        add_to_exam(args.add, args.workers)
+        return
     positions = exam_positions(args.workers)
     bite_rates(positions)
     if args.rates:
@@ -1471,10 +1545,12 @@ def main() -> None:
     g.add_argument("--force", action="store_true", help="play every game again")
     g.add_argument("--redo", choices=["students", "exam"], help="play only these again")
     g.add_argument("--batch", type=int, default=0, help="a batch of fresh games (0: the first)")
+    g.add_argument("--habits", nargs="*", help="only these habits' games (default: all)")
     d = sub.add_parser("exam-draw")
     d.add_argument("--workers", type=int, default=20)
     d.add_argument("--force", action="store_true")
     d.add_argument("--rates", action="store_true", help="only print how often each habit bites")
+    d.add_argument("--add", choices=list(HABITS), help="add a habit's positions to the exam")
     s = sub.add_parser("session")
     s.add_argument("--run", required=True)
     s.add_argument("--coach", default="none", help="none, or a model spec (providers.py)")

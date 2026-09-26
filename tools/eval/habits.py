@@ -92,6 +92,11 @@ _BANDS = (950, 1250, 1550, 1850, 2150, 2450)
 HUMAN_MISS = {
     "threat_blind": tuple(zip(_BANDS, (0.148, 0.113, 0.097, 0.084, 0.047, 0.030), strict=True)),
     "tactic_blind": tuple(zip(_BANDS, (0.284, 0.284, 0.273, 0.130, 0.130, 0.130), strict=True)),
+    # Of real players' own captures and checks, the share that come out behind -- a rate per
+    # forcing move played, not per position where the habit bites: a human game has no Nova
+    # candidates to tell a tempting capture (habit_rates.jsonl, 2026-09-26; the examples read
+    # right: Re4+?? into the king, Qxg2+?? losing the queen, Bxg4?? allowing Qxf7#).
+    "greedy": tuple(zip(_BANDS, (0.059, 0.047, 0.039, 0.028, 0.012, 0.004), strict=True)),
 }
 # How often the habit takes the move where it bites.
 TAKEOVER = 0.5
@@ -276,6 +281,8 @@ class Situation:
     # The lines the threat and the tactic were read from (UCI), for reading by hand.
     threat_line: list[str] = field(default_factory=list)
     tactic_line: list[str] = field(default_factory=list)
+    # Nova's likeliest moves that capture or give check (read off the board, no search).
+    forcing: frozenset[chess.Move] = frozenset()
 
     def loss(self, move: chess.Move) -> float:
         return max(0.0, self.best - self.scores[move])
@@ -317,7 +324,8 @@ def situation(
     took about five seconds, most of it the candidates (2026-09-26)."""
     evaluator.fresh()
     top = evaluator.top(board)
-    first = Situation(best=top[0][0] if top else 0.5, probs=probs, scores={})
+    forcing = forcing_moves(board, top_moves(probs, **kw))
+    first = Situation(best=top[0][0] if top else 0.5, probs=probs, scores={}, forcing=forcing)
     if not first.live:
         return first
     passed = evaluator.passed(board)
@@ -351,7 +359,13 @@ def situation(
         owed=idea_of.worth(idea_of.exchange_owed(board)),
         threat_line=[m.uci() for m in passed[2]] if passed else [],
         tactic_line=[m.uci() for m in tactic_line],
+        forcing=forcing,
     )
+
+
+def forcing_moves(board: chess.Board, moves: Sequence[chess.Move]) -> frozenset[chess.Move]:
+    """The moves that capture or give check."""
+    return frozenset(m for m in moves if board.is_capture(m) or board.gives_check(m))
 
 
 def tactic_of(
@@ -382,6 +396,8 @@ class Habit:
     off_note: str
 
     def on(self, s: Situation) -> bool:
+        if self.key == "greedy":
+            return s.live and bool(s.forcing)
         return s.threat if self.key == "threat_blind" else s.tactic
 
     def misses(self, s: Situation) -> list[chess.Move]:
@@ -389,8 +405,12 @@ class Habit:
         least the exchange at a threat (the threat not met), or does not win the exchange at a
         tactic (net of what they just took). A poor move that still meets the threat or cashes
         the tactic is another mistake: 25...fxg3, the wrong recapture that still won the knight
-        on a5, was read as the tactic missed (the hand review, 2026-09-26)."""
+        on a5, was read as the tactic missed (the hand review, 2026-09-26). The greedy habit's
+        is a capture or a check of its own that comes out behind: at least the exchange down
+        where it settles."""
         out = [m for m in s.candidates if s.loss(m) >= MISS]
+        if self.key == "greedy":
+            return [m for m in out if m in s.forcing and s.swings.get(m, 0) <= -TACTIC_GAIN]
         if self.key == "threat_blind":
             return [m for m in out if s.swings.get(m, 0) <= -TACTIC_GAIN]
         return [m for m in out if s.swings.get(m, 0) - s.owed < TACTIC_GAIN]
@@ -403,8 +423,11 @@ class Habit:
         misses = self.misses(s)
         return bool(misses) and any(s.loss(m) < MISS for m in s.candidates)
 
-    def human(self, rating: float) -> float:
-        """How often real players of `rating` miss it (the reference, habit_rates.py)."""
+    def human(self, rating: float) -> float | None:
+        """How often real players of `rating` miss it (the reference, habit_rates.py), None
+        where it has not been measured."""
+        if self.key not in HUMAN_MISS:
+            return None
         return interpolate(HUMAN_MISS[self.key], rating)
 
     def student(self, natural: float) -> float:
@@ -448,6 +471,19 @@ HABITS: dict[str, Habit] = {
             gold_note=(
                 "Before every move, look at all my checks, captures and attacks first; if one "
                 "of them wins material or leads to mate, play it."
+            ),
+            off_note=OFF_NOTE,
+        ),
+        # Added after the loop's rounds on the first two had met its stopping rule, as a habit
+        # no correction was made from (2026-09-26): common at every level (in the exam games'
+        # searched positions it bit 40 times at 800 and 9 at 2500).
+        Habit(
+            key="greedy",
+            cause="miscalculated line",
+            trait="plays captures and checks that come out behind once the exchanges are over",
+            gold_note=(
+                "Before any capture or check, follow it to where the exchanges stop and count "
+                "what I have left; if I come out behind, don't play it."
             ),
             off_note=OFF_NOTE,
         ),

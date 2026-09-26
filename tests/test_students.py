@@ -90,6 +90,24 @@ def test_a_threat_is_material_the_opponent_would_win_and_a_miss_loses_it():
     assert _reads("threat_blind", mate) == ["a2a3"]
 
 
+def test_a_greedy_miss_is_a_capture_or_check_that_comes_out_behind():
+    # 1.e4 e5 2.Nf3 Nc6 3.Bc4 Nd4: Nxe5 (a capture) and Bxf7+ (a check and a capture) are on
+    # offer beside the quiet Nxd4... here scored by hand.
+    scores = {"f3e5": 0.35, "c4f7": 0.30, "b1c3": 0.58, "h2h3": 0.44}
+    move = chess.Move.from_uci
+    board = chess.Board("r1bqkbnr/pppp1ppp/8/4p3/2BnP3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
+    forcing = habits.forcing_moves(board, [move(u) for u in scores])
+    assert forcing == {move("f3e5"), move("c4f7")}
+    swings = {move("f3e5"): 1, move("c4f7"): -2, move("h2h3"): -3}
+    s = _situation(scores, best=0.60, swings=swings, forcing=forcing)
+    # Nxe5 is a mistake that keeps the material (not greed that loses); h3 loses material but
+    # is no capture or check.
+    assert _reads("greedy", s) == ["c4f7"]
+    # Without a forcing move among the candidates the habit is not on; nor in a decided game.
+    assert _reads("greedy", _situation(scores, best=0.60, swings=swings)) == []
+    assert _reads("greedy", _situation(scores, best=0.95, swings=swings, forcing=forcing)) == []
+
+
 def test_a_tactic_position_s_misses_are_the_mistakes():
     scores = {"d1h5": 0.85, "a2a3": 0.60, "h2h3": 0.80}
     assert _reads("tactic_blind", _situation(scores, best=0.86, tactic_win=3)) == ["a2a3"]

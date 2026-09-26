@@ -51,7 +51,7 @@ GAMES_PER_CELL = 18
 KEEP = 6  # three sessions a cell
 # The check that cures each habit (students.CHECKS); for a threat, a check of the move's own
 # safety is the other half (the piece moved off the threat to a square where it is lost).
-CURE = {"threat_blind": "threats", "tactic_blind": "tactics"}
+CURE = {"threat_blind": "threats", "tactic_blind": "tactics", "greedy": "safety"}
 
 
 def run(cmd: list[str], log: Path, env: dict | None = None) -> None:
