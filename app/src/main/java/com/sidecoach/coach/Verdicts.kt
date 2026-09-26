@@ -126,6 +126,13 @@ val PRINCIPLES: Map<String, List<String>> = mapOf(
     ),
 )
 
+/**
+ * The terms of art in the wordings above: said to a player below 1400, the simulated 800-rated
+ * student listed "prophylaxis: stop their plan before pushing your own" among the things it did
+ * not understand (2026-09-26).
+ */
+val JARGON = Regex("\\b(?:prophylaxis|outpost|pawn storm)\\b", RegexOption.IGNORE_CASE)
+
 /** The opponent's first threat (the fact sheet's SAN, read after a pass), or null. */
 private fun threatOf(board: Board, threats: List<String>): Move? {
     if (threats.isEmpty() || board.isCheck()) return null
@@ -201,7 +208,8 @@ fun praiseFor(label: String?, last: String?): List<String> {
  * it taught, null when it is praise alone. With [bags] (the live coach's) every wording is drawn
  * from its bag, each once before any comes again ([Bags]); without, [pick] makes every draw, one
  * that is never [last]'s praise, as the desktop's `rng.choice` does. The praise is drawn before
- * the wording.
+ * the wording. [plain] leaves out the wordings that name a term of art (a player below 1400:
+ * [JARGON]).
  */
 fun verdict(
     board: Board,
@@ -214,6 +222,7 @@ fun verdict(
     last: String? = null,
     pick: (List<String>) -> String = { it[Random.nextInt(it.size)] },
     bags: Bags? = null,
+    plain: Boolean = false,
 ): Pair<String, String?> {
     val found = lesson(board, move, tags, phase, threats, taught)
     if (found != null && found.first == "mate") {
@@ -227,7 +236,9 @@ fun verdict(
         pick(praiseFor(label, last))
     }
     if (found == null) return "$opener." to null
-    val (kind, clauses) = found
+    val kind = found.first
+    var clauses = found.second
+    if (plain) clauses = clauses.filter { !JARGON.containsMatchIn(it) }.ifEmpty { clauses }
     val clause = if (bags != null) {
         bags.draw("clause:$kind", clauses)
     } else if (clauses.size > 1) {

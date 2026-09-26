@@ -269,6 +269,9 @@ class Coach(
     var summariser: LLMProvider = summariser ?: provider
     var system: String = systemMessage(persona = persona, rating = rating)
 
+    /** A player below 1400 hears no term of art in the templates ([JARGON]). */
+    var plainWords: Boolean = rating != null && rating.second < PLAIN_BELOW
+
     /**
      * Run the claims check on the caller's thread (replay and evaluation) instead of a
      * worker: live it is threaded so a button press never stalls the pipeline.
@@ -1025,6 +1028,7 @@ class Coach(
                     threats = facts.threats,
                     taught = taught.toList(),
                     bags = bags,
+                    plain = plainWords,
                 )
                 if (kind != null) {
                     taught.addLast(kind)
@@ -1189,6 +1193,22 @@ class Coach(
     } catch (exc: Exception) {
         speaker.lastError = "named analysis: ${exc::class.java.simpleName}: ${exc.message}"
         emptyList()
+    }
+
+    /**
+     * Whether the player's words answer the question the coach just asked: its last turn ended
+     * with one, nothing has happened since, and their words ask nothing.
+     */
+    internal fun answeringOurQuestion(said: String): Boolean {
+        if (questionPart(said).isNotEmpty()) return false
+        var entries = synchronized(lock) { conversation.entries.toList() }
+        // Their words themselves, when ask() has recorded them already, are not the thread.
+        if (entries.isNotEmpty() && entries.last().kind == "ask") entries = entries.dropLast(1)
+        for (entry in entries.asReversed()) {
+            if (entry.kind == "coach") return entry.text.trimEnd().endsWith("?")
+            if (entry.kind != "note") return false
+        }
+        return false
     }
 
     /**
@@ -1580,6 +1600,7 @@ class Coach(
                     threats = facts.threats,
                     taught = taught.toList(),
                     bags = bags,
+                    plain = plainWords,
                 ).first
                 val meaning = when (label) {
                     "brilliant" -> "a sound sacrifice"
@@ -1706,6 +1727,14 @@ class Coach(
         }
         val shown = " Your last turn above is the quick answer they have already been shown; " +
             "build on it, do not repeat it."
+        // Their words answer the question the coach just asked: the thread is closed, not
+        // carried on with another question. Every answer had earned a new question and none was
+        // resolved -- the students' "what Nc4 was expected to do was asked but not answered"
+        // (2026-09-26).
+        val answering = answeringOurQuestion(said)
+        val close = " They are answering the question you just asked, your last turn above: say first, " +
+            "plainly and from the facts, whether they have it right; if they do not, give the " +
+            "answer yourself in a sentence. Ask nothing more -- this closes that question."
         val directive: String
         val lastOpponent = lastOpponentMove()
         val lastOwn = lastOwnMove()
@@ -1830,8 +1859,12 @@ class Coach(
                         (if (idea.isNotEmpty()) ", and the idea was $idea" else "") +
                         ". Say that plainly -- the position it was played from is past, so " +
                         "nothing about it is withheld; the disclosure level binds only the " +
-                        "position they face now. Three sentences at most, then one question " +
-                        "that checks they see the pattern."
+                        "position they face now." +
+                        if (answering) {
+                            "$close Three sentences at most."
+                        } else {
+                            " Three sentences at most, then one question that checks they see the pattern."
+                        }
             }
         } else {
             directive =
@@ -1843,9 +1876,11 @@ class Coach(
                     "theirs to hear in full: the score after it, how far behind the best, the " +
                     "reply, what the move does. Only the engine's better move or line is " +
                     "withheld: never reveal that unless the sheet lists it, but do point them " +
-                    "toward the right idea with a question. What you already said in this " +
-                    "position is under 'Said here': do not say it again in other words; give " +
-                    "them something it did not."
+                    "toward the right idea" +
+                    (if (answering) " in words." else " with a question.") +
+                    " What you already said in this position is under 'Said here': do not say " +
+                    "it again in other words; give them something it did not." +
+                    (if (answering) close else "")
         }
         return "$checks$directive" to fallback
     }

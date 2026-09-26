@@ -147,4 +147,37 @@ class ChatAfterMoveTest {
             question.any { "the player's knight on f3 stands there; it can go to" in it },
         )
     }
+
+    /** The directive of the last model call: the harness after its "# Task" line. */
+    private fun directive(provider: ScriptedProvider): String {
+        val messages = synchronized(provider.prompts) { provider.prompts.last().second }
+        assertEquals(1, messages.size)
+        return messages[0].content.substringAfterLast("# Task\n")
+    }
+
+    /**
+     * Every answer to the coach's question had earned a new question and none was resolved (the
+     * simulated students: "what Nc4 was expected to do was asked but not answered"; desktop
+     * cf1e2a0). On the desktop the player's words on the opponent's turn go to the own-move
+     * directive (`_asked_own_move`, f733318, not ported); here they go to the generic one, which
+     * closes the question the same way.
+     */
+    @Test
+    fun anAnswerToTheCoachsQuestionClosesItWithoutAnother() {
+        val (coach, provider) = coach(listOf("You have it: the knight was loose.", "Right."))
+        val ucis = listOf("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "f3g5")
+        played(coach, ucis, mistakeAt = 7)
+        analysed(coach, ucis, 7, "d7d5", 0.45, 7.5)
+        messages(coach)
+        synchronized(coach.lock) { coach.conversation.coachSaid("What were you expecting that move to do?") }
+        assertTrue(coach.answeringOurQuestion("I wanted to attack f7 with the knight."))
+        assertTrue(!coach.answeringOurQuestion("Why is that bad?"))
+        coach.ask("I wanted to attack f7 with the knight.", 8.0)
+        messages(coach)
+        val directive = directive(provider)
+        assertTrue(directive, "They are answering the question you just asked" in directive)
+        assertTrue(directive, "then one question" !in directive)
+        // Once answered, the thread is closed: words after the coach's reply answer nothing.
+        assertTrue(!coach.answeringOurQuestion("ok"))
+    }
 }

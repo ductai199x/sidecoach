@@ -57,6 +57,9 @@ import kotlin.random.Random
 
 const val MAX_TOKENS = 220
 
+/** The top of the rating band below which the templates say no term of art ([JARGON]). */
+const val PLAIN_BELOW = 1400
+
 /**
  * After every this-many mistakes the lesson ends by asking what the player saw: a
  * self-report the profile keeps beside the mistake (DESIGN 5.6, "sparingly"). One that goes
