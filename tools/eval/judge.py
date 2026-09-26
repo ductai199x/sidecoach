@@ -1267,7 +1267,13 @@ _IDENTIFIED = re.compile(
     r"\b(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?)(?![A-Za-z])"
     r"|\b(?:king|queen|rook|bishop|knight|pawn|pawns|pieces?|material|exchange)\b"
     r"|\d"  # a count, a cost, a move number
-    r"|\b(?:white|black|equal|level|even|balanced|winning|losing|better|worse|ahead|behind|advantage|edge|decisive|drawn|draw|mate|checkmate|stalemate|resign|threat|threatens|threatening|fork|pin|skewer|check|opening|endgame|middlegame|book|best|excellent|great|brilliant|good|inaccuracy|mistake|miss|blunder|file|rank|diagonal|castle|castled|castling|isolated|passed|doubled|backward|outpost|tempo|initiative)\b",
+    r"|\b(?:white|black|equal|level|even|balanced|winning|losing|better|worse|ahead|behind|advantage|edge|decisive|drawn|draw|mate|checkmate|stalemate|resign|threat|threatens|threatening|fork|pin|skewer|check|opening|endgame|middlegame|book|best|excellent|great|brilliant|good|inaccuracy|mistake|miss|blunder|file|rank|diagonal|castle|castled|castling|isolated|passed|doubled|backward|outpost|tempo|initiative)\b"
+    # The sheet's own words for the position: checkable against the record (the benchmark,
+    # 2026-09-25: "There is no tactic to find", "The plan is finishing your development",
+    # "That one cost you a lot" were dropped unjudged).
+    r"|\b(?:tactics?|plans?|pattern|develop(?:ment|ed|ing)?|squares?|costs?|costing|loose|"
+    r"hanging|trapped|undefended|defended|attack(?:s|ed|ing)?|forcing|quiet|theory|"
+    r"centre|center|space|majority|trades?|wins?|won|loses?|lost|recapture)\b",
     re.IGNORECASE,
 )
 
@@ -1361,7 +1367,8 @@ def _identified(claim: str) -> bool:
         return False
     if _IDENTIFIED.search(claim) is None:
         return False
-    has_piece = _PIECE_IN_TEXT.search(claim) is not None
+    # A king is one of a kind: "their king has only two free squares" names it.
+    has_piece = _PIECE_IN_TEXT.search(re.sub(r"\bkings?\b", " ", claim, flags=re.I)) is not None
     has_place = (
         any(not re.fullmatch(r"[a-h][1-8]", x) for x in _SAN_IN_TEXT.findall(claim))
         or re.search(r"\b[a-h][1-8]\b", claim) is not None
@@ -1615,6 +1622,16 @@ def advice_or_question(quote: str, reply: str) -> str | None:
     return None
 
 
+# A pure appraisal: an evaluative word and nothing the record could check ("that's the key
+# idea", "a nice move").
+_APPRAISAL = re.compile(
+    r"\b(?:good|nice|great|strong|weak|important|key|useful|clear|simple|natural|fine|solid"
+    r"|excellent|big|critical|instructive|typical|classic|essential|essence|lesson|idea"
+    r"|principle|well|nicely|smart|clever|careful|beautiful|lovely|impressive)\b",
+    re.IGNORECASE,
+)
+
+
 def ground_claims(entries: list, reply: str) -> tuple[list[str], list[str | None], list[dict]]:
     """The claims kept from the split, their quotes, and the ones dropped with why.
 
@@ -1624,6 +1641,7 @@ def ground_claims(entries: list, reply: str) -> tuple[list[str], list[str | None
     check. Every claim must then pass the older filters: it names something the record could
     identify, and every move, square and piece in it is the reply's own."""
     reply_n = normalise(reply)
+    reply_q = reply_n.replace("...", "\u2026")
     kept: list[str] = []
     quotes: list[str | None] = []
     dropped: list[dict] = []
@@ -1635,25 +1653,38 @@ def ground_claims(entries: list, reply: str) -> tuple[list[str], list[str | None
             claim, quote = str(entry), None
         if not claim.strip():
             continue
+        quote_core = ""
         if quote is not None:
             # A quote missing or not word for word in the reply leaves the claim to the vote:
             # the split paraphrases ("the knight" for "your knight"), and a claim dropped
             # for it was a fabrication never looked at (the pre-spend audit, 2026-09-25).
             q = normalise(quote).strip(" \"'")
             core = q.replace("...", "\u2026").rstrip(".,;:!").strip()
-            reply_q = reply_n.replace("...", "\u2026")
+            quote_core = core
             why = (
                 advice_or_question(core, reply_q) if core and core.rstrip("?") in reply_q else None
             )
             if why:
                 dropped.append({"claim": claim, "quote": quote, "why": why})
                 continue
-        if not _identified(claim):
-            dropped.append({"claim": claim, "quote": quote, "why": "nothing identified"})
-            continue
-        if not _is_claim_of(claim, reply, questions=quote is None):
-            dropped.append({"claim": claim, "quote": quote, "why": "not the reply's own"})
-            continue
+        # A claim read from the reply's own words is the reply's, and is judged: the split
+        # may add the context it needs ("Bd4 was better than Bc5" for "Bd4 was better"), and
+        # it may name no square ("the queen supports the mate", "nothing is threatened"). Of
+        # 142 such claims dropped unjudged in the benchmark's first judging (2026-09-25),
+        # nearly all were checkable. Only a pure appraisal ("that's the key idea") is left
+        # out. A claim with no words of the reply to stand on keeps the older filters.
+        grounded = quote is not None and bool(quote_core) and quote_core.rstrip("?") in reply_q
+        if grounded:
+            if not _IDENTIFIED.search(claim) and _APPRAISAL.search(claim):
+                dropped.append({"claim": claim, "quote": quote, "why": "an appraisal"})
+                continue
+        else:
+            if not _identified(claim):
+                dropped.append({"claim": claim, "quote": quote, "why": "nothing identified"})
+                continue
+            if not _is_claim_of(claim, reply, questions=quote is None):
+                dropped.append({"claim": claim, "quote": quote, "why": "not the reply's own"})
+                continue
         kept.append(claim)
         quotes.append(quote)
     return kept, quotes, dropped
@@ -2732,54 +2763,10 @@ def judge_one(
         claims, quotes, dropped = ground_claims(list(parsed.get("claims", [])), reply)
         binary = provider
         # Each claim: does the record state it (or does it follow from the move itself)?
-        marked: list[dict] = []
-        for n, text in enumerate(claims, start=1):
-            decided = code_check(text, item)
-            if decided is not None:
-                answer = decided
-                why = "by the record's tally or loss: " + ("right" if decided else "wrong")
-            else:
-                answer = _yes_no(binary, ledger, rec["id"], record, support_question(text))
-                why = "yes" if answer else ("no" if answer is False else "not judged")
-            c: dict[str, Any] = {
-                "n": n,
-                "supported": answer,
-                "why": why,
-                "kind": None if answer else ("false" if decided is False else "unstated"),
-                "lesson": None,
-            }
-            opponent_move = _about_opponents_move(text, item)
-            if (
-                decided is None
-                and _TACTICAL.search(text)
-                and not _NEGATED.search(text)
-                and not opponent_move
-            ):
-                # The board rules on what a piece attacks, defends, threatens or hangs. A
-                # negated claim ("c5 is not an attack on e4") is left to the vote: the
-                # checker verifies the positive and would call the true claim false. So is
-                # a claim about the opponent's move: the checker reads "the queen" as the
-                # player's. A claim the code decided is final.
-                ruling, reason, _kind = checker_rules(
-                    text, item, _Metered(binary, ledger, rec["id"]), reply
-                )
-                c["checker"] = ruling
-                if ruling == "true":
-                    c["supported"], c["kind"], c["why"] = (
-                        True,
-                        None,
-                        "true on the board: " + reason[:200],
-                    )
-                elif ruling == "false":
-                    c["supported"], c["kind"], c["why"] = (
-                        False,
-                        "false",
-                        "false on the board: " + reason[:200],
-                    )
-            if c["supported"] is None:
-                c["supported"] = True  # not judged: the benefit of the doubt, noted
-                c["unjudged"] = True
-            marked.append(c)
+        marked = [
+            mark_claim(n, text, item, binary, ledger, rec["id"], record, reply)
+            for n, text in enumerate(claims, start=1)
+        ]
         # Each required fact, one direct question: does the reply say this? A verdict is
         # two existence checks -- praise, criticism -- mapped to the label's tier in code.
         required_marks: list[dict] = []
@@ -2915,6 +2902,108 @@ def judge_one(
         "judge_raw": "",
         "scores": score(item, det, verdict, claims),
     }
+
+
+def mark_claim(
+    n: int, text: str, item: dict, binary, ledger: Ledger, rid: str, record: str, reply: str
+) -> dict[str, Any]:
+    """The verdict on one claim: decided in code when the record can (final), else the vote;
+    a tactical claim the board rules on besides."""
+    decided = code_check(text, item)
+    if decided is not None:
+        answer = decided
+        why = "by the record's tally or loss: " + ("right" if decided else "wrong")
+    else:
+        answer = _yes_no(binary, ledger, rid, record, support_question(text))
+        why = "yes" if answer else ("no" if answer is False else "not judged")
+    c: dict[str, Any] = {
+        "n": n,
+        "supported": answer,
+        "why": why,
+        "kind": None if answer else ("false" if decided is False else "unstated"),
+        "lesson": None,
+    }
+    opponent_move = _about_opponents_move(text, item)
+    if (
+        decided is None
+        and _TACTICAL.search(text)
+        and not _NEGATED.search(text)
+        and not opponent_move
+    ):
+        # The board rules on what a piece attacks, defends, threatens or hangs. A negated
+        # claim ("c5 is not an attack on e4") is left to the vote: the checker verifies the
+        # positive and would call the true claim false. So is a claim about the opponent's
+        # move: the checker reads "the queen" as the player's. A claim the code decided is
+        # final.
+        ruling, reason, _kind = checker_rules(text, item, _Metered(binary, ledger, rid), reply)
+        c["checker"] = ruling
+        if ruling == "true":
+            c["supported"], c["kind"], c["why"] = (True, None, "true on the board: " + reason[:200])
+        elif ruling == "false":
+            c["supported"], c["kind"], c["why"] = (
+                False,
+                "false",
+                "false on the board: " + reason[:200],
+            )
+    if c["supported"] is None:
+        c["supported"] = True  # not judged: the benefit of the doubt, noted
+        c["unjudged"] = True
+    return c
+
+
+def regrind(j: dict, item: dict, provider, ledger: Ledger, *, floor: bool) -> dict:
+    """A judgment ground again under the current rules, from its own split: the claims it
+    kept and the ones it dropped, with their quotes. A claim kept now and not before is
+    voted; one kept before keeps its vote unless the code now decides it (a rule fixed);
+    the code's checks on the reply and the scores are computed again. The split itself is
+    never paid for twice (the benchmark, 2026-09-25)."""
+    reply = j["reply"]
+    if not reply.strip() or not j.get("verdict"):
+        return j
+    quotes_before = j.get("quotes") or [None] * len(j.get("claims") or [])
+    entries: list = [
+        {"claim": c, "quote": q} if q is not None else c
+        for c, q in zip(j.get("claims") or [], quotes_before, strict=False)
+    ]
+    entries += [
+        {"claim": d["claim"], "quote": d.get("quote")} if d.get("quote") is not None else d["claim"]
+        for d in j.get("dropped_claims") or []
+    ]
+    claims, quotes, dropped = ground_claims(entries, reply)
+    before = dict(zip(j.get("claims") or [], j["verdict"].get("claims") or [], strict=False))
+    record = (
+        "The record:\n"
+        + evidence_block(item, with_reference=False)
+        + '\n\nThe coach\'s reply:\n"""\n'
+        + reply
+        + '\n"""'
+    )
+    binary = binary_judge(provider)
+    marked: list[dict] = []
+    for n, text in enumerate(claims, start=1):
+        old = before.get(text)
+        decided = code_check(text, item)
+        if old is not None and decided is None:
+            c = dict(old)
+            c["n"] = n
+        else:
+            c = mark_claim(n, text, item, binary, ledger, j["id"], record, reply)
+        marked.append(c)
+    det = deterministic(item, reply, None, floor=floor)
+    det["board"] = (j.get("deterministic") or {}).get("board", det["board"])
+    verdict = dict(j["verdict"])
+    verdict["claims"] = marked
+    out = dict(j)
+    out.update(
+        claims=claims,
+        quotes=quotes,
+        dropped_claims=dropped,
+        deterministic=det,
+        verdict=verdict,
+        scores=score(item, det, verdict, claims),
+        regrind=True,
+    )
+    return out
 
 
 def reply_status(rec: dict) -> str:

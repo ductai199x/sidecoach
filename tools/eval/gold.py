@@ -48,10 +48,12 @@ import rubric  # noqa: E402
 import stamp  # noqa: E402
 from judge import (  # noqa: E402
     BINARY_SYSTEM,
+    JUDGMENTS,
     BudgetExceeded,
     Ledger,
     evidence_block,
     judge_all,
+    regrind,
     settings_prices,
 )
 from providers import judge_provider  # noqa: E402
@@ -270,6 +272,50 @@ def packets(items: dict[str, dict], n_ai: int, n_floor: int, seed: int = 2509) -
     return out
 
 
+# ---- grinding a run's judgments again -------------------------------------------------------
+
+
+def regrind_run(
+    run: str, new: str, items: dict[str, dict], judge, ledger: Ledger, *, workers: int
+) -> dict[str, int]:
+    """Every judgment of `run` (its AI arm and its floor) ground again under the judge's
+    rules as they are now (judge.regrind: the stored split, only newly kept claims voted),
+    written under `new`; the rubric's and the preference's answers copied beside them (a
+    copy: `run` is left as it was). Counts of what changed."""
+    import shutil
+    from concurrent.futures import ThreadPoolExecutor
+
+    changed = Counter()
+    for arm, suffix in (("ai", ""), ("floor", "-floor")):
+        src, dst = JUDGMENTS / f"{run}{suffix}", JUDGMENTS / f"{new}{suffix}"
+        if not src.exists():
+            continue
+        dst.mkdir(parents=True, exist_ok=True)
+        for path in sorted(src.glob("*.jsonl")):
+            before = [json.loads(line) for line in path.open(encoding="utf-8") if line.strip()]
+
+            def one(j: dict, floor: bool = arm == "floor") -> dict:
+                item = items.get(j["id"])
+                return j if item is None else regrind(j, item, judge, ledger, floor=floor)
+
+            with ThreadPoolExecutor(workers) as pool:
+                after = list(pool.map(one, before))
+            for b, a in zip(before, after, strict=True):
+                changed[f"{arm} judged"] += 1
+                if len(a.get("claims") or []) != len(b.get("claims") or []):
+                    changed[f"{arm} claims kept changed"] += 1
+                if bool(a["scores"].get("pass")) != bool(b["scores"].get("pass")):
+                    changed[f"{arm} pass changed"] += 1
+            with (dst / path.name).open("w", encoding="utf-8") as fh:
+                for j in after:
+                    fh.write(json.dumps(j, ensure_ascii=False) + "\n")
+    for suffix in ("-rubric", "-rubric-floor", "-prefer"):
+        src = JUDGMENTS / f"{run}{suffix}"
+        if src.exists():
+            shutil.copytree(src, JUDGMENTS / f"{new}{suffix}", dirs_exist_ok=True)
+    return dict(changed)
+
+
 # ---- judging a run again --------------------------------------------------------------------
 
 
@@ -352,9 +398,34 @@ def main() -> None:
     ap.add_argument("--n-ai", type=int, default=60)
     ap.add_argument("--n-floor", type=int, default=20)
     ap.add_argument("--part", choices=["tune", "confirm"], help="compare on these labels only")
+    ap.add_argument(
+        "--regrind",
+        action="store_true",
+        help="ground the run's judgments again under the current rules (the split kept; only"
+        " newly kept claims voted) into --as",
+    )
     args = ap.parse_args()
 
     run = args.run
+    if args.regrind:
+        if not args.new or args.budget_usd is None:
+            raise SystemExit("--regrind needs --as and --budget-usd")
+        items = rubric.load_items(args.items or rubric.items_dir(run))
+        judge, _ = judge_provider(args.judge)
+        ledger = Ledger(
+            f"regrind-{args.new}",
+            "regrind",
+            judge.model,
+            budget_usd=args.budget_usd,
+            resume=True,
+            version=stamp.code_version(),
+        )
+        try:
+            changed = regrind_run(run, args.new, items, judge, ledger, workers=args.workers)
+        except BudgetExceeded as exc:
+            raise SystemExit(f"stopped: {exc}") from None
+        print(f"{run} -> {args.new}: {changed}; {ledger.summary()}")
+        run = args.new
     if args.packet:
         items = rubric.load_items(args.items or rubric.items_dir(run))
         rows = packets(items, args.n_ai, args.n_floor)
