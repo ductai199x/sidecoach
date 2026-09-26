@@ -583,6 +583,40 @@ def test_the_draft_checker_can_veto_a_false_claim() -> None:
     assert coach.spoken[-1].attempts == 2 and coach.speaker.fallbacks == 0
 
 
+def test_the_claim_reader_lists_the_drafts_claims_and_the_board_refuses_a_false_one() -> None:
+    """A model lists what the draft asserts; python-chess decides it (coach/draft_claims.py).
+    "Their queen on c5" is refused where no queen stands; the second draft is spoken."""
+    import json
+
+    false_claims = json.dumps(
+        [
+            {
+                "kind": "piece",
+                "after": [],
+                "quote": "their queen on c5",
+                "side": "opponent",
+                "piece": "queen",
+                "square": "c5",
+            }
+        ]
+    )
+    reader = ScriptedProvider([false_claims, "[]"])
+    fine = "Their king on e8 is short of squares. Which check takes the last one?"
+    provider = ScriptedProvider(["Their queen on c5 is loose. Which check wins it?", fine])
+    coach = Coach(
+        provider,
+        policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)),
+        claim_reader=reader,
+    )
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6), 7.0)
+    out = _messages(coach)
+    assert out[0].text == fine
+    spoken = coach.spoken[-1]
+    assert spoken.attempts == 2
+    assert "c5 is empty then" in provider.prompts[1][1][-1]["content"], "the reason is named"
+
+
 def test_a_reply_that_says_less_than_the_template_is_not_said() -> None:
     """The template is the floor (parity pass, 2026-09-25): a first hint that names nothing of
     the key fact -- true, and thinner than the free coach's -- is sent back, and the template

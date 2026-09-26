@@ -31,7 +31,7 @@ from typing import Any
 
 import chess
 
-from sidecoach.coach import idea_words, situation
+from sidecoach.coach import draft_claims, idea_words, situation
 from sidecoach.coach.annotations import annotations_for, mentions_in
 from sidecoach.coach.bag import Bags
 from sidecoach.coach.conversation import IDEA_LEVEL_WORDS, Conversation, PlyRecord
@@ -1313,8 +1313,13 @@ class Speaker:
         draft_check: DraftCheck | None = None,
         verifier: LLMProvider | None = None,
         routine_provider: LLMProvider | None = None,
+        claim_reader: LLMProvider | None = None,
     ) -> None:
         self.provider = provider
+        # A model that lists the draft's claims for the board to decide
+        # (`coach/draft_claims.py`): off without one.
+        self.claim_reader = claim_reader
+        self._claims_seen: dict[tuple[str, str], list[str]] = {}
         # The model for a mundane reply (a word on a fine move), where nothing is at
         # stake and the first sound matters: the same model at less reasoning (Tai:
         # low at most; none is what makes it fast, low reasons as long as medium).
@@ -1703,7 +1708,32 @@ class Speaker:
                     continue  # a move of the game's history, named as such
                 found.append(problem)
         found.extend(false_illegal(text, request.board))
+        found.extend(self._claim_problems(text, request))
         return list(dict.fromkeys(found))
+
+    def _claim_problems(self, text: str, request: _Request) -> list[str]:
+        """The draft's claims, listed by `claim_reader` and decided on the board: those it
+        contradicts. None without a reader, or when the call fails -- a draft is never held
+        up by the check itself. The same text is read once."""
+        if self.claim_reader is None or not text.strip():
+            return []
+        key = (request.board.fen(), text)
+        if key not in self._claims_seen:
+            player = _player(request.facts)
+            player = request.board.turn if player is None else player
+            line = list(request.facts.line)
+            claims = draft_claims.extract(
+                text,
+                request.board,
+                player,
+                self.claim_reader,
+                played=request.played_san,
+                line=line,
+            )
+            self._claims_seen[key] = [
+                f"false: {p}" for p in draft_claims.verify(claims, request.board, player, line)
+            ]
+        return self._claims_seen[key]
 
     def _leaks(self, text: str, request: _Request) -> list[str]:
         """What `text` gives away of the answer the level withholds, for the log: the
@@ -2004,6 +2034,7 @@ class Coach:
         draft_check: DraftCheck | None = None,
         claims: Callable[[str, chess.Board, PositionFacts | None], list[str]] | None = None,
         verifier: LLMProvider | None = None,
+        claim_reader: LLMProvider | None = None,
         engine: NamedEngine | None = None,
         summarise_every: int = 0,
         summariser: LLMProvider | None = None,
@@ -2026,7 +2057,11 @@ class Coach:
         # asked of the model: free, immediate, true by construction (Tai, 2026-09-20).
         self.local_verdicts = local_verdicts
         self.speaker = Speaker(
-            provider, draft_check=draft_check, verifier=verifier, routine_provider=routine_provider
+            provider,
+            draft_check=draft_check,
+            verifier=verifier,
+            routine_provider=routine_provider,
+            claim_reader=claim_reader,
         )
         # The panel's voice, when it wants replies as they are written: a factory giving,
         # for a trigger and a ply, the sink the reply's sentences go to, or None.
