@@ -450,7 +450,8 @@ def session_cmd(run_name: str, args: argparse.Namespace, budget: float) -> list[
 
 
 def cmd_round(args: argparse.Namespace) -> None:
-    state = load_state()
+    # The state is read when the round is written, not when it starts: two rounds run at once
+    # and the later one wrote back the state it had read, round 5 lost (2026-09-26).
     log = LOOP / f"r{args.round}.log"
     LOOP.mkdir(parents=True, exist_ok=True)
     cand, base = f"r{args.round}-cand", f"r{args.round}-base"
@@ -485,6 +486,7 @@ def cmd_round(args: argparse.Namespace) -> None:
         (LOOP / f"r{args.round}-compare.txt").write_text(record["compare"], "utf-8")
         print(record["compare"])
     record["seconds"] = round(time.time() - t0)
+    state = load_state()
     state["rounds"] = [r for r in state["rounds"] if r["round"] != args.round] + [record]
     save_state(state)
     print(record["digest"])
