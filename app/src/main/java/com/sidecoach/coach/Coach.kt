@@ -828,7 +828,11 @@ class FirstCandidate(
             return true // a number and a stop: the sentence it begins is still coming
         }
         var faults = if (fresh.isNotEmpty()) check(fresh) else emptyList()
-        faults = faults.filter { !it.startsWith("too long") && !it.contains("question") }
+        // Sentence by sentence, only what a sentence can get wrong: the length, the closing
+        // question and what the whole must name are the whole reply's.
+        faults = faults.filter {
+            !it.startsWith("too long") && !it.startsWith("left out") && !it.contains("question")
+        }
         if (faults.isNotEmpty()) {
             problems = faults
             return false
@@ -1017,6 +1021,17 @@ class CoachRequest(
      * the model is not called (it could not keep up).
      */
     val templateOnly: Boolean = false,
+    /**
+     * What a reply must name, one of: the better move the lesson's template names, or a square
+     * the hint's template names. The template is the floor; a true reply that says less than it
+     * was a loss the checks let through (parity pass, 2026-09-25).
+     */
+    val mustName: List<String> = emptyList(),
+    /**
+     * More boards a statement may be true on: after the move the player just made, and along the
+     * engine's line from there -- the board the model is shown for a lesson after a move.
+     */
+    val frames: List<Board> = emptyList(),
 )
 
 /**
@@ -1041,7 +1056,26 @@ internal fun afterBest(request: CoachRequest): List<Board> {
     if (request.disclosed.isNotEmpty()) {
         frames.addAll(disclosedFrames(request.board, request.disclosed.split("\n")))
     }
-    return frames
+    return frames + request.frames
+}
+
+private val SQUARE_ITEM = Regex("[a-h][1-8]")
+
+/** Whether [text] names [item]: a square, or a move in SAN (with or without its mark). `coach._names`. */
+internal fun names(text: String, item: String): Boolean {
+    if (SQUARE_ITEM.matches(item)) return item in squaresIn(text)
+    val core = item.trimEnd('+', '#')
+    return Regex("(?<![A-Za-z])" + Regex.escape(core) + "[+#]?(?![A-Za-z0-9])").containsMatchIn(text)
+}
+
+/**
+ * The fault when [text] names none of [mustName]; null when it names one, or there is nothing
+ * it must name. `coach.omitted`.
+ */
+fun omitted(text: String, mustName: List<String>): String? {
+    if (mustName.isEmpty() || mustName.any { names(text, it) }) return null
+    if (mustName.size == 1) return "left out ${mustName[0]}: the reply must name it"
+    return "left out the key fact: the reply must name one of ${mustName.joinToString(", ")}"
 }
 
 const val VERIFY_SYSTEM =
@@ -1483,6 +1517,8 @@ class Speaker(
         if (wantsQuestion == false && text.trimEnd().endsWith("?")) {
             found.add("a question where the task allows none")
         }
+        val leftOut = omitted(text, request.mustName)
+        if (leftOut != null) found.add(leftOut)
         if (draftCheck != null) {
             for (problem in draftCheck.check(text, request.board, afterBest(request))) {
                 val san = problem.substringBefore(":").trim()

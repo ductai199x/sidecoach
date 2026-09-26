@@ -48,6 +48,16 @@ import java.util.Locale
  * The coach owns one of these per game and asks it for the messages of every request.
  */
 
+/**
+ * What the first hint may say, as the disclosure line and the directive state it: the key fact
+ * is named on the board (Tai, 2026-09-24), so "no square" -- the rule before the first hint was
+ * a lesson -- told the model to say less than the template.
+ */
+const val IDEA_LEVEL_WORDS =
+    "the idea: what is at stake and the key fact on the board -- the pieces, squares and " +
+        "their moves the facts name -- with the principle behind it; never the player's move, " +
+        "the square it goes to, or which of their own pieces moves"
+
 /** One move as it was seen, with the engine's word on it as it arrives. */
 class PlyRecord(val move: MovePlayed) {
     var assessment: MoveAssessment? = null
@@ -755,6 +765,10 @@ class Conversation {
         val userToMove = board.turn == colour
         val level = if (userToMove) wanted else DisclosureLevel.LINE
         val visible = visibleFacts(facts, level)
+        if (!userToMove) {
+            // The first hint is the player's: said of the opponent's move it reads as theirs.
+            visible.remove("situation")
+        }
         val side = if (userToMove) "player" else "opponent"
         val out = ArrayList<String>()
         val opening = record.analysis?.opening
@@ -762,6 +776,23 @@ class Conversation {
             val before = recordBefore(record)?.analysis?.opening
             if (before != opening) out.add("opening: $opening")
         }
+        out.addAll(factLines(visible, board, side))
+        return out
+    }
+
+    /**
+     * The facts of the position the player faced before their move, all of them (it is past):
+     * the lesson after the move is taught from them, and the record keeps only one line for
+     * that position.
+     */
+    fun facedText(facts: PositionFacts, board: Board): String {
+        val visible = visibleFacts(facts, DisclosureLevel.LINE)
+        return factLines(visible, board, "player").joinToString("\n")
+    }
+
+    /** The sheet's lines for [visible], in reading order, in the third person for [side]. */
+    private fun factLines(visible: Map<String, Any?>, board: Board, side: String): List<String> {
+        val out = ArrayList<String>()
         for (key in FACT_KEYS) {
             val value = visible[key]
             if (value == null || value == "" || value == false ||
@@ -917,9 +948,7 @@ class Conversation {
 
     private fun levelWords(level: DisclosureLevel): String = when (level) {
         DisclosureLevel.SILENT -> "say nothing about the position"
-        DisclosureLevel.IDEA ->
-            "the idea: the goal, the pattern and why it works; no square, no move, and " +
-                "not which of the player's own pieces does it"
+        DisclosureLevel.IDEA -> IDEA_LEVEL_WORDS
         DisclosureLevel.FOCUS -> "the idea, the target and the piece; not the move"
         DisclosureLevel.MOVE -> "the move and why it works may be named"
         DisclosureLevel.LINE -> "everything, the line included"
@@ -1009,6 +1038,7 @@ class Conversation {
             "decisive",
             "only_move",
             "nature",
+            "situation",
             "goal",
             "theme",
             "mechanism",
@@ -1027,6 +1057,11 @@ class Conversation {
 
         /** What a fact is called on the sheet, where its key would not say it. */
         val FACT_NAMES = mapOf(
+            // The template's first hint whole: its stakes, key fact, principle and trap, several
+            // of which exist nowhere else on the sheet. Without it the model was asked for "the
+            // stakes" and "the trap" and never given them (parity pass, 2026-09-25).
+            "situation" to "the first hint in the board's own words, all of it true (to the player, as it " +
+                "stands): the least a hint says",
             "theme" to "pattern",
             "mechanism" to "how it works",
             "question" to "a question that sets them looking (to the player, as it stands)",
@@ -1035,7 +1070,7 @@ class Conversation {
         )
 
         /** The facts addressed to the player, kept in the second person. */
-        val TO_THE_PLAYER = listOf("question", "nudge")
+        val TO_THE_PLAYER = listOf("question", "nudge", "situation")
 
         /**
          * `f"{value:.2f}"`: the exact binary value, rounded half to even.

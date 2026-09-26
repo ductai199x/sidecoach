@@ -321,6 +321,12 @@ class ConversationTest {
                 }
             }
         },
+        // The first hint and its parts: the sheet carries the whole of it (desktop 717cc9c).
+        stakes = nullable(o, "stakes"),
+        key = nullable(o, "key"),
+        trap = nullable(o, "trap"),
+        choices = strings(o.getJSONArray("choices")),
+        situation = nullable(o, "situation"),
     )
 
     private fun nullable(o: JSONObject, key: String): String? =

@@ -90,7 +90,8 @@ const val CONTRACT =
         "quiet; what is at stake (how many moves hold, and what the next best costs); the goal " +
         "(a mate, material to win, a pawn to queen, a threat to meet, or a plan), the key fact " +
         "on the board, the pattern that gets there and how it works, read from the best line " +
-        "itself; the capture that looks free and is a trap; the target and the piece; a " +
+        "itself; the capture that looks free and is a trap; the first hint in the board's own " +
+        "words, all of it true, which a hint says at least; the target and the piece; a " +
         "question from there to the move; the move and what it does, played out; the tactic, " +
         "the threats, the ideas, the focus squares -- for the side to move, and named as the " +
         "opponent's when it is the opponent's move. On the board: complete lists of what stands " +
@@ -104,6 +105,8 @@ const val CONTRACT =
         "When it is the player's turn the engine lines and some facts may be withheld and the " +
         "message says so; what may be said about that position is then in the facts shown and in " +
         "the disclosure level the task states.\n" +
+        "# The position they faced: after one of the player's moves, the facts of the position " +
+        "they moved from, for the lesson on that move.\n" +
         "# Task: what kind of reply is wanted now, and the disclosure level in force.\n" +
         "Everything about the course of the game -- who stood better when, what was missed, what " +
         "was won -- is in the game so far and the player's record, and nowhere else."

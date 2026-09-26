@@ -277,6 +277,98 @@ class CoachTest {
         return messages[0].content.substringAfterLast("# Task\n")
     }
 
+    /** `_given`: the messages the model was given on the [index]-th call (the last by default). */
+    private fun given(provider: ScriptedProvider, index: Int = -1): List<ChatMessage> =
+        synchronized(provider.prompts) {
+            provider.prompts[if (index < 0) provider.prompts.size + index else index].second
+        }
+
+    /** `_harness`: the one user message, the harness with the task at its end. */
+    private fun harness(messages: List<ChatMessage>): String {
+        assertTrue(messages.size == 1 && messages[0].role == "user")
+        return messages[0].content
+    }
+
+    /** `_directive` of a call's messages. */
+    private fun directiveOf(messages: List<ChatMessage>): String =
+        harness(messages).substringAfterLast("# Task\n")
+
+    /** `_current_move_message`: the 'Position now' section, the position the player faces. */
+    private fun currentMoveMessage(messages: List<ChatMessage>): String {
+        val text = harness(messages)
+        assertTrue("no position in the harness", "# Position now" in text)
+        return text.substringAfter("# Position now").substringBefore("# Task")
+    }
+
+    /**
+     * The first hint whole is on the sheet, the least the model's says, and the idea level names
+     * the key fact on the board, as the first hint does (parity pass, 2026-09-25; desktop
+     * 717cc9c, `test_a_decisive_moment_earns_the_idea_and_names_no_move`).
+     */
+    @Test
+    fun aDecisiveMomentsSheetCarriesTheFirstHintWhole() {
+        val (coach, provider) = coach(
+            listOf("You can mate right now: their king on e8 is short of squares. Which check does it?")
+        )
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 7.0)
+        val out = messages(coach)
+        assertTrue(out.size == 1 && out[0].trigger == Trigger.DECISIVE_QUESTION)
+        assertEquals(DisclosureLevel.IDEA, out[0].level)
+        val messages = given(provider, 0)
+        val current = currentMoveMessage(messages)
+        assertTrue(current, "the first hint in the board's own words" in current)
+        assertTrue(current, "Their king on e8 has one free square" in current)
+        val directive = directiveOf(messages)
+        assertTrue(directive, "the idea: what is at stake and the key fact on the board" in directive)
+        assertTrue(directive, "no square" !in directive)
+        assertTrue("named the key square: it stands", out[0].text.startsWith("You can mate right now"))
+    }
+
+    /**
+     * The template is the floor (parity pass, 2026-09-25): a first hint that names nothing of the
+     * key fact -- true, and thinner than the free coach's -- is sent back, and the template speaks
+     * when the second is no better (desktop 717cc9c).
+     */
+    @Test
+    fun aReplyThatSaysLessThanTheTemplateIsNotSaid() {
+        val thin = "Your king is safe for now, is it not?"
+        val (coach, provider) = coach(listOf(thin, "Think about checks. Which one works?"))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 7.0)
+        val out = messages(coach)
+        assertTrue(out[0].text, out[0].text != thin && "e8" in out[0].text)
+        val spoken = coach.spoken.last()
+        assertTrue(spoken.attempts == 2 && coach.speaker.fallbacks == 1)
+        assertTrue(spoken.problems.toString(), spoken.problems.any { it.startsWith("left out") })
+        val retry = given(provider, 1)
+        assertTrue("left out" in retry.last().content && "e8" in retry.last().content)
+    }
+
+    /**
+     * The lesson is taught from the position they faced, which the record keeps as one line: its
+     * sheet goes with the request, and the template's lesson as the floor, whose better move the
+     * reply must name (parity pass, 2026-09-25; desktop 717cc9c,
+     * `test_feedback_after_the_users_move_may_say_everything_about_that_position`).
+     */
+    @Test
+    fun theLessonAfterAMoveCarriesThePositionTheyFaced() {
+        val (coach, provider) = coach(
+            listOf(
+                "Their king on e8 is nearly out of squares.",
+                "Bxf7+ was fine, but Qxf7 was mate on the spot. Do you see why?",
+            )
+        )
+        bishopCheckInsteadOfMate(coach)
+        val messages = given(provider)
+        val content = messages.last().content
+        val faced = content.substringAfter("# The position they faced, before Bxf7+").substringBefore("# Task")
+        assertTrue(content, "# The position they faced, before Bxf7+" in content)
+        assertTrue(faced, "goal: the player can mate in one move" in faced)
+        assertTrue("The lesson in the board's own words" in directiveOf(messages))
+        assertEquals(emptyList<String>(), coach.spoken.last().problems)
+    }
+
     /** `_bishop_check_instead_of_mate`: the user plays Bxf7+ where Qxf7 was mate, and it is judged. */
     private fun bishopCheckInsteadOfMate(coach: Coach) {
         playToScholar(coach)

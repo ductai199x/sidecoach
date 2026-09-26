@@ -147,6 +147,14 @@ private val ASK_HINT = Regex(
     RegexOption.IGNORE_CASE,
 )
 
+/** A question about what to aim for: the first hint answers it, and its template is the floor. */
+private val ASK_AIM = Regex(
+    "\\bwhat (?:should|do|can|could) i (?:be )?(?:aim|go|look|play|work|strive)(?:ing)? for\\b" +
+        "|\\bwhat(?:'s| is) (?:the|my) (?:plan|idea|goal|aim)\\b|\\bwhat am i (?:aiming|going|playing) " +
+        "for\\b|\\bwhat to (?:aim|go) for\\b",
+    RegexOption.IGNORE_CASE,
+)
+
 /**
  * Words that can carry a claim about the board worth checking: a move, a square, a piece. A
  * bare "hint" or "what should I play" carries none, and skipping the check is what makes the
@@ -1426,21 +1434,37 @@ class Coach(
             quick = quick, elicit = elicit,
         )
         takeLeads(position, fallback)
+        var mustName = mustName(trigger, position, fallback, assessment, played, userText)
         if (quick) {
             // The template is already out as the quick answer; a model reply that fails the
             // checks adds nothing, rather than the same line a second time.
             fallback = ""
+            mustName = emptyList()
         } else if (trigger == Trigger.USER_ASK && fallback.isNotEmpty() && fallback in saidSinceMove()) {
             // Nor is anything the coach said since the last move said again word for word: a
             // student's answer to the hint got the same hint back, three times (round 5).
             fallback = ""
         }
-        val directive = "${levelLine(level, position)}$instructionText"
+        var directive = "${levelLine(level, position)}$instructionText"
+        var faced = ""
+        var frames: List<Board> = emptyList()
+        if (played != null && (trigger == Trigger.POST_MOVE || trigger == Trigger.POST_MISTAKE)) {
+            // The lesson after a move is taught from the position the player faced, which the
+            // record keeps as one line: its sheet goes with the request, and the template's
+            // lesson as the floor (parity pass, 2026-09-25).
+            val sheet = synchronized(lock) { conversation.facedText(position.facts!!, position.board) }
+            if (sheet.isNotEmpty()) faced = "\n\n# The position they faced, before ${played.san}\n$sheet"
+            if (mustName.isNotEmpty() && fallback.isNotEmpty()) {
+                directive += "\n\nThe lesson in the board's own words, all of it true -- your reply says at " +
+                    "least this, in your own words, and may say more: $fallback"
+            }
+            frames = framesAfter(position, played)
+        }
         val messages: List<ChatMessage>
         synchronized(lock) {
             conversation.level = level
             val harness = conversation.render()
-            messages = listOf(ChatMessage("user", "$harness\n\n# Task\n$directive"))
+            messages = listOf(ChatMessage("user", "$harness$faced\n\n# Task\n$directive"))
         }
         val request = CoachRequest(
             trigger = trigger,
@@ -1476,8 +1500,63 @@ class Coach(
             // review of a game that is over, always get the model.
             templateOnly = fastNow(ts) &&
                 trigger != Trigger.USER_ASK && trigger != Trigger.REVIEW,
+            mustName = mustName,
+            frames = frames,
         )
         speaker.submit(request)
+    }
+
+    /**
+     * What a model reply must name, as its template does: the better move, after a move that was
+     * not the best; one of the squares a hint's template names -- the key fact is on the board.
+     * Nothing for a word of praise, an answer to a question of the player's own, or a template
+     * with none. `coach._must_name`.
+     */
+    private fun mustName(
+        trigger: Trigger,
+        position: CoachPosition,
+        template: String,
+        assessment: MoveAssessment?,
+        played: MovePlayed?,
+        userText: String?,
+    ): List<String> {
+        if (template.isEmpty()) return emptyList()
+        if (trigger == Trigger.POST_MOVE || trigger == Trigger.POST_MISTAKE) {
+            if (assessment == null || played == null || assessment.best.isEmpty()) return emptyList()
+            val move = Move.fromUciOrNull(assessment.best[0]) ?: return emptyList()
+            val best = position.board.san(move)
+            return if (best != played.san && names(template, best)) listOf(best) else emptyList()
+        }
+        val said = userText ?: ""
+        val hint = trigger == Trigger.DECISIVE_QUESTION || trigger == Trigger.STUCK || (
+            trigger == Trigger.USER_ASK && (ASK_HINT.matchesAt(said, 0) || ASK_AIM.containsMatchIn(said))
+            )
+        return if (hint) squaresIn(template).sorted() else emptyList()
+    }
+
+    /**
+     * The board after the move just played, and along the engine's line from there: the board
+     * the model is shown, so a true sentence about it is not faulted against the position before
+     * the move. `coach._frames_after`.
+     */
+    private fun framesAfter(position: CoachPosition, played: MovePlayed): List<Board> {
+        val move = Move.fromUciOrNull(played.uci) ?: return emptyList()
+        if (!position.board.isLegal(move)) return emptyList()
+        var board = position.board.copy(withStack = false)
+        board.push(move)
+        val frames = arrayListOf(board)
+        val left = positions[played.ply]
+        val analysis = left?.analysis
+        if (analysis != null && analysis.lines.isNotEmpty()) {
+            for (uci in analysis.lines[0].moves.take(8)) {
+                val step = Move.fromUciOrNull(uci) ?: break
+                if (!board.isLegal(step)) break
+                board = board.copy(withStack = false)
+                board.push(step)
+                frames.add(board)
+            }
+        }
+        return frames
     }
 
     /**
@@ -1504,9 +1583,7 @@ class Coach(
         if (position.board.isGameOver()) return ""
         val words = when (level) {
             DisclosureLevel.SILENT -> "nothing about the position"
-            DisclosureLevel.IDEA ->
-                "the idea: the goal, the pattern and why it works; no square, no move, and " +
-                    "not which of the player's own pieces does it"
+            DisclosureLevel.IDEA -> IDEA_LEVEL_WORDS
             DisclosureLevel.FOCUS -> "the idea, the target and the piece; not the move"
             DisclosureLevel.MOVE -> "the move and why it works; not the whole line"
             DisclosureLevel.LINE -> "everything, the line included"
