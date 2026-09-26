@@ -605,7 +605,7 @@ class Conversation:
             better = san_line(board_before, assessment.best, limit=4)
             if better:
                 leads = line_outcome(board_before, assessment.best[:LINE_PLIES], user_colour)
-                notes = line_notes(board_before, assessment.best, limit=4)
+                notes = line_notes(board_before, assessment.best, limit=4, player=user_colour)
                 parts.append(
                     f"the engine preferred {better}"
                     + (f" -> {leads}" if leads else "")
@@ -737,7 +737,7 @@ class Conversation:
             )
             if i == 1:
                 # The best line move by move, computed: what a line may be explained by.
-                notes = line_notes(board, line.moves, limit=limit)
+                notes = line_notes(board, line.moves, limit=limit, player=user_colour)
                 if notes:
                     out.append(f"     move by move: {notes}")
         if weaker:

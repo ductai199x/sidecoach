@@ -116,7 +116,7 @@ def test_a_line_move_by_move_says_what_each_move_does_and_what_a_check_forces() 
     board = chess.Board("8/p1q1k2K/2p1p3/3p4/3P1R1P/6r1/1r6/8 w - - 0 49")
     notes = line_notes(board, ["Rf1", "Qd6", "Rf7+", "Kxf7"])
     assert notes.startswith("Rf1 (gets the rook out of attack), Qd6, Rf7+ (gives check")
-    assert notes.endswith("Kxf7 (only a king move gets out of check; takes the rook on f7)")
+    assert notes.endswith("Kxf7 (the king must move: Kd8, Ke8 or Kxf7; takes the rook on f7)")
     pinned = chess.Board("6rk/5prq/1p1p1n2/p1pP1B1p/P1P2P1n/2P1R1P1/2Q4K/2B2NR1 b - - 0 35")
     notes = line_notes(pinned, ["f6g4", "f5g4", "h7c2"])  # UCI, as the engine gives it
     assert "Bxg4 (one of 3 ways out of check; takes the knight on g4" in notes

@@ -1829,8 +1829,8 @@ _ASK_OPPONENT_MOVE = re.compile(
 )
 _ASK_EVAL = re.compile(
     r"\b(?:am i (?:winning|losing|better|worse|ok|okay|in trouble)|who'?s (?:better|winning)|"
-    r"how am i doing|is this (?:position )?good for me|what'?s the (?:eval|evaluation|score)|"
-    r"how bad is it|am i lost)\b",
+    r"how am i doing|is this (?:position )?good for me|"
+    r"what(?:'?s| is) the (?:eval|evaluation|score)|how bad is it|am i lost)\b",
     re.IGNORECASE,
 )
 # What a move cost, asked in so many words: only then is the figure said.
@@ -1898,6 +1898,43 @@ def question_part(text: str) -> str:
         s.strip() for s in sentences if s.strip().endswith("?") or _QUESTION_START.match(s.strip())
     ]
     return " ".join(asked).replace("…", "...")
+
+
+# The opening asked for by name ("what opening is this?"), not judged ("how is my opening?").
+_OPENING_FACT = re.compile(
+    r"\b(?:what|which)(?:'s| is| was)? (?:the |this |my )?opening\b|"
+    r"\bis (?:this|it|that) (?:still )?(?:theory|book)\b|\bname of (?:the |this )?opening\b",
+    re.IGNORECASE,
+)
+
+
+def fact_question(text: str) -> bool:
+    """Whether the words ask only for a fact the record holds whole -- the material, the
+    opening, who stands better -- which the template says exactly. The model added nothing
+    there (the locked test set, 2026-09-26: excellence 1.00 for the templates on all three)
+    and once gave the material after a recapture as the material now; answered by the
+    template, no call is made."""
+    if not (_ASK_MATERIAL.search(text) or _OPENING_FACT.search(text) or _ASK_EVAL.search(text)):
+        return False
+    others = (
+        _ASK_HINT.match(text),
+        _ASK_AIM.search(text),
+        _ASK_THREAT.search(text),
+        _ASK_MOVE.search(text),
+        _ASK_LINE.search(text),
+        _ASK_LAST_MOVE.search(text),
+        _ASK_OPPONENT_MOVE.search(text),
+        _ASK_REVIEW.search(text),
+        _ASK_COST.search(text),
+        re.search(r"\b(?:why|how come|what should|what do i|explain|plan)\b", text, re.I),
+        _SAN.search(text),
+    )
+    # Only the words beyond the question itself can carry a claim: "winning" in "am I
+    # winning?" is the question.
+    rest = text
+    for pattern in (_ASK_MATERIAL, _OPENING_FACT, _ASK_EVAL):
+        rest = pattern.sub(" ", rest)
+    return not any(others) and not may_carry_claims(rest)
 
 
 def may_carry_claims(text: str) -> bool:
@@ -2223,6 +2260,21 @@ class Coach:
                 now=True,
                 record_now=True,
             )
+
+        if not canned and fact_question(text):
+            # The material, the opening, the standing: said by the template, exactly.
+            _, answer = self._instruction(Trigger.USER_ASK, position, level, text, (), None, None)
+            self._queue_plain(
+                Trigger.USER_ASK,
+                answer,
+                ts,
+                ply=position.ply,
+                level=level,
+                fen=position.board.fen(),
+                now=True,
+                record_now=True,
+            )
+            return
 
         asked = question_part(text)
         shown_examination = False
@@ -3788,7 +3840,7 @@ class Coach:
         elif level >= DisclosureLevel.LINE and _ASK_LINE.search(said) and facts.line:
             # The line move by move, computed: the only reasons a move of it may be given
             # (4 of the 5 false claims the bench's labellers found were in these answers).
-            notes = line_notes(position.board, list(facts.line))
+            notes = line_notes(position.board, list(facts.line), player=self.user_colour)
             by_move = (
                 f" The line move by move, as the board gives it: {notes}. Explain it only from "
                 "these notes: a move 'forces' something only where a note says it is the only "

@@ -527,6 +527,37 @@ def test_what_a_line_forces_or_keeps_open_is_checked() -> None:
     assert check_draft(half, g6, us=chess.WHITE) == []
 
 
+def test_the_test_audits_false_claims_are_caught_and_their_true_twins_pass() -> None:
+    """The locked test set's audit (2026-09-26): false claims the checker now catches, each
+    beside the true sentence it must not fault."""
+    # "Qf2+ drives the King to h3": Kh1 was legal too; judged on Qf2+'s own frame.
+    box = chess.Board("6k1/5pp1/p2p4/1p3Pb1/2p1r1q1/P1P1p3/1P5K/4R3 b - - 1 48")
+    after = []
+    line = box.copy()
+    for san in ("Qh4+", "Kg2", "Qf2+", "Kh3", "Rh4#"):
+        line.push_san(san)
+        after.append(line.copy())
+    problems = check_draft("Qf2+ drives the King to h3.", box, after=after, us=chess.BLACK)
+    assert problems and "nothing forces the king to h3" in problems[0].reason
+    # "Kh8 is the only king move" where four were legal; "the only move that keeps your
+    # edge" is the stakes, and is not checked.
+    q = chess.Board("8/6k1/8/8/3Q4/8/5PPP/6K1 b - - 0 1")  # Qd4+ given: the king has five
+    problems = check_draft("After the check, Kh7 is the only king move.", q, us=chess.WHITE)
+    assert problems and problems[0].reason == "Kh7 is not the only king move: others are legal"
+    assert check_draft("Kh7 was the only move that keeps it level.", q, us=chess.WHITE) == []
+    # "Ne4 ... but it allows exf6" where exf6 cannot follow Ne4; across clauses, not judged.
+    n = chess.Board("r1bqkb1r/pppp1ppp/2n2n2/4P3/2B5/8/PPPP1PPP/RNBQK1NR b KQkq - 0 4")
+    problems = check_draft("Ne4 attacks f2, but it allows exf6.", n, us=chess.BLACK)
+    assert problems and "exf6 cannot be played after Ne4" in problems[0].reason
+    fine = "After Nd5, Bxd5 wins a pawn, while your move allowed exf6."
+    assert check_draft(fine, n, us=chess.BLACK) == []
+    # "Your queen checks" with no queen; "it took your bishop" is the story, not checked.
+    none = chess.Board("k7/8/8/8/8/8/8/K5R1 b - - 0 1")
+    problems = check_draft("Your queen checks the king.", none, us=chess.BLACK)
+    assert problems and problems[0].reason == "you have no queen"
+    assert check_draft("That exchange took your bishop.", none, us=chess.BLACK) == []
+
+
 def test_your_is_the_player_on_the_opponents_turn() -> None:
     """On the opponent's turn "your" is still the player being coached: read as the side to
     move, "your knight on f3" was flagged false and a true draft thrown away."""

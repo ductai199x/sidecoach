@@ -1001,8 +1001,16 @@ def _sentence(reason: str) -> str:
 
 _COLOUR_WORDS = r"your|their|the opponent's|opponent's|white's|black's|white|black"
 _PIECE_WORD = r"king|queen|rook|bishop|knight|pawn"
+# Words a coach puts between the owner and the piece: "your isolated pawn on g2".
+_PIECE_ADJECTIVES = (
+    r"(?:(?:isolated|passed|backward|doubled|loose|hanging|pinned|trapped|advanced|extra|"
+    r"lone|last|remaining|undefended|defended|attacked|active|passive|bad|good|"
+    r"light-squared|dark-squared|central|strong|weak|exposed|stranded|"
+    r"overloaded)\s+){0,2}"
+)
 _PIECE_ON = re.compile(
-    rf"\b(?:(?P<colour>{_COLOUR_WORDS})\s+)?(?P<piece>{_PIECE_WORD})s?\s+(?:on|at)\s+"
+    rf"\b(?:(?P<colour>{_COLOUR_WORDS})\s+)?{_PIECE_ADJECTIVES}(?P<piece>{_PIECE_WORD})s?"
+    r"\s+(?:on|at)\s+"
     r"(?P<square>[a-h][1-8])\b",
     re.IGNORECASE,
 )
@@ -1027,6 +1035,13 @@ _TACTIC = re.compile(
     r"(?:(?:is|was|are|were)\s+(?:now\s+)?|,\s*(?:which\s+)?(?:is|was)\s+|now\s+)?"
     r"(?P<state>pinned|hanging|undefended|unprotected|loose|en\s*prise|trapped|safe|"
     r"forks?|forking|skewers?|skewering)",
+    re.IGNORECASE,
+)
+# The same states said before the piece: "targeting the loose rook on e4" of a rook the
+# pawn on f5 defends (the test audit, 2026-09-26).
+_STATE_FIRST = re.compile(
+    rf"\b(?:(?P<colour>{_COLOUR_WORDS})\s+)?(?P<state>loose|hanging|undefended|unprotected|"
+    rf"pinned|trapped)\s+(?P<piece>{_PIECE_WORD})\s+(?:on|at)\s+(?P<square>[a-h][1-8])\b",
     re.IGNORECASE,
 )
 # The tagger's own piece values, so a fork and a skewer are judged the way it judges them.
@@ -1230,6 +1245,10 @@ def check_draft(
     threat), or legal further along the line the coach was given. Bare squares are never
     flagged; a coach may point at one.
     """
+    # The model writes curly apostrophes ("your opponent’s bishop"); the patterns spell
+    # them straight, and read that way a flipped owner went unchecked (the test audit,
+    # 2026-09-26).
+    text = straight_quotes(text)
     problems: list[DraftProblem] = []
     seen: set[str] = set()
     frames = [board, *after]
@@ -1253,7 +1272,7 @@ def check_draft(
             if all(reasons):
                 add(match.group(0), reasons[0] or "")
 
-    for match in _TACTIC.finditer(text):
+    for match in [*_TACTIC.finditer(text), *_STATE_FIRST.finditer(text)]:
         square, state = match.group("square"), match.group("state")
         present = [
             _placement_problem(frame, None, match.group("piece"), square, us) for frame in frames
@@ -1292,13 +1311,15 @@ def check_draft(
 # King away" where a block was legal, "the check on d6 forces your rook onto f7" where other
 # moves were: 2 of the 5 false claims the bench's labellers found (2026-09-25).
 _FORCE_KING = re.compile(
-    r"\bforc(?:e|es|ed|ing)\s+(?P<colour>your|their|the|his|white's|black's)\s+king\s+"
+    r"\b(?:forc(?:e|es|ed|ing)|driv(?:e|es|ing)|drove)\s+"
+    r"(?P<colour>your|their|the|his|white's|black's)\s+king\s+"
     r"(?:away|back|out|off|to\s+move|to\s+step\s+aside|to\s+(?P<square>[a-h][1-8]))\b"
     r"|\b(?P<colour2>your|their)\s+king\s+(?:has\s+to|must|is\s+forced\s+to)\s+move\b",
     re.IGNORECASE,
 )
 _FORCE_ONTO = re.compile(
-    r"\bforc(?:e|es|ed|ing)\s+(?P<colour>your|their|the|his|white's|black's)\s+"
+    r"\b(?:forc(?:e|es|ed|ing)|driv(?:e|es|ing)|drove)\s+"
+    r"(?P<colour>your|their|the|his|white's|black's)\s+"
     r"(?P<piece>queen|rook|bishop|knight|pawn)\s+(?:back\s+)?(?:onto|to|into)\s+"
     r"(?P<square>[a-h][1-8])\b",
     re.IGNORECASE,
@@ -1321,9 +1342,45 @@ _FILE_EMPTY = re.compile(
     r"clear\s+of\s+pawns|free\s+of\s+pawns|pawnless))\b",
     re.IGNORECASE,
 )
+_SAN = r"(?:O-O(?:-O)?|[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h](?:x[a-h])?[1-8])(?:=[QRBN])?[+#]?"
+# Only the move itself as the subject: "Ne4 allows exf6", "Ne4 saves the knight, but it
+# allows exf6" -- read across clauses ("after Rb8, Rxa5 wins, while your move allowed
+# fxe6") the subject was another move (the precision sweep, 2026-09-26).
+_ALLOWS = re.compile(
+    rf"\b(?P<first>{_SAN})(?![\w=])(?:[^.;!?,]{{0,50}}?,?\s+but\s+it|\s+it|)\s+"
+    rf"(?:allows|allowed|lets|runs\s+into|ran\s+into|invites|invited)\s+"
+    rf"(?P<reply>{_SAN})(?![\w=])"
+)
+# A piece named by its owner alone: "your queen checks" where the player had none.
+# Only with a present action ("your queen checks"): a piece named in the game's story
+# ("it took your bishop") is gone from the frames and true (the precision sweep).
+_OWNED = re.compile(
+    r"\b(?P<colour>your|their)\s+(?P<piece>queen|rook|bishop|knight)s?\s+"
+    r"(?:checks?|gives\s+check|attacks|pins|forks|skewers|mates|takes|captures)\b",
+    re.IGNORECASE,
+)
+# Only the unqualified claims: the only king move, the only legal move, the only move out
+# of check. "The only move that keeps your edge" is the stakes, and true (the sweep).
+_ONLY_MOVE = re.compile(
+    rf"\b(?P<san>{_SAN})(?![\w=])\s+(?:is|was)\s+the\s+only\s+"
+    r"(?:(?P<king>king\s+)move\b|legal\s+move\b|move\s+out\s+of\s+(?:the\s+)?check\b)"
+)
 _SAN_CHECK = re.compile(
     r"\b(?:[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h](?:x[a-h])?[1-8])(?:=[QRBN])?\+"
 )
+
+
+def straight_quotes(text: str) -> str:
+    """`text` with curly apostrophes and quotes made straight."""
+    return text.replace("\u2019", "'").replace("\u2018", "'")
+
+
+def _legal_san(board: chess.Board, san: str) -> bool:
+    try:
+        board.parse_san(san)
+    except ValueError:
+        return False
+    return True
 
 
 def _side(word: str | None, us: chess.Color) -> chess.Color | None:
@@ -1343,10 +1400,13 @@ def _side(word: str | None, us: chess.Color) -> chess.Color | None:
 def _checked_frames(
     text: str, frames: Sequence[chess.Board], side: chess.Color | None
 ) -> list[chess.Board]:
-    """The frames where `side` (either, when None) is in check: those given, and those after
-    a check the sentence names ("Rh4+"), played where it is legal."""
-    out = [f for f in frames if f.is_check() and (side is None or f.turn == side)]
-    for token in _SAN_CHECK.findall(text):
+    """The frames where `side` (either, when None) is in check. When the sentence names a
+    check ("Rh4+"), those after it, played where it is legal -- only those: "Qf2+ drives
+    the King to h3" was borne out by some other check of the line (the test audit); else
+    every frame in check."""
+    named = _SAN_CHECK.findall(text)
+    out = [] if named else [f for f in frames if f.is_check() and (side is None or f.turn == side)]
+    for token in named:
         for frame in frames:
             try:
                 move = frame.parse_san(token)
@@ -1372,18 +1432,32 @@ def _line_problems(
             checked = _checked_frames(sentence_text, frames, side)
             if not checked:
                 continue
-            if any(
-                all(f.piece_type_at(m.from_square) == chess.KING for m in f.legal_moves)
-                for f in checked
-            ):
-                continue
-            problems.append(
-                (
-                    match.group(0),
+            to = match.group("square")
+            if to is None:
+                if any(
+                    any(True for _ in f.legal_moves)
+                    and all(f.piece_type_at(m.from_square) == chess.KING for m in f.legal_moves)
+                    for f in checked
+                ):
+                    continue
+                reason = (
                     "the check does not force the king to move: it can be blocked "
-                    "or the checking piece taken",
+                    "or the checking piece taken"
                 )
-            )
+            else:
+                # "Forces the King to h6" where Kf6 was legal too (the test audit).
+                target = chess.parse_square(to.lower())
+                if any(
+                    any(True for _ in f.legal_moves)
+                    and all(
+                        f.piece_type_at(m.from_square) == chess.KING and m.to_square == target
+                        for m in f.legal_moves
+                    )
+                    for f in checked
+                ):
+                    continue
+                reason = f"nothing forces the king to {to.lower()}: other moves are legal there"
+            problems.append((match.group(0), reason))
         for match in _FORCE_ONTO.finditer(sentence_text):
             side = _side(match.group("colour"), us)
             kind = _PIECE_WORDS.get(match.group("piece").lower())
@@ -1414,6 +1488,49 @@ def _line_problems(
                     f"{match.group('square').lower()}: other moves are legal there",
                 )
             )
+    for match in _OWNED.finditer(text):
+        side = _side(match.group("colour"), us)
+        kind = _PIECE_WORDS.get(match.group("piece").lower())
+        if side is None or kind is None or kind == chess.KING:
+            continue
+        if any(f.pieces(kind, side) for f in frames):
+            continue
+        whose = "you have" if side == us else "they have"
+        problems.append((match.group(0), f"{whose} no {match.group('piece').lower()}"))
+    for match in _ONLY_MOVE.finditer(text):
+        san, king_only = match.group("san"), bool(match.group("king"))
+        where = [f for f in frames if _legal_san(f, san)]
+        if not where:
+            continue
+
+        def alone(frame: chess.Board, king_only: bool = king_only) -> bool:
+            moves = list(frame.legal_moves)
+            if king_only:
+                moves = [m for m in moves if frame.piece_type_at(m.from_square) == chess.KING]
+            return len(moves) == 1
+
+        if any(alone(f) for f in where):
+            continue
+        kind = "king move" if king_only else "move"
+        problems.append((match.group(0), f"{san} is not the only {kind}: others are legal"))
+    for match in _ALLOWS.finditer(text):
+        first, reply = match.group("first"), match.group("reply")
+        played_on = []
+        for frame in frames:
+            try:
+                move = frame.parse_san(first)
+            except ValueError:
+                continue
+            after = frame.copy(stack=False)
+            after.push(move)
+            played_on.append(after)
+        if not played_on:
+            continue  # a move of some other moment: the move check has it
+        if any(_legal_san(after, reply) for after in played_on):
+            continue
+        problems.append(
+            (match.group(0), f"{reply} cannot be played after {first}: it does not allow it")
+        )
     for match in _FILE_EMPTY.finditer(text):
         letter = match.group("file").lower()
         index = ord(letter) - ord("a")

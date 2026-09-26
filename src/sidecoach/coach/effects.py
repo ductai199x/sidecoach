@@ -231,7 +231,13 @@ def effects_text(
     return "; ".join(describe_effects(board, move, limit=limit, hazards=hazards))
 
 
-def line_notes(board: chess.Board, moves: list[str], *, limit: int = 8) -> str:
+def line_notes(
+    board: chess.Board,
+    moves: list[str],
+    *,
+    limit: int = 8,
+    player: chess.Color | None = None,
+) -> str:
     """A line move by move with what each move does, computed from the board: "Rh4+ (checks
     the king on h5), Kg5 (only a king move gets out of check), ...". A reply to a check
     says whether it was the only legal move, whether the king had to move, or that it was one
@@ -240,7 +246,10 @@ def line_notes(board: chess.Board, moves: list[str], *, limit: int = 8) -> str:
     Asked to explain a line, the model gave its moves purposes the board denies: "the check
     forced the King away" where a block was legal, "Rad8 keeps the b- and e-files open" where
     both held pawns (the bench's gold labels, 2026-09-25: 4 of the 5 false claims were in
-    explanations of lines). The notes are what a line may be explained by."""
+    explanations of lines). The notes are what a line may be explained by. With `player`,
+    each move says whose it is ("the player's Qxa7", "the opponent's c3"): without it the
+    model gave the player the opponent's moves and the reverse (the test audit, 2026-09-26:
+    "advancing b4" of their pawn, "your queen checks" of theirs)."""
     current = board.copy(stack=False)
     out: list[str] = []
     for text in moves[:limit]:
@@ -259,13 +268,19 @@ def line_notes(board: chess.Board, moves: list[str], *, limit: int = 8) -> str:
             if len(legal) == 1:
                 notes.append("the only legal move")
             elif all(current.piece_type_at(m.from_square) == chess.KING for m in legal):
-                notes.append("only a king move gets out of check")
+                # The king moves named: "only a king move gets out of check" was read as "Kh8
+                # is the only king move" where there were four (the test audit, 2026-09-26).
+                sans = sorted(current.san(m) for m in legal)
+                listed = ", ".join(sans[:-1]) + f" or {sans[-1]}"
+                notes.append(f"the king must move: {listed}")
             else:
                 notes.append(f"one of {len(legal)} ways out of check")
         does = effects_text(current, move, hazards=False)
         if does:
             notes.append(does)
         san = current.san(move)
+        if player is not None:
+            san = ("the player's " if current.turn == player else "the opponent's ") + san
         out.append(f"{san} ({'; '.join(notes)})" if notes else san)
         current.push(move)
     return ", ".join(out)

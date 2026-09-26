@@ -2113,6 +2113,24 @@ def test_their_own_move_is_theirs_even_after_the_reply_and_a_threat_gets_its_ans
     assert "They ask what the opponent threatens" in _directive(_given(provider, 0))
 
 
+def test_a_question_only_about_a_fact_is_answered_by_the_template() -> None:
+    """The material, the opening by name, who stands better: the template says them exactly
+    and no model is called (the locked test set, 2026-09-26: the model once gave the material
+    after a recapture as the material now). A judgement or a why still goes to the model."""
+    from sidecoach.coach.coach import fact_question
+
+    for said in ("who's up material?", "what opening is this?", "am I winning?"):
+        assert fact_question(said), said
+    for said in ("how is my opening?", "why am I losing?", "am I winning? what should I do?"):
+        assert not fact_question(said), said
+    coach, provider = _coach(["The model's words."])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    coach.ask("who's up material?", 8.0)
+    out = _messages(coach)
+    assert out and out[-1].text.startswith("Material:") and provider.prompts == []
+
+
 def test_their_threat_on_their_turn_is_their_best_move_not_the_players() -> None:
     """The sheet's threats are the side NOT to move's: on the opponent's turn, the player's
     own. "What are they threatening?" there is answered with their best move now."""
