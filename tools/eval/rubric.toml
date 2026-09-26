@@ -1,0 +1,60 @@
+# The excellence rubric: what a reply of the coach is asked beyond being true and complete.
+# tools/eval/rubric.py asks each criterion as one yes/no question about a reply against the
+# record of its moment, for the classes in `applies_to` ("*" is every class). Edit freely:
+# an edited question is asked again on the next run (answers are kept per question), an
+# unchanged one is never paid for twice.
+#
+#   key         a short name, for the report
+#   question    one yes/no question to the judge; {low} and {high} are the player's rating
+#               band from the app's settings (about 1000 to 1400)
+#   applies_to  the item classes it is asked for (tools/eval/taxonomy.py), or ["*"]
+#   only_if     optional: "ends_with_question" -- asked only when the reply ends with a
+#               question (decided in code; otherwise not asked and not scored)
+
+[[criterion]]
+key = "why"
+question = "Does the reply explain why concretely on this board -- what a move or a threat does to specific pieces or squares -- rather than only naming a label or a principle?"
+applies_to = [
+    "lesson", "verdict_weaker", "stuck_hint", "decisive_question", "ask_hint", "ask_plan",
+    "verdict", "ask_last_move", "ask_opponent_move", "ask_threat", "ask_eval", "ask_named_move",
+]
+
+[[criterion]]
+key = "transfer"
+question = "Does the reply give the player an idea they can reuse in other games -- a pattern or rule of thumb tied to this position -- and not a generic platitude?"
+applies_to = [
+    "lesson", "verdict_weaker", "stuck_hint", "decisive_question", "ask_hint", "ask_plan",
+    "ask_last_move",
+]
+
+[[criterion]]
+key = "question"
+question = "The reply asks a question. Can the player answer it by looking at this board, does it move them toward the idea, and has the reply not already answered it?"
+applies_to = [
+    "lesson", "verdict_weaker", "stuck_hint", "decisive_question", "ask_hint", "ask_plan",
+    "ask_last_move",
+]
+only_if = "ends_with_question"
+
+[[criterion]]
+key = "economy"
+question = "Is every sentence useful to a player rated about {low} to {high} -- no filler, no repetition, nothing they would not understand?"
+applies_to = ["*"]
+
+[[criterion]]
+key = "connection"
+question = "Where the record gives a link to the player's game so far -- an earlier moment, a recurring mistake, their stated plan -- does the reply use it? If the record gives no such link, answer yes."
+applies_to = ["lesson", "verdict_weaker", "ask_last_move", "ask_game_so_far"]
+
+[[criterion]]
+key = "actionable"
+question = "Does the reply leave the player something concrete to look for or do next?"
+applies_to = [
+    "lesson", "verdict_weaker", "stuck_hint", "decisive_question", "ask_hint", "ask_plan",
+    "ask_game_so_far",
+]
+
+[[criterion]]
+key = "tone"
+question = "Is the tone encouraging and honest -- no gushing, no scolding, no hedging?"
+applies_to = ["*"]

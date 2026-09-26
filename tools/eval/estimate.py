@@ -122,6 +122,27 @@ def coach_estimate(
     return out
 
 
+def repeated_record_estimate(
+    work: list[tuple[str, int]], prices: tuple[float, float, float], *, votes: float = 0.0
+) -> Estimate:
+    """Questions asked of one record each (the rubric: the record and the reply in the
+    system prompt, one question a call): (record, questions) per reply. The first call reads
+    the record fresh, every later one from the cache; each question takes `votes` calls
+    (EXPECTED_VOTES by default), each writing a word."""
+    per = votes or EXPECTED_VOTES
+    out = Estimate()
+    for record, questions in work:
+        tokens = _tokens(record)
+        calls = questions * per
+        prompt = calls * (tokens + QUESTION_TOKENS)
+        cached = (calls - 1) * tokens if tokens >= CACHE_MIN_TOKENS else 0
+        completion = calls * VOTE_COMPLETION
+        out = out.add(
+            Estimate(calls, prompt, cached, completion, _usd(prompt, cached, completion, prices))
+        )
+    return out
+
+
 def single_call_estimate(
     prompts: list[str], prices: tuple[float, float, float], *, completion: int = 2
 ) -> Estimate:

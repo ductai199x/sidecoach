@@ -775,3 +775,114 @@ def test_the_effort_table_says_when_arms_are_not_comparable():
     other = effort_table.table([arm("effort-none", ["a"]), arm("effort-low", ["b"], "def")])
     assert "NOT COMPARABLE" in other
     assert estimate.coach_completion("openai:gpt-5.6-luna@low") == 200
+
+
+# ---- the excellence rubric ---------------------------------------------------------------
+
+
+def test_the_rubric_file_reads_as_criteria():
+    import rubric  # pyright: ignore[reportMissingImports]
+
+    criteria = rubric.load_rubric(rating=(1000, 1400))
+    keys = [c.key for c in criteria]
+    assert keys == ["why", "transfer", "question", "economy", "connection", "actionable", "tone"]
+    by = {c.key: c for c in criteria}
+    assert "rated about 1000 to 1400" in by["economy"].question
+    assert by["economy"].applies("ask_material", "Level.")  # "*": every class
+    assert not by["connection"].applies("stuck_hint", "Look at e5.")
+    # The question criterion is asked only of a reply that ends with a question.
+    assert by["question"].applies("lesson", "Nf3 was better. Which piece guards e5?")
+    assert not by["question"].applies("lesson", "Nf3 was better.")
+
+
+def test_a_rubric_file_with_a_repeated_key_or_an_unknown_condition_is_refused(tmp_path):
+    import rubric  # pyright: ignore[reportMissingImports]
+
+    twice = tmp_path / "twice.toml"
+    twice.write_text(
+        '[[criterion]]\nkey = "a"\nquestion = "Q?"\napplies_to = ["*"]\n' * 2, encoding="utf-8"
+    )
+    with pytest.raises(ValueError):
+        rubric.load_rubric(twice, rating=(1000, 1400))
+    odd = tmp_path / "odd.toml"
+    odd.write_text(
+        '[[criterion]]\nkey = "a"\nquestion = "Q?"\napplies_to = ["*"]\nonly_if = "sunny"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        rubric.load_rubric(odd, rating=(1000, 1400))
+
+
+def test_a_rubric_vote_stops_at_two_and_an_unreadable_answer_is_not_scored():
+    import rubric  # pyright: ignore[reportMissingImports]
+
+    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
+    agree = FakeModel("No.")
+    assert rubric.ask(agree, ledger, "x", "record", "Q?") is False and agree.calls == 2
+    with pytest.raises(judge.JudgeFailed):
+        rubric.ask(FakeModel("Perhaps."), ledger, "x", "record", "Q?")
+
+
+def test_the_rubric_asks_each_question_once_and_scores_the_replies(tmp_path, monkeypatch):
+    import rubric  # pyright: ignore[reportMissingImports]
+
+    monkeypatch.setattr(judge, "JUDGMENTS", tmp_path / "judgments")
+    item = _lesson(_build(tmp_path))
+    ai_reply = "Nf3 was better: it develops a piece and keeps f3 free. Which piece is still home?"
+    tasks = [rubric.Task("ai", item, ai_reply), rubric.Task("floor", item, item["fallback"])]
+    criteria = rubric.load_rubric(rating=(1000, 1400))
+    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
+    model = FakeModel(lambda n: "no" if n <= 2 else "yes")  # the first question: no
+    answers, failed = rubric.run_rubric("run", tasks, criteria, model, ledger, workers=1)
+    asked = model.calls
+    assert not failed and asked > 0
+    ai_keys = set(answers["ai"][item["id"]])
+    assert "question" in ai_keys and "tone" in ai_keys  # the AI reply ends with a question
+    assert "question" not in answers["floor"][item["id"]]  # the template does not
+    # Asked again: nothing to pay for.
+    rubric.run_rubric("run", tasks, criteria, model, ledger, workers=1)
+    assert model.calls == asked
+    # An edited question is asked again, and only it.
+    edited = [
+        rubric.Criterion(c.key, c.question + " Be strict.", c.applies_to, c.only_if)
+        if c.key == "tone"
+        else c
+        for c in criteria
+    ]
+    rubric.run_rubric("run", tasks, edited, model, ledger, workers=1)
+    assert model.calls == asked + 2 * 2  # two replies, two votes each
+    kept = {arm: rubric.load_answers("run", arm, reuse_stale=False) for arm in ("ai", "floor")}
+    rows = rubric.scores_of(tasks, edited, kept)
+    assert rows[0]["excellence"] is not None and rows[0]["answers"]["tone"] is True
+    text = rubric.report("run", rows, edited, failed)
+    assert "| tone |" in text and "Excellence" in text
+
+
+def test_the_rubric_finds_a_runs_items_and_judges_the_models_own_replies(tmp_path, monkeypatch):
+    import rubric  # pyright: ignore[reportMissingImports]
+
+    path = rubric.items_dir("effort-medium-47138dd-r1")
+    assert path.parts[-2:] == ("effort-medium", "items-47138dd-r1")
+    assert rubric.items_dir("a-b-1234567-d89abcde-r2").name == "items-1234567-d89abcde-r2"
+    monkeypatch.setattr(judge, "JUDGMENTS", tmp_path)
+
+    def item(i: str, **reply) -> dict:
+        return {
+            "id": i,
+            "game": "g",
+            "class": "lesson",
+            "fallback": "Nf3 was better.",
+            "reply": {"reply": f"AI {i}.", "fallback_used": False, **reply},
+        }
+
+    items = {i: item(i) for i in ("a", "b")} | {"c": item("c", fallback_used=True)}
+    for run, ids in (("run", ["a", "b", "c"]), ("run-floor", ["a"])):
+        (tmp_path / run).mkdir()
+        (tmp_path / run / "g.jsonl").write_text(
+            "".join(json.dumps({"id": i}) + "\n" for i in ids), encoding="utf-8"
+        )
+    tasks = rubric.tasks_of("run", items, floor=True)
+    assert [(t.arm, t.id) for t in tasks] == [("ai", "a"), ("ai", "b"), ("floor", "a")]
+    work = [("R" * 8000, 3)]
+    est = estimate.repeated_record_estimate(work, PRICES, votes=2)
+    assert est.calls == 6 and est.cached == pytest.approx(5 * estimate._tokens("R" * 8000))
