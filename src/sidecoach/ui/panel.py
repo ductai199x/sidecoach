@@ -2210,6 +2210,9 @@ class PanelEngine:
             ]
             if spoken.attempts:
                 meta.append(f"{spoken.attempts} attempt{'s' if spoken.attempts != 1 else ''}")
+            if spoken.leaks:
+                # For debugging: what the reply gave away of the answer, spoken anyway.
+                meta.append("leak noted: " + "; ".join(spoken.leaks))
             if not message.text:
                 # The model's reply failed the checks and the quick answer already stands.
                 self._emit(
@@ -2251,6 +2254,7 @@ class PanelEngine:
                     ply=message.ply,
                     attempts=spoken.attempts,
                     problems=spoken.problems,
+                    leaks=spoken.leaks,
                     fallback=bool(spoken.problems),
                     voice=action,
                     fen=message.fen,

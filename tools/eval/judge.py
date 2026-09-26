@@ -567,12 +567,14 @@ def deterministic(item: dict, reply: str, draft_check, *, floor: bool = False) -
     verdict  the verdict word or cost said of the move just assessed, against its
              assessment (the coach's `_verdict_problems`)
     floor    what the reply must name, as its template does (the coach's `omitted`)
-    leak     the coach's own disclosure checks in Speaker._problems, with its own
-             exemptions: a withheld item named, the answer given away
+    leak     the coach's own disclosure checks (Speaker._leaks), with its own
+             exemptions: a withheld item named, the answer given away -- reported,
+             never a fail (Tai, 2026-09-26: a debugging tool, not a reason to
+             reject a reply)
     coach    the coach's own Speaker._problems, whole, for the audit
 
-    The judge is never more lenient than the coach: whatever the coach's checks flag is a
-    fail here too."""
+    The judge is never more lenient than the coach: whatever the coach's checks refuse is
+    a fail here too."""
     board = chess.Board(item["fen"])
     request = request_for(item, item["system"])
     speaking = bool(reply.strip())
@@ -608,17 +610,17 @@ def deterministic(item: dict, reply: str, draft_check, *, floor: bool = False) -
     classified = set(directive_form) | set(rules) | set(verdict) | set(drafted)
     if left_out:
         classified.add(left_out)
-    # What else the coach's own checks flag: its disclosure checks ("withheld ...", "gives
-    # away ...") are leaks; any other is one of its rules (a figure in a remark nobody asked
-    # for, from a check beyond `restated`). Both fail the reply, as they stop it live.
-    leaks: list[str] = []
+    # What else the coach's own checks refuse is one of its rules (a figure in a remark
+    # nobody asked for, from a check beyond `restated`): a fail, as it stops the reply live.
+    # The leaks are the coach's log (`Speaker._leaks`): reported, never a fail.
     for problem in coach_checks:
-        if problem in classified:
-            continue
-        if problem.startswith(("withheld ", "gives away ")):
-            leaks.append(problem)
-        else:
+        if problem not in classified:
             rules.append(problem)
+    leaks = (
+        Speaker(None, draft_check=draft_check)._leaks(reply, request)  # type: ignore[arg-type]
+        if speaking
+        else []
+    )
     return {
         "leak": leaks,
         "board": board_problems,
@@ -1823,8 +1825,7 @@ def score(
                 "where": idea_raw.get("where") if isinstance(idea_raw.get("where"), str) else None,
             }
     hard = (
-        bool(det["leak"])
-        or bool(det["board"])
+        bool(det["board"])
         or bool(unsupported)
         or "empty" in det["form"]["problems"]
         # The owner's rules after a move, and a verdict or cost stated against the record.

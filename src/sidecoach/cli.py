@@ -1146,10 +1146,11 @@ class _Coaching:
         if self.coach is None:
             return ""
         spoken = self.coach.spoken
-        leaks = sum(1 for item in spoken if item.problems)
+        caught = sum(1 for item in spoken if item.problems)
+        leaks = sum(1 for item in spoken if item.leaks)
         return (
-            f"{len(spoken)} coach messages, {leaks} drafts caught by the checks, "
-            f"{self.coach.speaker.fallbacks} templates used"
+            f"{len(spoken)} coach messages, {caught} drafts caught by the checks, "
+            f"{self.coach.speaker.fallbacks} templates used, {leaks} leaks noted"
         )
 
     def close(self) -> None:

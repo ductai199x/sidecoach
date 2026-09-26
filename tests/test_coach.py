@@ -153,7 +153,8 @@ def test_a_decisive_moment_earns_the_idea_and_names_no_move() -> None:
     assert len(out) == 1 and out[0].trigger is Trigger.DECISIVE_QUESTION
     assert out[0].level is DisclosureLevel.IDEA
     # The model was handed the game as one message: the setting, the record one line per
-    # move, the position the player faces in full with the engine's lines withheld.
+    # move, the position the player faces in full -- everything, the answer included (Tai,
+    # 2026-09-26: the model sees engine lines at hints; the reply is checked).
     messages = _given(provider, 0)
     harness = _harness(messages)
     assert harness.startswith("# Setting\nYou coach White.")
@@ -169,13 +170,18 @@ def test_a_decisive_moment_earns_the_idea_and_names_no_move() -> None:
     assert "White to move." in current and "decisive: yes" in current
     assert "3... Nf6 by the opponent" in current
     assert "Pieces -- White: K e1, Q h5" in current, "the position is given piece by piece"
-    assert "Legal moves" not in current, "the moves are withheld with the lines at this level"
-    assert "## Engine lines" + chr(10) + "withheld" in current
-    # The idea is given -- the goal and the pattern -- and nothing that plays it.
-    assert "goal: the player can mate in one move" in current
-    assert "pattern: a mating attack" in current
-    for secret in ("Qxf7", "queen", "h5f7", "candidates", "Checks"):
-        assert secret not in current, secret
+    assert "Legal moves" in current and "Qxf7#" in current, "the model sees every move"
+    assert "the best first move is the answer they are finding" in current
+    assert "On the board (complete lists)" in current
+    # The rung's facts -- the goal and the pattern -- stand apart from those past it.
+    facts = current.split("## Facts (the player to move)")[1].split("## Past this level")[0]
+    assert "goal: the player can mate in one move" in facts
+    assert "pattern: a mating attack" in facts
+    for secret in ("Qxf7", "queen", "h5f7", "candidates"):
+        assert secret not in facts, secret
+    beyond = current.split("## Past this level")[1].split("## Disclosure")[0]
+    assert "piece: the player's queen on h5" in beyond and "Qxf7" in beyond
+    assert "You see everything, the answer included" in current
     # The first hint whole is on the sheet, the least the model's says (parity, 2026-09-25),
     # and the idea level names the key fact on the board, as the first hint does.
     assert "the first hint in the board's own words" in current
@@ -188,19 +194,20 @@ def test_a_decisive_moment_earns_the_idea_and_names_no_move() -> None:
     assert _messages(coach) == []
 
 
-def test_a_leaked_draft_is_regenerated_then_replaced() -> None:
-    coach, provider = _coach(["Play Qxf7, it is mate!", "Your queen is ready to strike on f7."])
+def test_a_leaked_draft_is_spoken_and_the_leak_logged() -> None:
+    """A reply that gives the answer away is logged, never refused (Tai, 2026-09-26: the
+    leak check is "a debugging tool and not something used to reject response")."""
+    coach, provider = _coach(
+        ["Their king on e8 is boxed in: your queen can end it on f7. Which check is it?"]
+    )
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6), 7.0)
     out = _messages(coach)
-    assert len(out) == 1
-    assert "Qxf7" not in out[0].text and "f7" not in out[0].text and "queen" not in out[0].text
+    assert len(out) == 1 and out[0].text.startswith("Their king on e8 is boxed in")
     spoken = coach.spoken[-1]
-    assert spoken.attempts == 2 and spoken.problems, "both drafts leaked; the template spoke"
-    assert coach.speaker.fallbacks == 1
-    # The second attempt was told what was wrong.
-    _, retry = provider.prompts[1]
-    assert "not allowed" in retry[-1]["content"] and "Qxf7" in retry[-1]["content"]
+    assert spoken.attempts == 1 and not spoken.problems and coach.speaker.fallbacks == 0
+    assert "withheld square f7" in spoken.leaks and "withheld piece queen" in spoken.leaks
+    assert len(provider.prompts) == 1, "no second call for a leak"
 
 
 def test_two_hints_give_the_idea_then_the_focus_and_asking_for_the_move_gives_it() -> None:
@@ -219,9 +226,10 @@ def test_two_hints_give_the_idea_then_the_focus_and_asking_for_the_move_gives_it
     out = _messages(coach)
     assert out[0].level is DisclosureLevel.IDEA
     current = _current_move_message(_given(provider, 0))
-    assert "goal: the player can mate in one move" in current and "Qxf7" not in current
-    facts = current.split("## Facts (the player to move)")[1].split("## Said here")[0]
+    facts = current.split("## Facts (the player to move)")[1].split("## Past this level")[0]
+    assert "goal: the player can mate in one move" in facts and "Qxf7" not in facts
     assert "queen" not in facts and "target:" not in facts, "not the piece or the target yet"
+    assert "target:" in current.split("## Past this level")[1], "the model knows them"
     # The player's words stand under the position, verbatim.
     assert '## Said here\n    PLAYER said: "give me a hint"' in current
     # The second, the focus: the target and the piece, never the move.
@@ -229,10 +237,11 @@ def test_two_hints_give_the_idea_then_the_focus_and_asking_for_the_move_gives_it
     out = _messages(coach)
     assert out[0].level is DisclosureLevel.FOCUS
     current = _current_move_message(_given(provider, 1))
-    facts = current.split("## Facts (the player to move)")[1].split("## Said here")[0]
+    facts = current.split("## Facts (the player to move)")[1].split("## Past this level")[0]
     assert "target: the opponent's king on e8" in facts
     assert "piece: the player's queen on h5" in facts
-    assert "Qxf7" not in current, "not even among the checks on offer"
+    assert "Qxf7" not in facts, "the move is past the focus rung"
+    assert "Qxf7" in current.split("## Past this level")[1], "and the model knows it"
     coach.ask("ok just tell me the move", 9.0)
     out = _messages(coach)
     assert out[0].level is DisclosureLevel.MOVE and "Qxf7" in out[0].text
@@ -1132,10 +1141,10 @@ def test_material_is_always_from_the_users_side_and_the_review_draws_on_the_tall
 
 
 def test_a_quick_answer_is_a_turn_before_the_model_and_a_failed_reply_adds_nothing() -> None:
-    # The model's two candidates both name the mating move at the IDEA level: rejected
-    # twice. With the quick answer already out, nothing is said in its place -- the same
-    # line a second time was what the first rendered example showed.
-    coach, provider = _coach(["[p=0.5] Play Qxf7#.\n[p=0.5] Qxf7 mates.", "[p=1.0] Qxf7#!"])
+    # The model gives nothing usable, twice. With the quick answer already out, nothing is
+    # said in its place -- the same line a second time was what the first rendered example
+    # showed.
+    coach, provider = _coach(["", ""])
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)
     coach.ask("hint", 8.0)
@@ -1184,7 +1193,7 @@ def test_a_retry_does_not_grow_the_prompt() -> None:
     """When every candidate fails the checks, the second try carries the complaint inside
     the directive: appending the failed attempt as two more messages doubled the prompt
     on a long game, past the model's context."""
-    coach, provider = _coach(["[p=0.5] Play Qxf7#.\n[p=0.5] Qxf7 mates.", "[p=1.0] Look around."])
+    coach, provider = _coach(["", "[p=1.0] Look around."])
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)
     coach.ask("hint", 8.0)
@@ -2053,8 +2062,11 @@ def test_a_late_lesson_does_not_give_away_the_move_they_face_now() -> None:
 
     request = _after_move_request(SCHOLAR, "Bxf7+", "h5f7")
     request.now_answer = ("Qxf7#",)
-    faults = Speaker(ScriptedProvider([]))._problems("And now Qxf7# is mate on the spot.", request)
-    assert "gives away Qxf7# in the position they face now" in faults
+    speaker = Speaker(ScriptedProvider([]))
+    said = "And now Qxf7# is mate on the spot."
+    assert "gives away Qxf7# in the position they face now" in speaker._leaks(said, request)
+    # Logged, never a reason to refuse the reply (Tai, 2026-09-26).
+    assert not any(p.startswith("gives away") for p in speaker._problems(said, request))
 
 
 def test_the_verdict_words_are_checked_clause_by_clause() -> None:

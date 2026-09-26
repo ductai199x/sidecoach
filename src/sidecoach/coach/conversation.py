@@ -8,8 +8,10 @@ a dialog, the end of the game), the way a game record carries its annotations. O
 model has seen a move's line it is frozen and never edited; facts that arrive later go in
 a note of their own. `# Position now` is the last ply in full at the disclosure level in
 force for the position the player faces: the board, the last move, the standing, the
-engine's lines (withheld on the player's own turn below MOVE), the facts in the third
-person per side, the disclosure line, the complete inventory of what stands on the board,
+engine's lines, the facts in the third person per side (below MOVE on the player's turn,
+those past the rung set apart, for the model to teach from), the disclosure line -- the
+model sees everything and the reply is checked for the answer (`disclosure.leak_check`) --
+the complete inventory of what stands on the board,
 the player's record so far, and what was already said here. The coach appends its task and
 answers as the assistant.
 
@@ -61,6 +63,17 @@ IDEA_LEVEL_WORDS = (
     "their moves the facts name, the target's square too, even where the move goes -- with "
     "the principle behind it; never the player's move itself, or which of their own pieces "
     "makes it"
+)
+# Below the move level the model sees everything -- the engine lines, the legal moves, the
+# facts past the rung -- and says only what the rung allows; the reply is checked for the
+# answer before it is spoken (disclosure.leak_check).
+BEYOND_TITLE = (
+    "Past this level (for you to teach from; do not say the move, its square or the piece "
+    "that makes it)"
+)
+SEE_ALL_WORDS = (
+    "You see everything, the answer included, so the hint can be precise and true: say what "
+    "this level allows, built from what you know."
 )
 
 # The engine lines the harness shows: the best three, then three weaker ones, each to
@@ -469,11 +482,12 @@ class Conversation:
         who = "the player" if move.by_user else "the opponent"
         if not full:
             return f"{self._numbered(move)} ({who}): {self._verdict_line(record, board_before)}"
-        # The legal moves name every move, the mating one with its mark: for the position
-        # the player faces they are shown only once moves may be named.
-        user_to_move = board_after.turn == user_colour
+        # The legal moves name every move, the mating one with its mark: shown at every
+        # level, the answer among them, since the model sees everything and what it says is
+        # checked (Tai, 2026-09-26: "The model need to see everything including engine lines
+        # at hint").
         lines: list[str] = [
-            position_text(board_after, legal=not (user_to_move and level < DisclosureLevel.MOVE)),
+            position_text(board_after, legal=True),
             self._turn_text(board_after).capitalize() + ".",
         ]
         clock = ""
@@ -516,14 +530,24 @@ class Conversation:
         # on b7 gives check") is noise beside the review.
         if facts and not board.is_game_over():
             out.append((f"Facts ({self._facts_owner(user_to_move)})", "\n".join(facts)))
-        if user_to_move and level < DisclosureLevel.MOVE:
-            out.append(("Disclosure", f"Level {level.name.lower()}: {self._level_words(level)}."))
-        # The inventory lists the checks and captures on offer, the answer among them: on
-        # the player's turn it comes with the move (at the focus rung it named Qxf7#).
-        if not (user_to_move and level < DisclosureLevel.MOVE):
+        hiding = user_to_move and level < DisclosureLevel.MOVE and not board.is_game_over()
+        if hiding:
+            # The facts past the rung -- the piece, the target, the move and why it works --
+            # are the model's to teach from, set apart so the rung's own stay plain (a hint
+            # built on the heuristic sheet alone could only reword it).
+            beyond = self._beyond_lines(record, board, level)
+            if beyond:
+                out.append((BEYOND_TITLE, "\n".join(beyond)))
             out.append(
-                ("On the board (complete lists)", "\n".join(inventory_lines(board, user_colour)))
+                (
+                    "Disclosure",
+                    f"Level {level.name.lower()}: {self._level_words(level)}. {SEE_ALL_WORDS}",
+                )
             )
+        # The inventory lists the checks and captures on offer, the answer among them.
+        out.append(
+            ("On the board (complete lists)", "\n".join(inventory_lines(board, user_colour)))
+        )
         tally = self._tally_text(record)
         if tally:
             out.append(("The player's record", tally))
@@ -680,18 +704,22 @@ class Conversation:
         level: DisclosureLevel,
     ) -> tuple[str, list[str]]:
         """The engine lines section: its title's tail (whose move, whose scores) and its
-        lines. Withheld below the candidate level on the player's turn -- what may be
-        said is in the facts -- and the standing is a section of its own."""
+        lines, in full at every level -- below the move level on the player's turn the title
+        says the first move is the answer they are finding -- and the standing is a section
+        of its own."""
         analysis = record.analysis
         if analysis is None or not analysis.lines:
             return "", ["not in yet."]
         to_move = board.turn
         user_to_move = to_move == user_colour
-        if user_to_move and level < DisclosureLevel.MOVE:
-            return "", ["withheld at this disclosure level."]
         whose = "the player's" if user_to_move else "the opponent's"
+        answer = (
+            "; the best first move is the answer they are finding: teach from it, never name it"
+            if user_to_move and level < DisclosureLevel.MOVE
+            else ""
+        )
         top = analysis.lines[0].expected_score
-        limit = LINE_PLIES if (not user_to_move or level >= DisclosureLevel.LINE) else 1
+        limit = LINE_PLIES
         best = analysis.lines[:BEST_LINES]
         weaker = analysis.lines[BEST_LINES : BEST_LINES + WEAKER_LINES]
         out: list[str] = []
@@ -713,7 +741,7 @@ class Conversation:
                     f"  {i}. {san_line(board, line.moves, limit=limit)}  "
                     f"{self._score(line.expected_score, to_move, user_colour)} ({gap})"
                 )
-        return f"({whose} move; scores from the player's side)", out
+        return f"({whose} move; scores from the player's side{answer})", out
 
     def _standing_text(self, top: Line, to_move: chess.Color, user_colour: chess.Color) -> str:
         """Who stands better, in words, with the engine's number named by side: "The player
@@ -849,6 +877,19 @@ class Conversation:
                 out.append(f"opening: {record.analysis.opening}")
         out.extend(self._fact_lines(visible, board, side))
         return out
+
+    def _beyond_lines(
+        self, record: PlyRecord, board: chess.Board, level: DisclosureLevel
+    ) -> list[str]:
+        """The facts past `level` on the player's turn, one per line: the piece, the target,
+        the move and why it works -- the model's to teach from, not to say."""
+        facts = record.facts
+        if facts is None:
+            return []
+        shown = visible_facts(facts, level)
+        every = visible_facts(facts, DisclosureLevel.LINE)
+        beyond = {key: value for key, value in every.items() if key not in shown}
+        return self._fact_lines(beyond, board, "player")
 
     def faced_text(self, facts: PositionFacts, board: chess.Board) -> str:
         """The facts of the position the player faced before their move, all of them (it is
