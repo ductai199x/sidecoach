@@ -7,6 +7,7 @@ import com.sidecoach.chess.Board
 import com.sidecoach.events.Line
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -137,6 +138,37 @@ class ClaimsTest {
         val problems = checkDraft("Your knight on c6 defends e5.", board, us = com.sidecoach.chess.WHITE)
         assertTrue(problems.toString(), problems.isNotEmpty() && problems[0].reason == "the knight on c6 is your opponent's, not yours")
         assertTrue(checkDraft("Their knight on c6 defends e5.", board, us = com.sidecoach.chess.WHITE).isEmpty())
+    }
+
+    /**
+     * The bench's gold false claims, from explanations of lines (2026-09-25): a rook "forced onto
+     * f7" where other moves were legal, files "kept open" with pawns on them. A claim no frame
+     * applies to is left alone (desktop 00894e0).
+     */
+    @Test
+    fun whatALineForcesOrKeepsOpenIsChecked() {
+        val white = com.sidecoach.chess.WHITE
+        val board = Board("8/p1q1k2K/2p1p3/3p4/3P1R1P/6r1/1r6/8 w - - 0 49")
+        val after = ArrayList<Board>()
+        val line = board.copy()
+        for (san in listOf("Rf1", "Qd6")) {
+            line.push(line.parseSan(san)!!)
+            after.add(line.copy())
+        }
+        val text = "Black then uses the check on d6 to force your rook onto f7."
+        var problems = checkDraft(text, board, after = after, us = white)
+        assertEquals(listOf("force your rook onto f7"), problems.map { it.text })
+        val rad8 = Board("r6r/pQ3pkp/4p1p1/P2BPb2/3b4/8/1P3PPP/R4RK1 b - - 0 21")
+        problems = checkDraft("Rad8 keeps the b-file and e-file open.", rad8)
+        assertEquals(listOf("the b-file is not open; a pawn stands on it"), problems.map { it.reason })
+        val lone = Board("8/8/8/8/8/5k2/8/R3K3 w - - 0 1")
+        assertEquals(emptyList<DraftProblem>(), checkDraft("Ra3+ forces their king to move.", lone, us = white))
+        val blocked = Board("8/8/8/8/5n2/5k2/8/R3K3 w - - 0 1")
+        problems = checkDraft("Ra3+ forces their king to move.", blocked, us = white)
+        assertTrue(problems.toString(), problems.isNotEmpty() && "can be blocked" in problems[0].reason)
+        // No check anywhere: about another moment, left alone.
+        val quiet = Board("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
+        assertEquals(emptyList<DraftProblem>(), checkDraft("The check forced their king away.", quiet, us = white))
     }
 
     /** The stub the generator used: the same lines for the same position, read from the file. */

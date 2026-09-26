@@ -1005,6 +1005,10 @@ def case_for(
         "line_outcome": O.line_outcome(board, list(analysis.lines[0].moves), us)
         if analysis.lines
         else None,
+        # The best line move by move, as the lines block and the line directive give it.
+        "line_notes": E.line_notes(board, list(analysis.lines[0].moves))
+        if analysis.lines
+        else None,
         "effects": [
             {
                 "move": m.uci(),

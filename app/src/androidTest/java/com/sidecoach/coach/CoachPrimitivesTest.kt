@@ -171,6 +171,11 @@ class CoachPrimitivesTest {
                 if (analysis.lines.isNotEmpty()) lineOutcome(board, analysis.lines[0].moves, us) else null,
                 if (case.isNull("line_outcome")) null else case.getString("line_outcome"),
             )
+            check(
+                "line notes",
+                if (analysis.lines.isNotEmpty()) lineNotes(board, analysis.lines[0].moves) else null,
+                if (case.isNull("line_notes")) null else case.getString("line_notes"),
+            )
 
             val effects = case.getJSONArray("effects")
             for (k in 0 until effects.length()) {

@@ -239,3 +239,45 @@ fun describeEffects(board: Board, move: Move, limit: Int = 3, hazards: Boolean =
  */
 fun effectsText(board: Board, move: Move, limit: Int = 3, hazards: Boolean = true): String =
     describeEffects(board, move, limit, hazards).joinToString("; ")
+
+/**
+ * A line move by move with what each move does, computed from the board: "Rh4+ (checks the
+ * king on h5), Kg5 (only a king move gets out of check), ...". A reply to a check says whether
+ * it was the only legal move, whether the king had to move, or that it was one of several ways
+ * out. [moves] in UCI or SAN. `effects.line_notes`.
+ *
+ * Asked to explain a line, the model gave its moves purposes the board denies: "the check
+ * forced the King away" where a block was legal, "Rad8 keeps the b- and e-files open" where
+ * both held pawns (the bench's gold labels, 2026-09-25: 4 of the 5 false claims were in
+ * explanations of lines). The notes are what a line may be explained by.
+ */
+fun lineNotes(board: Board, moves: List<String>, limit: Int = 8): String {
+    val current = board.copy(withStack = false)
+    val out = ArrayList<String>()
+    for (text in moves.take(limit)) {
+        // UCI when it is a legal move here (python-chess: the null move never is), else SAN.
+        val uci = Move.fromUciOrNull(text)
+        val move = if (uci != null && !uci.isNull && current.isLegal(uci)) {
+            uci
+        } else {
+            current.parseSan(text) ?: break
+        }
+        val notes = ArrayList<String>()
+        if (current.isCheck()) {
+            val legal = current.legalMoves()
+            if (legal.size == 1) {
+                notes.add("the only legal move")
+            } else if (legal.all { current.pieceTypeAt(it.from) == KING }) {
+                notes.add("only a king move gets out of check")
+            } else {
+                notes.add("one of ${legal.size} ways out of check")
+            }
+        }
+        val does = effectsText(current, move, hazards = false)
+        if (does.isNotEmpty()) notes.add(does)
+        val san = current.san(move)
+        out.add(if (notes.isNotEmpty()) "$san (${notes.joinToString("; ")})" else san)
+        current.push(move)
+    }
+    return out.joinToString(", ")
+}

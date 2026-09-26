@@ -121,7 +121,11 @@ const val RULES =
         "the course of the game, say only what the game so far and the record show: never infer " +
         "how the game went from the position on the board. When the message gives a plan or " +
         "ideas, those are yours to teach: when there is no tactic, build the lesson around them, " +
-        "so the player learns the idea and not only the combination.\n" +
+        "so the player learns the idea and not only the combination. A line is explained only " +
+        "by what its move-by-move notes say each move does: never give a move a purpose they do " +
+        "not state -- taking a square away, keeping a file open -- and say a move forces " +
+        "something only where a note says the reply is the only legal move or that only a king " +
+        "move gets out of check.\n" +
         "2. For the position the player faces now, never name a move, a destination square or a " +
         "piece unless the message lists it at the disclosure level the task states. At the idea " +
         "level give what is at stake and the key fact on the board -- the pieces, squares and " +

@@ -1288,6 +1288,115 @@ fun checkDraft(
         if (reasons.all { it != null }) add(match.value, reasons[0] ?: "")
     }
     for ((phrase, reason) in strategicProblems(text, board, us)) add(phrase, reason)
+    for ((phrase, reason) in lineProblems(text, frames, us)) add(phrase, reason)
+    return problems
+}
+
+// What a move is said to force: the king away, or a piece onto a square. "The check forced the
+// King away" where a block was legal, "the check on d6 forces your rook onto f7" where other
+// moves were: 2 of the 5 false claims the bench's labellers found (2026-09-25).
+private val FORCE_KING = Regex(
+    "\\bforc(?:e|es|ed|ing)\\s+(?<colour>your|their|the|his|white's|black's)\\s+king\\s+" +
+        "(?:away|back|out|off|to\\s+move|to\\s+step\\s+aside|to\\s+(?<square>[a-h][1-8]))\\b" +
+        "|\\b(?<colour2>your|their)\\s+king\\s+(?:has\\s+to|must|is\\s+forced\\s+to)\\s+move\\b",
+    RegexOption.IGNORE_CASE,
+)
+private val FORCE_ONTO = Regex(
+    "\\bforc(?:e|es|ed|ing)\\s+(?<colour>your|their|the|his|white's|black's)\\s+" +
+        "(?<piece>queen|rook|bishop|knight|pawn)\\s+(?:back\\s+)?(?:onto|to|into)\\s+" +
+        "(?<square>[a-h][1-8])\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+// Files said to be kept open, or to be open, more than one at a time: "Rad8 keeps the b-file
+// and e-file open", "the b- and e-files are open". One file alone is [OPEN_FILE]'s.
+private val FILES_OPEN = Regex(
+    "\\bkeep(?:s|ing)?\\s+(?<body>(?:the\\s+)?[a-h]-(?:file)?(?:\\s*(?:,|and)\\s*(?:the\\s+)?" +
+        "[a-h]-(?:file)?)*s?)\\s+open\\b" +
+        "|(?<body2>\\b[a-h]-(?:file)?(?:\\s*(?:,|and)\\s*(?:the\\s+)?[a-h]-(?:file)?)+s?)\\s+" +
+        "(?:are|stay|remain)\\s+open\\b",
+    RegexOption.IGNORE_CASE,
+)
+private val SAN_CHECK = Regex(
+    "\\b(?:[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h](?:x[a-h])?[1-8])(?:=[QRBN])?\\+",
+)
+private val SENTENCE_BREAK = Regex("(?<=[.!?])\\s+")
+private val FILE_LETTER = Regex("\\b([a-h])-")
+
+/** The side a colour word names: "your" is [us]; "the" and "his" either side (null). */
+private fun sideOf(word: String?, us: Boolean): Boolean? {
+    val said = (word ?: "").lowercase()
+    return when {
+        said == "your" -> us
+        said == "their" -> !us
+        said.startsWith("white") -> WHITE
+        said.startsWith("black") -> BLACK
+        else -> null
+    }
+}
+
+/**
+ * The frames where [side] (either, when null) is in check: those given, and those after a check
+ * the sentence names ("Rh4+"), played where it is legal. `claims._checked_frames`.
+ */
+private fun checkedFrames(text: String, frames: List<Board>, side: Boolean?): List<Board> {
+    val out = frames.filter { it.isCheck() && (side == null || it.turn == side) }.toMutableList()
+    for (token in SAN_CHECK.findAll(text).map { it.value }) {
+        for (frame in frames) {
+            val move = frame.parseSan(token) ?: continue
+            val after = frame.copy(withStack = false)
+            after.push(move)
+            if (after.isCheck() && (side == null || after.turn == side)) out.add(after)
+        }
+    }
+    return out
+}
+
+/**
+ * What a line is said to force, or to keep open, that none of the frames bears out. A claim no
+ * frame applies to -- no check on the board or the line for that side -- is left alone: it is
+ * about some other moment of the game. `claims._line_problems`.
+ */
+private fun lineProblems(text: String, frames: List<Board>, us: Boolean): List<Pair<String, String>> {
+    val problems = ArrayList<Pair<String, String>>()
+    for (sentenceText in text.split(SENTENCE_BREAK)) {
+        for (match in FORCE_KING.findAll(sentenceText)) {
+            val side = sideOf(match.groups["colour"]?.value ?: match.groups["colour2"]?.value, us)
+            val checked = checkedFrames(sentenceText, frames, side)
+            if (checked.isEmpty()) continue
+            if (checked.any { f -> f.legalMoves().all { f.pieceTypeAt(it.from) == KING } }) continue
+            problems.add(
+                match.value to
+                    "the check does not force the king to move: it can be blocked " +
+                    "or the checking piece taken",
+            )
+        }
+        for (match in FORCE_ONTO.findAll(sentenceText)) {
+            val side = sideOf(match.groups["colour"]?.value, us)
+            val piece = match.groups["piece"]!!.value.lowercase()
+            val squareText = match.groups["square"]!!.value.lowercase()
+            val kind = PIECE_WORDS[piece]
+            val square = parseSquare(squareText)
+            fun lands(f: Board, m: Move): Boolean = m.to == square && f.pieceTypeAt(m.from) == kind
+            val candidates = (frames + checkedFrames(sentenceText, frames, side)).filter { f ->
+                (side == null || f.turn == side) && f.legalMoves().any { lands(f, it) }
+            }
+            if (candidates.isEmpty()) continue
+            if (candidates.any { f -> f.legalMoves().all { lands(f, it) } }) continue
+            problems.add(
+                match.value to "nothing forces the $piece to $squareText: other moves are legal there",
+            )
+        }
+    }
+    for (match in FILES_OPEN.findAll(text)) {
+        val body = match.groups["body"]?.value ?: match.groups["body2"]?.value ?: ""
+        for (letter in FILE_LETTER.findAll(body.lowercase()).map { it.groupValues[1] }.distinct()) {
+            val index = letter[0] - 'a'
+            if (frames.none { f -> fileSquares(index).all { f.pieceTypeAt(it) != PAWN } }) {
+                problems.add(match.value to "the $letter-file is not open; a pawn stands on it")
+            }
+        }
+    }
     return problems
 }
 

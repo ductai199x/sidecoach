@@ -2287,14 +2287,24 @@ class Coach(
         } else if (level.value >= DisclosureLevel.LINE.value &&
             ASK_LINE.containsMatchIn(said) && facts.line.isNotEmpty()
         ) {
+            // The line move by move, computed: the only reasons a move of it may be given (4 of
+            // the 5 false claims the bench's labellers found were in these answers).
+            val notes = lineNotes(position.board, facts.line)
+            val byMove = if (notes.isNotEmpty()) {
+                " The line move by move, as the board gives it: $notes. Explain it only from " +
+                    "these notes: a move 'forces' something only where a note says it is the " +
+                    "only legal move or that only a king move gets out of check."
+            } else {
+                ""
+            }
             directive = if (quick) {
                 "They asked to see the line and have just been shown it: " +
                     "${facts.line.joinToString(" ")}. Give one or two short sentences on the " +
-                    "idea behind it. Do not answer with a question."
+                    "idea behind it." + byMove + " Do not answer with a question."
             } else {
                 "They asked to see the line: give it -- ${facts.line.joinToString(" ")} -- " +
-                    "plainly, then one short sentence on the idea behind it. Do not answer " +
-                    "with a question."
+                    "plainly, then one short sentence on the idea behind it." + byMove +
+                    " Do not answer with a question."
             }
         } else if (level.value >= DisclosureLevel.MOVE.value &&
             ASK_MOVE.containsMatchIn(said) && facts.candidates.isNotEmpty()

@@ -196,6 +196,15 @@ DRAFTS = [
     "Be careful in that area1 of the board; nothing here is a move.",
     "Your knight on f3 is pinned, the rook on a1 is hanging, and Nf3 is impossible.",
     "Nothing concrete at all, just a feeling about the position.",
+    # What a line is said to force or keep open (desktop 00894e0): checked on the frames with
+    # a check for that side, or after a check the sentence names; left alone where none apply.
+    "The check forced their king away.",
+    "Your king has to move.",
+    "Qh5+ forces the king to step aside.",
+    "Bb5+ forces their knight onto d7.",
+    "The check forces your queen back to e2.",
+    "Rad8 keeps the b-file and e-file open.",
+    "The b- and e-files are open.",
 ]
 
 
