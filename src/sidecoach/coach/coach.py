@@ -43,7 +43,7 @@ from sidecoach.coach.disclosure import (
     squares_in,
     visible_facts,
 )
-from sidecoach.coach.effects import effects_text, line_notes
+from sidecoach.coach.effects import effects_text, line_notes, line_spoken
 from sidecoach.coach.facts import describe_move, facts_from_analysis, standing_words
 from sidecoach.coach.named import EngineLike as NamedEngine
 from sidecoach.coach.named import analyse_named, disclosed_frames
@@ -251,17 +251,23 @@ def their_move_now(board: chess.Board, facts: PositionFacts) -> str:
     return f"It's their move, and their best is a quiet one, {san}: it takes nothing at once."
 
 
-def line_template(facts: PositionFacts) -> str:
+def line_template(facts: PositionFacts, board: chess.Board | None = None) -> str:
+    """The line, and why its first move works. With the `board` the facts describe, each move
+    with what it does, computed (`effects.line_spoken`): the answer to "show me the line",
+    exact where the model's explanations went wrong a third of the time."""
     if not facts.line:
         return "I have no line for this yet."
-    text = f"The line is {' '.join(facts.line)}."
+    spoken = line_spoken(board, list(facts.line)) if board is not None else ""
+    text = f"The line runs {spoken}." if spoken else f"The line is {' '.join(facts.line)}."
     return f"{text} {_sentence(facts.why)}" if facts.why else text
 
 
-def hint_template(facts: PositionFacts, level: DisclosureLevel) -> str:
+def hint_template(
+    facts: PositionFacts, level: DisclosureLevel, board: chess.Board | None = None
+) -> str:
     """The template for a hint at `level`: two hints, then the answer."""
     if level >= DisclosureLevel.LINE:
-        return line_template(facts)
+        return line_template(facts, board)
     if level >= DisclosureLevel.MOVE:
         return move_template(facts)
     if level >= DisclosureLevel.FOCUS:
@@ -1900,6 +1906,8 @@ def question_part(text: str) -> str:
     return " ".join(asked).replace("…", "...")
 
 
+# A request that asks for a reason as well: the model's to answer.
+_ASKS_WHY = re.compile(r"\b(?:why|how|explain|what does|what's the idea|idea)\b", re.IGNORECASE)
 # The opening asked for by name ("what opening is this?"), not judged ("how is my opening?").
 _OPENING_FACT = re.compile(
     r"\b(?:what|which)(?:'s| is| was)? (?:the |this |my )?opening\b|"
@@ -2261,6 +2269,12 @@ class Coach:
                 record_now=True,
             )
 
+        if canned and unlock in (Unlock.ASK_MOVE, Unlock.ASK_LINE) and not _ASKS_WHY.search(text):
+            # The move or the line, asked for bare: the template has said it, each move with
+            # what it does, computed. The model's explanations of moves and lines carried a
+            # false claim in a quarter to a third of its answers, and the rubric scored the
+            # template as high (the locked test set, 2026-09-26): no call is made.
+            return
         if not canned and fact_question(text):
             # The material, the opening, the standing: said by the template, exactly.
             _, answer = self._instruction(Trigger.USER_ASK, position, level, text, (), None, None)
@@ -3717,7 +3731,7 @@ class Coach:
             # already said out loud as the coach's last turn when `quick`.
             checks += "\n".join(engine_words) + "\n\n"
         # The rung's template: two hints, then the answer; the line when asked for it.
-        fallback = hint_template(facts, level)
+        fallback = hint_template(facts, level, position.board)
         # The position answered about is not the one on the board (its analysis has not
         # landed): say so, or the template speaks of a past position as the present --
         # "the line is Bb3 ..." right after Bb3 was played (the offline pass, 2026-09-21).

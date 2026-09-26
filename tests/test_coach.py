@@ -245,17 +245,15 @@ def test_two_hints_give_the_idea_then_the_focus_and_asking_for_the_move_gives_it
     coach.ask("ok just tell me the move", 9.0)
     out = _messages(coach)
     assert out[0].level is DisclosureLevel.MOVE and "Qxf7" in out[0].text
-    current = _current_move_message(_given(provider, 2))
-    assert "Engine lines" in current and "Qxf7#" in current
-    # Every earlier coach turn stands under the position as an annotation: two hints, each
-    # answered at once with the template and then by the model -- and this ask's own quick
-    # answer is already there when the model is asked to build on it.
+    # The move asked for bare is the template's, exact: no third call (the locked test set,
+    # 2026-09-26: the model's explanations of moves were false in a quarter of them).
+    assert len(provider.prompts) == 2
+    # Every earlier coach turn stands under the position as an annotation: the first hint,
+    # answered at once with the template and then by the model, and the second's template.
+    current = _current_move_message(_given(provider, 1))
     said = current.split("## Said here\n", 1)[1]
     lines = said.strip().splitlines()
-    assert sum(line.startswith("    YOU (the coach) said: ") for line in lines) == 5
-    assert lines[-2] == '    PLAYER said: "ok just tell me the move"'
-    assert lines[-1].startswith('    YOU (the coach) said: "Qxf7# is mate')
-    assert "have just been shown that it is Qxf7" in _directive(_given(provider, 2))
+    assert sum(line.startswith("    YOU (the coach) said: ") for line in lines) == 3
 
 
 def test_naming_the_move_yourself_earns_the_candidate_level() -> None:
@@ -962,8 +960,9 @@ def test_clock_scales_the_policy_and_a_new_game_resets_it() -> None:
 
 def test_a_canned_ask_is_answered_at_once_and_the_model_builds_on_it() -> None:
     """Hint, Best move and Line: the template for the level goes out immediately, with its
-    marks, and the model's fuller reply follows; the buttons felt slow when the answer
-    waited on two model calls."""
+    marks; the buttons felt slow when the answer waited on two model calls. The move and
+    the line asked for bare are the template's alone (exact); with a why, the model's
+    fuller reply follows."""
     coach, provider = _coach(["Because it keeps the knight out of play, and eyes e5."])
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)
@@ -972,11 +971,12 @@ def test_a_canned_ask_is_answered_at_once_and_the_model_builds_on_it() -> None:
     assert [m.text for m in quick] == ["Qxf7# is mate."]
     assert quick[0].trigger is Trigger.USER_ASK and quick[0].level is DisclosureLevel.MOVE
     assert any(mark.kind == "arrow" for mark in quick[0].annotations)
+    assert _messages(coach) == [] and provider.prompts == [], "the move alone: no call"
+    # With a why, the model answers.
+    coach.ask("what should I play, and why?", 9.0)
     out = _messages(coach)
-    assert [m.text for m in out] == ["Because it keeps the knight out of play, and eyes e5."]
-    prompt = provider.prompts[0][1][-1]["content"]
-    assert "have just been shown that it is Qxf7#" in prompt
-    assert "TWO different ways" in prompt, "an answer the player waits for asks for fewer"
+    assert [m.text for m in out][-1] == "Because it keeps the knight out of play, and eyes e5."
+    assert len(provider.prompts) == 1
 
 
 def test_claims_are_checked_off_the_callers_thread_and_only_when_there_are_any() -> None:

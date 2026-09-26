@@ -122,3 +122,18 @@ def test_a_line_move_by_move_says_what_each_move_does_and_what_a_check_forces() 
     assert "Bxg4 (one of 3 ways out of check; takes the knight on g4" in notes
     assert notes.split(", ")[-1].startswith("Qxc2+ (takes the queen on c2")
     assert line_notes(board, ["Rf1", "Ke9"]) == "Rf1 (gets the rook out of attack)"
+
+
+def test_a_line_said_aloud_gives_each_move_what_it_does() -> None:
+    """The template's answer to "show me the line": exact, each move with what it does."""
+    from sidecoach.coach.effects import line_spoken
+
+    board = chess.Board("1r3rk1/p4pp1/3p1q1p/1p1BnP2/2p1P3/1P2Q2P/P5P1/3R1RK1 w - - 0 22")
+    assert line_spoken(board, ["Qxa7", "c3", "Rf2", "b4"]) == (
+        "Qxa7, taking the pawn on a7 and attacking the rook on b8; c3, getting the pawn out "
+        "of attack; Rf2; b4"
+    )
+    mate = chess.Board("6k1/5pp1/p2p4/1p3Pb1/2p1r1q1/P1P1p3/1P5K/4R3 b - - 1 48")
+    assert line_spoken(mate, ["Qh4+", "Kg2", "Qf2+", "Kh3", "Rh4#", "Kg3"]).endswith(
+        "Rh4#, checkmate"
+    )

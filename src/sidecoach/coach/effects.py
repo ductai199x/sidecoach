@@ -284,3 +284,62 @@ def line_notes(
         out.append(f"{san} ({'; '.join(notes)})" if notes else san)
         current.push(move)
     return ", ".join(out)
+
+
+# What a move does, said as it is played: "Qxa7, taking the pawn on a7 and attacking the rook
+# on b8". The effects' own verbs, in the -ing form.
+_GERUND = {
+    "attacks": "attacking",
+    "takes": "taking",
+    "gives": "giving",
+    "gets": "getting",
+    "uncovers": "uncovering",
+    "pins": "pinning",
+    "defends": "defending",
+    "forks": "forking",
+    "skewers": "skewering",
+    "castles": "castling",
+    "stops": "stopping",
+    "threatens": "threatening",
+    "covers": "covering",
+    "blocks": "blocking",
+}
+
+
+def _gerund(phrase: str) -> str:
+    verb, _, rest = phrase.partition(" ")
+    said = _GERUND.get(verb)
+    return f"{said} {rest}".strip() if said else phrase
+
+
+def line_spoken(board: chess.Board, moves: list[str], *, limit: int = 6) -> str:
+    """A line as the coach says it, each move with what it does, computed: "Qxa7, taking the
+    pawn on a7 and attacking the rook on b8; c3, getting the pawn out of attack; Rf2". The
+    template's answer to "show me the line": asked to explain a line, the model gave its
+    moves to the wrong side or purposes the board denies in a third of its answers (the
+    locked test set, 2026-09-26). `moves` in UCI or SAN."""
+    current = board.copy(stack=False)
+    parts: list[str] = []
+    for text in moves[:limit]:
+        try:
+            move = chess.Move.from_uci(text)
+            if move not in current.legal_moves:
+                raise ValueError(text)
+        except ValueError:
+            try:
+                move = current.parse_san(text)
+            except ValueError:
+                break
+        san = current.san(move)
+        effects = describe_effects(current, move, limit=2, hazards=False)
+        after = current.copy(stack=False)
+        after.push(move)
+        if after.is_checkmate():
+            parts.append(f"{san}, checkmate")
+            break
+        if effects:
+            parts.append(f"{san}, " + " and ".join(_gerund(e) for e in effects))
+        else:
+            parts.append(san)
+        current.push(move)
+    return "; ".join(parts)
