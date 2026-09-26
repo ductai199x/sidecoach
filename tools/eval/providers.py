@@ -79,6 +79,11 @@ def provider_for(kind: str, *, timeout_s: float) -> Any:
         from sidecoach.llm.offline import OfflineProvider
 
         return OfflineProvider()
+    # The keys from .env, whichever tool asks first: parity.py on its own had never loaded
+    # the settings, and its judge found no key (the benchmark's dev baseline, 2026-09-25).
+    from sidecoach.config import load_dotenv
+
+    load_dotenv()
     return provider_from_spec(kind, timeout_s=timeout_s)
 
 
