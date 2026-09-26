@@ -20,6 +20,15 @@ from sidecoach.events import (
 from tests.test_coach import _coach
 
 
+def _offline():
+    """The coach with no model: its templates are the answer."""
+    from sidecoach.coach.coach import Coach
+    from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
+    from sidecoach.llm.offline import OfflineProvider
+
+    return Coach(OfflineProvider(), policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
+
+
 def _played(coach, ucis: list[str], mistake_at: int) -> None:
     board = chess.Board()
     coach.on_event(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=board.fen()), 0.0)
@@ -79,28 +88,38 @@ def test_what_a_question_names_is_examined_aloud_and_what_a_statement_names_is_n
     assert question_part("I see the fork now: 19.Nf6 hits the queen and rook.") == ""
     assert question_part("After 12...h5 what then?") == "After 12...h5 what then?"
 
-    coach, _ = _coach([])
-    _played(coach, ["e2e4", "e7e5", "g1f3", "b8c6"], mistake_at=3)
-    board = chess.Board()
-    for uci in ("e2e4", "e7e5", "g1f3", "b8c6"):
-        board.push_uci(uci)
-    coach.on_event(
-        Analysis(
-            game_id="g",
-            fen=board.fen(),
-            ply=4,
-            lines=[Line(moves=["f1c4"], depth=12, expected_score=0.55)],
-            decisive=False,
-            only_move=False,
-            tags=[],
-        ),
-        4.5,
-    )
-    _messages(coach)
+    def italian(coach) -> None:
+        _played(coach, ["e2e4", "e7e5", "g1f3", "b8c6"], mistake_at=3)
+        board = chess.Board()
+        for uci in ("e2e4", "e7e5", "g1f3", "b8c6"):
+            board.push_uci(uci)
+        coach.on_event(
+            Analysis(
+                game_id="g",
+                fen=board.fen(),
+                ply=4,
+                lines=[Line(moves=["f1c4"], depth=12, expected_score=0.55)],
+                decisive=False,
+                only_move=False,
+                tags=[],
+            ),
+            4.5,
+        )
+        _messages(coach)
+
+    # Offline the examination is the answer: a question's pieces are read out, a statement's not.
+    coach = _offline()
+    italian(coach)
     coach.ask("I see it now: my knight on f3 attacks the pawn on e5.", 5.0)
     assert not any("can go to" in m.text for m in _messages(coach))
     coach.ask("Where can my knight on f3 go?", 6.0)
     assert any("Your knight on f3 can go to" in m.text for m in _messages(coach))
+    # With a model to answer in words, a piece's inventory said first is noise ("Your king on
+    # g8 can go to f7, g7, h8; ..." before the AI's own answer).
+    coach, _ = _coach(["[p=1.0] It can go to d4, e5, g5 or h4."])
+    italian(coach)
+    coach.ask("Where can my knight on f3 go?", 6.0)
+    assert not any("Your knight on f3 can go to" in m.text for m in _messages(coach))
 
 
 def test_an_answer_to_the_coachs_question_closes_it_without_another() -> None:
@@ -145,7 +164,7 @@ def test_a_piece_asked_about_is_read_on_the_board_as_it_stands() -> None:
     6): pieces and squares are read on the board as it stands."""
     from tests.test_coach import _messages
 
-    coach, _ = _coach([])
+    coach = _offline()
     ucis = ["e2e4", "e7e5", "g1f3", "b8c6", "f1b5"]
     _played(coach, ucis, mistake_at=5)
     board = chess.Board()

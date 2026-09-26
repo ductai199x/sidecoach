@@ -1963,6 +1963,8 @@ class Coach:
         # The causes of the session's mistakes, from the player model: the pattern is said
         # when one comes back (`_on_evidence`).
         self._causes_seen: Counter[str] = Counter()
+        # The game each cause's pattern was last said in: once a game after the first.
+        self._pattern_told: dict[str, str | None] = {}
         # The record's question-answerer (profile/ask.py), set by whoever owns the store;
         # the answers it gave, with their queries, for the panel's log.
         self.profile_ask: Callable[[str], Any] | None = None
@@ -2166,7 +2168,12 @@ class Coach:
             # examined aloud as a question about it would be: that is the answer. Without it
             # the templates said the hint that had asked for it again, word for word, three
             # times (the students' round 5); pieces and squares named in passing stay unsaid.
-            if not asked:
+            # With a model to answer in words, a piece's or a square's inventory said first is
+            # noise ("Your king on g8 can go to f7, g7, h8; ..." before the AI's own good answer
+            # to "why doesn't the check prevent that capture?", 2026-09-26): only a move's
+            # examination goes out. Offline it is the answer, and stays.
+            offline = getattr(self.speaker.provider, "offline", False)
+            if not asked or not offline:
                 said = [f for f in said if "the expected score is" in f]
             if said:
                 shown_examination = True
@@ -2324,27 +2331,40 @@ class Coach:
 
     def _on_evidence(self, event: ProfileEvidence, ts: float) -> None:
         """A mistake of the player's placed by the player model. When its cause is behind
-        an earlier mistake of the session's too, the pattern is said -- the second time, and
-        every second time after -- with the habit that answers it, right after the lesson on
-        the move. Each lesson taught its own moment and a principle of its own, and the
-        threat-blind student's notebook held five unrelated rules, none of them the habit
-        (the simulated students, 2026-09-26). Said from the model's cause, no model call."""
+        an earlier mistake of the session's too, the pattern is said, with the habit that
+        answers it, right after the lesson on the move -- the second time, and after that at
+        most once in each game: said every second time it came to "10 times now" in one
+        session (the AI's sessions, 2026-09-26). Each lesson had taught its own moment and a
+        principle of its own, and the threat-blind student's notebook held five unrelated
+        rules, none of them the habit. A player of 1800 and up hears the pattern without the
+        textbook habit. Said from the model's cause, no model call."""
         if event.game_id != self.game_id or event.cause not in HABIT:
             return
         self._causes_seen[event.cause] += 1
         n = self._causes_seen[event.cause]
-        if n < 2 or n % 2:
+        if n < 2 or self._pattern_told.get(event.cause) == self.game_id:
             return
+        self._pattern_told[event.cause] = self.game_id
         words, habit = HABIT[event.cause]
         times = {2: "twice", 3: "three times"}.get(n, f"{n} times")
-        text = self._bags.draw(
-            f"pattern:{event.cause}",
-            (
-                f"That is {times} now: {words}. The habit to build: {habit}.",
-                f"This keeps happening -- {words}, {times} now. The habit that fixes it: {habit}.",
-                f"Notice the pattern: {words}, {times} now. So, {habit}.",
-            ),
-        )
+        if self.strong_player:
+            text = self._bags.draw(
+                f"pattern-strong:{event.cause}",
+                (
+                    f"That is {times} now: {words}.",
+                    f"Notice the pattern -- {words}, {times} now.",
+                ),
+            )
+        else:
+            text = self._bags.draw(
+                f"pattern:{event.cause}",
+                (
+                    f"That is {times} now: {words}. The habit to build: {habit}.",
+                    f"This keeps happening -- {words}, {times} now. The habit that fixes it: "
+                    f"{habit}.",
+                    f"Notice the pattern: {words}, {times} now. So, {habit}.",
+                ),
+            )
         with self._lock:
             self.conversation.note(f"The pattern, told to the player: {text}")
         self._queue_plain(Trigger.POST_MISTAKE, text, ts, record_now=True)
@@ -3609,6 +3629,24 @@ class Coach:
             "plainly and from the facts, whether they have it right; if they do not, give the "
             "answer yourself in a sentence. Ask nothing more -- this closes that question."
         )
+        # After the coach has already spoken since the move, a follow-up gets only what it
+        # asks: the verdict and the better move came back in every reply ("e6 was a miss
+        # costing 41% of the game; Nxc3 was better" twice running), and "I understand: I
+        # should play Nxc3" got the lesson again and "Which White piece is still at home on
+        # g1?" (the AI's sessions, 2026-09-26).
+        followup = not answering and bool(self._said_since_move())
+        asks = bool(question_part(said))
+        follow = (
+            " You have already told them the verdict on it and the better move, in your turns "
+            "above: do not repeat either."
+            + (
+                " Answer only what they ask now -- concretely, from the facts, in one to three "
+                "sentences -- and ask nothing back."
+                if asks
+                else " They ask nothing: reply in one short sentence -- say whether what they "
+                "say is right, or put it right -- and ask nothing."
+            )
+        )
         if _ASK_REVIEW.search(said):
             # An overall verdict comes from the tally in "Game so far", never from an
             # impression of the last position: the first review told a player a queen up
@@ -3693,8 +3731,15 @@ class Coach:
                 "They asked about a move or line and have just been shown the engine's word on "
                 "it -- your last turn above. Build on it in one or two sentences: what their move "
                 "does or allows, and what that means for their idea, in plain chess words, saying "
-                "only what that analysis and the messages state. Then one question that points "
-                "them at the idea. Name no move the messages do not give. " + NO_FIGURES
+                "only what that analysis and the messages state."
+                + (
+                    " You have already told them the verdict on their move and the better one: "
+                    "do not repeat either, and ask nothing."
+                    if followup
+                    else " Then one question that points them at the idea."
+                )
+                + " Name no move the messages do not give. "
+                + NO_FIGURES
             )
             fallback = ""
         elif _ASK_OPPONENT_MOVE.search(said) and (their := self._last_opponent_move()) is not None:
@@ -3826,12 +3871,16 @@ class Coach:
                     + (
                         close + " Three sentences at most."
                         if answering
+                        else follow
+                        if followup
                         else " Three sentences at most, then one question that makes them find "
                         "on the board something your reply has not said."
                     )
                     + " Name moves bare, never with a move number in front. "
                     f"{TIE_TO_THE_GAME}"
                 )
+                if followup and not asks:
+                    fallback = ""  # a nod needs no template: nothing, rather than the lesson again
         elif _ASK_MATERIAL.search(said) or _ASK_OPENING.search(said) or _ASK_EVAL.search(said):
             # A plain question about the game as it stands: answered plainly, no question
             # back (the generic answer's "point them ... with a question" asked one).
@@ -3877,9 +3926,18 @@ class Coach:
                 "the score after it, how far behind the best, the reply, what the move does. "
                 "Only the engine's better move or line is withheld: never reveal that unless "
                 "the sheet lists it, but do point them toward the right idea"
-                + (" in words." if answering else " with a question.")
+                + (" in words." if answering or (followup and not asks) else " with a question.")
                 + " What you already said in this position is under 'Said here': do not say "
                 "it again in other words; give them something it did not."
-                + (close if answering else "")
+                + (
+                    close
+                    if answering
+                    else " They ask nothing: reply in one short sentence -- say whether what "
+                    "they say is right, or put it right -- and ask nothing."
+                    if followup and not asks
+                    else ""
+                )
             )
+            if followup and not asks and not engine_words:
+                fallback = ""  # a nod needs no template: nothing, rather than a hint again
         return f"{checks}{directive}", fallback

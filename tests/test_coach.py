@@ -1255,6 +1255,28 @@ def test_a_question_about_the_last_move_gets_its_verdict_in_full() -> None:
     assert out[-1].text.startswith("Qxf7# was better")
 
 
+def test_a_follow_up_gets_what_it_asks_and_a_nod_one_sentence() -> None:
+    """The verdict and the better move came back in every reply, and "I understand: I should
+    play Nxc3" got the lesson again and "Which White piece is still at home on g1?" (the AI's
+    sessions, 2026-09-26)."""
+    coach, provider = _coach(["...", "...", "...", "..."])
+    _bishop_check_instead_of_mate(coach)
+    with coach._lock:
+        coach.conversation.coach_said("That one cost you: Qxf7# was better -- it is mate.")
+    provider.replies = ["", ""]
+    coach.ask("I see, I should have seen the mate.", 12.0)
+    _messages(coach)
+    directive = _directive(_given(provider))
+    assert "do not repeat either" in directive
+    assert "They ask nothing: reply in one short sentence" in directive
+    assert "then one question" not in directive
+    provider.replies = ["", ""]
+    coach.ask("Why does the bishop check not work?", 13.0)
+    _messages(coach)
+    directive = _directive(_given(provider))
+    assert "Answer only what they ask now" in directive and "do not repeat either" in directive
+
+
 def test_what_a_move_cost_is_said_when_they_ask_it() -> None:
     coach, provider = _coach(["...", "..."])
     _bishop_check_instead_of_mate(coach)
@@ -1493,8 +1515,17 @@ def test_a_cause_that_comes_back_is_named_with_the_habit_that_fixes_it() -> None
     assert len(second) == 1 and "twice now" in second[0]
     assert "what their moves threatened" in second[0]
     assert "look at what their last move attacks" in second[0]
+    # Once a game after that: said every second time it came to "10 times now" in a session.
     assert placed(31, causes.MISSED_THREAT) == []
-    assert "4 times now" in placed(37, causes.MISSED_THREAT)[0]
+    assert placed(37, causes.MISSED_THREAT) == []
+    coach.game_id = "g2"  # the next game of the session
+    assert "5 times now" in placed(9, causes.MISSED_THREAT, game_id="g2")[0]
+    assert placed(15, causes.MISSED_THREAT, game_id="g2") == []
+    # A player of 1800 and up hears the pattern without the textbook habit.
+    coach.strong_player = True
+    coach.game_id = "g3"
+    strong = placed(9, causes.MISSED_THREAT, game_id="g3")[0]
+    assert "what their moves threatened" in strong and "look at what" not in strong
 
 
 def test_the_review_is_spoken_from_the_profiles_facts_and_the_next_game_knows_the_player() -> None:
