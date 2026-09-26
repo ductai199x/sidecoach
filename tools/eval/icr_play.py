@@ -549,10 +549,13 @@ VERDICT_WEIGHT = 0.3
 
 
 def stops(catalogue: dict[str, list[dict]], wanted: Collection[str]) -> dict[str, int]:
-    """For each game with a moment in `wanted`, the ply of its last one: the game is played
-    that far and no further (the moves after it would be coach calls for nothing)."""
+    """For each game with a moment in `wanted`, the ply after its last one: the game is
+    played that far and no further (the moves after it would be coach calls for nothing). A
+    moment after a move carries the ply of the position the move left from, so the game goes
+    one ply past it -- stopped at it, the move was never played and the moment silently never
+    came (the benchmark's dev baseline, 2026-09-25)."""
     return {
-        stem: max(m["ply"] for m in ms if m["id"] in wanted)
+        stem: max(m["ply"] for m in ms if m["id"] in wanted) + 1
         for stem, ms in catalogue.items()
         if any(m["id"] in wanted for m in ms)
     }

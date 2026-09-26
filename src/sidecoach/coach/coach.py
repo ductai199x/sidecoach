@@ -1106,7 +1106,21 @@ def restated(text: str, request: _Request) -> list[str]:
     better_promotes = better is not None and better.promotion is not None
     if board.is_castling(move) and "castl" in low and not better_castles:
         faults.append(f"says what {played} plainly did: castling")
-    says_check = re.search(r"\b(?:with|gives?|giving) (?:a )?check\b", low)
+    # The check said of the move just played: in a clause about it -- one that names it or
+    # opens with "that", "it", "your move", "you gave" -- and names no other move. "After
+    # Bg4 your knight jumps in with check" is the better line's check, and was faulted as
+    # the played move's (the benchmark's smoke run, 2026-09-25).
+    names_played = re.compile(rf"(?<![A-Za-z]){re.escape(played)}[+#]?(?![A-Za-z0-9])")
+    says_check = any(
+        re.search(r"\b(?:with|gives?|gave|giving) (?:a )?check\b", clause, re.I)
+        and (
+            names_played.search(clause)
+            or _ABOUT_IT.match(clause)
+            or re.match(r"\W*you (?:just )?(?:gave|give|played|put)\b", clause, re.I)
+        )
+        and not [m for m in _SAN.findall(clause) if m.rstrip("+#") != played]
+        for clause in _CLAUSE.split(text)
+    )
     if board.gives_check(move) and says_check and not better_checks:
         faults.append(f"says what {played} plainly did: the check")
     if move.promotion and "promot" in low and not better_promotes:

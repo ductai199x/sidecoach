@@ -1815,6 +1815,14 @@ def test_a_word_after_the_move_never_restates_it_nor_quotes_a_figure() -> None:
     # The better move takes on the same square with check: the words are about it.
     miss = _after_move_request(SCHOLAR, "Bxf7+", "h5f7")
     assert restated("Taking the pawn on f7 with check was right, but with the queen.", miss) == []
+    # The check said of the move played is a restatement; a check in the better line is not
+    # (the benchmark's smoke run, 2026-09-25: "after Bg4 your knight jumps in with check").
+    f5 = "rnbqkbnr/ppppp1pp/8/5p2/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+    check = _after_move_request(f5, "Qh5+", "e4f5")
+    said = "says what Qh5 plainly did: the check"
+    assert said in restated("Sure, Qh5+ gives check, but exf5 wins a pawn.", check)
+    assert said in restated("That gave check, but exf5 wins a pawn.", check)
+    assert restated("exf5 wins a pawn, and after Nf6 your queen comes in with check.", check) == []
 
 
 def test_the_first_hint_sets_the_length_of_the_hint() -> None:

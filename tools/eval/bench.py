@@ -67,6 +67,9 @@ GAMES_PER_LEVEL = 12
 DEV_MOMENTS = 30
 TEST_MOMENTS = 60
 SEED = 2509
+# The coach's board checker reads each draft through the routine model: about /usr/bin/bash.0004 a
+# moment, measured on the dev baseline (2026-09-25) -- the coach estimate leaves it out.
+DRAFT_CHECK_USD = 0.0004
 # What the moments are, by what the coach is doing: the word after a move, the hint ladder,
 # and the answers to the player's other questions.
 FAMILIES: dict[str, tuple[str, ...]] = {
@@ -395,7 +398,12 @@ def cmd_run(args: argparse.Namespace) -> None:
         cost = estimate.coach_estimate(
             requests, settings_prices(), completion=estimate.coach_completion(args.coach)
         )
+        checker = DRAFT_CHECK_USD * len(wanted)
         print(f"{args.split}: {len(wanted)} moments, the coach: {cost.line()}")
+        print(
+            f"  the coach's board checker on its drafts (effort none): ~${checker:.2f};"
+            f" in all ~${cost.usd + checker:.2f} (budget ${args.budget_usd:.2f})"
+        )
         return
     out = BENCH / "runs" / args.name / "items"
     out.mkdir(parents=True, exist_ok=True)
@@ -423,7 +431,10 @@ def cmd_run(args: argparse.Namespace) -> None:
             provider=provider,
             ledger=ledger,
             only=keys,
-            stop=max(m["key"][0] for m in moments),
+            # A moment after a move carries the ply of the position the move left from:
+            # the play-through goes one ply further, or the move that triggers it is never
+            # played (the dev baseline stopped on one, 2026-09-25).
+            stop=max(m["key"][0] for m in moments) + 1,
             engine_cache=dict(cache),
             version=version,
         )
