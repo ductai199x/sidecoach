@@ -6,11 +6,13 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
+import com.sidecoach.chess.parseSquare
 import com.sidecoach.chess.squareName
 import com.sidecoach.events.DisclosureLevel
 import com.sidecoach.events.Line
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -217,6 +219,28 @@ class NamedTest {
         assertTrue(there.toString(), there.size == 1 && "the player's bishop on b5 stands there" in there[0])
         val past = analyseNamed("is my bishop on b5 safe?", before, null, WHITE, DisclosureLevel.LINE)
         assertTrue(past.toString(), past.size == 1 && "b5 is empty" in past[0])
+    }
+
+    /** `_piece`: the examination of the piece or square [square], as analyseNamed makes it. */
+    private fun piece(fen: String, square: String, userColour: Boolean): String =
+        examinePiece(Probe(label = square, moves = emptyList(), square = parseSquare(square)), Board(fen), userColour)
+
+    /**
+     * A simulated student's 9.Nf3? -- the square the student named went out as written for the
+     * model: "f3: the player's knight on f3 stands there; it can go to ..." (2026-09-26; desktop
+     * f733318).
+     */
+    @Test
+    fun aPieceExaminedIsSaidToThePlayer() {
+        val fen = "r3kbnr/pbpp1ppp/1pn1p3/8/8/4PN1P/PPPPQPP1/RNB1KB1R w KQkq - 0 1"
+        val said = spoken(piece(fen, "f3", WHITE))
+        assertTrue(said, said.startsWith("Your knight on f3 can go to "))
+        assertTrue(said, "the player" !in said && "stands there" !in said)
+        assertEquals(
+            "d4 is empty; you control it with the pawn on e3 and the knight on f3; they control it" +
+                " with the knight on c6.",
+            spoken(piece(fen, "d4", WHITE)),
+        )
     }
 
     /**

@@ -467,8 +467,25 @@ fun spoken(fact: String): String {
         "${mm.groupValues[1]} ${firstMoves(mm.groupValues[2], 2)}"
     }
     body = Regex("what (\\S+) does: ").replace(body) { mm -> mm.groupValues[1] + " " }
+    // A piece or a square examined (examinePiece) is said to the player, not about them: "f3: the
+    // player's knight on f3 stands there; it can go to ..." went out as it was written for the
+    // model (a simulated student's session, 2026-09-26).
+    body = body.replace("the player's", "your")
+        .replace("the opponent's", "their")
+        .replace("the player controls", "you control")
+        .replace("the opponent controls", "they control")
+    val piece = PIECE_STANDS.find(body)
+    if (piece != null) {
+        val (whose, name, square) = piece.destructured
+        return "${whose.replaceFirstChar { it.uppercaseChar() }} $name on $square " +
+            body.substring(piece.range.last + 1)
+    }
+    if (SQUARE_EMPTY.containsMatchIn(body)) return body // names its square itself
     return "$label: $body"
 }
+
+private val PIECE_STANDS = Regex("^(your|their) (\\w+) on ([a-h][1-8]) stands there; it ")
+private val SQUARE_EMPTY = Regex("^[a-h][1-8] is empty")
 
 private val MOVE_NUMBERED = Regex("^\\d+\\.")
 

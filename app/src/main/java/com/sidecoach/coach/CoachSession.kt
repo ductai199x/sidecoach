@@ -1422,10 +1422,19 @@ class Coach(
      * The player's move a question is about, when it asks about their own last move: against a
      * bot the reply comes at once, and "what should I have played?" then found the opponent's
      * move last and got a hint for the next one (the runtime audit). `coach._asked_own_move`.
+     *
+     * Words said while the opponent is to move -- the player's own move the last one played --
+     * are about that move too, unless they ask about the opponent's threat or move, the material,
+     * the opening, the standing or the game: a simulated student's "I didn't even notice they
+     * were aiming for my rook" after 9.Nf3? was answered for the side to move, "You can win a
+     * knight. Their knight on f3 can simply be taken" -- the student's own knight (2026-09-26).
      */
-    private fun askedOwnMove(text: String): PlyRecord? {
-        if (!ASK_LAST_MOVE.containsMatchIn(text)) return null
-        return lastOwnMove(mine = MY_MOVE.containsMatchIn(text))
+    internal fun askedOwnMove(text: String): PlyRecord? {
+        if (ASK_LAST_MOVE.containsMatchIn(text)) return lastOwnMove(mine = MY_MOVE.containsMatchIn(text))
+        if (finished || userToMove) return null
+        val elsewhere = listOf(ASK_THREAT, ASK_OPPONENT_MOVE, ASK_MATERIAL, ASK_OPENING, ASK_EVAL, ASK_REVIEW)
+        if (elsewhere.any { it.containsMatchIn(text) }) return null
+        return lastOwnMove()
     }
 
     /** The opponent's move, when it is the last move played and has its verdict. */

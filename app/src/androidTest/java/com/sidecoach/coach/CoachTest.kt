@@ -665,9 +665,8 @@ class CoachTest {
     /**
      * The verdict and the better move came back in every reply, and "I understand: I should play
      * Nxc3" got the lesson again and "Which White piece is still at home on g1?" (the AI's
-     * sessions, 2026-09-26; desktop 9e49622). The desktop's words ("I see, I should have seen the
-     * mate.", "Why does the bishop check not work?") reach the answer about the last move through
-     * `_asked_own_move` (f733318, not ported); on the phone the words about the last move do.
+     * sessions, 2026-09-26; desktop 9e49622), in the desktop's words, which reach the answer about
+     * the last move through askedOwnMove (desktop f733318).
      */
     @Test
     fun aFollowUpGetsWhatItAsksAndANodOneSentence() {
@@ -680,7 +679,7 @@ class CoachTest {
             provider.replies.clear()
             provider.replies.addAll(listOf("", ""))
         }
-        coach.ask("I see now what was better: the queen mates.", 12.0)
+        coach.ask("I see, I should have seen the mate.", 12.0)
         messages(coach)
         var directive = directive(provider)
         assertTrue(directive, "do not repeat either" in directive)
@@ -690,16 +689,15 @@ class CoachTest {
             provider.replies.clear()
             provider.replies.addAll(listOf("", ""))
         }
-        coach.ask("Why was that bad?", 13.0)
+        coach.ask("Why does the bishop check not work?", 13.0)
         messages(coach)
         directive = directive(provider)
         assertTrue(directive, "Answer only what they ask now" in directive && "do not repeat either" in directive)
     }
 
     /**
-     * Asked what it cost, the figure is said (desktop 6d9ba6f). The desktop's "how much did that
-     * cost me?" reaches the answer about the last move through `_asked_own_move` (f733318, not
-     * ported); on the phone the question about the last move carries it.
+     * Asked what it cost, the figure is said (desktop 6d9ba6f), in the desktop's words, which reach
+     * the answer about the last move through askedOwnMove (desktop f733318).
      */
     @Test
     fun whatAMoveCostIsSaidWhenTheyAskIt() {
@@ -709,7 +707,7 @@ class CoachTest {
             provider.replies.clear()
             provider.replies.addAll(listOf("", ""))
         }
-        coach.ask("was that a mistake? how much did it cost me?", 12.0)
+        coach.ask("how much did that cost me?", 12.0)
         val out = messages(coach)
         val directive = directive(provider)
         assertTrue(directive, "cost 45% of the game -- they asked" in directive)

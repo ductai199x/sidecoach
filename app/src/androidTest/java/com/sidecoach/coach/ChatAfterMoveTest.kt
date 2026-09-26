@@ -122,9 +122,8 @@ class ChatAfterMoveTest {
     /**
      * Named in a statement or before the question, the pieces came back as the whole answer --
      * where each can go, what each attacks -- and the question went unanswered (the simulated
-     * students, 2026-09-26; desktop 797094c). The phone says a piece examined as the object has
-     * it ("the player's knight on f3 stands there; it can go to ..."): the desktop's
-     * "Your knight on f3 can go to" came with f733318, not ported.
+     * students, 2026-09-26; desktop 797094c). A piece examined is said to the player: "Your knight
+     * on f3 can go to ..." (desktop f733318).
      */
     @Test
     fun whatAQuestionNamesIsExaminedAloudAndWhatAStatementNamesIsNot() {
@@ -152,26 +151,22 @@ class ChatAfterMoveTest {
         assertTrue(statement.toString(), statement.none { "can go to" in it })
         c.ask("Where can my knight on f3 go?", 6.0)
         val question = messages(c).map { it.text }
-        assertTrue(
-            question.toString(),
-            question.any { "the player's knight on f3 stands there; it can go to" in it },
-        )
+        assertTrue(question.toString(), question.any { "Your knight on f3 can go to" in it })
         // With a model to answer in words, a piece's inventory said first is noise ("Your king on
         // g8 can go to f7, g7, h8; ..." before the AI's own answer; desktop 9e49622).
         c = coach(listOf("[p=1.0] It can go to d4, e5, g5 or h4.")).first
         italian(c)
         c.ask("Where can my knight on f3 go?", 6.0)
         val modelled = messages(c).map { it.text }
-        assertTrue(modelled.toString(), modelled.none { "the player's knight on f3 stands there" in it })
+        assertTrue(modelled.toString(), modelled.none { "Your knight on f3 can go to" in it })
     }
 
     /**
      * Asked about their own last move, the coach answers from the position it was played from
      * -- but "b5 is empty" was said with the player's bishop on b5 (the students' round 6; desktop
-     * f85c2bf): pieces and squares are read on the board as it stands. The desktop's question
-     * ("Is my bishop on b5 safe there?") reaches the position before the move through
-     * `_asked_own_move` (f733318, not ported); on the phone a question about the last move
-     * ("was that a mistake ...") reaches it, and the desktop's own question is asked too.
+     * f85c2bf): pieces and squares are read on the board as it stands. "Is my bishop on b5 safe
+     * there?", said while the opponent is to move, is about the move just played (desktop
+     * f733318).
      */
     @Test
     fun aPieceAskedAboutIsReadOnTheBoardAsItStands() {
@@ -181,12 +176,37 @@ class ChatAfterMoveTest {
         for (ply in 4..5) analysed(coach, ucis, ply, if (ply == 5) "a7a6" else "f1b5", 0.5, ply + 0.7)
         messages(coach)
         assertTrue(!coach.userToMove)
-        coach.ask("Was that a mistake, putting my bishop on b5?", 6.0)
-        var said = messages(coach).joinToString(" ") { it.text }
-        assertTrue(said, "the player's bishop on b5 stands there" in said && "b5 is empty" !in said)
-        coach.ask("Is my bishop on b5 safe there?", 7.0)
-        said = messages(coach).joinToString(" ") { it.text }
-        assertTrue(said, "the player's bishop on b5 stands there" in said && "b5 is empty" !in said)
+        coach.ask("Is my bishop on b5 safe there?", 6.0)
+        val said = messages(coach).joinToString(" ") { it.text }
+        assertTrue(said, "Your bishop on b5" in said && "b5 is empty" !in said)
+    }
+
+    /**
+     * What the player says while the opponent is to move is about the move they just played: "I
+     * didn't even notice they were aiming for my rook" after 9.Nf3? was answered for the side to
+     * move -- the student's own knight (a simulated student's session, 2026-09-26; desktop
+     * f733318).
+     */
+    @Test
+    fun chatOnTheOpponentsTurnIsAboutThePlayersMove() {
+        val (coach, _) = coach(emptyList())
+        played(coach, listOf("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "f3g5"), mistakeAt = 7)
+        assertTrue(!coach.userToMove) // the player's 4.Ng5 is the last move
+        val own = coach.askedOwnMove("I didn't even notice they were aiming for my rook")
+        assertTrue(own != null && own.move.ply == 7)
+        // About the opponent's side of the board: not the player's move.
+        assertEquals(null, coach.askedOwnMove("what are they threatening?"))
+        assertEquals(null, coach.askedOwnMove("how did I do this game?"))
+    }
+
+    @Test
+    fun chatOnThePlayersOwnTurnIsAboutThePosition() {
+        val (coach, _) = coach(emptyList())
+        played(coach, listOf("e2e4", "e7e5", "g1f3", "b8c6"), mistakeAt = 3)
+        assertTrue(coach.userToMove)
+        assertEquals(null, coach.askedOwnMove("I didn't even notice they were aiming for my rook"))
+        // Asked in so many words, it is still about the player's move.
+        assertTrue(coach.askedOwnMove("why was my last move bad?") != null)
     }
 
     /** The directive of the last model call: the harness after its "# Task" line. */
