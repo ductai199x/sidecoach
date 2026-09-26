@@ -1218,7 +1218,8 @@ private val PLAIN_PIECE = mapOf(
     com.sidecoach.chess.ROOK to "rook",
     com.sidecoach.chess.QUEEN to "queen",
 )
-private val SAYS_CHECK = Regex("\\b(?:with|gives?|giving) (?:a )?check\\b")
+private val SAYS_CHECK = Regex("\\b(?:with|gives?|gave|giving) (?:a )?check\\b", RegexOption.IGNORE_CASE)
+private val YOU_GAVE = Regex("^\\W*you (?:just )?(?:gave|give|played|put)\\b", RegexOption.IGNORE_CASE)
 
 /**
  * What a word after the player's move says that they see on the board or did not ask for (Tai,
@@ -1270,7 +1271,20 @@ internal fun restated(text: String, request: CoachRequest): List<String> {
     if (board.isCastling(move) && "castl" in low && !betterCastles) {
         faults.add("says what $played plainly did: castling")
     }
-    if (board.givesCheck(move) && SAYS_CHECK.containsMatchIn(low) && !betterChecks) {
+    // The check said of the move just played: in a clause about it -- one that names it or opens
+    // with "that", "it", "your move", "you gave" -- and names no other move. "After Bg4 your
+    // knight jumps in with check" is the better line's check, and was faulted as the played
+    // move's (the benchmark's smoke run, 2026-09-25).
+    val namesPlayed = Regex("(?<![A-Za-z])" + Regex.escape(played) + "[+#]?(?![A-Za-z0-9])")
+    val saysCheck = splitClauses(text).any { clause ->
+        SAYS_CHECK.containsMatchIn(clause) &&
+            (
+                namesPlayed.containsMatchIn(clause) || ABOUT_IT.containsMatchIn(clause) ||
+                    YOU_GAVE.containsMatchIn(clause)
+                ) &&
+            SAN.findAll(clause).none { it.groupValues[1].trimEnd('+', '#') != played }
+    }
+    if (board.givesCheck(move) && saysCheck && !betterChecks) {
         faults.add("says what $played plainly did: the check")
     }
     if (move.promotion != 0 && "promot" in low && !betterPromotes) {

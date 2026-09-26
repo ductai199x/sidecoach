@@ -1068,6 +1068,15 @@ class CoachTest {
         // The better move takes on the same square with check: the words are about it.
         val miss = afterMoveRequest(SCHOLAR, "Bxf7+", "h5f7")
         assertEquals(emptyList<String>(), restated("Taking the pawn on f7 with check was right, but with the queen.", miss))
+        // The check said of the move played is a restatement; a check in the better line is not
+        // (the benchmark's smoke run, 2026-09-25: "after Bg4 your knight jumps in with check";
+        // desktop 1117852).
+        val f5 = "rnbqkbnr/ppppp1pp/8/5p2/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        val check = afterMoveRequest(f5, "Qh5+", "e4f5")
+        val said = "says what Qh5 plainly did: the check"
+        assertTrue(said in restated("Sure, Qh5+ gives check, but exf5 wins a pawn.", check))
+        assertTrue(said in restated("That gave check, but exf5 wins a pawn.", check))
+        assertEquals(emptyList<String>(), restated("exf5 wins a pawn, and after Nf6 your queen comes in with check.", check))
     }
 
     /**
