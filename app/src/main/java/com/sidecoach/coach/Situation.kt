@@ -77,7 +77,16 @@ object Situation {
         QUEEN to "queen",
         KING to "king",
     )
-    private val NUMBER = mapOf(2 to "two", 3 to "three", 4 to "four", 5 to "five", 6 to "six", 7 to "seven", 8 to "eight")
+    /**
+     * Counts in words to twenty: a digit in the first hint is a figure the coach may not quote
+     * ("you have 10 checks": the pre-spend audit, 2026-09-25).
+     */
+    private val NUMBER = mapOf(
+        2 to "two", 3 to "three", 4 to "four", 5 to "five", 6 to "six", 7 to "seven", 8 to "eight",
+        9 to "nine", 10 to "ten", 11 to "eleven", 12 to "twelve", 13 to "thirteen", 14 to "fourteen",
+        15 to "fifteen", 16 to "sixteen", 17 to "seventeen", 18 to "eighteen", 19 to "nineteen",
+        20 to "twenty",
+    )
 
     /** `re.compile(r"[a-h](x[a-h])?[1-8]").match`: at the start of the text. */
     private val PAWN_MOVE = Regex("^[a-h](x[a-h])?[1-8]")

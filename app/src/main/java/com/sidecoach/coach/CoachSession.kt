@@ -56,7 +56,8 @@ private val HINT = Regex(
 
 /** An overall verdict on the game: "how did I do", "how was my game", "overall", "summary". */
 private val ASK_REVIEW = Regex(
-    "\\b(?:how (?:did|have|am) i (?:do|play|done|played|playing|doing)|how was (?:my|the) game|" +
+    "\\b(?:how (?:did|have) i (?:do|play|done|played|playing|doing)|how am i playing|" +
+        "how was (?:my|the) game|" +
         "overall|summar(?:y|ise|ize)|review (?:my|the) game|rate my (?:game|play)|" +
         "where did i (?:lose|go wrong)|what (?:do|did) i keep (?:missing|doing)|" +
         "what (?:did|have) i (?:do|done) wrong|my (?:mistakes|worst moves?)|" +
@@ -143,7 +144,8 @@ private val ASK_COST = Regex(
 /** A bare request for a hint, with nothing claimed: "hint", "give me a hint", "a clue". */
 private val ASK_HINT = Regex(
     "^\\W*(?:(?:give me |i need |can i have |i want |any |another |one more )?(?:a |an |some )?" +
-        "(?:hint|clue|nudge|help|tip)s?(?: please)?)\\W*\$",
+        "(?:hint|clue|nudge|help|tip)s?(?: please)?|i'?m stuck|i am stuck|where (?:should|do) i look" +
+        "|i don'?t know what to (?:do|play))\\W*\$",
     RegexOption.IGNORE_CASE,
 )
 
@@ -159,7 +161,10 @@ internal val ASK_THREAT = Regex(
     "\\b(?:what(?:'s|s| is| are) (?:their|the|his|her|my opponent's|the opponent's) threats?" +
         "|what (?:do|does) (?:they|he|she|my opponent|the opponent) threaten" +
         "|what (?:is|are|'s|'re) (?:they|he|she|my opponent|the opponent) (?:threatening|up to)" +
-        "|is (?:there|anything) (?:a )?threat(?:ened)?|am i (?:in danger|threatened))\\b",
+        "|is (?:there|anything) (?:a )?threat(?:ened)?|am i (?:in danger|threatened)" +
+        "|what (?:do|does) (?:they|he|she|my opponent|the opponent) want" +
+        "|is (?:anything|something) (?:hanging|loose|en prise)" +
+        "|what (?:are|is) (?:they|he|she|my opponent|the opponent) going for)\\b",
     RegexOption.IGNORE_CASE,
 )
 
@@ -167,7 +172,8 @@ internal val ASK_THREAT = Regex(
 private val ASK_AIM = Regex(
     "\\bwhat (?:should|do|can|could) i (?:be )?(?:aim|go|look|play|work|strive)(?:ing)? for\\b" +
         "|\\bwhat(?:'s| is) (?:the|my) (?:plan|idea|goal|aim)\\b|\\bwhat am i (?:aiming|going|playing) " +
-        "for\\b|\\bwhat to (?:aim|go) for\\b",
+        "for\\b|\\bwhat to (?:aim|go) for\\b|\\bhow (?:do|can|should) i (?:make progress|improve|" +
+        "continue|proceed)\\b",
     RegexOption.IGNORE_CASE,
 )
 
@@ -1432,22 +1438,38 @@ class Coach(
         return null
     }
 
-    /** Who stands better, from the engine's score for the position, in plain words. */
-    private fun standingTemplate(position: CoachPosition): String {
+    /**
+     * Who stands better, from the engine's score for the position, in plain words, and the
+     * material ([material], said whole by [materialWords]; else the facts').
+     */
+    private fun standingTemplate(position: CoachPosition, material: String? = null): String {
         val analysis = position.analysis
         if (analysis == null || analysis.lines.isEmpty()) return "I have no evaluation for this yet."
         var score = analysis.lines[0].expectedScore
         if (position.board.turn != userColour) score = 1.0 - score
-        val words = when {
-            score >= 0.85 -> "you are winning"
-            score >= 0.62 -> "you are better"
-            score > 0.38 -> "it is about equal"
-            score > 0.15 -> "you are worse"
-            else -> "you are losing"
-        }
-        val material = position.facts?.material
-        val tail = if (!material.isNullOrEmpty()) "; material: $material" else ""
-        return "Right now $words$tail."
+        // The Standing line's own words: its bands and this template's differed (0.8 and 0.85
+        // for winning), and a reply that said what the line said was faulted.
+        val words = standingWords(score)
+        var said = material
+        if (said.isNullOrEmpty() && position.facts != null) said = position.facts!!.material
+        return "Right now $words" + (if (!said.isNullOrEmpty()) "; material: $said" else "") + "."
+    }
+
+    /**
+     * The material as the game stands, to the player: now, and after the recapture the engine
+     * expects when the last move was a capture -- named, unless it is the player's own move
+     * before the move rung. The template said only the first half and the model only the second
+     * ("you are up a bishop and a pawn for a knight", the recapture still to come: quality round
+     * 3, 2026-09-25). `coach._material_words`.
+     */
+    private fun materialWords(level: DisclosureLevel, facts: PositionFacts): String? {
+        val found = synchronized(lock) { conversation.materialNow() } ?: return facts.material
+        val (now, recapture, thenWords) = found
+        if (recapture == null || thenWords == null) return now
+        val then = if (thenWords.startsWith("level")) "it is $thenWords" else thenWords
+        if (userToMove && level.value < DisclosureLevel.MOVE.value) return now
+        val whose = if (userToMove) "your" else "their"
+        return "$now -- and after $whose recapture $recapture, $then"
     }
 
     /**
@@ -1584,6 +1606,24 @@ class Coach(
             frames = framesAfter(position, moved)
         }
         frames = frames + analysisFrames(position)
+        // The earlier moments of the same idea, for a directive a link belongs in: found in the
+        // record by the coach and listed with how each went and what was said, and every other
+        // earlier move of the game held back from the reply ([unlistedLinks]).
+        var earlier = ""
+        var before: Set<String>? = null
+        if (TIE_TO_THE_GAME in directive) {
+            val key = position.facts!!.theme?.ifEmpty { null } ?: position.facts!!.plan
+            val taught = moved?.ply ?: (position.ply + 1)
+            val links: List<String>
+            synchronized(lock) {
+                links = if (!key.isNullOrEmpty()) conversation.sameIdea(key, taught) else emptyList()
+                before = conversation.movesBefore(position.ply)
+            }
+            if (links.isNotEmpty()) {
+                earlier = "\n\n# Earlier in this game, the same idea: $key\n" + links.joinToString("\n")
+            }
+            directive = directive.replace(TIE_TO_THE_GAME, if (links.isNotEmpty()) TIE_LISTED else NO_EARLIER)
+        }
         // And the board before the last move played: an answer about it says what it took
         // ("15...Qxe7 took your knight on e7"), which the board after it no longer shows.
         val records = synchronized(lock) { conversation.activeRecords() }
@@ -1592,7 +1632,19 @@ class Coach(
         synchronized(lock) {
             conversation.level = renderLevel
             val harness = conversation.render()
-            messages = listOf(ChatMessage("user", "$harness$faced\n\n# Task\n$directive"))
+            messages = listOf(ChatMessage("user", "$harness$faced$earlier\n\n# Task\n$directive"))
+        }
+        var unlisted: Set<String>? = null
+        val earlierMoves = before
+        if (earlierMoves != null) {
+            var shown = GAME_SO_FAR.replace(messages[0].content, "")
+            for (constant in listOf(NO_NUMBERS, NOT_THE_MOVE, TIE_LISTED, NO_EARLIER)) {
+                shown = shown.replace(constant, " ")
+            }
+            val sanctioned = HashSet<String>()
+            for (m in SAN.findAll(shown)) sanctioned.add(m.groupValues[1].trimEnd('+', '#'))
+            for (m in facts.candidates + facts.line + facts.threats) sanctioned.add(m.trimEnd('+', '#'))
+            unlisted = earlierMoves.filter { it.trimEnd('+', '#') !in sanctioned }.toSet()
         }
         val request = CoachRequest(
             trigger = trigger,
@@ -1632,6 +1684,7 @@ class Coach(
             frames = frames,
             nowAnswer = nowAnswer,
             record = numberedMoves(),
+            unlisted = unlisted,
         )
         speaker.submit(request)
     }
@@ -1905,7 +1958,7 @@ class Coach(
                 ) to reviewLines.take(4).joinToString(" ")
         }
         if (trigger == Trigger.DECISIVE_QUESTION) {
-            return ideaDirective(facts) to ideaTemplate(facts)
+            return "${ideaDirective(facts)} $NO_FIGURES" to ideaTemplate(facts)
         }
         if (trigger == Trigger.STUCK) {
             val directive =
@@ -1913,7 +1966,8 @@ class Coach(
             return (
                 "The player has been thinking for a while and is stuck. " +
                     directive +
-                    " Take a different angle from anything already said about this position."
+                    " Take a different angle from anything already said about this position. " +
+                    NO_FIGURES
                 ) to hintTemplate(facts, level)
         }
         if ((trigger == Trigger.POST_MOVE || trigger == Trigger.POST_MISTAKE) &&
@@ -1966,9 +2020,11 @@ class Coach(
                     "The player just played ${played.san}, which was ${rated(label)}: it cost " +
                         "${percent(loss)} of the game. The better move was $best ($betterWords). " +
                         "Teach the difference from the fact sheet of the position they faced -- " +
-                        "its goal, its pattern, why the better move works, and what their move " +
-                        "missed or allowed -- as a pattern to remember, in three sentences at " +
-                        "most, then ask one question that checks they see it. " +
+                        "its goal, its pattern and the tactic when the sheet names one, why the " +
+                        "better move works, and what their move missed or allowed -- as a pattern " +
+                        "to remember, in three sentences at " +
+                        "most, then ask one question that makes them find on the board something " +
+                        "your reply has not said. " +
                         "$TIE_TO_THE_GAME $NOT_THE_MOVE $NO_NUMBERS"
                 if (!allowed.isNullOrEmpty()) {
                     instructionText += " What ${played.san} allowed, from the engine's line: $allowed."
@@ -2058,11 +2114,12 @@ class Coach(
                     )
                 }
                 instructionText =
-                    "The player just played ${played.san}, which was fine but not the " +
-                        "strongest: $best ($betterWords) was better, by a little. One or two " +
-                        "sentences: that it was fine, then the better move and the idea behind it " +
-                        "as a lesson to keep. No lecture, no question. $TIE_TO_THE_GAME " +
-                        "$NOT_THE_MOVE $NO_NUMBERS"
+                    "The player just played ${played.san}, which was ${rated(label)}: " +
+                        "playable, not the strongest -- $best ($betterWords) was better, by a " +
+                        "little. One or two sentences: how it rated, in plain words, then the " +
+                        "better move, what it does, and the idea behind it as a lesson to keep. No " +
+                        "lecture, no question. " +
+                        "$TIE_TO_THE_GAME $NOT_THE_MOVE $NO_NUMBERS"
             }
             return instructionText to fallback
         }
@@ -2117,8 +2174,13 @@ class Coach(
         }
         // A question about a fact that is never withheld -- the material, the opening, who
         // stands better -- falls back to that fact, not to the hint for the position.
-        if (ASK_MATERIAL.containsMatchIn(said) && !facts.material.isNullOrEmpty()) {
-            fallback = "Material: ${facts.material}."
+        val material = if (ASK_MATERIAL.containsMatchIn(said) || ASK_EVAL.containsMatchIn(said)) {
+            materialWords(level, facts)
+        } else {
+            null
+        }
+        if (!material.isNullOrEmpty() && ASK_MATERIAL.containsMatchIn(said)) {
+            fallback = "Material: $material."
         } else if (ASK_OPENING.containsMatchIn(said)) {
             val opening = openingSoFar()
             fallback = if (opening != null) {
@@ -2127,7 +2189,7 @@ class Coach(
                 "We left the opening book early."
             }
         } else if (ASK_EVAL.containsMatchIn(said)) {
-            fallback = standingTemplate(position)
+            fallback = standingTemplate(position, material)
         }
         val shown = " Your last turn above is the quick answer they have already been shown; " +
             "build on it, do not repeat it."
@@ -2190,15 +2252,17 @@ class Coach(
                 level.value >= DisclosureLevel.FOCUS.value ->
                     aim.ifEmpty { "They asked for another hint. " } + FOCUS_DIRECTIVE
                 else -> aim.ifEmpty { "They asked for a hint. " } + ideaDirective(facts)
-            }
+            } + " " + NO_FIGURES
             directive = if (quick && level.value < DisclosureLevel.MOVE.value) {
                 // The hint is out already, in the template's words: the model adds to it, in a
                 // sentence or two -- not the whole hint again, which the voice talked over the
                 // template with (the runtime audit, 2026-09-25).
                 "They asked for a hint and have just been shown it -- your last turn above. " +
-                    "In one or two sentences, build on it: a sharper angle on the same key fact, " +
-                    "or the one question that sets them looking. Do not repeat it, and give " +
-                    "nothing the next hint would. Do not comment on anything said earlier."
+                    "In one or two sentences, build on it: a sharper angle on the same key fact " +
+                    "-- a piece or square of it, and what it does, threatens or allows, with the " +
+                    "principle behind it in a clause -- then the one question that sets them " +
+                    "looking. Do not repeat it, and give nothing the next hint would. Do not " +
+                    "comment on anything said earlier. " + NO_FIGURES
             } else {
                 hinted + " Do not comment on anything said earlier." + (if (quick) shown else "")
             }
@@ -2233,8 +2297,8 @@ class Coach(
             directive =
                 "They asked about a move or line and have just been shown the engine's word " +
                     "on it -- your last turn above. Build on it in one or two sentences: what " +
-                    "it means for their idea, in plain chess words, saying only what that " +
-                    "analysis and the messages state; do not repeat its numbers." +
+                    "their move does or allows, and what that means for their idea, in plain " +
+                    "chess words, saying only what that analysis and the messages state." +
                     (
                         if (followup) {
                             " You have already told them the verdict on their move and the better one: " +
@@ -2243,7 +2307,8 @@ class Coach(
                             " Then one question that points them at the idea."
                         }
                         ) +
-                    " Name no move the messages do not give."
+                    " Name no move the messages do not give. " +
+                    NO_FIGURES
             fallback = ""
         } else if (ASK_OPPONENT_MOVE.containsMatchIn(said) && lastOpponent != null) {
             val theirs = lastOpponent.assessment!!
@@ -2254,9 +2319,10 @@ class Coach(
                 "They ask about the opponent's last move, $san. It is in the record under " +
                     "'Last move' with its verdict ($label) and what it does; all of that is " +
                     "theirs to hear. Name the move, say how it rated and what it does, in " +
-                    "plain words, two or three sentences; then, if you like, one question " +
-                    "about what it asks of them. Never answer about the player's own move " +
-                    "instead."
+                    "plain words, and what they threaten now when the facts list a threat (at " +
+                    "most two), two or three sentences; then, if you like, one question about " +
+                    "what it asks of them. Never answer about the player's own move instead. " +
+                    NO_FIGURES
         } else if (lastOwn != null) {
             // Asked about their own last move. Its verdict was given in its move message and
             // the facts of the position it was played from in the message before: all of it
@@ -2306,6 +2372,17 @@ class Coach(
                 // answer, and Tai had said the figure is for when he asks (2026-09-20).
                 val askedCost = ASK_COST.containsMatchIn(said)
                 fallback = if (askedCost) "It cost you ${percent(loss)} of the game." else ""
+                // What the move let them do, from the position it left, as the lesson after the
+                // move has it: without it "why was that bad?" named the better move and a rule,
+                // and no piece, square or move of the reason (quality round 3).
+                val left = positions[lastOwn.move.ply]
+                val leftAnalysis = left?.analysis
+                val allowed = if (left != null && leftAnalysis != null) {
+                    IdeaWords.allowed(left.board, leftAnalysis, san)
+                } else {
+                    null
+                }
+                val faced = position.ply == lastOwn.move.ply - 1
                 if (best.isNotEmpty()) {
                     // The better move played out and the pattern to keep, as the lesson says it
                     // -- not "the idea was a pin" and nothing more.
@@ -2316,13 +2393,19 @@ class Coach(
                             facts,
                             best,
                             opener,
+                            board = if (faced) position.board else null,
                             played = lastOwn.move.uci,
+                            allowed = allowed,
                             keepLead = lead,
                             strong = strongPlayer,
                         )
                     }
+                } else if (!allowed.isNullOrEmpty()) {
+                    fallback = (if (fallback.isNotEmpty()) "$fallback " else "") +
+                        templateSentence(allowed[0].uppercaseChar() + allowed.substring(1))
                 }
                 if (fallback.isEmpty()) fallback = "That was ${rated(label)}."
+                val reason = if (best.isNotEmpty()) "what $best does, and " else ""
                 val cost = if (askedCost) {
                     " that cost ${percent(loss)} of the game -- they asked, so say it"
                 } else {
@@ -2335,17 +2418,23 @@ class Coach(
                         (if (idea.isNotEmpty()) ", and the idea was $idea" else "") +
                         ". Say that plainly -- the position it was played from is past, so " +
                         "nothing about it is withheld; the disclosure level binds only the " +
-                        "position they face now." +
+                        "position they face now -- and say why, concretely: ${reason}what $san " +
+                        "missed or allowed, naming the pieces, squares or moves, from the sheet of " +
+                        "the position they faced (its pattern, and its tactic when it names one) -- " +
+                        "and the pattern to keep." +
+                        (if (!allowed.isNullOrEmpty()) " What $san allowed, from the engine's line: $allowed." else "") +
                         (
                             if (answering) {
                                 "$close Three sentences at most."
                             } else if (followup) {
                                 follow
                             } else {
-                                " Three sentences at most, then one question that checks they see the pattern."
+                                " Three sentences at most, then one question that makes them find " +
+                                    "on the board something your reply has not said."
                             }
                             ) +
-                        " $TIE_TO_THE_GAME"
+                        " Name moves bare, never with a move number in front. " +
+                        TIE_TO_THE_GAME
                 if (followup && !asks) {
                     fallback = "" // a nod needs no template: nothing, rather than the lesson again
                 }
@@ -2355,29 +2444,40 @@ class Coach(
         ) {
             // A plain question about the game as it stands: answered plainly, no question back
             // (the generic answer's "point them ... with a question" asked one).
-            directive =
+            var plainly =
                 "They asked a plain question about the game as it stands. Answer it from the " +
                     "message -- the material, the opening, or who stands better, as it gives them " +
-                    "-- in one or two sentences, and no question. The material in the Material " +
-                    "line's own words: what it is now, and after the expected recapture when the " +
-                    "line gives one; never count the pieces yourself."
+                    "-- in one or two sentences, and no question."
+            if (ASK_EVAL.containsMatchIn(said)) {
+                plainly += " Who stands better, in the words of the Standing line, and the material " +
+                    "as it stands."
+            }
+            if (ASK_OPENING.containsMatchIn(said)) plainly += " The opening by the name the record gives it."
+            if (!material.isNullOrEmpty()) {
+                plainly += " The material is this, and your answer gives all of it, in these terms: " +
+                    "$material. Never count the pieces yourself."
+            }
+            directive = plainly
         } else if (ASK_THREAT.containsMatchIn(said)) {
             val threats = facts.threats.take(2)
             fallback = if (threats.isNotEmpty()) {
-                val words = threats.map { conversation.threatWords(position.board, it) }
+                val words = threats.map { Conversation.threatWords(position.board, it) }
                 "They threaten " + words.joinToString(" and ") + "."
             } else {
                 "Nothing is threatened right now: no move of theirs wins anything."
             }
             directive =
-                "They ask what the opponent threatens. Say it as the facts give it -- the move and " +
-                    "what it does, from 'what the other side threatens' -- or, when the facts list " +
-                    "none, say plainly that nothing is threatened. One or two sentences, no question."
+                "They ask what the opponent threatens. Say it as the facts give it -- each threat " +
+                    "they list, at most two: the move and what it does, from 'what the other side " +
+                    "threatens' -- or, when the facts list " +
+                    "none, say plainly that nothing is threatened. One or two sentences, no question. " +
+                    NO_FIGURES
         } else {
             directive =
                 "Answer them directly and be honest about their own claim. If they proposed a " +
                     "move, or named a square or piece, you may say it back and tell them " +
-                    "plainly whether it holds up -- when the engine does not rate their move, " +
+                    "plainly whether it holds up, and what it does or allows, as the engine's word " +
+                    "on it gives it -- when the engine does not rate their move, " +
                     "say it is not the strongest and, in general terms, why. When the engine's " +
                     "word on the move or line they named is given above, that analysis is " +
                     "theirs to hear in full: the score after it, how far behind the best, the " +

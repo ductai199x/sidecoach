@@ -1080,9 +1080,11 @@ class CoachTest {
         assertEquals(IDEA_DIRECTIVE, ideaDirective(short))
         val long = short.copy(situation = "One. Two. Three. Four. Five.")
         assertTrue("Five sentences at most." in ideaDirective(long))
-        assertEquals(5, directiveLimits(ideaDirective(long)).first)
+        // One more for the question the directive offers on top ("then, if you like, one
+        // question"), which it does not require (desktop 134b2ea).
+        assertEquals(6 to null, directiveLimits(ideaDirective(long)))
         val longest = short.copy(situation = List(9) { "Yes." }.joinToString(" "))
-        assertEquals(6, directiveLimits(ideaDirective(longest)).first)
+        assertEquals(7 to null, directiveLimits(ideaDirective(longest)))
     }
 
     /**

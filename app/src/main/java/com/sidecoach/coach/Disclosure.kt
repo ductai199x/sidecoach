@@ -257,8 +257,16 @@ private val PIECE_WORD_CONTEXTS = Regex(
         "|(?:their|opponent's|the opponent's|enemy) ${PIECE_RE}s?" +
         "|(?:wins?|winning|won|trap|traps|trapped|lose|loses|losing) (?:a |an |the |their |two )?" +
         "${PIECE_RE}s?" +
-        "|(?:checks?|attacks?|takes|took|captures?d?|removes?d?|hits?) (?:your|their|the|my) " +
-        "$PIECE_RE on [a-h][1-8]" +
+        "|(?:check(?:s|ing|ed)?|attack(?:s|ing|ed)?|takes|taking|took|captur(?:es?|ing|ed)" +
+        "|remov(?:es?|ing|ed)|hit(?:s|ting)?|threaten(?:s|ing|ed)?|win(?:s|ning)?|won" +
+        "|pin(?:s|ning|ned)?|fork(?:s|ing|ed)?|skewer(?:s|ing|ed)?|go(?:es|ing)? after) " +
+        "(?:your|their|the|my) $PIECE_RE on [a-h][1-8]" +
+        // What their threat goes after, said without its square: "g5 attacks your queen" is the
+        // threat the sheet gives, not the move to find -- never "take your queen" or "attack with
+        // your queen" (the smoke run, 2026-09-25).
+        "|(?:attack(?:s|ing|ed)?|threaten(?:s|ing|ed)?|hit(?:s|ting)?|pin(?:s|ning|ned)?" +
+        "|fork(?:s|ing|ed)?|skewer(?:s|ing|ed)?|go(?:es|ing)? after) (?:your|the|my) " +
+        "${PIECE_RE}s?\\b(?! to\\b)" +
         "|(?:your|their|my|the) $PIECE_RE on [a-h][1-8] (?:is|was|remains|stays) (?:in )?" +
         "(?:check|attacked|under attack|hanging|loose|defended|undefended|pinned)",
 )
@@ -320,6 +328,11 @@ fun leakCheck(
     said: String? = null,
     /** The game's moves as numbered in the record ("17. Rh1"). */
     record: Collection<String> = emptyList(),
+    /**
+     * What the sheet shows beyond the facts' own words -- what the threats do -- whose pieces on
+     * their squares are facts about the board, like the facts'.
+     */
+    shown: String = "",
 ): List<String> {
     val visible = visibleFacts(facts, level)
     val allowedSquares = HashSet<String>()
@@ -386,10 +399,13 @@ fun leakCheck(
             }
         }
     } else if (level.value < DisclosureLevel.LINE.value) {
-        val shown = facts.candidates.toSet() + facts.threats.toSet()
+        val visibleMoves = (facts.candidates + facts.threats).map { TRAILING_MARKS.replace(it, "") }.toSet()
         // The move's why names its continuation ("after Qf6, Bg2 ..."): what the level shows may
-        // be said.
-        val withheldMoves = facts.line.filter { it !in shown && it !in allowedMoves }
+        // be said -- compared without check marks, as `allowedMoves` holds them ("Rc6+" was
+        // withheld while the sheet gave it: the pre-spend audit, 2026-09-25).
+        val withheldMoves = facts.line.filter {
+            TRAILING_MARKS.replace(it, "") !in visibleMoves && TRAILING_MARKS.replace(it, "") !in allowedMoves
+        }
         val withheldSquares = squaresIn(withheldMoves.joinToString(" ")) - allowedSquares
         for (square in (squaresIn(movesText) intersect withheldSquares).sorted()) add("square $square")
         for (move in withheldMoves) {
@@ -427,8 +443,8 @@ fun leakCheck(
         // A piece the visible facts name on its square, said in other words ("their pawn on b5 is
         // about to take your bishop on a4" for "winning your bishop on a4"), is the fact, not a
         // hint at the piece to move.
-        val shown = visible.values.filterIsInstance<String>().joinToString(" ").lowercase()
-        for (found in PIECE_ON_SQUARE.findAll(shown).map { it.groupValues[1] to it.groupValues[2] }.toSet()) {
+        val onSheet = (visible.values.filterIsInstance<String>() + shown).joinToString(" ").lowercase()
+        for (found in PIECE_ON_SQUARE.findAll(onSheet).map { it.groupValues[1] to it.groupValues[2] }.toSet()) {
             val (pieceWord, square) = found
             scrubbed = Regex("\\b${pieceWord}s? on $square\\b").replace(scrubbed, " ")
         }

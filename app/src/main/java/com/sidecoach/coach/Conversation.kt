@@ -555,13 +555,12 @@ class Conversation {
         val move = record.move
         val assessment = record.assessment
         val boardAfter = Board(move.fenAfter)
-        var material = materialText(boardAfter, colour)
-        val recapture = expectedRecapture(record, boardBefore, boardAfter)
-        if (recapture != null) {
+        val (now, san, then) = materialWords(record, boardBefore, boardAfter, colour)
+        var material = now
+        if (san != null) {
             // A capture the engine expects to be answered: "up a knight" after Nxe6 was
             // read as a knight won, and the coach said so, with dxe6 to come.
-            val (san, then) = recapture
-            material += " before the expected recapture $san, then ${materialText(then, colour)}"
+            material += " before the expected recapture $san, then $then"
         }
         if (assessment == null) return "verdict not in yet. Material: $material."
         val label = assessment.label?.name?.lowercase() ?: assessment.severity.name.lowercase()
@@ -623,6 +622,33 @@ class Conversation {
             text += " Motifs in the move: $named."
         }
         return text
+    }
+
+    /**
+     * The material after the move, to the player; and when the engine expects the capture taken
+     * back, the recapture (SAN) and the material after it. `conversation._material_words`.
+     */
+    private fun materialWords(
+        record: PlyRecord,
+        boardBefore: Board,
+        boardAfter: Board,
+        colour: Boolean,
+    ): Triple<String, String?, String?> {
+        val material = materialText(boardAfter, colour)
+        val recapture = expectedRecapture(record, boardBefore, boardAfter) ?: return Triple(material, null, null)
+        val (san, then) = recapture
+        return Triple(material, san, materialText(then, colour))
+    }
+
+    /**
+     * The material as the game stands, as the record's last move gives it: now, and the expected
+     * recapture with the material after it ([materialWords]). Null before the first move.
+     */
+    fun materialNow(): Triple<String, String?, String?>? {
+        val active = activeRecords()
+        if (active.isEmpty()) return null
+        val record = active.last()
+        return materialWords(record, Board(record.move.fenBefore), Board(record.move.fenAfter), userColour)
     }
 
     /**
@@ -730,15 +756,6 @@ class Conversation {
         return "$text)."
     }
 
-    /** A threat with what it does: "Nd3+ (forks the queen on d2 and the rook on f1)". */
-    internal fun threatWords(board: Board, san: String): String {
-        if (board.isCheck()) return san
-        val passed = board.copy(withStack = false)
-        passed.push(Move.NULL)
-        val move = passed.parseSan(san) ?: return san
-        val text = effectsText(passed, move, hazards = false)
-        return if (text.isNotEmpty()) "$san ($text)" else san
-    }
 
     /** Where the line leads, for the lines block: "-> you win a pawn; the e-file opens". */
     private fun leads(board: Board, moves: List<String>, colour: Boolean): String {
@@ -906,6 +923,83 @@ class Conversation {
     /** Every move that was played and judged, across re-reads, for the tally. */
     fun judgedRecords(): List<PlyRecord> = records.filter { !it.withdrawn }
 
+    /**
+     * The player's moves before [beforePly] played in a position with the very same idea -- the
+     * pattern or the plan its facts name, [key] -- the latest [limit] of them, one line each: the
+     * move, how it went, and what the coach said after it. Book moves are theory, not a pattern
+     * found. The only earlier moments a lesson may tie itself to: told to find its own in the
+     * record, the model misremembered them (quality rounds 2 and 3, 2026-09-25).
+     * `conversation.same_idea`.
+     */
+    fun sameIdea(key: String, beforePly: Int, limit: Int = 2): List<String> {
+        val active = activeRecords()
+        val lines = ArrayList<String>()
+        for ((i, record) in active.withIndex()) {
+            val move = record.move
+            if (i == 0 || move.ply >= beforePly || !move.byUser) continue
+            val faced = active[i - 1]
+            val facedFacts = faced.facts
+            if (faced.move.ply != move.ply - 1 || facedFacts == null) continue
+            if ((facedFacts.theme?.ifEmpty { null } ?: facedFacts.plan) != key) continue
+            val a = record.assessment ?: continue
+            if (a.label != null && a.label.name.lowercase() == "book") continue
+            val label = a.label?.name?.lowercase() ?: a.severity.name.lowercase()
+            var better = ""
+            if (a.best.isNotEmpty() && a.best[0] != move.uci) {
+                val m = Move.fromUciOrNull(a.best[0])
+                better = if (m != null) Board(move.fenBefore).san(m) else ""
+            }
+            val how = if (better.isEmpty()) {
+                "$label -- the player found it"
+            } else if (a.severity == Severity.NONE) {
+                "$label; $better was better"
+            } else {
+                val rated = (if (label[0] in "aeiou") "an " else "a ") + label
+                "$rated; $better was better"
+            }
+            var line = "- At ${move.san} (the player's move): $how."
+            val said = saidAfter(record)
+            if (said.isNotEmpty()) line += "\n    YOU (the coach) said: \"$said\""
+            lines.add(line)
+        }
+        return lines.takeLast(limit)
+    }
+
+    /** The coach's first words after [record]'s move, before the next move: "" if none. */
+    private fun saidAfter(record: PlyRecord): String {
+        var after = false
+        for (entry in entries) {
+            if (entry.kind == "ply") {
+                if (after) return ""
+                after = entry.record === record
+            } else if (after && entry.kind == "ask") {
+                return ""
+            } else if (after && entry.kind == "coach" && entry.text.isNotEmpty()) {
+                return entry.text
+            }
+        }
+        return ""
+    }
+
+    /**
+     * The moves of the game before [ply] (SAN) -- those played and those the verdicts preferred
+     * -- that name a piece, a capture or castling: a pawn's step reads the same as a square, and
+     * a reply names squares for what stands on them. `conversation.moves_before`.
+     */
+    fun movesBefore(ply: Int): Set<String> {
+        val out = HashSet<String>()
+        for (record in activeRecords()) {
+            if (record.move.ply >= ply) continue
+            out.add(record.move.san)
+            val a = record.assessment
+            if (a != null && a.best.isNotEmpty()) {
+                val m = Move.fromUciOrNull(a.best[0])
+                if (m != null) out.add(Board(record.move.fenBefore).san(m))
+            }
+        }
+        return out.filter { !PAWN_STEP.matches(it) }.toSet()
+    }
+
     /** `list.index`, by identity: two records of the same move would otherwise tie. */
     private fun indexOf(record: PlyRecord): Int = records.indexOfFirst { it === record }
 
@@ -1043,6 +1137,22 @@ class Conversation {
         "attackingF2F7",
         "advancedPawn",
     )
+
+    /**
+     * A threat with what it does: "Nd3+ (forks the queen on d2 and the rook on f1)".
+     * `Conversation._threat_words`, a static method there too.
+     */
+    fun threatWords(board: Board, san: String): String {
+        if (board.isCheck()) return san
+        val passed = board.copy(withStack = false)
+        passed.push(Move.NULL)
+        val move = passed.parseSan(san) ?: return san
+        val text = effectsText(passed, move, hazards = false)
+        return if (text.isNotEmpty()) "$san ($text)" else san
+    }
+
+    /** A pawn's step, which reads the same as a square ([movesBefore]). */
+    private val PAWN_STEP = Regex("[a-h][1-8](?:=[QRBN])?[+#]?")
 
     val LABEL_ORDER = listOf(
         "brilliant",

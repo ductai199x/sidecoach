@@ -451,6 +451,15 @@ const val IN_CHECK_QUESTION =
         "and which way out leaves you safest?"
 const val IN_CHECK_NATURE = "a check to answer -- take the checking piece, block it, or move the king"
 
+/** A quiet first move of a tactic the idea reader finds, by its goal. `facts._QUIET_TACTIC`. */
+private val QUIET_TACTIC = mapOf(
+    "win" to "a tactic -- the best move is quiet, but the line after it wins material",
+    "combination" to "a tactic -- the best move is quiet, but the line after it wins material",
+    "mate" to "a tactic -- the best move is quiet, but the line after it mates",
+    "promote" to "a tactic -- the best move is quiet, but the line after it queens a pawn",
+    "attack" to "a tactic -- the best move is quiet, but the attack after it wins",
+)
+
 /**
  * Whether the answer is forcing, a quiet move that wins material, or quiet, in the words the
  * sheet uses. `line` is the engine's line from `best` (UCI), played out to see whether it
@@ -611,6 +620,12 @@ fun factsFromAnalysis(
     var nature: String? = null
     if (best != null) {
         nature = natureOf(board, best, if (lines.isNotEmpty()) lines[0].moves else emptyList())
+        // The nature agrees with the idea: a tactic the idea reader finds -- a pawn won back, a
+        // mate -- under TACTIC_GAIN was "quiet -- no tactic to find" beside "You have a tactic
+        // that wins back a pawn" (the pre-spend audit, 2026-09-25).
+        if (tactical && nature.startsWith("quiet")) {
+            nature = QUIET_TACTIC[idea.goal] ?: QUIET_TACTIC.getValue("win")
+        }
     }
     var mechanism = IdeaWords.mechanism(idea)
     if (mechanism == null && planKind != null && planKind in IdeaWords.PLAN_WHY) {

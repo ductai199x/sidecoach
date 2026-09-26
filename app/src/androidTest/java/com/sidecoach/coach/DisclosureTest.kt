@@ -102,6 +102,27 @@ class DisclosureTest {
     }
 
     /**
+     * Asked for the threat, the coach says the move and what it does, as the sheet does: "g5,
+     * attacking your queen on c3" was refused while the queen was the piece to move (the smoke
+     * run, 2026-09-25). Naming the queen as the one to use is still the hint (desktop 134b2ea).
+     */
+    @Test
+    fun whatTheirThreatGoesAfterIsTheThreatNotTheHint() {
+        val f = facts().copy(candidates = listOf("Qd2"), piece = "the player's queen on c3")
+        for (fine in listOf(
+            "They threaten b4, attacking your queen on c3.",
+            "b4 is coming: it attacks your queen.",
+            "Their b4 threatens your queen.",
+            "They threaten Nd5, winning your queen on c3.",
+        )) {
+            assertEquals(fine, emptyList<String>(), leakCheck(fine, f, DisclosureLevel.IDEA))
+        }
+        for (leak in listOf("Move your queen.", "Take your queen to safety.", "Attack with your queen.")) {
+            assertTrue(leak, "piece queen" in leakCheck(leak, f, DisclosureLevel.IDEA))
+        }
+    }
+
+    /**
      * Round 2 refused four good replies for "the pawn on c3", "your pawn on h2" when the pawn to
      * move was elsewhere; "take it with the queen" and "the c-pawn should take it" name it
      * (desktop 47138dd).

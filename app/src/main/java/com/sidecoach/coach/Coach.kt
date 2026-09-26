@@ -174,7 +174,7 @@ const val STILL_READING = "Give me a moment: I am still reading this position."
 private val PAWN_MOVE = Regex("^[a-h](x[a-h])?[1-8]")
 
 /** `text` as a sentence: a capital first, a stop last. */
-private fun templateSentence(raw: String): String {
+internal fun templateSentence(raw: String): String {
     var text = raw.trim()
     if (text.isEmpty()) return ""
     if (!PAWN_MOVE.containsMatchIn(text)) {  // "f7+ forces mate", never "F7+"
@@ -455,8 +455,7 @@ private val NUMBER_WORDS = mapOf(2 to "TWO", 3 to "THREE", 4 to "FOUR", 5 to "FI
  */
 const val NO_NUMBERS =
     "Do not quote the cost or any number: say how the move rates in words, and keep the " +
-        "figures for when the player asks. Name moves bare, as h3 or Bd5, never with a move " +
-        "number in front."
+        "figures for when the player asks. Name moves bare, never with a move number in front."
 
 /**
  * The player has just played the move and sees it on the board: naming it, or saying what it
@@ -470,6 +469,13 @@ const val NOT_THE_MOVE =
         "Say what it means instead: the idea behind it and the pattern to keep -- and, when there " +
         "was a better move, that move and why."
 
+/**
+ * A hint, and an answer that is not about a figure: the code faults one ([Speaker.problemsOf]),
+ * so the directive says so -- the stuck hint was faulted for "ahead by about 1.2 pawns" and
+ * never told.
+ */
+const val NO_FIGURES = "Quote no figure -- no percentage, no score, no move number -- and name moves bare."
+
 /*
  * What the model is asked to do on each rung before the player moves. The template for the
  * rung is the floor; the model is there to rise above it (Tai, 2026-09-23: "AI is supposed to
@@ -478,22 +484,36 @@ const val NOT_THE_MOVE =
  */
 const val IDEA_DIRECTIVE =
     "Give the first hint as a short lesson on this position, from the fact sheet: what is at " +
-        "stake (its stakes: how many moves hold, and what even the next best one costs), then " +
-        "the key fact on the board, named as the sheet names it -- the pieces, the squares, their " +
-        "threat, the target, the plan -- and the principle behind it in a clause, and the trap if " +
-        "the sheet gives one. Precise, never a principle on its own: every sentence says " +
+        "stake (its stakes: how many moves hold, and what even the next best one costs -- or its " +
+        "goal, where the sheet gives no stakes, or its nature -- whether there is a tactic to find " +
+        "-- where it gives neither), then the key fact on the board, named as the " +
+        "sheet names it -- the pieces, the squares, their threat, the target, the plan, the " +
+        "pattern -- and what it does, threatens or allows, with the principle behind it in a " +
+        "clause, and the trap if the sheet gives one, so they know what to look for; then, if " +
+        "you like, one question that sets them looking. Precise, never a principle on its own: " +
+        "every sentence says " +
         "something about this board. Never name the player's move, and not which of their own " +
-        "pieces makes it -- that is the next hint; the target's square, as the sheet names it, " +
+        "pieces makes it -- that is the next hint -- unless the key fact names that piece on its " +
+        "square; the target's square, as the sheet names it, " +
         "may be said even where the move goes, and the moves the sheet lists as all as good, " +
         "when several are, may be named. Two or three sentences."
+
 /**
- * The game so far, used: an earlier moment of the same kind is the coach's best material, and
- * the excellence rubric found it used in half the lessons that had one (2026-09-25).
+ * The game so far, used: an earlier moment of the same idea is the coach's best material, and the
+ * excellence rubric found it used in half the lessons that had one (2026-09-25). The coach finds
+ * those moments itself ([Conversation.sameIdea]) and lists them: told to find its own in the
+ * record, the model misremembered one ("as after 9...a6, when Bc4 saved your bishop": neither
+ * happened) and copied the directive's own example move as a link (quality rounds 2 and 3,
+ * 2026-09-25). TIE_TO_THE_GAME marks the directives a link belongs in; the coach's speak puts the
+ * rule for the moments listed, or for none, in its place.
  */
-const val TIE_TO_THE_GAME =
-    "If the game so far shows the very same threat or pattern earlier -- not merely a similar " +
-        "idea -- tie this one to it in a clause, naming that moment by its move, bare (as with " +
-        "Bg4). Most moments have no such link: do not reach for one, and never invent one."
+const val TIE_TO_THE_GAME = "Tie this lesson to the game only through the earlier moments listed."
+const val TIE_LISTED =
+    "Under 'Earlier in this game' are the player's earlier moves played with the very same " +
+        "idea as this one. Tie this lesson to the one that fits best, in a clause -- naming its " +
+        "move bare, as the list does -- and say of it only what the list says. Speak of no other " +
+        "earlier moment."
+const val NO_EARLIER = "Speak of no earlier moment of the game: none had the same idea."
 
 private val LENGTH_WORDS = mapOf(4 to "Four", 5 to "Five", 6 to "Six")
 
@@ -511,8 +531,9 @@ fun ideaDirective(facts: PositionFacts?): String {
 }
 
 const val FOCUS_DIRECTIVE =
-    "Name the piece to use, from the fact sheet, and ask the one question that leads from the " +
-        "first hint's key fact to the move. Do not name the move. One or two sentences."
+    "Name the piece to use and what it goes after -- the target -- as the fact sheet names " +
+        "them, with the principle behind it in a clause, and ask the one question that leads from " +
+        "there to the move. Do not name the move. One or two sentences."
 const val MOVE_DIRECTIVE =
     "The next hint is the answer: give the move and explain it correctly from the fact " +
         "sheet's why -- what it does and what it leads to -- and the pattern to keep. One or two " +
@@ -1126,6 +1147,12 @@ class CoachRequest(
     val nowAnswer: List<String> = emptyList(),
     /** The game's moves as the record numbers them ("17. Rh1"): said so, they are history. */
     val record: Set<String> = emptySet(),
+    /**
+     * For a directive a link belongs in ([TIE_TO_THE_GAME]): the earlier moves of the game the
+     * reply may not name -- all but those the list of earlier moments and the sheets give. Null
+     * when the directive has no place for a link.
+     */
+    val unlisted: Set<String>? = null,
 )
 
 /**
@@ -1159,6 +1186,11 @@ private val SQUARE_ITEM = Regex("[a-h][1-8]")
 internal fun names(text: String, item: String): Boolean {
     if (SQUARE_ITEM.matches(item)) return item in squaresIn(text)
     val core = item.trimEnd('+', '#')
+    if (core.startsWith("O-O")) {
+        // Castling: "O-O" is not named by "O-O-O" (the recheck of round 3's replies).
+        val pattern = "(?<![-A-Za-z0-9])" + Regex.escape(core) + "(?!-O)[+#]?(?![A-Za-z0-9])"
+        return Regex(pattern).containsMatchIn(text)
+    }
     return Regex("(?<![A-Za-z])" + Regex.escape(core) + "[+#]?(?![A-Za-z0-9])").containsMatchIn(text)
 }
 
@@ -1244,6 +1276,29 @@ internal fun restated(text: String, request: CoachRequest): List<String> {
     if (move.promotion != 0 && "promot" in low && !betterPromotes) {
         faults.add("says what $played plainly did: the promotion")
     }
+    return faults
+}
+
+/**
+ * The game's history in a request, up to the next section: the moves that stand only there are
+ * the earlier moments ([unlistedLinks]).
+ */
+internal val GAME_SO_FAR = Regex("# Game so far\\n.*?(?=\\n# )", RegexOption.DOT_MATCHES_ALL)
+
+/** A move with its number in front: "after 9...a6", "12. Qc2". */
+private val MOVE_NUMBER = Regex("\\b\\d+\\s*\\.(?:\\s*\\.\\.)?\\s*(?:O-O|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8])")
+
+/**
+ * What a lesson says of an earlier moment the coach did not list: a move of the game before the
+ * position taught that neither the list of earlier moments nor the sheets give, and any move with
+ * its number -- "the same safety lesson as after 9...a6, when Bc4 saved your bishop" named a
+ * moment that never happened (quality round 3, 2026-09-25). `coach.unlisted_links`.
+ */
+fun unlistedLinks(text: String, unlisted: Set<String>): List<String> {
+    val faults = unlisted.sorted().filter { names(text, it) }
+        .map { "names $it, an earlier moment not listed: tie only to the moments listed" }
+        .toMutableList()
+    if (MOVE_NUMBER.containsMatchIn(text)) faults.add("a move with its number: name moves bare")
     return faults
 }
 
@@ -1675,9 +1730,17 @@ class Speaker(
         // the record's moves, squares and pieces had let the answer through.
         val said = listOfNotNull(request.userText, request.disclosed)
             .filter { it.isNotEmpty() }.joinToString(" ")
+        // What the sheet says the threats do ("Ne6 (uncovers an attack on the pawn on d2)") is
+        // shown to the model: a piece named there is the threat, not the hint.
+        val threatWords = request.facts.threats.joinToString(" ") { Conversation.threatWords(request.board, it) }
         val found = ArrayList<String>()
         for (item in leakCheck(
-            text, request.facts, request.level, said = said.ifEmpty { null }, record = request.record,
+            text,
+            request.facts,
+            request.level,
+            said = said.ifEmpty { null },
+            record = request.record,
+            shown = threatWords,
         )) {
             found.add("withheld $item")
         }
@@ -1708,9 +1771,15 @@ class Speaker(
         val leftOut = omitted(text, request.mustName)
         if (leftOut != null) found.add(leftOut)
         found.addAll(restated(text, request))
-        if ((request.trigger == Trigger.DECISIVE_QUESTION || request.trigger == Trigger.STUCK) &&
-            figureSaid(text)
-        ) {
+        val unlisted = request.unlisted
+        if (unlisted != null) found.addAll(unlistedLinks(text, unlisted))
+        // A figure where none was asked for: an unprompted remark, and an answer whose directive
+        // keeps the figures for when the player asks -- "46...Rh5 was excellent, costing only
+        // 0.01" (quality round 3, 2026-09-25).
+        val unasked = request.trigger == Trigger.DECISIVE_QUESTION || request.trigger == Trigger.STUCK || (
+            request.trigger == Trigger.USER_ASK && (NO_NUMBERS in directive || NO_FIGURES in directive)
+            )
+        if (unasked && figureSaid(text)) {
             found.add("a figure in a remark nobody asked for: say it in words")
         }
         // RULES 7: the coach speaks as the one who saw the game -- "Stockfish gives White about
@@ -1727,7 +1796,7 @@ class Speaker(
             }
         }
         found.addAll(falseIllegal(text, request.board))
-        return found
+        return found.distinct()
     }
 
     private fun run() {

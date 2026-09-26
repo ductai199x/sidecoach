@@ -79,8 +79,12 @@ object IdeaWords {
 
     /** The furthest ply of a win read out move by move: the player's third move. */
     const val LATER_READ = 4
+    /** Counts in words to twenty: a digit is a figure the coach may not quote. */
     private val NUMBER = mapOf(
         1 to "one", 2 to "two", 3 to "three", 4 to "four", 5 to "five", 6 to "six", 7 to "seven",
+        8 to "eight", 9 to "nine", 10 to "ten", 11 to "eleven", 12 to "twelve", 13 to "thirteen",
+        14 to "fourteen", 15 to "fifteen", 16 to "sixteen", 17 to "seventeen", 18 to "eighteen",
+        19 to "nineteen", 20 to "twenty",
     )
 
     /** The pattern's name, as the coach names it. */
