@@ -38,6 +38,7 @@ import argparse
 import io
 import json
 import multiprocessing as mp
+import os
 import random
 import re
 import sys
@@ -47,7 +48,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "src"))
+# A round of the improvement loop runs its baseline coach from that commit's src/
+# (student_loop.py). The package is bound here, first: the tools imported later put this
+# tree's src/ back in front, and a submodule is found through the package itself.
+sys.path.insert(0, os.environ.get("SIDECOACH_SRC") or str(ROOT / "src"))
+import sidecoach  # noqa: E402
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(ROOT / "tools" / "bots"))
 
@@ -57,6 +63,7 @@ from habits import (  # noqa: E402
     GOOD,
     HABITS,
     MISS,
+    TACTIC_GAIN,
     Evaluator,
     Situation,
     situation,
@@ -88,7 +95,12 @@ GAMES = ROOT / "data" / "students" / "games"
 EXAM_GAMES = ROOT / "data" / "students" / "exam"
 FACTS = ROOT / "data" / "eval" / "facts" / "students"
 OUT = ROOT / "data" / "eval" / "students"
+# Each round of the improvement loop (student_loop.py) coaches a batch of student games it
+# has never seen, played with the batch's own seeds; batch 0 is the first set (GAMES, FACTS).
+BATCHES = ROOT / "data" / "students" / "batches"
 EXAM = OUT / "exam.json"
+# The exam's answers; exam/ holds the first design's, where the student read the board itself.
+EXAM_RESULTS = OUT / "exam2"
 POSITIONS = OUT / "positions.jsonl"  # every exam-game position's raw numbers
 ENGINE_CACHE = OUT / "engine_cache.json"
 
@@ -197,21 +209,39 @@ def play_plain(job: tuple[int, int]) -> str:
     return str(game)
 
 
+def games_dir(batch: int) -> Path:
+    return GAMES if batch == 0 else BATCHES / f"b{batch}" / "games"
+
+
+def facts_dir(batch: int) -> Path:
+    return FACTS if batch == 0 else ROOT / "data" / "eval" / "facts" / f"students_b{batch}"
+
+
 def cmd_games(args: argparse.Namespace) -> None:
-    GAMES.mkdir(parents=True, exist_ok=True)
+    games = games_dir(args.batch)
+    games.mkdir(parents=True, exist_ok=True)
     EXAM_GAMES.mkdir(parents=True, exist_ok=True)
     student_jobs: dict[Path, list[tuple[str, int, int, int]]] = {}
     for habit in HABITS:
         for level in LEVELS:
-            path = GAMES / f"{habit}-L{level}.pgn"
+            path = games / f"{habit}-L{level}.pgn"
             if path.exists() and not (args.force or args.redo == "students"):
                 continue
             student_jobs[path] = [
-                (habit, level, i, SEED * 1_000_003 + hash_of(habit) * 10_007 + level * 101 + i)
+                (
+                    habit,
+                    level,
+                    i,
+                    SEED * 1_000_003
+                    + hash_of(habit) * 10_007
+                    + level * 101
+                    + i
+                    + args.batch * 7_919_993,
+                )
                 for i in range(args.games_per_cell)
             ]
     plain_jobs: dict[Path, list[tuple[int, int]]] = {}
-    for level in LEVELS:
+    for level in LEVELS if args.batch == 0 else ():  # the exam is drawn once, from batch 0
         path = EXAM_GAMES / f"L{level}.pgn"
         if path.exists() and not (args.force or args.redo == "exam"):
             continue
@@ -226,13 +256,13 @@ def cmd_games(args: argparse.Namespace) -> None:
         for path, result in [*student_async.items(), *plain_async.items()]:
             pgns = result.get()
             if path in student_async:
-                every = GAMES / "all" / path.name
+                every = games / "all" / path.name
                 every.parent.mkdir(parents=True, exist_ok=True)
                 every.write_text("\n\n".join(pgns) + "\n\n", encoding="utf-8")
                 pgns = most_habit(pgns, args.keep)
             path.write_text("\n\n".join(pgns) + "\n\n", encoding="utf-8")
             print(f"{path.relative_to(ROOT)}: {len(pgns)} games ({time.time() - t0:.0f} s)")
-    for path in sorted(GAMES.glob("*.pgn")):
+    for path in sorted(games.glob("*.pgn")):
         for game in read_games(path):
             h = game.headers
             plies = len(list(game.mainline_moves()))
@@ -646,13 +676,18 @@ class Student:
         user = (
             f"Your games are over ({result}). Everything the coach said to you in them, and "
             f"what you said, in order:\n{whole}\n\n"
-            "Write down what you will remember, as a real player jots a few notes after a "
-            "lesson: at most five short lines, in your own words, about what to do or look "
-            "for in your next games. Then list the coach's words or ideas you did not "
-            "understand, and the things it told you that you already knew well.\n"
-            'Answer with JSON only: {"notes": ["..."], "unclear": ["..."], '
-            '"already_knew": ["..."], "helpful": <1 to 5>}'
+            "Write down what you will remember from the coach, as a real player jots a few "
+            "notes after a lesson: at most five short lines, in your own words, about what to "
+            "do or look for in your next games. Write only what the coach taught you -- a rule "
+            "or idea it gave you, or one its questions led you to. A player remembers the "
+            "moments (a piece lost, a move missed) as moments unless the coach gave a rule to "
+            "take from them: do not make a rule of your own out of a moment. For each note, "
+            "copy the coach's words it comes from. Then list the coach's words or ideas you "
+            "did not understand, and the things it told you that you already knew well.\n"
+            'Answer with JSON only: {"notes": [{"note": "...", "from": "<the coach\'s words>"}],'
+            ' "unclear": ["..."], "already_knew": ["..."], "helpful": <1 to 5>}'
         )
+        coach = [t["text"] for t in self.transcript if t["who"] == "coach"]
         for _ in range(3):
             text = chat(
                 self.provider, self.ledger, self.system, user, "student-notes", temperature=0.4
@@ -664,14 +699,53 @@ class Student:
                 data = json.loads(found.group(0))
             except json.JSONDecodeError:
                 continue
-            notes = [str(n).strip() for n in data.get("notes") or [] if str(n).strip()][:5]
+            kept, own, sources = [], [], []
+            for n in (data.get("notes") or [])[:5]:
+                note = str(n.get("note", "") if isinstance(n, dict) else n).strip()
+                quote = str(n.get("from", "") if isinstance(n, dict) else "").strip()
+                if not note:
+                    continue
+                if from_coach(quote, coach):
+                    kept.append(note)
+                    sources.append(quote)
+                else:
+                    own.append(note)
             return {
-                "notes": notes,
+                "notes": kept,
+                "note_sources": sources,
+                "own_notes": own,
                 "unclear": [str(x) for x in data.get("unclear") or []],
                 "already_knew": [str(x) for x in data.get("already_knew") or []],
                 "helpful": data.get("helpful"),
             }
         return {"notes": [], "unclear": [], "already_knew": [], "helpful": None, "failed": True}
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def from_coach(quote: str, coach: list[str]) -> bool:
+    """Whether a note's source is the coach's own words: at least three words, nearly all of
+    them in one thing the coach said, in order. The student's notes are its record of the
+    coaching; a rule the student made up itself is its own (luna, writing as a 1200 player,
+    turned "Bxg1 takes their rook: nothing defends it" into "scan forcing captures first",
+    and the templates' notebooks beat the hand-written cure, 2026-09-26)."""
+    q = _words(quote)
+    if len(q) < 3:
+        return False
+    for said in coach:
+        s = _words(said)
+        # The quote's words found in order in what the coach said (their longest common
+        # subsequence): a word or two changed in the copying still counts.
+        row = [0] * (len(s) + 1)
+        for w in q:
+            prev = 0
+            for j, x in enumerate(s, 1):
+                prev, row[j] = row[j], prev + 1 if w == x else max(row[j], row[j - 1])
+        if row[-1] >= 0.8 * len(q):
+            return True
+    return False
 
 
 # ---- a session -----------------------------------------------------------------------------
@@ -684,7 +758,22 @@ def _result_words(result: str, colour: chess.Color) -> str:
     return "you won" if won else "you lost"
 
 
-def run_session(facts_paths: list[Path], coach_spec: str, student_spec: str, ledger) -> dict:
+def sessions_of(batch: int) -> list[tuple[str, list[Path]]]:
+    """A batch's sessions: each cell's kept games, GAMES_KEPT to a session in the order
+    played, named "<cell>~<k>"."""
+    cells: dict[str, list[Path]] = defaultdict(list)
+    for p in sorted(facts_dir(batch).glob("*.json")):
+        cells[cell_of(p.stem)].append(p)
+    out = []
+    for cell, paths in sorted(cells.items()):
+        for k in range(0, len(paths), GAMES_KEPT):
+            out.append((f"{cell}~{k // GAMES_KEPT}", paths[k : k + GAMES_KEPT]))
+    return out
+
+
+def run_session(
+    facts_paths: list[Path], coach_spec: str, student_spec: str, ledger, sid: str
+) -> dict:
     """A student's games played through the coach one after the other, event by event as
     build_game sends them (corpus.py), with the student reading what the coach says and
     talking back, and writing its notebook after the last. Two games a session: one game gave
@@ -695,7 +784,7 @@ def run_session(facts_paths: list[Path], coach_spec: str, student_spec: str, led
     from providers import Metered, coach_provider, provider_for
 
     games = [json.loads(p.read_text(encoding="utf-8")) for p in facts_paths]
-    cell = cell_of(games[0]["name"])
+    cell = sid
     headers = games[0]["headers"]
     level = int(headers["Level"])
     rng = random.Random(f"students:{SEED}:{cell}")
@@ -717,14 +806,20 @@ def run_session(facts_paths: list[Path], coach_spec: str, student_spec: str, led
         engine=engine,
         seed=f"students:{cell}",
     )
-    played = [play_coached(facts, coach, student) for facts in games]
+    # The player model the app keeps, here in memory for the session: the review after each
+    # game names the causes of the mistakes from it.
+    from sidecoach.profile.profiler import Profiler
+    from sidecoach.profile.store import Store
+
+    profiler = Profiler(Store(None), ts=0.0, puzzles=None)
+    played = [play_coached(facts, coach, student, profiler) for facts in games]
     results = "; ".join(
         f"game {i}: {_result_words(p['result'], p['colour'])}" for i, p in enumerate(played, 1)
     )
     notebook = student.notebook(results)
     engine.close()
     return {
-        "game": cell,
+        "game": sid,
         "games": [p["game"] for p in played],
         "habit": headers["Habit"],
         "level": level,
@@ -751,9 +846,11 @@ def cell_of(game: str) -> str:
     return game.split("__", 1)[0]
 
 
-def play_coached(facts: dict, coach, student: Student) -> dict:
+def play_coached(facts: dict, coach, student: Student, profiler=None) -> dict:
     """One game of the student's through the coach, with the student talking back; what the
-    notebook and the report need from it."""
+    notebook and the report need from it. With `profiler` (the app's player model, in
+    memory), every event goes to it as well and its own events -- the game's review with the
+    causes of the mistakes -- go on to the coach, as the app sends them (ui/panel.py)."""
     from sidecoach.events import Analysis, GameEnded, GameStarted, MoveAssessment, MovePlayed, Side
 
     game = facts["name"]
@@ -801,9 +898,15 @@ def play_coached(facts: dict, coach, student: Student) -> dict:
                 return
             invite = True
 
+    def send(event) -> None:
+        coach.on_event(event, ts)
+        if profiler is not None:
+            for out in profiler.on_event(event, ts):
+                coach.on_event(out, ts)
+
     user_side = Side.WHITE if colour == chess.WHITE else Side.BLACK
-    coach.on_event(GameStarted(game_id=game, user_side=user_side, start_fen=facts["start_fen"]), ts)
-    coach.on_event(Analysis.model_validate({**facts["start_analysis"], "game_id": game}), ts)
+    send(GameStarted(game_id=game, user_side=user_side, start_fen=facts["start_fen"]))
+    send(Analysis.model_validate({**facts["start_analysis"], "game_id": game}))
     board = chess.Board(facts["start_fen"])
     talk(board, 0, drain(), invite=False)
     student_moves = mistakes = 0
@@ -811,16 +914,18 @@ def play_coached(facts: dict, coach, student: Student) -> dict:
     for step in facts["script"]:
         if step["kind"] == "ended":
             ts += 2
-            coach.on_event(
+            send(
                 GameEnded(
                     game_id=game,
                     result=step["result"],
                     reason=step.get("reason"),
                     pgn="",
                     final_fen=coach.board.fen(),
-                ),
-                ts,
+                )
             )
+            if profiler is not None and profiler.game_over_unreviewed:
+                for out in profiler.flush(ts):
+                    coach.on_event(out, ts)
             student.heard(board.ply(), [m.text for m in drain() if m.text], "game_end")
             break
         if step["kind"] != "move":
@@ -836,9 +941,9 @@ def play_coached(facts: dict, coach, student: Student) -> dict:
             by_user=step["by_user"],
             think_ms=None,
         )
-        coach.on_event(move, ts)
-        coach.on_event(MoveAssessment.model_validate({**step["assessment"], "game_id": game}), ts)
-        coach.on_event(Analysis.model_validate({**step["analysis"], "game_id": game}), ts)
+        send(move)
+        send(MoveAssessment.model_validate({**step["assessment"], "game_id": game}))
+        send(Analysis.model_validate({**step["analysis"], "game_id": game}))
         board.push(chess.Move.from_uci(step["uci"]))
         messages = drain()
         costly = step["by_user"] and step["assessment"].get("severity") in ("mistake", "blunder")
@@ -882,24 +987,22 @@ def cmd_session(args: argparse.Namespace) -> None:
         raise SystemExit("a paid run needs --budget-usd")
     out = OUT / "runs" / args.run
     out.mkdir(parents=True, exist_ok=True)
-    cells: dict[str, list[Path]] = defaultdict(list)
-    for p in sorted(FACTS.glob("*.json")):
-        cells[cell_of(p.stem)].append(p)
     todo = [
-        (cell, paths)
-        for cell, paths in sorted(cells.items())
-        if not (out / f"{cell}.json").exists()
-        and (not args.only or any(k in cell for k in args.only))
+        (sid, paths)
+        for sid, paths in sessions_of(args.batch)
+        if not (out / f"{sid}.json").exists()
+        and (not args.only or any(k in sid for k in args.only))
     ]
     print(f"{len(todo)} sessions to run -> {out.relative_to(ROOT)}", flush=True)
+    print(f"the coach: {Path(sidecoach.__file__).parent}", flush=True)
     t0 = time.time()
     new_engine: dict = {}
 
     def one(job: tuple[str, list[Path]]) -> str:
-        cell, paths = job
-        record = run_session(paths, args.coach, args.student, ledger)
+        sid, paths = job
+        record = run_session(paths, args.coach, args.student, ledger, sid)
         new_engine.update(record.pop("engine_new"))
-        (out / f"{cell}.json").write_text(json.dumps(record, ensure_ascii=False, indent=1), "utf-8")
+        (out / f"{sid}.json").write_text(json.dumps(record, ensure_ascii=False, indent=1), "utf-8")
         spent = f", ${ledger.cost():.3f}" if ledger is not None else ""
         return (
             f"{record['game']}: {record['mistakes']} mistakes, {record['coach_messages']} coach"
@@ -933,36 +1036,217 @@ def _norm(san: str) -> str:
     return san.strip().strip(".,;:'\"").rstrip("+#!?").replace("0-0", "O-O")
 
 
-def decide(item: dict, notes: list[str], provider, ledger) -> tuple[str, bool, str]:
+# The student does not read the board for itself. A language model reading a list of squares,
+# with no time to think, invents attacks ("Black's last move attacks my queen on d2"), and a
+# note about threats then moved it off good moves anywhere: in the first gate (2026-09-26) the
+# placebo note fixed 39% of the errors and broke 46% of the good instincts, the cure 59% and
+# 59%. The habit is not looking, and its cure is looking: the student makes the checks its
+# notebook tells it to make -- none without one -- and each is answered here, truthfully, as a
+# player who looks would see it; the student decides on what it found.
+CHECKS = {
+    "threats": "what their last move attacks, and what captures or checks they could play next",
+    "tactics": "whether you have a check, capture or attack that wins material",
+    "safety": "whether the move you want to play loses material",
+    "development": "whether your knights and bishops are out and your king is castled",
+}
+
+
+def move_words(board: chess.Board, move: chess.Move, me: chess.Color) -> str:
+    """A move as a player says it: "Rc3 (your rook from c2 to c3)", "Bxc2 (their bishop on d3
+    takes your rook on c2)"."""
+    piece = board.piece_at(move.from_square)
+    assert piece is not None
+    san = board.san(move)
+    if board.is_castling(move):
+        return f"{san} ({'you castle' if piece.color == me else 'they castle'})"
+    owner, other = ("your", "their") if piece.color == me else ("their", "your")
+    name = chess.piece_name(piece.piece_type)
+    frm, to = chess.square_name(move.from_square), chess.square_name(move.to_square)
+    promo = f", making a {chess.piece_name(move.promotion)}" if move.promotion else ""
+    if board.is_capture(move):
+        taken = board.piece_at(move.to_square)
+        victim = chess.PAWN if taken is None else taken.piece_type
+        victim_name = chess.piece_name(victim)
+        return f"{san} ({owner} {name} on {frm} takes {other} {victim_name} on {to}{promo})"
+    return f"{san} ({owner} {name} from {frm} to {to}{promo})"
+
+
+def _points(n: int) -> str:
+    return f"{n} point{'s' if n != 1 else ''} of material"
+
+
+def answer_check(check: str, item: dict) -> str:
+    """What a player sees who makes this check here: the item's own lines (habits.situation),
+    read where they settle."""
+    board = chess.Board(item["fen"])
+    me = board.turn
+    if check == "threats":
+        if item["threat_win"] is None:  # no passing in check: the threat is the check
+            return (
+                f"You are in check from {item['last_san']}."
+                if item.get("last_san")
+                else ("You are in check.")
+            )
+        if not (item["threat_mates"] or item["threat_win"] >= TACTIC_GAIN):
+            return "Nothing: they threaten none of your pieces."
+        after = board.copy(stack=False)
+        after.push(chess.Move.null())
+        first = move_words(after, chess.Move.from_uci(item["threat_line"][0]), me)
+        if item["threat_mates"]:
+            return f"They threaten checkmate, starting with {first}."
+        return (
+            f"If you do nothing about it, they play {first}, and when the exchanges are over they"
+            f" are {_points(item['threat_win'])} up."
+        )
+    if check == "tactics":
+        if not (item["tactic_mates"] or item["tactic_win"] >= TACTIC_GAIN):
+            return "No: none of your checks, captures or attacks wins material."
+        # The move among those the student is weighing: the engine's own first move is not
+        # always one of them, and the student then named a move it could not play (3 of 156).
+        moves = {c["uci"]: c for c in item["candidates"]}
+        uci = item["tactic_line"][0]
+        if uci not in moves:
+            cashing = [
+                c
+                for c in item["candidates"]
+                if c.get("swing", 0) - item.get("owed", 0) >= TACTIC_GAIN and c["loss"] < MISS
+            ]
+            if not cashing:
+                return "No: none of the moves you are weighing wins material."
+            uci = max(cashing, key=lambda c: (c.get("swing", 0), -c["loss"]))["uci"]
+        first = move_words(board, chess.Move.from_uci(uci), me)
+        if item["tactic_mates"]:
+            return f"Yes: {first} leads to checkmate."
+        return f"Yes: {first} wins {_points(item['tactic_win'])} when the exchanges are over."
+    if check == "safety":
+        instinct = next(c for c in item["candidates"] if c["uci"] == item["instinct"])
+        lost = -instinct.get("swing", 0)
+        if lost >= TACTIC_GAIN:
+            return (
+                f"No: after {instinct['san']} you lose {_points(lost)} when the exchanges are over."
+            )
+        return f"You see nothing wrong with {instinct['san']}."
+    if check == "development":
+        home = {
+            chess.WHITE: {chess.B1, chess.G1, chess.C1, chess.F1},
+            chess.BLACK: {chess.B8, chess.G8, chess.C8, chess.F8},
+        }[me]
+        minors = board.pieces(chess.KNIGHT, me) | board.pieces(chess.BISHOP, me)
+        at_home = len([s for s in minors if s in home])
+        king = board.king(me)
+        castled = (
+            king is not None
+            and chess.square_file(king) in (1, 2, 6)
+            and (chess.square_rank(king) == (0 if me == chess.WHITE else 7))
+        )
+        pieces = (
+            "your knights and bishops are all out"
+            if not at_home
+            else f"{at_home} of your knights and bishops {'is' if at_home == 1 else 'are'} still"
+            " at home"
+        )
+        return f"{pieces.capitalize()}; your king {'is' if castled else 'is not'} castled."
+    raise ValueError(check)
+
+
+PHASES = ("opening", "middlegame", "endgame")
+# The notebook is read once, note by note, by a model given time to think. Asked per position
+# as the player, or per check, with no reasoning, it said yes to every check for "Stay calm and
+# play solid chess" and quoted the check list's own words as the note (2026-09-26); asked note
+# by note it read twelve test notes as a person would, at effort low and above -- but at low
+# the threat cure alone was read as four checks, development among them. One call a notebook.
+READER = "openai:gpt-5.6-luna@medium"
+_READ_MENU = (
+    "threats -- look at what the opponent's last move attacks and what captures or checks they"
+    " could play next\n"
+    "tactics -- look for a check, capture or attack of one's own that wins material\n"
+    "safety -- check whether the move one wants to play loses material\n"
+    "development -- check whether the knights and bishops are out and the king is castled"
+)
+
+
+def phase_of(board: chess.Board) -> str:
+    if board.fullmove_number <= 12:
+        return "opening"
+    return "endgame" if len(board.piece_map()) <= 12 else "middlegame"
+
+
+def notebook_checks(notes: list[str], reader, ledger) -> tuple[dict[str, list[str]], str]:
+    """The checks a notebook tells its player to make, in each phase of the game, and what
+    the reader said: one call a notebook."""
+    numbered = "\n".join(f"{i}. {n}" for i, n in enumerate(notes, 1))
+    ask = (
+        f"A chess player's notebook:\n{numbered}\n\n"
+        f"Four kinds of check a player can make before a move:\n{_READ_MENU}\n\n"
+        "For each note, say which of these checks it tells the player to make -- only a check"
+        " the note itself asks for, in any words; most notes ask for none of them -- and the"
+        " phase of the game it is limited to (opening, middlegame, endgame, or any). Answer one"
+        " line per note, exactly:\n<number>: <checks separated by commas, or none> | <phase>"
+    )
+    text = chat(reader, ledger, "You read notes carefully and literally.", ask, "exam-read")
+    by_phase: dict[str, list[str]] = {p: [] for p in PHASES}
+    seen: set[int] = set()
+    for line in text.splitlines():
+        found = re.match(r"\s*(\d+)\s*[:.]\s*([^|]*)\|\s*([a-z]+)", line.lower())
+        # Only the notes there are, each once: the reader split a one-note notebook at its
+        # semicolon and answered for a note 2 with every check (2026-09-26).
+        number = int(found.group(1)) if found else 0
+        if not found or not 1 <= number <= len(notes) or number in seen:
+            continue
+        seen.add(number)
+        named = [c for c in CHECKS if re.search(rf"\b{c}\b", found.group(2))]
+        for p in PHASES:
+            if found.group(3) in ("any", p):
+                by_phase[p] += [c for c in named if c not in by_phase[p]]
+    return by_phase, text
+
+
+def decide(
+    item: dict, notes: list[str], checks: dict[str, list[str]], provider, ledger
+) -> tuple[str, bool, str]:
     """The student's move in an exam position with this notebook: (uci, a valid answer, what
-    it said). An empty notebook is the instinct, no call."""
+    it said). It makes the checks its notebook calls for in this phase of the game (none: its
+    instinct, no call) and decides on what they found. An empty notebook is the instinct."""
     instinct = next(c for c in item["candidates"] if c["uci"] == item["instinct"])
     if not notes:
         return instinct["uci"], True, ""
+    board = chess.Board(item["fen"])
+    side = "White" if board.turn == chess.WHITE else "Black"
+    phase = phase_of(board)
+    made = checks.get(phase, [])
+    if not made:
+        return instinct["uci"], True, ""
+    notebook = "\n".join(f"- {n}" for n in notes)
+    system = persona(item["level"], None)
     rng = random.Random(item["id"])
     others = [c for c in item["candidates"] if c["uci"] != item["instinct"]]
     rng.shuffle(others)
-    board = chess.Board(item["fen"])
-    side = "White" if board.turn == chess.WHITE else "Black"
-    last = f"Their last move: {item['last_san']}\n" if item.get("last_san") else ""
-    notebook = "\n".join(f"- {n}" for n in notes)
+
+    def words(c: dict) -> str:
+        return move_words(board, chess.Move.from_uci(c["uci"]), board.turn)
+
+    seen = "\n".join(f"- {c}: {answer_check(c, item)}" for c in made)
+    last = f" Their last move was {item['last_san']}." if item.get("last_san") else ""
     user = (
-        f"You are playing {side}, and it is your move. The board:\n{board_text(board)}\n{last}\n"
-        f"Your notebook, from your lessons with your coach:\n{notebook}\n\n"
-        f"Your first instinct is to play {instinct['san']}. The other moves you are also "
-        f"considering: {', '.join(c['san'] for c in others)}.\n\n"
-        "Check your notebook. If something in it applies to this position and changes your "
-        "mind, play the move it leads you to; if nothing in it applies, play your instinct.\n"
-        "Answer on one line exactly:\nMOVE: <one of the moves above> | NOTE: <the note you "
-        "used, or none>"
+        f"You are playing {side}; it is move {board.fullmove_number}, the {phase}, and your"
+        " move."
+        f"{last}\nYour notebook:\n{notebook}\n\n"
+        f"The move that came to mind first: {words(instinct)}.\n"
+        f"The other moves you are considering:\n"
+        + "\n".join(f"- {words(c)}" for c in others)
+        + f"\n\nWhat your checks found:\n{seen}\n\n"
+        "Play the move that came to mind first unless what your checks found gives you a"
+        " reason to play another of these moves. Answer on one line exactly:\nMOVE: <one of"
+        " the moves above, as written before the brackets>"
     )
-    text = chat(provider, ledger, persona(item["level"], None), user, "exam", temperature=0.0)
-    found = re.search(r"MOVE:\s*([^|\n]+)", text)
-    said = _norm(found.group(1).split()[0]) if found and found.group(1).split() else ""
+    text = chat(provider, ledger, system, user, "exam", temperature=0.0)
+    said_move = re.search(r"MOVE:\s*([^|\n(]+)", text)
+    said = _norm(said_move.group(1).split()[0]) if said_move and said_move.group(1).split() else ""
+    record = f"{seen}\n{text}"
     for c in item["candidates"]:
         if _norm(c["san"]) == said:
-            return c["uci"], True, text
-    return instinct["uci"], False, text
+            return c["uci"], True, record
+    return instinct["uci"], False, record
 
 
 def _notebooks(run: str) -> dict[tuple[str, int], list[tuple[str, list[str]]]]:
@@ -977,12 +1261,14 @@ def _notebooks(run: str) -> dict[tuple[str, int], list[tuple[str, list[str]]]]:
 def cmd_exam(args: argparse.Namespace) -> None:
     import stamp
     from judge import BudgetExceeded, Ledger
-    from providers import Metered, provider_for
+    from providers import provider_for
 
     items = json.loads(EXAM.read_text(encoding="utf-8"))["items"]
-    inner = provider_for(args.student, timeout_s=300)
+    # A paid student's calls are checked and recorded by chat(), on the ledger it is given:
+    # through Metered as well, every call was recorded twice.
+    provider = provider_for(args.student, timeout_s=300)
+    reader = provider_for(args.reader, timeout_s=300)
     ledger = None
-    provider = inner
     if args.student != "local":
         if args.budget_usd is None:
             raise SystemExit("a paid student needs --budget-usd")
@@ -994,8 +1280,7 @@ def cmd_exam(args: argparse.Namespace) -> None:
             resume=True,
             version=stamp.code_version(),
         )
-        provider = Metered(inner, ledger, "exam")
-    folder = OUT / "exam" / tag(args.student)
+    folder = EXAM_RESULTS / tag(args.student)
     folder.mkdir(parents=True, exist_ok=True)
     for arm in args.arms.split(","):
         path = folder / f"{arm}.jsonl"
@@ -1025,10 +1310,34 @@ def cmd_exam(args: argparse.Namespace) -> None:
                         if (it["id"], f"{habit}:{game}") not in done:
                             jobs.append((habit, level, game, notes, it))
         print(f"{arm}: {len(jobs)} decisions to make", flush=True)
+        t0 = time.time()
+        reads_path = folder / f"{arm}.reads.json"
+        reads: dict[str, dict] = (
+            json.loads(reads_path.read_text("utf-8")) if reads_path.exists() else {}
+        )
 
-        def one(job):
+        def read(notes: list[str], reads: dict = reads) -> None:
+            by_phase, said = notebook_checks(notes, reader, ledger)
+            reads["\n".join(notes)] = {"checks": by_phase, "said": said}
+
+        unread = {
+            "\n".join(notes): notes
+            for _, _, _, notes, _ in jobs
+            if notes and "\n".join(notes) not in reads
+        }
+        try:
+            with ThreadPoolExecutor(args.workers) as pool:
+                list(pool.map(read, unread.values()))
+        except BudgetExceeded as exc:
+            print(f"stopped: {exc}")
+            break
+        finally:
+            reads_path.write_text(json.dumps(reads, ensure_ascii=False, indent=1), "utf-8")
+
+        def one(job, reads: dict = reads):
             habit, level, game, notes, it = job
-            uci, valid, said = decide(it, notes, provider, ledger)
+            checks = reads["\n".join(notes)]["checks"] if notes else {}
+            uci, valid, said = decide(it, notes, checks, provider, ledger)
             chosen = next(c for c in it["candidates"] if c["uci"] == uci)
             return {
                 "item": it["id"],
@@ -1036,6 +1345,7 @@ def cmd_exam(args: argparse.Namespace) -> None:
                 "habit": habit,
                 "level": level,
                 "kind": it["kind"],
+                "checks": checks.get(phase_of(chess.Board(it["fen"])), []),
                 "choice": uci,
                 "loss": chosen["loss"],
                 "good": chosen["loss"] < GOOD,
@@ -1044,7 +1354,6 @@ def cmd_exam(args: argparse.Namespace) -> None:
                 "said": said,
             }
 
-        t0 = time.time()
         try:
             with (
                 ThreadPoolExecutor(args.workers) as pool,
@@ -1071,7 +1380,7 @@ def tag(spec: str) -> str:
 def cmd_report(args: argparse.Namespace) -> None:
     from bench import mcnemar, wilson
 
-    folder = OUT / "exam" / tag(args.student)
+    folder = EXAM_RESULTS / tag(args.student)
     arms = ["none", "off", "gold", *[r for r in args.runs.split(",") if r]]
     rows: dict[str, list[dict]] = {}
     for arm in arms:
@@ -1143,6 +1452,7 @@ def main() -> None:
     g.add_argument("--keep", type=int, default=GAMES_KEPT, help="the games a session is given")
     g.add_argument("--force", action="store_true", help="play every game again")
     g.add_argument("--redo", choices=["students", "exam"], help="play only these again")
+    g.add_argument("--batch", type=int, default=0, help="a batch of fresh games (0: the first)")
     d = sub.add_parser("exam-draw")
     d.add_argument("--workers", type=int, default=20)
     d.add_argument("--force", action="store_true")
@@ -1154,9 +1464,11 @@ def main() -> None:
     s.add_argument("--budget-usd", type=float)
     s.add_argument("--workers", type=int, default=4)
     s.add_argument("--only", nargs="*", help="only the games whose names hold one of these")
+    s.add_argument("--batch", type=int, default=0, help="the batch of games to coach")
     e = sub.add_parser("exam")
     e.add_argument("--student", default="local")
     e.add_argument("--arms", default="none,off,gold")
+    e.add_argument("--reader", default=READER, help="reads the notebook's checks, once each")
     e.add_argument("--budget-usd", type=float)
     e.add_argument("--workers", type=int, default=4)
     r = sub.add_parser("report")

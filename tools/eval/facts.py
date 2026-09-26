@@ -167,7 +167,8 @@ def game_from_game(game: chess.pgn.Game, user_side: str) -> dict:
     }
 
 
-def sources(kind: str) -> list[tuple[str, dict]]:
+def sources(kind: str, batch: int = 0) -> list[tuple[str, dict]]:
+    """The games of a source; `batch` picks a batch of the students' games (students.py)."""
     out: list[tuple[str, dict]] = []
     if kind == "masters":
         for path in sorted((ROOT / "data" / "eval" / "masters").glob("*/*.json")):
@@ -244,8 +245,12 @@ def sources(kind: str) -> list[tuple[str, dict]]:
                     i += 1
     elif kind == "students":
         # The simulated students' games (tools/eval/students.py): one file a habit and level,
-        # the student's side in each game's own header.
-        for path in sorted((ROOT / "data" / "students" / "games").glob("*.pgn")):
+        # the student's side in each game's own header. Batch 0 is the first set; each round
+        # of the improvement loop has a batch of its own.
+        games = ROOT / "data" / "students" / "games"
+        if batch:
+            games = ROOT / "data" / "students" / "batches" / f"b{batch}" / "games"
+        for path in sorted(games.glob("*.pgn")):
             with path.open(encoding="utf-8") as fh:
                 i = 0
                 while (game := chess.pgn.read_game(fh)) is not None:

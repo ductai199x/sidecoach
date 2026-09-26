@@ -249,43 +249,115 @@ def test_the_board_is_listed_piece_by_piece():
     assert "Black: King e8" in text
 
 
-def _item():
+def _item(**kw):
+    """An exam position from the first draw: Black's rook on c2 hangs to the bishop on d3;
+    the instinct, ...c5, leaves it there."""
     return {
-        "id": "L800-threat_blind-x-p020",
+        "id": "L800-threat_blind-L800x11-p113",
         "level": 800,
-        "fen": chess.STARTING_FEN,
-        "last_san": None,
-        "instinct": "a2a3",
+        "fen": "8/3K4/1kp5/8/8/3BR3/2r5/8 b - - 3 57",
+        "last_san": "Bd3",
+        "instinct": "c6c5",
+        "threat_win": 5,
+        "threat_mates": False,
+        "threat_line": ["d3c2", "b6c5"],
+        "tactic_win": 0,
+        "tactic_mates": False,
+        "tactic_line": ["c2c3"],
+        "owed": 0,
         "candidates": [
-            {"uci": "a2a3", "san": "a3", "loss": 0.2},
-            {"uci": "e2e4", "san": "e4", "loss": 0.0},
-            {"uci": "g1f3", "san": "Nf3", "loss": 0.01},
+            {"uci": "c6c5", "san": "c5", "loss": 0.428, "swing": -5},
+            {"uci": "c2c3", "san": "Rc3", "loss": 0.0, "swing": 0},
+            {"uci": "c2d2", "san": "Rd2", "loss": 0.006, "swing": 0},
         ],
+        **kw,
     }
 
 
-def test_an_empty_notebook_keeps_the_instinct_without_a_call():
-    class Never:
-        def chat(self, *a, **kw):
-            raise AssertionError("no call for an empty notebook")
-
-    assert students.decide(_item(), [], Never(), None) == ("a2a3", True, "")
+class _Never:
+    def chat(self, *a, **kw):
+        raise AssertionError("no call")
 
 
-def test_the_students_answer_is_read_from_its_move_line():
+def test_an_empty_notebook_or_one_that_asks_for_no_check_keeps_the_instinct_without_a_call():
+    assert students.decide(_item(), [], {}, _Never(), None) == ("c6c5", True, "")
+    # A note for the opening only, in an endgame.
+    book = ["In the opening, castle early."]
+    checks = {"opening": ["development"], "middlegame": [], "endgame": []}
+    assert students.decide(_item(), book, checks, _Never(), None) == ("c6c5", True, "")
+
+
+def test_the_checks_the_notebook_calls_for_are_answered_as_a_player_who_looks_would_see():
+    item = _item()
+    assert students.answer_check("threats", item) == (
+        "If you do nothing about it, they play Bxc2 (their bishop on d3 takes your rook on c2),"
+        " and when the exchanges are over they are 5 points of material up."
+    )
+    assert students.answer_check("safety", item) == (
+        "No: after c5 you lose 5 points of material when the exchanges are over."
+    )
+    assert students.answer_check("tactics", item).startswith("No:")
+    # In check there is no passing move to read a threat from.
+    assert students.answer_check("threats", _item(threat_win=None)) == (
+        "You are in check from Bd3."
+    )
+
+
+def test_a_tactic_is_named_among_the_moves_the_student_weighs():
+    """The engine's own first move is not always a candidate: the student then named a move
+    it could not play (3 of 156 in the first gate)."""
+    item = _item(tactic_win=3, tactic_line=["b6b5"])
+    item["candidates"][2]["swing"] = 3
+    assert students.answer_check("tactics", item).startswith("Yes: Rd2 (your rook from c2 to")
+    item["candidates"][2]["swing"] = 0
+    assert students.answer_check("tactics", item).startswith("No: none of the moves you are")
+
+
+def test_the_students_move_is_read_from_its_answer_after_its_checks():
     def said(text):
         class One:
             def chat(self, system, messages, **kw):
-                assert "Your first instinct is to play a3" in messages[0]["content"]
+                prompt = messages[0]["content"]
+                assert "The move that came to mind first: c5 (your pawn from c6 to c5)" in prompt
+                assert "they play Bxc2 (their bishop on d3 takes your rook on c2)" in prompt
                 return SimpleNamespace(text=text, stats={})
 
-        return students.decide(_item(), ["check threats"], One(), None)
+        checks = {"opening": ["threats"], "middlegame": ["threats"], "endgame": ["threats"]}
+        return students.decide(_item(), ["look at what they attack"], checks, One(), None)
 
-    assert said("MOVE: Nf3+ | NOTE: check threats")[:2] == ("g1f3", True)
-    assert said("MOVE: e4. | NOTE: none")[:2] == ("e2e4", True)
+    assert said("MOVE: Rc3")[:2] == ("c2c3", True)
+    assert said("MOVE: Rd2 (your rook from c2 to d2)")[:2] == ("c2d2", True)
     # A move not among the candidates: the instinct, marked as not a valid answer.
-    assert said("MOVE: Qh5 | NOTE: none")[:2] == ("a2a3", False)
-    assert said("I would play e4")[:2] == ("a2a3", False)
+    assert said("MOVE: Qh5")[:2] == ("c6c5", False)
+    assert said("I would play Rc3")[:2] == ("c6c5", False)
+
+
+def test_the_notebook_is_read_note_by_note_and_only_the_notes_there_are():
+    def read(text, notes):
+        class One:
+            def chat(self, system, messages, **kw):
+                return SimpleNamespace(text=text, stats={})
+
+        return students.notebook_checks(notes, One(), None)[0]
+
+    # The reader split a one-note notebook at its semicolon and answered for a note 2.
+    got = read("1: threats | any\n2: threats, tactics, safety | any", ["look at what it attacks"])
+    assert got == {"opening": ["threats"], "middlegame": ["threats"], "endgame": ["threats"]}
+    got = read("1: development | opening\n2: none | any", ["castle early", "stay calm"])
+    assert got == {"opening": ["development"], "middlegame": [], "endgame": []}
+
+
+def test_a_note_counts_only_when_it_comes_from_the_coachs_words():
+    coach = [
+        "That cost you something: Bxg1 was the move -- it takes their rook: nothing defends "
+        "it; after fxg6, hxg6. What were you expecting that move to do?"
+    ]
+    assert students.from_coach("it takes their rook: nothing defends it", coach)
+    assert students.from_coach("Bxg1 takes their rook, nothing defends it", coach)
+    assert students.from_coach("What were you expecting that move to do", coach)
+    # The student's own rule, and a quote too short to be one.
+    assert not students.from_coach("scan forcing captures first", coach)
+    assert not students.from_coach("rook", coach)
 
 
 def test_a_session_keeps_the_games_where_the_habit_shows_most():

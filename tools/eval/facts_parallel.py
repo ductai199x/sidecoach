@@ -79,11 +79,14 @@ def main() -> None:
     ap.add_argument("source", choices=["masters", "recordings", "bots", "bench", "students"])
     ap.add_argument("--workers", type=int, default=20)
     ap.add_argument("--limit", type=int)
+    ap.add_argument("--batch", type=int, default=0, help="students: the batch (students.py)")
     args = ap.parse_args()
     folder = args.source if args.source in ("bots", "bench", "students") else f"{args.source}_v2"
+    if args.source == "students" and args.batch:
+        folder = f"students_b{args.batch}"
     out = ROOT / "data" / "eval" / "facts" / folder
     out.mkdir(parents=True, exist_ok=True)
-    todo = F.sources(args.source)
+    todo = F.sources(args.source, args.batch)
     if args.limit:
         todo = todo[: args.limit]
     # Longest games first so the pool ends together.
