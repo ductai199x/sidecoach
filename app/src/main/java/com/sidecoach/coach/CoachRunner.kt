@@ -256,6 +256,10 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
                 if (message.ply != null) "ply ${message.ply}" else "no ply",
             )
             if (one.attempts != 0) meta.add("${one.attempts} attempt${if (one.attempts != 1) "s" else ""}")
+            if (one.leaks.isNotEmpty()) {
+                // For debugging: what the reply gave away of the answer, spoken anyway.
+                meta.add("leak noted: " + one.leaks.joinToString("; "))
+            }
             if (message.text.isEmpty()) {
                 // The model's reply failed the checks and the quick answer already stands.
                 PanelEngine.emit(

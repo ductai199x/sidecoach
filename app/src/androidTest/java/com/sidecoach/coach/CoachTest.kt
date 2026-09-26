@@ -323,6 +323,19 @@ class CoachTest {
         assertEquals(DisclosureLevel.IDEA, out[0].level)
         val messages = given(provider, 0)
         val current = currentMoveMessage(messages)
+        // Everything, the answer included (Tai, 2026-09-26: the model sees engine lines at hints;
+        // the reply is checked; desktop 9e2e8e2).
+        assertTrue("the model sees every move", "Legal moves" in current && "Qxf7#" in current)
+        assertTrue(current, "the best first move is the answer they are finding" in current)
+        assertTrue(current, "On the board (complete lists)" in current)
+        // The rung's facts -- the goal and the pattern -- stand apart from those past it.
+        val facts = current.substringAfter("## Facts (the player to move)").substringBefore("## Past this level")
+        assertTrue(facts, "goal: the player can mate in one move" in facts)
+        assertTrue(facts, "pattern: a mating attack" in facts)
+        for (secret in listOf("Qxf7", "queen", "h5f7", "candidates")) assertTrue(secret, secret !in facts)
+        val beyond = current.substringAfter("## Past this level").substringBefore("## Disclosure")
+        assertTrue(beyond, "piece: the player's queen on h5" in beyond && "Qxf7" in beyond)
+        assertTrue(current, "You see everything, the answer included" in current)
         assertTrue(current, "the first hint in the board's own words" in current)
         assertTrue(current, "Their king on e8 has one free square" in current)
         val directive = directiveOf(messages)
@@ -437,12 +450,36 @@ class CoachTest {
         assertEquals("the limit and its slack, no more", 3, heard.sumOf { t -> t.count { it == '.' } })
     }
 
-    /** A late verdict's lesson must not give away the answer in the position faced now (af1bae2). */
+    /**
+     * A late verdict's lesson that gives away the answer in the position faced now is noted
+     * (af1bae2) -- logged, never a reason to refuse the reply (Tai, 2026-09-26; desktop 9e2e8e2).
+     */
     @Test
     fun aLateLessonDoesNotGiveAwayTheMoveTheyFaceNow() {
         val request = afterMoveRequest(SCHOLAR, "Bxf7+", "h5f7", nowAnswer = listOf("Qxf7#"))
-        val faults = Speaker(ScriptedProvider(emptyList())).problemsOf("And now Qxf7# is mate on the spot.", request)
-        assertTrue(faults.toString(), "gives away Qxf7# in the position they face now" in faults)
+        val speaker = Speaker(ScriptedProvider(emptyList()))
+        val said = "And now Qxf7# is mate on the spot."
+        assertTrue("gives away Qxf7# in the position they face now" in speaker.leaks(said, request))
+        assertTrue(speaker.problemsOf(said, request).none { it.startsWith("gives away") })
+    }
+
+    /**
+     * A reply that gives the answer away is logged, never refused (Tai, 2026-09-26: the leak
+     * check is "a debugging tool and not something used to reject response"; desktop 9e2e8e2).
+     */
+    @Test
+    fun aLeakedDraftIsSpokenAndTheLeakLogged() {
+        val (coach, provider) = coach(
+            listOf("Their king on e8 is boxed in: your queen can end it on f7. Which check is it?")
+        )
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 7.0)
+        val out = messages(coach)
+        assertTrue(out.size == 1 && out[0].text.startsWith("Their king on e8 is boxed in"))
+        val spoken = coach.spoken.last()
+        assertTrue(spoken.attempts == 1 && spoken.problems.isEmpty() && coach.speaker.fallbacks == 0)
+        assertTrue(spoken.leaks.toString(), "withheld square f7" in spoken.leaks && "withheld piece queen" in spoken.leaks)
+        assertEquals("no second call for a leak", 1, provider.prompts.size)
     }
 
     /**

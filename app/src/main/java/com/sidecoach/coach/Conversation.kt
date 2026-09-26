@@ -34,10 +34,11 @@ import java.util.Locale
  * Once the model has seen a move's line it is frozen and never edited; facts that arrive
  * later go in a note of their own. `# Position now` is the last ply in full at the
  * disclosure level in force for the position the player faces: the board, the last move,
- * the standing, the engine's lines (withheld on the player's own turn below MOVE), the facts
- * in the third person per side, the disclosure line, the complete inventory of what stands on
- * the board, the player's record so far, and what was already said here. The coach appends
- * its task and answers as the assistant.
+ * the standing, the engine's lines, the facts in the third person per side (below MOVE on the
+ * player's turn, those past the rung set apart, for the model to teach from), the disclosure
+ * line -- the model sees everything and the reply is checked for the answer ([leakCheck]) --
+ * the complete inventory of what stands on the board, the player's record so far, and what was
+ * already said here. The coach appends its task and answers as the assistant.
  *
  * Two levers keep a long game's harness small. The dialogue older than the last N plies can
  * be folded by a summariser into one "Earlier dialogue, summarised" line ([foldable],
@@ -58,6 +59,18 @@ const val IDEA_LEVEL_WORDS =
         "their moves the facts name, the target's square too, even where the move goes -- with " +
         "the principle behind it; never the player's move itself, or which of their own pieces " +
         "makes it"
+
+/**
+ * Below the move level the model sees everything -- the engine lines, the legal moves, the facts
+ * past the rung -- and says only what the rung allows; the reply is checked for the answer before
+ * it is spoken ([leakCheck]).
+ */
+const val BEYOND_TITLE =
+    "Past this level (for you to teach from; do not say the move, its square or the piece " +
+        "that makes it)"
+const val SEE_ALL_WORDS =
+    "You see everything, the answer included, so the hint can be precise and true: say what " +
+        "this level allows, built from what you know."
 
 /** One move as it was seen, with the engine's word on it as it arrives. */
 class PlyRecord(val move: MovePlayed) {
@@ -453,16 +466,11 @@ class Conversation {
         if (!full) {
             return "${numbered(move)} ($who): ${verdictLine(record, boardBefore)}"
         }
-        // The legal moves name every move, the mating one with its mark: for the position
-        // the player faces they are shown only once moves may be named.
-        val userToMove = boardAfter.turn == colour
+        // The legal moves name every move, the mating one with its mark: shown at every level,
+        // the answer among them, since the model sees everything and what it says is checked
+        // (Tai, 2026-09-26: "The model need to see everything including engine lines at hint").
         val lines = ArrayList<String>()
-        lines.add(
-            positionText(
-                boardAfter,
-                legal = !(userToMove && level.value < DisclosureLevel.MOVE.value),
-            )
-        )
+        lines.add(positionText(boardAfter, legal = true))
         val turn = turnText(boardAfter)
         // `str.capitalize()`: the first letter up, the rest down.
         lines.add(turn.take(1).uppercase() + turn.drop(1).lowercase() + ".")
@@ -512,18 +520,19 @@ class Conversation {
         if (facts.isNotEmpty() && !board.isGameOver()) {
             out.add("Facts (${factsOwner(userToMove)})" to facts.joinToString("\n"))
         }
-        if (userToMove && level.value < DisclosureLevel.MOVE.value) {
+        val hiding = userToMove && level.value < DisclosureLevel.MOVE.value && !board.isGameOver()
+        if (hiding) {
+            // The facts past the rung -- the piece, the target, the move and why it works -- are
+            // the model's to teach from, set apart so the rung's own stay plain (a hint built on
+            // the heuristic sheet alone could only reword it).
+            val beyond = beyondLines(record, board, level)
+            if (beyond.isNotEmpty()) out.add(BEYOND_TITLE to beyond.joinToString("\n"))
             out.add(
-                "Disclosure" to "Level ${level.name.lowercase()}: ${levelWords(level)}."
+                "Disclosure" to "Level ${level.name.lowercase()}: ${levelWords(level)}. $SEE_ALL_WORDS"
             )
         }
-        // The inventory lists the checks and captures on offer, the answer among them: on the
-        // player's turn it comes with the move (at the focus rung it named Qxf7#).
-        if (!(userToMove && level.value < DisclosureLevel.MOVE.value)) {
-            out.add(
-                "On the board (complete lists)" to inventoryLines(board, colour).joinToString("\n")
-            )
-        }
+        // The inventory lists the checks and captures on offer, the answer among them.
+        out.add("On the board (complete lists)" to inventoryLines(board, colour).joinToString("\n"))
         val tally = tallyText(record)
         if (tally.isNotEmpty()) out.add("The player's record" to tally)
         return out
@@ -688,12 +697,14 @@ class Conversation {
         if (analysis == null || analysis.lines.isEmpty()) return "" to listOf("not in yet.")
         val toMove = board.turn
         val userToMove = toMove == colour
-        if (userToMove && level.value < DisclosureLevel.MOVE.value) {
-            return "" to listOf("withheld at this disclosure level.")
-        }
         val whose = if (userToMove) "the player's" else "the opponent's"
+        val answer = if (userToMove && level.value < DisclosureLevel.MOVE.value) {
+            "; the best first move is the answer they are finding: teach from it, never name it"
+        } else {
+            ""
+        }
         val top = analysis.lines[0].expectedScore
-        val limit = if (!userToMove || level.value >= DisclosureLevel.LINE.value) LINE_PLIES else 1
+        val limit = LINE_PLIES
         val best = analysis.lines.take(BEST_LINES)
         val weaker = analysis.lines.drop(BEST_LINES).take(WEAKER_LINES)
         val out = ArrayList<String>()
@@ -722,7 +733,7 @@ class Conversation {
                 )
             }
         }
-        return "($whose move; scores from the player's side)" to out
+        return "($whose move; scores from the player's side$answer)" to out
     }
 
     /**
@@ -800,6 +811,19 @@ class Conversation {
         }
         out.addAll(factLines(visible, board, side))
         return out
+    }
+
+    /**
+     * The facts past [level] on the player's turn, one per line: the piece, the target, the move
+     * and why it works -- the model's to teach from, not to say. `conversation._beyond_lines`.
+     */
+    private fun beyondLines(record: PlyRecord, board: Board, level: DisclosureLevel): List<String> {
+        val facts = record.facts ?: return emptyList()
+        val shown = visibleFacts(facts, level)
+        val every = visibleFacts(facts, DisclosureLevel.LINE)
+        val beyond = LinkedHashMap<String, Any?>()
+        for ((key, value) in every) if (key !in shown) beyond[key] = value
+        return factLines(beyond, board, "player")
     }
 
     /**

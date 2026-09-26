@@ -599,6 +599,7 @@ object PanelEngine {
                 put("ply", message.ply ?: JSONObject.NULL)
                 put("attempts", spoken.attempts)
                 put("problems", JSONArray(spoken.problems))
+                put("leaks", JSONArray(spoken.leaks))
                 put("fallback", spoken.problems.isNotEmpty())
                 put("voice", action)
                 put("fen", message.fen ?: JSONObject.NULL)

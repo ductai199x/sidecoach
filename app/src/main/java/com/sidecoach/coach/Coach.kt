@@ -43,13 +43,15 @@ import kotlin.random.Random
  * The coach: what to say, when, from which facts, checked before it is shown.
  * `coach/coach.py`.
  *
- * Three things keep it honest. The disclosure level decides which facts reach the model at
- * all, so it cannot repeat what it never saw. The level only ever moves through the
+ * Three things keep it honest. The model sees everything -- the engine lines, the legal moves,
+ * the facts past the current level -- so its hints can be precise and true, and the disclosure
+ * level says what it may say (Tai, 2026-09-26). The level only ever moves through the
  * deterministic unlocks in [Disclosure], driven by what the user did or asked, never by the
- * model's own judgement. And every draft is checked twice before it is shown: for leaks
- * past the current level, and for claims about the board that the board contradicts. A
- * draft that fails is regenerated once with the problem named, and then replaced by a
- * template, so the user never sees a leak and never sees nothing.
+ * model's own judgement. And every draft is checked before it is shown for claims about the
+ * board that the board contradicts, a verdict against the record, and the form the task asks
+ * for; a draft that fails is regenerated once with the problem named, and then replaced by a
+ * template, so the user never sees a false claim and never sees nothing. What a reply gives
+ * away of the answer is logged ([Speaker.leaks]), never a reason to refuse it.
  *
  * The model is slow, a second or three, so it runs on a worker thread; the capture loop
  * hands in events and polls for messages, exactly as it does with the engine.
@@ -843,7 +845,7 @@ internal fun percent(value: Double): String =
 
 /**
  * Reads the first verbalized candidate off the model's stream and hands it to a sink
- * sentence by sentence. Each new complete sentence is checked (the leak and board checks)
+ * sentence by sentence. Each new complete sentence is checked (the board and form checks)
  * before it goes; a fault stops the stream with what was said so far kept. The stream is
  * stopped once the candidate is complete -- the second marker seen -- so the other
  * candidates are never written. A reply with no marker at all is one candidate.
@@ -1008,6 +1010,11 @@ class Spoken(
      */
     val verified: List<List<String>> = emptyList(),
     val repaired: Boolean = false,
+    /**
+     * What the model's reply gave away of the answer the level withholds ([Speaker.leaks]):
+     * logged for debugging, never a reason the reply was refused.
+     */
+    val leaks: List<String> = emptyList(),
 )
 
 class CoachPosition(
@@ -1359,8 +1366,9 @@ fun interface DraftCheck {
 /**
  * Runs the model on a worker thread and checks what it says.
  *
- * A draft with a leak or a false claim about the board is sent back once with the problem
- * named; a second failure is replaced by the template, and the failure counted. With a
+ * A draft with a false claim about the board (or against the record, or the form) is sent back
+ * once with the problem named; a second failure is replaced by the template, and the failure
+ * counted. What a reply gives away of the answer is logged, not refused. With a
  * [verifier], every candidate that passes those checks is also read against the messages by
  * a second model, the clean ones are sampled from, and when none is clean the likeliest is
  * repaired once: test-time verification, on top of the demonstrations in C.
@@ -1474,7 +1482,7 @@ class Speaker(
      *
      * A single reply collapses onto the one most typical phrasing, which is why the coach
      * repeated itself. Asking the model to verbalize a small distribution of replies (arxiv
-     * 2510.01171) recovers its range; the leak and board checks then filter that set, and a
+     * 2510.01171) recovers its range; the board and form checks then filter that set, and a
      * reply is sampled by its own stated likelihood from those that pass. Because several
      * are offered at once, a clean one is usually among them, so the template is rarely
      * needed.
@@ -1518,7 +1526,7 @@ class Speaker(
             val streaming = provider as? StreamingProvider
             if (request.streamTo != null && attempts == 1 && verifier == null && streaming != null) {
                 // The first candidate goes to the voice sentence by sentence as it is
-                // written, each sentence checked for leaks before it is said; the stream is
+                // written, each sentence checked before it is said; the stream is
                 // closed once that candidate is complete, the others unwritten.
                 val (limit, _) = directiveLimits(request.messages.last().content.substringAfterLast("# Task"))
                 reader = FirstCandidate(
@@ -1633,9 +1641,13 @@ class Speaker(
             )
             messages = messages.dropLast(1) + retry
         }
+        val leaks: List<String>
         if (problems.isNotEmpty() && !streamed) {
             fallbacks += 1
             text = request.fallback
+            leaks = emptyList()
+        } else {
+            leaks = leaks(text, request)
         }
         val message = CoachMessage(
             text = text,
@@ -1655,6 +1667,7 @@ class Speaker(
             verified = verified,
             repaired = repaired,
             streamed = streamed,
+            leaks = leaks,
         )
     }
 
@@ -1732,40 +1745,14 @@ class Speaker(
         return Triple(emptyList(), verified, false)
     }
 
+    /**
+     * What stops a draft: a false claim about the board, a verdict against the record, the form
+     * the directive asks for, the owner's rules. Not a leak: that is logged ([leaks]), never a
+     * reason to refuse a reply (Tai, 2026-09-26: "it should be used as a debugging tool and not
+     * something used to reject response"). `Speaker._problems`.
+     */
     internal fun problemsOf(text: String, request: CoachRequest): List<String> {
-        // What the user said this turn, what the directive itself disclosed (the engine on
-        // what they asked about) and the moves of the game so far are not leaks: a move
-        // already played may be discussed in full, whatever the level in force. The piece a
-        // played move moved may be named too: "your opponent's rook took on c6" about a move
-        // of the record is no hint, but the word "rook" was a leak whenever the withheld
-        // piece happened to be a rook as well.
-        // What the user said and what the directive disclosed are theirs already. The moves of
-        // the game are no exemption: only the answer is withheld ([leakCheck]), and exempting
-        // the record's moves, squares and pieces had let the answer through.
-        val said = listOfNotNull(request.userText, request.disclosed)
-            .filter { it.isNotEmpty() }.joinToString(" ")
-        // What the sheet says the threats do ("Ne6 (uncovers an attack on the pawn on d2)") is
-        // shown to the model: a piece named there is the threat, not the hint.
-        val shownThreats = visibleFacts(request.facts, request.level)["threats"]
-        val threatWords = if (shownThreats is List<*> && shownThreats.isNotEmpty()) {
-            request.facts.threats.joinToString(" ") { Conversation.threatWords(request.board, it) }
-        } else {
-            ""
-        }
         val found = ArrayList<String>()
-        for (item in leakCheck(
-            text,
-            request.facts,
-            request.level,
-            said = said.ifEmpty { null },
-            record = request.record,
-            shown = threatWords,
-        )) {
-            found.add("withheld $item")
-        }
-        for (move in request.nowAnswer) {
-            if (names(text, move)) found.add("gives away $move in the position they face now")
-        }
         // The length the directive states: a reply over it is a fault of its own, so a
         // shorter candidate wins the draw, or the likeliest is cut to size.
         val directive = if (request.messages.isNotEmpty()) {
@@ -1815,6 +1802,48 @@ class Speaker(
             }
         }
         found.addAll(falseIllegal(text, request.board))
+        return found.distinct()
+    }
+
+    /**
+     * What [text] gives away of the answer the level withholds, for the log: the move to find,
+     * its square, the piece that makes it. A debugging signal, never a reason to refuse the
+     * reply (see [problemsOf]). `Speaker._leaks`.
+     */
+    internal fun leaks(text: String, request: CoachRequest): List<String> {
+        // What the user said this turn, what the directive itself disclosed (the engine on
+        // what they asked about) and the moves of the game so far are not leaks: a move
+        // already played may be discussed in full, whatever the level in force. The piece a
+        // played move moved may be named too: "your opponent's rook took on c6" about a move
+        // of the record is no hint, but the word "rook" was a leak whenever the withheld
+        // piece happened to be a rook as well.
+        // What the user said and what the directive disclosed are theirs already. The moves of
+        // the game are no exemption: only the answer is withheld ([leakCheck]), and exempting
+        // the record's moves, squares and pieces had let the answer through.
+        val said = listOfNotNull(request.userText, request.disclosed)
+            .filter { it.isNotEmpty() }.joinToString(" ")
+        // What the sheet says the threats do ("Ne6 (uncovers an attack on the pawn on d2)") is
+        // shown to the model: a piece named there is the threat, not the hint.
+        val shownThreats = visibleFacts(request.facts, request.level)["threats"]
+        val threatWords = if (shownThreats is List<*> && shownThreats.isNotEmpty()) {
+            request.facts.threats.joinToString(" ") { Conversation.threatWords(request.board, it) }
+        } else {
+            ""
+        }
+        val found = ArrayList<String>()
+        for (item in leakCheck(
+            text,
+            request.facts,
+            request.level,
+            said = said.ifEmpty { null },
+            record = request.record,
+            shown = threatWords,
+        )) {
+            found.add("withheld $item")
+        }
+        for (move in request.nowAnswer) {
+            if (names(text, move)) found.add("gives away $move in the position they face now")
+        }
         return found.distinct()
     }
 
