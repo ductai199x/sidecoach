@@ -283,6 +283,50 @@ Tai's finish line (2026-09-26), with a hard cap of $3 for the rest of the projec
 
 **Spend:** $2.30 of the $3 cap. Pilot $0.03, test coach $0.41, rubric $1.46, dev coach $0.30, claim-reader validation $0.10.
 
+## The reruns at 81421cd: is it only the model now? (2026-09-26 evening)
+
+Tai: "rerun the test and dev splits now with Luna to verify that it's just the model from
+here on."
+
+**The runs.**
+- `dev-v2`: all 30 games, 114 model replies, $0.23.
+- `test-v2`: 10 of 30 games, 63 model replies, before the cap stopped it. A first attempt stopped on the moments now routed to the template and cost $0.33 for nothing (the bench fix is 4db43a4).
+- Spend is now **$2.93 of $3**.
+
+**The audit ($0).**
+- Three labellers read all 177 replies.
+- Every flag was checked by hand against the board, the record and the harness.
+- 20 replies the labellers called clean were also read by hand, to see what they miss.
+
+**Results.**
+- Questions answered: 78 of 78.
+- 23 replies had a false claim:
+  - 8 (dev 7, test 1) came only from our harness.
+  - 15 are the model's own: dev 10 of 114 (8.8%), test 5 of 63 (7.9%).
+  - The hand sample of clean replies found 1 miss in 20 (test R029, "you seize the file before your opponent can play Re3", when Re3 is their very next move). So the model's own rate is about 8.5% counted, and likely 10-12% with what the labellers miss.
+  - The earlier estimates (test about 2%, dev about 5-7%) were too low. Dev v1 measured 7.8% own; dev v2 measures 8.8%.
+- The harness causes are fixed in a050c5a. The replay with a stub model ($0) shows all nine gone:
+  - a king step "to a square nothing can reach", true of every king move;
+  - a great move "the one move that keeps the advantage, or the chance taken" (now whichever holds), and "the sacrifice that works" offered for a trade;
+  - a pass move that threatens nothing listed as a threat ("They threaten Rc3.");
+  - "nothing is threatened" while in check;
+  - a better move that "stops" a threat the played move stopped too;
+  - two different lines for one named move;
+  - "clears its way" for a rook behind its passed pawn.
+  - The sample also turned up "uncovers an attack ... by the knight" for an unpin, now "frees".
+- The model's own errors are its reasoning about sequences and purposes:
+  - "before they can play Re3";
+  - "allows hxg3, which defends it";
+  - "develops the knight" of Nf6-d7;
+  - "keeps pressure on the half-open file" behind its own pawn;
+  - "prepares Rxa5 mate", an idea only the other move made;
+  - a pin said to hold after the move that breaks it.
+
+**Answer: yes, from here on it is the model.** Every harness cause found in the audit is fixed and replay-checked. What remains is about 8-12% of AI replies with a false claim of the model's own making. **E1 (1 in 50) is not met, and prompting and harness work will not reach it.** The levers left are all Tai's to decide:
+- the claim reader (luna, catches about 30% at no false refusals, +1.3 s);
+- repairing the claim in place;
+- a stronger model, outside the budget.
+
 ## Next, if wanted
 
 Scale the exemplars to 30-50 from the already-judged training moments: round 1's 400
