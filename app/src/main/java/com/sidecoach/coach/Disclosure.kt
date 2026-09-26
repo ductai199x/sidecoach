@@ -263,6 +263,11 @@ private val PIECE_WORD_CONTEXTS = Regex(
         "(?:check|attacked|under attack|hanging|loose|defended|undefended|pinned)",
 )
 
+/** A move with its number in front: the game's record, not a move suggested. */
+private val NUMBERED_MOVE = Regex(
+    "\\b\\d+\\.(?:\\.\\.)?\\s*(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)[+#]?"
+)
+
 /**
  * A token is a bare square ("f7") or a SAN move ending in its destination square ("Ng5",
  * "Nxf7+", "exd5", "R1e1", "e8=Q"). Group 1 is the destination square.
@@ -350,13 +355,16 @@ fun leakCheck(
         if (item !in leaks) leaks.add(item)
     }
 
+    // A move said with its number ("17. Rh1", "4... Nf6") is the record, not a suggestion: the
+    // review names the moves where ground was lost, and one may be the answer again.
+    val movesText = NUMBERED_MOVE.replace(text, " ")
     if (level.value < DisclosureLevel.MOVE.value) {
         val answer = (facts.candidates + facts.line.filterIndexed { i, _ -> i % 2 == 0 })
             .filter { it.isNotEmpty() }
             .map { TRAILING_MARKS.replace(it, "") }
             .toSet()
         val answerSquares = squaresIn(answer.joinToString(" ")) - allowedSquares
-        for (token in TOKEN_SPLIT.split(text)) {
+        for (token in TOKEN_SPLIT.split(movesText)) {
             val match = SQUARE_TOKEN.matchEntire(token) ?: continue
             val square = match.groupValues[1]
             val core = TRAILING_MARKS.replace(token, "")
@@ -371,9 +379,9 @@ fun leakCheck(
         val shown = facts.candidates.toSet() + facts.threats.toSet()
         val withheldMoves = facts.line.filter { it !in shown }
         val withheldSquares = squaresIn(withheldMoves.joinToString(" ")) - allowedSquares
-        for (square in (squaresIn(text) intersect withheldSquares).sorted()) add("square $square")
+        for (square in (squaresIn(movesText) intersect withheldSquares).sorted()) add("square $square")
         for (move in withheldMoves) {
-            if (Regex("(?<![A-Za-z])${Regex.escape(move)}(?![A-Za-z0-9])").containsMatchIn(text)) {
+            if (Regex("(?<![A-Za-z])${Regex.escape(move)}(?![A-Za-z0-9])").containsMatchIn(movesText)) {
                 add("move $move")
             }
         }
@@ -412,12 +420,29 @@ fun leakCheck(
             scrubbed = Regex("\\b${pieceWord}s? on $square\\b").replace(scrubbed, " ")
         }
         scrubbed = PIECE_WORD_CONTEXTS.replace(scrubbed, " ")
+        // The piece to move is named when it is said on its own square, or as "your <piece>" with
+        // no square; another piece of that kind on another square ("attacks the pawn on d2" when
+        // the pawn to move is on e4) is a fact about the board, not the hint. Without a square
+        // on the sheet, any mention counts, as before.
+        val pieceSquares = squaresIn(facts.piece)
         for (pieceWord in LinkedHashSet(PIECE_WORD.findAll(facts.piece.lowercase()).map { it.value }.toList())) {
             // "The king behind it", "their king runs out of squares": the word is in every
             // explanation of a pin or a mate, and says nothing about which piece to move.
             if (pieceWord in saidWords || pieceWord == "king") continue
-            if (Regex("\\b${Regex.escape(pieceWord)}s?\\b").containsMatchIn(scrubbed)) {
-                add("piece $pieceWord")
+            val mention = Regex(
+                "\\b(your |my )?${Regex.escape(pieceWord)}s?\\b(?: (?:on|from) ([a-h][1-8]))?"
+            )
+            for (found in mention.findAll(scrubbed)) {
+                val square = found.groups[2]?.value
+                val named = if (square != null) {
+                    square in pieceSquares
+                } else {
+                    found.groups[1] != null || pieceSquares.isEmpty()
+                }
+                if (named) {
+                    add("piece $pieceWord")
+                    break
+                }
             }
         }
     }

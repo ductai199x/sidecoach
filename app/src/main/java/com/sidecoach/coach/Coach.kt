@@ -688,7 +688,10 @@ fun directiveLimits(directive: String): Pair<Int?, Boolean?> {
     val low = directive.lowercase()
     var question: Boolean? = null
     if (Regex("\\bask one (?:orienting )?question\\b").containsMatchIn(low)) question = true
-    if (Regex("\\bthen(?:, if you like,)? one question\\b").containsMatchIn(low)) {
+    if (Regex("\\bthen, if you like, one question\\b").containsMatchIn(low)) {
+        // A question offered on top of the sentences: one more is allowed, none required.
+        limit = limit?.plus(1)
+    } else if (Regex("\\bthen one question\\b").containsMatchIn(low)) {
         // A question asked for on top of the sentences: one more is allowed.
         question = true
         limit = limit?.plus(1)

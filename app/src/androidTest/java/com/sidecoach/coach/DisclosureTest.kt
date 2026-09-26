@@ -66,6 +66,20 @@ class DisclosureTest {
         assertTrue("square g5" in leakCheck("Look at g5.", facts(), DisclosureLevel.IDEA, said = said))
     }
 
+    /**
+     * A move said with its number is the record (the review names "17. Ng5" where ground was
+     * lost); a pawn on another square than the one to move is a fact, not the hint (the eval
+     * audit's gate, 2026-09-25; desktop d17b39b).
+     */
+    @Test
+    fun theRecordAndOtherPiecesOfAKindAreNoLeak() {
+        assertEquals(emptyList<String>(), leakCheck("You lost the most ground at 17. Ng5 (mistake).", facts(), DisclosureLevel.IDEA))
+        val f = facts().copy(piece = "the player's pawn on e4")
+        assertEquals(emptyList<String>(), leakCheck("They threaten Ne6, attacking the pawn on d2.", f, DisclosureLevel.IDEA))
+        assertTrue("piece pawn" in leakCheck("Your pawn on e4 is the one.", f, DisclosureLevel.IDEA))
+        assertTrue("piece pawn" in leakCheck("Think about your pawn.", f, DisclosureLevel.IDEA))
+    }
+
     companion object {
         private const val START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
     }
