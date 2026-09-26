@@ -751,7 +751,7 @@ class Coach(
             while (thinkS.size > PACE_MOVES) thinkS.removeFirst()
         }
         if (event.byUser) pendingAsk = null // they played on: the question is answered by the move
-        board = Board(event.fenAfter)
+        board = boardAfter(board, event)
         moves[event.ply] = event
         conversation.move(event)
         val position =
@@ -790,7 +790,7 @@ class Coach(
      */
     private fun onTakeback(event: Takeback, ts: Double) {
         conversation.takeback(event)
-        board = Board(event.fen)
+        board = boardBack(board, event.fen)
         val active = conversation.activeRecords()
         val ply = if (active.isNotEmpty()) active.last().move.ply else 0
         for (gone in positions.keys.filter { it > ply }) positions.remove(gone)

@@ -5,7 +5,13 @@ import com.sidecoach.chess.Board
 import com.sidecoach.chess.KNIGHT
 import com.sidecoach.chess.Move
 import com.sidecoach.events.Analysis
+import com.sidecoach.events.GameStarted
 import com.sidecoach.events.Line
+import com.sidecoach.events.MovePlayed
+import com.sidecoach.llm.ChatMessage
+import com.sidecoach.llm.Completion
+import com.sidecoach.llm.LLMProvider
+import com.sidecoach.vision.Pieces
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -14,11 +20,12 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * `tests/test_winning_back.py` (desktop f513fd5), case for case: taking back is not winning
- * (Tai's puzzles, 2026-09-26: "why is the coaching telling me to win a knight when I have to
- * trade equal value to it"): what the opponent's last capture took counts against the line
- * ([IdeaReader.exchangeOwed]), so a recapture is "you can win back a knight", a net win is named
- * by what it nets, and a lesson never says a move "allowed" a recapture.
+ * `tests/test_winning_back.py` (desktop f513fd5 and 2820821), case for case: taking back is not
+ * winning (Tai's puzzles, 2026-09-26: "why is the coaching telling me to win a knight when I
+ * have to trade equal value to it"): what the opponent's last capture took counts against the
+ * line ([IdeaReader.exchangeOwed]), so a recapture is "you can win back a knight", a net win is
+ * named by what it nets, and a lesson never says a move "allowed" a recapture. The live coach's
+ * positions keep the moves that led to them ([boardAfter], [boardBack]), so it sees the same.
  *
  * The positions are Lichess puzzles from the sample (the setup move played on the board, as the
  * coach has it), with the engine's line written out.
@@ -28,6 +35,54 @@ class WinningBackTest {
 
     private val ruy = listOf("e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6")
 
+    /** `ScriptedProvider([])` of `tests/test_coach.py`: no replies, every prompt kept. */
+    private class ScriptedProvider : LLMProvider {
+        override val name = "scripted"
+        val prompts = ArrayList<Pair<String, List<ChatMessage>>>()
+
+        override fun healthcheck(): Pair<Boolean, String> = true to "scripted"
+
+        override fun chat(
+            system: String,
+            messages: List<ChatMessage>,
+            maxTokens: Int,
+            temperature: Double,
+            thinking: Boolean,
+        ): Completion {
+            synchronized(prompts) { prompts.add(system to messages.toList()) }
+            return Completion(text = "Keep looking.")
+        }
+    }
+
+    /** `_coach([])` of `tests/test_coach.py`. */
+    private fun coachOf(): Coach =
+        Coach(ScriptedProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+
+    /** `_moves`: the moves from the start, each as the reconciler hands it over. */
+    private fun movesOf(ucis: List<String>): List<MovePlayed> {
+        val board = Board()
+        val out = ArrayList<MovePlayed>()
+        for ((i, uci) in ucis.withIndex()) {
+            val ply = i + 1
+            val move = Move.fromUci(uci)
+            val before = board.fen()
+            val san = board.san(move)
+            board.push(move)
+            out.add(
+                MovePlayed(
+                    gameId = "g",
+                    ply = ply,
+                    san = san,
+                    uci = uci,
+                    fenBefore = before,
+                    fenAfter = board.fen(),
+                    byUser = ply % 2 == 0,
+                ),
+            )
+        }
+        return out
+    }
+
     /** `_board`: the position with its moves played on it, so the board knows them. */
     private fun boardOf(fen: String?, moves: List<String>): Board {
         val board = if (fen != null) Board(fen) else Board()
@@ -35,7 +90,8 @@ class WinningBackTest {
         return board
     }
 
-    private fun analysisOf(board: Board, sans: String, score: Double): Analysis {
+    /** `_analysis`; [ply] stands for the test's `model_copy(update={"ply": ...})`. */
+    private fun analysisOf(board: Board, sans: String, score: Double, ply: Int = 0): Analysis {
         val b = board.copy()
         val moves = ArrayList<String>()
         for (san in sans.split(" ")) {
@@ -46,7 +102,7 @@ class WinningBackTest {
         return Analysis(
             gameId = "g",
             fen = board.fen(),
-            ply = 0,
+            ply = ply,
             lines = listOf(Line(moves = moves, depth = 20, expectedScore = score)),
             decisive = false,
             onlyMove = false,
@@ -113,5 +169,54 @@ class WinningBackTest {
         val board = boardOf(null, ruy + "b5c6")  // the player's 4.Bxc6, Black to move
         val analysis = analysisOf(board, "dxc6 O-O", score = 0.5)
         assertNull(IdeaWords.allowed(board, analysis, "Bxc6"))
+    }
+
+    /**
+     * The coach built each position from the move's FEN, so the exchange in progress was never
+     * seen live: the fix reached only the benches (the Android port's review, 2026-09-26).
+     */
+    @Test
+    fun theLiveCoachKeepsTheMovesThatLedToAPosition() {
+        val coach = coachOf()
+        val start = Board().fen()
+        coach.onEvent(GameStarted(gameId = "g", userSide = Pieces.Side.BLACK, startFen = start), 0.0)
+        for ((i, event) in movesOf(ruy + "b5c6").withIndex()) coach.onEvent(event, i.toDouble())
+        val position = coach.positions.getValue(7)
+        assertEquals(ruy + "b5c6", position.board.moveStack.map { it.uci() })
+        assertEquals(mapOf(KNIGHT to 1), IdeaReader.exchangeOwed(position.board))
+        val analysis = analysisOf(position.board, "dxc6 O-O", score = 0.5, ply = 7)
+        coach.onEvent(analysis, 8.0)
+        assertTrue(position.facts != null && position.facts!!.goal == "you can win back a bishop")
+    }
+
+    @Test
+    fun aBoardKeepsItsMovesOnlyWhenTheEventAgreesWithIt() {
+        val (first, second) = movesOf(listOf("e2e4", "e7e5"))
+        val board = boardAfter(Board(), first)
+        assertEquals(listOf("e2e4"), board.moveStack.map { it.uci() })
+        // Played from somewhere else than the board: from the position the event gives.
+        val elsewhere = boardAfter(Board("8/8/8/8/8/8/8/K6k w - - 0 1"), second)
+        assertEquals(listOf("e7e5"), elsewhere.moveStack.map { it.uci() })
+        // A FEN the board does not reach (the counters differ): the event's own, no moves.
+        val odd = MovePlayed(
+            gameId = second.gameId,
+            ply = second.ply,
+            san = second.san,
+            uci = second.uci,
+            fenBefore = second.fenBefore,
+            fenAfter = second.fenAfter.replace(" 0 2", " 0 9"),
+            byUser = second.byUser,
+            thinkMs = second.thinkMs,
+        )
+        assertTrue(boardAfter(board, odd).moveStack.isEmpty() && boardAfter(board, odd).fen() == odd.fenAfter)
+    }
+
+    @Test
+    fun aTakebackKeepsTheMovesBeforeIt() {
+        val board = Board()
+        for (uci in ruy) board.push(Move.fromUci(uci))
+        val back = boardBack(board, movesOf(ruy)[1].fenAfter)
+        assertEquals(ruy.take(2), back.moveStack.map { it.uci() })
+        assertTrue(boardBack(board, "8/8/8/8/8/8/8/K6k w - - 0 1").moveStack.isEmpty())
     }
 }

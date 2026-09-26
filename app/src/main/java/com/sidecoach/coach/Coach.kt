@@ -886,6 +886,34 @@ class CoachPosition(
 }
 
 /**
+ * The board after [event], carrying the moves that led to it: the idea reader reads an exchange
+ * in progress from them ([IdeaReader.exchangeOwed]), and a board rebuilt from the FEN alone read
+ * 20...Nxh5 Qxh5 as "you can win a knight" (Tai's puzzles, 2026-09-26). The move goes onto
+ * [board] when that is where it was played from, else onto the position it was played from; a
+ * board whose FEN is not the event's own (the analysis is matched on it) is the event's FEN,
+ * without moves. `coach.board_after`.
+ */
+fun boardAfter(board: Board, event: MovePlayed): Board {
+    for (start in listOf(board, Board(event.fenBefore))) {
+        if (start.fen() != event.fenBefore) continue
+        val move = Move.fromUciOrNull(event.uci) ?: break
+        if (!start.isLegal(move)) break
+        val after = start.copy()
+        after.push(move)
+        if (after.fen() == event.fenAfter) return after
+        break
+    }
+    return Board(event.fenAfter)
+}
+
+/** The board taken back to [fen], keeping the moves before it when they reach it. `coach.board_back`. */
+fun boardBack(board: Board, fen: String): Board {
+    val back = board.copy()
+    while (back.moveStack.isNotEmpty() && back.fen() != fen) back.pop()
+    return if (back.fen() == fen) back else Board(fen)
+}
+
+/**
  * The game's pace: the user's last few think times. Under [FAST_PACE_S] a move, the game is
  * fast -- a model reply (two to five seconds) would land after the next move, and a spoken
  * sentence (three to five) would be talked over the next two. So a fast game gets the
