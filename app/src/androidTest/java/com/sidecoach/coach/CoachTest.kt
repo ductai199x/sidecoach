@@ -525,6 +525,25 @@ class CoachTest {
         assertEquals(listOf(Trigger.POST_MISTAKE), out.map { it.trigger })
     }
 
+    /**
+     * The second audit: "ahead by about 1.2 pawns" was no figure to the old check; "you took on
+     * d5" and "that d5 pawn" said the capture back; "which was a inaccuracy" (desktop 8438193).
+     */
+    @Test
+    fun figuresOrdinalsCapturesAndArticles() {
+        assertTrue(figureSaid("You are ahead by about 1.2 pawns."))
+        assertTrue(figureSaid("It cost you 15% of the game."))
+        assertFalse(figureSaid("Your rook on the 7th rank and Nf3 were strong."))
+        val ruy = "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
+        val trade = afterMoveRequest(ruy, "Bxc6", "e1g1")
+        assertTrue(restated("You took on c6, giving up the bishop pair.", trade).isNotEmpty())
+        assertTrue(restated("Winning that c6 knight gives up the bishop pair.", trade).isNotEmpty())
+        assertEquals(
+            listOf("an inaccuracy", "a miss", "best", "a book move"),
+            listOf("inaccuracy", "miss", "best", "book").map { rated(it) },
+        )
+    }
+
     /** Their own move is theirs even after the reply, and a threat gets its answer (af1bae2). */
     @Test
     fun theirOwnMoveIsTheirsEvenAfterTheReplyAndAThreatGetsItsAnswer() {

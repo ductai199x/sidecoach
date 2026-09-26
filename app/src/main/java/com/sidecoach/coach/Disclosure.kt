@@ -263,10 +263,15 @@ private val PIECE_WORD_CONTEXTS = Regex(
         "(?:check|attacked|under attack|hanging|loose|defended|undefended|pinned)",
 )
 
-/** A move with its number in front: the game's record, not a move suggested. */
+/** A move with its number in front: the game's record when the game played it. */
 private val NUMBERED_MOVE = Regex(
     "\\b\\d+\\.(?:\\.\\.)?\\s*(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)[+#]?"
 )
+
+private val SPACES = Regex("\\s+")
+
+/** A numbered move in one spelling: "17. Rh1+" and "17.Rh1" are "17.Rh1". `disclosure.numbered_key`. */
+fun numberedKey(text: String): String = SPACES.replace(text, "").trimEnd('+', '#')
 
 /**
  * A token is a bare square ("f7") or a SAN move ending in its destination square ("Ng5",
@@ -313,6 +318,8 @@ fun leakCheck(
     facts: PositionFacts,
     level: DisclosureLevel,
     said: String? = null,
+    /** The game's moves as numbered in the record ("17. Rh1"). */
+    record: Collection<String> = emptyList(),
 ): List<String> {
     val visible = visibleFacts(facts, level)
     val allowedSquares = HashSet<String>()
@@ -355,9 +362,12 @@ fun leakCheck(
         if (item !in leaks) leaks.add(item)
     }
 
-    // A move said with its number ("17. Rh1", "4... Nf6") is the record, not a suggestion: the
-    // review names the moves where ground was lost, and one may be the answer again.
-    val movesText = NUMBERED_MOVE.replace(text, " ")
+    // A move of the game said with its number ("17. Rh1", "4... Nf6") is the record, not a
+    // suggestion: the review names the moves where ground was lost, and one may be the answer
+    // again. Only a numbered move the game actually played -- "5. cxd5 wins it" of the move to
+    // find was let through by any number at all (the second audit).
+    val played = record.map { numberedKey(it) }.toSet()
+    val movesText = NUMBERED_MOVE.replace(text) { m -> if (numberedKey(m.value) in played) " " else m.value }
     if (level.value < DisclosureLevel.MOVE.value) {
         val answer = (facts.candidates + facts.line.filterIndexed { i, _ -> i % 2 == 0 })
             .filter { it.isNotEmpty() }
@@ -377,7 +387,9 @@ fun leakCheck(
         }
     } else if (level.value < DisclosureLevel.LINE.value) {
         val shown = facts.candidates.toSet() + facts.threats.toSet()
-        val withheldMoves = facts.line.filter { it !in shown }
+        // The move's why names its continuation ("after Qf6, Bg2 ..."): what the level shows may
+        // be said.
+        val withheldMoves = facts.line.filter { it !in shown && it !in allowedMoves }
         val withheldSquares = squaresIn(withheldMoves.joinToString(" ")) - allowedSquares
         for (square in (squaresIn(movesText) intersect withheldSquares).sorted()) add("square $square")
         for (move in withheldMoves) {
@@ -425,6 +437,11 @@ fun leakCheck(
         // the pawn to move is on e4) is a fact about the board, not the hint. Without a square
         // on the sheet, any mention counts, as before.
         val pieceSquares = squaresIn(facts.piece)
+        // Once the square the answer goes to is said (the target, which the first hint may name),
+        // the piece that goes there is the rest of the answer: any mention of it counts ("take it
+        // with the queen", "the c-pawn should take it": the second audit).
+        val answerMoves = facts.candidates.take(3).filter { it.isNotEmpty() }.map { TRAILING_MARKS.replace(it, "") }
+        val destSaid = (squaresIn(answerMoves.joinToString(" ")) intersect squaresIn(movesText)).isNotEmpty()
         for (pieceWord in LinkedHashSet(PIECE_WORD.findAll(facts.piece.lowercase()).map { it.value }.toList())) {
             // "The king behind it", "their king runs out of squares": the word is in every
             // explanation of a pin or a mate, and says nothing about which piece to move.
@@ -434,7 +451,9 @@ fun leakCheck(
             )
             for (found in mention.findAll(scrubbed)) {
                 val square = found.groups[2]?.value
-                val named = if (square != null) {
+                val named = if (destSaid) {
+                    true
+                } else if (square != null) {
                     square in pieceSquares
                 } else {
                     found.groups[1] != null || pieceSquares.isEmpty()

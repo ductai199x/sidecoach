@@ -55,8 +55,9 @@ import java.util.Locale
  */
 const val IDEA_LEVEL_WORDS =
     "the idea: what is at stake and the key fact on the board -- the pieces, squares and " +
-        "their moves the facts name -- with the principle behind it; never the player's move, " +
-        "the square it goes to, or which of their own pieces moves"
+        "their moves the facts name, the target's square too, even where the move goes -- with " +
+        "the principle behind it; never the player's move itself, or which of their own pieces " +
+        "makes it"
 
 /** One move as it was seen, with the engine's word on it as it arrives. */
 class PlyRecord(val move: MovePlayed) {

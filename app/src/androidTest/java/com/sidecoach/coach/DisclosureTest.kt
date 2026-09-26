@@ -73,11 +73,32 @@ class DisclosureTest {
      */
     @Test
     fun theRecordAndOtherPiecesOfAKindAreNoLeak() {
-        assertEquals(emptyList<String>(), leakCheck("You lost the most ground at 17. Ng5 (mistake).", facts(), DisclosureLevel.IDEA))
+        val record = listOf("17. Ng5")
+        val said = "You lost the most ground at 17. Ng5 (mistake)."
+        assertEquals(emptyList<String>(), leakCheck(said, facts(), DisclosureLevel.IDEA, record = record))
+        // A number in front of the move to find is no exemption: "5. cxd5 wins it cleanly" was
+        // let through by any number at all (the second audit; desktop 8438193).
+        assertTrue("move Ng5" in leakCheck("5. Ng5 wins it cleanly.", facts(), DisclosureLevel.IDEA, record = record))
+        assertTrue("move Ng5" in leakCheck(said, facts(), DisclosureLevel.IDEA))
         val f = facts().copy(piece = "the player's pawn on e4")
         assertEquals(emptyList<String>(), leakCheck("They threaten Ne6, attacking the pawn on d2.", f, DisclosureLevel.IDEA))
         assertTrue("piece pawn" in leakCheck("Your pawn on e4 is the one.", f, DisclosureLevel.IDEA))
         assertTrue("piece pawn" in leakCheck("Think about your pawn.", f, DisclosureLevel.IDEA))
+    }
+
+    /**
+     * The first hint may name the target's square even where the move goes; the piece that goes
+     * there is then the answer ("take it with the queen": the second audit; desktop 8438193).
+     */
+    @Test
+    fun onceTheAnswersSquareIsSaidItsPieceIsTheRestOfTheAnswer() {
+        val f = facts().copy(
+            candidates = listOf("Qxf7"),
+            piece = "the player's queen on h5",
+            situation = "Their pawn on f7 is the target.",
+        )
+        assertEquals(emptyList<String>(), leakCheck("Their pawn on f7 is weak.", f, DisclosureLevel.IDEA))
+        assertTrue("piece queen" in leakCheck("Their pawn on f7 is weak: take it with the queen.", f, DisclosureLevel.IDEA))
     }
 
     companion object {

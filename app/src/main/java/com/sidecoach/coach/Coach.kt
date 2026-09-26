@@ -467,8 +467,8 @@ const val NO_NUMBERS =
 const val NOT_THE_MOVE =
     "Do not open with the move they played, and do not say what it plainly did on the board " +
         "-- what it took, the check, the castling, the promotion: they just played it and see it. " +
-        "Say what it means instead: the idea behind it, the pattern to keep, the better move and " +
-        "why."
+        "Say what it means instead: the idea behind it and the pattern to keep -- and, when there " +
+        "was a better move, that move and why."
 
 /*
  * What the model is asked to do on each rung before the player moves. The template for the
@@ -482,9 +482,10 @@ const val IDEA_DIRECTIVE =
         "the key fact on the board, named as the sheet names it -- the pieces, the squares, their " +
         "threat, the target, the plan -- and the principle behind it in a clause, and the trap if " +
         "the sheet gives one. Precise, never a principle on its own: every sentence says " +
-        "something about this board. Never name the player's move or the square it goes to, and " +
-        "not which of their own pieces moves -- that is the next hint -- though the moves the " +
-        "sheet lists as all as good, when several are, may be named. Two or three sentences."
+        "something about this board. Never name the player's move, and not which of their own " +
+        "pieces makes it -- that is the next hint; the target's square, as the sheet names it, " +
+        "may be said even where the move goes, and the moves the sheet lists as all as good, " +
+        "when several are, may be named. Two or three sentences."
 private val LENGTH_WORDS = mapOf(4 to "Four", 5 to "Five", 6 to "Six")
 
 /**
@@ -1103,6 +1104,8 @@ class CoachRequest(
      * verdict's lesson said "and now Qxf7# is mate" (the runtime audit, 2026-09-25).
      */
     val nowAnswer: List<String> = emptyList(),
+    /** The game's moves as the record numbers them ("17. Rh1"): said so, they are history. */
+    val record: Set<String> = emptySet(),
 )
 
 /**
@@ -1139,7 +1142,20 @@ internal fun names(text: String, item: String): Boolean {
     return Regex("(?<![A-Za-z])" + Regex.escape(core) + "[+#]?(?![A-Za-z0-9])").containsMatchIn(text)
 }
 
-private val NUMBER_SAID = Regex("\\d+(?:\\.\\d+)?\\s*(?:%|per ?cent)|(?<![\\w.])0\\.\\d+", RegexOption.IGNORE_CASE)
+private val ORDINAL = Regex("\\b\\d+(?:st|nd|rd|th)\\b")
+private val DIGIT = Regex("\\d")
+
+/**
+ * Whether [text] quotes a figure: any digit outside a move, a square or an ordinal ("the 7th
+ * rank") -- "ahead by about 1.2 pawns" went through a check for percentages alone.
+ * `coach.figure_said`.
+ */
+fun figureSaid(text: String): Boolean {
+    var rest = SAN.replace(text, " ")
+    rest = ORDINAL.replace(rest, " ")
+    return DIGIT.containsMatchIn(rest)
+}
+
 private val PLAIN_PIECE = mapOf(
     com.sidecoach.chess.PAWN to "pawn",
     com.sidecoach.chess.KNIGHT to "knight",
@@ -1168,7 +1184,7 @@ internal fun restated(text: String, request: CoachRequest): List<String> {
     if (Regex("^\\W*" + Regex.escape(played) + "(?![A-Za-z0-9])").containsMatchIn(text)) {
         faults.add("opens with $played, the move just played")
     }
-    if (NUMBER_SAID.containsMatchIn(text)) {
+    if (figureSaid(text)) {
         faults.add("a figure in a remark nobody asked for: say it in words")
     }
     val board = request.board
@@ -1183,8 +1199,10 @@ internal fun restated(text: String, request: CoachRequest): List<String> {
     val victim = board.pieceAt(move.to)
     if (victim != null && victim.pieceType in PLAIN_PIECE) {
         val square = squareName(move.to)
-        val took = "\\b(?:takes|taking|took|captures?|capturing|grabs?|grabbing)\\s+(?:the|their|a)\\s+" +
-            "${PLAIN_PIECE.getValue(victim.pieceType)}\\s+on\\s+$square\\b"
+        val name = PLAIN_PIECE.getValue(victim.pieceType)
+        val verb = "\\b(?:takes|taking|took|take|captures?|capturing|grabs?|grabbing|wins?|winning|won)"
+        val took = "$verb\\s+(?:the|their|a|that)\\s+(?:$name\\s+on\\s+$square|$square\\s+$name)\\b" +
+            "|\\b(?:takes|taking|took|take)\\s+on\\s+$square\\b"
         if (Regex(took).containsMatchIn(low) && !(better != null && better.to == move.to)) {
             faults.add("says what $played plainly did: the capture on $square")
         }
@@ -1635,7 +1653,9 @@ class Speaker(
         val said = listOfNotNull(request.userText, request.disclosed)
             .filter { it.isNotEmpty() }.joinToString(" ")
         val found = ArrayList<String>()
-        for (item in leakCheck(text, request.facts, request.level, said = said.ifEmpty { null })) {
+        for (item in leakCheck(
+            text, request.facts, request.level, said = said.ifEmpty { null }, record = request.record,
+        )) {
             found.add("withheld $item")
         }
         for (move in request.nowAnswer) {
@@ -1665,6 +1685,11 @@ class Speaker(
         val leftOut = omitted(text, request.mustName)
         if (leftOut != null) found.add(leftOut)
         found.addAll(restated(text, request))
+        if ((request.trigger == Trigger.DECISIVE_QUESTION || request.trigger == Trigger.STUCK) &&
+            figureSaid(text)
+        ) {
+            found.add("a figure in a remark nobody asked for: say it in words")
+        }
         if (draftCheck != null) {
             for (problem in draftCheck.check(text, request.board, afterBest(request))) {
                 val san = problem.substringBefore(":").trim()

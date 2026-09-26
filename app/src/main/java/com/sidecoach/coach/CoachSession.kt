@@ -235,7 +235,7 @@ fun unlockFor(text: String, board: Board, candidates: List<String>): Unlock? {
  * A label as said of a move: "a mistake", "an inaccuracy", "a miss"; the good ones as they are
  * ("best", "excellent"), and theory as "a book move". `coach._rated`.
  */
-private fun rated(label: String): String {
+internal fun rated(label: String): String {
     if (label in listOf("inaccuracy", "mistake", "miss", "blunder")) {
         return (if (label[0] in "aeiou") "an " else "a ") + label
     }
@@ -1619,8 +1619,14 @@ class Coach(
             mustName = mustName,
             frames = frames,
             nowAnswer = nowAnswer,
+            record = numberedMoves(),
         )
         speaker.submit(request)
+    }
+
+    /** The moves played in the game so far as the record numbers them: "17. Rh1". */
+    private fun numberedMoves(): Set<String> = synchronized(lock) {
+        conversation.judgedRecords().map { conversation.numbered(it.move) }.toSet()
     }
 
     /**
@@ -1945,7 +1951,7 @@ class Coach(
                     )
                 }
                 instructionText =
-                    "The player just played ${played.san}, which was a $label: it cost " +
+                    "The player just played ${played.san}, which was ${rated(label)}: it cost " +
                         "${percent(loss)} of the game. The better move was $best ($betterWords). " +
                         "Teach the difference from the fact sheet of the position they faced -- " +
                         "its goal, its pattern, why the better move works, and what their move " +
@@ -1963,7 +1969,7 @@ class Coach(
                     // or misjudged the line", the model said exactly that, every time.
                     fallback += " What were you expecting that move to do?"
                     instructionText =
-                        "The player just played ${played.san}, which was a $label: it cost " +
+                        "The player just played ${played.san}, which was ${rated(label)}: it cost " +
                             "${percent(loss)} of the game. The better move was $best " +
                             "($betterWords). Teach the difference from the fact sheet of the " +
                             "position they faced -- its goal, its pattern, why the better move " +
@@ -2022,7 +2028,7 @@ class Coach(
                 // lesson), but the word says what the move was -- never "fine".
                 fallback = bags.draw("cost", COST_YOU).replace("{best}", best) + "."
                 instructionText =
-                    "The player just played ${played.san}, which was a $label: $best " +
+                    "The player just played ${played.san}, which was ${rated(label)}: $best " +
                         "($betterWords) was better. It is a fast game: one or two sentences, no " +
                         "lesson, no question. $NOT_THE_MOVE $NO_NUMBERS"
             } else {
@@ -2230,7 +2236,7 @@ class Coach(
             val theirs = lastOpponent.assessment!!
             val san = lastOpponent.move.san
             val label = theirs.label?.name?.lowercase() ?: theirs.severity.name.lowercase()
-            fallback = "Their $san was $label."
+            fallback = "Their $san was ${rated(label)}."
             directive =
                 "They ask about the opponent's last move, $san. It is in the record under " +
                     "'Last move' with its verdict ($label) and what it does; all of that is " +
@@ -2311,7 +2317,7 @@ class Coach(
                 }
                 directive =
                     "They ask about the move they already played, $san. Its verdict is in its " +
-                        "move message and is theirs in full: it was a $label$cost" +
+                        "move message and is theirs in full: it was ${rated(label)}$cost" +
                         (if (best.isNotEmpty()) ", the engine preferred $best" else "") +
                         (if (idea.isNotEmpty()) ", and the idea was $idea" else "") +
                         ". Say that plainly -- the position it was played from is past, so " +
@@ -2328,6 +2334,15 @@ class Coach(
                     fallback = "" // a nod needs no template: nothing, rather than the lesson again
                 }
             }
+        } else if (ASK_MATERIAL.containsMatchIn(said) || ASK_OPENING.containsMatchIn(said) ||
+            ASK_EVAL.containsMatchIn(said)
+        ) {
+            // A plain question about the game as it stands: answered plainly, no question back
+            // (the generic answer's "point them ... with a question" asked one).
+            directive =
+                "They asked a plain question about the game as it stands. Answer it from the " +
+                    "message -- the material, the opening, or who stands better, as it gives them " +
+                    "-- in one or two sentences, and no question."
         } else if (ASK_THREAT.containsMatchIn(said)) {
             val threats = facts.threats.take(2)
             fallback = if (threats.isNotEmpty()) {
