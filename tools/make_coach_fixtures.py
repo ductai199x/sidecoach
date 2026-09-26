@@ -757,7 +757,10 @@ def templates_json(
         "focus": focus_template(facts),
         "move": move_template(facts),
         "line": line_template(facts),
+        # With the board, each move of the line with what it does (desktop d8c687c).
+        "line_board": line_template(facts, board),
         "hints": {str(int(level)): hint_template(facts, level) for level in levels},
+        "hints_board": {str(int(level)): hint_template(facts, level, board) for level in levels},
         "best": best,
         # The lesson after a costly move, and as the answer to "why was that bad?" says it when
         # the model gives nothing (`Coach`'s fallback: "{best} was better", desktop 5e80cdf).

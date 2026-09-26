@@ -291,3 +291,66 @@ fun lineNotes(board: Board, moves: List<String>, limit: Int = 8, player: Boolean
     }
     return out.joinToString(", ")
 }
+
+// What a move does, said as it is played: "Qxa7, taking the pawn on a7 and attacking the rook on
+// b8". The effects' own verbs, in the -ing form.
+private val GERUND = mapOf(
+    "attacks" to "attacking",
+    "takes" to "taking",
+    "gives" to "giving",
+    "gets" to "getting",
+    "uncovers" to "uncovering",
+    "pins" to "pinning",
+    "defends" to "defending",
+    "forks" to "forking",
+    "skewers" to "skewering",
+    "castles" to "castling",
+    "stops" to "stopping",
+    "threatens" to "threatening",
+    "covers" to "covering",
+    "blocks" to "blocking",
+)
+
+private fun gerund(phrase: String): String {
+    val space = phrase.indexOf(' ')
+    val verb = if (space < 0) phrase else phrase.substring(0, space)
+    val rest = if (space < 0) "" else phrase.substring(space + 1)
+    val said = GERUND[verb]
+    return if (said != null) "$said $rest".trim() else phrase
+}
+
+/**
+ * A line as the coach says it, each move with what it does, computed: "Qxa7, taking the pawn on
+ * a7 and attacking the rook on b8; c3, getting the pawn out of attack; Rf2". The template's
+ * answer to "show me the line": asked to explain a line, the model gave its moves to the wrong
+ * side or purposes the board denies in a third of its answers (the locked test set,
+ * 2026-09-26). [moves] in UCI or SAN. `effects.line_spoken`.
+ */
+fun lineSpoken(board: Board, moves: List<String>, limit: Int = 6): String {
+    val current = board.copy(withStack = false)
+    val parts = ArrayList<String>()
+    for (text in moves.take(limit)) {
+        // UCI when it is a legal move here (python-chess: the null move never is), else SAN.
+        val uci = Move.fromUciOrNull(text)
+        val move = if (uci != null && !uci.isNull && current.isLegal(uci)) {
+            uci
+        } else {
+            current.parseSan(text) ?: break
+        }
+        val san = current.san(move)
+        val effects = describeEffects(current, move, limit = 2, hazards = false)
+        val after = current.copy(withStack = false)
+        after.push(move)
+        if (after.isCheckmate()) {
+            parts.add("$san, checkmate")
+            break
+        }
+        if (effects.isNotEmpty()) {
+            parts.add("$san, " + effects.joinToString(" and ") { gerund(it) })
+        } else {
+            parts.add(san)
+        }
+        current.push(move)
+    }
+    return parts.joinToString("; ")
+}

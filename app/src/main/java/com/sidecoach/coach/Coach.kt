@@ -244,15 +244,21 @@ fun theirMoveNow(board: Board, facts: PositionFacts): String {
     return "It's their move, and their best is a quiet one, $san: it takes nothing at once."
 }
 
-fun lineTemplate(facts: PositionFacts): String {
+/**
+ * The line, and why its first move works. With the [board] the facts describe, each move with
+ * what it does, computed ([lineSpoken]): the answer to "show me the line", exact where the
+ * model's explanations went wrong a third of the time.
+ */
+fun lineTemplate(facts: PositionFacts, board: Board? = null): String {
     if (facts.line.isEmpty()) return "I have no line for this yet."
-    val text = "The line is ${facts.line.joinToString(" ")}."
+    val spoken = if (board != null) lineSpoken(board, facts.line) else ""
+    val text = if (spoken.isNotEmpty()) "The line runs $spoken." else "The line is ${facts.line.joinToString(" ")}."
     return if (!facts.why.isNullOrEmpty()) "$text ${templateSentence(facts.why)}" else text
 }
 
 /** The template for a hint at `level`: two hints, then the answer. */
-fun hintTemplate(facts: PositionFacts, level: DisclosureLevel): String {
-    if (level.value >= DisclosureLevel.LINE.value) return lineTemplate(facts)
+fun hintTemplate(facts: PositionFacts, level: DisclosureLevel, board: Board? = null): String {
+    if (level.value >= DisclosureLevel.LINE.value) return lineTemplate(facts, board)
     if (level.value >= DisclosureLevel.MOVE.value) return moveTemplate(facts)
     if (level.value >= DisclosureLevel.FOCUS.value) return focusTemplate(facts)
     return ideaTemplate(facts)

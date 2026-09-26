@@ -33,4 +33,18 @@ class EffectsTest {
         assertTrue(notes, notes.split(", ").last().startsWith("Qxc2+ (takes the queen on c2"))
         assertEquals("Rf1 (gets the rook out of attack)", lineNotes(board, listOf("Rf1", "Ke9")))
     }
+
+    /** The template's answer to "show me the line": exact, each move with what it does (d8c687c). */
+    @Test
+    fun aLineSaidAloudGivesEachMoveWhatItDoes() {
+        val board = Board("1r3rk1/p4pp1/3p1q1p/1p1BnP2/2p1P3/1P2Q2P/P5P1/3R1RK1 w - - 0 22")
+        assertEquals(
+            "Qxa7, taking the pawn on a7 and attacking the rook on b8; c3, getting the pawn out " +
+                "of attack; Rf2; b4",
+            lineSpoken(board, listOf("Qxa7", "c3", "Rf2", "b4")),
+        )
+        val mate = Board("6k1/5pp1/p2p4/1p3Pb1/2p1r1q1/P1P1p3/1P5K/4R3 b - - 1 48")
+        val said = lineSpoken(mate, listOf("Qh4+", "Kg2", "Qf2+", "Kh3", "Rh4#", "Kg3"))
+        assertTrue(said, said.endsWith("Rh4#, checkmate"))
+    }
 }

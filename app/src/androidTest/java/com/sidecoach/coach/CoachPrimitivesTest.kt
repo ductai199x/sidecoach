@@ -381,9 +381,18 @@ class CoachPrimitivesTest {
         check("$fen focusTemplate", focusTemplate(facts), want.getString("focus"))
         check("$fen moveTemplate", moveTemplate(facts), want.getString("move"))
         check("$fen lineTemplate", lineTemplate(facts), want.getString("line"))
+        check("$fen lineTemplate with the board", lineTemplate(facts, board), want.getString("line_board"))
         val hints = want.getJSONObject("hints")
         for (key in hints.keys()) {
             check("$fen hintTemplate at $key", hintTemplate(facts, DisclosureLevel.of(key.toInt())), hints.getString(key))
+        }
+        val hintsBoard = want.getJSONObject("hints_board")
+        for (key in hintsBoard.keys()) {
+            check(
+                "$fen hintTemplate at $key with the board",
+                hintTemplate(facts, DisclosureLevel.of(key.toInt()), board),
+                hintsBoard.getString(key),
+            )
         }
         val best = want.getString("best")
         val lessons = want.getJSONArray("lessons")

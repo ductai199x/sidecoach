@@ -209,6 +209,12 @@ fun questionPart(text: String): String {
     return asked.joinToString(" ").replace("…", "...")
 }
 
+/** A request that asks for a reason as well: the model's to answer. */
+private val ASKS_WHY = Regex(
+    "\\b(?:why|how|explain|what does|what's the idea|idea)\\b",
+    RegexOption.IGNORE_CASE,
+)
+
 /** The opening asked for by name ("what opening is this?"), not judged ("how is my opening?"). */
 private val OPENING_FACT = Regex(
     "\\b(?:what|which)(?:'s| is| was)? (?:the |this |my )?opening\\b|" +
@@ -644,6 +650,15 @@ class Coach(
             )
         }
 
+        if (canned && (unlock == Unlock.ASK_MOVE || unlock == Unlock.ASK_LINE) &&
+            !ASKS_WHY.containsMatchIn(text)
+        ) {
+            // The move or the line, asked for bare: the template has said it, each move with what
+            // it does, computed. The model's explanations of moves and lines carried a false claim
+            // in a quarter to a third of its answers, and the rubric scored the template as high
+            // (the locked test set, 2026-09-26): no call is made.
+            return
+        }
         if (!canned && factQuestion(text)) {
             // The material, the opening, the standing: said by the template, exactly.
             val answer = instruction(
@@ -2217,7 +2232,7 @@ class Coach(
             checks += engineWords.joinToString("\n") + "\n\n"
         }
         // The rung's template: two hints, then the answer; the line when asked for it.
-        var fallback = hintTemplate(facts, level)
+        var fallback = hintTemplate(facts, level, position.board)
         // The position answered about is not the one on the board (its analysis has not
         // landed): say so, or the template speaks of a past position as the present -- "the
         // line is Bb3 ..." right after Bb3 was played (the offline pass, 2026-09-21).

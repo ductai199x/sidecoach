@@ -613,6 +613,31 @@ class CoachTest {
     }
 
     /**
+     * Hint, Best move and Line: the template for the level goes out immediately, with its marks;
+     * the buttons felt slow when the answer waited on two model calls. The move and the line
+     * asked for bare are the template's alone (exact); with a why, the model's fuller reply
+     * follows (desktop d8c687c).
+     */
+    @Test
+    fun aCannedAskIsAnsweredAtOnceAndTheModelBuildsOnIt() {
+        val (coach, provider) = coach(listOf("Because it keeps the knight out of play, and eyes e5."))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        coach.askMove(8.0)
+        val quick = coach.poll() // before the model has answered anything
+        assertEquals(listOf("Qxf7# is mate."), quick.map { it.text })
+        assertTrue(quick[0].trigger == Trigger.USER_ASK && quick[0].level == DisclosureLevel.MOVE)
+        assertTrue(quick[0].annotations.any { it.kind == "arrow" })
+        assertEquals("the move alone: no call", emptyList<CoachMessage>(), messages(coach))
+        assertEquals(0, provider.prompts.size)
+        // With a why, the model answers.
+        coach.ask("what should I play, and why?", 9.0)
+        val out = messages(coach)
+        assertEquals("Because it keeps the knight out of play, and eyes e5.", out.map { it.text }.last())
+        assertEquals(1, provider.prompts.size)
+    }
+
+    /**
      * The material, the opening by name, who stands better: the template says them exactly and
      * no model is called (the locked test set, 2026-09-26: the model once gave the material after
      * a recapture as the material now). A judgement or a why still goes to the model (desktop
