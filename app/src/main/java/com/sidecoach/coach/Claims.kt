@@ -1302,6 +1302,10 @@ private val PASSED = Regex(
 
 private fun fileSquares(fileIndex: Int): List<Int> = (0..7).map { square(fileIndex, it) }
 
+/** Whose half-open file the sentence says: theirs, or the player's. */
+private val THEIRS_SAID = Regex("\\bopponent|\\btheir\\b|\\bfor them\\b")
+private val YOURS_SAID = Regex("\\byour?\\b|\\bfor you\\b")
+
 /**
  * Concrete strategic claims the board contradicts: a file said open that has pawns, a pawn
  * said passed that an enemy pawn still holds up. Only clear, checkable contradictions are
@@ -1319,10 +1323,22 @@ private fun strategicProblems(text: String, board: Board): List<Pair<String, Str
         val theirs = pawns.any { it != null && it.pieceType == PAWN && it.colour != us }
         if (kind == "open" && (ours || theirs)) {
             problems.add(match.value to "the $letter-file is not open; a pawn stands on it")
-        } else if (kind == "halfopen" && ours) {
-            problems.add(
-                match.value to "the $letter-file is not half-open for you; you have a pawn there"
-            )
+        } else if (kind == "halfopen") {
+            // Whose file it is, as the sentence says: "for you" or "your" is the player's, "their"
+            // or "the opponent's" theirs ("your opponent takes the half-open f-file": round 2
+            // refused two good replies read as the player's); unsaid, either side's.
+            val window = text.substring(
+                maxOf(0, match.range.first - 60),
+                minOf(text.length, match.range.last + 1 + 20),
+            ).lowercase()
+            val (wrong, whose) = if (THEIRS_SAID.containsMatchIn(window)) {
+                theirs to "for them; they have a pawn there"
+            } else if (YOURS_SAID.containsMatchIn(window)) {
+                ours to "for you; you have a pawn there"
+            } else {
+                (ours && theirs) to "for either side: both have a pawn there"
+            }
+            if (wrong) problems.add(match.value to "the $letter-file is not half-open $whose")
         }
     }
     for (match in PASSED.findAll(text)) {

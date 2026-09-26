@@ -438,26 +438,30 @@ fun leakCheck(
         // the pawn to move is on e4) is a fact about the board, not the hint. Without a square
         // on the sheet, any mention counts, as before.
         val pieceSquares = squaresIn(facts.piece)
-        // Once the square the answer goes to is said (the target, which the first hint may name),
-        // the piece that goes there is the rest of the answer: any mention of it counts ("take it
-        // with the queen", "the c-pawn should take it": the second audit).
-        val answerMoves = facts.candidates.take(3).filter { it.isNotEmpty() }.map { TRAILING_MARKS.replace(it, "") }
-        val destSaid = (squaresIn(answerMoves.joinToString(" ")) intersect squaresIn(movesText)).isNotEmpty()
+        // The file of a pawn to move: "the c-pawn" names the pawn on c4.
+        val pieceFiles = pieceSquares.map { it[0] }.toSet()
+        // The piece that does it, said as the one that takes or goes ("take it with the queen",
+        // "capture with a pawn", "the c-pawn should take it": the second audit) -- not every
+        // mention of its kind: "the pawn on c3", "your pawn on h2" are the board (round 2 refused
+        // four good replies for them).
         for (pieceWord in LinkedHashSet(PIECE_WORD.findAll(facts.piece.lowercase()).map { it.value }.toList())) {
             // "The king behind it", "their king runs out of squares": the word is in every
             // explanation of a pin or a mate, and says nothing about which piece to move.
             if (pieceWord in saidWords || pieceWord == "king") continue
             val mention = Regex(
-                "\\b(your |my )?${Regex.escape(pieceWord)}s?\\b(?: (?:on|from) ([a-h][1-8]))?"
+                "\\b(your |my |with (?:the |a |your )?|(?:([a-h])-))?${Regex.escape(pieceWord)}s?\\b" +
+                    "(?: (?:on|from) ([a-h][1-8]))?"
             )
             for (found in mention.findAll(scrubbed)) {
-                val square = found.groups[2]?.value
-                val named = if (destSaid) {
-                    true
-                } else if (square != null) {
+                val prefix = found.groups[1]?.value
+                val file = found.groups[2]?.value
+                val square = found.groups[3]?.value
+                val named = if (square != null) {
                     square in pieceSquares
+                } else if (file != null) {
+                    file[0] in pieceFiles || pieceFiles.isEmpty()
                 } else {
-                    found.groups[1] != null || pieceSquares.isEmpty()
+                    prefix != null || pieceSquares.isEmpty()
                 }
                 if (named) {
                     add("piece $pieceWord")

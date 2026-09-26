@@ -558,6 +558,23 @@ class CoachTest {
         )
     }
 
+    /**
+     * Round 2: "Stockfish gives White about 0.8 pawns" in seven answers (desktop 47138dd; the
+     * review's costliest losses are held by the conversation fixture).
+     */
+    @Test
+    fun theCoachNeverNamesTheEngine() {
+        val request = afterMoveRequest(SCHOLAR, "Bxf7+", "h5f7")
+        val speaker = Speaker(ScriptedProvider(emptyList()))
+        val faults = speaker.problemsOf("Qxf7 was better; Stockfish liked it more.", request)
+        assertTrue(faults.toString(), "named the engine: say it as the coach who saw the game" in faults)
+        val asked = afterMoveRequest(SCHOLAR, "Bxf7+", "h5f7", userText = "what does the engine say?")
+        assertTrue(
+            "named the engine: say it as the coach who saw the game" !in
+                speaker.problemsOf("Qxf7 was better; the engine liked it more.", asked)
+        )
+    }
+
     /** Their own move is theirs even after the reply, and a threat gets its answer (af1bae2). */
     @Test
     fun theirOwnMoveIsTheirsEvenAfterTheReplyAndAThreatGetsItsAnswer() {
@@ -620,9 +637,8 @@ class CoachTest {
      * "Why was that bad?" is about a position that is past: the directive states the verdict,
      * the move the engine preferred and the idea, and says nothing is withheld -- and what it
      * cost only when they ask it: "It cost you 22% of the game." opened every answer, and Tai
-     * had said the figure is for when he asks (2026-09-20; desktop 6d9ba6f). The phone's
-     * directive names the better move as "the engine preferred Qxf7#" (the desktop's "Qxf7# was
-     * better" came with commits not ported).
+     * had said the figure is for when he asks (2026-09-20; desktop 6d9ba6f). The better move is
+     * named as "Qxf7# was better", never "the engine preferred" (desktop 47138dd).
      */
     @Test
     fun aQuestionAboutTheLastMoveGetsItsVerdictWithoutTheFigure() {
@@ -636,7 +652,7 @@ class CoachTest {
         val out = messages(coach)
         val directive = directive(provider)
         assertTrue(directive, "They ask about the move they already played, Bxf7+" in directive)
-        assertTrue(directive, "the engine preferred Qxf7#" in directive)
+        assertTrue(directive, "Qxf7# was better" in directive)
         assertTrue(directive, "nothing about it is withheld" in directive)
         assertTrue(directive, "45%" !in directive && "no figures" in directive)
         // Spoken from the position the move was played from, with everything shown.
@@ -998,6 +1014,7 @@ class CoachTest {
         severity: Severity = Severity.MISTAKE,
         label: Label = Label.MISTAKE,
         expectedLoss: Double = 0.2,
+        userText: String? = null,
     ): CoachRequest {
         val board = Board(fen)
         return CoachRequest(
@@ -1010,6 +1027,7 @@ class CoachTest {
             fallback = "",
             ply = 7,
             gameId = "g",
+            userText = userText,
             playedSan = san,
             assessment = MoveAssessment(
                 gameId = "g",

@@ -1153,6 +1153,9 @@ internal fun names(text: String, item: String): Boolean {
     return Regex("(?<![A-Za-z])" + Regex.escape(core) + "[+#]?(?![A-Za-z0-9])").containsMatchIn(text)
 }
 
+private val ENGINE_NAMED = Regex("\\b(?:stockfish|the engine|engine's|an engine)\\b", RegexOption.IGNORE_CASE)
+private val ENGINE_ASKED = Regex("stockfish|engine", RegexOption.IGNORE_CASE)
+
 private val ORDINAL = Regex("\\b\\d+(?:st|nd|rd|th)\\b|\\b[A-E]\\d\\d\\b")
 private val DIGIT = Regex("\\d")
 
@@ -1700,6 +1703,12 @@ class Speaker(
             figureSaid(text)
         ) {
             found.add("a figure in a remark nobody asked for: say it in words")
+        }
+        // RULES 7: the coach speaks as the one who saw the game -- "Stockfish gives White about
+        // 0.8 pawns" came in seven of the pilot's answers.
+        val askedEngine = ENGINE_ASKED.containsMatchIn(request.userText ?: "")
+        if (ENGINE_NAMED.containsMatchIn(text) && !askedEngine) {
+            found.add("named the engine: say it as the coach who saw the game")
         }
         if (draftCheck != null) {
             for (problem in draftCheck.check(text, request.board, afterBest(request))) {

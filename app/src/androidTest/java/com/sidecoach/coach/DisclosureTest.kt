@@ -101,6 +101,29 @@ class DisclosureTest {
         assertTrue("piece queen" in leakCheck("Their pawn on f7 is weak: take it with the queen.", f, DisclosureLevel.IDEA))
     }
 
+    /**
+     * Round 2 refused four good replies for "the pawn on c3", "your pawn on h2" when the pawn to
+     * move was elsewhere; "take it with the queen" and "the c-pawn should take it" name it
+     * (desktop 47138dd).
+     */
+    @Test
+    fun thePieceThatDoesItIsTheOneThatTakesNotEveryOneOfItsKind() {
+        val f = facts().copy(
+            candidates = listOf("cxd5"),
+            piece = "the player's pawn on c4",
+            situation = "Their pawn on d5 can simply be taken.",
+        )
+        for (fine in listOf(
+            "Their pawn on d5 can be taken; they threaten dxc3, taking the pawn on c3.",
+            "Ng4 is coming, attacking your pawn on h2.",
+        )) {
+            assertEquals(fine, emptyList<String>(), leakCheck(fine, f, DisclosureLevel.IDEA))
+        }
+        for (leak in listOf("Take it with a pawn, not a piece.", "The c-pawn should take it.", "Use your pawn.")) {
+            assertTrue(leak, "piece pawn" in leakCheck(leak, f, DisclosureLevel.IDEA))
+        }
+    }
+
     companion object {
         private const val START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
     }

@@ -708,7 +708,7 @@ class Conversation {
     private fun standingText(top: Line, toMove: Boolean, colour: Boolean): String {
         val score = if (toMove == colour) top.expectedScore else 1.0 - top.expectedScore
         val words = standingWords(score, thirdPerson = true)
-        var text = words.take(1).uppercase() + words.drop(1) + " (Stockfish: "
+        var text = words.take(1).uppercase() + words.drop(1) + " (by the numbers: "
         val mate = top.mate
         val cp = top.scoreCp
         if (mate != null) {
@@ -854,7 +854,7 @@ class Conversation {
      */
     private fun tallyText(through: PlyRecord): String {
         val counts = LinkedHashMap<String, Int>()
-        val lost = ArrayList<String>()
+        val lost = ArrayList<Pair<Double, String>>()
         var n = 0
         val throughAt = indexOf(through)
         for (record in judgedRecords()) {
@@ -865,14 +865,21 @@ class Conversation {
             val label = assessment.label?.name?.lowercase() ?: assessment.severity.name.lowercase()
             counts[label] = (counts[label] ?: 0) + 1
             if (assessment.severity.name.lowercase() != "none") {
-                lost.add("${numbered(record.move)} ($label)")
+                val cost = assessment.expectedLoss
+                lost.add(cost to "${numbered(record.move)} ($label)")
             }
         }
         if (n == 0) return ""
         val tally = LABEL_ORDER.filter { it in counts }.joinToString(", ") { "${counts[it]} $it" }
         var text = "The player's moves so far ($n judged): $tally."
         if (lost.isNotEmpty()) {
-            text += " Ground lost at: " + lost.takeLast(6).joinToString("; ") + "."
+            // The costliest three, then the latest: "how did I do?" is answered from where the
+            // game turned, and the last six alone named 39.Rb7 and 52.Kh3 over the blunders at
+            // moves 19 and 24 (round 2). Python's sort is stable: equal costs keep their order.
+            val costliest = lost.sortedBy { -it.first }.take(3).map { it.second }
+            val latest = lost.takeLast(3).map { it.second }.filter { it !in costliest }
+            text += " Ground lost most at: " + costliest.joinToString("; ") + "."
+            if (latest.isNotEmpty()) text += " Lately: " + latest.joinToString("; ") + "."
         }
         // The opening the game was in, as the book last named it: it was shown only at the
         // ply where the name changed, and asked later the coach named one from memory.

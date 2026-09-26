@@ -501,6 +501,7 @@ class Coach(
         val trigger = policy.tick(ts) ?: return
         val position = current ?: return
         if (position.facts == null) return
+        if (position.board.isGameOver()) return // nothing to be stuck on: the game is over on the board
         val level = position.disclosure.apply(Unlock.STUCK) ?: position.disclosure.level
         policy.said(position.ply, ts)
         speak(trigger, position, level, ts)
@@ -1583,6 +1584,10 @@ class Coach(
             frames = framesAfter(position, moved)
         }
         frames = frames + analysisFrames(position)
+        // And the board before the last move played: an answer about it says what it took
+        // ("15...Qxe7 took your knight on e7"), which the board after it no longer shows.
+        val records = synchronized(lock) { conversation.activeRecords() }
+        if (records.isNotEmpty()) frames = frames + Board(records.last().move.fenBefore)
         val messages: List<ChatMessage>
         synchronized(lock) {
             conversation.level = renderLevel
@@ -2325,7 +2330,7 @@ class Coach(
                 directive =
                     "They ask about the move they already played, $san. Its verdict is in its " +
                         "move message and is theirs in full: it was ${rated(label)}$cost" +
-                        (if (best.isNotEmpty()) ", the engine preferred $best" else "") +
+                        (if (best.isNotEmpty()) ", $best was better" else "") +
                         (if (idea.isNotEmpty()) ", and the idea was $idea" else "") +
                         ". Say that plainly -- the position it was played from is past, so " +
                         "nothing about it is withheld; the disclosure level binds only the " +

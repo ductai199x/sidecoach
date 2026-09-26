@@ -116,6 +116,15 @@ class ClaimsTest {
         assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
     }
 
+    /** Round 2: "your opponent's best is Qf7, taking the half-open f-file" is theirs (desktop 47138dd). */
+    @Test
+    fun aHalfOpenFileIsReadAsWhoseTheSentenceSays() {
+        val board = Board("4k3/8/8/8/8/8/5P2/4K3 w - - 0 1") // a white pawn on f2 only
+        assertTrue(checkDraft("Your opponent's rook takes the half-open f-file.", board).isEmpty())
+        assertTrue(checkDraft("The f-file is half-open for you.", board).isNotEmpty())
+        assertTrue(checkDraft("The half-open f-file is theirs to use.", board).isEmpty())
+    }
+
     /** The stub the generator used: the same lines for the same position, read from the file. */
     private fun recorded(seen: JSONObject): ClaimEngine = ClaimEngine { board, _ ->
         val entry = seen.optJSONArray(board.fen()) ?: JSONArray()
