@@ -14,6 +14,7 @@ import com.sidecoach.events.Severity
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.Completion
 import com.sidecoach.llm.LLMProvider
+import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.vision.Pieces
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -55,6 +56,9 @@ class ChatAfterMoveTest {
         val coach = Coach(provider, policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
         return coach to provider
     }
+
+    /** `_offline`: the coach with no model -- its templates are the answer. */
+    private fun offline() = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
 
     private fun messages(coach: Coach): List<CoachMessage> {
         coach.speaker.runPending()
@@ -132,20 +136,33 @@ class ChatAfterMoveTest {
         assertEquals("", questionPart("I see the fork now: 19.Nf6 hits the queen and rook."))
         assertEquals("After 12...h5 what then?", questionPart("After 12...h5 what then?"))
 
-        val (coach, _) = coach(emptyList())
         val ucis = listOf("e2e4", "e7e5", "g1f3", "b8c6")
-        played(coach, ucis, mistakeAt = 3)
-        analysed(coach, ucis, 4, "f1c4", 0.55, 4.5)
-        messages(coach)
-        coach.ask("I see it now: my knight on f3 attacks the pawn on e5.", 5.0)
-        val statement = messages(coach).map { it.text }
+        fun italian(coach: Coach) {
+            played(coach, ucis, mistakeAt = 3)
+            analysed(coach, ucis, 4, "f1c4", 0.55, 4.5)
+            messages(coach)
+        }
+
+        // Offline the examination is the answer: a question's pieces are read out, a statement's
+        // not (desktop 9e49622 moved this half to the coach without a model).
+        var c = offline()
+        italian(c)
+        c.ask("I see it now: my knight on f3 attacks the pawn on e5.", 5.0)
+        val statement = messages(c).map { it.text }
         assertTrue(statement.toString(), statement.none { "can go to" in it })
-        coach.ask("Where can my knight on f3 go?", 6.0)
-        val question = messages(coach).map { it.text }
+        c.ask("Where can my knight on f3 go?", 6.0)
+        val question = messages(c).map { it.text }
         assertTrue(
             question.toString(),
             question.any { "the player's knight on f3 stands there; it can go to" in it },
         )
+        // With a model to answer in words, a piece's inventory said first is noise ("Your king on
+        // g8 can go to f7, g7, h8; ..." before the AI's own answer; desktop 9e49622).
+        c = coach(listOf("[p=1.0] It can go to d4, e5, g5 or h4.")).first
+        italian(c)
+        c.ask("Where can my knight on f3 go?", 6.0)
+        val modelled = messages(c).map { it.text }
+        assertTrue(modelled.toString(), modelled.none { "the player's knight on f3 stands there" in it })
     }
 
     /**
@@ -158,7 +175,7 @@ class ChatAfterMoveTest {
      */
     @Test
     fun aPieceAskedAboutIsReadOnTheBoardAsItStands() {
-        val (coach, _) = coach(emptyList())
+        val coach = offline() // the inventory said aloud: the coach without a model (desktop 9e49622)
         val ucis = listOf("e2e4", "e7e5", "g1f3", "b8c6", "f1b5")
         played(coach, ucis, mistakeAt = 5)
         for (ply in 4..5) analysed(coach, ucis, ply, if (ply == 5) "a7a6" else "f1b5", 0.5, ply + 0.7)

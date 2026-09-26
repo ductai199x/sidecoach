@@ -28,6 +28,7 @@ import com.sidecoach.events.Takeback
 import com.sidecoach.events.Trigger
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.LLMProvider
+import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.profile.Causes
 import com.sidecoach.vision.Pieces
 
@@ -358,6 +359,9 @@ class Coach(
      */
     private val causesSeen = LinkedHashMap<String, Int>()
 
+    /** The game each cause's pattern was last said in: once a game after the first. */
+    private val patternTold = HashMap<String, String?>()
+
     /**
      * The record's question-answerer, set by whoever owns the store; the answers it gave,
      * with their queries, for the panel's log.
@@ -550,8 +554,13 @@ class Coach(
             // A move they propose in a statement ("I'll play Qd1, blocking the check") is
             // examined aloud as a question about it would be: that is the answer. Without it the
             // templates said the hint that had asked for it again, word for word, three times
-            // (the students' round 5); pieces and squares named in passing stay unsaid.
-            if (asked.isEmpty()) said = said.filter { "the expected score is" in it }
+            // (the students' round 5); pieces and squares named in passing stay unsaid. With a
+            // model to answer in words, a piece's or a square's inventory said first is noise
+            // ("Your king on g8 can go to f7, g7, h8; ..." before the AI's own good answer to
+            // "why doesn't the check prevent that capture?", 2026-09-26): only a move's
+            // examination goes out. Offline it is the answer, and stays.
+            val offline = speaker.provider is OfflineProvider
+            if (asked.isEmpty() || !offline) said = said.filter { "the expected score is" in it }
             if (said.isNotEmpty()) {
                 shownExamination = true
                 queuePlain(
@@ -730,32 +739,45 @@ class Coach(
 
     /**
      * A mistake of the player's placed by the player model. When its cause is behind an earlier
-     * mistake of the session's too, the pattern is said -- the second time, and every second
-     * time after -- with the habit that answers it, right after the lesson on the move. Each
-     * lesson taught its own moment and a principle of its own, and the threat-blind student's
-     * notebook held five unrelated rules, none of them the habit (the simulated students,
-     * 2026-09-26). Said from the model's cause, no model call.
+     * mistake of the session's too, the pattern is said, with the habit that answers it, right
+     * after the lesson on the move -- the second time, and after that at most once in each game:
+     * said every second time it came to "10 times now" in one session (the AI's sessions,
+     * 2026-09-26). Each lesson had taught its own moment and a principle of its own, and the
+     * threat-blind student's notebook held five unrelated rules, none of them the habit. A player
+     * of 1800 and up hears the pattern without the textbook habit. Said from the model's cause,
+     * no model call.
      */
     private fun onEvidence(event: ProfileEvidence, ts: Double) {
         val cause = event.cause
         if (event.gameId != gameId || cause == null || !Causes.HABIT.containsKey(cause)) return
         val n = (causesSeen[cause] ?: 0) + 1
         causesSeen[cause] = n
-        if (n < 2 || n % 2 != 0) return
+        if (n < 2 || (patternTold.containsKey(cause) && patternTold[cause] == gameId)) return
+        patternTold[cause] = gameId
         val (words, habit) = Causes.HABIT.getValue(cause)
         val times = when (n) {
             2 -> "twice"
             3 -> "three times"
             else -> "$n times"
         }
-        val text = bags.draw(
-            "pattern:$cause",
-            listOf(
-                "That is $times now: $words. The habit to build: $habit.",
-                "This keeps happening -- $words, $times now. The habit that fixes it: $habit.",
-                "Notice the pattern: $words, $times now. So, $habit.",
-            ),
-        )
+        val text = if (strongPlayer) {
+            bags.draw(
+                "pattern-strong:$cause",
+                listOf(
+                    "That is $times now: $words.",
+                    "Notice the pattern -- $words, $times now.",
+                ),
+            )
+        } else {
+            bags.draw(
+                "pattern:$cause",
+                listOf(
+                    "That is $times now: $words. The habit to build: $habit.",
+                    "This keeps happening -- $words, $times now. The habit that fixes it: $habit.",
+                    "Notice the pattern: $words, $times now. So, $habit.",
+                ),
+            )
+        }
         synchronized(lock) { conversation.note("The pattern, told to the player: $text") }
         queuePlain(Trigger.POST_MISTAKE, text, ts, recordNow = true)
     }
@@ -1786,6 +1808,22 @@ class Coach(
         val close = " They are answering the question you just asked, your last turn above: say first, " +
             "plainly and from the facts, whether they have it right; if they do not, give the " +
             "answer yourself in a sentence. Ask nothing more -- this closes that question."
+        // After the coach has already spoken since the move, a follow-up gets only what it asks:
+        // the verdict and the better move came back in every reply ("e6 was a miss costing 41% of
+        // the game; Nxc3 was better" twice running), and "I understand: I should play Nxc3" got
+        // the lesson again and "Which White piece is still at home on g1?" (the AI's sessions,
+        // 2026-09-26).
+        val followup = !answering && saidSinceMove().isNotEmpty()
+        val asks = questionPart(said).isNotEmpty()
+        val follow = " You have already told them the verdict on it and the better move, in your turns " +
+            "above: do not repeat either." +
+            if (asks) {
+                " Answer only what they ask now -- concretely, from the facts, in one to three " +
+                    "sentences -- and ask nothing back."
+            } else {
+                " They ask nothing: reply in one short sentence -- say whether what they " +
+                    "say is right, or put it right -- and ask nothing."
+            }
         val directive: String
         val lastOpponent = lastOpponentMove()
         val lastOwn = lastOwnMove()
@@ -1850,9 +1888,16 @@ class Coach(
                 "They asked about a move or line and have just been shown the engine's word " +
                     "on it -- your last turn above. Build on it in one or two sentences: what " +
                     "it means for their idea, in plain chess words, saying only what that " +
-                    "analysis and the messages state; do not repeat its numbers. Then one " +
-                    "question that points them at the idea. Name no move the messages do not " +
-                    "give."
+                    "analysis and the messages state; do not repeat its numbers." +
+                    (
+                        if (followup) {
+                            " You have already told them the verdict on their move and the better one: " +
+                                "do not repeat either, and ask nothing."
+                        } else {
+                            " Then one question that points them at the idea."
+                        }
+                        ) +
+                    " Name no move the messages do not give."
             fallback = ""
         } else if (ASK_OPPONENT_MOVE.containsMatchIn(said) && lastOpponent != null) {
             val theirs = lastOpponent.assessment!!
@@ -1928,9 +1973,14 @@ class Coach(
                         "position they face now." +
                         if (answering) {
                             "$close Three sentences at most."
+                        } else if (followup) {
+                            follow
                         } else {
                             " Three sentences at most, then one question that checks they see the pattern."
                         }
+                if (followup && !asks) {
+                    fallback = "" // a nod needs no template: nothing, rather than the lesson again
+                }
             }
         } else {
             directive =
@@ -1943,10 +1993,19 @@ class Coach(
                     "reply, what the move does. Only the engine's better move or line is " +
                     "withheld: never reveal that unless the sheet lists it, but do point them " +
                     "toward the right idea" +
-                    (if (answering) " in words." else " with a question.") +
+                    (if (answering || (followup && !asks)) " in words." else " with a question.") +
                     " What you already said in this position is under 'Said here': do not say " +
                     "it again in other words; give them something it did not." +
-                    (if (answering) close else "")
+                    when {
+                        answering -> close
+                        followup && !asks ->
+                            " They ask nothing: reply in one short sentence -- say whether what " +
+                                "they say is right, or put it right -- and ask nothing."
+                        else -> ""
+                    }
+            if (followup && !asks && engineWords.isEmpty()) {
+                fallback = "" // a nod needs no template: nothing, rather than a hint again
+            }
         }
         return "$checks$directive" to fallback
     }

@@ -342,6 +342,40 @@ class CoachTest {
     }
 
     /**
+     * The verdict and the better move came back in every reply, and "I understand: I should play
+     * Nxc3" got the lesson again and "Which White piece is still at home on g1?" (the AI's
+     * sessions, 2026-09-26; desktop 9e49622). The desktop's words ("I see, I should have seen the
+     * mate.", "Why does the bishop check not work?") reach the answer about the last move through
+     * `_asked_own_move` (f733318, not ported); on the phone the words about the last move do.
+     */
+    @Test
+    fun aFollowUpGetsWhatItAsksAndANodOneSentence() {
+        val (coach, provider) = coach(listOf("...", "...", "...", "..."))
+        bishopCheckInsteadOfMate(coach)
+        synchronized(coach.lock) {
+            coach.conversation.coachSaid("That one cost you: Qxf7# was better -- it is mate.")
+        }
+        synchronized(provider.replies) {
+            provider.replies.clear()
+            provider.replies.addAll(listOf("", ""))
+        }
+        coach.ask("I see now what was better: the queen mates.", 12.0)
+        messages(coach)
+        var directive = directive(provider)
+        assertTrue(directive, "do not repeat either" in directive)
+        assertTrue(directive, "They ask nothing: reply in one short sentence" in directive)
+        assertTrue(directive, "then one question" !in directive)
+        synchronized(provider.replies) {
+            provider.replies.clear()
+            provider.replies.addAll(listOf("", ""))
+        }
+        coach.ask("Why was that bad?", 13.0)
+        messages(coach)
+        directive = directive(provider)
+        assertTrue(directive, "Answer only what they ask now" in directive && "do not repeat either" in directive)
+    }
+
+    /**
      * Asked what it cost, the figure is said (desktop 6d9ba6f). The desktop's "how much did that
      * cost me?" reaches the answer about the last move through `_asked_own_move` (f733318, not
      * ported); on the phone the question about the last move carries it.
@@ -592,9 +626,19 @@ class CoachTest {
         assertTrue(second.toString(), second.size == 1 && "twice now" in second[0])
         assertTrue(second[0], "what their moves threatened" in second[0])
         assertTrue(second[0], "look at what their last move attacks" in second[0])
+        // Once a game after that: said every second time it came to "10 times now" in a session
+        // (desktop 9e49622).
         assertEquals(emptyList<String>(), placed(31, Causes.MISSED_THREAT))
-        val fourth = placed(37, Causes.MISSED_THREAT)
-        assertTrue(fourth.toString(), "4 times now" in fourth[0])
+        assertEquals(emptyList<String>(), placed(37, Causes.MISSED_THREAT))
+        coach.gameId = "g2" // the next game of the session
+        val fifth = placed(9, Causes.MISSED_THREAT, gameId = "g2")
+        assertTrue(fifth.toString(), "5 times now" in fifth[0])
+        assertEquals(emptyList<String>(), placed(15, Causes.MISSED_THREAT, gameId = "g2"))
+        // A player of 1800 and up hears the pattern without the textbook habit.
+        coach.strongPlayer = true
+        coach.gameId = "g3"
+        val strong = placed(9, Causes.MISSED_THREAT, gameId = "g3")[0]
+        assertTrue(strong, "what their moves threatened" in strong && "look at what" !in strong)
     }
 
     companion object {
