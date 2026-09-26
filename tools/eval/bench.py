@@ -374,8 +374,9 @@ def load_manifest() -> dict:
     return json.loads(MANIFEST.read_text(encoding="utf-8"))
 
 
-# The classes a fact question falls in, answered by the template alone (coach.fact_question).
-TEMPLATE_CLASSES = frozenset({"ask_material", "ask_opening", "ask_eval"})
+# The classes answered by the template alone when asked bare: a fact question
+# (coach.fact_question), and the move or the line asked for (d8c687c, 81421cd).
+TEMPLATE_CLASSES = frozenset({"ask_material", "ask_opening", "ask_eval", "ask_line", "ask_move"})
 
 
 def cmd_run(args: argparse.Namespace) -> None:
