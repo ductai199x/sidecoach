@@ -262,7 +262,26 @@ Tai's finish line (2026-09-26), with a hard cap of $3 for the rest of the projec
 
 **E1 is not met.** The rest are in the AI's core (lessons, hints, why-answers, great-move verdicts). There its explanations are the excellence and the errors at once.
 
-**Spend:** $2.20 of the $3 cap. Pilot $0.03, test coach $0.41, rubric $1.46, dev coach $0.30.
+**Tai: "can you fix it? To make it as low as 1%?" (18:17).**
+
+- **Step 1 ($0, 70931ab).** It fixed the four sheet bugs:
+  - the outcome now names the pieces ("the exchange: a rook for a bishop");
+  - an advanced pawn is no longer called passed;
+  - the x-ray wording is fixed;
+  - the recapture comes from the engine's line when the new position has not been read yet.
+
+  Great and brilliant moves also get the board's sentence (Tai's rule of 2026-09-20; the model's delight carried a false claim in 18% of them).
+  - Estimate: about 2% on test.
+  - About 7% on dev, whose errors (lessons, hints, plans) no fix was designed from. Dev is the honest number.
+- **Step 2 (1402650, 232fc11): a model lists the draft's claims, python-chess decides them** (`coach/draft_claims.py`). A claim is decided only on what its own words say.
+  - Validation, over the 37 hand-confirmed false replies and 99 clean ones:
+    - luna@none as the reader caught 11/37 (30%) and refused 0/99 clean;
+    - the local Qwen 27B caught 5/37 and refused 0/99.
+  - The looser verifier caught up to 20/37 but refused 26/99.
+  - Luna adds a median 1.3 s per reply (p90 2.5 s) and about $0.0004.
+  - It is off (`Speaker.claim_reader`): short of the half this was to reach, and 1% was not reached. On at 30%, the estimate is dev about 5%, test about 1.4%.
+
+**Spend:** $2.30 of the $3 cap. Pilot $0.03, test coach $0.41, rubric $1.46, dev coach $0.30, claim-reader validation $0.10.
 
 ## Next, if wanted
 
