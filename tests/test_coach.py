@@ -1242,14 +1242,27 @@ def test_a_question_about_the_last_move_gets_its_verdict_in_full() -> None:
     out = _messages(coach)
     directive = _directive(_given(provider))
     assert "They ask about the move they already played, Bxf7+" in directive
-    assert "cost 45% of the game" in directive and "Qxf7# was better" in directive
+    assert "Qxf7# was better" in directive
     assert "nothing about it is withheld" in directive
+    # What it cost is said only when they ask it: "It cost you 22% of the game." opened every
+    # answer, and Tai had said the figure is for when he asks (2026-09-20).
+    assert "45%" not in directive and "no figures" in directive
     # Spoken from the position the move was played from, with everything shown: naming
     # the better move is not a leak, as it is not in the lesson after a mistake.
     assert out and out[-1].level is DisclosureLevel.LINE
     assert out[-1].fen == SCHOLAR
-    # The fallback is the verdict itself, not a hint.
-    assert out[-1].text.startswith("It cost you 45% of the game. Qxf7# was better")
+    # The fallback is the verdict itself, not a hint -- and without the figure.
+    assert out[-1].text.startswith("Qxf7# was better")
+
+
+def test_what_a_move_cost_is_said_when_they_ask_it() -> None:
+    coach, provider = _coach(["...", "..."])
+    _bishop_check_instead_of_mate(coach)
+    provider.replies = ["", ""]
+    coach.ask("how much did that cost me?", 12.0)
+    out = _messages(coach)
+    assert "cost 45% of the game -- they asked" in _directive(_given(provider))
+    assert out and out[-1].text.startswith("It cost you 45% of the game. Qxf7# was better")
 
 
 def test_a_question_about_a_fine_last_move_says_it_was_fine() -> None:

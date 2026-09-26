@@ -82,6 +82,8 @@ from sidecoach.profile.insights import motif_words
 MAX_TOKENS = 220
 # The top of the rating band below which the templates say no term of art (verdicts.JARGON).
 PLAIN_BELOW = 1400
+# The bottom of the rating band from which the templates add no textbook rule to a lesson.
+STRONG_FROM = 1800
 # After every this-many mistakes the lesson ends by asking what the player saw: a
 # self-report the profile keeps beside the mistake (DESIGN 5.6, "sparingly"). One that
 # goes unanswered is the last of the game: a player with the mic off heard "did you miss
@@ -315,12 +317,14 @@ def lesson_template(
     played: str | None = None,
     allowed: str | None = None,
     keep_lead: str = KEEP_LEADS[0],
+    strong: bool = False,
 ) -> str:
     """After a move that cost something: the better move, what it does, what the move made
     allowed, and the pattern to keep. `opener` is the rotated "That one cost you: {best} was
     better"; `board` and `played` (UCI) are the position the player faced and the move made,
     `allowed` what it let the opponent do (`idea_words.allowed`), when known, and `keep_lead`
-    how the rule to keep is introduced (`KEEP_LEADS`, rotated by the coach)."""
+    how the rule to keep is introduced (`KEEP_LEADS`, rotated by the coach). `strong` (a
+    player of 1800 and up) leaves the rule out: the concrete point is the lesson."""
     text = opener
     why = facts.why or ""
     other_piece = _recapture(board, best, played)
@@ -328,6 +332,8 @@ def lesson_template(
         text += f" -- {other_piece}"
         if allowed:
             text = _sentence(text) + " " + allowed
+        if strong:
+            return _sentence(text)
         return (
             _sentence(text)
             + " "
@@ -364,7 +370,7 @@ def lesson_template(
         keep = PATTERN_LESSONS["a mating attack"]
     if keep is None and facts.plan and facts.mechanism:
         keep = facts.mechanism.split(": ", 1)[-1]
-    if keep and not _said(keep, text):
+    if keep and not strong and not _said(keep, text):
         text += " " + _sentence(f"{keep_lead}: {keep}")
     return text
 
@@ -1749,6 +1755,12 @@ _ASK_EVAL = re.compile(
     r"how bad is it|am i lost)\b",
     re.IGNORECASE,
 )
+# What a move cost, asked in so many words: only then is the figure said.
+_ASK_COST = re.compile(
+    r"\b(?:how much (?:did|does) (?:it|that|this|my move)\s*(?:\w+\s*)?cost|what did (?:it|that) "
+    r"cost|how (?:bad|costly) was (?:it|that|my move)|how much (?:did|have) i lose)\b",
+    re.IGNORECASE,
+)
 # A bare request for a hint, with nothing claimed: "hint", "give me a hint", "a clue".
 _ASK_HINT = re.compile(
     r"^\W*(?:(?:give me |i need |can i have |i want |any |another |one more )?(?:a |an |some )?"
@@ -1910,6 +1922,9 @@ class Coach:
         self.system = system_message(persona=persona, rating=rating)
         # A player below 1400 hears no term of art in the templates (verdicts.JARGON).
         self.plain_words = rating is not None and rating[1] < PLAIN_BELOW
+        # A player of 1800 and up hears no textbook rule: the strong simulated students listed
+        # about 4.5 a session they already knew ("rooks belong on open files", 75 times).
+        self.strong_player = rating is not None and rating[0] >= STRONG_FROM
         # Run the claims check on the caller's thread (replay and evaluation) instead of a
         # worker: live it is threaded so a button press never stalls the pipeline.
         self.sync_claims = False
@@ -2636,6 +2651,7 @@ class Coach:
                     taught=tuple(self._taught),
                     bags=self._bags,
                     plain=self.plain_words,
+                    strong=self.strong_player,
                 )
                 if kind is not None:
                     self._taught.append(kind)
@@ -3410,6 +3426,7 @@ class Coach:
                         played=played.uci,
                         allowed=allowed,
                         keep_lead=lead,
+                        strong=self.strong_player,
                     ),
                 )
                 instruction = (
@@ -3457,6 +3474,7 @@ class Coach:
                     taught=tuple(self._taught),
                     bags=self._bags,
                     plain=self.plain_words,
+                    strong=self.strong_player,
                 )
                 meaning = {
                     "brilliant": "a sound sacrifice",
@@ -3509,6 +3527,7 @@ class Coach:
                         board=position.board,
                         played=played.uci,
                         keep_lead=lead,
+                        strong=self.strong_player,
                     ),
                 )
                 instruction = (
@@ -3723,7 +3742,12 @@ class Coach:
                 fallback = self._fresh_lesson(
                     opener,
                     lambda lead: lesson_template(
-                        facts, best, opener, played=record.move.uci, keep_lead=lead
+                        facts,
+                        best,
+                        opener,
+                        played=record.move.uci,
+                        keep_lead=lead,
+                        strong=self.strong_player,
                     ),
                 )
                 directive = (
@@ -3739,7 +3763,10 @@ class Coach:
                     "two sentences, and do not invent a fault. No question."
                 )
             else:
-                fallback = f"It cost you {loss:.0%} of the game."
+                # What it cost only when they ask: "It cost you 22% of the game." opened every
+                # answer, and Tai had said the figure is for when he asks (2026-09-20).
+                asked_cost = bool(_ASK_COST.search(said))
+                fallback = f"It cost you {loss:.0%} of the game." if asked_cost else ""
                 # What the move let them do, from the position it left, as the lesson after
                 # the move has it: without it "why was that bad?" named the better move and a
                 # rule, and no piece, square or move of the reason (quality round 3).
@@ -3755,7 +3782,7 @@ class Coach:
                     # it -- not "the idea was a pin" and nothing more.
                     # Asked about the move just taught, the lesson is not said twice.
                     opener = f"{best} was better"
-                    fallback += " " + self._fresh_lesson(
+                    fallback = (fallback + " " if fallback else "") + self._fresh_lesson(
                         opener,
                         lambda lead: lesson_template(
                             facts,
@@ -3765,15 +3792,24 @@ class Coach:
                             played=record.move.uci,
                             allowed=allowed,
                             keep_lead=lead,
+                            strong=self.strong_player,
                         ),
                     )
                 elif allowed:
-                    fallback += " " + _sentence(allowed[0].upper() + allowed[1:])
+                    fallback = (fallback + " " if fallback else "") + _sentence(
+                        allowed[0].upper() + allowed[1:]
+                    )
+                if not fallback:
+                    fallback = f"That was {_rated(label)}."
                 reason = f"what {best} does, and " if best else ""
+                cost = (
+                    f" that cost {loss:.0%} of the game -- they asked, so say it"
+                    if asked_cost
+                    else " (what it cost is not theirs to hear unless they ask: no figures)"
+                )
                 directive = (
                     f"They ask about the move they already played, {san}. Its verdict is in its "
-                    f"move message and is theirs in full: it was {_rated(label)} that cost "
-                    f"{loss:.0%} of the game"
+                    f"move message and is theirs in full: it was {_rated(label)}{cost}"
                     + (f", {best} was better" if best else "")
                     + (f", and the idea was {idea}" if idea else "")
                     + ". Say that plainly -- the position it was played from is past, so "

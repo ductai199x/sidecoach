@@ -130,6 +130,18 @@ def test_their_move_first_is_not_measured_against_the_best_and_is_said_as_their_
     assert "pass" not in said
 
 
+def test_a_line_said_aloud_is_its_first_reply() -> None:
+    """ "they would answer 9... Bxg2 10. Kxg2 Qd7 11. d5 Na6 12. Nc3 O-O" came before every
+    answer the AI then gave in words: aloud, the reply's first two moves."""
+    fact = (
+        "Engine on your Qc3, which the player asked about: after 6... Qc3 the expected score "
+        "is 0.45 from the player's side, 0.05 behind the engine's best; the opponent's reply "
+        "would be 7. Nf3 Nd7 8. Rc1 Qa5 9. d4; what Qc3 does: attacks the pawn on d3."
+    )
+    said = spoken(fact)
+    assert "they would answer 7. Nf3 Nd7;" in said and "Rc1" not in said
+
+
 def test_spoken_puts_the_same_facts_in_plain_words() -> None:
     fact = (
         "Engine on your Bc4, which the player asked about: after 3. Bc4 the expected score is 0.52 "

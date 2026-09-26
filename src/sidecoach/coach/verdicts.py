@@ -207,15 +207,20 @@ def verdict(
     rng: random.Random | None = None,
     bags: Bags | None = None,
     plain: bool = False,
+    strong: bool = False,
 ) -> tuple[str, str | None]:
     """The sentence -- the praise for the label, then what the move teaches -- and the kind
     of lesson it taught, None when it is praise alone. With `bags` (the live coach's) every
     wording is drawn from its bag, each once before any comes again (`coach/bag.py`);
     without, a `choice` that is never `last`'s praise. The praise is drawn before the
     wording, so the phone's port draws the same. `plain` leaves out the wordings that name
-    a term of art (a player below 1400: `JARGON`)."""
+    a term of art (a player below 1400: `JARGON`); `strong` (1800 and up) the principles
+    -- "rooks belong on open files" was what the strong simulated students most often said
+    they already knew -- keeping the tactics, which are the board's own."""
     rng = rng or random.Random()
     found = lesson(board, move, tags, phase=phase, threats=threats, taught=taught)
+    if strong and found is not None and found[0] in PRINCIPLES:
+        found = None
     if found is not None and found[0] == "mate":
         if bags is not None:
             return bags.draw("mate", MATE), "mate"

@@ -236,9 +236,22 @@ def test_a_player_below_1400_hears_no_term_of_art(monkeypatch) -> None:
     monkeypatch.setattr(verdicts, "lesson", lambda *a, **k: ("prophylaxis", clauses))
     move = chess.Move.from_uci("e2e4")
     said = {
-        verdict(chess.Board(), move, "good", rng=random.Random(i), plain=True)[0]
-        for i in range(20)
+        verdict(chess.Board(), move, "good", rng=random.Random(i), plain=True)[0] for i in range(20)
     }
     assert not any("prophylaxis" in s for s in said)
     rich = {verdict(chess.Board(), move, "good", rng=random.Random(i))[0] for i in range(40)}
     assert any("prophylaxis" in s for s in rich)
+
+
+def test_a_player_of_1800_and_up_hears_no_textbook_principle(monkeypatch) -> None:
+    """The strong simulated students most often said they already knew "rooks belong on
+    open files" (75 times): from 1800 the praise stands alone."""
+    from sidecoach.coach import verdicts
+
+    clauses = list(PRINCIPLES["takeFile"])
+    monkeypatch.setattr(verdicts, "lesson", lambda *a, **k: ("takeFile", clauses))
+    move = chess.Move.from_uci("e2e4")
+    text, kind = verdict(chess.Board(), move, "good", rng=random.Random(1), strong=True)
+    assert kind is None and "rook" not in text
+    text, kind = verdict(chess.Board(), move, "good", rng=random.Random(1))
+    assert kind == "takeFile"
