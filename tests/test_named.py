@@ -213,3 +213,17 @@ def test_undefended_means_no_defender_and_hanging_means_attacked_too() -> None:
     held = chess.Board("4k3/8/8/8/8/5N2/4P3/4K3 w - - 0 1")
     problems = check_draft("Your knight on f3 is undefended.", held)
     assert [p.reason for p in problems] == ["the knight on f3 is defended"]
+
+
+def test_a_piece_examined_is_said_to_the_player() -> None:
+    """A simulated student's 9.Nf3? -- the square the student named went out as written for
+    the model: 'f3: the player's knight on f3 stands there; it can go to ...' (2026-09-26)."""
+    fen = "r3kbnr/pbpp1ppp/1pn1p3/8/8/4PN1P/PPPPQPP1/RNB1KB1R w KQkq - 0 1"
+    said = spoken(_piece(fen, "f3", chess.WHITE))
+    assert said.startswith("Your knight on f3 can go to ")
+    assert "the player" not in said and "stands there" not in said
+    empty = spoken(_piece(fen, "d4", chess.WHITE))
+    assert empty == (
+        "d4 is empty; you control it with the pawn on e3 and the knight on f3; they control it"
+        " with the knight on c6."
+    )

@@ -478,6 +478,21 @@ def spoken(fact: str) -> str:
         "the engine then plays", "then the engine plays"
     )
     body = re.sub(r"what (\S+) does: ", r"\1 ", body)
+    # A piece or a square examined (`examine_piece`) is said to the player, not about them:
+    # "f3: the player's knight on f3 stands there; it can go to ..." went out as it was
+    # written for the model (a simulated student's session, 2026-09-26).
+    body = (
+        body.replace("the player's", "your")
+        .replace("the opponent's", "their")
+        .replace("the player controls", "you control")
+        .replace("the opponent controls", "they control")
+    )
+    piece = re.match(r"^(your|their) (\w+) on ([a-h][1-8]) stands there; it ", body)
+    if piece:
+        whose, name, square = piece.groups()
+        return f"{whose.capitalize()} {name} on {square} " + body[piece.end() :]
+    if re.match(r"^[a-h][1-8] is empty", body):
+        return body  # names its square itself
     return f"{label}: {body}"
 
 
