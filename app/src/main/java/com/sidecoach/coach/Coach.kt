@@ -483,7 +483,8 @@ const val IDEA_DIRECTIVE =
         "threat, the target, the plan -- and the principle behind it in a clause, and the trap if " +
         "the sheet gives one. Precise, never a principle on its own: every sentence says " +
         "something about this board. Never name the player's move or the square it goes to, and " +
-        "not which of their own pieces moves -- that is the next hint. Two or three sentences."
+        "not which of their own pieces moves -- that is the next hint -- though the moves the " +
+        "sheet lists as all as good, when several are, may be named. Two or three sentences."
 private val LENGTH_WORDS = mapOf(4 to "Four", 5 to "Five", 6 to "Six")
 
 /**
@@ -607,53 +608,66 @@ fun falseIllegal(text: String, board: Board): List<String> {
     return out
 }
 
+/** A reply's clauses: a sentence, or the halves of one joined by " -- " or ", but / though". */
+private val CLAUSE = Regex("(?<=[.;:!?])\\s+|\\s+--\\s+|,\\s+(?:but|though|while)\\s+")
+
+/** A clause about the move just played without naming it: "That was ...", "It cost ...". */
+private val ABOUT_IT = Regex("^\\W*(?:that|it|this|your (?:last )?move)\\b", RegexOption.IGNORE_CASE)
+
+/** `re.split`: the pieces between the matches, empty ones kept. */
+private fun splitClauses(text: String): List<String> = text.split(CLAUSE)
+
 /**
  * Faults in what a reply says of the move just assessed: a "best" that was not, a slip word
- * for a sound move, a cost that is not the recorded one.
+ * for a sound move, a cost that is not the recorded one -- clause by clause, where the clause is
+ * about that move (it names it, or opens with "that" or "it"). Every lesson names the better
+ * move too, and skipping any reply that did let "That was a blunder: a3 was better" through for a
+ * good move (the runtime audit, 2026-09-25).
  */
 internal fun verdictProblems(text: String, request: CoachRequest): List<String> {
     val a = request.assessment ?: return emptyList()
     val played = request.playedSan
     if (played.isNullOrEmpty()) return emptyList()
-    // Only when the reply speaks of that move, and of no other move by name.
-    val others = SAN.findAll(text).map { it.groupValues[1] }
-        .filter { it.trimEnd('+', '#') != played.trimEnd('+', '#') }
-        .toList()
-    val names = Regex(
-        "(?<![A-Za-z])" + Regex.escape(played.trimEnd('+', '#')) + "[+#]?(?![A-Za-z0-9])"
-    )
-    if (others.isNotEmpty() || !names.containsMatchIn(text)) return emptyList()
+    val core = played.trimEnd('+', '#')
+    val namesIt = Regex("(?<![A-Za-z])" + Regex.escape(core) + "[+#]?(?![A-Za-z0-9])")
     val label = a.label?.name?.lowercase() ?: a.severity.name.lowercase()
+    // A move that cost nothing is as good as the best: "the best move on the board" for a great
+    // move the engine chose itself is true.
+    val bestOk = label == "best" || label == "excellent" || a.expectedLoss < 0.005
     val problems = ArrayList<String>()
-    if (SAYS_BEST.containsMatchIn(text) &&
-        label != "best" && label != "excellent" &&
-        !Regex(
-            "\\bnot (?:the )?(?:best|strongest)\\b|\\bwas better\\b|\\bwas stronger\\b",
-            RegexOption.IGNORE_CASE,
-        ).containsMatchIn(text)
-    ) {
-        problems.add("called $played the best move; its verdict is $label")
-    }
-    if (SAYS_SLIP.containsMatchIn(text) &&
-        a.severity == Severity.NONE &&
-        !Regex(
-            "\\bnot (?:a )?(?:blunder|mistake)\\b|\\bno (?:blunder|mistake)\\b",
-            RegexOption.IGNORE_CASE,
-        ).containsMatchIn(text)
-    ) {
-        problems.add("called $played a slip; its verdict is $label")
-    }
-    for (found in SAYS_COST.findAll(text)) {
-        var value = found.groupValues[1].toDouble()
-        if (found.groupValues[2].isNotEmpty() || value > 1.0) value /= 100.0
-        if (kotlin.math.abs(value - a.expectedLoss) > maxOf(0.02, 0.35 * a.expectedLoss)) {
-            problems.add(
-                "gave the cost of $played as ${found.groupValues[1]}; it was " +
-                    formatted(a.expectedLoss, 2)
-            )
+    for (clause in splitClauses(text)) {
+        if (!(namesIt.containsMatchIn(clause) || ABOUT_IT.containsMatchIn(clause))) continue
+        val others = SAN.findAll(clause).map { it.groupValues[1] }
+            .filter { it.trimEnd('+', '#') != core }
+            .toList()
+        if (others.isEmpty() && !bestOk && SAYS_BEST.containsMatchIn(clause) &&
+            !Regex(
+                "\\bnot (?:the )?(?:best|strongest)\\b|\\bwas better\\b|\\bwas stronger\\b",
+                RegexOption.IGNORE_CASE,
+            ).containsMatchIn(clause)
+        ) {
+            problems.add("called $played the best move; its verdict is $label")
+        }
+        if (a.severity == Severity.NONE && SAYS_SLIP.containsMatchIn(clause) &&
+            !Regex(
+                "\\bnot (?:a )?(?:blunder|mistake)\\b|\\bno (?:blunder|mistake)\\b",
+                RegexOption.IGNORE_CASE,
+            ).containsMatchIn(clause)
+        ) {
+            problems.add("called $played a slip; its verdict is $label")
+        }
+        for (found in SAYS_COST.findAll(clause)) {
+            var value = found.groupValues[1].toDouble()
+            if (found.groupValues[2].isNotEmpty() || value > 1.0) value /= 100.0
+            if (kotlin.math.abs(value - a.expectedLoss) > maxOf(0.02, 0.35 * a.expectedLoss)) {
+                problems.add(
+                    "gave the cost of $played as ${found.groupValues[1]}; it was " +
+                        formatted(a.expectedLoss, 2)
+                )
+            }
         }
     }
-    return problems
+    return problems.distinct()
 }
 
 /**
@@ -792,6 +806,13 @@ internal fun percent(value: Double): String =
 class FirstCandidate(
     private val sink: (String) -> Boolean,
     private val check: (String) -> List<String>,
+    /**
+     * What the whole reply must name (held until it comes), and the task's length (the stream is
+     * closed there): with the voice on, the reply was never checked whole, and "Mate is close."
+     * and an eight-sentence homily both went out (the runtime audit).
+     */
+    private val mustName: List<String> = emptyList(),
+    private val limit: Int? = null,
 ) {
     private var buffer = ""
 
@@ -830,8 +851,12 @@ class FirstCandidate(
      */
     private fun offer(text: String, final: Boolean = false): Boolean {
         val cleaned = STRAY_MARKER.replace(text, "").trim()
-        val ends = SENTENCE_END.findAll(cleaned)
+        var ends = SENTENCE_END.findAll(cleaned)
             .filter { final || it.range.last + 1 < cleaned.length }.toList()
+        if (limit != null) {
+            // Cut at the task's length before anything is said, however large the chunk.
+            ends = ends.take(limit + LENGTH_SLACK)
+        }
         val complete = if (ends.isNotEmpty()) {
             cleaned.substring(0, ends.last().range.last + 1).trim()
         } else {
@@ -842,11 +867,23 @@ class FirstCandidate(
         if (fresh.count { it.isLetter() } < 2) {
             return true // a number and a stop: the sentence it begins is still coming
         }
+        if (mustName.isNotEmpty() && spoken.isEmpty()) {
+            // Nothing goes out before what the reply must name: held until it comes, and a reply
+            // that ends without it is not said at all -- it is read whole instead.
+            val leftOut = omitted(complete, mustName)
+            if (leftOut != null) {
+                if (final) {
+                    problems = listOf(leftOut)
+                    return false
+                }
+                return true
+            }
+        }
         var faults = if (fresh.isNotEmpty()) check(fresh) else emptyList()
         // Sentence by sentence, only what a sentence can get wrong: the length, the closing
         // question and what the whole must name are the whole reply's.
         faults = faults.filter {
-            !it.startsWith("too long") && !it.startsWith("left out") && !it.contains("question") &&
+            !it.startsWith("too long") && !it.startsWith("left out") && it != "no closing question" &&
                 // Only the reply's first sentence can open it with the move.
                 !(spoken.isNotEmpty() && it.startsWith("opens with"))
         }
@@ -859,7 +896,8 @@ class FirstCandidate(
             return false
         }
         spoken = complete
-        return true
+        // As long as the task allows: the rest is not said.
+        return limit == null || sentenceTotal(spoken) < limit + LENGTH_SLACK
     }
 
     fun feed(delta: String): Boolean {
@@ -1049,6 +1087,12 @@ class CoachRequest(
      * engine's line from there -- the board the model is shown for a lesson after a move.
      */
     val frames: List<Board> = emptyList(),
+    /**
+     * When the reply is about a position already moved from and the player is to move again: the
+     * answer there (its best move and line), which the reply must not give away -- a late
+     * verdict's lesson said "and now Qxf7# is mate" (the runtime audit, 2026-09-25).
+     */
+    val nowAnswer: List<String> = emptyList(),
 )
 
 /**
@@ -1356,7 +1400,13 @@ class Speaker(
                 // The first candidate goes to the voice sentence by sentence as it is
                 // written, each sentence checked for leaks before it is said; the stream is
                 // closed once that candidate is complete, the others unwritten.
-                reader = FirstCandidate(request.streamTo) { t -> problemsOf(t, request) }
+                val (limit, _) = directiveLimits(request.messages.last().content.substringAfterLast("# Task"))
+                reader = FirstCandidate(
+                    request.streamTo,
+                    { t -> problemsOf(t, request) },
+                    mustName = request.mustName,
+                    limit = limit,
+                )
             }
             var raw: String
             try {
@@ -1569,16 +1619,17 @@ class Speaker(
         // played move moved may be named too: "your opponent's rook took on c6" about a move
         // of the record is no hint, but the word "rook" was a leak whenever the withheld
         // piece happened to be a rook as well.
-        val moved = request.played.filter { it.isNotEmpty() && it[0] != 'O' }
-            .map { PIECE_WORD[it[0]] ?: "pawn" }
-            .toSortedSet()
-        val said = listOfNotNull(
-            request.userText,
-            request.disclosed.ifEmpty { null },
-        ).plus(request.played.sorted()).plus(moved).filter { it.isNotEmpty() }.joinToString(" ")
+        // What the user said and what the directive disclosed are theirs already. The moves of
+        // the game are no exemption: only the answer is withheld ([leakCheck]), and exempting
+        // the record's moves, squares and pieces had let the answer through.
+        val said = listOfNotNull(request.userText, request.disclosed)
+            .filter { it.isNotEmpty() }.joinToString(" ")
         val found = ArrayList<String>()
         for (item in leakCheck(text, request.facts, request.level, said = said.ifEmpty { null })) {
             found.add("withheld $item")
+        }
+        for (move in request.nowAnswer) {
+            if (names(text, move)) found.add("gives away $move in the position they face now")
         }
         // The length the directive states: a reply over it is a fault of its own, so a
         // shorter candidate wins the draw, or the likeliest is cut to size.

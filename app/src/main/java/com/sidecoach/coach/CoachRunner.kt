@@ -55,7 +55,9 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
                 draftCheck = { text, board, after ->
                     checkDraft(text, board, after).map { "${it.text}: ${it.reason}" }
                 },
-                claims = if (offline) null else claimsCheck(model),
+                // The claims in their words are parsed at the routine effort: at medium every ask with
+                // a claim waited on a second full model call first (the runtime audit, 2026-09-25).
+                claims = if (offline) null else claimsCheck(routineProvider(settings, model)),
                 verifier = if (offline) null else verifier(settings, model),
                 engine = null,
                 summariseEvery = settings.summariseEvery(),
@@ -85,7 +87,7 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
             provider,
             routineProvider = routineProvider(settings, provider),
             verifier = if (offline) null else verifier(settings, provider),
-            claims = if (offline) null else claimsCheck(provider),
+            claims = if (offline) null else claimsCheck(routineProvider(settings, provider)),
         )
         this.detail = "${provider.name} ($detail)"
     }

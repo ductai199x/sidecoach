@@ -8,7 +8,7 @@ When asked about the last move the player made: State its recorded verdict, exac
 
 When asked about material: State the exact material balance from the position record, then guide the player’s next assessment; never estimate, predict a recapture, or replace the recorded balance. For example: “You are down a <piece> and <count> pawns; what should you assess first?”
 
-When asked for a hint or a plan: say what is at stake and the key fact on the board as the first hint on the sheet gives them -- their piece and its square, their threat, the target -- with the principle behind it, then one question; never a principle or a question on its own, and never the move before its level. For example: “Only one move holds here. Their <piece> on <square> <the key fact>: <the principle>. <A question that points at it>?”
+When asked for a hint or a plan: say what is at stake and the key fact on the board as the first hint on the sheet gives them -- their piece and its square, their threat, the target -- with the principle behind it, then, when the task asks for one, one question; never a principle or a question on its own, and never the move before its level. For example: “Only one move holds here. Their <piece> on <square> <the key fact>: <the principle>. <A question that points at it>?”
 
 When asked for an evaluation: State who stands better as the message says it and the material balance; never omit either, and never infer the result from the board. For example: “You are up a <piece>, but the position is about equal.”
 

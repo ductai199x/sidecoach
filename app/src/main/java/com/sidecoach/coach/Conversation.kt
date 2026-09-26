@@ -152,8 +152,8 @@ class Conversation {
         if (event.kind == "puzzle") {
             text += "\nThis is a puzzle the player is solving on the panel's board, $side to " +
                 "move and to find the best line. Say nothing unasked; when they ask for a " +
-                "hint, give one at the level allowed, never the move itself unless asked " +
-                "for it:\n" + positionText(Board(event.startFen))
+                "hint, give one at the level allowed -- the move itself only at the third hint " +
+                "or when asked for it:\n" + positionText(Board(event.startFen))
         } else if (event.kind != "game") {
             text += "\nThis is a position, not a game from the start: a puzzle, an analysis " +
                 "board, or a game joined from the middle. There is no earlier history to " +
@@ -730,7 +730,7 @@ class Conversation {
     }
 
     /** A threat with what it does: "Nd3+ (forks the queen on d2 and the rook on f1)". */
-    private fun threatWords(board: Board, san: String): String {
+    internal fun threatWords(board: Board, san: String): String {
         if (board.isCheck()) return san
         val passed = board.copy(withStack = false)
         passed.push(Move.NULL)
@@ -793,7 +793,8 @@ class Conversation {
         val visible = visibleFacts(facts, DisclosureLevel.LINE)
         // The hint's questions were for finding the move; the lesson is on the move made.
         for (key in listOf("question", "nudge")) visible.remove(key)
-        return factLines(visible, board, "player", past = true).joinToString("\n")
+        val lines = factLines(visible, board, "player", past = true)
+        return (listOf(positionText(board, legal = false)) + lines).joinToString("\n")
     }
 
     /**

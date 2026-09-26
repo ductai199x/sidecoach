@@ -184,9 +184,13 @@ private val IDEA_KEYS = listOf(
     "trap",
     "choices",
     "situation",
+    // Their threat is the first hint's key fact as often as not ("they threaten Nxe5, winning
+    // your pawn"): withheld to the move level, "what is their threat?" got "nothing" (the runtime
+    // audit, 2026-09-25).
+    "threats",
 )
 private val FOCUS_KEYS = IDEA_KEYS + listOf("target", "piece", "nudge", "region", "ideas")
-private val MOVE_KEYS = FOCUS_KEYS + listOf("why", "tactic", "focus", "candidates", "threats")
+private val MOVE_KEYS = FOCUS_KEYS + listOf("why", "tactic", "focus", "candidates")
 private val BY_LEVEL: Map<DisclosureLevel, List<String>> = mapOf(
     DisclosureLevel.SILENT to emptyList(),
     DisclosureLevel.IDEA to IDEA_KEYS,
@@ -289,6 +293,15 @@ fun squaresIn(text: String): Set<String> {
  *
  * `said` is what the user asked this turn: a square, piece word or move they named is theirs
  * already, so confirming it back is not a leak and never faulted.
+ *
+ * Below MOVE only the answer is withheld (Tai, 2026-09-25: "leaking is not a criminal offense
+ * ... it's useful to point out in precise manner the plan (yours or opponent's) or the positional
+ * advantage or disadvantage ... clamp down egregious offense but be smart about it"): the moves
+ * the player is to find -- the good moves, the player's moves in the best line -- and the squares
+ * they go to, unless the visible facts name them. Any other move or square -- a plan, a weakness,
+ * their threat, a line the facts give -- may be said. The moves of the game are no exemption: the
+ * answer is withheld even when it was played before (by mid-game that exemption covered most of
+ * the board: the runtime audit).
  */
 fun leakCheck(
     text: String,
@@ -338,13 +351,19 @@ fun leakCheck(
     }
 
     if (level.value < DisclosureLevel.MOVE.value) {
+        val answer = (facts.candidates + facts.line.filterIndexed { i, _ -> i % 2 == 0 })
+            .filter { it.isNotEmpty() }
+            .map { TRAILING_MARKS.replace(it, "") }
+            .toSet()
+        val answerSquares = squaresIn(answer.joinToString(" ")) - allowedSquares
         for (token in TOKEN_SPLIT.split(text)) {
             val match = SQUARE_TOKEN.matchEntire(token) ?: continue
             val square = match.groupValues[1]
             val core = TRAILING_MARKS.replace(token, "")
             if (core != square) {
-                if (core.lowercase() !in saidWords && core !in allowedMoves) add("move $core")
-            } else if (square !in allowedSquares) {
+                val known = core.lowercase() in saidWords || core in allowedMoves
+                if (core in answer && !known) add("move $core")
+            } else if (square in answerSquares && square !in saidSquares) {
                 add("square $square")
             }
         }
@@ -384,12 +403,20 @@ fun leakCheck(
             val value = visible[key]
             if (value is String && value.isNotEmpty()) scrubbed = scrubbed.replace(value.lowercase(), " ")
         }
+        // A piece the visible facts name on its square, said in other words ("their pawn on b5 is
+        // about to take your bishop on a4" for "winning your bishop on a4"), is the fact, not a
+        // hint at the piece to move.
+        val shown = visible.values.filterIsInstance<String>().joinToString(" ").lowercase()
+        for (found in PIECE_ON_SQUARE.findAll(shown).map { it.groupValues[1] to it.groupValues[2] }.toSet()) {
+            val (pieceWord, square) = found
+            scrubbed = Regex("\\b${pieceWord}s? on $square\\b").replace(scrubbed, " ")
+        }
         scrubbed = PIECE_WORD_CONTEXTS.replace(scrubbed, " ")
         for (pieceWord in LinkedHashSet(PIECE_WORD.findAll(facts.piece.lowercase()).map { it.value }.toList())) {
             // "The king behind it", "their king runs out of squares": the word is in every
             // explanation of a pin or a mate, and says nothing about which piece to move.
             if (pieceWord in saidWords || pieceWord == "king") continue
-            if (Regex("\\b${Regex.escape(pieceWord)}\\b").containsMatchIn(scrubbed)) {
+            if (Regex("\\b${Regex.escape(pieceWord)}s?\\b").containsMatchIn(scrubbed)) {
                 add("piece $pieceWord")
             }
         }
@@ -399,3 +426,6 @@ fun leakCheck(
 
 /** `re.findall(_PIECE, ...)`: every piece word, wherever it stands in the text. */
 private val PIECE_WORD = Regex(PIECE_RE)
+
+/** `re.findall(rf"({_PIECE})s? on ([a-h][1-8])", ...)`: a piece word and its square. */
+private val PIECE_ON_SQUARE = Regex("($PIECE_RE)s? on ([a-h][1-8])")

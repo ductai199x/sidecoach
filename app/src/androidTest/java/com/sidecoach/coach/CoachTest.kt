@@ -402,10 +402,82 @@ class CoachTest {
         coach.ask("what should I be aiming for here?", 8.0)
         val out = messages(coach)
         assertTrue(out[0].text, out[0].level == DisclosureLevel.IDEA && "e8" in out[0].text)
+        // The hint is out at once, in the template's words; the model adds to it (desktop
+        // af1bae2).
         val directive = directiveOf(given(provider, 0))
-        assertTrue(directive, "They asked what to aim for" in directive)
-        assertTrue(directive, "Give the first hint as a short lesson" in directive)
+        assertTrue(directive, "have just been shown it" in directive && "Do not repeat it" in directive)
         assertTrue(directive, "be honest about their own claim" !in directive)
+    }
+
+    /**
+     * The runtime audit: with the voice on, the reply was checked sentence by sentence only, and
+     * "Mate is close." went out whole. Now the stream holds until what the reply must name has
+     * come, says nothing when it never does, and stops at the task's length (desktop af1bae2).
+     */
+    @Test
+    fun withTheVoiceOnNothingGoesOutBeforeTheKeyFactAndNotPastTheLength() {
+        val heard = ArrayList<String>()
+        var reader = FirstCandidate({ heard.add(it); true }, { emptyList() }, mustName = listOf("e8"))
+        reader.feed("Stay calm. Look carefully at the whole board. ")
+        assertEquals("held: the key fact has not come", emptyList<String>(), heard)
+        reader.finish()
+        assertTrue(heard.isEmpty() && reader.problems.isNotEmpty() && reader.problems[0].startsWith("left out"))
+
+        heard.clear()
+        reader = FirstCandidate({ heard.add(it); true }, { emptyList() }, mustName = listOf("e8"))
+        reader.feed("Mate is close. Their king on e8 has one square. Which check takes it? ")
+        reader.finish()
+        assertTrue(heard.toString(), heard.joinToString(" ").startsWith("Mate is close. Their king on e8"))
+
+        heard.clear()
+        reader = FirstCandidate({ heard.add(it); true }, { emptyList() }, limit = 1)
+        reader.feed("One. Two. Three. Four. Five. ")
+        reader.finish()
+        assertEquals("the limit and its slack, no more", 3, heard.sumOf { t -> t.count { it == '.' } })
+    }
+
+    /** A late verdict's lesson must not give away the answer in the position faced now (af1bae2). */
+    @Test
+    fun aLateLessonDoesNotGiveAwayTheMoveTheyFaceNow() {
+        val request = afterMoveRequest(SCHOLAR, "Bxf7+", "h5f7", nowAnswer = listOf("Qxf7#"))
+        val faults = Speaker(ScriptedProvider(emptyList())).problemsOf("And now Qxf7# is mate on the spot.", request)
+        assertTrue(faults.toString(), "gives away Qxf7# in the position they face now" in faults)
+    }
+
+    /**
+     * Every lesson names the better move, and skipping any reply that did let "That was a
+     * blunder: a3 was better" through for a good move (the runtime audit; desktop af1bae2).
+     */
+    @Test
+    fun theVerdictWordsAreCheckedClauseByClause() {
+        val ruy = "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
+        val good = afterMoveRequest(
+            ruy, "O-O", "b5a4", severity = Severity.NONE, label = Label.GOOD, expectedLoss = 0.04,
+        )
+        assertEquals(
+            listOf("called O-O a slip; its verdict is good"),
+            verdictProblems("That was a blunder: Ba4 was better.", good),
+        )
+        assertTrue(verdictProblems("O-O was the best move here, though Ba4 was close.", good).isNotEmpty())
+        assertEquals(emptyList<String>(), verdictProblems("Fine, but Ba4 was the best move here.", good))
+    }
+
+    /** Their own move is theirs even after the reply, and a threat gets its answer (af1bae2). */
+    @Test
+    fun theirOwnMoveIsTheirsEvenAfterTheReplyAndAThreatGetsItsAnswer() {
+        for (said in listOf("what should I have played?", "did I just blunder?", "was my move bad?")) {
+            assertTrue(said, MY_MOVE.containsMatchIn(said))
+        }
+        assertFalse("'that' is the last move played", MY_MOVE.containsMatchIn("why was that bad?"))
+        for (said in listOf("what is their threat?", "what does my opponent threaten?", "am I in danger?")) {
+            assertTrue(said, ASK_THREAT.containsMatchIn(said))
+        }
+        val (coach, provider) = coach(listOf("Nothing is threatened right now."))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        coach.ask("what is their threat?", 8.0)
+        messages(coach)
+        assertTrue("They ask what the opponent threatens" in directiveOf(given(provider, 0)))
     }
 
     /** `_bishop_check_instead_of_mate`: the user plays Bxf7+ where Qxf7 was mate, and it is judged. */
@@ -817,7 +889,15 @@ class CoachTest {
     }
 
     /** `_after_move_request`: a lesson's request on [fen] after [san], the engine preferring [bestUci]. */
-    private fun afterMoveRequest(fen: String, san: String, bestUci: String): CoachRequest {
+    private fun afterMoveRequest(
+        fen: String,
+        san: String,
+        bestUci: String,
+        nowAnswer: List<String> = emptyList(),
+        severity: Severity = Severity.MISTAKE,
+        label: Label = Label.MISTAKE,
+        expectedLoss: Double = 0.2,
+    ): CoachRequest {
         val board = Board(fen)
         return CoachRequest(
             trigger = Trigger.POST_MISTAKE,
@@ -834,11 +914,12 @@ class CoachTest {
                 gameId = "g",
                 ply = 7,
                 uci = board.parseSan(san)!!.uci(),
-                expectedLoss = 0.2,
-                severity = Severity.MISTAKE,
+                expectedLoss = expectedLoss,
+                severity = severity,
                 best = listOf(bestUci),
-                label = Label.MISTAKE,
+                label = label,
             ),
+            nowAnswer = nowAnswer,
         )
     }
 

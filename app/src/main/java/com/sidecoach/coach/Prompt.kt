@@ -73,9 +73,9 @@ const val CONTRACT =
         "# Setting: which colour the player has, and the time control when there is one.\n" +
         "# Game so far: every move played, one line each, with the engine's verdict on it -- the " +
         "label, what it cost, and the move the engine preferred with what it would have done. " +
-        "Under a move, indented, stands what was said after it: the player's words as 'player:' " +
-        "and your own reply as 'you:'. Events -- a takeback, a re-read of the board, the game " +
-        "over -- stand there too, where they happened.\n" +
+        "Under a move, indented, stands what was said after it: the player's words as 'PLAYER " +
+        "said:' and your own replies as 'YOU (the coach) said:'. Events -- a takeback, a re-read " +
+        "of the board, the game over -- stand there too, as 'EVENT:', where they happened.\n" +
         "# Position now: the position after the last move, in sections. Board: the FEN, every " +
         "piece with its square, and the legal moves for the side to move. Last move: who played " +
         "it and the verdict in full -- the label, the cost in expected score from the player's " +
@@ -134,8 +134,8 @@ const val RULES =
         "where it helps, one question that sets them looking the right way; never the answer " +
         "before its level. Never a question that could be asked of any position -- " +
         "'look at the whole board', 'what is your opponent's idea' -- when the message gives " +
-        "the goal. A hint or a lesson ends with a question; an answer to a direct question " +
-        "does not.\n" +
+        "the goal. A hint or a lesson ends with a question when the task asks for one; an answer " +
+        "to a direct question does not.\n" +
         "4. Keep to the length the task gives; otherwise two to four sentences. One question at " +
         "a time. Do not restate your previous turn, and vary your phrasing across the game.\n" +
         "5. You speak to the player: address them as 'you', and call the other side 'your " +

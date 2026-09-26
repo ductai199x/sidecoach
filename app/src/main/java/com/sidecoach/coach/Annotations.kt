@@ -157,8 +157,15 @@ fun annotationsFor(
             add(Annotation(kind = "square", squares = listOf(square), color = "mention", opacity = 0.6))
         }
     }
+    // Their threat is words from the idea level (Disclosure's IDEA_KEYS); its arrow still waits
+    // for the move level, where it always came.
     @Suppress("UNCHECKED_CAST")
-    for (san in (visible["threats"] as? List<String> ?: emptyList()).take(2)) {
+    val threats = if (level.value >= DisclosureLevel.MOVE.value) {
+        visible["threats"] as? List<String> ?: emptyList()
+    } else {
+        emptyList()
+    }
+    for (san in threats.take(2)) {
         // A threat is the opponent's move, read after a null move.
         add(arrow(nullMoved(board), san, "threat", 0.8))
     }

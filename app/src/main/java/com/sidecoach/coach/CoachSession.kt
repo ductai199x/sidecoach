@@ -147,6 +147,21 @@ private val ASK_HINT = Regex(
     RegexOption.IGNORE_CASE,
 )
 
+/** The player's own move, named as theirs: asked after the opponent has replied too. */
+internal val MY_MOVE = Regex(
+    "\\b(?:what should i have (?:played|done)|what did i (?:miss|do wrong)|did i (?:just )?" +
+        "(?:blunder|mess up)|my (?:last )?move|was i wrong|should i have)\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+/** A question about the opponent's threat. */
+internal val ASK_THREAT = Regex(
+    "\\b(?:what(?:'s| is| are) (?:their|the|his|her|my opponent's|the opponent's) threats?" +
+        "|what (?:do|does) (?:they|he|she|my opponent|the opponent) threaten" +
+        "|is (?:there|anything) (?:a )?threat(?:ened)?|am i (?:in danger|threatened))\\b",
+    RegexOption.IGNORE_CASE,
+)
+
 /** A question about what to aim for: the first hint answers it, and its template is the floor. */
 private val ASK_AIM = Regex(
     "\\bwhat (?:should|do|can|could) i (?:be )?(?:aim|go|look|play|work|strive)(?:ing)? for\\b" +
@@ -502,17 +517,15 @@ class Coach(
             level = DisclosureLevel.LINE
         }
         synchronized(lock) { conversation.userSaid(text) }
-        if (ASK_LAST_MOVE.containsMatchIn(text)) {
-            val own = lastOwnMove()
-            if (own != null) {
-                // About the move they already played: spoken from the position it was played
-                // from, with everything shown, as the lesson after a mistake is. That
-                // position is past; the level in force binds only the one they face now.
-                val before = positions[own.move.ply - 1]
-                if (before?.facts != null) {
-                    position = before
-                    level = DisclosureLevel.LINE
-                }
+        val own = askedOwnMove(text)
+        if (own != null) {
+            // About the move they already played: spoken from the position it was played from,
+            // with everything shown, as the lesson after a mistake is. That position is past;
+            // the level in force binds only the one they face now.
+            val before = positions[own.move.ply - 1]
+            if (before?.facts != null) {
+                position = before
+                level = DisclosureLevel.LINE
             }
         }
         val where = position
@@ -1309,7 +1322,9 @@ class Coach(
         val content = "Position (FEN): ${board.fen()}\n$side to move. The player is $player.\n" +
             "Legal moves: $legal\n\nThe player says: \"${text.trim()}\"\n\nJSON only."
         return try {
-            speaker.provider.chat(
+            // Parsing their words into moves is no lesson: the routine effort, not the coach's
+            // (at medium it was a second model call's worth of waiting).
+            speaker.routineProvider.chat(
                 PLAN_SYSTEM,
                 listOf(ChatMessage("user", content)),
                 maxTokens = 400,
@@ -1322,15 +1337,30 @@ class Coach(
 
     /**
      * The player's own move, when it is the last move played and has its verdict. Once the
-     * opponent has replied, "that move" is theirs: the generic ask handles it.
+     * opponent has replied, "that move" is theirs -- unless the words say it is the player's
+     * ([mine]): "what should I have played?", "did I blunder?".
      */
-    private fun lastOwnMove(): PlyRecord? {
+    private fun lastOwnMove(mine: Boolean = false): PlyRecord? {
         synchronized(lock) {
             val records = conversation.activeRecords()
+            if (mine) {
+                val own = records.lastOrNull { it.move.byUser }
+                return if (own != null && own.assessment != null) own else null
+            }
             val last = records.lastOrNull() ?: return null
             if (last.move.byUser && last.assessment != null) return last
         }
         return null
+    }
+
+    /**
+     * The player's move a question is about, when it asks about their own last move: against a
+     * bot the reply comes at once, and "what should I have played?" then found the opponent's
+     * move last and got a hint for the next one (the runtime audit). `coach._asked_own_move`.
+     */
+    private fun askedOwnMove(text: String): PlyRecord? {
+        if (!ASK_LAST_MOVE.containsMatchIn(text)) return null
+        return lastOwnMove(mine = MY_MOVE.containsMatchIn(text))
     }
 
     /** The opponent's move, when it is the last move played and has its verdict. */
@@ -1438,7 +1468,7 @@ class Coach(
             quick = quick, elicit = elicit,
         )
         takeLeads(position, fallback)
-        var mustName = mustName(trigger, position, fallback, assessment, played, userText)
+        var mustName = mustName(trigger, position, level, fallback, assessment, played, userText)
         if (quick) {
             // The template is already out as the quick answer; a model reply that fails the
             // checks adds nothing, rather than the same line a second time.
@@ -1449,12 +1479,33 @@ class Coach(
             // student's answer to the hint got the same hint back, three times (round 5).
             fallback = ""
         }
-        var directive = "${levelLine(level, position)}$instructionText"
+        // A reply about a position already moved from -- the lesson on a move, an answer about it
+        // -- is rendered at the level of the position on the board now, and must not give away
+        // the answer there (a verdict can land after the opponent has replied).
+        val now = current
+        val past = now != null && now !== position && now.ply > position.ply
+        val renderLevel = if (past && now != null) now.disclosure.level else level
+        var nowAnswer: List<String> = emptyList()
+        val nowFacts = now?.facts
+        if (past && now != null && nowFacts != null && now.board.turn == userColour &&
+            now.disclosure.level.value < DisclosureLevel.MOVE.value
+        ) {
+            val spokenOf = HashSet<String>()
+            spokenOf.add(played?.san ?: "")
+            spokenOf.addAll(playedMoves())
+            if (assessment != null && assessment.best.isNotEmpty()) {
+                val move = Move.fromUciOrNull(assessment.best[0])
+                if (move != null) spokenOf.add(position.board.san(move))
+            }
+            val answer = nowFacts.candidates.take(1) + nowFacts.line
+            nowAnswer = answer.distinct().filter { it !in spokenOf }
+        }
+        var directive = "${levelLine(level, position, if (past) renderLevel else null)}$instructionText"
         var faced = ""
         var frames: List<Board> = emptyList()
         var moved = if (trigger == Trigger.POST_MOVE || trigger == Trigger.POST_MISTAKE) played else null
-        if (moved == null && trigger == Trigger.USER_ASK && ASK_LAST_MOVE.containsMatchIn(userText ?: "")) {
-            val own = lastOwnMove()
+        if (moved == null && trigger == Trigger.USER_ASK) {
+            val own = askedOwnMove(userText ?: "")
             if (own != null && own.move.ply == position.ply + 1) moved = own.move
         }
         if (moved != null) {
@@ -1472,7 +1523,7 @@ class Coach(
         frames = frames + analysisFrames(position)
         val messages: List<ChatMessage>
         synchronized(lock) {
-            conversation.level = level
+            conversation.level = renderLevel
             val harness = conversation.render()
             messages = listOf(ChatMessage("user", "$harness$faced\n\n# Task\n$directive"))
         }
@@ -1512,19 +1563,23 @@ class Coach(
                 trigger != Trigger.USER_ASK && trigger != Trigger.REVIEW,
             mustName = mustName,
             frames = frames,
+            nowAnswer = nowAnswer,
         )
         speaker.submit(request)
     }
 
     /**
      * What a model reply must name, as its template does: the better move, after a move that was
-     * not the best; one of the squares a hint's template names -- the key fact is on the board.
-     * Nothing for a word of praise, an answer to a question of the player's own, or a template
-     * with none. `coach._must_name`.
+     * not the best; for a hint, by its rung -- one of the key fact's squares, the target's or the
+     * piece's, the move; their threat, asked for it. Never a move the sheet lists as one of
+     * several good ones: the directive forbids the player's moves, and requiring them rejected
+     * every obedient reply (the runtime audit, 2026-09-25). Nothing for a word of praise, another
+     * question, or a template with none. `coach._must_name`.
      */
     private fun mustName(
         trigger: Trigger,
         position: CoachPosition,
+        level: DisclosureLevel,
         template: String,
         assessment: MoveAssessment?,
         played: MovePlayed?,
@@ -1532,13 +1587,14 @@ class Coach(
     ): List<String> {
         if (template.isEmpty()) return emptyList()
         val said = userText ?: ""
+        val facts = position.facts
         var trigger = trigger
         var assessment = assessment
         var played = played
-        if (trigger == Trigger.USER_ASK && ASK_LAST_MOVE.containsMatchIn(said)) {
+        val own = if (trigger == Trigger.USER_ASK) askedOwnMove(said) else null
+        if (own != null) {
             // "Why was that bad?": the lesson on their last move, as after it.
-            val own = lastOwnMove()
-            if (own == null || own.move.ply != position.ply + 1) return emptyList()
+            if (own.move.ply != position.ply + 1) return emptyList()
             trigger = Trigger.POST_MISTAKE
             assessment = own.assessment
             played = own.move
@@ -1549,10 +1605,32 @@ class Coach(
             val best = position.board.san(move)
             return if (best != played.san && names(template, best)) listOf(best) else emptyList()
         }
+        if (facts == null) return emptyList()
+        if (trigger == Trigger.USER_ASK && ASK_THREAT.containsMatchIn(said)) {
+            return facts.threats.filter { names(template, it) }
+        }
         val hint = trigger == Trigger.DECISIVE_QUESTION || trigger == Trigger.STUCK || (
             trigger == Trigger.USER_ASK && (ASK_HINT.matchesAt(said, 0) || ASK_AIM.containsMatchIn(said))
             )
-        return if (hint) squaresIn(template).sorted() else emptyList()
+        if (!hint) return emptyList()
+        if (level.value >= DisclosureLevel.MOVE.value) {
+            val best = facts.candidates.firstOrNull() ?: ""
+            return if (best.isNotEmpty() && names(template, best)) listOf(best) else emptyList()
+        }
+        val choices = squaresIn(facts.choices.joinToString(" "))
+        val source = if (level.value >= DisclosureLevel.FOCUS.value) {
+            listOfNotNull(facts.target, facts.piece).filter { it.isNotEmpty() }.joinToString(" ")
+        } else {
+            facts.key ?: ""
+        }
+        val named = squaresIn(template) - choices
+        val squares = (squaresIn(source) intersect named).ifEmpty { named }
+        return squares.sorted()
+    }
+
+    /** The moves played in the game so far, as SAN. `coach._played_moves`. */
+    private fun playedMoves(): Set<String> = synchronized(lock) {
+        conversation.judgedRecords().map { it.move.san }.toSet()
     }
 
     /**
@@ -1653,17 +1731,29 @@ class Coach(
         return out
     }
 
-    /** What may be said about the position the player faces, stated on the directive. */
-    private fun levelLine(level: DisclosureLevel, position: CoachPosition): String {
+    /**
+     * What may be said about the position the player faces, stated on the directive; with
+     * [nowLevel], the reply is about a position already moved from, and the one on the board has
+     * its own level.
+     */
+    private fun levelLine(
+        level: DisclosureLevel,
+        position: CoachPosition,
+        nowLevel: DisclosureLevel? = null,
+    ): String {
         if (position.board.isGameOver()) return ""
-        val words = when (level) {
+        fun words(of: DisclosureLevel): String = when (of) {
             DisclosureLevel.SILENT -> "nothing about the position"
             DisclosureLevel.IDEA -> IDEA_LEVEL_WORDS
             DisclosureLevel.FOCUS -> "the idea, the target and the piece; not the move"
             DisclosureLevel.MOVE -> "the move and why it works; not the whole line"
             DisclosureLevel.LINE -> "everything, the line included"
         }
-        return "Disclosure for the position the player faces: $words.\n\n"
+        if (nowLevel != null) {
+            return "The position this is about has been moved from: everything about it may be " +
+                "said. Disclosure for the position the player faces now: ${words(nowLevel)}.\n\n"
+        }
+        return "Disclosure for the position the player faces: ${words(level)}.\n\n"
     }
 
     /**
@@ -1988,7 +2078,7 @@ class Coach(
             }
         val directive: String
         val lastOpponent = lastOpponentMove()
-        val lastOwn = lastOwnMove()
+        val lastOwn = askedOwnMove(said)
         if (ASK_REVIEW.containsMatchIn(said)) {
             // An overall verdict comes from the tally in "Game so far", never from an
             // impression of the last position: the first review told a player a queen up that
@@ -2016,12 +2106,23 @@ class Coach(
             // claim") gave the model no lesson to give (parity pass 2, 2026-09-25).
             var aim = if (ASK_HINT.matchesAt(said, 0)) "" else "They asked what to aim for: answer with "
             aim += if (aim.isNotEmpty()) "the hint at this rung. " else ""
-            directive = when {
+            val hinted = when {
                 level.value >= DisclosureLevel.MOVE.value -> aim + MOVE_DIRECTIVE
                 level.value >= DisclosureLevel.FOCUS.value ->
                     aim.ifEmpty { "They asked for another hint. " } + FOCUS_DIRECTIVE
                 else -> aim.ifEmpty { "They asked for a hint. " } + ideaDirective(facts)
-            } + " Do not comment on anything said earlier." + (if (quick) shown else "")
+            }
+            directive = if (quick && level.value < DisclosureLevel.MOVE.value) {
+                // The hint is out already, in the template's words: the model adds to it, in a
+                // sentence or two -- not the whole hint again, which the voice talked over the
+                // template with (the runtime audit, 2026-09-25).
+                "They asked for a hint and have just been shown it -- your last turn above. " +
+                    "In one or two sentences, build on it: a sharper angle on the same key fact, " +
+                    "or the one question that sets them looking. Do not repeat it, and give " +
+                    "nothing the next hint would. Do not comment on anything said earlier."
+            } else {
+                hinted + " Do not comment on anything said earlier." + (if (quick) shown else "")
+            }
         } else if (level.value >= DisclosureLevel.LINE.value &&
             ASK_LINE.containsMatchIn(said) && facts.line.isNotEmpty()
         ) {
@@ -2077,7 +2178,7 @@ class Coach(
                     "plain words, two or three sentences; then, if you like, one question " +
                     "about what it asks of them. Never answer about the player's own move " +
                     "instead."
-        } else if (ASK_LAST_MOVE.containsMatchIn(said) && lastOwn != null) {
+        } else if (lastOwn != null) {
             // Asked about their own last move. Its verdict was given in its move message and
             // the facts of the position it was played from in the message before: all of it
             // may be said outright. Without this the model took "the better move is withheld"
@@ -2087,16 +2188,35 @@ class Coach(
             val label = own.label?.name?.lowercase() ?: own.severity.name.lowercase()
             val loss = own.expectedLoss
             var best = ""
-            if (own.best.isNotEmpty() && own.severity != Severity.NONE) {
+            if (own.best.isNotEmpty()) {
                 val move = Move.fromUciOrNull(own.best[0])
                 best = if (move != null) Board(lastOwn.move.fenBefore).san(move) else ""
             }
+            if (best == san) best = ""
             // The request's facts are those of the position the move was played from when the
             // coach has them (ask() chose that position); the idea is theirs. The theme or the
             // plan, never a static feature: "the idea was the isolated d-pawn ..." became the
             // reason a bishop retreat was an inaccuracy.
             val idea = facts.theme ?: facts.plan ?: ""
-            if (own.severity == Severity.NONE) {
+            if (own.severity == Severity.NONE && best.isNotEmpty() && loss >= 0.005) {
+                // Sound but not the best: said as the word after it said it ("Fine, but a3 was a
+                // little tighter"), never "it cost nothing" (the runtime audit).
+                val opener = bags.draw("fine", FINE_TIGHTER).replace("{best}", best)
+                fallback = freshLesson(opener) { lead ->
+                    lessonTemplate(
+                        facts,
+                        best,
+                        opener,
+                        played = lastOwn.move.uci,
+                        keepLead = lead,
+                        strong = strongPlayer,
+                    )
+                }
+                directive =
+                    "They ask about the move they already played, $san. It was $label: sound, " +
+                        "a little behind $best. Say so plainly -- it was fine, then the better move " +
+                        "and the idea behind it. Two sentences at most, no question."
+            } else if (own.severity == Severity.NONE) {
                 fallback = verdictWord(label)
                 directive =
                     "They ask about the move they already played, $san. It was not bad: the " +
@@ -2148,6 +2268,18 @@ class Coach(
                     fallback = "" // a nod needs no template: nothing, rather than the lesson again
                 }
             }
+        } else if (ASK_THREAT.containsMatchIn(said)) {
+            val threats = facts.threats.take(2)
+            fallback = if (threats.isNotEmpty()) {
+                val words = threats.map { conversation.threatWords(position.board, it) }
+                "They threaten " + words.joinToString(" and ") + "."
+            } else {
+                "Nothing is threatened right now: no move of theirs wins anything."
+            }
+            directive =
+                "They ask what the opponent threatens. Say it as the facts give it -- the move and " +
+                    "what it does, from 'what the other side threatens' -- or, when the facts list " +
+                    "none, say plainly that nothing is threatened. One or two sentences, no question."
         } else {
             directive =
                 "Answer them directly and be honest about their own claim. If they proposed a " +
