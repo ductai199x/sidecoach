@@ -278,11 +278,15 @@ class Task:
         return self.item["id"]
 
 
-def tasks_of(run: str, items: dict[str, dict], *, floor: bool) -> list[Task]:
-    """The AI arm: the run's judged moments where the model's own reply was spoken. The
+def tasks_of(
+    run: str, items: dict[str, dict], *, floor: bool, unjudged: bool = False
+) -> list[Task]:
+    """The AI arm: the run's judged moments where the model's own reply was spoken -- with
+    `unjudged`, every moment of its items where it was (a run the parity judge has not read:
+    the locked test set, scored on the rubric alone within Tai's $3 cap, 2026-09-26). The
     floor arm: the templates of the run's paired moments (its floor judgments), or, when
     the run judged no floor, of its AI moments that have a template of their own."""
-    ai_ids = judged_ids(run)
+    ai_ids = set(items) if unjudged else judged_ids(run)
     out = [
         Task("ai", items[i], items[i]["reply"]["reply"])
         for i in sorted(ai_ids)
@@ -606,11 +610,16 @@ def main() -> None:
     ap.add_argument("--budget-usd", type=float, required=True)
     ap.add_argument("--dry-run", action="store_true", help="estimate the cost; call nothing")
     ap.add_argument("--reuse-stale", action="store_true")
+    ap.add_argument(
+        "--unjudged",
+        action="store_true",
+        help="every moment of the items the model answered, not only the parity-judged ones",
+    )
     args = ap.parse_args()
 
     criteria = load_rubric(args.rubric)
     items = load_items(args.items or items_dir(args.run))
-    tasks = tasks_of(args.run, items, floor=args.floor)
+    tasks = tasks_of(args.run, items, floor=args.floor, unjudged=args.unjudged)
     if not tasks:
         raise SystemExit(f"{args.run}: no judged moments with the model's own reply")
     arms = Counter(t.arm for t in tasks)
