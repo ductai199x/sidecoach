@@ -161,7 +161,13 @@ def describe_effects(
         s = by_others[0]
         attacker = next((a for a in _hitters(after, us, s) if a != move.to_square), None)
         if attacker is not None:
-            out.append(f"uncovers an attack on {_name(after, s)} by {_name(after, attacker)}")
+            # Uncovered only where the moved piece stood between them; otherwise the move let
+            # a pinned piece loose ("Ke7 uncovers an attack ... by the knight on d6", of a
+            # knight unpinned from the d-file: the v2 sample check, 2026-09-26).
+            if move.from_square in chess.SquareSet.between(attacker, s):
+                out.append(f"uncovers an attack on {_name(after, s)} by {_name(after, attacker)}")
+            else:
+                out.append(f"frees {_name(after, attacker)} to attack {_name(after, s)}")
 
     pins = _pinned_enemies(after, us) - _pinned_enemies(board, us)
     for s in sorted(pins):
@@ -294,6 +300,7 @@ _GERUND = {
     "gives": "giving",
     "gets": "getting",
     "uncovers": "uncovering",
+    "frees": "freeing",
     "pins": "pinning",
     "defends": "defending",
     "forks": "forking",

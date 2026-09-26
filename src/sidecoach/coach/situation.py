@@ -881,9 +881,19 @@ def mate_key(board: chess.Board, idea: Idea) -> str | None:
     return f"Their king on {_sq(idea.target)} has {squares}{said}"
 
 
+def _checks_after(board: chess.Board, move: chess.Move) -> int:
+    """The checks the opponent has once `move` is played."""
+    after = board.copy(stack=False)
+    after.push(move)
+    return sum(1 for reply in after.legal_moves if after.gives_check(reply))
+
+
 def evasion_why(board: chess.Board, best: chess.Move) -> str | None:
     """What the way out of check does, at the move rung: takes the checker, blocks, or steps
-    away ("The move is Re4." said nothing)."""
+    away ("The move is Re4." said nothing). A king step says what sets its square apart only
+    when something does: every legal king move lands where nothing attacks it, so "a square
+    nothing of theirs can reach" read as a reason no other king move had (dev audit,
+    2026-09-26)."""
     if not board.is_check():
         return None
     san = board.san(best)
@@ -891,7 +901,18 @@ def evasion_why(board: chess.Board, best: chess.Move) -> str | None:
     if best.to_square in checkers:
         return f"{san} takes the piece giving check"
     if board.piece_type_at(best.from_square) == chess.KING:
-        return f"{san} steps out of check to a square nothing of theirs can reach"
+        others = [
+            m
+            for m in board.legal_moves
+            if m != best and board.piece_type_at(m.from_square) == chess.KING
+        ]
+        if (
+            others
+            and not _checks_after(board, best)
+            and all(_checks_after(board, m) for m in others)
+        ):
+            return f"{san} steps out of check to the one square where no check follows"
+        return f"{san} steps out of check"
     return f"{san} blocks the check"
 
 

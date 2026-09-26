@@ -431,6 +431,45 @@ def _to_move(uci: str) -> chess.Move | None:
         return None
 
 
+# What makes the other side's move after a pass a threat, as the sheet names its effects: it
+# mates, takes, checks, or attacks something. A move that only defends, retreats or takes a
+# file is what they would do with a free move, not a threat ("They threaten Rc3." of a rook
+# guarding the third rank against a mate in three: dev audit, 2026-09-26).
+_THREAT_EFFECTS = (
+    "checkmate",
+    "takes ",
+    "gives check",
+    "forks ",
+    "attacks ",
+    "uncovers an attack",
+    "frees ",
+    "pins ",
+)
+
+
+def _threatens(passed: chess.Board, move: chess.Move) -> bool:
+    from sidecoach.coach.effects import describe_effects  # effects imports this module
+
+    if move.promotion:
+        return True
+    effects = describe_effects(passed, move, limit=8, hazards=False)
+    if any(e.startswith(_THREAT_EFFECTS) for e in effects):
+        return True
+    # A quiet move that threatens mate on an empty square attacks nothing yet.
+    again = passed.copy(stack=False)
+    again.push(move)
+    if again.is_check() or again.is_game_over():
+        return False
+    again.push(chess.Move.null())
+    for reply in list(again.legal_moves):
+        again.push(reply)
+        mate = again.is_checkmate()
+        again.pop()
+        if mate:
+            return True
+    return False
+
+
 # A line whose play-out gains this much material (in pawns' worth) is a tactic even when
 # its first move is quiet: a discovered attack, a knight move that forks next.
 TACTIC_GAIN = 2
@@ -542,7 +581,10 @@ def facts_from_analysis(
         for uci in analysis.threats:
             move = _to_move(uci)
             if move is not None and move in passed.legal_moves:
-                threats.append(passed.san(move))
+                # Their best move if you passed stays the prophylactic question's ("if you let
+                # them, their best is Kc2"); it is listed as a threat only when it is one.
+                if _threatens(passed, move):
+                    threats.append(passed.san(move))
                 if threat_move is None:
                     threat_move = move
 
@@ -612,7 +654,7 @@ def facts_from_analysis(
     mechanism = idea_words.mechanism(idea)
     if mechanism is None and plan_kind in idea_words.PLAN_WHY:
         mechanism = f"{plan}: {idea_words.PLAN_WHY[plan_kind]}"
-    question = idea_words.question(idea, plan_kind)
+    question = idea_words.question(idea, plan_kind, board)
     if board.is_check() and question in situation.ANY_POSITION:
         # In check the question is the check: "a quiet improvement -- which of your pieces has
         # no job right now?" was the hint in seven of ten AI sessions' check positions, and the
@@ -621,7 +663,7 @@ def facts_from_analysis(
         if nature is not None and nature.startswith("quiet"):
             nature = IN_CHECK_NATURE
     target = idea_words.target(idea, board)
-    nudge = idea_words.nudge(idea)
+    nudge = idea_words.nudge(idea, board)
     why = idea_words.why(idea, board, describe_tactic)
     goal = idea_words.goal(idea)
     if move_threat is not None and best is not None:

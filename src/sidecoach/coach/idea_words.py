@@ -542,7 +542,37 @@ def _mechanism(idea: Idea) -> str | None:
     return text
 
 
-def question(idea: Idea, plan_kind: str | None) -> str:
+def clears_path(idea: Idea, board: chess.Board) -> bool:
+    """Whether the first move of a promotion idea clears the queening pawn's way: the pawn
+    itself goes, or a piece leaves (or takes on) a square in front of it. A rook stepping off
+    a5 behind 57...a4, with White's rook still on a3, was asked "Which move clears its way?"
+    and taught as "that rook is blocking your passed pawn's route" (the test audit,
+    2026-09-26)."""
+    if idea.first is None:
+        return True
+    pawn = _queening_pawn(idea, board)
+    piece = board.piece_at(pawn)
+    if piece is None or piece.piece_type != chess.PAWN or idea.first.from_square == pawn:
+        return True
+    step = 8 if piece.color == chess.WHITE else -8
+    ahead = set()
+    square = pawn + step
+    while 0 <= square < 64:
+        ahead.add(square)
+        square += step
+    return idea.first.from_square in ahead or (
+        board.is_capture(idea.first) and idea.first.to_square in ahead
+    )
+
+
+# A promotion whose first move is no clearing: the pawn needs a piece's help, not a road.
+PROMOTE_HELP_QUESTION = (
+    "What does your pawn need to get through, and which of your pieces can give it?"
+)
+PROMOTE_HELP_NUDGE = "Which move helps it through?"
+
+
+def question(idea: Idea, plan_kind: str | None, board: chess.Board | None = None) -> str:
     """The idea rung's question: the one that sets the player looking the right way."""
     name = idea.blow.name if idea.blow is not None else None
     if idea.goal == "convert":
@@ -579,6 +609,8 @@ def question(idea: Idea, plan_kind: str | None) -> str:
     if idea.goal == "win":
         return "Which of their pieces is loose or attacked more times than it is defended?"
     if idea.goal == "promote":
+        if board is not None and not clears_path(idea, board):
+            return PROMOTE_HELP_QUESTION
         return "What stands in your pawn's way, and how do you remove it?"
     if idea.goal == "defend":
         return (
@@ -607,7 +639,7 @@ NUDGE: dict[str, str] = {
 }
 
 
-def nudge(idea: Idea) -> str | None:
+def nudge(idea: Idea, board: chess.Board | None = None) -> str | None:
     """The focus rung's question: the one that leads from the target to the move."""
     name = idea.blow.name if idea.blow is not None else None
     if idea.goal == "mate":
@@ -623,6 +655,8 @@ def nudge(idea: Idea) -> str | None:
     if idea.goal == "attack":
         return "Which sacrifice opens it?" if idea.sacrifices else "Which check comes first?"
     if idea.goal == "promote":
+        if board is not None and not clears_path(idea, board):
+            return PROMOTE_HELP_NUDGE
         return "Which move clears its way?"
     if idea.goal == "defend":
         return "Which move stops it and keeps your pieces working?"

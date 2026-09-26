@@ -31,6 +31,7 @@ from typing import Any
 
 import chess
 
+from sidecoach.analysis.exchange import VALUE, defenders
 from sidecoach.coach import draft_claims, idea_words, situation
 from sidecoach.coach.annotations import annotations_for, mentions_in
 from sidecoach.coach.bag import Bags
@@ -44,7 +45,7 @@ from sidecoach.coach.disclosure import (
     visible_facts,
 )
 from sidecoach.coach.effects import effects_text, line_notes, line_spoken
-from sidecoach.coach.facts import describe_move, facts_from_analysis, standing_words
+from sidecoach.coach.facts import PIECE_NAMES, describe_move, facts_from_analysis, standing_words
 from sidecoach.coach.named import EngineLike as NamedEngine
 from sidecoach.coach.named import analyse_named, disclosed_frames
 from sidecoach.coach.named import spoken as spoken_examination
@@ -111,6 +112,15 @@ def _local(label: Label | None) -> bool:
 
 def _exciting(label: Label | None) -> bool:
     return label is not None and label.value in EXCITING
+
+
+def _great_meaning(facts: PositionFacts) -> str:
+    """Why a move is great (score.label_move), from the sheet of the position it was played
+    in: the only move there, or the best reply to the opponent's error. Offered both, the model
+    called a punished error "the one move that keeps the advantage" (dev audit, 2026-09-26)."""
+    if facts.only_move:
+        return "the only good move: every other move lost a lot"
+    return "the chance taken: their last move was an error, and this is the best reply to it"
 
 
 # How many of the last lessons a sound move's word may not teach again (verdicts.lesson):
@@ -249,6 +259,39 @@ def their_move_now(board: chess.Board, facts: PositionFacts) -> str:
     if does:
         return f"It's their move, and their best is {san} ({does})."
     return f"It's their move, and their best is a quiet one, {san}: it takes nothing at once."
+
+
+def in_check_threat(board: chess.Board) -> str:
+    """What the opponent threatens when the player is in check: the check, and what else the
+    checking piece can win, read from the board ("their queen on e6 gives check, and it also
+    attacks your pawn on c6")."""
+    us = board.turn
+
+    def kind(square: chess.Square) -> chess.PieceType:
+        return board.piece_type_at(square) or chess.PAWN
+
+    def name(square: chess.Square) -> str:
+        return f"{PIECE_NAMES[kind(square)]} on {chess.square_name(square)}"
+
+    checkers = sorted(board.checkers())
+    if not checkers:
+        return "Nothing is threatened right now: no move of theirs wins anything."
+    text = f"Their {' and '.join(name(s) for s in checkers)} "
+    text += "gives check" if len(checkers) == 1 else "give check"
+    if len(checkers) == 1:
+        # What it can win next, besides the king: undefended, or worth more than it.
+        worth = VALUE[kind(checkers[0])]
+        hit = sorted(
+            (
+                s
+                for s in board.attacks(checkers[0]) & board.occupied_co[us]
+                if kind(s) != chess.KING and (not defenders(board, us, s) or VALUE[kind(s)] > worth)
+            ),
+            key=lambda s: (-VALUE[kind(s)], s),
+        )
+        if hit:
+            text += ", and it also attacks " + " and ".join(f"your {name(s)}" for s in hit[:2])
+    return text + "."
 
 
 def line_template(facts: PositionFacts, board: chess.Board | None = None) -> str:
@@ -3008,6 +3051,8 @@ class Coach:
                 # Pieces and squares as the board stands now, whatever position the question
                 # is about.
                 pieces_board=self.board,
+                # The lines the sheet already shows: a move they start is read from them.
+                known=position.analysis.lines if position.analysis is not None else (),
             )
         except Exception as exc:  # noqa: BLE001
             self.speaker.last_error = f"named analysis: {type(exc).__name__}: {exc}"
@@ -3271,7 +3316,10 @@ class Coach:
                         after.append(replied)
             with self._lock:
                 sheet = self.conversation.faced_text(
-                    position.facts, position.board, after[-1] if after else None
+                    position.facts,
+                    position.board,
+                    after[-1] if after else None,
+                    after[0] if after else None,
                 )
             if sheet:
                 faced = f"\n\n# The position they faced, before {moved.san}\n{sheet}"
@@ -3721,14 +3769,20 @@ class Coach:
                 )
                 meaning = {
                     "brilliant": "a sound sacrifice",
-                    "great": "the one move that keeps the advantage, or the chance taken",
+                    "great": _great_meaning(facts),
                 }[label]
+                # Only the reason that holds: offered "the sacrifice that works" beside a
+                # great move, the model called 11...Nxf3+ gxf3, a knight for a knight, "the
+                # knight sacrifice" (the dev audit, 2026-09-26).
+                reason = (
+                    "the sacrifice that works" if label == "brilliant" else meaning.split(":", 1)[0]
+                )
                 instruction = (
                     f"The player just played {played.san}: {label} -- {meaning}. Show some "
                     "delight, in your own voice, in one or two sentences: name what makes it "
-                    "the move -- the chance taken, the only move, the sacrifice that works, "
-                    "the idea it serves -- from the messages above, nothing invented. No "
-                    "question, no advice, and not the same words as your last such sentence. "
+                    f"the move -- {reason}, and the idea it serves -- from the messages above, "
+                    "nothing invented. No question, no advice, and not the same words as your "
+                    "last such sentence. "
                     f"{NOT_THE_MOVE} {NO_NUMBERS}"
                 )
             elif routine:
@@ -3736,7 +3790,7 @@ class Coach:
                 meaning = {
                     "book": "opening theory",
                     "brilliant": "a sound sacrifice",
-                    "great": "the one move that keeps the advantage",
+                    "great": _great_meaning(facts),
                     "best": "the engine's own choice",
                     "excellent": "as strong as the best move",
                     "good": "a sound move, a little behind the best",
@@ -4146,6 +4200,16 @@ class Coach:
                 "the opponent's best move now is and what it does, from the engine lines (the "
                 "opponent's move) -- not 'the player's threats', which are the player's own. "
                 "One or two sentences, no question. " + NO_FIGURES
+            )
+        elif _ASK_THREAT.search(said) and position.board.is_check():
+            # In check there is no "if you passed": the sheet lists no threat, and "nothing
+            # is threatened" was said with their queen checking and hitting a pawn (dev audit,
+            # 2026-09-26). The check is the threat, and what else the checker attacks.
+            fallback = in_check_threat(position.board)
+            directive = (
+                "They ask what the opponent threatens, and they are in check: the check is "
+                f"the threat. Say it as the board gives it: {fallback} One or two sentences, "
+                "no question. " + NO_FIGURES
             )
         elif _ASK_THREAT.search(said):
             threats = facts.threats[:2]

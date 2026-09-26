@@ -175,6 +175,21 @@ def _gone(text: str, board: chess.Board) -> bool:
     return False
 
 
+def _also_stopped(facts: PositionFacts, played: chess.Board | None) -> str | None:
+    """The threat the better move's reason says it stops, when the move played stopped it
+    too: on the board right after it, the threat can no longer be played."""
+    if played is None or not facts.threats or not facts.why:
+        return None
+    threat = str(facts.threats[0])
+    if f"stops {threat}" not in facts.why:
+        return None
+    try:
+        played.parse_san(threat)
+    except ValueError:
+        return threat
+    return None
+
+
 @dataclass
 class Entry:
     """One message of the conversation. A ply entry renders itself from its record until it
@@ -931,14 +946,22 @@ class Conversation:
         return self._fact_lines(beyond, board, "player")
 
     def faced_text(
-        self, facts: PositionFacts, board: chess.Board, after: chess.Board | None = None
+        self,
+        facts: PositionFacts,
+        board: chess.Board,
+        after: chess.Board | None = None,
+        played: chess.Board | None = None,
     ) -> str:
         """The facts of the position the player faced before their move, all of them (it is
         past): the lesson after the move is taught from them, and the record keeps only one
         line for that position. With `after`, the board once the move (and the reply the
         engine expects) is played: an idea about a piece that no longer stands there is left
         out -- "the opponent's backward d-pawn on d6 is a lasting target" beside Qxc5 dxc5
-        was said as "preserving your lasting target on d6" (the test audit, 2026-09-26)."""
+        was said as "preserving your lasting target on d6" (the test audit, 2026-09-26).
+        With `played`, the board right after the move: a better move that "stops" their
+        threat, where the move played stopped it too, says so -- "Qc4+ ... stops gxh1=Q+"
+        beside 19.Qxg2, which took the pawn, was taught as "the priority was to stop the
+        promotion" (the dev audit, 2026-09-26)."""
         visible = visible_facts(facts, DisclosureLevel.LINE)
         # The hint's questions were for finding the move; the lesson is on the move made.
         for key in ("question", "nudge"):
@@ -946,6 +969,9 @@ class Conversation:
         if after is not None and visible.get("ideas"):
             visible["ideas"] = [i for i in visible["ideas"] if not _gone(str(i), after)]
         lines = self._fact_lines(visible, board, "player", past=True)
+        stopped = _also_stopped(facts, played)
+        if stopped:
+            lines.append(f"the move played also stops {stopped}")
         return "\n".join([position_text(board, legal=False), *lines])
 
     def _fact_lines(
