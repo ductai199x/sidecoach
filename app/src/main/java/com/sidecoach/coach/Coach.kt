@@ -746,6 +746,17 @@ fun completeSentences(text: String): String {
 }
 
 /**
+ * Markdown the model writes around words ("**Rc1**", "`e4`", "__now__") and at the start of a
+ * line ("# ", "- ", "* "): the reply is spoken and shown as it is, and "?**" at its end failed the
+ * closing-question check (the parity pilot, 2026-09-25).
+ */
+private val EMPHASIS = Regex("\\*\\*|__|`")
+private val LINE_MARK = Regex("^\\s*(?:#{1,6}\\s+|[-*]\\s+(?=\\S))", RegexOption.MULTILINE)
+
+/** [text] without markdown: the emphasis marks and the line marks go, the words stay. `coach.plain`. */
+fun plain(text: String): String = LINE_MARK.replace(EMPHASIS.replace(text, ""), "")
+
+/**
  * The verbalized replies as (probability, text). A reply with no markers is one candidate.
  *
  * The text of each candidate runs from its marker to the next, so a reply that wraps onto
@@ -753,7 +764,7 @@ fun completeSentences(text: String): String {
  * Every candidate is cut back to its last complete sentence.
  */
 internal fun parseCandidates(raw: String): List<Pair<Double, String>> {
-    var cleaned = THINK_BLOCK.replace(raw, "").trim()
+    var cleaned = plain(THINK_BLOCK.replace(raw, "")).trim()
     val markers = VS_MARKER.findAll(cleaned).toList()
     if (markers.isEmpty()) {
         cleaned = completeSentences(STRAY_MARKER.replace(cleaned, "").trim())
@@ -833,7 +844,7 @@ class FirstCandidate(
 
     /** The first candidate's text so far, and whether it is complete. */
     private fun candidate(): Pair<String, Boolean> {
-        val cleaned = THINK_BLOCK.replace(buffer, "")
+        val cleaned = plain(THINK_BLOCK.replace(buffer, ""))
         val markers = VS_MARKER.findAll(cleaned).toList()
         if (markers.isEmpty()) {
             // No marker yet: the model may be writing one, or writing a bare reply.

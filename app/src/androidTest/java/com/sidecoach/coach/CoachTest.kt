@@ -544,6 +544,20 @@ class CoachTest {
         )
     }
 
+    /**
+     * The parity pilot: "**Rc1** was better", and a closing question wrapped in ** failed the
+     * question check twice, so the template spoke (desktop de68772).
+     */
+    @Test
+    fun theModelsMarkdownNeverReachesTheVoiceOrTheChecks() {
+        assertEquals("Their threat is ...f5, on e4. Why?", plain("Their threat is **...f5**, on `e4`. **Why?**"))
+        assertEquals("Plan\npush the pawn\ntrade", plain("# Plan\n- push the pawn\n* trade"))
+        assertEquals(
+            listOf(1.0 to "Rc1 was better. Do you see why?"),
+            parseCandidates("**Rc1** was better. **Do you see why?**"),
+        )
+    }
+
     /** Their own move is theirs even after the reply, and a threat gets its answer (af1bae2). */
     @Test
     fun theirOwnMoveIsTheirsEvenAfterTheReplyAndAThreatGetsItsAnswer() {

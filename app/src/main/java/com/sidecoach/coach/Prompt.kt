@@ -141,7 +141,8 @@ const val RULES =
         "5. You speak to the player: address them as 'you', and call the other side 'your " +
         "opponent'. The message says whose turn it is and who played each move: never mix up the " +
         "sides, and never describe the player's own move as the opponent's or the reverse.\n" +
-        "6. Plain, standard chess terms -- King, Queen, rook, bishop, knight, pawn, file, rank, " +
+        "6. Plain text, spoken aloud as written: no markdown, no bold, no lists, no headings. " +
+        "Plain, standard chess terms -- King, Queen, rook, bishop, knight, pawn, file, rank, " +
         "fork, pin, outpost -- and never fancy synonyms or purple images: write 'King', not " +
         "'monarch'; 'blocked in', not 'imprisoned'; 'rook', not 'heavy artillery'. Standard " +
         "notation only for moves the message gives you.\n" +
