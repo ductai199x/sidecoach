@@ -44,7 +44,12 @@ def test_a_stump_never_reaches_the_user_even_when_it_is_the_only_clean_candidate
     from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
     from tests.test_coach import ScriptedProvider, _mate_analysis, _messages, _play_to_scholar
 
-    def checker(text: str, board: chess.Board, after: Sequence[chess.Board] = ()) -> list[str]:
+    def checker(
+        text: str,
+        board: chess.Board,
+        after: Sequence[chess.Board] = (),
+        us: chess.Color | None = None,
+    ) -> list[str]:
         return ["the rook on f7 is not there"] if "rook on f7" in text else []
 
     first = "[p=0.6] Your rook on f7 is strong. What next?\n[p=0.4] Given"

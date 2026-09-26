@@ -43,6 +43,7 @@ from sidecoach.coach.disclosure import (
     squares_in,
     visible_facts,
 )
+from sidecoach.coach.effects import effects_text
 from sidecoach.coach.facts import describe_move, facts_from_analysis, standing_words
 from sidecoach.coach.named import EngineLike as NamedEngine
 from sidecoach.coach.named import analyse_named, disclosed_frames
@@ -232,6 +233,22 @@ def move_template(facts: PositionFacts) -> str:
     if facts.plan:
         return _sentence(f"the move is {facts.candidates[0]}: {facts.plan}")
     return f"The move is {facts.candidates[0]}."
+
+
+def their_move_now(board: chess.Board, facts: PositionFacts) -> str:
+    """What the opponent threatens when it is their move: their best move now and what it
+    does on the board, read from the position as it stands (no pass: they are to move)."""
+    if not facts.candidates:
+        return "It's their move; I have no read on it yet."
+    san = facts.candidates[0]
+    try:
+        move = board.parse_san(san)
+    except ValueError:
+        return "It's their move; I have no read on it yet."
+    does = effects_text(board, move, hazards=False)
+    if does:
+        return f"It's their move, and their best is {san} ({does})."
+    return f"It's their move, and their best is a quiet one, {san}: it takes nothing at once."
 
 
 def line_template(facts: PositionFacts) -> str:
@@ -441,6 +458,10 @@ def _said(keep: str, text: str) -> bool:
     said = " ".join(re.findall(r"[a-z']+", text.lower()))
     return any(" ".join(words[j : j + 4]) in said for j in range(len(words) - 3))
 
+
+# The board check over a draft: the text, the board, the boards along the best line, and
+# the player's colour (whose "your"); the problems, one line each.
+DraftCheck = Callable[[str, chess.Board, Sequence[chess.Board], chess.Color | None], list[str]]
 
 # Verbalized sampling: how many candidate replies to ask for, and the room and warmth to
 # give the distribution. Warmer than a single reply on purpose, since a check filters them.
@@ -1053,6 +1074,13 @@ class _Request:
     unlisted: frozenset[str] | None = None
 
 
+def _player(facts: PositionFacts) -> chess.Color | None:
+    """The side the coach speaks to, from the facts: whose "your" a draft means."""
+    if facts.user_side is None:
+        return None
+    return chess.WHITE if facts.user_side == "white" else chess.BLACK
+
+
 def _after_best(request: _Request) -> list[chess.Board]:
     """The boards along the engine's line, so what the line does reads as real.
 
@@ -1276,7 +1304,7 @@ class Speaker:
         self,
         provider: LLMProvider,
         *,
-        draft_check: Callable[[str, chess.Board, Sequence[chess.Board]], list[str]] | None = None,
+        draft_check: DraftCheck | None = None,
         verifier: LLMProvider | None = None,
         routine_provider: LLMProvider | None = None,
     ) -> None:
@@ -1661,7 +1689,9 @@ class Speaker:
         if _ENGINE_NAMED.search(text) and not asked_engine:
             found.append("named the engine: say it as the coach who saw the game")
         if self.draft_check is not None:
-            for problem in self.draft_check(text, request.board, _after_best(request)):
+            for problem in self.draft_check(
+                text, request.board, _after_best(request), _player(request.facts)
+            ):
                 san = problem.split(":", 1)[0].strip()
                 if san in request.played:
                     continue  # a move of the game's history, named as such
@@ -1926,7 +1956,7 @@ class Coach:
         provider: LLMProvider,
         *,
         policy: InterjectionPolicy | None = None,
-        draft_check: Callable[[str, chess.Board, Sequence[chess.Board]], list[str]] | None = None,
+        draft_check: DraftCheck | None = None,
         claims: Callable[[str, chess.Board, PositionFacts | None], list[str]] | None = None,
         verifier: LLMProvider | None = None,
         engine: NamedEngine | None = None,
@@ -3232,7 +3262,11 @@ class Coach:
         if facts is None:
             return ()
         if trigger is Trigger.USER_ASK and _ASK_THREAT.search(said):
-            return tuple(t for t in facts.threats if _names(template, t))
+            # On the opponent's turn their threat is their best move now (`their_move_now`).
+            theirs = (
+                facts.candidates[:1] if position.board.turn != self.user_colour else facts.threats
+            )
+            return tuple(t for t in theirs if _names(template, t))
         hint = trigger in (Trigger.DECISIVE_QUESTION, Trigger.STUCK) or (
             trigger is Trigger.USER_ASK and bool(_ASK_HINT.match(said) or _ASK_AIM.search(said))
         )
@@ -3956,6 +3990,18 @@ class Coach:
                     f" The material is this, and your answer gives all of it, in these terms: "
                     f"{material}. Never count the pieces yourself."
                 )
+        elif _ASK_THREAT.search(said) and position.board.turn != self.user_colour:
+            # The opponent is to move: their threat is their best move now. The sheet's
+            # threats are the side NOT to move's -- the player's own -- and answered from
+            # them, "what are they threatening?" got the player's threat (the code review,
+            # 2026-09-26).
+            fallback = their_move_now(position.board, facts)
+            directive = (
+                "They ask what the opponent threatens, and it is the opponent's move: say what "
+                "the opponent's best move now is and what it does, from the engine lines (the "
+                "opponent's move) -- not 'what the other side threatens', which is the player's "
+                "own threat. One or two sentences, no question. " + NO_FIGURES
+            )
         elif _ASK_THREAT.search(said):
             threats = facts.threats[:2]
             if threats:

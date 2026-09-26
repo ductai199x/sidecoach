@@ -565,7 +565,12 @@ def test_a_lesson_is_said_of_the_board_the_player_sees_and_not_twice() -> None:
 
 
 def test_the_draft_checker_can_veto_a_false_claim() -> None:
-    def checker(text: str, board: chess.Board, after: Sequence[chess.Board] = ()) -> list[str]:
+    def checker(
+        text: str,
+        board: chess.Board,
+        after: Sequence[chess.Board] = (),
+        us: chess.Color | None = None,
+    ) -> list[str]:
         return ["the rook on f7 is not there"] if "rook on f7" in text else []
 
     fine = "Their king on e8 is short of squares, is it not?"
@@ -615,7 +620,12 @@ def test_verbalized_replies_parse_into_weighted_candidates() -> None:
 def test_verbalized_sampling_keeps_the_checked_candidate() -> None:
     # The model offers a leaky reply and a clean one in one distribution; VS keeps the clean
     # one on the first attempt, no retry, no template.
-    def checker(text: str, board: chess.Board, after: Sequence[chess.Board] = ()) -> list[str]:
+    def checker(
+        text: str,
+        board: chess.Board,
+        after: Sequence[chess.Board] = (),
+        us: chess.Color | None = None,
+    ) -> list[str]:
         return ["the rook on f7 is not there"] if "rook on f7" in text else []
 
     block = (
@@ -2101,6 +2111,36 @@ def test_their_own_move_is_theirs_even_after_the_reply_and_a_threat_gets_its_ans
     coach.ask("what is their threat?", 8.0)
     _messages(coach)
     assert "They ask what the opponent threatens" in _directive(_given(provider, 0))
+
+
+def test_their_threat_on_their_turn_is_their_best_move_not_the_players() -> None:
+    """The sheet's threats are the side NOT to move's: on the opponent's turn, the player's
+    own. "What are they threatening?" there is answered with their best move now."""
+    coach, provider = _coach(["", ""])
+    _start(coach, Side.BLACK)
+    board = chess.Board()
+    for ply, san in enumerate(("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"), start=1):
+        move = board.parse_san(san)
+        before = board.fen()
+        board.push(move)
+        coach.on_event(
+            MovePlayed(
+                game_id="g",
+                ply=ply,
+                san=san,
+                uci=move.uci(),
+                fen_before=before,
+                fen_after=board.fen(),
+                by_user=(ply % 2 == 0),
+            ),
+            float(ply),
+        )
+    assert not coach.user_to_move
+    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    coach.ask("what are they threatening?", 8.0)
+    out = _messages(coach)
+    assert "it is the opponent's move" in _directive(_given(provider, 0))
+    assert out and out[-1].text.startswith("It's their move, and their best is Qxf7#"), out
 
 
 def test_a_mistakes_lesson_waits_for_what_the_move_allowed() -> None:

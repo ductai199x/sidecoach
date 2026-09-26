@@ -494,6 +494,17 @@ def test_draft_wrong_colour() -> None:
     assert check_draft("The opponent's knight on c6 defends e5.", board) == []
 
 
+def test_your_is_the_player_on_the_opponents_turn() -> None:
+    """On the opponent's turn "your" is still the player being coached: read as the side to
+    move, "your knight on f3" was flagged false and a true draft thrown away."""
+    board = chess.Board(ITALIAN)
+    board.turn = chess.BLACK  # the opponent (Black) is thinking; the player is White
+    assert check_draft("Your knight on f3 eyes e5.", board, us=chess.WHITE) == []
+    problems = check_draft("Your knight on c6 defends e5.", board, us=chess.WHITE)
+    assert problems and problems[0].reason == "the knight on c6 is your opponent's, not yours"
+    assert check_draft("Their knight on c6 defends e5.", board, us=chess.WHITE) == []
+
+
 def test_draft_square_piece_form() -> None:
     board = chess.Board(ITALIAN)
     assert check_draft("The e5 pawn and the f6-knight are the targets.", board) == []

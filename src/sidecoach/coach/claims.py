@@ -1211,22 +1211,29 @@ def _tactic_problem(board: chess.Board, square_name: str, state: str) -> str | N
 
 
 def check_draft(
-    text: str, board: chess.Board, *, after: Sequence[chess.Board] = ()
+    text: str,
+    board: chess.Board,
+    *,
+    after: Sequence[chess.Board] = (),
+    us: chess.Color | None = None,
 ) -> list[DraftProblem]:
     """Everything concrete in a coach draft that the board contradicts. Empty means clean.
 
     A "<piece> on <square>" phrase must match the board, colour word included ("your" is
-    the side to move). A tactic claimed of such a piece (pinned, hanging, safe, a fork, a
-    skewer) must hold on the board, or on one of the `after` positions, which are the boards
-    along the best line: a fork the best move creates is real even though the current board
-    does not show it yet. A move must be playable on one of the frames: legal now, legal
-    for the opponent after a pass (a coach may name a threat), or legal further along the
-    line the coach was given. Bare squares are never flagged; a coach may point at one.
+    `us`, the player being coached, the side to move when not given: on the opponent's
+    turn "your knight on f3" is the player's, and read as the side to move's it was
+    flagged false -- the code review, 2026-09-26). A tactic claimed of such a piece (pinned,
+    hanging, safe, a fork, a skewer) must hold on the board, or on one of the `after`
+    positions, which are the boards along the best line: a fork the best move creates is
+    real even though the current board does not show it yet. A move must be playable on one
+    of the frames: legal now, legal for the opponent after a pass (a coach may name a
+    threat), or legal further along the line the coach was given. Bare squares are never
+    flagged; a coach may point at one.
     """
     problems: list[DraftProblem] = []
     seen: set[str] = set()
     frames = [board, *after]
-    us = board.turn
+    us = board.turn if us is None else us
 
     def add(phrase: str, reason: str) -> None:
         if phrase not in seen:
@@ -1274,7 +1281,7 @@ def check_draft(
         reasons = [_move_problem(frame, match.group(1).replace("0", "O")) for frame in frames]
         if all(reasons):
             add(match.group(0), reasons[0] or "")
-    for phrase, reason in _strategic_problems(text, board):
+    for phrase, reason in _strategic_problems(text, board, us):
         add(phrase, reason)
     return problems
 
@@ -1299,12 +1306,14 @@ def _file_squares(file_index: int) -> list[chess.Square]:
     return [chess.square(file_index, rank) for rank in range(8)]
 
 
-def _strategic_problems(text: str, board: chess.Board) -> list[tuple[str, str]]:
+def _strategic_problems(
+    text: str, board: chess.Board, us: chess.Color | None = None
+) -> list[tuple[str, str]]:
     """Concrete strategic claims the board contradicts: a file said open that has pawns, a
     pawn said passed that an enemy pawn still holds up. Only clear, checkable contradictions
     are flagged; a fuzzy claim (space, king safety, activity) is left alone.
     """
-    us = board.turn
+    us = board.turn if us is None else us
     problems: list[tuple[str, str]] = []
     for match in _OPEN_FILE.finditer(text):
         kind = (match.group("k1") or match.group("k2")).lower().replace(" ", "").replace("-", "")

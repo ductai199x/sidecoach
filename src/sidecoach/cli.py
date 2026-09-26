@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from sidecoach.analysis.annotator import Analyser, Book, Tagger
     from sidecoach.analysis.chesscom import Overview
     from sidecoach.capture.base import CaptureBackend
-    from sidecoach.coach.coach import Coach
+    from sidecoach.coach.coach import Coach, DraftCheck
     from sidecoach.events import Event, MoveAssessment
     from sidecoach.replay.recording import Recording
     from sidecoach.vision.theme_cache import ThemeCache
@@ -1220,15 +1220,20 @@ class _Profiling:
             self.store.close()
 
 
-def _draft_check() -> Callable[[str, chess.Board, Sequence[chess.Board]], list[str]] | None:
+def _draft_check() -> DraftCheck | None:
     """The board check over the coach's draft, when the claims module is built."""
     try:
         claims = importlib.import_module("sidecoach.coach.claims")
     except ImportError:
         return None
 
-    def check(text: str, board: chess.Board, after: Sequence[chess.Board] = ()) -> list[str]:
-        problems = claims.check_draft(text, board, after=after)
+    def check(
+        text: str,
+        board: chess.Board,
+        after: Sequence[chess.Board] = (),
+        us: chess.Color | None = None,
+    ) -> list[str]:
+        problems = claims.check_draft(text, board, after=after, us=us)
         return [f"{item.text}: {item.reason}" for item in problems]
 
     return check

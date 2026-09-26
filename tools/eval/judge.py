@@ -64,6 +64,7 @@ from sidecoach.coach.coach import (  # noqa: E402
     LENGTH_SLACK,
     Speaker,
     _after_best,
+    _player,
     _Request,
     _sentence_total,
     directive_limits,
@@ -581,7 +582,7 @@ def deterministic(item: dict, reply: str, draft_check, *, floor: bool = False) -
     board_problems: list[str] = []
     drafted: list[str] = []
     if draft_check and speaking:
-        for problem in draft_check(reply, board, _after_best(request)):
+        for problem in draft_check(reply, board, _after_best(request), _player(request.facts)):
             if problem.split(":", 1)[0].strip() in request.played:
                 continue
             drafted.append(problem)

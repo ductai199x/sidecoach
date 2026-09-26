@@ -103,7 +103,12 @@ def test_the_first_candidate_streams_sentence_by_sentence_and_closes_the_stream(
 
 
 def test_a_sentence_that_fails_the_check_stops_the_stream_with_what_was_said() -> None:
-    def checker(text: str, board: chess.Board, after: Sequence[chess.Board] = ()) -> list[str]:
+    def checker(
+        text: str,
+        board: chess.Board,
+        after: Sequence[chess.Board] = (),
+        us: chess.Color | None = None,
+    ) -> list[str]:
         return ["the rook on f7 is not there"] if "rook on f7" in text else []
 
     reply = "[p=0.5] A fine move. Your rook on f7 is strong.\n[p=0.5] Clean reply here."
@@ -118,7 +123,12 @@ def test_a_sentence_that_fails_the_check_stops_the_stream_with_what_was_said() -
 
 
 def test_a_first_sentence_that_fails_falls_back_to_the_whole_reply_path() -> None:
-    def checker(text: str, board: chess.Board, after: Sequence[chess.Board] = ()) -> list[str]:
+    def checker(
+        text: str,
+        board: chess.Board,
+        after: Sequence[chess.Board] = (),
+        us: chess.Color | None = None,
+    ) -> list[str]:
         return ["leak"] if "secret" in text else []
 
     reply = "[p=0.5] The secret is Qxf7.\n[p=0.5] Look at the f7 square."
