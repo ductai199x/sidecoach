@@ -1495,7 +1495,9 @@ _OBJECT_START = frozenset(
     ]  # fmt: skip
 )
 # After "remember", "notice", "see", "keep in mind", "note": what follows is stated by the
-# reply ("remember that your king is still in the centre"), and is judged.
+# reply ("remember that your king is still in the centre"), and is judged. After any other
+# verb "that" is its object ("meet that threat first": the benchmark, 2026-09-25).
+_EMBED_VERBS = frozenset(["remember", "notice", "see", "note", "keep", "look", "watch"])
 _EMBEDS = ("that ", "how ", "in mind that ", "in mind how ", "why ")
 # A question's own clause opens with one of these ("-- which piece can take it?").
 _INTERROGATIVE = frozenset(
@@ -1606,9 +1608,9 @@ def advice_or_question(quote: str, reply: str) -> str | None:
         return "advice"
     if first in IMPERATIVES:
         rest = " ".join(words[1:5]) + " "
-        if rest.startswith(_EMBEDS):
+        if first in _EMBED_VERBS and rest.startswith(_EMBEDS):
             return None  # "remember that your king is in the centre": stated, and judged
-        if second in _OBJECT_START:
+        if second in _OBJECT_START or second == "that":
             return "advice"
     return None
 
@@ -2145,7 +2147,29 @@ _NOT_MATERIAL = re.compile(
 )
 
 
-def material_check(text: str, record: str | None) -> bool | None:
+# Who a claim about the balance speaks of: its first-named party. "Your opponent" before
+# "your"; a colour is the player's or the opponent's by the record's "You coach White".
+_PARTY = re.compile(
+    r"\b(your opponent|the opponent|opponent|they|their|them|you|your|white|black)\b", re.I
+)
+
+
+def _party(text: str, user: str | None) -> str | None:
+    """ "player" or "opponent": the side a claim about the balance is about, by the first
+    party it names; None when it names none (the player, by default) or a colour of a side
+    it cannot place."""
+    found = _PARTY.search(text)
+    if found is None:
+        return None
+    word = found.group(1).lower()
+    if word in ("white", "black"):
+        if user not in ("white", "black"):
+            return "unknown"
+        return "player" if word == user else "opponent"
+    return "player" if word in ("you", "your") else "opponent"
+
+
+def material_check(text: str, record: str | None, user: str | None = None) -> bool | None:
     """A present-tense claim about the material balance against the record's material
     line ("level", "level in value: your bishop against their knight", "you are up a
     pawn"). "Neither side is ahead materially" was voted false against "level in value";
@@ -2163,6 +2187,15 @@ def material_check(text: str, record: str | None) -> bool | None:
     says_level = bool(_MAT_LEVEL.search(text))
     says_up = bool(_MAT_UP.search(text)) and not says_level
     says_down = bool(_MAT_DOWN.search(text)) and not says_level
+    # About the opponent, "ahead" is the player behind: "Black is ahead materially" of a
+    # White player a bishop and two pawns down was decided wrong (the benchmark, 2026-09-25).
+    party = _party(text, user)
+    if party == "unknown":
+        return None
+    if party == "opponent" and not says_level:
+        if re.search(r"\bnot\b", text, re.I):
+            return None  # "they are not up" -- the vote's
+        says_up, says_down = says_down, says_up
     rec = record.lower()
     rec_level = rec.startswith("level")
     rec_up = rec.startswith("you are up")
@@ -2555,7 +2588,12 @@ def code_check(text: str, item: dict) -> bool | None:
         decided = check(text, item)
         if decided is not None:
             return decided
-    material = material_check(text, m.get("material"))
+    coached = re.search(
+        r"You coach (White|Black)",
+        str(item["messages"][-1]["content"]) if item.get("messages") else "",
+    )
+    user = coached.group(1).lower() if coached else None
+    material = material_check(text, m.get("material"), user)
     if material is False:
         # The balance after the expected recapture, as the harness states it, holds too.
         after = re.search(
@@ -2568,6 +2606,7 @@ def code_check(text: str, item: dict) -> bool | None:
                 later
                 if later.startswith(("level", "you are"))
                 else "you are " + later.removeprefix("the player is "),
+                user,
             )
     if material is not None:
         return material

@@ -1047,6 +1047,32 @@ def test_a_claim_in_the_old_form_still_reads():
     assert dropped == [{"claim": "the endgame", "quote": None, "why": "nothing identified"}]
 
 
+def test_the_balance_is_read_of_the_side_the_claim_names():
+    # The benchmark's first judging (2026-09-25): "Black is ahead materially" of a White
+    # player a bishop and two pawns down was decided wrong, the subject taken for the player.
+    down = "you are down a bishop and two pawns for a knight"
+    assert judge.material_check("Black is ahead materially.", down, "white") is True
+    assert judge.material_check("White is ahead materially.", down, "white") is False
+    assert judge.material_check("Your opponent is up material.", down, "white") is True
+    assert judge.material_check("You are up material.", down, "white") is False
+    assert judge.material_check("You are down a bishop and two pawns.", down, "white") is True
+    assert judge.material_check("Black is ahead materially.", down, None) is None  # unplaced
+
+
+def test_that_after_an_order_is_its_object_not_a_statement():
+    # "meet that threat first by getting the attacked piece out of danger" was judged as a
+    # claim, "that" read as "remember that ..." (the benchmark, 2026-09-25).
+    reply = judge.normalise(
+        "They threaten dxe5, so meet that threat first by getting the attacked piece out of danger."
+    )
+    quote = judge.normalise("getting the attacked piece out of danger")
+    assert judge.advice_or_question(quote, reply) == "advice"
+    remember = judge.normalise("Remember that your king on g1 has no luft.")
+    assert (
+        judge.advice_or_question(judge.normalise("your king on g1 has no luft"), remember) is None
+    )
+
+
 def test_the_vote_counts_a_plain_inference_as_supported():
     question = judge.support_question("This is no longer opening theory")
     assert "following plainly from what it states" in question
