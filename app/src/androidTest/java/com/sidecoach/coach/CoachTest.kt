@@ -3,6 +3,7 @@ package com.sidecoach.coach
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
+import com.sidecoach.chess.WHITE
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.CoachMessage
 import com.sidecoach.events.DisclosureLevel
@@ -399,6 +400,75 @@ class CoachTest {
         val left = coach.bags.left("lead:mate-one")
         assertTrue(lead !in left && left.size == IdeaWords.MATE_ONE_LEADS.size - 1)
         assertEquals(emptyMap<String, String>(), position.leads)
+    }
+
+    /** `italian`: 1.e4 e5 2.Nf3 Nc6, White (the player) to move, the position analysed. */
+    private fun italian(coach: Coach) {
+        start(coach)
+        val board = Board()
+        for ((i, san) in listOf("e4", "e5", "Nf3", "Nc6").withIndex()) {
+            val ply = i + 1
+            val move = board.parseSan(san)!!
+            val before = board.fen()
+            board.push(move)
+            coach.onEvent(
+                MovePlayed(
+                    gameId = "g",
+                    ply = ply,
+                    san = san,
+                    uci = move.uci(),
+                    fenBefore = before,
+                    fenAfter = board.fen(),
+                    byUser = ply % 2 == 1,
+                ),
+                ply.toDouble(),
+            )
+        }
+        coach.onEvent(
+            Analysis(
+                gameId = "g",
+                fen = board.fen(),
+                ply = 4,
+                lines = listOf(Line(moves = listOf("f1b5"), depth = 12, expectedScore = 0.55)),
+                decisive = false,
+                onlyMove = false,
+                tags = emptyList(),
+            ),
+            5.0,
+        )
+        messages(coach)
+    }
+
+    /**
+     * "I'll play Qd1, blocking the check" answered the templates' hint, and got the hint back word
+     * for word, three times (the students' round 5): a move proposed is examined aloud as a
+     * question about it is; and a template already said since the last move is not said again
+     * (desktop adc4b26).
+     */
+    @Test
+    fun aMoveProposedInAStatementIsExaminedAloudAndNothingIsSaidTwice() {
+        val engine = EngineLike { board, _ ->
+            if (board.turn == WHITE) {
+                listOf(Line(moves = listOf("f1b5"), depth = 14, expectedScore = 0.55))
+            } else {
+                listOf(Line(moves = listOf("f8c5", "d2d3"), depth = 14, expectedScore = 0.48))
+            }
+        }
+        // The planner reads their words into a probe (first call); the model answers (second).
+        val (coach, _) = coach(listOf("{\"probes\": [{\"label\": \"your Bc4\", \"moves\": [\"Bc4\"]}]}", "[p=1.0] Fine."))
+        coach.engine = engine
+        italian(coach)
+        coach.ask("I'll play Bc4 and aim at f7.", 6.0)
+        val out = messages(coach).map { it.text }
+        assertTrue(out.toString(), out.isNotEmpty() && out[0].startsWith("your Bc4: after 3. Bc4 it is about equal"))
+        // Offline, a statement naming no move gets the template once, and not again.
+        val offline = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+        italian(offline)
+        offline.ask("I think my position is fine.", 7.0)
+        val first = messages(offline).map { it.text }
+        offline.ask("I think my position is fine.", 8.0)
+        val again = messages(offline).map { it.text }
+        assertTrue("$first / $again", first.isNotEmpty() && again.intersect(first.toSet()).isEmpty())
     }
 
     /**

@@ -145,11 +145,14 @@ object Causes {
         val after = before.copy(withStack = false)
         after.push(move)
         if (replyMate != null && replyMate > 0) return MISSED_THREAT to (allowed ?: "mate")
-        if (missedChance &&
-            available != null &&
-            !(before.isCapture(move) || before.givesCheck(move))
-        ) {
-            return NOT_CONSIDERED to available
+        val forcing = before.isCapture(move) || before.givesCheck(move)
+        if (missedChance && available != null && !forcing) return NOT_CONSIDERED to available
+        if (forcing) {
+            // A capture or a check that comes out behind is a line miscalculated, even when the
+            // reply it allows wins material: the player began it. Read as a threat missed, the
+            // greedy student heard "what you kept missing: what their moves threatened" after
+            // every game (the simulated students' round 5, 2026-09-26).
+            return MISCALCULATED to (attempted ?: allowed ?: available)
         }
         if (allowed != null) return MISSED_THREAT to allowed
         if (reply != null) {
@@ -157,7 +160,6 @@ object Causes {
             if (replyMove != null && winsMaterial(after, replyMove)) return MISSED_THREAT to "hangingPiece"
         }
         if (attempted != null) return MISCALCULATED to attempted
-        if (before.isCapture(move) || before.givesCheck(move)) return MISCALCULATED to available
         if (available != null) return NOT_CONSIDERED to available
         if (phase == "endgame") return ENDGAME to null
         if (phase == "opening" || leftBook) return OPENING_GAP to null

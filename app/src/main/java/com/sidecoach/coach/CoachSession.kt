@@ -522,8 +522,13 @@ class Coach(
             // A probe the planner made of their words that is no legal move is the model's to
             // know, not the player's to hear: "after pass, Kd1 is not a legal move" was read
             // out as the answer to "How does Qc7+ prevent Re8?" (the students).
-            val said = found.filter { "is not a legal move" !in it }
-            if (said.isNotEmpty() && asked.isNotEmpty()) {
+            var said = found.filter { "is not a legal move" !in it }
+            // A move they propose in a statement ("I'll play Qd1, blocking the check") is
+            // examined aloud as a question about it would be: that is the answer. Without it the
+            // templates said the hint that had asked for it again, word for word, three times
+            // (the students' round 5); pieces and squares named in passing stay unsaid.
+            if (asked.isEmpty()) said = said.filter { "the expected score is" in it }
+            if (said.isNotEmpty()) {
                 shownExamination = true
                 queuePlain(
                     Trigger.USER_ASK,
@@ -1195,6 +1200,17 @@ class Coach(
         emptyList()
     }
 
+    /** What the coach has said since the last move was played. */
+    private fun saidSinceMove(): List<String> {
+        val entries = synchronized(lock) { conversation.entries.toList() }
+        val out = ArrayList<String>()
+        for (entry in entries.asReversed()) {
+            if (entry.kind == "ply") break
+            if (entry.kind == "coach") out.add(entry.text)
+        }
+        return out
+    }
+
     /**
      * Whether the player's words answer the question the coach just asked: its last turn ended
      * with one, nothing has happened since, and their words ask nothing.
@@ -1353,6 +1369,10 @@ class Coach(
         if (quick) {
             // The template is already out as the quick answer; a model reply that fails the
             // checks adds nothing, rather than the same line a second time.
+            fallback = ""
+        } else if (trigger == Trigger.USER_ASK && fallback.isNotEmpty() && fallback in saidSinceMove()) {
+            // Nor is anything the coach said since the last move said again word for word: a
+            // student's answer to the hint got the same hint back, three times (round 5).
             fallback = ""
         }
         val directive = "${levelLine(level, position)}$instructionText"

@@ -64,6 +64,21 @@ class CausesReviewTest {
     }
 
     /**
+     * Even when the reply it allows wins material: the player began it. As a threat missed, the
+     * greedy student heard "what their moves threatened" after every game (desktop adc4b26).
+     */
+    @Test
+    fun aCaptureOrCheckThatComesOutBehindIsALineMiscalculated() {
+        // 1.e4 e5 2.Nf3 Nc6 3.Bc4 Nd4 4.Nxe5?, allowing the fork ...Qg5.
+        val board = Board("r1bqkbnr/pppp1ppp/8/4p3/2BnP3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
+        var found = Causes.classify(board, Move.fromUci("f3e5"), allowedTags = listOf(FORK))
+        assertEquals(Causes.MISCALCULATED to "fork", found)
+        // A mate allowed is still the threat.
+        found = Causes.classify(board, Move.fromUci("f3e5"), replyMate = 2)
+        assertEquals(Causes.MISSED_THREAT, found.first)
+    }
+
+    /**
      * Asked "What do I keep missing?", the reviews named the move that cost most and never the
      * pattern (the simulated students, 2026-09-26). Second, after the result, so the offline
      * review's first four lines carry it.
