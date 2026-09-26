@@ -17,6 +17,16 @@ def test_a_capture_said_of_a_piece_that_has_moved_is_false() -> None:
     """Rg3 Bg4 Ne7+: "Ne7+ wins back the bishop on f5" -- the bishop is on g4 by then."""
     board = chess.Board("5rk1/pp3pp1/2p4p/3N1b1q/2P2P2/1P2R3/PB4PP/4R1K1 w - - 0 22")
     wrong = _claim(
+        "piece",
+        ("Rg3", "Bg4"),
+        "Ne7+ wins back the bishop on f5",
+        side=None,
+        piece="bishop",
+        square="f5",
+    )
+    assert verify([wrong], board, chess.WHITE)
+    # "Wins" is no capture in so many words: decided by where the bishop stands, not by Ne7+.
+    wins = _claim(
         "move_does",
         ("Rg3", "Bg4"),
         "Ne7+ wins back the bishop on f5",
@@ -24,8 +34,8 @@ def test_a_capture_said_of_a_piece_that_has_moved_is_false() -> None:
         does="takes",
         target="f5",
     )
-    assert verify([wrong], board, chess.WHITE)
-    pin = _claim("move_does", (), "Rg3 hits g7", move="Rg3", does="attacks", target="g7")
+    assert verify([wins], board, chess.WHITE) == []
+    pin = _claim("move_does", (), "Rg3 attacks g7", move="Rg3", does="attacks", target="g7")
     assert verify([pin], board, chess.WHITE) == []
 
 

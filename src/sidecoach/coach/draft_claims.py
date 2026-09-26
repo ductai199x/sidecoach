@@ -27,7 +27,7 @@ from sidecoach.llm.base import LLMProvider
 EXTRACT_SYSTEM = """\
 You read a chess coach's reply and list every concrete claim it makes about the board, so \
 each can be checked with a chess engine. You do not judge the claims: you only transcribe \
-them.
+them, exactly as the reply puts them, true or false.
 
 You are given the position the reply is about (FEN), which side the coach speaks to \
 ("you"), the move just played if the reply is about one, the engine's best line from the \
@@ -35,30 +35,34 @@ position, and the reply.
 
 Reply with a JSON array only, no prose, no code fences. Each element is an object with:
 - "kind": one of the kinds below
-- "after": the moves, in SAN, played from the given position to reach the moment the claim \
-is about, as the reply itself puts it -- [] for the given position. A claim about the position \
-after the move just played starts with that move. "After Bg4, Ne7+ wins the bishop" said of \
-the line Rg3 Bg4 Ne7+ is about the moment after ["Rg3", "Bg4"], and the move is "Ne7+".
-- "quote": the words the claim comes from, copied exactly from the reply
-- the fields of its kind, below. Sides are "you" or "opponent".
+- "quote": REQUIRED and never empty: the exact words of the reply the claim comes from, \
+copied character for character, including every square and piece named
+- "after": the moves, in SAN, played from the given position BEFORE the moment the claim is \
+about, as the reply puts it -- [] for the given position. Never include the claim's own move. \
+A claim about the position after the move just played starts with that move. In "Rg3 was \
+better: after Bg4, Ne7+ wins the bishop", the Ne7+ claim has after ["Rg3", "Bg4"].
+- the fields of its kind, below. Sides are "you" or "opponent", exactly as the reply assigns \
+them ("your", "you" -> "you"; "their", "your opponent's", "they" -> "opponent"); null when the \
+reply does not say whose.
 
 Kinds:
 - "piece": a piece stands on a square: "side", "piece" (king, queen, rook, bishop, knight, \
 pawn), "square"
-- "owns_move": a move is played by a side: "move", "side"
+- "owns_move": the reply says a move is played by a side -- every move of a line it assigns \
+to someone ("then meet ...c3 by bringing the rook to f2 and advancing b4" says Rf2 and b4 are \
+yours and c3 is theirs): "move", "side"
 - "move_does": a move takes, attacks, defends, checks, pins or forks something: "move", \
-"does" (takes | attacks | defends | checks | pins | forks), "target" (a square)
-- "stops": a move stops or prevents another move: "move", "target_move"
-- "allows": a move allows or lets another move happen right after it: "move", "target_move"
-- "only_move": a move is the only move (or the only king move, or the only legal move): \
+"does" (takes | attacks | defends | checks | pins | forks), "target" (the square)
+- "allows": a move allows or lets another move happen: "move", "target_move"
+- "only_move": a move is called the only move, the only king move or the only legal move: \
 "move", "only" (legal | king)
-- "forced": a check or move forces a piece to a square: "piece", "square"
-- "mate": the move is checkmate: "move"
-- "state": a piece is loose, undefended, hanging, defended, pinned, trapped or passed: \
-"side", "piece", "square", "state" (loose | defended | pinned | trapped | passed)
-- "file": a file is open, half-open or has no pawns: "file" (a-h), "state" (open | \
-half-open | no pawns)
-- "king_squares": the king has these free squares: "side", "squares" (list)
+- "forced": a move is said to force or drive a piece to a square: "piece", "square"
+- "mate": a move is called checkmate or mate: "move"
+- "state": a piece is called loose, undefended, hanging, defended, pinned, trapped or \
+passed: "side", "piece", "square", "state" (loose | defended | pinned | trapped | passed)
+- "file": a file is called open or said to have no pawns: "file" (a-h), "state" (open | \
+no pawns)
+- "king_squares": the king is said to have these free squares: "side", "squares" (list)
 
 Only claims a board can settle. Skip advice, principles, praise, plans, evaluations, the \
 course of the game and anything vague. Keep every move exactly as the reply writes it. \
@@ -204,6 +208,13 @@ def verify(
         if frame is None:
             continue
         reason = _check(claim, frame, player)
+        if reason is not None and claim.kind == "state":
+            # A state holds at the moment the words may mean: any point of the line as said.
+            for k in range(len(claim.after)):
+                earlier = _frame(board, claim.after[:k])
+                if earlier is not None and _check(claim, earlier, player) is None:
+                    reason = None
+                    break
         if reason is not None and before is not None:
             earlier = _frame(before, claim.after)
             if earlier is not None and _check(claim, earlier, player) is None:
@@ -225,8 +236,11 @@ _ONLY_KING = re.compile(r"\bonly a king move\b", re.IGNORECASE)
 
 def _grounded(claim: DraftClaim) -> bool:
     """Whether the claim's own words say what it is decided on: every square it names is in
-    the quote, a state or a file's openness in so many words, "only" unqualified, an owner
-    only when the quote names one. Anything else is the extractor's reading, not the reply's."""
+    the quote; an owner only as the words put it, right before the piece; a state, a file's
+    openness, a capture, a check, a forced square or "only" in so many words. Anything else
+    is the extractor's reading, not the reply's (luna's and the local model's false alarms,
+    2026-09-26: "strike" read as "takes", "forces mate" as a king forced to c3, "opening the
+    a-file" as an open file, "your" carried over to the next piece)."""
     quote = straight(claim.quote)
     low = quote.lower()
     f = claim.fields
@@ -237,18 +251,38 @@ def _grounded(claim: DraftClaim) -> bool:
         found = _SQUARE.search(str(value).lower())
         if found is None or found.group(0) not in low:
             return False
-    if not _OWNER.search(quote):
-        f.pop("side", None)
     kind = claim.kind
+    if kind in ("piece", "state") and f.get("square"):
+        owner = _owner_of(low, str(f.get("square")).lower())
+        if owner is None:
+            f.pop("side", None)
+        else:
+            f["side"] = owner
+    elif not _OWNER.search(quote):
+        f.pop("side", None)
     if kind == "piece":
-        return (
-            re.search(r"\b(?:king|queen|rook|bishop|knight|pawn)s? on [a-h][1-8]\b", low)
-            is not None
-        )
+        return _PLACED.search(low) is not None
     if kind == "state":
         state = str(f.get("state", "")).lower()
         words = {"loose": ("loose", "undefended", "unprotected", "hanging")}.get(state, (state,))
         return any(w in low for w in words)
+    if kind == "move_does":
+        # The verb in so many words: "stops Nxe4" is no capture, "keeps your queen on d8" no
+        # defence, "stops gxh1=Q+" no attack (luna's false alarms, 2026-09-26).
+        does = str(f.get("does", "")).lower()
+        needed = {
+            "takes": ("take", "took", "captur"),
+            "checks": ("check", "+"),
+            "defends": ("defend", "cover", "protect", "guard"),
+            "attacks": ("attack", "hits", "hitting", "threaten"),
+            "pins": ("pin",),
+            "forks": ("fork",),
+        }.get(does)
+        if does == "takes" and "x" in str(f.get("move", "")):
+            return True
+        return needed is not None and any(w in low for w in needed)
+    if kind == "forced":
+        return _FORCED.search(low) is not None
     if kind == "only_move":
         if _ONLY_KING.search(quote):
             f["only"] = "king_forced"
@@ -257,13 +291,41 @@ def _grounded(claim: DraftClaim) -> bool:
             r"only (?:legal |king )?move (?:that|which|to|for|keeping|preserving|holding)", low
         )
     if kind == "file":
-        return "-file" in low and any(w in low for w in ("open", "no pawn"))
+        return _FILE_SAID.search(low) is not None
     if kind == "mate":
         return "mate" in low or "#" in quote
     if kind == "owns_move":
-        return _OWNER.search(quote) is not None
+        move = str(f.get("move") or "").lstrip(".").rstrip("+#")
+        return bool(move) and move.lower() in low and _OWNER.search(quote) is not None
     # "Before they could play c6": a "stops" claim has no plain contradiction to decide.
     return kind != "stops"
+
+
+_PLACED = re.compile(r"\b(?:king|queen|rook|bishop|knight|pawn)s? on [a-h][1-8]\b")
+_FORCED = re.compile(
+    r"\b(?:forc|driv|drove|send|sent)\w*\s+(?:the\s+|their\s+|your\s+)?"
+    r"(?:king|queen|rook|bishop|knight|pawn)\s+(?:\w+\s+)?(?:to|onto|into|back to)\s+[a-h][1-8]"
+)
+# A file said open as it stands: "the open g-file", "the g-file is open", "no pawns" -- not
+# "opening the a-file", what a move is for.
+_FILE_SAID = re.compile(
+    r"(?<!half-)(?<!half )\bopen\s+(?:[a-h]-\s*(?:and\s+(?:half-open\s+)?)?)*[a-h]-files?\b"
+    r"|\b[a-h]-file\s+(?:is|are|stays|remains)\s+(?:still\s+)?open\b"
+    r"|\b[a-h]-file\s+has\s+no\s+pawns(?!\s+of\b)"
+)
+
+
+def _owner_of(low: str, square: str) -> str | None:
+    """Whose piece the words put on `square`: "your"/"their" said right before it -- in "your
+    queen on e7 is attacked by the knight on f5" the knight is nobody's."""
+    found = re.search(
+        r"\b(your opponent'?s|your|their|my|opponent'?s)\s+(?:[a-z-]+\s+){0,2}?"
+        rf"(?:king|queen|rook|bishop|knight|pawn)s?\s+on\s+{square}\b",
+        low,
+    )
+    if found is None:
+        return None
+    return "you" if found.group(1) in ("your", "my") else "opponent"
 
 
 def straight(text: str) -> str:
@@ -279,10 +341,13 @@ def _check(claim: DraftClaim, frame: chess.Board, player: chess.Color) -> str | 
             _PIECES.get(str(f.get("piece", "")).lower()),
             _square(f.get("square")),
         )
-        if side is None or piece is None or square is None:
+        if piece is None or square is None:
             return None
         there = frame.piece_at(square)
-        if there is None or there.piece_type != piece or there.color != side:
+        # Whose, only as the words say; the piece itself always ("the bishop on f5" where the
+        # bishop had gone to g4).
+        wrong_side = side is not None and there is not None and there.color != side
+        if there is None or there.piece_type != piece or wrong_side:
             whose = "yours" if there is not None and there.color == player else "theirs"
             what = "empty" if there is None else f"{whose}: a {chess.piece_name(there.piece_type)}"
             return f"{chess.square_name(square)} is {what} then"
@@ -328,9 +393,16 @@ def _check(claim: DraftClaim, frame: chess.Board, player: chess.Color) -> str | 
             return None
         after = frame.copy(stack=False)
         after.push(move)
-        if _move(after, reply) is None:
-            return f"{reply} cannot be played after {f.get('move')}"
-        return None
+        # The target may be the side's own next move, after any reply ("b4 lets you win the
+        # pawn on d4" after Kf7); a finished game allows nothing to judge.
+        if after.is_game_over() or _move(after, reply) is not None:
+            return None
+        for answer in list(after.legal_moves):
+            later = after.copy(stack=False)
+            later.push(answer)
+            if _move(later, reply) is not None:
+                return None
+        return f"{reply} cannot be played after {f.get('move')}"
     if kind == "only_move":
         move = _move(frame, f.get("move"))
         if move is None:
