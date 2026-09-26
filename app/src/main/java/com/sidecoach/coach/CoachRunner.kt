@@ -66,6 +66,7 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
                 routineProvider = routineProvider(settings, model),
                 verbalizedSampling = settings.verbalizedSampling(),
                 localVerdicts = settings.localVerdicts(),
+                lessonWaitS = LESSON_WAIT_S,
                 persona = settings.persona(),
                 rating = settings.rating(),
             ).also { it.start() }

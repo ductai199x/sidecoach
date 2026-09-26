@@ -292,6 +292,11 @@ class Coach(
     var localVerdicts: Boolean = true,
     persona: String? = null,
     rating: Pair<Int, Int>? = null,
+    /**
+     * The lesson on a mistake, held until the position the move left is analysed (or
+     * [LESSON_WAIT_S] passes, or the game moves on): the app waits, the tests do not.
+     */
+    var lessonWaitS: Double = 0.0,
     /** How a bag is shuffled when refilled ([Bags]); injected so a test can fix the draw. */
     shuffle: (MutableList<String>) -> Unit = { it.shuffle() },
     sample: (List<Pair<Double, String>>) -> String = ::sampleReply,
@@ -349,6 +354,17 @@ class Coach(
 
     val spoken = ArrayList<Spoken>()
     private var current: CoachPosition? = null
+
+    /** The held lesson ([lessonWaitS]): when it was held, the position, the verdict, the move, elicit. */
+    private class HeldLesson(
+        val ts: Double,
+        val position: CoachPosition,
+        val assessment: MoveAssessment,
+        val played: MovePlayed,
+        val elicit: Boolean,
+    )
+
+    private var heldLesson: HeldLesson? = null
     private var clockPeakMs: Int? = null
 
     /** The conversation is read from the caller's thread and from a claims check. */
@@ -427,9 +443,16 @@ class Coach(
             is Analysis -> onAnalysis(event, ts)
             is MoveAssessment -> onAssessment(event, ts)
             is ClockObservation -> onClock(event, ts)
-            is Takeback -> onTakeback(event, ts)
-            is Resync -> onResync(event, ts)
+            is Takeback -> {
+                heldLesson = null // the move it was on is gone
+                onTakeback(event, ts)
+            }
+            is Resync -> {
+                heldLesson = null
+                onResync(event, ts)
+            }
             is GameEnded -> {
+                releaseLesson(ts)
                 current = null
                 finished = true
                 conversation.ended(event)
@@ -461,8 +484,13 @@ class Coach(
             policy.settings = policy.settings.copy(quiet = value)
         }
 
-    /** Time passing: a hint if the user has been stuck long enough. */
+    /**
+     * Time passing: a held lesson once its wait is up; a hint if the user has been stuck long
+     * enough.
+     */
     fun tick(ts: Double) {
+        val held = heldLesson
+        if (held != null && ts - held.ts >= lessonWaitS) releaseLesson(ts)
         val trigger = policy.tick(ts) ?: return
         val position = current ?: return
         if (position.facts == null) return
@@ -907,7 +935,25 @@ class Coach(
         return !(policy.userToMove && since != null && ts - since >= FAST_PACE_S)
     }
 
+    /** The held lesson on a mistake, spoken now. `coach._release_lesson`. */
+    private fun releaseLesson(ts: Double) {
+        val held = heldLesson ?: return
+        heldLesson = null
+        speak(
+            Trigger.POST_MISTAKE,
+            held.position,
+            DisclosureLevel.LINE,
+            ts,
+            assessment = held.assessment,
+            played = held.played,
+            elicit = held.elicit,
+        )
+    }
+
     private fun onMove(event: MovePlayed, ts: Double) {
+        // The game moved on: a lesson still waiting on its analysis goes now, before the new
+        // move is in the record.
+        releaseLesson(ts)
         if (event.byUser && event.thinkMs != null) {
             thinkS.addLast(event.thinkMs / 1000.0)
             while (thinkS.size > PACE_MOVES) thinkS.removeFirst()
@@ -995,6 +1041,7 @@ class Coach(
         )
         position.leads = leads
         conversation.analysed(event, position.facts!!)
+        if (heldLesson?.played?.ply == event.ply) releaseLesson(ts) // what the move allowed is known now
         val pending = pendingAsk
         if (position === current && pending != null) {
             val (text, _) = pending
@@ -1141,6 +1188,10 @@ class Coach(
                 annotations = marks,
                 fen = before.board.fen(),
             )
+            return
+        }
+        if (trigger == Trigger.POST_MISTAKE && lessonWaitS > 0 && (after == null || after.analysis == null)) {
+            heldLesson = HeldLesson(ts, before, event, move, elicit)
             return
         }
         speak(
@@ -1500,7 +1551,11 @@ class Coach(
             val answer = nowFacts.candidates.take(1) + nowFacts.line
             nowAnswer = answer.distinct().filter { it !in spokenOf }
         }
-        var directive = "${levelLine(level, position, if (past) renderLevel else null)}$instructionText"
+        // The player faces a position again only once it is their turn: on the opponent's, what
+        // the move allowed is the lesson, and "nothing about the position" forbade it.
+        val facing = past && now != null && now.board.turn == userColour
+        val line = levelLine(level, position, if (facing) renderLevel else null, past = past)
+        var directive = "$line$instructionText"
         var faced = ""
         var frames: List<Board> = emptyList()
         var moved = if (trigger == Trigger.POST_MOVE || trigger == Trigger.POST_MISTAKE) played else null
@@ -1740,6 +1795,7 @@ class Coach(
         level: DisclosureLevel,
         position: CoachPosition,
         nowLevel: DisclosureLevel? = null,
+        past: Boolean = false,
     ): String {
         if (position.board.isGameOver()) return ""
         fun words(of: DisclosureLevel): String = when (of) {
@@ -1752,6 +1808,10 @@ class Coach(
         if (nowLevel != null) {
             return "The position this is about has been moved from: everything about it may be " +
                 "said. Disclosure for the position the player faces now: ${words(nowLevel)}.\n\n"
+        }
+        if (past) {
+            return "The position this is about has been moved from: everything about it may be " +
+                "said, and what the opponent can do now.\n\n"
         }
         return "Disclosure for the position the player faces: ${words(level)}.\n\n"
     }

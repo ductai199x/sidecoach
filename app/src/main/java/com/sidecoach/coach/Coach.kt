@@ -1025,6 +1025,13 @@ const val PACE_MOVES = 4
 /** How many plies back the coach keeps a position and its facts. */
 const val POSITIONS_KEPT = 40
 
+/**
+ * How long the lesson on a mistake waits for the analysis of the position the move left: the
+ * verdict comes first, from the best line alone, and the analysis about a second after it --
+ * without it the lesson had no "what your move allowed" (the parity audit, 2026-09-25).
+ */
+const val LESSON_WAIT_S = 1.5
+
 class CoachRequest(
     val trigger: Trigger,
     val level: DisclosureLevel,

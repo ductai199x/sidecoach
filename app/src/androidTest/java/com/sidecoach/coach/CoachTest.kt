@@ -22,6 +22,7 @@ import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.ProfileEvidence
 import com.sidecoach.events.Resync
 import com.sidecoach.events.Severity
+import com.sidecoach.events.Takeback
 import com.sidecoach.events.Trigger
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.Completion
@@ -460,6 +461,68 @@ class CoachTest {
         )
         assertTrue(verdictProblems("O-O was the best move here, though Ba4 was close.", good).isNotEmpty())
         assertEquals(emptyList<String>(), verdictProblems("Fine, but Ba4 was the best move here.", good))
+    }
+
+    /**
+     * The verdict comes first, from the best line alone; the analysis of the position the move
+     * left about a second later, and with it what the move allowed. The app holds the lesson for
+     * it (at most [LESSON_WAIT_S]); the game moving on releases it at once (desktop 98c4d40).
+     */
+    @Test
+    fun aMistakesLessonWaitsForWhatTheMoveAllowed() {
+        val coach = Coach(
+            ScriptedProvider(emptyList()),
+            policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)),
+            lessonWaitS = LESSON_WAIT_S,
+        )
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 7.0)
+        messages(coach)
+        val board = Board(SCHOLAR)
+        val move = board.parseSan("Bxf7+")!!
+        board.push(move)
+        val played = MovePlayed(
+            gameId = "g",
+            ply = 7,
+            san = "Bxf7+",
+            uci = move.uci(),
+            fenBefore = SCHOLAR,
+            fenAfter = board.fen(),
+            byUser = true,
+        )
+        val verdict = MoveAssessment(
+            gameId = "g",
+            ply = 7,
+            uci = move.uci(),
+            expectedLoss = 0.45,
+            severity = Severity.BLUNDER,
+            best = listOf("h5f7"),
+            label = Label.MISS,
+        )
+        coach.onEvent(played, 10.0)
+        coach.onEvent(verdict, 10.1)
+        assertEquals("held for the analysis of the position it left", emptyList<CoachMessage>(), messages(coach))
+        coach.tick(10.1 + LESSON_WAIT_S / 2)
+        assertEquals("still inside the wait", emptyList<CoachMessage>(), messages(coach))
+        coach.tick(10.1 + LESSON_WAIT_S)
+        var out = messages(coach)
+        assertTrue(out.size == 1 && out[0].trigger == Trigger.POST_MISTAKE)
+        // The analysis landing releases it at once.
+        coach.onEvent(Takeback(gameId = "g", plies = 1, fen = SCHOLAR), 12.0)
+        messages(coach)
+        coach.onEvent(played, 13.0)
+        coach.onEvent(verdict, 13.1)
+        val after = Analysis(
+            gameId = "g",
+            fen = board.fen(),
+            ply = 7,
+            lines = listOf(Line(moves = listOf("e8e7"), depth = 12, expectedScore = 0.1)),
+            decisive = false,
+            onlyMove = true,
+        )
+        coach.onEvent(after, 13.5)
+        out = messages(coach)
+        assertEquals(listOf(Trigger.POST_MISTAKE), out.map { it.trigger })
     }
 
     /** Their own move is theirs even after the reply, and a threat gets its answer (af1bae2). */
