@@ -374,6 +374,10 @@ def load_manifest() -> dict:
     return json.loads(MANIFEST.read_text(encoding="utf-8"))
 
 
+# The classes a fact question falls in, answered by the template alone (coach.fact_question).
+TEMPLATE_CLASSES = frozenset({"ask_material", "ask_opening", "ask_eval"})
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     import estimate
     import stamp
@@ -441,7 +445,15 @@ def cmd_run(args: argparse.Namespace) -> None:
         with lock:
             new_engine.update(new)
         got = {tuple(it["moment_key"]): it for it in items if it.get("reply")}
-        for m in moments:
+        # A question only about a fact -- the material, the opening, the standing -- is the
+        # template's since 4365dfa (coach.fact_question): no model reply comes back for it,
+        # and it is left out of the run (Tai's $3 cap day, 2026-09-26).
+        answered = [
+            m
+            for m in moments
+            if tuple(m["key"]) in got or m["class"] not in TEMPLATE_CLASSES
+        ]
+        for m in answered:
             it = got.get(tuple(m["key"]))
             if it is None or it["class"] != m["class"]:
                 raise SystemExit(
@@ -449,11 +461,11 @@ def cmd_run(args: argparse.Namespace) -> None:
                     " the code no longer meets the frozen moments; draw a new benchmark"
                 )
         with done.open("w", encoding="utf-8") as fh:
-            for m in moments:
+            for m in answered:
                 it = got[tuple(m["key"])]
                 it["bench"] = {"level": m["level"], "family": m["family"], "split": args.split}
                 fh.write(json.dumps(it, ensure_ascii=False) + "\n")
-        return f"{stem}: {len(moments)} moments"
+        return f"{stem}: {len(answered)} moments ({len(moments) - len(answered)} by the template)"
 
     with ThreadPoolExecutor(args.workers) as pool:
         futures = [pool.submit(one, stem) for stem in sorted(by_game)]
