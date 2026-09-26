@@ -205,6 +205,9 @@ DRAFTS = [
     "The check forces your queen back to e2.",
     "Rad8 keeps the b-file and e-file open.",
     "The b- and e-files are open.",
+    # A file said to have no pawns (desktop cc06e83).
+    "The g-file has no pawns, so use it.",
+    "There are no pawns on the d-file.",
 ]
 
 

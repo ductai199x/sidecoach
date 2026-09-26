@@ -169,6 +169,11 @@ class ClaimsTest {
         // No check anywhere: about another moment, left alone.
         val quiet = Board("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
         assertEquals(emptyList<DraftProblem>(), checkDraft("The check forced their king away.", quiet, us = white))
+        // "The g-file has no pawns" of a half-open file (the pilot, 2026-09-26; desktop cc06e83).
+        val g6 = Board("rn2k3/pp2bp2/2p3p1/4Q2p/P1P5/1P3BK1/7R/RN4q1 w q - 7 33")
+        problems = checkDraft("The g-file has no pawns, so use it.", g6, us = white)
+        assertEquals(listOf("the g-file has a pawn on it"), problems.map { it.reason })
+        assertEquals(emptyList<DraftProblem>(), checkDraft("The d-file has no pawns, so use it.", g6, us = white))
     }
 
     /** The stub the generator used: the same lines for the same position, read from the file. */

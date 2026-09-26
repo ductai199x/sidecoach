@@ -1317,6 +1317,14 @@ private val FILES_OPEN = Regex(
         "(?:are|stay|remain)\\s+open\\b",
     RegexOption.IGNORE_CASE,
 )
+// A file said to have no pawns: "the g-file has no pawns" of a half-open file with a pawn on g6
+// (the pilot of 2026-09-26: the sheet said "takes the half-open g-file").
+private val FILE_EMPTY = Regex(
+    "\\bthe\\s+(?<file>[a-h])-file\\s+(?:has\\s+no\\s+pawns|is\\s+(?:empty|clear\\s+of\\s+pawns|" +
+        "free\\s+of\\s+pawns|pawnless))\\b" +
+        "|\\bno\\s+pawns\\s+(?:on|in)\\s+the\\s+(?<file2>[a-h])-file\\b",
+    RegexOption.IGNORE_CASE,
+)
 private val SAN_CHECK = Regex(
     "\\b(?:[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h](?:x[a-h])?[1-8])(?:=[QRBN])?\\+",
 )
@@ -1386,6 +1394,13 @@ private fun lineProblems(text: String, frames: List<Board>, us: Boolean): List<P
             problems.add(
                 match.value to "nothing forces the $piece to $squareText: other moves are legal there",
             )
+        }
+    }
+    for (match in FILE_EMPTY.findAll(text)) {
+        val letter = (match.groups["file"]?.value ?: match.groups["file2"]!!.value).lowercase()
+        val index = letter[0] - 'a'
+        if (frames.none { f -> fileSquares(index).all { f.pieceTypeAt(it) != PAWN } }) {
+            problems.add(match.value to "the $letter-file has a pawn on it")
         }
     }
     for (match in FILES_OPEN.findAll(text)) {
