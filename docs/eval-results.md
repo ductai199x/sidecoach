@@ -193,6 +193,67 @@ The labellers found 5 in 60 AI replies, 4 of them answers to "show me the line".
 
 **Spend:** $2.02 of the $2.50 Tai approved. Coach $0.24, judge $0.81, rubric $0.69, then regrinds, rubric fills and the vote trial.
 
+## The locked test set and the false-claim audit (2026-09-26)
+
+Tai's finish line (2026-09-26), with a hard cap of $3 for the rest of the project:
+- E1: false chess claims in at most 1 AI reply in 50;
+- E2: AI excellence at least the template's + 0.10 on the locked TEST set;
+- E3: at least 90% of the player's questions answered;
+- E4: his real-game bugs closed.
+
+**What changed before the run.**
+- The model sees everything (engine lines, legal moves, facts past the rung). The leak check only logs.
+- Lines are given move by move, with what each move does (`effects.line_notes`).
+- The draft check covers forcing and open-file claims.
+- The real-game bugs are fixed: their threat on their turn, "your" on the opponent's turn, 35...Nxf5's fork, first hints of 7 to 10 sentences.
+
+**The run.** `bench-test-final`: 300 moments, 298 answered by the model, for $0.41.
+- The rubric ran on its own (`rubric.py --unjudged`) for $1.46.
+- The parity judge was skipped: it would have broken the cap, and it cannot see false claims (0 of 4 above).
+
+| | AI | Template |
+|---|---|---|
+| excellence (298 / 224) | 0.99 | 0.86 |
+| paired (224): higher / lower / same | 94 / 2 / 128 | |
+
+**E2 met (+0.13).**
+
+**The audit ($0).** Four labellers (Claude, python-chess) read all 298 replies, and every flag was read by hand.
+- Questions answered: 165 of 166 (**E3 met**).
+- False claims: 28 of 298 replies (9.4%). Two flags were rejected ("Excellent" said of a great move reads as praise).
+- The families:
+  - sides mixed up in lines ("advancing b4" of their pawn, "your queen checks" of theirs);
+  - "only move" and "forces the King to h6" where other moves were legal;
+  - a fact true before a move said after it (a target on d6 that recaptures; the material before a recapture);
+  - relations to moves that cannot follow ("Ne4 allows exf6");
+  - "loose" of defended pieces;
+  - purposes the board denies.
+
+**Fixes, and a dev check.**
+- Lines now name the mover and list the king's moves.
+- Fact questions (the material, the opening by name, the standing) get the template, which is exact.
+- The draft check reads straight and curly quotes, adjectives, named checks' frames, "only king move", "allows", and state-before-piece. It catches 8 of the 30 flagged replies, and 18 new true flags across 9,832 stored replies.
+- A dev run (`bench-dev-final`, $0.30) audited the same way found 14 of 129 (11%): **no measurable change**.
+- By class, over the 365 replies audited:
+
+| class | replies with a false claim |
+|---|---|
+| ask_line | 35% |
+| ask_move | 24% |
+| ask_last_move | 19% |
+| verdict (great moves) | 18% |
+| lesson | 11% |
+| hints | 5-14% |
+| ask_threat, ask_game_so_far, ask_named_move, fact asks | 0% |
+
+- The model's explanations of concrete sequences are where it is wrong.
+
+**Decision (d8c687c).** A bare "which move?" or "show me the line" gets the exact template: the line said move by move with what each does (`effects.line_spoken`), and no model call. There the rubric scored the templates as high as the model (1.00), so by Tai's rule the AI speaks only where it adds to the offline text. This removes about a third of the false claims by construction; the estimated rate is now about 7%.
+
+**E1 is not met.** The rest are in the AI's core (lessons, hints, why-answers, great-move verdicts). There its explanations are the excellence and the errors at once.
+
+**Spend:** $2.20 of the $3 cap. Pilot $0.03, test coach $0.41, rubric $1.46, dev coach $0.30.
+
 ## Next, if wanted
 
 Scale the exemplars to 30-50 from the already-judged training moments: round 1's 400
