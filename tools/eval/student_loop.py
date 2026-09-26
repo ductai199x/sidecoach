@@ -31,6 +31,7 @@ import argparse
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -223,6 +224,175 @@ def question_threads(transcript: list[dict]) -> tuple[int, int]:
     return closed, carried
 
 
+# ---- explanations ------------------------------------------------------------------------------
+
+JUDGE = "openai:gpt-5.6-luna@none"
+_JUDGE_SYSTEM = "You compare what someone says about a chess move with what really happened."
+
+
+_VERBS = (
+    r"\b(?:win|wins|won|winning|lose|loses|lost|losing|take|takes|taking|took|capture|"
+    r"captures|captured|hang|hangs|hanging|drop|drops|picks? up|grabs?)\b"
+)
+
+
+def truth_fields(truth: dict) -> dict:
+    """The moves, the piece and the mate a truth names -- its own fields, or read from its
+    sentence for probes recorded before it had them."""
+    if "moves" in truth:
+        return truth
+    t = truth["text"]
+    moves = re.findall(r"(?:they answer|force mate:|missed) (\S+?)[,.:\s]", t + " ")
+    piece = re.search(r"taking the (\w+)", t)
+    return {
+        **truth,
+        "moves": moves,
+        "piece": piece.group(1) if piece else None,
+        "mate": "force mate" in t,
+    }
+
+
+def _norm(word: str) -> str:
+    word = re.sub(r"^\d+\.+|^\.+", "", word.strip(".,:;()!?*\"'"))
+    return word.rstrip("+#").replace("x", "")
+
+
+def gives_reason(truth: dict, text: str) -> bool:
+    """Code's yes, where it can say one: the text names the mate, the move that wins (or the
+    better move missed), or the kind of piece won with a word of winning or losing -- never a
+    bare square, which is named for many reasons."""
+    f = truth_fields(truth)
+    low = text.lower()
+    if f.get("mate") and re.search(r"\bmate\b|checkmat|mating", low):
+        return True
+    said = {_norm(w) for w in text.split()}
+    if any(_norm(m) in said for m in f.get("moves", []) if m):
+        return True
+    piece = f.get("piece")
+    if not piece or piece == "pawn":
+        # A pawn is named in nearly every exchange ("a bishop for a pawn"): the move or the
+        # judge decides.
+        return False
+    # The piece as what is won or lost ("wins a knight", "lose my queen"), not merely named:
+    # anywhere in a sentence that names several pieces, 9 of 30 texts set against another
+    # move's truth passed.
+    names = rf"(?:{piece}s?{'|the exchange' if piece == 'rook' else ''})"
+    return bool(re.search(rf"{_VERBS}\W+(?:[\w'-]+\W+){{0,3}}{names}\b", low))
+
+
+def judge_reason(truth: dict, who: str, text: str, provider, ledger) -> bool | None:
+    """Whether `text` gives the reason the engine's truth gives. Code decides where it can
+    (`gives_reason`); the judge -- yes or no, no reasoning -- the rest. Asked whether the text
+    gave "this same reason", the judge said no to "After Re8, Rcf7 is mate" against "they can
+    force mate: Rcf7#" and agreed with the hand labels on 19 and 17 of 30; asked whether the
+    text mentions the same outcome, 47-50 of 60 real pairs and every mismatched one."""
+    import students
+
+    if gives_reason(truth, text):
+        return True
+    ask = (
+        f"What really happened after the move, read from the engine:\n{truth['text']}\n\n"
+        f'What the {who} says about the move:\n"{text}"\n\n'
+        f"Does the {who}'s text mention the same outcome -- the same piece being lost or won "
+        "(the same kind of piece), or the mate -- or the same move that does it? Other things "
+        "it says do not matter. Answer yes or no."
+    )
+    said = students.chat(provider, ledger, _JUDGE_SYSTEM, ask, "explain-judge", temperature=0.0)
+    word = said.strip().lower()[:3]
+    return True if word.startswith("yes") else False if word.startswith("no") else None
+
+
+def explain_path(run_name: str) -> Path:
+    return LOOP / f"{run_name}-explain.jsonl"
+
+
+def explain_rows(run_name: str) -> dict[tuple[str, int, int], dict]:
+    path = explain_path(run_name)
+    if not path.exists():
+        return {}
+    rows = [json.loads(x) for x in path.read_text("utf-8").splitlines() if x]
+    return {(r["session"], r["game"], r["ply"]): r for r in rows}
+
+
+def cmd_explain(args: argparse.Namespace) -> None:
+    """Each why-probe of a run judged twice against the engine's truth: did the coach's words
+    at that move give the reason, and did the student's own account of it."""
+    import stamp
+    from judge import Ledger
+    from providers import provider_for
+
+    ledger = Ledger(
+        "students-explain", "students", JUDGE, budget_usd=args.budget_usd, resume=True,
+        version=stamp.code_version(),
+    )  # fmt: skip
+    provider = provider_for(JUDGE, timeout_s=120)
+    for run_name in args.runs:
+        done = explain_rows(run_name)
+        jobs = [
+            (sid, p)
+            for sid, s in sessions(run_name).items()
+            for p in s.get("probes", [])
+            if (sid, p["game"], p["ply"]) not in done
+        ]
+
+        def one(job: tuple[str, dict]) -> dict:
+            sid, p = job
+            coach = " ".join(p["coach"]) or "(nothing)"
+            return {
+                "session": sid,
+                "game": p["game"],
+                "ply": p["ply"],
+                "kind": p["truth"]["kind"],
+                "stated": judge_reason(p["truth"], "coach", coach, provider, ledger),
+                "understood": judge_reason(p["truth"], "player", p["restated"], provider, ledger),
+            }
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        with (
+            ThreadPoolExecutor(16) as pool,
+            explain_path(run_name).open("a", encoding="utf-8") as fh,
+        ):
+            for row in pool.map(one, jobs):
+                fh.write(json.dumps(row) + "\n")
+        rows = list(explain_rows(run_name).values())
+        n = max(len(rows), 1)
+        stated = sum(bool(r["stated"]) for r in rows)
+        understood = sum(bool(r["understood"]) for r in rows)
+        print(
+            f"{run_name}: {len(rows)} probes; the coach gave the reason {stated}"
+            f" ({stated / n:.0%}), the student understood it {understood} ({understood / n:.0%})"
+        )
+    print(ledger.summary())
+
+
+def explain_lines(base: str, cand: str) -> list[str]:
+    """The two runs' why-probes, paired by session, game and ply."""
+    a, b = explain_rows(base), explain_rows(cand)
+    common = sorted(set(a) & set(b))
+    if not common:
+        return []
+    out = []
+    for name, rows in ((base, a), (cand, b)):
+        stated = sum(bool(rows[k]["stated"]) for k in common)
+        understood = sum(bool(rows[k]["understood"]) for k in common)
+        out.append(
+            f"  {name:<14} why-probes {len(common)}: the coach gave the reason {stated}"
+            f" ({stated / len(common):.0%}), the student understood it {understood}"
+            f" ({understood / len(common):.0%})"
+        )
+    for key in ("understood", "stated"):
+        per: dict[str, int] = defaultdict(int)
+        for k in common:
+            per[k[0]] += bool(b[k][key]) - bool(a[k][key])
+        mean, p = sign_flip(list(per.values()))
+        out.append(
+            f"  sessions paired ({key}): mean difference {mean:+.2f} probes a session,"
+            f" sign-flip p={p:.3f} (n={len(per)})"
+        )
+    return out
+
+
 def signal_lines(name: str, runs: dict, books: dict, common: list[str]) -> list[str]:
     rows = [signals(runs[s], books.get("\n".join(runs[s]["notes"]))) for s in common]
     n = max(len(rows), 1)
@@ -322,6 +492,7 @@ def compare(base: str, cand: str, student: str) -> str:
         f"  sessions (notes carrying the cure): {cand} more {focus_better}, fewer {focus_worse};"
         f" sign test p={mcnemar(focus_worse, focus_better):.3f}"
     )
+    lines += explain_lines(base, cand)
     return "\n".join(lines)
 
 
@@ -527,6 +698,9 @@ def main() -> None:
     d.add_argument("run")
     d.add_argument("--student", default=STUDENT)
     sub.add_parser("status")
+    x = sub.add_parser("explain")
+    x.add_argument("runs", nargs="+")
+    x.add_argument("--budget-usd", type=float, default=0.5)
     args = ap.parse_args()
     commands = {
         "prepare": cmd_prepare,
@@ -534,6 +708,7 @@ def main() -> None:
         "compare": cmd_compare,
         "digest": cmd_digest,
         "status": cmd_status,
+        "explain": cmd_explain,
     }
     commands[args.cmd](args)
 

@@ -365,6 +365,44 @@ def test_the_notebook_is_read_note_by_note_and_only_the_notes_there_are():
     assert got == {"opening": ["development"], "middlegame": [], "endgame": []}
 
 
+def test_the_why_probe_s_truth_is_the_reply_that_wins_or_the_win_missed():
+    # 1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6 4.Bxf7+? Kxf7: a bishop for a pawn.
+    before = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
+    step = {
+        "fen_before": before,
+        "uci": "c4f7",
+        "analysis": {"lines": [{"moves": ["e8f7", "b1c3", "d7d6"], "mate": None}]},
+        "assessment": {"best": ["b1c3"]},
+    }
+    truth = students.truth_of(step)
+    assert truth is not None and truth["kind"] == "allowed"
+    assert truth["text"].startswith("After Bxf7+, they answer Kxf7, taking the bishop on f7")
+    assert truth["moves"] == ["Kxf7"] and truth["piece"] == "bishop"
+    # A quiet move that loses nothing and misses nothing concrete: no probe.
+    quiet = dict(step, uci="h2h3", analysis={"lines": [{"moves": ["d7d6"], "mate": None}]})
+    assert students.truth_of(quiet) is None
+
+
+def test_code_says_a_text_gives_the_reason_when_it_names_the_move_the_mate_or_the_loss():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "eval"))
+    import student_loop  # pyright: ignore[reportMissingImports]
+
+    truth = {"kind": "allowed", "text": "", "moves": ["Kxf7"], "piece": "bishop"}
+    yes = student_loop.gives_reason
+    assert yes(truth, "After Bxf7+ the king just takes: Kxf7.")
+    assert yes(truth, "They answer 6...Kxf7 and I lose a bishop for a pawn.")
+    assert yes(truth, "I would lose my bishop for nothing.")
+    # A bishop named, not as what is lost; a bare square.
+    assert not yes(truth, "My bishop on c4 was aiming at f7.")
+    assert not yes(truth, "The f7 square was defended.")
+    mate = {"kind": "allowed", "text": "", "moves": ["Qa8#"], "mate": True}
+    assert yes(mate, "It allowed checkmate.") and yes(mate, "27.Qa8# ends it.")
+    # A pawn is named in nearly every exchange: the move is needed.
+    pawn = {"kind": "allowed", "text": "", "moves": ["dxe4"], "piece": "pawn"}
+    assert not yes(pawn, "I gave up a bishop for a pawn.")
+    assert yes(pawn, "Then dxe4 wins it.")
+
+
 def test_a_note_counts_only_when_it_comes_from_the_coachs_words():
     coach = [
         "That cost you something: Bxg1 was the move -- it takes their rook: nothing defends "

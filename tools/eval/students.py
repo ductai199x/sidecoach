@@ -62,12 +62,14 @@ import chess.pgn  # noqa: E402
 from habits import (  # noqa: E402
     GOOD,
     HABITS,
+    LOST,
     MISS,
     TACTIC_GAIN,
     Evaluator,
     Situation,
     situation,
     student_move,
+    swing,
 )
 
 LEVELS = (800, 1200, 1600, 2000, 2500)
@@ -89,6 +91,9 @@ CONTROL_SAMPLE = 0.25
 MIN_PLY = 10
 MAX_PLIES = 200
 MAX_STUDENT_TURNS = 8  # the student's replies to the coach in one game
+# The why-probes a game: the student's costly moves, the first few with a concrete reason
+# (`truth_of`), are asked about in the same words whatever the coach.
+MAX_PROBES = 4
 END_QUESTION = "How did I do this game? What do I keep missing?"
 
 GAMES = ROOT / "data" / "students" / "games"
@@ -744,6 +749,18 @@ class Student:
         self.turns += 1
         return text
 
+    def restate(self, san: str, said: list[str]) -> str:
+        """What the student says was wrong with its move, from what the coach said about it
+        and nothing else: no board, so what it gives is what the coaching gave it."""
+        words = "\n".join(f'- "{t}"' for t in said) or "- (nothing)"
+        user = (
+            f"Your coach said this about your move {san}:\n{words}\n\n"
+            f"In one or two sentences, in your own words and using only what the coach told "
+            f"you, say what was wrong with {san} and what you should have seen. If the coach "
+            "did not make it clear, say so."
+        )
+        return chat(self.provider, self.ledger, self.system, user, "student-restate").strip()
+
     def notebook(self, result: str) -> dict:
         """The notes the student keeps, and what it says about the coaching."""
         whole = "\n".join(self.line(t) for t in self.transcript)
@@ -820,6 +837,100 @@ def from_coach(quote: str, coach: list[str]) -> bool:
         if row[-1] >= 0.8 * len(q):
             return True
     return False
+
+
+# ---- the why-probe's truth -------------------------------------------------------------------
+
+_NAMES = {
+    chess.PAWN: "pawn",
+    chess.KNIGHT: "knight",
+    chess.BISHOP: "bishop",
+    chess.ROOK: "rook",
+    chess.QUEEN: "queen",
+    chess.KING: "king",
+}
+
+
+def _first_win(board: chess.Board, line: list[chess.Move], who: chess.Color) -> str | None:
+    """The first capture `who` makes along `line`, as a player says it: "Qxf7, taking the
+    bishop on f7"."""
+    b = board.copy(stack=False)
+    for move in line[:12]:
+        if move not in b.legal_moves:
+            return None
+        if b.turn == who and b.is_capture(move):
+            victim = b.piece_at(move.to_square)
+            name = _NAMES[victim.piece_type] if victim is not None else "pawn"
+            return f"{b.san(move)}, taking the {name} on {chess.square_name(move.to_square)}"
+        b.push(move)
+    return None
+
+
+def _san_line(board: chess.Board, line: list[chess.Move], n: int) -> str:
+    b = board.copy(stack=False)
+    out = []
+    for move in line[:n]:
+        if move not in b.legal_moves:
+            break
+        out.append(b.san(move))
+        b.push(move)
+    return " ".join(out)
+
+
+def truth_of(step: dict) -> dict | None:
+    """What was wrong with a move of the student's, read from the engine where it is concrete:
+    the reply it allows that wins material or mates ("allowed"), or what the better move
+    would have won while this one wins nothing ("missed"). None for a mistake with no material
+    or mate in it: its reason is positional, and a probe of it could not be scored."""
+    before = chess.Board(step["fen_before"])
+    played = chess.Move.from_uci(step["uci"])
+    san = before.san(played)
+    after = before.copy(stack=False)
+    after.push(played)
+    lines = step["analysis"].get("lines") or []
+    if not lines or not lines[0].get("moves"):
+        return None
+    reply = [chess.Move.from_uci(u) for u in lines[0]["moves"]]
+    mate = lines[0].get("mate")
+    them = after.turn
+    loss = swing(before, [played, *reply], -mate if mate else None)
+    if loss == LOST:
+        return {
+            "kind": "allowed",
+            "text": f"After {san}, they can force mate: {_san_line(after, reply, 5)}.",
+            "moves": _san_line(after, reply, 1).split(),
+            "mate": True,
+        }
+    if loss <= -TACTIC_GAIN:
+        taken = _first_win(after, reply, them)
+        what = f"{taken}" if taken else _san_line(after, reply, 3)
+        return {
+            "kind": "allowed",
+            "text": f"After {san}, they answer {what}, and when the exchanges are over they are "
+            f"{-loss} points of material ahead.",
+            # What a text must name for code to say it gives the reason: the move that wins
+            # or the kind of piece it wins (`gives_reason`).
+            "moves": [taken.split(",")[0]] if taken else _san_line(after, reply, 1).split(),
+            "piece": taken.split("taking the ")[1].split()[0] if taken else None,
+        }
+    best = [chess.Move.from_uci(u) for u in step["assessment"].get("best") or []]
+    if not best or best[0] == played or best[0] not in before.legal_moves:
+        return None
+    gain = swing(before, best, None)
+    if gain - max(loss, 0) >= TACTIC_GAIN:
+        taken = _first_win(before, best, before.turn)
+        best_san = before.san(best[0])
+        return {
+            "kind": "missed",
+            "text": f"{san} missed {best_san}"
+            + (f" ({taken})" if taken and not taken.startswith(best_san + ",") else "")
+            + f", which wins {gain} points of material when the exchanges are over"
+            + (f": {taken}." if taken and taken.startswith(best_san + ",") else ".")
+            + f" {san} itself wins nothing.",
+            "moves": [best_san],
+            "piece": taken.split("taking the ")[1].split()[0] if taken else None,
+        }
+    return None
 
 
 # ---- a session -----------------------------------------------------------------------------
@@ -912,6 +1023,7 @@ def run_session(
         "student_turns": student.turns,
         "fallbacks": sum(1 for s in coach.spoken if s.problems),
         "review": [p["review"] for p in played],
+        "probes": [dict(q, game=i) for i, p in enumerate(played, 1) for q in p["probes"]],
         "transcript": student.transcript,
         **notebook,
         "engine_new": engine.new,
@@ -988,6 +1100,7 @@ def play_coached(facts: dict, coach, student: Student, profiler=None) -> dict:
     board = chess.Board(facts["start_fen"])
     talk(board, 0, drain(), invite=False)
     student_moves = mistakes = 0
+    probes: list[dict] = []
     result = headers.get("Result", "*")
     for step in facts["script"]:
         if step["kind"] == "ended":
@@ -1028,6 +1141,28 @@ def play_coached(facts: dict, coach, student: Student, profiler=None) -> dict:
         student_moves += step["by_user"]
         mistakes += costly
         talk(board, step["ply"], messages, invite=costly)
+        truth = truth_of(step) if costly and len(probes) < MAX_PROBES else None
+        if truth is not None:
+            # The why-probe: the same question whatever the coach, then the student says in
+            # its own words what was wrong, from what the coach said and without the board.
+            ply = step["ply"]
+            question = f"Why was {step['san']} a mistake?"
+            student.said(ply, question)
+            ts += 4
+            coach.ask(question, ts)
+            student.heard(ply, [m.text for m in drain() if m.text], "why")
+            said = [
+                t["text"] for t in student.transcript if t["ply"] == ply and t["who"] == "coach"
+            ]
+            probes.append(
+                {
+                    "ply": ply,
+                    "move": step["san"],
+                    "truth": truth,
+                    "coach": said,
+                    "restated": student.restate(step["san"], said),
+                }
+            )
     ts += 3
     student.said(board.ply(), END_QUESTION)
     coach.ask(END_QUESTION, ts)
@@ -1041,6 +1176,7 @@ def play_coached(facts: dict, coach, student: Student, profiler=None) -> dict:
         "student_moves": student_moves,
         "mistakes": mistakes,
         "review": review,
+        "probes": probes,
     }
 
 
