@@ -7,6 +7,7 @@ import com.sidecoach.chess.WHITE
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.CoachMessage
 import com.sidecoach.events.DisclosureLevel
+import com.sidecoach.events.GameReview
 import com.sidecoach.events.GameStarted
 import com.sidecoach.events.Label
 import com.sidecoach.events.Line
@@ -639,6 +640,33 @@ class CoachTest {
         coach.gameId = "g3"
         val strong = placed(9, Causes.MISSED_THREAT, gameId = "g3")[0]
         assertTrue(strong, "what their moves threatened" in strong && "look at what" !in strong)
+    }
+
+    /**
+     * A 2000 player was told "you kept missing endgame technique: bring your King to the middle
+     * and push your passed pawns" (the AI's sessions, 2026-09-26; desktop 216dcb1).
+     */
+    @Test
+    fun aStrongPlayersReviewNamesThePatternWithoutTheTextbookHabit() {
+        val (coach, _) = coach(emptyList())
+        coach.strongPlayer = true
+        start(coach)
+        val pattern = "What you kept missing: endgame technique -- 2 of your 3 mistakes. The habit that fixes " +
+            "it: in the endgame, bring your king to the middle and push your passed pawns."
+        coach.onEvent(
+            GameReview(
+                gameId = "g",
+                userSide = Pieces.Side.WHITE,
+                result = "1-0",
+                moves = 40,
+                lines = listOf("You played white and won in 40 moves.", pattern),
+            ),
+            1.0,
+        )
+        val said = messages(coach).joinToString(" ") { it.text }
+        assertTrue(said, "endgame technique -- 2 of your 3 mistakes." in said && "passed pawns" !in said)
+        // What the model is shown of the review says it the same way.
+        assertTrue("passed pawns" !in coach.conversation.render())
     }
 
     companion object {

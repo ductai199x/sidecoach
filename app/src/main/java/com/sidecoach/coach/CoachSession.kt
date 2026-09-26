@@ -130,6 +130,9 @@ private val ASK_EVAL = Regex(
     RegexOption.IGNORE_CASE,
 )
 
+/** A review line's habit, left out for a strong player ([Coach.onReview]). */
+private val HABIT_SAID = Regex(" The habit that fixes it: .*$")
+
 /** What a move cost, asked in so many words: only then is the figure said. */
 private val ASK_COST = Regex(
     "\\b(?:how much (?:did|does) (?:it|that|this|my move)\\s*(?:\\w+\\s*)?cost|what did (?:it|that) " +
@@ -727,13 +730,19 @@ class Coach(
      */
     private fun onReview(event: GameReview, ts: Double) {
         if (event.gameId != gameId) return
-        synchronized(lock) { conversation.review(event.lines) }
+        var lines = event.lines.toList()
+        if (strongPlayer) {
+            // The pattern and its count, not the textbook habit: a 2000 player was told "bring
+            // your King to the middle and push your passed pawns" (the AI's sessions).
+            lines = lines.map { it.replace(HABIT_SAID, "") }
+        }
+        synchronized(lock) { conversation.review(lines) }
         val position = latestWithFacts()
-        if (position == null || event.lines.isEmpty()) {
-            queuePlain(Trigger.REVIEW, event.lines.take(4).joinToString(" "), ts, recordNow = true)
+        if (position == null || lines.isEmpty()) {
+            queuePlain(Trigger.REVIEW, lines.take(4).joinToString(" "), ts, recordNow = true)
             return
         }
-        reviewLines = event.lines.toList()
+        reviewLines = lines
         speak(Trigger.REVIEW, position, DisclosureLevel.LINE, ts)
     }
 
@@ -1376,7 +1385,8 @@ class Coach(
             // Python's max over (n, cause): the count, then the cause's name.
             val (n, cause) = kept.maxWith(compareBy<Pair<Int, String>>({ it.first }, { it.second }))
             val (words, habit) = Causes.HABIT.getValue(cause)
-            text += " What you keep missing: $words, $n times. The habit that fixes it: $habit."
+            text += " What you keep missing: $words, $n times."
+            if (!strongPlayer) text += " The habit that fixes it: $habit."
         }
         if (lost.isNotEmpty()) {
             // The three that cost the most, told in the order they were played.
