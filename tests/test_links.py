@@ -335,8 +335,10 @@ def test_why_was_that_bad_says_what_the_move_allowed() -> None:
     coach.ask("why was that bad?", 3.0)
     _messages(coach)
     directive = _directive(_given(provider))
-    assert "What Qxd5 allowed, from the engine's line: after Qxd5, Rxa1+ wins a rook." in (
-        directive
+    # Counted with the pawn Qxd5 took: the coach's board keeps its moves (f513fd5's follow-up).
+    assert (
+        "What Qxd5 allowed, from the engine's line: after Qxd5, Rxa1+ wins a rook for a pawn."
+        in directive
     )
     assert "say why, concretely: what Rxa8+ does, and what Qxd5 missed or allowed" in directive
     assert "Name moves bare" in directive

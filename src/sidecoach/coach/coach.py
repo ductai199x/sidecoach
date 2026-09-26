@@ -931,6 +931,38 @@ class _Position:
     leads: dict[str, str] = field(default_factory=dict)
 
 
+def board_after(board: chess.Board, event: MovePlayed) -> chess.Board:
+    """The board after `event`, carrying the moves that led to it: the idea reader reads an
+    exchange in progress from them (`idea.exchange_owed`), and a board rebuilt from the FEN
+    alone read 20...Nxh5 Qxh5 as "you can win a knight" (Tai's puzzles, 2026-09-26). The
+    move goes onto `board` when that is where it was played from, else onto the position it
+    was played from; a board whose FEN is not the event's own (the analysis is matched on it)
+    is the event's FEN, without moves."""
+    for start in (board, chess.Board(event.fen_before)):
+        if start.fen() != event.fen_before:
+            continue
+        try:
+            move = chess.Move.from_uci(event.uci)
+        except ValueError:
+            break
+        if move not in start.legal_moves:
+            break
+        after = start.copy()
+        after.push(move)
+        if after.fen() == event.fen_after:
+            return after
+        break
+    return chess.Board(event.fen_after)
+
+
+def board_back(board: chess.Board, fen: str) -> chess.Board:
+    """The board taken back to `fen`, keeping the moves before it when they reach it."""
+    back = board.copy()
+    while back.move_stack and back.fen() != fen:
+        back.pop()
+    return back if back.fen() == fen else chess.Board(fen)
+
+
 # The game's pace: the user's last few think times. Under FAST_PACE_S a move, the game
 # is fast -- a model reply (two to five seconds) would land after the next move, and a
 # spoken sentence (three to five) would be talked over the next two. So a fast game
@@ -2328,7 +2360,7 @@ class Coach:
             self._think_s.append(event.think_ms / 1000.0)
         if event.by_user:
             self._pending_ask = None  # they played on: the question is answered by the move
-        self.board = chess.Board(event.fen_after)
+        self.board = board_after(self.board, event)
         self.moves[event.ply] = event
         self.conversation.move(event)
         position = _Position(ply=event.ply, board=self.board.copy(), last_move=event.san)
@@ -2362,7 +2394,7 @@ class Coach:
         """Moves withdrawn: the conversation says so, and the game goes on from the position
         the board is back at; the replacement moves arrive as ordinary moves."""
         self.conversation.takeback(event)
-        self.board = chess.Board(event.fen)
+        self.board = board_back(self.board, event.fen)
         active = self.conversation.active_records()
         ply = active[-1].move.ply if active else 0
         for gone in [p for p in self.positions if p > ply]:
