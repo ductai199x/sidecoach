@@ -65,12 +65,20 @@ from habits import (  # noqa: E402
 
 LEVELS = (800, 1200, 1600, 2000, 2500)
 SEED = 2609
-GAMES_PER_CELL = 2  # student games for each habit and level
+# Student games played for each habit and level, and the ones kept for its session: those
+# where the habit shows most. Two natural games gave the habit 0-5 moves a cell -- a game
+# turns lopsided early, and in a decided position nothing bites (2026-09-26); a session is
+# a test of whether the coach finds and teaches a habit the student shows.
+GAMES_PER_CELL = 6
+GAMES_KEPT = 2
 EXAM_GAMES_PER_LEVEL = 16
 ERRORS_PER_CELL = 16  # exam positions where the habit bites, for each habit and level
 CONTROLS_PER_LEVEL = 8  # exam positions where nothing bites and the instinct is good
 EXAM_CANDIDATES = 5
 PER_GAME = 2  # exam positions of a kind from one game, at most
+# Of the live positions with neither a threat nor a tactic, the share whose candidates are
+# searched (the controls are drawn from them; the search is the costly part).
+CONTROL_SAMPLE = 0.25
 MIN_PLY = 10
 MAX_PLIES = 200
 MAX_STUDENT_TURNS = 8  # the student's replies to the coach in one game
@@ -217,6 +225,11 @@ def cmd_games(args: argparse.Namespace) -> None:
         plain_async = {p: pool.map_async(play_plain, jobs) for p, jobs in plain_jobs.items()}
         for path, result in [*student_async.items(), *plain_async.items()]:
             pgns = result.get()
+            if path in student_async:
+                every = GAMES / "all" / path.name
+                every.parent.mkdir(parents=True, exist_ok=True)
+                every.write_text("\n\n".join(pgns) + "\n\n", encoding="utf-8")
+                pgns = most_habit(pgns, args.keep)
             path.write_text("\n\n".join(pgns) + "\n\n", encoding="utf-8")
             print(f"{path.relative_to(ROOT)}: {len(pgns)} games ({time.time() - t0:.0f} s)")
     for path in sorted(GAMES.glob("*.pgn")):
@@ -229,6 +242,21 @@ def cmd_games(args: argparse.Namespace) -> None:
                 f"  {path.stem} ({h['CoachedSide']}): {h['Result']} {plies} plies, the habit bit"
                 f" {bit} times and chose {took} moves"
             )
+
+
+def most_habit(pgns: list[str], keep: int) -> list[str]:
+    """The `keep` games in which the habit chose the most moves (then bit the most), in the
+    order they were played."""
+
+    def count(pgn: str, header: str) -> int:
+        found = re.search(rf'\[{header} "([^"]*)"\]', pgn)
+        return len([x for x in found.group(1).split(",") if x]) if found else 0
+
+    ranked = sorted(
+        range(len(pgns)),
+        key=lambda i: (-count(pgns[i], "HabitPlies"), -count(pgns[i], "HabitChances"), i),
+    )
+    return [pgns[i] for i in sorted(ranked[:keep])]
 
 
 def hash_of(text: str) -> int:
@@ -263,41 +291,57 @@ def _exam_positions(job: tuple[str, int, str]) -> list[dict]:
     style, t = _style(level), temperature_for(level)
     out = []
     last_san = None
+    sample = random.Random(f"{SEED}:{game_id}")
+
+    def need(s: Situation) -> bool:
+        return s.threat or s.tactic or sample.random() < CONTROL_SAMPLE
+
     for move in game.mainline_moves():
         if board.ply() >= MIN_PLY and not board.is_game_over():
             probs = _nova.probabilities([board], [style], temperature=t)[0]
-            s = situation(board, probs, _evaluator)
-            out.append(
-                {
-                    "game": game_id,
-                    "level": level,
-                    "ply": board.ply(),
-                    "fen": board.fen(),
-                    "last_san": last_san,
-                    "best": round(s.best, 4),
-                    "threat_win": s.threat_win,
-                    "threat_mates": s.threat_mates,
-                    "tactic_win": s.tactic_win,
-                    "tactic_mates": s.tactic_mates,
-                    "owed": s.owed,
-                    "threat_line": s.threat_line,
-                    "tactic_line": s.tactic_line,
-                    "candidates": [
-                        {
-                            "uci": m.uci(),
-                            "san": board.san(m),
-                            "p": round(probs[m], 4),
-                            "score": round(s.scores[m], 4),
-                            "loss": round(s.loss(m), 4),
-                            "swing": s.swings.get(m, 0),
-                        }
-                        for m in s.candidates
-                    ],
-                }
-            )
+            s = situation(board, probs, _evaluator, need=need)
+            if s.live:
+                out.append(record(game_id, level, board, last_san, probs, s))
         last_san = board.san(move)
         board.push(move)
     return out
+
+
+def record(
+    game_id: str,
+    level: int,
+    board: chess.Board,
+    last_san: str | None,
+    probs: dict[chess.Move, float],
+    s: Situation,
+) -> dict:
+    """An exam game's position as stored: the reading and each candidate's worth and line."""
+    return {
+        "game": game_id,
+        "level": level,
+        "ply": board.ply(),
+        "fen": board.fen(),
+        "last_san": last_san,
+        "best": round(s.best, 4),
+        "threat_win": s.threat_win,
+        "threat_mates": s.threat_mates,
+        "tactic_win": s.tactic_win,
+        "tactic_mates": s.tactic_mates,
+        "owed": s.owed,
+        "threat_line": s.threat_line,
+        "tactic_line": s.tactic_line,
+        "candidates": [
+            {
+                "uci": m.uci(),
+                "san": board.san(m),
+                "p": round(probs[m], 4),
+                "score": round(s.scores[m], 4),
+                "loss": round(s.loss(m), 4),
+                "swing": s.swings.get(m, 0),
+            }
+            for m in s.candidates
+        ],
+    }
 
 
 def position_situation(p: dict) -> Situation:
@@ -347,8 +391,10 @@ def select_items(positions: list[dict], rng: random.Random) -> list[dict]:
                     break
                 if per_game[p["game"]] >= PER_GAME or (p["game"], p["ply"]) in used:
                     continue
-                reading = habit_reading(p)
                 cands = p["candidates"]
+                if not cands:
+                    continue  # read without its candidates: no exam item
+                reading = habit_reading(p)
                 if kind == "control":
                     if not position_situation(p).live:
                         continue
@@ -416,9 +462,10 @@ def bite_rates(positions: list[dict]) -> None:
             bitten = [position_situation(p) for p in here if habit_reading(p)[key]]
             natural = [habit.natural(s) for s in bitten]
             share = len(bitten) / max(1, len(here))
+            nova = sum(natural) / max(1, len(natural))
             parts.append(
-                f"{key} {share:.0%} ({40 * share:.1f} per 40), Nova misses"
-                f" {sum(natural) / max(1, len(natural)):.0%}, student {habit.target(level):.0%}"
+                f"{key} {share:.0%} ({40 * share:.1f} per 40), real players miss"
+                f" {habit.human(level):.0%}, Nova {nova:.0%}, the student {habit.student(nova):.0%}"
             )
         print(f"  L{level}: {len(here)} live positions; " + "; ".join(parts))
 
@@ -549,6 +596,7 @@ class Student:
         self.provider, self.ledger = provider, ledger
         self.transcript: list[dict] = []
         self.turns = 0
+        self.game_turns_from = 0  # `turns` when the current game began: the cap is a game's
 
     def heard(self, ply: int, texts: list[str], trigger: str | None = None) -> None:
         for text in texts:
@@ -557,15 +605,22 @@ class Student:
     def said(self, ply: int, text: str) -> None:
         self.transcript.append({"ply": ply, "who": "you", "text": text})
 
+    @staticmethod
+    def line(t: dict) -> str:
+        """A transcript entry as the student reads it: the coach's words, its own, or a marker
+        (a new game)."""
+        if t["who"] == "coach":
+            return f"Coach: {t['text']}"
+        if t["who"] == "you":
+            return f"You: {t['text']}"
+        return f"({t['text']})"
+
     def _tail(self, n: int = 12) -> str:
-        return "\n".join(
-            f"{'Coach' if t['who'] == 'coach' else 'You'}: {t['text']}"
-            for t in self.transcript[-n:]
-        )
+        return "\n".join(self.line(t) for t in self.transcript[-n:])
 
     def react(self, board: chess.Board, said_now: list[str]) -> str | None:
         """What the student types back after the coach's words, or None."""
-        if self.turns >= MAX_STUDENT_TURNS:
+        if self.turns - self.game_turns_from >= MAX_STUDENT_TURNS:
             return None
         side = "White" if self.colour == chess.WHITE else "Black"
         user = (
@@ -587,11 +642,9 @@ class Student:
 
     def notebook(self, result: str) -> dict:
         """The notes the student keeps, and what it says about the coaching."""
-        whole = "\n".join(
-            f"{'Coach' if t['who'] == 'coach' else 'You'}: {t['text']}" for t in self.transcript
-        )
+        whole = "\n".join(self.line(t) for t in self.transcript)
         user = (
-            f"The game is over ({result}). Everything the coach said to you in this game, and "
+            f"Your games are over ({result}). Everything the coach said to you in them, and "
             f"what you said, in order:\n{whole}\n\n"
             "Write down what you will remember, as a real player jots a few notes after a "
             "lesson: at most five short lines, in your own words, about what to do or look "
@@ -631,29 +684,28 @@ def _result_words(result: str, colour: chess.Color) -> str:
     return "you won" if won else "you lost"
 
 
-def run_session(facts_path: Path, coach_spec: str, student_spec: str, ledger) -> dict:
-    """One student game played through the coach, event by event as build_game sends them
-    (corpus.py), with the student reading what the coach says and talking back."""
+def run_session(facts_paths: list[Path], coach_spec: str, student_spec: str, ledger) -> dict:
+    """A student's games played through the coach one after the other, event by event as
+    build_game sends them (corpus.py), with the student reading what the coach says and
+    talking back, and writing its notebook after the last. Two games a session: one game gave
+    the coach one or two of the habit's mistakes to find (2026-09-26)."""
     from bench import settings_for
     from coach_build import build_coach
     from corpus import CachedEngine
     from providers import Metered, coach_provider, provider_for
 
-    from sidecoach.events import Analysis, GameEnded, GameStarted, MoveAssessment, MovePlayed, Side
-
-    facts = json.loads(facts_path.read_text(encoding="utf-8"))
-    game = facts["name"]
-    headers = facts["headers"]
+    games = [json.loads(p.read_text(encoding="utf-8")) for p in facts_paths]
+    cell = cell_of(games[0]["name"])
+    headers = games[0]["headers"]
     level = int(headers["Level"])
-    colour = chess.WHITE if facts["user_side"] == "white" else chess.BLACK
-    rng = random.Random(f"students:{SEED}:{game}")
-    random.seed(f"sidecoach-eval:{game}")
+    rng = random.Random(f"students:{SEED}:{cell}")
+    random.seed(f"sidecoach-eval:{cell}")
     temperament = rng.choice(TEMPERAMENTS)
 
     provider = coach_provider(coach_spec, ledger, "coach") if coach_spec != "none" else None
     inner = provider_for(student_spec, timeout_s=300)
     student_llm = inner if student_spec == "local" else Metered(inner, ledger, "student")
-    student = Student(level, colour, temperament, student_llm, None)
+    student = Student(level, chess.WHITE, temperament, student_llm, None)
     engine_cache = (
         json.loads(ENGINE_CACHE.read_text(encoding="utf-8")) if ENGINE_CACHE.exists() else {}
     )
@@ -663,7 +715,58 @@ def run_session(facts_path: Path, coach_spec: str, student_spec: str, ledger) ->
         ledger=ledger,
         settings=settings_for(level),
         engine=engine,
-        seed=f"students:{game}",
+        seed=f"students:{cell}",
+    )
+    played = [play_coached(facts, coach, student) for facts in games]
+    results = "; ".join(
+        f"game {i}: {_result_words(p['result'], p['colour'])}" for i, p in enumerate(played, 1)
+    )
+    notebook = student.notebook(results)
+    engine.close()
+    return {
+        "game": cell,
+        "games": [p["game"] for p in played],
+        "habit": headers["Habit"],
+        "level": level,
+        "results": [p["result"] for p in played],
+        "coach": coach_spec,
+        "student": student_spec,
+        "temperament": temperament,
+        "habit_plies": [p["habit_plies"] for p in played],
+        "student_moves": sum(p["student_moves"] for p in played),
+        "mistakes": sum(p["mistakes"] for p in played),
+        "coach_messages": sum(1 for t in student.transcript if t["who"] == "coach"),
+        "student_turns": student.turns,
+        "fallbacks": sum(1 for s in coach.spoken if s.problems),
+        "review": [p["review"] for p in played],
+        "transcript": student.transcript,
+        **notebook,
+        "engine_new": engine.new,
+    }
+
+
+def cell_of(game: str) -> str:
+    """A student game's cell, its habit and level: "threat_blind-L800__001" is
+    "threat_blind-L800"."""
+    return game.split("__", 1)[0]
+
+
+def play_coached(facts: dict, coach, student: Student) -> dict:
+    """One game of the student's through the coach, with the student talking back; what the
+    notebook and the report need from it."""
+    from sidecoach.events import Analysis, GameEnded, GameStarted, MoveAssessment, MovePlayed, Side
+
+    game = facts["name"]
+    headers = facts["headers"]
+    colour = chess.WHITE if facts["user_side"] == "white" else chess.BLACK
+    student.colour = colour
+    student.game_turns_from = student.turns
+    student.transcript.append(
+        {
+            "ply": 0,
+            "who": "note",
+            "text": f"A new game: you play {'White' if colour == chess.WHITE else 'Black'}.",
+        }
     )
     ts = 0.0
 
@@ -747,28 +850,14 @@ def run_session(facts_path: Path, coach_spec: str, student_spec: str, ledger) ->
     coach.ask(END_QUESTION, ts)
     review = [m.text for m in drain() if m.text]
     student.heard(board.ply(), review, "review")
-    notebook = student.notebook(_result_words(result, colour))
-    engine.close()
-    fallbacks = sum(1 for s in coach.spoken if s.problems)
     return {
         "game": game,
-        "habit": headers["Habit"],
-        "level": level,
-        "side": facts["user_side"],
+        "colour": colour,
         "result": result,
-        "coach": coach_spec,
-        "student": student_spec,
-        "temperament": temperament,
         "habit_plies": [int(x) for x in headers.get("HabitPlies", "").split(",") if x],
         "student_moves": student_moves,
         "mistakes": mistakes,
-        "coach_messages": sum(1 for t in student.transcript if t["who"] == "coach"),
-        "student_turns": student.turns,
-        "fallbacks": fallbacks,
         "review": review,
-        "transcript": student.transcript,
-        **notebook,
-        "engine_new": engine.new,
     }
 
 
@@ -793,19 +882,24 @@ def cmd_session(args: argparse.Namespace) -> None:
         raise SystemExit("a paid run needs --budget-usd")
     out = OUT / "runs" / args.run
     out.mkdir(parents=True, exist_ok=True)
+    cells: dict[str, list[Path]] = defaultdict(list)
+    for p in sorted(FACTS.glob("*.json")):
+        cells[cell_of(p.stem)].append(p)
     todo = [
-        p
-        for p in sorted(FACTS.glob("*.json"))
-        if not (out / p.name).exists() and (not args.only or any(k in p.stem for k in args.only))
+        (cell, paths)
+        for cell, paths in sorted(cells.items())
+        if not (out / f"{cell}.json").exists()
+        and (not args.only or any(k in cell for k in args.only))
     ]
     print(f"{len(todo)} sessions to run -> {out.relative_to(ROOT)}", flush=True)
     t0 = time.time()
     new_engine: dict = {}
 
-    def one(path: Path) -> str:
-        record = run_session(path, args.coach, args.student, ledger)
+    def one(job: tuple[str, list[Path]]) -> str:
+        cell, paths = job
+        record = run_session(paths, args.coach, args.student, ledger)
         new_engine.update(record.pop("engine_new"))
-        (out / path.name).write_text(json.dumps(record, ensure_ascii=False, indent=1), "utf-8")
+        (out / f"{cell}.json").write_text(json.dumps(record, ensure_ascii=False, indent=1), "utf-8")
         spent = f", ${ledger.cost():.3f}" if ledger is not None else ""
         return (
             f"{record['game']}: {record['mistakes']} mistakes, {record['coach_messages']} coach"
@@ -1029,8 +1123,9 @@ def cmd_report(args: argparse.Namespace) -> None:
         ]
         print(f"\nsessions {run}: {len(sessions)}")
         for s in sessions:
+            chose = sum(len(h) for h in s["habit_plies"])
             print(
-                f"  {s['game']:<24} {s['result']:<7} habit {len(s['habit_plies']):>2}"
+                f"  {s['game']:<20} {' '.join(s['results']):<16} habit {chose:>2}"
                 f" mistakes {s['mistakes']:>2} said {s['coach_messages']:>3} replies"
                 f" {s['student_turns']} unclear {len(s['unclear'])} knew"
                 f" {len(s['already_knew'])} helpful {s.get('helpful')}"
@@ -1045,6 +1140,7 @@ def main() -> None:
     g = sub.add_parser("games")
     g.add_argument("--workers", type=int, default=20)
     g.add_argument("--games-per-cell", type=int, default=GAMES_PER_CELL)
+    g.add_argument("--keep", type=int, default=GAMES_KEPT, help="the games a session is given")
     g.add_argument("--force", action="store_true", help="play every game again")
     g.add_argument("--redo", choices=["students", "exam"], help="play only these again")
     d = sub.add_parser("exam-draw")

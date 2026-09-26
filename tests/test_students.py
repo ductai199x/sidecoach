@@ -100,14 +100,20 @@ def test_a_tactic_position_s_misses_are_the_mistakes():
     assert not _reads("tactic_blind", hopeless)
 
 
-def test_the_student_misses_twice_as_often_as_real_players_of_its_rating():
+def test_real_players_miss_less_as_they_get_stronger():
     h = habits.HABITS["threat_blind"]
-    assert abs(h.target(800) - 0.296) < 1e-9  # real 800s: 14.8%
-    assert abs(h.target(2500) - 0.06) < 1e-9  # real 2300+: 3.0%
+    assert abs(h.human(800) - 0.148) < 1e-9  # real 800-1100: 14.8%
+    assert abs(h.human(2500) - 0.030) < 1e-9  # real 2300+: 3.0%
     ratings = (800, 1200, 1600, 2000, 2500)
     for key in habits.HABITS:
-        targets = [habits.HABITS[key].target(r) for r in ratings]
-        assert targets == sorted(targets, reverse=True)
+        rates = [habits.HABITS[key].human(r) for r in ratings]
+        assert rates == sorted(rates, reverse=True)
+
+
+def test_the_student_misses_half_the_time_more_than_nova():
+    h = habits.HABITS["threat_blind"]
+    assert h.student(0.0) == habits.TAKEOVER
+    assert abs(h.student(0.2) - (habits.TAKEOVER + (1 - habits.TAKEOVER) * 0.2)) < 1e-9
 
 
 class _Fake:
@@ -147,8 +153,8 @@ def test_where_the_habit_bites_the_student_misses_at_its_target_rate(monkeypatch
         habits.student_move(h, 800, chess.Board(), probs, _Fake(3), rng)[0].uci() == "a2a3"
         for _ in range(n)
     )
-    # Nova plays a3 10% of the time; the habit brings it to the target, 29.6% at 800.
-    assert abs(missed / n - h.target(800)) < 0.02
+    # Nova plays a3 10% of the time; the habit takes the move half the time: 55%.
+    assert abs(missed / n - h.student(0.1)) < 0.02
     _, bit, by_habit = habits.student_move(h, 800, chess.Board(), probs, _Fake(0), rng)
     assert not bit and not by_habit  # nothing threatened: Nova's own move
 
@@ -280,3 +286,12 @@ def test_the_students_answer_is_read_from_its_move_line():
     # A move not among the candidates: the instinct, marked as not a valid answer.
     assert said("MOVE: Qh5 | NOTE: none")[:2] == ("a2a3", False)
     assert said("I would play e4")[:2] == ("a2a3", False)
+
+
+def test_a_session_keeps_the_games_where_the_habit_shows_most():
+    def pgn(chose: str, bit: str, tag: str) -> str:
+        return f'[Event "{tag}"]\n[HabitChances "{bit}"]\n[HabitPlies "{chose}"]\n\n1. e4 *'
+
+    games = [pgn("12", "12,14", "a"), pgn("8,20,31", "8,20,31", "b"), pgn("", "5", "c")]
+    kept = students.most_habit(games, 2)
+    assert [g.split('"')[1] for g in kept] == ["a", "b"]  # in the order they were played

@@ -35,8 +35,11 @@ move as the opponent's threat (3 of 8 read by hand); a tactic read from a 7-ply 
 slow gains and in-between recaptures, and flipped between engine runs. Tai: "If I wasn't here
 you would have just accepted shitty numbers."
 
-A student misses twice as often as real players of its rating (HUMAN_MISS, TARGET_FACTOR):
-the habit is its most frequent mistake, not a caricature.
+Where the habit bites, it takes the student's move half the time (TAKEOVER), whatever Nova
+would have played: a blind spot planted on top of the student's own play, seen two or three
+times a game, which the coach can find and its notes can cure. The first rule set the student's
+miss rate at twice real players' (HUMAN_MISS, kept as the reference) -- but Nova in its own
+games already misses about that often, and the habit chose 2 moves in 20 games (2026-09-26).
 
 Each habit also carries the note a student would ideally have written for it (the exam's
 ceiling) and an off-topic note (true, useful, about something else: the exam's placebo).
@@ -45,8 +48,8 @@ ceiling) and an off-topic note (true, useful, about something else: the exam's p
 from __future__ import annotations
 
 import random
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
 
 import chess
 import chess.engine
@@ -90,8 +93,8 @@ HUMAN_MISS = {
     "threat_blind": tuple(zip(_BANDS, (0.148, 0.113, 0.097, 0.084, 0.047, 0.030), strict=True)),
     "tactic_blind": tuple(zip(_BANDS, (0.284, 0.284, 0.273, 0.130, 0.130, 0.130), strict=True)),
 }
-TARGET_FACTOR = 2.0
-TARGET_CAP = 0.9
+# How often the habit takes the move where it bites.
+TAKEOVER = 0.5
 
 
 def interpolate(points: Sequence[tuple[float, float]], x: float) -> float:
@@ -298,17 +301,43 @@ class Situation:
 
 
 def situation(
-    board: chess.Board, probs: dict[chess.Move, float], evaluator: Evaluator, **kw
+    board: chess.Board,
+    probs: dict[chess.Move, float],
+    evaluator: Evaluator,
+    need: Callable[[Situation], bool] | None = None,
+    **kw,
 ) -> Situation:
     """`board` as the habits read it. The board should carry its moves: the last ones are
-    what tells an exchange in progress (`idea.exchange_owed`)."""
+    what tells an exchange in progress (`idea.exchange_owed`).
+
+    Read in stages, the costly search last: the engine's top lines (a decided position stops
+    there, with no candidates: nothing bites in it); the pass and the tactic from those lines;
+    and only where `need` says so of that reading (every live position when it is None),
+    Nova's candidates, each searched to its line. At the coach's depth a position read whole
+    took about five seconds, most of it the candidates (2026-09-26)."""
     evaluator.fresh()
+    top = evaluator.top(board)
+    first = Situation(best=top[0][0] if top else 0.5, probs=probs, scores={})
+    if not first.live:
+        return first
+    passed = evaluator.passed(board)
+    win, mates, tactic_line = tactic_of(board, top, first.best)
+    first = replace(
+        first,
+        threat_win=None if passed is None else passed[0],
+        threat_mates=bool(passed and passed[1]),
+        tactic_win=win,
+        tactic_mates=mates,
+        owed=idea_of.worth(idea_of.exchange_owed(board)),
+        threat_line=[m.uci() for m in passed[2]] if passed else [],
+        tactic_line=[m.uci() for m in tactic_line],
+    )
+    if need is not None and not need(first):
+        return first
     candidates = top_moves(probs, **kw)
     lines = evaluator.lines(board, candidates)
-    top = evaluator.top(board)
-    best = max(top[0][0] if top else 0.0, *(score for score, _, _ in lines.values()))
+    best = max(first.best, *(score for score, _, _ in lines.values()))
     win, mates, tactic_line = tactic_of(board, [*top, *lines.values()], best)
-    passed = evaluator.passed(board)
     return Situation(
         best=best,
         probs=probs,
@@ -374,10 +403,14 @@ class Habit:
         misses = self.misses(s)
         return bool(misses) and any(s.loss(m) < MISS for m in s.candidates)
 
-    def target(self, rating: float) -> float:
-        """How often the student misses where the habit bites: twice real players' rate at its
-        rating."""
-        return min(TARGET_CAP, TARGET_FACTOR * interpolate(HUMAN_MISS[self.key], rating))
+    def human(self, rating: float) -> float:
+        """How often real players of `rating` miss it (the reference, habit_rates.py)."""
+        return interpolate(HUMAN_MISS[self.key], rating)
+
+    def student(self, natural: float) -> float:
+        """How often the student misses where the habit bites, Nova missing `natural` of the
+        time on its own."""
+        return TAKEOVER + (1 - TAKEOVER) * natural
 
     def natural(self, s: Situation) -> float:
         """How often Nova itself plays one of the habit's misses here, its candidates'
@@ -438,16 +471,12 @@ def student_move(
     evaluator: Evaluator,
     rng: random.Random,
 ) -> tuple[chess.Move, bool, bool]:
-    """The student's move. Where the habit bites, the habit takes the move with the chance
-    that brings the student's miss rate there to its target, given how often Nova misses
-    anyway: one of its misses, by Nova's probabilities. Elsewhere, and when the draw is lost,
-    Nova's own move. The flags: the habit bit, and it chose the move."""
-    s = situation(board, probs, evaluator)
+    """The student's move. Where the habit bites, TAKEOVER of the time one of its misses, by
+    Nova's probabilities; elsewhere, and when the draw is lost, Nova's own move. The flags: the
+    habit bit, and it chose the move."""
+    s = situation(board, probs, evaluator, need=habit.on)
     if habit.bites(s):
-        natural = habit.natural(s)
-        target = habit.target(rating)
-        takeover = max(0.0, (target - natural) / (1.0 - natural)) if natural < 1 else 0.0
-        if rng.random() < takeover:
+        if rng.random() < TAKEOVER:
             return sample(probs, habit.misses(s), rng), True, True
         return sample(probs, list(probs), rng), True, False
     return sample(probs, list(probs), rng), False, False
