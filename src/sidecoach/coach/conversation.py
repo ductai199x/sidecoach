@@ -35,7 +35,7 @@ import chess
 
 from sidecoach.analysis.engine import san_line
 from sidecoach.coach.disclosure import PositionFacts, visible_facts
-from sidecoach.coach.effects import effects_text
+from sidecoach.coach.effects import effects_text, line_notes
 from sidecoach.coach.facts import material_text, motif_words, position_text, standing_words
 from sidecoach.coach.inventory import inventory_lines
 from sidecoach.coach.outcome import line_outcome
@@ -605,7 +605,12 @@ class Conversation:
             better = san_line(board_before, assessment.best, limit=4)
             if better:
                 leads = line_outcome(board_before, assessment.best[:LINE_PLIES], user_colour)
-                parts.append(f"the engine preferred {better}" + (f" -> {leads}" if leads else ""))
+                notes = line_notes(board_before, assessment.best, limit=4)
+                parts.append(
+                    f"the engine preferred {better}"
+                    + (f" -> {leads}" if leads else "")
+                    + (f" (move by move: {notes})" if notes else "")
+                )
         text = "; ".join(parts) + f". Material: {material}."
         # What the move did on the board, and what the better move would have done: the
         # mechanism, computed, so the coach has a true reason to give instead of one it
@@ -730,6 +735,11 @@ class Conversation:
                 + self._does(board, line.moves)
                 + self._leads(board, line.moves[:limit], user_colour)
             )
+            if i == 1:
+                # The best line move by move, computed: what a line may be explained by.
+                notes = line_notes(board, line.moves, limit=limit)
+                if notes:
+                    out.append(f"     move by move: {notes}")
         if weaker:
             # The scores are from the player's side, so on the opponent's turn a weaker
             # line for them shows a higher number: the title says whose.

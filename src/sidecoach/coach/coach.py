@@ -43,7 +43,7 @@ from sidecoach.coach.disclosure import (
     squares_in,
     visible_facts,
 )
-from sidecoach.coach.effects import effects_text
+from sidecoach.coach.effects import effects_text, line_notes
 from sidecoach.coach.facts import describe_move, facts_from_analysis, standing_words
 from sidecoach.coach.named import EngineLike as NamedEngine
 from sidecoach.coach.named import analyse_named, disclosed_frames
@@ -3786,16 +3786,27 @@ class Coach:
             else:
                 directive += " Do not comment on anything said earlier." + (shown if quick else "")
         elif level >= DisclosureLevel.LINE and _ASK_LINE.search(said) and facts.line:
+            # The line move by move, computed: the only reasons a move of it may be given
+            # (4 of the 5 false claims the bench's labellers found were in these answers).
+            notes = line_notes(position.board, list(facts.line))
+            by_move = (
+                f" The line move by move, as the board gives it: {notes}. Explain it only from "
+                "these notes: a move 'forces' something only where a note says it is the only "
+                "legal move or that only a king move gets out of check."
+                if notes
+                else ""
+            )
             directive = (
                 (
                     f"They asked to see the line and have just been shown it: "
                     f"{' '.join(facts.line)}. Give one or two short sentences on the idea "
-                    "behind it. Do not answer with a question."
+                    "behind it." + by_move + " Do not answer with a question."
                 )
                 if quick
                 else (
                     f"They asked to see the line: give it -- {' '.join(facts.line)} -- plainly, "
-                    "then one short sentence on the idea behind it. Do not answer with a question."
+                    "then one short sentence on the idea behind it." + by_move + " Do not answer "
+                    "with a question."
                 )
             )
         elif level >= DisclosureLevel.MOVE and _ASK_MOVE.search(said) and facts.candidates:

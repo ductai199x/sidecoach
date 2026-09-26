@@ -494,6 +494,31 @@ def test_draft_wrong_colour() -> None:
     assert check_draft("The opponent's knight on c6 defends e5.", board) == []
 
 
+def test_what_a_line_forces_or_keeps_open_is_checked() -> None:
+    """The bench's gold false claims, from explanations of lines (2026-09-25): a rook
+    "forced onto f7" where other moves were legal, files "kept open" with pawns on them. A
+    claim no frame applies to is left alone."""
+    board = chess.Board("8/p1q1k2K/2p1p3/3p4/3P1R1P/6r1/1r6/8 w - - 0 49")
+    after = []
+    line = board.copy()
+    for san in ("Rf1", "Qd6"):
+        line.push_san(san)
+        after.append(line.copy())
+    text = "Black then uses the check on d6 to force your rook onto f7."
+    problems = check_draft(text, board, after=after, us=chess.WHITE)
+    assert [p.text for p in problems] == ["force your rook onto f7"]
+    rad8 = chess.Board("r6r/pQ3pkp/4p1p1/P2BPb2/3b4/8/1P3PPP/R4RK1 b - - 0 21")
+    problems = check_draft("Rad8 keeps the b-file and e-file open.", rad8)
+    assert [p.reason for p in problems] == ["the b-file is not open; a pawn stands on it"]
+    lone = chess.Board("8/8/8/8/8/5k2/8/R3K3 w - - 0 1")
+    assert check_draft("Ra3+ forces their king to move.", lone, us=chess.WHITE) == []
+    blocked = chess.Board("8/8/8/8/5n2/5k2/8/R3K3 w - - 0 1")
+    problems = check_draft("Ra3+ forces their king to move.", blocked, us=chess.WHITE)
+    assert problems and "can be blocked" in problems[0].reason
+    quiet = chess.Board(ITALIAN)  # no check anywhere: about another moment, left alone
+    assert check_draft("The check forced their king away.", quiet, us=chess.WHITE) == []
+
+
 def test_your_is_the_player_on_the_opponents_turn() -> None:
     """On the opponent's turn "your" is still the player being coached: read as the side to
     move, "your knight on f3" was flagged false and a true draft thrown away."""

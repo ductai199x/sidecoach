@@ -1283,6 +1283,139 @@ def check_draft(
             add(match.group(0), reasons[0] or "")
     for phrase, reason in _strategic_problems(text, board, us):
         add(phrase, reason)
+    for phrase, reason in _line_problems(text, frames, us):
+        add(phrase, reason)
+    return problems
+
+
+# What a move is said to force: the king away, or a piece onto a square. "The check forced the
+# King away" where a block was legal, "the check on d6 forces your rook onto f7" where other
+# moves were: 2 of the 5 false claims the bench's labellers found (2026-09-25).
+_FORCE_KING = re.compile(
+    r"\bforc(?:e|es|ed|ing)\s+(?P<colour>your|their|the|his|white's|black's)\s+king\s+"
+    r"(?:away|back|out|off|to\s+move|to\s+step\s+aside|to\s+(?P<square>[a-h][1-8]))\b"
+    r"|\b(?P<colour2>your|their)\s+king\s+(?:has\s+to|must|is\s+forced\s+to)\s+move\b",
+    re.IGNORECASE,
+)
+_FORCE_ONTO = re.compile(
+    r"\bforc(?:e|es|ed|ing)\s+(?P<colour>your|their|the|his|white's|black's)\s+"
+    r"(?P<piece>queen|rook|bishop|knight|pawn)\s+(?:back\s+)?(?:onto|to|into)\s+"
+    r"(?P<square>[a-h][1-8])\b",
+    re.IGNORECASE,
+)
+# Files said to be kept open, or to be open, more than one at a time: "Rad8 keeps the b-file
+# and e-file open", "the b- and e-files are open". One file alone is `_OPEN_FILE`'s.
+_FILES_OPEN = re.compile(
+    r"\bkeep(?:s|ing)?\s+(?P<body>(?:the\s+)?[a-h]-(?:file)?(?:\s*(?:,|and)\s*(?:the\s+)?"
+    r"[a-h]-(?:file)?)*s?)\s+open\b"
+    r"|(?P<body2>\b[a-h]-(?:file)?(?:\s*(?:,|and)\s*(?:the\s+)?[a-h]-(?:file)?)+s?)\s+"
+    r"(?:are|stay|remain)\s+open\b",
+    re.IGNORECASE,
+)
+_SAN_CHECK = re.compile(
+    r"\b(?:[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h](?:x[a-h])?[1-8])(?:=[QRBN])?\+"
+)
+
+
+def _side(word: str | None, us: chess.Color) -> chess.Color | None:
+    """The side a colour word names: "your" is `us`; "the" and "his" either side."""
+    word = (word or "").lower()
+    if word == "your":
+        return us
+    if word == "their":
+        return not us
+    if word.startswith("white"):
+        return chess.WHITE
+    if word.startswith("black"):
+        return chess.BLACK
+    return None
+
+
+def _checked_frames(
+    text: str, frames: Sequence[chess.Board], side: chess.Color | None
+) -> list[chess.Board]:
+    """The frames where `side` (either, when None) is in check: those given, and those after
+    a check the sentence names ("Rh4+"), played where it is legal."""
+    out = [f for f in frames if f.is_check() and (side is None or f.turn == side)]
+    for token in _SAN_CHECK.findall(text):
+        for frame in frames:
+            try:
+                move = frame.parse_san(token)
+            except ValueError:
+                continue
+            after = frame.copy(stack=False)
+            after.push(move)
+            if after.is_check() and (side is None or after.turn == side):
+                out.append(after)
+    return out
+
+
+def _line_problems(
+    text: str, frames: Sequence[chess.Board], us: chess.Color
+) -> list[tuple[str, str]]:
+    """What a line is said to force, or to keep open, that none of the frames bears out. A
+    claim no frame applies to -- no check on the board or the line for that side -- is left
+    alone: it is about some other moment of the game."""
+    problems: list[tuple[str, str]] = []
+    for sentence_text in re.split(r"(?<=[.!?])\s+", text):
+        for match in _FORCE_KING.finditer(sentence_text):
+            side = _side(match.group("colour") or match.group("colour2"), us)
+            checked = _checked_frames(sentence_text, frames, side)
+            if not checked:
+                continue
+            if any(
+                all(f.piece_type_at(m.from_square) == chess.KING for m in f.legal_moves)
+                for f in checked
+            ):
+                continue
+            problems.append(
+                (
+                    match.group(0),
+                    "the check does not force the king to move: it can be blocked "
+                    "or the checking piece taken",
+                )
+            )
+        for match in _FORCE_ONTO.finditer(sentence_text):
+            side = _side(match.group("colour"), us)
+            kind = _PIECE_WORDS.get(match.group("piece").lower())
+            square = chess.parse_square(match.group("square").lower())
+            candidates = [
+                f
+                for f in [*frames, *_checked_frames(sentence_text, frames, side)]
+                if (side is None or f.turn == side)
+                and any(
+                    m.to_square == square and f.piece_type_at(m.from_square) == kind
+                    for m in f.legal_moves
+                )
+            ]
+            if not candidates:
+                continue
+            if any(
+                all(
+                    m.to_square == square and f.piece_type_at(m.from_square) == kind
+                    for m in f.legal_moves
+                )
+                for f in candidates
+            ):
+                continue
+            problems.append(
+                (
+                    match.group(0),
+                    f"nothing forces the {match.group('piece').lower()} to "
+                    f"{match.group('square').lower()}: other moves are legal there",
+                )
+            )
+    for match in _FILES_OPEN.finditer(text):
+        body = match.group("body") or match.group("body2") or ""
+        for letter in dict.fromkeys(re.findall(r"\b([a-h])-", body.lower())):
+            index = ord(letter) - ord("a")
+            if not any(
+                all(f.piece_type_at(sq) != chess.PAWN for sq in _file_squares(index))
+                for f in frames
+            ):
+                problems.append(
+                    (match.group(0), f"the {letter}-file is not open; a pawn stands on it")
+                )
     return problems
 
 
