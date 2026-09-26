@@ -2084,6 +2084,94 @@ def opening_named(reply: str, name: str) -> bool:
     return bool(words) and all(w.lower() in text for w in words)
 
 
+_SQUARE_OR_MOVE = re.compile(
+    r"(?<![A-Za-z0-9])(O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?)(?![A-Za-z0-9])"
+)
+_NUMBER_WORDS = {
+    "no": 0, "none": 0, "zero": 0, "one": 1, "a": 1, "an": 1, "two": 2, "three": 3, "four": 4,
+    "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12,
+}  # fmt: skip
+_COST_TIER_WORDS = {
+    "a little": ("a little", "slight", "a touch", "small"),
+    "a good deal": ("a good deal", "a lot", "significant", "serious"),
+    "a lot": ("a lot", "a good deal", "serious", "big", "costly"),
+    "the game, or close to it": ("the game", "decisive", "losing", "lost"),
+}
+
+
+def _count(text: str) -> int | None:
+    if text.isdigit():
+        return int(text)
+    return _NUMBER_WORDS.get(text.lower())
+
+
+def _counts_said(reply: str, label: str) -> list[int]:
+    """The counts the reply gives of moves of one label: "10 inaccuracies", "two mistakes"."""
+    plural = {"inaccuracy": "inaccurac(?:y|ies)", "miss": "miss(?:es)?"}.get(label, label + "s?")
+    return [
+        n
+        for n in (
+            _count(m.group(1))
+            for m in re.finditer(rf"\b(\d+|[a-z]+)\s+(?:{plural})\b", reply, re.I)
+        )
+        if n is not None
+    ]
+
+
+def fact_in_code(fact: dict, item: dict, reply: str) -> bool | None:
+    """A required fact the record lets code decide, or None (the vote's): the votes ruled
+    these unevenly against the adjudicated gold set (2026-09-25) -- "That cost you something"
+    taken for "the game, or close to it", the target "the pawn on b4" missed, a count given
+    as its parts refused.
+
+    cost      the move's own label word (the directive asks its rating in words), a tier
+              word of its cost, or its share as a figure
+    named     the move or square the value is about -- its first; a line: most of its moves
+    counts    the strong moves by their parts or their sum; a slip's count by its number"""
+    key, value, how = fact["key"], str(fact.get("value") or ""), fact.get("how")
+    low = reply.lower()
+    if key == "cost":
+        label = (item["moment"].get("last_label") or "").lower()
+        loss = item["moment"].get("last_loss")
+        if value == "nothing":
+            return None
+        if label and re.search(rf"\b{re.escape(label)}\w*\b", low):
+            return True
+        tier = value.split(" (", 1)[0]
+        if any(w in low for w in _COST_TIER_WORDS.get(tier, ())):
+            return True
+        return loss is not None and re.search(rf"\b{round(loss * 100)}\s*%", low) is not None
+    if key == "strong_moves":
+        found = re.match(r"(\d+) of", value)
+        if not found:
+            return None
+        want = int(found.group(1))
+        parts = sum(
+            n
+            for lab in ("best", "excellent", "great", "brilliant")
+            for n in _counts_said(reply, lab)
+        )
+        direct = [int(m.group(1)) for m in re.finditer(r"\b(\d+) of (?:your |the )?\d+", reply)]
+        return parts == want or want in direct
+    if key.startswith("count_"):
+        found = re.match(r"(\d+) ", value)
+        if not found:
+            return None
+        return int(found.group(1)) in _counts_said(reply, key.removeprefix("count_"))
+    if how == "named":
+        from sidecoach.coach.coach import _names
+
+        tokens = [t for t in _SQUARE_OR_MOVE.findall(value) if not t.isdigit()]
+        if not tokens:
+            return None
+        if key == "line":
+            named = sum(1 for t in tokens if _names(reply, t))
+            return named >= max(1, round(0.6 * len(tokens)))
+        return _names(reply, tokens[0])
+    return None
+
+
 def _required_words(fact: dict) -> str:
     """A required fact as the two questions name it."""
     key = fact["key"].replace("_", " ")
@@ -2128,7 +2216,9 @@ _COUNT_WERE = re.compile(
     re.IGNORECASE,
 )
 _COUNT_OF = re.compile(
-    r"\b(\d+) of (?:your |the |the player's )?(\d+)(?: judged)? moves"
+    # The space before "were": "38 of your 57 moves were best or excellent" never matched and
+    # went to the vote, which faulted it (the benchmark's gold set, 2026-09-25).
+    r"\b(\d+) of (?:your |the |the player's )?(\d+)(?: judged)? moves\s*"
     r"(?:were|was|are|rated|judged|scored)?\s*(?:judged |rated |as |at least )?"
     r"((?:best|excellent|great|brilliant|good|book|inaccurac(?:y|ies)|mistakes?|miss(?:es)?"
     r"|blunders?|,|\s|or|and)+)",
@@ -2593,6 +2683,8 @@ def code_check(text: str, item: dict) -> bool | None:
         if not labels:
             return None
         judged = sum(tally.values())
+        if "best" in labels:
+            labels += ["great", "brilliant"]  # the engine's own move too, as the review counts
         return (total is None or total == judged) and n == sum(
             tally.get(x, 0) for x in dict.fromkeys(labels)
         )
@@ -2792,7 +2884,7 @@ def judge_one(
                     record,
                     f"Does the reply criticise the move {move} (call it a mistake, an"
                     " inaccuracy, a blunder, a miss, weaker than another move, or say it cost"
-                    " something)?",
+                    " something)? A denial such as 'not a mistake' is no criticism.",
                 )
                 want = _TIERS[str(fact["value"]).lower()]
                 said = (
@@ -2820,6 +2912,18 @@ def judge_one(
                         "mentioned": stated,
                         "correct": True if stated else None,
                         "lesson": None,
+                    }
+                )
+                continue
+            in_code = fact_in_code(fact, item, reply)
+            if in_code is not None:
+                required_marks.append(
+                    {
+                        "key": fact["key"],
+                        "mentioned": in_code,
+                        "correct": True if in_code else None,
+                        "lesson": None,
+                        "code": True,
                     }
                 )
                 continue
@@ -2993,6 +3097,20 @@ def regrind(j: dict, item: dict, provider, ledger: Ledger, *, floor: bool) -> di
     det["board"] = (j.get("deterministic") or {}).get("board", det["board"])
     verdict = dict(j["verdict"])
     verdict["claims"] = marked
+    values = {f["key"]: f for f in item.get("required") or []}
+    required: list[dict] = []
+    for mark in verdict.get("required") or []:
+        fact = values.get(mark.get("key"))
+        in_code = fact_in_code(fact, item, reply) if fact is not None else None
+        if in_code is not None:
+            mark = {
+                **mark,
+                "mentioned": in_code,
+                "correct": True if in_code else None,
+                "code": True,
+            }
+        required.append(mark)
+    verdict["required"] = required
     out = dict(j)
     out.update(
         claims=claims,

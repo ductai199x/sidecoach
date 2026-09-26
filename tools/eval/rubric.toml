@@ -47,23 +47,20 @@ applies_to = [
 ]
 only_if = "ends_with_question"
 
-[[criterion]]
-key = "question_idea"
-question = "The reply ends with a question. Does answering that question lead the player to the idea the reply teaches?"
-applies_to = [
-    "lesson", "verdict_weaker", "stuck_hint", "decisive_question", "ask_hint", "ask_plan",
-    "ask_last_move",
-]
-only_if = "ends_with_question"
-
-[[criterion]]
-key = "question_open"
-question = "The reply ends with a question. Is the answer to that question something the reply itself does not already state?"
-applies_to = [
-    "lesson", "verdict_weaker", "stuck_hint", "decisive_question", "ask_hint", "ask_plan",
-    "ask_last_move",
-]
-only_if = "ends_with_question"
+# Not asked (the benchmark's gold set, 2026-09-25): whether the question leads to the lesson's
+# idea, and whether the reply has not already answered it, reached only 80% agreement with the
+# adjudicated labels, reworded twice -- the first is ambiguous ("what the lesson is about"),
+# the second the judge cannot see when the answer is a move the reply names ("stopping
+# Rxa3+" before "what check can they play?"). Tai's rule: what cannot be judged reliably is
+# not asked. A code rule for the second is the way back in.
+#
+# [[criterion]]
+# key = "question_idea"
+# question = "The reply ends with a question. Is the answer to that question the move, piece or square the reply's lesson is about?"
+#
+# [[criterion]]
+# key = "question_open"
+# question = "The reply ends with a question. Does the player have to find its answer on the board, because the reply's own words do not give that answer?"
 
 [[criterion]]
 key = "connection"
@@ -83,12 +80,12 @@ applies_to = [
 # The tone, one fact at a time.
 [[criterion]]
 key = "no_gushing"
-question = "Is the reply free of over-the-top praise?"
+question = "Is the reply free of over-the-top praise -- superlatives piled up, 'amazing', 'incredible', 'genius'? One word of praise such as 'excellent' or 'great move' is fine."
 applies_to = ["*"]
 
 [[criterion]]
 key = "no_scolding"
-question = "Is the reply free of blame or harsh words about the player?"
+question = "Is the reply free of harsh words about the player -- insults, sarcasm, 'careless', 'terrible'? Naming a move's verdict (a mistake, a blunder, it cost you) is not harsh."
 applies_to = ["*"]
 
 [[criterion]]

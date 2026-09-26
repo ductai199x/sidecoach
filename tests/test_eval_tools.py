@@ -854,8 +854,6 @@ def test_the_rubric_file_reads_as_criteria():
         "why",
         "transfer",
         "question_board",
-        "question_idea",
-        "question_open",
         "connection",
         "actionable",
         "no_gushing",
@@ -867,7 +865,7 @@ def test_the_rubric_file_reads_as_criteria():
     assert not by["connection"].applies("stuck_hint", "Look at e5.")
     # The question criteria are asked only of a reply that ends with a question -- and not
     # of "what were you expecting?", the coach listening rather than teaching.
-    for key in ("question_board", "question_idea", "question_open"):
+    for key in ("question_board",):
         assert by[key].applies("lesson", "Nf3 was better. Which piece guards e5?")
         assert not by[key].applies("lesson", "Nf3 was better.")
         assert not by[key].applies(
@@ -917,8 +915,8 @@ def test_the_rubric_asks_each_question_once_and_scores_the_replies(tmp_path, mon
     asked = model.calls
     assert not failed and asked > 0
     ai_keys = set(answers["ai"][item["id"]])
-    assert "question_open" in ai_keys and "no_hedging" in ai_keys  # it ends with a question
-    assert "question_open" not in answers["floor"][item["id"]]  # the template does not
+    assert "question_board" in ai_keys and "no_hedging" in ai_keys  # it ends with a question
+    assert "question_board" not in answers["floor"][item["id"]]  # the template does not
     # Asked again: nothing to pay for.
     rubric.run_rubric("run", tasks, criteria, model, ledger, workers=1)
     assert model.calls == asked
