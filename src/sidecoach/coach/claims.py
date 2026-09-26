@@ -1312,6 +1312,14 @@ _FILES_OPEN = re.compile(
     r"(?:are|stay|remain)\s+open\b",
     re.IGNORECASE,
 )
+# A file said to have no pawns: "the g-file has no pawns" of a half-open file with a pawn on
+# g6 (the pilot of 2026-09-26: the sheet said "takes the half-open g-file").
+_FILE_EMPTY = re.compile(
+    r"\bthe\s+(?P<file>[a-h])-file\s+(?:has\s+no\s+pawns|is\s+(?:empty|clear\s+of\s+pawns|"
+    r"free\s+of\s+pawns|pawnless))\b"
+    r"|\bno\s+pawns\s+(?:on|in)\s+the\s+(?P<file2>[a-h])-file\b",
+    re.IGNORECASE,
+)
 _SAN_CHECK = re.compile(
     r"\b(?:[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h](?:x[a-h])?[1-8])(?:=[QRBN])?\+"
 )
@@ -1405,6 +1413,13 @@ def _line_problems(
                     f"{match.group('square').lower()}: other moves are legal there",
                 )
             )
+    for match in _FILE_EMPTY.finditer(text):
+        letter = (match.group("file") or match.group("file2")).lower()
+        index = ord(letter) - ord("a")
+        if not any(
+            all(f.piece_type_at(sq) != chess.PAWN for sq in _file_squares(index)) for f in frames
+        ):
+            problems.append((match.group(0), f"the {letter}-file has a pawn on it"))
     for match in _FILES_OPEN.finditer(text):
         body = match.group("body") or match.group("body2") or ""
         for letter in dict.fromkeys(re.findall(r"\b([a-h])-", body.lower())):

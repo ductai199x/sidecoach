@@ -517,6 +517,11 @@ def test_what_a_line_forces_or_keeps_open_is_checked() -> None:
     assert problems and "can be blocked" in problems[0].reason
     quiet = chess.Board(ITALIAN)  # no check anywhere: about another moment, left alone
     assert check_draft("The check forced their king away.", quiet, us=chess.WHITE) == []
+    # "The g-file has no pawns" of a half-open file (the pilot, 2026-09-26).
+    g6 = chess.Board("rn2k3/pp2bp2/2p3p1/4Q2p/P1P5/1P3BK1/7R/RN4q1 w q - 7 33")
+    problems = check_draft("The g-file has no pawns, so use it.", g6, us=chess.WHITE)
+    assert [p.reason for p in problems] == ["the g-file has a pawn on it"]
+    assert check_draft("The d-file has no pawns, so use it.", g6, us=chess.WHITE) == []
 
 
 def test_your_is_the_player_on_the_opponents_turn() -> None:
