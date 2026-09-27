@@ -62,12 +62,15 @@ class SettingsPhoneTest {
     @Test
     fun thePageDescribesThePhone() {
         val described = SettingsApi(SettingsStore(app)).describe()
+        val keys = described.keys().asSequence().toSet()
+        assertTrue(keys.toString(), keys.containsAll(setOf("settings", "schema", "path", "secrets", "keyring", "devices")))
         val defs = described.getJSONObject("schema").getJSONObject("\$defs")
         val listen = defs.getJSONObject("VoiceSettings").getJSONObject("properties").getJSONObject("listen")
         assertEquals(listOf("off", "ptt", "vad"), listen.getJSONArray("choices").let { a -> (0 until a.length()).map { a.getString(it) } })
         assertEquals("now", listen.getString("applies"))
         assertEquals("Listening" to "Hearing you", listen.getString("label") to listen.getString("section"))
         assertTrue(listen.getString("description").startsWith("How the coach hears you"))
+        assertTrue(listen.getJSONObject("choice_labels").getString("ptt").startsWith("While I hold"))
         val engine = defs.getJSONObject("EngineSettings").getJSONObject("properties")
         assertEquals(2 to 64, engine.getJSONObject("threads").getInt("default") to engine.getJSONObject("hash_mb").getInt("default"))
         val llm = defs.getJSONObject("LLMSettings").getJSONObject("properties")

@@ -3,7 +3,10 @@ package com.sidecoach.ui
 import android.graphics.BitmapFactory
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.analysis.Analyser
 import com.sidecoach.analysis.Assessing
+import com.sidecoach.analysis.Engine
+import com.sidecoach.analysis.GameAnnotator
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.coach.CoachRunner
 import com.sidecoach.events.GameStarted
@@ -40,8 +43,8 @@ class PanelEngineTest {
     /**
      * The loop over a rendered game (the pipeline fixtures' scholar's mate): the board locked,
      * the start position learned, the moves on the page -- the position from the game, the side
-     * from its start -- and the status strip in the loop's own ticks. An ask pressed before the
-     * session is drained by it; listening is left as it was.
+     * from its start -- and the status strip in the loop's own ticks, all of it polled over
+     * HTTP. An ask pressed before the session is drained by it; listening is left as it was.
      */
     @Test
     fun theLoopFollowsAGameAndReportsIt() {
@@ -73,7 +76,13 @@ class PanelEngineTest {
                 for (bitmap in bitmaps.values) bitmap.recycle()
             }
         }
-        val polled = PanelEngine.poll(cursor)
+        // As the page gets it: the poll over HTTP (`test_poll_reports_a_game`).
+        val server = PanelServerTest.serve(app)
+        val polled = try {
+            JSONObject(PanelServerTest.request(server.start(), "GET", "/api/poll?since=$cursor").second)
+        } finally {
+            server.stop()
+        }
         PanelEngine.set("running" to false)
         val lines = polled.getJSONArray("lines").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
         val texts = lines.map { it.getString("text") }
@@ -260,6 +269,127 @@ class PanelEngineTest {
         val texts = PanelEngine.poll(cursor).getJSONArray("lines").let { a -> (0 until a.length()).map { a.getJSONObject(it).getString("text") } }
         assertTrue(texts.toString(), texts.count { it.startsWith("engine: ") && !it.startsWith("engine: primed") } <= 1)
         assertTrue(texts.toString(), texts.count { it.startsWith("coach: ") } <= 1)
+    }
+
+    /** The desktop test's engine: no process, never asked anything here. */
+    private class NoProcess : Engine(File("fake"), null) {
+        override fun close() = Unit
+    }
+
+    /** An engine stage that is on, as `_Stage` is when it found Stockfish. */
+    private fun onStage() = Assessing(Analyser(GameAnnotator(NoProcess())), "Stockfish, depth 18")
+
+    /**
+     * The stages from a fresh start with [makeEngine] building the engine's stage, [found] the
+     * network and the opening tables in [openings], as the desktop's tests monkeypatch
+     * `cli._Assessing` and `config.find_stockfish`; everything put back after.
+     */
+    private fun withStages(
+        makeEngine: (android.content.Context, SettingsStore) -> Assessing,
+        found: () -> File?,
+        openings: File,
+        body: () -> Unit,
+    ) {
+        val seams = Triple(PanelWarm.makeEngine, PanelWarm.findEngine, PanelWarm.openings)
+        PanelWarm.makeEngine = makeEngine
+        PanelWarm.findEngine = { found() }
+        PanelWarm.openings = { openings }
+        val kept = PanelWarm.keepStages(null, null)
+        try {
+            body()
+        } finally {
+            runCatching { PanelWarm.coaching?.close() }
+            runCatching { PanelWarm.assessing?.close() }
+            PanelWarm.keepStages(kept.first, kept.second)
+            PanelWarm.makeEngine = seams.first
+            PanelWarm.findEngine = seams.second
+            PanelWarm.openings = seams.third
+        }
+    }
+
+    /**
+     * A first run warms up before Setup has fetched the engine's network; the stage built then
+     * has no engine. Once Setup has put one in place, the next Start builds the engine -- and
+     * the coach, which was built knowing there was none -- rather than waiting for a restart
+     * (`test_an_engine_installed_after_the_warm_up_is_built_at_the_next_start`).
+     */
+    @Test
+    fun anEngineInstalledAfterTheWarmUpIsBuiltAtTheNextStart() {
+        val built = ArrayList<Boolean>()
+        var network: File? = null
+        val none = File(app.cacheDir, "no-openings")
+        withStages(
+            makeEngine = { _, _ ->
+                val on = network != null
+                built.add(on)
+                if (on) onStage() else Assessing(null, "no Stockfish network yet (see Setup)")
+            },
+            found = { network },
+            openings = none,
+        ) {
+            val (_, first, coaching) = PanelWarm.forSession(app)
+            assertFalse(first.on)
+            assertTrue("nothing new to find: kept", PanelWarm.forSession(app).second === first)
+            network = File(app.filesDir, "nn-installed.nnue")
+            val (_, second, recoached) = PanelWarm.forSession(app)
+            assertTrue("the engine Setup installed is built", second !== first && second.on)
+            assertTrue("the coach is built again with the engine", recoached !== coaching)
+            assertTrue("and kept from then on", PanelWarm.forSession(app).second === second)
+            assertEquals(listOf(false, true), built)
+        }
+    }
+
+    /**
+     * The engine is built at the warm-up; Setup may fetch the opening tables after it. The next
+     * Start gives the kept annotator the book, without building anything again
+     * (`test_opening_tables_fetched_after_the_warm_up_reach_the_kept_engine`).
+     */
+    @Test
+    fun openingTablesFetchedAfterTheWarmUpReachTheKeptEngine() {
+        val folder = File(app.cacheDir, "openings-after-warm-up").apply { deleteRecursively() }
+        try {
+            withStages(makeEngine = { _, _ -> onStage() }, found = { null }, openings = folder) {
+                val (_, first, _) = PanelWarm.forSession(app)
+                assertEquals("no tables yet", null, first.analyser!!.annotator.book)
+                folder.mkdirs()
+                InstrumentationRegistry.getInstrumentation().context.assets.open("openings_sample/c.tsv").use { input ->
+                    File(folder, "c.tsv").outputStream().use { input.copyTo(it) }
+                }
+                val (_, again, _) = PanelWarm.forSession(app)
+                assertTrue("the engine is kept, not built again", again === first)
+                assertNotNull("the book the tables make", again.analyser!!.annotator.book)
+            }
+        } finally {
+            folder.deleteRecursively()
+        }
+    }
+
+    /**
+     * The warm-up opens listening, and a session only reads the screen: one that ends -- its
+     * loop closed, its service's hold on the microphone let go -- leaves listening as it was
+     * (`test_listening_outlives_a_session`: after a Stop, push-to-talk did nothing while the
+     * page still showed it on, 2026-09-23).
+     */
+    @Test
+    fun listeningOutlivesASession() {
+        InstrumentationRegistry.getInstrumentation().uiAutomation
+            .grantRuntimePermission(app.packageName, android.Manifest.permission.RECORD_AUDIO)
+        PanelListen.build(app)
+        val before = PanelListen.listener?.mode ?: "off"
+        try {
+            PanelListen.visible(true)
+            assertEquals("ptt", PanelListen.setListen("ptt"))
+            val mic = PanelListen.mic!!
+            org.junit.Assume.assumeTrue("no microphone here: ${mic.detail}", mic.isOpen)
+            PanelListen.sessionHolds(true)
+            GameWatcher(app, null, null, Assessing(null, "off"), CoachRunner(SettingsStore(app), enabled = false), profilePath = null)
+                .close()
+            PanelListen.sessionHolds(false)
+            assertTrue("the session closed the ear", PanelListen.listener?.mode == "ptt" && mic.isOpen)
+            assertEquals("ptt", PanelEngine.poll(Int.MAX_VALUE).getJSONObject("state").getString("listen"))
+        } finally {
+            PanelListen.setListen(before)
+        }
     }
 
     /**

@@ -84,6 +84,31 @@ object PanelWarm {
         private set
     private var engineStale = false
 
+    /**
+     * What builds the engine's stage, finds the engine's network and holds the opening tables:
+     * `cli._Assessing`, `config.find_stockfish` and the data folder's `openings`, which the
+     * desktop's tests monkeypatch or point at a folder of their own; a test here sets these.
+     */
+    @Volatile internal var makeEngine: (Context, SettingsStore) -> Assessing = { context, store ->
+        Assessing.fromSettings(context, store)
+    }
+    @Volatile internal var findEngine: (Context) -> File? = { EngineAssets.found(it) }
+    @Volatile internal var openings: (Context) -> File = { File(it.filesDir, "openings") }
+
+    /**
+     * The stages a test starts from, as the desktop's tests start from a fresh `PanelEngine`;
+     * the ones it replaced, to put back.
+     */
+    internal fun keepStages(engine: Assessing?, coach: CoachRunner?): Pair<Assessing?, CoachRunner?> =
+        warmLock.withLock {
+            val before = assessing to coaching
+            assessing = engine
+            coaching = coach
+            engineStale = false
+            PanelVoice.coach = coach?.coach
+            before
+        }
+
     /** Whether a warm-up has been started in this process; the app opens it once. */
     @Volatile private var started = false
 
@@ -234,7 +259,7 @@ object PanelWarm {
         // Built before there was an engine, and there is one now (Setup fetched the
         // network after the warm-up): built again, and not only at the next launch.
         val kept = assessing
-        if (kept != null && !kept.on && EngineAssets.found(appContext) != null) engineStale = true
+        if (kept != null && !kept.on && findEngine(appContext) != null) engineStale = true
         if (engineStale) {
             // The coach too: it was built knowing whether there was an engine at all.
             runCatching { assessing?.close() }
@@ -247,10 +272,10 @@ object PanelWarm {
         // kept annotator takes the book now rather than at the next launch.
         val annotator = assessing?.analyser?.annotator
         if (annotator != null && annotator.book == null) {
-            annotator.book = OpeningBook.load(File(appContext.filesDir, "openings"))
+            annotator.book = OpeningBook.load(openings(appContext))
         }
         val store = SettingsStore(appContext)
-        val engine = assessing ?: Assessing.fromSettings(appContext, store).also {
+        val engine = assessing ?: makeEngine(appContext, store).also {
             assessing = it
             PanelEngine.emit("sys", if (it.on) "info" else "warn", "engine: ${it.detail}")
         }
