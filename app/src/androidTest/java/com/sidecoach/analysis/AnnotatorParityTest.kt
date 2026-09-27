@@ -11,6 +11,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -164,14 +165,158 @@ class AnnotatorParityTest {
         )
     }
 
-    /** The desktop test's `FakeEngine`: scripted lines, a quiet move for anything else. */
-    private class FakeEngine(private val answers: Map<String, List<Line>>) : Engine(File("fake"), null) {
+    /** The desktop test's `FakeEngine`: scripted lines, a quiet move for anything else, the calls kept. */
+    private open class FakeEngine(private val answers: Map<String, List<Line>> = emptyMap()) : Engine(File("fake"), null) {
+        val calls = java.util.Collections.synchronizedList(ArrayList<String>())
+        val multipvs = java.util.Collections.synchronizedList(ArrayList<Int>())
+
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> {
+            calls.add(board.fen())
+            multipvs.add(multipv ?: 1)
             if (board.isGameOver(claimDraw = true)) return emptyList()
             return answers[board.fen()] ?: listOf(Line(moves = listOf("a2a3"), depth = 1, expectedScore = 0.5))
         }
 
         override fun close() = Unit
+    }
+
+    /**
+     * `test_each_position_is_measured_once`: whole once each; the verdict on a move searches the
+     * position it led to for its best line alone first, then the whole; a new game measures again.
+     */
+    @Test
+    fun eachPositionIsMeasuredOnce() {
+        val board = Board()
+        val fake = FakeEngine()
+        val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
+        val e2e4 = Move.fromUci("e2e4")
+        annotator.assess("g", board, e2e4, 1)
+        val after = board.copy(withStack = false)
+        after.push(e2e4)
+        annotator.assess("g", after, Move.fromUci("e7e5"), 2)
+        assertEquals("after e4, after e5: each measured whole once", 2, fake.multipvs.count { it != 1 })
+        assertEquals("one verdict search per position", 3, fake.multipvs.count { it == 1 })
+        annotator.reset()
+        annotator.assess("g", board, e2e4, 1)
+        assertEquals("a new game measures again", 3, fake.multipvs.count { it != 1 })
+    }
+
+    /** `test_the_assessment_says_how_deep_the_search_got`: the shallower of the two searches. */
+    @Test
+    fun theAssessmentSaysHowDeepTheSearchGot() {
+        val board = Board()
+        val after = board.copy()
+        after.push(Move.fromUci("e2e4"))
+        val fake = FakeEngine(
+            mapOf(
+                board.fen() to listOf(Line(moves = listOf("e2e4"), depth = 18, expectedScore = 0.55)),
+                after.fen() to listOf(Line(moves = listOf("e7e5"), depth = 11, expectedScore = 0.45)),
+            ),
+        )
+        val (assessment, _) = GameAnnotator(fake, depth = 18, withThreats = false).assess("g", board, Move.fromUci("e2e4"), 1)
+        assertEquals(11, assessment.depth)
+    }
+
+    /**
+     * `test_the_mate_distance_counts_the_move_being_judged` and
+     * `test_an_illegal_move_is_refused_rather_than_measured`.
+     */
+    @Test
+    fun theMateDistanceCountsTheMoveAndAnIllegalMoveIsRefused() {
+        val before = Board("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4")
+        assertEquals(1, mateIn(before, Move.fromUci("h5f7"), emptyList()))
+        val quiet = Move.fromUci("d2d3")
+        // After the move the opponent is to move and is mated in two of the mover's moves.
+        assertEquals(3, mateIn(before, quiet, listOf(Line(moves = emptyList(), depth = 9, expectedScore = 0.0, mate = -2))))
+        assertEquals(-2, mateIn(before, quiet, listOf(Line(moves = emptyList(), depth = 9, expectedScore = 1.0, mate = 2))))
+        assertEquals(null, mateIn(before, quiet, listOf(Line(moves = emptyList(), depth = 9, expectedScore = 0.5))))
+        val refused = runCatching {
+            GameAnnotator(FakeEngine(), depth = 6, withThreats = false).assess("g", Board(), Move.fromUci("e2e5"), 1)
+        }.exceptionOrNull()
+        assertTrue("$refused", refused is IllegalArgumentException && "not legal" in refused.message!!)
+    }
+
+    /**
+     * The worker: it answers off the caller's thread, a failing analysis does not end the
+     * session, and a queue it cannot keep up with drops the oldest work
+     * (`test_the_analyser_answers_off_the_caller_s_thread`, `test_a_failing_analysis_does_not_end_the_session`,
+     * `test_the_queue_drops_the_oldest_work_when_it_cannot_keep_up`).
+     */
+    @Test
+    fun theWorkerAnswersSurvivesAFailureAndDropsTheOldest() {
+        val answered = Analyser(GameAnnotator(FakeEngine(), depth = 6, withThreats = false))
+        answered.start()
+        answered.submitMove("g", Board(), Move.fromUci("e2e4"), 1)
+        val events = drain(answered)
+        answered.close()
+        assertEquals(listOf("MoveAssessment", "Analysis"), events.map { it::class.java.simpleName })
+        assertEquals(0, answered.failures)
+
+        val broken = object : FakeEngine() {
+            override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> =
+                throw RuntimeException("engine gone")
+        }
+        val failing = Analyser(GameAnnotator(broken, depth = 6, withThreats = false))
+        failing.start()
+        failing.submitMove("g", Board(), Move.fromUci("e2e4"), 1)
+        val deadline = System.currentTimeMillis() + 5000
+        while (failing.failures == 0 && System.currentTimeMillis() < deadline) Thread.sleep(10)
+        failing.close()
+        assertEquals(1, failing.failures)
+        assertTrue("${failing.lastError}", failing.lastError?.contains("engine gone") == true)
+
+        val stuck = Analyser(GameAnnotator(FakeEngine(), depth = 6, withThreats = false), maxPending = 2)  // never started
+        repeat(5) { stuck.submitPosition("g", Board(), 0) }
+        assertEquals(3, stuck.dropped)
+        assertEquals(2, stuck.pending)
+    }
+
+    /**
+     * `test_behind_a_fast_game_the_analyser_keeps_the_verdicts_and_drops_stale_analyses`: moves
+     * faster than the engine -- every ply still gets its verdict and an analysis, a thin one from
+     * the verdict's own line for the plies the game has left, and the whole measurement only for
+     * the position the player faces (2026-09-22: a queen ending at two seconds a move ran forty
+     * plies behind).
+     */
+    @Test
+    fun behindAFastGameTheVerdictsAreKeptAndStaleAnalysesThin() {
+        val fake = FakeEngine()
+        val analyser = Analyser(GameAnnotator(fake, depth = 6, withThreats = false))
+        val board = Board()
+        // Five plies queued before the worker starts: it is behind from the first one.
+        for ((i, san) in listOf("e4", "e5", "Nf3", "Nc6", "Bb5").withIndex()) {
+            val move = board.parseSan(san)!!
+            analyser.submitMove("g", board, move, i + 1)
+            board.push(move)
+        }
+        analyser.start()
+        val got = ArrayList<com.sidecoach.events.Event>()
+        val deadline = System.currentTimeMillis() + 5000
+        while (System.currentTimeMillis() < deadline && got.count { it is com.sidecoach.events.Analysis } < 5) {
+            got += analyser.poll()
+            Thread.sleep(20)
+        }
+        Thread.sleep(100)
+        got += analyser.poll()
+        analyser.close()
+        val assessments = got.filterIsInstance<com.sidecoach.events.MoveAssessment>()
+        val analyses = got.filterIsInstance<com.sidecoach.events.Analysis>()
+        assertEquals("a verdict for every ply", listOf(1, 2, 3, 4, 5), assessments.map { it.ply })
+        assertEquals(listOf(1, 2, 3, 4, 5), analyses.map { it.ply })
+        assertTrue("thin for stale plies", analyses.take(4).all { it.lines.size == 1 && it.threats.isEmpty() })
+        assertEquals(4, analyser.skipped)
+        assertEquals("one whole measurement: the position the player faces", 1, fake.multipvs.count { it == 6 })
+    }
+
+    private fun drain(analyser: Analyser): List<com.sidecoach.events.Event> {
+        val deadline = System.currentTimeMillis() + 10_000
+        val events = ArrayList<com.sidecoach.events.Event>()
+        while (System.currentTimeMillis() < deadline) {
+            events += analyser.poll()
+            if (events.isNotEmpty() && analyser.pending == 0) return events
+            Thread.sleep(10)
+        }
+        return events
     }
 
     /**

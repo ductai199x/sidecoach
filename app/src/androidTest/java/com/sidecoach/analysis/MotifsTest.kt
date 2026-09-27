@@ -92,6 +92,31 @@ class MotifsTest {
         assertTrue(failures.take(8).joinToString("\n"), failures.isEmpty())
     }
 
+    /**
+     * The desktop's own hand-built positions: every tagger call `tests/test_motifs.py` makes --
+     * the shapes each tag must and must not be given, the illegal moves that tag as nothing.
+     */
+    @Test
+    fun theDesktopsHandBuiltPositionsTagAsThePythonTagsThem() {
+        val data = fixtures().getJSONArray("hand")
+        val failures = ArrayList<String>()
+        for (i in 0 until data.length()) {
+            val case = data.getJSONObject(i)
+            val board = Board(case.getString("fen"))
+            val pv = case.getJSONArray("pv").let { a -> List(a.length()) { Move.fromUci(a.getString(it)) } }
+            val mateIn = if (case.isNull("mate_in")) null else case.getInt("mate_in")
+            val kind = case.getString("kind")
+            val mine = if (kind == "move") {
+                Motifs.tagsForMove(board, Move.fromUci(case.getString("move")), pv, mateIn)
+            } else {
+                Motifs.tagsForPosition(board, pv, mateIn)
+            }
+            compare("${case.getString("fen")} $kind ${case.optString("move")} $pv $mateIn", mine, case.getJSONArray("tags"), failures)
+        }
+        Log.i(TAG, "${data.length()} hand-built tagger calls checked")
+        assertTrue(failures.take(8).joinToString("\n"), failures.isEmpty())
+    }
+
     @Test
     fun thePhaseMatchesThePython() {
         val data = fixtures().getJSONArray("phases")
