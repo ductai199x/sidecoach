@@ -12,7 +12,8 @@ from the desktop's own code:
 - `correct` and `normalise` on a corpus of transcripts -- the recogniser's typical slips as well
   as clean ones -- against a few boards, every case of tests/test_voice_correct.py on its own
   board, and the characters where Python's `\\w` and `\\s` are not ICU's; every spoken form of
-  every legal move on those boards; and difflib's ratio on pairs of move forms.
+  every legal move on those boards; difflib's ratio on pairs of move forms; and the endpointer
+  on scripted probabilities with its thresholds changed, the coach speaking and not.
 
     uv run --no-sync python D:/sidecoach-android/tools/make_stt_fixtures.py   (desktop repo)
 """
@@ -217,6 +218,27 @@ def main() -> None:
         corrections.append({"fen": fen, "raw": raw, "text": fixed.text, "moves": fixed.moves})
     normalised = [{"raw": raw, "norm": normalise(raw)} for raw in TRANSCRIPTS + NORMALISED + UNICODE]
 
+    # The endpointer on scripted probabilities, with the desktop test's own thresholds and
+    # others, the coach speaking and not: its event and whether it is inside an utterance.
+    endpointer = []
+    rng = np.random.default_rng(11)
+    walk = [float(round(p, 3)) for p in rng.random(300)]
+    coach = [bool(c) for c in rng.random(300) < 0.3]
+    for kwargs, feeds in (
+        ({"end_ms": 96, "min_utterance_ms": 64}, [(p, False) for p in [0.9, 0.9] + [0.8] * 5 + [0.1] * 3]),
+        ({"end_ms": 64, "min_utterance_ms": 320}, [(p, False) for p in [0.9, 0.9, 0.1, 0.1]]),
+        ({}, [(0.6, True), (0.6, True), (0.9, True), (0.9, True)]),
+        ({}, [(0.85, True), (0.85, True), (0.5, False), (0.35, False), (0.34, False)] + [(0.1, False)] * 13),
+        ({}, list(zip(walk, coach))),
+        ({"start": 0.7, "end": 0.2, "start_frames": 3, "end_ms": 200, "start_while_speaking": 0.95,
+          "min_utterance_ms": 100, "frame_ms": 20}, list(zip(walk, coach))),
+    ):
+        ep = Endpointer(**kwargs)
+        events = []
+        for p, speaking in feeds:
+            events.append([ep.feed(p, coach_speaking=speaking), ep.speaking])
+        endpointer.append({"args": kwargs, "feeds": [[p, s] for p, s in feeds], "events": events})
+
     # Every spoken form of every legal move, and the move it is, board by board. As a map: the
     # order within a move's forms is a Python set's, which the string hash seed decides.
     all_forms = [
@@ -236,6 +258,7 @@ def main() -> None:
         "corrections": corrections,
         "normalised": normalised,
         "forms": all_forms,
+        "endpointer": endpointer,
         "ratios": ratios,
     }), encoding="utf-8")
     print(f"{len(clips)} clips, {len(corrections)} corrections, {len(ratios)} ratios -> {OUT} ({OUT.stat().st_size / 1e6:.1f} MB)")

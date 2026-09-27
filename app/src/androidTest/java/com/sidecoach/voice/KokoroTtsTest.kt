@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -28,7 +29,17 @@ class KokoroTtsTest {
         val dir = File(app.filesDir, "models/kokoro")
         if (!File(dir, KokoroTts.ONNX_FILE).exists() || !File(dir, KokoroTts.VOICES_FILE).exists()) return null
         return KokoroTts(app, dir).also {
-            it.load()
+            assertTrue(it.load())
+            // The graph is loaded once, whatever the voice does
+            // (`test_kokoro_loads_once_and_a_voice_change_reloads_nothing`).
+            val model = MODEL.get(it)
+            assertTrue(it.load() && it.load())
+            it.voice = "bm_george"
+            it.voice = "af_heart"
+            assertTrue(it.load())
+            assertSame("the graph must be loaded exactly once", model, MODEL.get(it))
+            assertTrue(it.healthcheck().second, it.healthcheck().second.contains("voice af_heart, cpu,"))
+            it.voice = "af_sarah"
             it.prime()
         }
     }
@@ -106,5 +117,8 @@ class KokoroTtsTest {
 
     companion object {
         private const val TAG = "sidecoach.voice"
+
+        /** The loaded graph, to see that it is the same one after more loads and voice changes. */
+        private val MODEL = KokoroTts::class.java.getDeclaredField("kokoro").apply { isAccessible = true }
     }
 }

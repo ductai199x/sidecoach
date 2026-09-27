@@ -158,6 +158,92 @@ class PanelListenTest {
         assertTrue(reply.getJSONObject("data").getString("full").startsWith("Press Start first"))
     }
 
+    private val app = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext
+
+    /** The microphone allowed, as the person allows it once (the phone's own). */
+    private fun allowMicrophone() {
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation
+            .grantRuntimePermission(app.packageName, android.Manifest.permission.RECORD_AUDIO)
+    }
+
+    /** A 16 kHz mono 16-bit WAV of the desktop's tests, as floats (`server.hear` reads it so). */
+    private fun clip(name: String): FloatArray {
+        val raw = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().context
+            .assets.open("voice/$name").use { it.readBytes() }
+        val wav = java.nio.ByteBuffer.wrap(raw).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        var at = 12
+        while (String(raw, at, 4, Charsets.US_ASCII) != "data") at += 8 + wav.getInt(at + 4)
+        val start = at + 8
+        return FloatArray(wav.getInt(at + 4) / 2) { wav.getShort(start + 2 * it) / 32768.0f }
+    }
+
+    /**
+     * The settings page's live test (`test_the_microphone_test_keeps_what_it_hears_and_asks_no_coach`):
+     * while it is on, an utterance is transcribed and corrected into the test's list, the coach is
+     * not asked, and the listening mode it interrupted comes back when it stops.
+     */
+    @Test
+    fun theMicrophoneTestKeepsWhatItHearsAndAsksNoCoach() {
+        allowMicrophone()
+        PanelListen.build(app)
+        PanelListen.setListen("off")
+        PanelListen.stt = object : Recogniser {
+            override val loaded = true
+            override val loadSeconds: Double? = 0.0
+            override fun healthcheck() = true to "fake"
+            override fun load() = true
+            override fun prime(): Double? = 0.0
+            override fun close() = Unit
+            override fun transcribe(audio: FloatArray) = "Night F3"
+        }
+        PanelEngine.set("fen" to com.sidecoach.chess.STARTING_FEN)
+        val status = PanelListen.hearStatus()
+        assertEquals(false, status.getBoolean("on"))
+        assertEquals(0, status.getJSONArray("heard").length())
+        val started = PanelListen.setHearTest(true)
+        assertTrue(started.toString(), started.getBoolean("ok") && started.getBoolean("on"))
+        assertEquals("vad", PanelListen.listener!!.mode)
+        // An utterance while the test is on: kept for the page, corrected, and not an ask.
+        PanelListen.hear(silence(1.0))
+        val heard = PanelListen.hearStatus()
+        val first = heard.getJSONArray("heard").getJSONObject(0)
+        assertEquals("corrected to the legal move", "Nf3", first.getString("heard"))
+        assertEquals("Night F3", first.getString("raw"))
+        assertTrue(first.getLong("stt_ms") >= 0 && heard.has("level") && heard.getBoolean("ok"))
+        assertTrue("nothing was asked of the coach", asked.isEmpty())
+        val stopped = PanelListen.setHearTest(false)
+        assertEquals(false, stopped.getBoolean("on"))
+        assertEquals("off", PanelListen.listener!!.mode)
+    }
+
+    /**
+     * `test_a_spoken_move_reaches_the_coach_as_san`, with the phone's recogniser: a real clip
+     * is heard, corrected to the legal move, put in the text box and asked of the coach after the
+     * quiet; the recogniser was loaded once and says where.
+     */
+    @Test
+    fun aSpokenMoveReachesTheCoachAsSan() {
+        val recogniser = com.sidecoach.voice.ParakeetStt(app, PanelListen.modelDir(app))
+        org.junit.Assume.assumeTrue("no Parakeet (tools/test.ps1 pushes it)", recogniser.load())
+        PanelListen.stt = recogniser
+        PanelEngine.set("fen" to com.sidecoach.chess.STARTING_FEN)
+        val cursor = PanelEngine.poll(Int.MAX_VALUE).getInt("cursor")
+        PanelListen.hear(clip("knight_f3.wav"))
+        val lines = PanelEngine.poll(cursor).getJSONArray("lines")
+        val heard = (0 until lines.length()).map { lines.getJSONObject(it) }
+            .filter { it.getString("chan") == "voice" && it.getString("text").startsWith("heard:") }
+        assertTrue("nothing heard", heard.isNotEmpty())
+        assertEquals("heard: Nf3", heard.last().getString("text"))
+        assertEquals("Nf3", heard.last().getJSONObject("data").getJSONArray("moves").getString(0))
+        assertTrue(heard.last().getJSONObject("data").getLong("stt_ms") < 2000)
+        // The corrected text is in the text box, and asked of the coach after the quiet.
+        assertEquals("Nf3", dictation().getString("text"))
+        assertEquals("Nf3" to true, asked.poll(3, TimeUnit.SECONDS))
+        assertTrue(recogniser.loaded)
+        assertEquals("parakeet-tdt_ctc-110m, cpu", recogniser.healthcheck().second)
+        recogniser.close()
+    }
+
     /** A voice gate that answers a script of probabilities, one per frame. */
     private class ScriptedGate(probs: List<Double>) : VoiceGate {
         private val probs = ArrayDeque(probs)

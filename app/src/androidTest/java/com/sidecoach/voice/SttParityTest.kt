@@ -79,6 +79,39 @@ class SttParityTest {
         assertTrue(failures.take(20).joinToString("\n\n") + "\n(${failures.size} failures)", failures.isEmpty())
     }
 
+    /**
+     * The endpointer on scripted probabilities, with its thresholds changed and the coach
+     * speaking and not (`tests/test_voice_hearing.py`'s cases among them: a start after two
+     * frames, an end after the silence, a blip dropped, 0.85 while the coach speaks).
+     */
+    @Test
+    fun theEndpointerKeepsTheDesktopsThresholds() {
+        val cases = fixtures.getJSONArray("endpointer")
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val a = case.getJSONObject("args")
+            val endpointer = Endpointer(
+                start = a.optDouble("start", 0.5),
+                end = a.optDouble("end", 0.35),
+                startFrames = a.optInt("start_frames", 2),
+                endMs = a.optInt("end_ms", 400),
+                startWhileSpeaking = a.optDouble("start_while_speaking", 0.85),
+                minUtteranceMs = a.optInt("min_utterance_ms", 250),
+                frameMs = a.optInt("frame_ms", 32),
+            )
+            val feeds = case.getJSONArray("feeds")
+            val events = case.getJSONArray("events")
+            for (k in 0 until feeds.length()) {
+                val feed = feeds.getJSONArray(k)
+                val want = events.getJSONArray(k)
+                val event = endpointer.feed(feed.getDouble(0), coachSpeaking = feed.getBoolean(1))
+                check("endpointer #$i $a frame $k event", event, if (want.isNull(0)) null else want.getString(0))
+                check("endpointer #$i $a frame $k speaking", endpointer.speaking, want.getBoolean(1))
+            }
+        }
+        assertTrue(failures.take(20).joinToString("\n\n"), failures.isEmpty())
+    }
+
     @Test
     fun theGateAndTheEndpointerHearWhatTheDesktopHears() {
         val silero = File(app.filesDir, "models/silero/${SileroGate.FILE}")
