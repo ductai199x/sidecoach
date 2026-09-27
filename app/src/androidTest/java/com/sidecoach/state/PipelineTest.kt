@@ -48,7 +48,8 @@ import org.opencv.imgproc.Imgproc
  * Between frames a scenario may do what the desktop's pipeline tests do to a pipeline (`call`:
  * a reset, Flip, the End game menu, a side forced, a clock as a reader left it), and a frame may
  * count as changed by hand (`forced`) where the desktop's test passes it; every event must
- * carry its tick's time and frame id.
+ * carry its tick's time and frame id. A frame may carry where the tracker's lock stood after it
+ * (`lock`), as the desktop's test of a moved board asserts it.
  */
 @RunWith(AndroidJUnit4::class)
 class PipelineTest {
@@ -156,6 +157,20 @@ class PipelineTest {
                             "$name frame $f ($file):\n  kotlin: ${mine.joinToString(" | ")}" +
                                 "\n  python: ${theirs.joinToString(" | ")}",
                         )
+                    }
+                    if (frame.has("lock")) {
+                        // Where the tracker's lock stands after this frame (a board moved: desktop
+                        // 17c45a6's `test_a_board_moved_any_fraction_of_a_cell_is_found_again`).
+                        val region = pipeline.board?.region
+                        val mine = region?.let { listOf(it.x, it.y, it.w, it.h) }
+                        val theirs = if (frame.isNull("lock")) {
+                            null
+                        } else {
+                            frame.getJSONArray("lock").let { a -> List(a.length()) { a.getInt(it) } }
+                        }
+                        if (mine != theirs && failures.size < 8) {
+                            failures.add("$name frame $f ($file): the lock is at $mine, python's at $theirs")
+                        }
                     }
                     if (frame.has("asked")) {
                         // "Re-read the screen" on this frame: `GameWatcher.analyse`, from the lock.

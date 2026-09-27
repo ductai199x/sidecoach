@@ -18,7 +18,11 @@ odd. This records, compactly, one table per part:
   covered by the game-over dialog, flush with the frame's corner at a half-pixel pitch, two
   boards, a larger checkerboard, an inverted and a low-contrast theme, nothing -- with what
   `detect_boards` returns for each, the fit at the board and a cell to either side, and the
-  tracker's lock after each of a run of updates.
+  tracker's lock after each of a run of updates. Then the moves of desktop 17c45a6's
+  `test_a_board_moved_any_fraction_of_a_cell_is_found_again` on a larger page -- two cells and
+  a fraction, two whole cells, 0.8 of a cell up, the diagonals -- with the cells readable at
+  the old lock and the new place (`readable_cells`), and the tracker following each (its
+  `probes` beside its `detections`).
 
     cd D:/chess-coaching-companion
     uv run --no-sync python <worktree>/tools/make_vision_fixtures.py
@@ -47,6 +51,8 @@ from sidecoach.vision.board_detect import (  # noqa: E402
     BoardCandidate,
     detect_boards,
     fit_score,
+    readable_cells,
+    square_colours,
     to_gray,
 )
 from sidecoach.vision.result_badges import (  # noqa: E402
@@ -233,11 +239,31 @@ def candidate_of(board: BoardCandidate | None) -> list | None:
     if board is None:
         return None
     r = board.region
-    return [r.x, r.y, r.w, r.h, r6(board.cell_px), r6(board.fit), r6(board.contrast), board.occupied]
+    return [
+        r.x, r.y, r.w, r.h, r6(board.cell_px), r6(board.fit), r6(board.contrast), board.occupied,
+        board.readable,
+    ]  # fmt: skip
 
 
 def page(x0: int, y0: int, cell: int, **kw) -> np.ndarray:  # noqa: ANN003
     return synthetic_board(width=W, height=H, x0=x0, y0=y0, cell=cell, seed=5, **kw)
+
+
+# The moves of desktop 17c45a6's scenario test, in cells, on a page with room for them: the
+# board of 40 px cells at (240, 160) on 800 by 640, after 1. e4 e5.
+MOVE_W, MOVE_H = 800, 640
+MOVE_X0, MOVE_Y0, MOVE_CELL = 240, 160, 40
+MOVES = [(0.0, 2.4), (-2.4, 0.0), (2.0, 0.0), (0.0, -0.8), (3.0, 3.0), (-1.4, -1.4)]
+
+
+def moved_page(dx: float, dy: float) -> np.ndarray:
+    board = chess.Board()
+    board.push_san("e4")
+    move = board.push_san("e5")
+    return synthetic_board(
+        width=MOVE_W, height=MOVE_H, x0=int(MOVE_X0 + dx * MOVE_CELL), y0=int(MOVE_Y0 + dy * MOVE_CELL),
+        cell=MOVE_CELL, board=board, highlight=move, coordinates=True, seed=5,
+    )  # fmt: skip
 
 
 def board_cases() -> dict:
@@ -268,6 +294,12 @@ def board_cases() -> dict:
     frames["larger-checkerboard"] = checker
     frames["inverted"] = page(90, 30, 45, board=start, light=(60, 60, 200), dark=(200, 200, 60))
     frames["low-contrast"] = page(90, 30, 45, board=start, light=(214, 214, 214), dark=(140, 140, 140))
+    frames["moved-home"] = moved_page(0.0, 0.0)
+    moved = {}
+    for dx, dy in MOVES:
+        name = f"moved-{dx:+.1f}-{dy:+.1f}"
+        frames[name] = moved_page(dx, dy)
+        moved[name] = (int(MOVE_X0 + dx * MOVE_CELL), int(MOVE_Y0 + dy * MOVE_CELL))
 
     files = {name: png(f"board-{name}.png", frame) for name, frame in frames.items()}
     detections = []
@@ -296,17 +328,48 @@ def board_cases() -> dict:
         ("flush with the corner at a half-pixel pitch", {}, ["corner-half-pixel"] * 12),
         ("nothing, then a board", {}, ["noise"] * 4 + ["board"] * 2),
     ):
-        tracker = BoardTracker(**settings)
-        states = []
-        for name in sequence:
-            board = tracker.update(frames[name])
-            states.append(
-                [tracker.locked, tracker.verified, tracker.detections, candidate_of(board)]
+        runs.append(track(what, settings, sequence, frames, files))
+
+    # The board moved as the desktop's scenario test moves it: the cells the lock read at home
+    # and at the new place, in the lock's colours, and the tracker following it -- to within
+    # three pixels of where it was drawn, as the test asserts, or this is no fixture of it.
+    home_gray = to_gray(frames["moved-home"])
+    home = Region(MOVE_X0, MOVE_Y0, 8 * MOVE_CELL, 8 * MOVE_CELL)
+    colours = square_colours(home_gray, home, float(MOVE_CELL))
+    assert colours is not None
+    readable = []
+    for name, (x0, y0) in moved.items():
+        gray = to_gray(frames[name])
+        for region in (home, Region(x0, y0, 8 * MOVE_CELL, 8 * MOVE_CELL)):
+            readable.append(
+                {
+                    "file": files[name],
+                    "region": [region.x, region.y, region.w, region.h],
+                    "cell": float(MOVE_CELL),
+                    "colours": [r6(v) for v in colours],
+                    "readable": readable_cells(gray, region, float(MOVE_CELL), colours),
+                }
             )
-        runs.append(
-            {"what": what, "settings": settings, "frames": [files[n] for n in sequence], "states": states}
+    for name, (x0, y0) in moved.items():
+        run = track(f"moved {name[6:]} cells: found again", {}, ["moved-home"] * 3 + [name] * 12, frames, files)
+        last = run["states"][-1][3]
+        if last is None or abs(last[0] - x0) > 3 or abs(last[1] - y0) > 3:
+            raise SystemExit(f"{name}: the desktop's tracker did not follow the board: {run['states']}")
+        runs.append(run)
+    return {"detections": detections, "runs": runs, "readable": readable}
+
+
+def track(what: str, settings: dict, sequence: list[str], frames: dict, files: dict) -> dict:
+    """The tracker's lock after each update of a run: locked, verified, its detections, the
+    board, its probes."""
+    tracker = BoardTracker(**settings)
+    states = []
+    for name in sequence:
+        board = tracker.update(frames[name])
+        states.append(
+            [tracker.locked, tracker.verified, tracker.detections, candidate_of(board), tracker.probes]
         )
-    return {"detections": detections, "runs": runs}
+    return {"what": what, "settings": settings, "frames": [files[n] for n in sequence], "states": states}
 
 
 def main() -> None:
@@ -323,7 +386,10 @@ def main() -> None:
     for d in out["boards"]["detections"]:
         print("detect", d["file"], d["boards"][:1], [f[5] for f in d["fits"]])
     for run in out["boards"]["runs"]:
-        print("track", run["what"], [s[3][:5] if s[3] else None for s in run["states"]][-1], run["states"][-1][2])
+        last = run["states"][-1]
+        print("track", run["what"], last[3][:5] if last[3] else None, "detections", last[2], "probes", last[4])
+    for r in out["boards"]["readable"]:
+        print("readable", r["file"], r["region"][:2], r["readable"])
     print(f"{size / 1e6:.1f} MB -> {OUT}")
 
 

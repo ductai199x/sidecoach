@@ -32,6 +32,9 @@ object BoardDetect {
 
     const val MIN_READABLE_CELLS = 24
 
+    /** Boards whose width is within this fraction of the largest are one size to the ranking. */
+    const val SAME_SIZE = 0.95
+
     /** The checker pattern's sign for each cell, light (+1) at the top-left. */
     val SIGNS = FloatArray(64) { if (((it / 8) + (it % 8)) % 2 == 0) 1f else -1f }
 
@@ -67,11 +70,26 @@ object BoardDetect {
         // Size first, then fit, so a window that is part board and part background, which
         // can pass on a palette read from itself, never outranks a clean board; the
         // occupied count only decides between boards of one size and fit.
-        return good.sortedWith(
+        val ranked = good.sortedWith(
             compareByDescending<BoardCandidate> { it.region.w }
                 .thenByDescending { it.fit }
                 .thenByDescending { it.occupied },
-        ).take(topK)
+        ).toMutableList()
+        if (ranked.isNotEmpty()) {
+            // Among boards of about the size of the largest, the one that reads more of its
+            // cells as squares comes first: a window 4 px wider, part board and part
+            // background (24 cells readable against the board's 64), outranked a board moved
+            // two cells away and the game was never read again (the parity audit's sweep,
+            // 2026-09-26). The first of the most readable, as Python's `max` keeps it.
+            val widest = ranked[0].region.w
+            val peers = ranked.filter { it.region.w >= SAME_SIZE * widest }
+            val best = peers.maxWith(
+                compareBy<BoardCandidate> { it.readable }.thenBy { it.fit }.thenBy { it.occupied },
+            )
+            ranked.remove(best)
+            ranked.add(0, best)
+        }
+        return ranked.take(topK)
     }
 
     /**
@@ -368,7 +386,10 @@ data class BoardCandidate(
     val score: Double,
     val contrast: Double,
     val fit: Double = 0.0,
+    /** Cells whose interior differs from their ring: pieces and marks. */
     val occupied: Int = 0,
+    /** Cells whose ring reads as one of the two square colours. */
+    val readable: Int = 0,
 )
 
 /** One grey plane of floats: the frame as the detector works on it. */

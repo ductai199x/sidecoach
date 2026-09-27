@@ -146,6 +146,18 @@ object BoardRefine {
         return false
     }
 
+    /**
+     * How many of the 64 cells at [region] read as one of [colours]' square colours.
+     *
+     * The fit counts only these, so a board that moved away by two cells and a fraction still
+     * fits where it was, on the cells it left behind; what gives it away is how few are left
+     * to read (the tracker's probe).
+     */
+    fun readableCells(gray: Plane, region: Region, cell: Double, colours: Colours): Int {
+        val medians = cellMedians(gray, region, cell) ?: return 0
+        return readableAgainst(medians, colours).count { it }
+    }
+
     /** (fit, contrast) of a grid of cell medians read against [colours]. */
     fun scoreCells(
         gray: Plane,
@@ -365,12 +377,14 @@ object BoardRefine {
         var fit = 0.0
         var contrast = 0.0
         var occupied = 0
+        var readable = 0
         if (medians != null) {
             val read = colours ?: palette(medians)
             val scored = scoreCells(gray, fitted.region, fitted.cellPx, medians, read)
             fit = scored.first
             contrast = scored.second
             occupied = occupiedCells(gray, fitted.region, fitted.cellPx, medians, read)
+            readable = readableAgainst(medians, read).count { it }
         }
         val board = candidate.copy(
             region = fitted.region,
@@ -378,6 +392,7 @@ object BoardRefine {
             fit = fit,
             contrast = contrast,
             occupied = occupied,
+            readable = readable,
         )
         return Refinement(board, strength, reference)
     }

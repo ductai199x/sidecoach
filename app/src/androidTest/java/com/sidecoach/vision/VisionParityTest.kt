@@ -18,7 +18,9 @@ import kotlin.math.abs
  * round a board; the result badges on the live games' crops and on rendered boards; the board
  * detector and the tracker on small pages -- a board in place, nudged, slid, resized, under the
  * dialog, flush with the frame's corner at a half-pixel pitch, beside another board, a larger
- * checkerboard, two themes that are hard to read, nothing at all.
+ * checkerboard, two themes that are hard to read, nothing at all -- and the board moved as
+ * desktop 17c45a6's scenario test moves it: the cells readable at the old lock and the new
+ * place, and the tracker's probe finding it again.
  */
 @RunWith(AndroidJUnit4::class)
 class VisionParityTest {
@@ -160,13 +162,27 @@ class VisionParityTest {
                 val board = tracker.update(gray(frames.getString(i)))
                 val state = states.getJSONArray(i)
                 val got = "locked=${tracker.locked} verified=${tracker.verified} detections=${tracker.detections} " +
-                    (board?.let { show(it) } ?: "none")
+                    "probes=${tracker.probes} " + (board?.let { show(it) } ?: "none")
                 val want = "locked=${state.getBoolean(0)} verified=${state.getBoolean(1)} detections=${state.getInt(2)} " +
-                    (if (state.isNull(3)) "none" else show(state.getJSONArray(3)))
+                    "probes=${state.getInt(4)} " + (if (state.isNull(3)) "none" else show(state.getJSONArray(3)))
                 if (got != want) {
                     failures.add("${run.getString("what")}, update ${i + 1} (${frames.getString(i)}): phone $got, desktop $want")
                     break
                 }
+            }
+        }
+        // The cells a lock reads in its own colours, at the old place and the new
+        // (`readable_cells`): what gives a moved board away.
+        val readable = boards.getJSONArray("readable")
+        for (k in 0 until readable.length()) {
+            val case = readable.getJSONObject(k)
+            val file = case.getString("file")
+            val region = region(case.getJSONArray("region"))
+            val c = case.getJSONArray("colours")
+            val colours = Colours(c.getDouble(0), c.getDouble(1), c.getDouble(2))
+            val got = BoardRefine.readableCells(gray(file), region, case.getDouble("cell"), colours)
+            if (got != case.getInt("readable")) {
+                failures.add("$file readable at $region: phone $got, desktop ${case.getInt("readable")}")
             }
         }
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
@@ -189,14 +205,19 @@ class VisionParityTest {
 
     private fun region(a: JSONArray) = Region(a.getInt(0), a.getInt(1), a.getInt(2), a.getInt(3))
 
-    /** A board as both sides print it: the region, the pitch and the fit to six places. */
+    /**
+     * A board as both sides print it: the region, the pitch and the fit to six places, the
+     * occupied and readable cells.
+     */
     private fun show(b: BoardCandidate): String =
         "(${b.region.x},${b.region.y},${b.region.w},${b.region.h}) cell ${"%.6f".format(b.cellPx)} " +
-            "fit ${"%.6f".format(b.fit)} contrast ${"%.6f".format(b.contrast)} occupied ${b.occupied}"
+            "fit ${"%.6f".format(b.fit)} contrast ${"%.6f".format(b.contrast)} occupied ${b.occupied} " +
+            "readable ${b.readable}"
 
     private fun show(a: JSONArray): String =
         "(${a.getInt(0)},${a.getInt(1)},${a.getInt(2)},${a.getInt(3)}) cell ${"%.6f".format(a.getDouble(4))} " +
-            "fit ${"%.6f".format(a.getDouble(5))} contrast ${"%.6f".format(a.getDouble(6))} occupied ${a.getInt(7)}"
+            "fit ${"%.6f".format(a.getDouble(5))} contrast ${"%.6f".format(a.getDouble(6))} occupied ${a.getInt(7)} " +
+            "readable ${a.getInt(8)}"
 
     private fun near(what: String, mine: DoubleArray, theirs: JSONArray, failures: MutableList<String>) {
         for (i in mine.indices) {

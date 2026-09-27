@@ -721,6 +721,52 @@ def flip_a_joined_position() -> list[dict]:
     ]
 
 
+# `tests/test_scenarios.py`'s `Session`: the board at (440, 200) on 1280 by 800, drawn as it
+# draws it, every frame read (`process` changed by default).
+SESSION_FRAME = dict(width=1280, height=800)
+SESSION_X0, SESSION_Y0 = 440, 200
+
+
+def moved_any_fraction(cell: int, dx: float, dy: float) -> list[dict]:
+    """`test_a_board_moved_any_fraction_of_a_cell_is_found_again` (desktop 17c45a6): 1. e4 e5,
+    the board moved by (dx, dy) cells, eight frames to settle, then 2. Nf3 Nc6 on it. Moves
+    that kept the old lock: two cells and a fraction (the cells it left behind still fit), 0.8
+    of a cell (the palette re-read inverted), two whole cells (a window part board and part
+    background ranked first), the diagonals."""
+    board = chess.Board()
+    x0, y0 = SESSION_X0, SESSION_Y0
+
+    def shown(repeat: int, highlight=None) -> dict:  # noqa: ANN001
+        image = synth.synthetic_board(
+            board=board, x0=x0, y0=y0, cell=cell, highlight=highlight, **SESSION_FRAME
+        )
+        return {"_image": image, "_repeat": repeat, "_where": (x0, y0, cell), "_changed": True}
+
+    states = [shown(2)]
+    for san in ("e4", "e5"):
+        states.append(shown(2, board.push_san(san)))
+    x0, y0 = int(SESSION_X0 + dx * cell), int(SESSION_Y0 + dy * cell)
+    # The lock after the settle, which the test holds to within three pixels of the board.
+    states.append(dict(shown(8), _lock=True))
+    for san in ("Nf3", "Nc6"):
+        states.append(shown(2, board.push_san(san)))
+    states.append(shown(3))
+    return states
+
+
+MOVED = {
+    "moved-50-0+2.4": (50, 0.0, 2.4),
+    "moved-50-2.4+0": (50, -2.4, 0.0),
+    "moved-50+2+0": (50, 2.0, 0.0),
+    "moved-50-0-0.8": (50, 0.0, -0.8),
+    "moved-48+3+3": (48, 3.0, 3.0),
+    # At 48 px the same diagonal re-locks too, but its Nc6 does not land on the highlighted
+    # square: a landing reference learned at one lock offset, read at another (the desktop's
+    # docs/known-issues.md).
+    "moved-64-1.4-1.4": (64, -1.4, -1.4),
+}
+
+
 SCENARIOS = {
     "mate-green": lambda: scholars_mate("green", "cburnett"),
     "resign-green": lambda: a_resignation("green", "cburnett"),
@@ -765,6 +811,7 @@ SCENARIOS = {
     "slow-jump": a_jump_on_a_slow_stream,
     "resync-turned": a_resync_the_other_way_up,
     "flip-joined": flip_a_joined_position,
+    **{name: (lambda args=args: moved_any_fraction(*args)) for name, args in MOVED.items()},
 }
 
 # Scenarios the phone replays once, not again as a still screen read from its last pixels
@@ -783,6 +830,7 @@ READ_ONCE = {
     "slow-jump",
     "resync-turned",
     "flip-joined",
+    *MOVED,
 }
 
 # What each of those scenarios must show on the desktop, as its test asserts: a fixture that
@@ -841,7 +889,26 @@ EXPECT = {
         == ["GameEnded * board reoriented"]
         and sum(line.startswith("GameStarted position") for line in lines) == 2
     ),
+    **{
+        name: (
+            lambda lines, data, args=args: _sans(lines) == ["e4", "e5", "Nf3", "Nc6"]
+            and _lock_near(data, *args)
+        )
+        for name, args in MOVED.items()
+    },
 }
+
+
+def _lock_near(data: dict, cell: int, dx: float, dy: float) -> bool:
+    """The lock after the settle within three pixels of where the board was moved to."""
+    locks = [f["lock"] for f in data["frames"] if "lock" in f]
+    x0, y0 = int(SESSION_X0 + dx * cell), int(SESSION_Y0 + dy * cell)
+    return (
+        len(locks) == 1
+        and locks[0] is not None
+        and abs(locks[0][0] - x0) <= 3
+        and abs(locks[0][1] - y0) <= 3
+    )
 
 
 def _sans(lines: list[str]) -> list[str]:
@@ -902,6 +969,7 @@ def run(name: str, states: list[dict]) -> dict:
         step = state.pop("_dt", 0.0)
         forced = state.pop("_changed", None)
         where = state.pop("_where", (X0, Y0, CELL))
+        lock = state.pop("_lock", False)
         if session:
             pipeline = GamePipeline(cache=cache)
             gate = ChangeGate()
@@ -944,6 +1012,14 @@ def run(name: str, states: list[dict]) -> dict:
                 frame["forced"] = True
             if session and i == 0:
                 frame["session"] = True
+            if lock and i == repeat - 1:
+                # Where the tracker's lock stands after the state's last frame.
+                held = pipeline.board
+                frame["lock"] = (
+                    None
+                    if held is None
+                    else [held.region.x, held.region.y, held.region.w, held.region.h]
+                )
             if asked and i == repeat - 1:
                 # The panel's "Re-read the screen" on this frame: a cold read the player
                 # asked for, from the tracker's lock (`panel._analyze`).
