@@ -342,12 +342,19 @@ def _comb_fit(
     best comb whose last tooth runs past the edge by the offset step and the drift of a
     pitch step, and each of the two is fitted finely within the frame. Past the edge, a
     comb a cell over, its last tooth hidden beyond the frame, can tie the flush board's
-    in the coarse pass; the fine pass inside the frame tells them apart.
+    in the coarse pass; the fine pass inside the frame tells them apart. At the near end
+    likewise the first tooth may sit on the frame's edge, half a pixel before the first
+    pixel, and the best coarse comb that starts there is fitted finely too: the coarse grid
+    held a flush board's comb only from the first pixel, half a pixel off its boundaries,
+    where a pitch a coarse step long moved the far teeth off them, and a comb a cell over,
+    every tooth on a boundary, won -- a lock a fifth of a cell off a board in the frame's
+    top-left corner re-fitted a whole cell off it.
     """
     n = len(profile)
     xs = np.arange(n, dtype=np.float64)
     reach = pitch * offset_cells
     step = max(0.25, pitch * 0.01)
+    first = -0.5 if blind[0] else 0.0
     last = n - 0.5 if blind[1] else n - 1.0
     ends = (last, last + 1.0 + 4.0 * step) if blind[1] else (last,)
 
@@ -373,11 +380,12 @@ def _comb_fit(
                     bests[k] = (float(offsets[i]), float(p), float(scored[i]))
         return bests
 
+    pitches = np.arange(pitch * (1 - search), pitch * (1 + search), step)
     coarse = best_over(
-        np.arange(pitch * (1 - search), pitch * (1 + search), step),
-        np.arange(max(0.0, start - reach), min(n - 1.0, start + reach), 1.0),
-        ends,
+        pitches, np.arange(max(0.0, start - reach), min(n - 1.0, start + reach), 1.0), ends
     )
+    if first < 0.0 and start - reach < 0.0:
+        coarse += best_over(pitches, np.array([first]), ends[-1:])
     span = max(1.0, 4.0 * step)
     found: list[tuple[float, float, float]] = []
     for k, (o, p, s) in enumerate(coarse):
@@ -385,7 +393,7 @@ def _comb_fit(
             continue
         found += best_over(
             np.arange(p * 0.99, p * 1.01, max(0.05, p * 0.002)),
-            np.arange(max(0.0, o - span), min(n - 1.0, o + span) + 0.01, 0.25),
+            np.arange(max(first, o - span), min(n - 1.0, o + span) + 0.01, 0.25),
             (last,),
         )
         if k == 0:
