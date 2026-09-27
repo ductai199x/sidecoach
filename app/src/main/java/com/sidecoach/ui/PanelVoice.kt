@@ -45,6 +45,28 @@ object PanelVoice {
     @Volatile var tts: KokoroTts? = null
         private set
 
+    /** What the coach's lines are spoken through: whether it is busy, a line, silence. */
+    interface Speaking {
+        val busy: Boolean
+        fun say(text: String)
+        fun stop()
+    }
+
+    /**
+     * A stand-in for the voice when set, as the desktop's tests set `engine._tts` to a fake:
+     * what the policy did is then seen without a model to speak it.
+     */
+    @Volatile internal var standIn: Speaking? = null
+
+    /** The voice the coach's lines go to: the stand-in, or the voice the warm-up built. */
+    private fun speaking(): Speaking? = standIn ?: tts?.let { voice ->
+        object : Speaking {
+            override val busy: Boolean get() = voice.busy
+            override fun say(text: String) = voice.say(text)
+            override fun stop() = voice.stop()
+        }
+    }
+
     @Volatile var muted = false
         private set
 
@@ -56,7 +78,7 @@ object PanelVoice {
     @Volatile var loopTs = 0.0
 
     /** What is being spoken now: its trigger and ply (`panel._voicing`). */
-    @Volatile private var voicing: Pair<String, Int?>? = null
+    @Volatile internal var voicing: Pair<String, Int?>? = null
 
     /** A word held back for pace (`panel._held_word`): trigger, text, ply, since. */
     private data class Held(val trigger: String, val text: String, val ply: Int?, val since: Double)
@@ -196,7 +218,7 @@ object PanelVoice {
     fun speak(trigger: String, text: String, ply: Int?): String {
         // A line the voice will not say is still captioned, whole.
         if (muted) return "muted".also { Captions.show(text) }
-        val speaker = tts ?: return "muted".also { Captions.show(text) }
+        val speaker = speaking() ?: return "muted".also { Captions.show(text) }
         val action = voiceAction(trigger, text, ply, plyNow(), speaker.busy, voicing, coachFast())
         if (action == "supersede") speaker.stop()
         if (action == "speak" || action == "supersede") {
@@ -225,7 +247,7 @@ object PanelVoice {
         var started = false
         return sink@{ sentence ->
             if (muted) return@sink false
-            val speaker = tts ?: return@sink false
+            val speaker = speaking() ?: return@sink false
             if (!started) {
                 val action = voiceAction(name, sentence, ply, plyNow(), speaker.busy, voicing, coachFast())
                 if (action == "supersede") speaker.stop()
@@ -263,7 +285,7 @@ object PanelVoice {
         // appeared, not from when the word arrived.
         val began = coach.policy.positionSince
         val thinking = if (began != null) ts - began else SystemClock.elapsedRealtime() / 1000.0 - held.since
-        val speaker = tts ?: return
+        val speaker = speaking() ?: return
         if (thinking < PACE_RESUME_S || speaker.busy) return
         heldWord = null
         voicing = held.trigger to held.ply
@@ -297,7 +319,7 @@ object PanelVoice {
     }
 
     /** The voice's thread: a line's audio is playing now. `_on_audio_starts`. */
-    private fun onAudioStarts(line: String) {
+    internal fun onAudioStarts(line: String) {
         val now = SystemClock.elapsedRealtime() / 1000.0
         synchronized(lock) {
             val moved = awaitingAudio.remove(line) ?: return
