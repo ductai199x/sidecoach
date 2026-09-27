@@ -13,7 +13,6 @@ from sidecoach.vision.pieces import (
     HOVER_TOLERANCE,
     CellReading,
     ThemeModel,
-    iou,
     looks_like_start_position,
     orientation_from_start,
     overlay_reaches,
@@ -95,7 +94,7 @@ def test_theme_model_classifies_start_and_later_positions() -> None:
     frame = synthetic_board()
     model = ThemeModel.from_start_position(frame, GEOM, Side.WHITE)
     assert model is not None
-    assert model.symbols == set("PNBRQKpnbrqk")
+    assert {e.symbol for e in model.exemplars} == set("PNBRQKpnbrqk")
     _check_all_cells(model, frame, chess.Board(), Side.WHITE)
 
     later = chess.Board()
@@ -172,7 +171,7 @@ def test_bootstrap_fuses_pawns_so_one_odd_pawn_does_not_spoil_them() -> None:
     model = ThemeModel.from_start_position(odd, GEOM, Side.WHITE)
     assert model is not None
     exemplar = next(e for e in model.exemplars if e.symbol == "P")
-    assert not exemplar.mask[:8, :8].any(), "the badge survived fusion"
+    assert not exemplar.tone[:8, :8].any(), "the badge survived fusion"
     clean = model.classify_frame(frame, GEOM)
     for square in (chess.A2, chess.E2, chess.H2):
         r, c = row_col(square, Side.WHITE)
@@ -186,39 +185,6 @@ def _with_strip(frame: np.ndarray, square: chess.Square, height: float) -> np.nd
     out = frame.copy()
     out[y0 : y0 + int(round((y1 - y0) * height)), x0:x1] = (255, 255, 255)
     return out
-
-
-@pytest.fixture
-def overlap(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The silhouette overlap as the matcher: the tests of its exemplar hygiene."""
-    from sidecoach.vision import pieces
-
-    monkeypatch.setattr(pieces, "MATCHER", "iou")
-
-
-@pytest.mark.usefixtures("overlap")
-@pytest.mark.parametrize("height", [0.18, 0.24])
-def test_bootstrap_does_not_fuse_a_spoiled_knight_with_its_pair(height: float) -> None:
-    """A tooltip strip over b1 at bootstrap: refuse the frame, or keep g1's knight alone."""
-    frame = synthetic_board()
-    spoiled = _with_strip(frame, chess.B1, height)
-    assert looks_like_start_position(spoiled, GEOM)
-    model = ThemeModel.from_start_position(spoiled, GEOM, Side.WHITE)
-    if model is None:
-        return  # refused; the next start frame gets a chance
-    exemplar = next(e for e in model.exemplars if e.symbol == "N")
-    assert not exemplar.mask[:4].any(), "the strip became part of the knight"
-    clean = model.classify_frame(frame, GEOM)
-    for square in (chess.B1, chess.G1):
-        r, c = row_col(square, Side.WHITE)
-        assert clean[r][c].symbol == "N" and clean[r][c].settled, clean[r][c]
-
-
-@pytest.mark.usefixtures("overlap")
-def test_bootstrap_refuses_a_frame_where_both_colours_pairs_are_spoiled() -> None:
-    frame = synthetic_board()
-    spoiled = _with_strip(_with_strip(frame, chess.B1, 0.24), chess.G8, 0.24)
-    assert ThemeModel.from_start_position(spoiled, GEOM, Side.WHITE) is None
 
 
 def test_start_shaped_from_readings_matches_the_frame_rule() -> None:
@@ -237,10 +203,7 @@ def test_start_shaped_from_readings_matches_the_frame_rule() -> None:
     assert not start_shaped(model.classify_frame(synthetic_board(board=one_move), GEOM))
 
 
-@pytest.mark.usefixtures("overlap")
 def test_degenerate_inputs() -> None:
-    assert iou(np.zeros((CELL, CELL), dtype=bool), np.zeros((CELL, CELL), dtype=bool)) == 0.0
-
     frame = synthetic_board()
     r, c = row_col(chess.E2, Side.WHITE)
     pawn = silhouette(GEOM.crop(frame, r, c, size=2 * CELL))

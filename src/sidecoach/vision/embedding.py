@@ -15,13 +15,13 @@ detail at 44 px) among them.
 
 Only what the cell IS comes from the embedding. Whether a piece has landed on its
 square is the phase correlation of the cell against that piece's own start-position
-crop (`pieces.LANDING`, "phase": the shift itself, sub-pixel, no silhouette -- a pooled
+crop (`pieces._phase_shift`: the shift itself, sub-pixel, no silhouette -- a pooled
 embedding barely moves when the piece does, 0.87 similar at a fifth of a cell off, and
 its shifted copies were no better at 43 px), and a tint, a hover outline, a cover or a
 drawing over the cell are the colour and geometry rules in `pieces`, which need no
 training and no theme. Runs through onnxruntime on the GPU when there is one, else the
-CPU, the changed cells of a frame in one batch; `CellEmbedder.load()` is None without
-the model file, and the overlap reads on.
+CPU, the changed cells of a frame in one batch. The model file ships in the package;
+`CellEmbedder.load()` is None without it (a broken install), and nothing is learned.
 """
 
 from __future__ import annotations

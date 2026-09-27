@@ -2470,7 +2470,7 @@ class PanelEngine:
             )
             return []
         current = self._forced_bottom or pipe.bottom or Side.WHITE
-        target = Side.BLACK if current == Side.WHITE else Side.WHITE
+        target = current.other
         self._forced_bottom = target
         pipe.forced_bottom = target
         self._set(bottom=target.value)

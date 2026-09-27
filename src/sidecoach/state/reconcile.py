@@ -60,8 +60,25 @@ Observation = dict[chess.Square, CellReading]
 
 
 def highlighted_squares(obs: Observation) -> frozenset[chess.Square]:
-    """The squares the site marks as its last move (or a selection): tinted, not red."""
-    return frozenset(sq for sq, r in obs.items() if r.highlighted and r.tint != "red")
+    """The squares the site marks as its last move (or a selection); a red tint is never a
+    highlight (`pieces._classify`)."""
+    return frozenset(sq for sq, r in obs.items() if r.highlighted)
+
+
+def by_square(readings: Readings, bottom: Side) -> Observation:
+    """A frame's readings keyed by the squares they show, `bottom` at the bottom."""
+    return {square_at(r, c, bottom): readings[r][c] for r in range(8) for c in range(8)}
+
+
+def loose_placement(obs: Observation) -> chess.Board:
+    """The pieces a read names, a held or a ringed one included (its kind, or its best
+    guess), an unreadable cell taken as empty: what the board shows, not a position."""
+    board = chess.Board(None)
+    for sq, reading in obs.items():
+        symbol = reading.symbol or reading.guess
+        if reading.kind == "piece" and symbol is not None:
+            board.set_piece_at(sq, chess.Piece.from_symbol(symbol))
+    return board
 
 
 def _came_from(board: chess.Board, start: chess.Square, to: chess.Square) -> bool:
@@ -402,10 +419,12 @@ class Reconciler:
                 self._previous[sq] = key
         return out
 
-    def disagreements(self, obs: Observation) -> set[chess.Square]:
-        return {
-            sq for sq, reading in obs.items() if not cell_agrees(reading, self.board.piece_at(sq))
-        }
+    def disagreements(
+        self, obs: Observation, board: chess.Board | None = None
+    ) -> set[chess.Square]:
+        """The squares whose reading disagrees with `board` (the latest position)."""
+        board = self.board if board is None else board
+        return {sq for sq, reading in obs.items() if not cell_agrees(reading, board.piece_at(sq))}
 
     # Lifecycle
 
@@ -431,6 +450,11 @@ class Reconciler:
             GameStarted(game_id=self.game_id, user_side=self.user_side, start_fen=self.board.fen()),
             PositionChanged(game_id=self.game_id, fen=self.board.fen(), ply=0),
         ]
+
+    def _restart(self) -> list[Event]:
+        """The game under way ended, unless it had, and a new one begun from the start."""
+        ended = [] if self._finished else [self.ended_event("*", "new game started")]
+        return ended + self.start()
 
     def reorient(self, bottom: Side) -> list[Event]:
         """The board was flipped or re-themed before the first move: the same game, seen anew.
@@ -581,9 +605,7 @@ class Reconciler:
         if reading.symbol is not None:
             return False
         for colour in chess.COLORS:
-            if reading.colour is not None and reading.colour != (
-                Side.WHITE if colour == chess.WHITE else Side.BLACK
-            ):
+            if reading.colour is not None and reading.colour != Side.of(colour):
                 continue
             king = self.board.king(colour)
             if king is not None and chess.square_distance(king, square) <= 1:
@@ -607,9 +629,7 @@ class Reconciler:
         reading = obs[square]
         if reading.kind != "piece" or reading.symbol is not None:
             return False
-        return reading.colour is None or reading.colour == (
-            Side.WHITE if piece.color == chess.WHITE else Side.BLACK
-        )
+        return reading.colour is None or reading.colour == Side.of(piece.color)
 
     @staticmethod
     def _checked_kings(after: chess.Board, decorated: set[chess.Square]) -> bool:
@@ -803,11 +823,7 @@ class Reconciler:
             # square of no known kind, or an unsettled piece) cannot be ignored as stale,
             # yet they can be neither read exactly nor trusted as settled; in this retry
             # they are wildcards alongside the ignored cells.
-            soft = frozenset(
-                sq
-                for sq, reading in obs.items()
-                if reading.kind == "piece" and (reading.symbol is None or not reading.settled)
-            )
+            soft = frozenset(sq for sq, reading in obs.items() if is_junk(reading))
             subsets = self._stale_subsets(stale, obs)
             # Soft wildcards only go with junk cells: ignoring a clean reading as well
             # would let the search invent a story through the cells nobody can read.
@@ -852,10 +868,7 @@ class Reconciler:
 
         # New game: the start position is back on the board.
         if self.in_progress and len(obs) >= 48 and matches(chess.Board(), obs, set(obs)):
-            if not self._finished:
-                events.append(self._ended("*", "new game started"))
-            events.extend(self.start())
-            return events
+            return events + self._restart()
 
         adopted = self._maybe_position_resync(obs, diff)
         if adopted:
@@ -1141,7 +1154,7 @@ class Reconciler:
         # Held as a view: the pieces and the squares the site highlights, which a move
         # starting changes first (`pipeline._view`).
         placement = (
-            self._placement(obs).board_fen()
+            loose_placement(obs).board_fen()
             + "|"
             + ",".join(chess.square_name(sq) for sq in sorted(highlighted_squares(obs)))
         )
@@ -1163,8 +1176,8 @@ class Reconciler:
             return []
 
         adopted = self._adopt_placement(
-            self._placement(obs),
-            prefer=self._bottom_colour(),
+            loose_placement(obs),
+            prefer=self.bottom.color,
             highlighted=highlighted_squares(obs),
         )
         if adopted is None:
@@ -1198,17 +1211,19 @@ class Reconciler:
         reason = f"position adopted after {len(diff)} unexplained cells"
         if self._turn_unknown:
             reason += "; side to move pending"
-        events += [
-            Resync(game_id=self.game_id, fen=board.fen(), reason=reason),
-            PositionChanged(game_id=self.game_id, fen=board.fen(), ply=0),
-        ]
-        if not self._turn_unknown and board.is_game_over():
-            self._finished = True
-            events.append(self._ended(board.result(), "game over on board"))
-        return events
+        return events + self._resynced(reason)
 
-    def _bottom_colour(self) -> chess.Color:
-        return chess.WHITE if self.bottom is Side.WHITE else chess.BLACK
+    def _resynced(self, reason: str) -> list[Event]:
+        """A new position for the game: Resync and PositionChanged, and the end when the
+        position is over and the side to move known."""
+        events: list[Event] = [
+            Resync(game_id=self.game_id, fen=self.board.fen(), reason=reason),
+            PositionChanged(game_id=self.game_id, fen=self.board.fen(), ply=0),
+        ]
+        if not self._turn_unknown and self.board.is_game_over():
+            self._finished = True
+            events.append(self.ended_event(self.board.result(), "game over on board"))
+        return events
 
     @staticmethod
     def _adopt_placement(
@@ -1273,19 +1288,7 @@ class Reconciler:
         assert not self.board.move_stack
         self.board.turn = colour
         self._base_fen = self.board.fen()
-        name = "white" if colour == chess.WHITE else "black"
-        events: list[Event] = [
-            Resync(
-                game_id=self.game_id,
-                fen=self.board.fen(),
-                reason=f"side to move settled by the clock: {name}",
-            ),
-            PositionChanged(game_id=self.game_id, fen=self.board.fen(), ply=0),
-        ]
-        if self.board.is_game_over():
-            self._finished = True
-            events.append(self._ended(self.board.result(), "game over on board"))
-        return events
+        return self._resynced(f"side to move settled by the clock: {Side.of(colour).value}")
 
     def start_from(
         self,
@@ -1299,7 +1302,7 @@ class Reconciler:
         is when the position was read, so the first move's think time counts from it (it
         counted from zero: a first move that "took 412630 seconds")."""
         adopted = self._adopt_placement(
-            placement, prefer=self._bottom_colour(), highlighted=highlighted
+            placement, prefer=self.bottom.color, highlighted=highlighted
         )
         if adopted is None:
             return []
@@ -1322,14 +1325,6 @@ class Reconciler:
                 kind=self.kind,
             )
         ]
-
-    def _placement(self, obs: Observation) -> chess.Board:
-        board = chess.Board(None)
-        for sq, reading in obs.items():
-            symbol = reading.symbol or reading.guess
-            if reading.kind == "piece" and symbol is not None:
-                board.set_piece_at(sq, chess.Piece.from_symbol(symbol))
-        return board
 
     def _explain_turn_unknown(
         self,
@@ -1422,7 +1417,7 @@ class Reconciler:
 
         if self.viewing is not None:
             earlier = self._board_at(self.viewing)
-            diff_earlier = {sq for sq, r in obs.items() if not cell_agrees(r, earlier.piece_at(sq))}
+            diff_earlier = self.disagreements(obs, earlier)
             branches = single_explanations(earlier, obs, diff_earlier)
             if len(branches) != 1:
                 # The user played on from the viewed position and the opponent replied
@@ -1481,10 +1476,6 @@ class Reconciler:
             key = ("moves-cautious" if cautious else "moves", paths[0])
             return self._settle(key, full_obs, self._commit_moves(paths[0]))
         return None
-
-    @property
-    def user_colour(self) -> chess.Color:
-        return chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
 
     def _flight(self, moves: Explanation) -> bool:
         """Whether `moves`, the pending story or a story built on it, catch a piece in flight:
@@ -1547,7 +1538,7 @@ class Reconciler:
         if story is None or self._pending is None:
             return None
         moves, base = story
-        diff_base = {sq for sq, r in obs.items() if not cell_agrees(r, base.piece_at(sq))}
+        diff_base = self.disagreements(obs, base)
         if not diff_base:
             # The frame shows the position the story leads to: one more frame of evidence.
             if not self._highlight_ok(obs, moves):
@@ -1601,7 +1592,7 @@ class Reconciler:
             moves, base = story
         elif self._pending is not None and self._pending[0][0] in STORY_KEYS:
             return None  # a pending story that is no longer legal explains nothing
-        user_colour = self.user_colour
+        user_colour = self.user_side.color
         bot_diff: set[chess.Square] = set()
         for sq, reading in obs.items():
             if cell_agrees(reading, base.piece_at(sq)):
@@ -1653,7 +1644,7 @@ class Reconciler:
         """
         if self.viewing is not None or self._turn_unknown or self._hover_seen:
             return None
-        user_colour = self.user_colour
+        user_colour = self.user_side.color
         shown: list[chess.Square] = []
         gone: list[chess.Square] = []
         for sq in diff:
@@ -1896,10 +1887,7 @@ class Reconciler:
 
     def _commit_new_game(self, moves: Explanation) -> Callable[[], list[Event]]:
         def commit() -> list[Event]:
-            events: list[Event] = []
-            if not self._finished:
-                events.append(self._ended("*", "new game started"))
-            events.extend(self.start())
+            events = self._restart()
             for move in moves:
                 events.extend(self._commit(move))
             return events
@@ -1980,7 +1968,7 @@ class Reconciler:
             ]
         fen_before = self.board.fen()
         san = self.board.san(move)
-        by_user = (self.board.turn == chess.WHITE) == (self.user_side == Side.WHITE)
+        by_user = self.board.turn == self.user_side.color
         # Time since the previous commit, as seen on screen: a chain committed at once
         # gives it all to its first move and leaves the others open.
         think_ms = None
@@ -2005,7 +1993,7 @@ class Reconciler:
         if self.board.is_game_over():
             self._finished = True
             self._result = self.board.result()
-            events.append(self._ended(self._result, "game over on board"))
+            events.append(self.ended_event(self._result, "game over on board"))
         return events
 
     def end(self, result: str, reason: str) -> list[Event]:
@@ -2017,9 +2005,9 @@ class Reconciler:
         self._finished = True
         self._pending = None
         self._result = result
-        return [self._ended(result, reason)]
+        return [self.ended_event(result, reason)]
 
-    def _ended(self, result: str, reason: str) -> GameEnded:
+    def ended_event(self, result: str, reason: str) -> GameEnded:
         return GameEnded(
             game_id=self.game_id,
             result=result,

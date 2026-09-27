@@ -7,7 +7,7 @@ orientation is decided per game.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import MISSING, dataclass, field, fields, replace
 from typing import Literal
 
 import chess
@@ -17,7 +17,6 @@ from sidecoach.events import (
     BoardUnread,
     ClockObservation,
     Event,
-    GameEnded,
     GameStarted,
     PositionChanged,
     Region,
@@ -26,7 +25,13 @@ from sidecoach.events import (
     ScreenStateChanged,
     Side,
 )
-from sidecoach.state.reconcile import Readings, Reconciler
+from sidecoach.state.reconcile import (
+    Readings,
+    Reconciler,
+    by_square,
+    highlighted_squares,
+    loose_placement,
+)
 from sidecoach.vision.board_detect import BoardCandidate
 from sidecoach.vision.clock import ClockReader, ClockReading
 from sidecoach.vision.coordinates import learn_rank_labels, read_bottom_side
@@ -38,7 +43,7 @@ from sidecoach.vision.pieces import (
     orientation_from_start,
     start_shaped,
 )
-from sidecoach.vision.result_badges import Badge, badge_on
+from sidecoach.vision.result_badges import Badge, badge_on, result_of
 from sidecoach.vision.squares import BoardGeometry, row_col, square_at
 from sidecoach.vision.theme_cache import ThemeCache, sample_palette
 from sidecoach.vision.tracker import BoardTracker
@@ -87,20 +92,6 @@ def _fit(readings: Readings) -> float:
     return sum(margins) / len(margins) if margins else 0.0
 
 
-def _loose_placement(readings: Readings, bottom: Side) -> chess.Board:
-    """The pieces a read names, a held or a ringed one included (its kind, or its best
-    guess) and an unreadable cell taken as empty: what the board shows, for telling a set
-    that reads it from one that does not, not a placement to adopt."""
-    board = chess.Board(None)
-    for row in range(8):
-        for col in range(8):
-            reading = readings[row][col]
-            symbol = reading.symbol or reading.guess
-            if reading.kind == "piece" and symbol is not None:
-                board.set_piece_at(square_at(row, col, bottom), chess.Piece.from_symbol(symbol))
-    return board
-
-
 def _plausible_ms(ms: int | None) -> int | None:
     return ms if ms is not None and 0 <= ms <= CLOCK_MAX_MS else None
 
@@ -127,7 +118,7 @@ def clock_observation(reading: ClockReading | None, bottom: Side) -> ClockObserv
     if reading.running == "bottom":
         running = bottom
     elif reading.running == "top":
-        running = Side.BLACK if bottom is Side.WHITE else Side.WHITE
+        running = bottom.other
     return ClockObservation(white_ms=white_ms, black_ms=black_ms, running=running)
 
 
@@ -135,16 +126,6 @@ def clock_observation(reading: ClockReading | None, bottom: Side) -> ClockObserv
 _ColdRead = tuple[ThemeModel, Side, Readings, chess.Board]
 # What a read shows: the placement and the squares the site highlights.
 _View = tuple[str, frozenset[chess.Square]]
-
-
-def _highlighted(readings: Readings, bottom: Side) -> frozenset[chess.Square]:
-    """The squares the site marks as its last move (or a selection), not a red mark."""
-    return frozenset(
-        square_at(row, col, bottom)
-        for row in range(8)
-        for col in range(8)
-        if readings[row][col].highlighted and readings[row][col].tint != "red"
-    )
 
 
 def _view(read: _ColdRead) -> _View:
@@ -156,7 +137,14 @@ def _view(read: _ColdRead) -> _View:
     could not be explained (Tai's desktop, 2026-09-24: 1...Qxh7 2.Qb1 invented, dump
     20260924-165745)."""
     _model, bottom, readings, placement = read
-    return placement.board_fen(), _highlighted(readings, bottom)
+    return placement.board_fen(), highlighted_squares(by_square(readings, bottom))
+
+
+# What `GamePipeline.reset` keeps: the settings, the tracker and its lock, the side the
+# person told, the clock reader, the cache, and the count of recognisers built.
+_RESET_KEEPS = frozenset(
+    {"start_frames_needed", "tracker", "forced_bottom", "board", "clock", "cache", "bootstraps"}
+)
 
 
 @dataclass
@@ -405,12 +393,7 @@ class GamePipeline:
             (result, wk, bk)
             for wk, wb in whites
             for bk, bb in blacks
-            for result, want in (
-                ("1-0", (Badge.WIN, Badge.LOSS)),
-                ("0-1", (Badge.LOSS, Badge.WIN)),
-                ("1/2-1/2", (Badge.DRAW, Badge.DRAW)),
-            )
-            if (wb, bb) == want and wk != bk
+            if wk != bk and (result := result_of(wb, bb)) is not None
         ]
         if len(pairs) != 1:
             return None
@@ -442,9 +425,8 @@ class GamePipeline:
         the pair must agree with itself for BADGE_FRAMES frames. A mating story still
         pending that the badges confirm is committed first, so the record has the move;
         a frame the record has not caught up with is given a few frames to be told. The
-        reason is what the pipeline knows: a mate or a stalemate on the board, a
-        repetition or the material, a clock at zero; otherwise a resignation, or an
-        agreed draw.
+        reason is what the pipeline knows: a mate on the board, a clock at zero;
+        otherwise a resignation.
         """
         rec = self.reconciler
         if rec is None or not rec.started or rec.finished or self._badge_frame is None:
@@ -470,16 +452,6 @@ class GamePipeline:
         return rec.end(result, self._end_reason(rec.board, result))
 
     def _end_reason(self, board: chess.Board, result: str) -> str:
-        if result == "1/2-1/2":
-            if board.is_stalemate():
-                return "stalemate"
-            if board.is_insufficient_material():
-                return "insufficient material"
-            if board.can_claim_threefold_repetition():
-                return "repetition"
-            if board.can_claim_fifty_moves():
-                return "fifty-move rule"
-            return "draw agreed"
         if board.is_checkmate():
             return "checkmate"
         if self._last_clock is not None:
@@ -498,29 +470,12 @@ class GamePipeline:
         return self._stamp(self.reconciler.end(result, reason), ts, frame_id)
 
     def reset(self) -> None:
-        """Forget the game and the recogniser; the next start position bootstraps again."""
-        self.model = None
-        self.reconciler = None
-        self.bottom = None
-        self._readings = None
-        self._readings_key = None
-        self._unread_change = False
-        self._start_seen = 0
-        self._start_on_screen = False
-        self._screen_state = ScreenState.UNKNOWN
-        self._last_clock = None
-        self._last_clock_ts = None
-        self._cold_tried = None
-        self._cold_candidate = None
-        self._cold_last = None
-        self._cold_since = None
-        self._cold_noticed = False
-        self._start_checked = None
-        self._flip_seen = None
-        self._dialog_since = None
-        self._covered = False
-        self._badges = None
-        self._badge_frame = None
+        """Forget the game and the recogniser; the next start position bootstraps again.
+        Every field returns to its default but what `_RESET_KEEPS` names."""
+        for f in fields(self):
+            if f.name not in _RESET_KEEPS:
+                default = f.default_factory() if f.default_factory is not MISSING else f.default
+                setattr(self, f.name, default)
         if self.clock is not None:
             self.clock.reset()
 
@@ -657,15 +612,7 @@ class GamePipeline:
         previous = self.reconciler
         if previous is None or not previous.in_progress or previous.finished:
             return []
-        return [
-            GameEnded(
-                game_id=previous.game_id,
-                result="*",
-                reason=reason,
-                pgn=previous.pgn(),
-                final_fen=previous.board.fen(),
-            )
-        ]
+        return [previous.ended_event("*", reason)]
 
     def _turn_from_clock(self, ts: float) -> list[Event]:
         """A side to move left open by a resync or a cold start, settled by the clock
@@ -678,7 +625,7 @@ class GamePipeline:
             return []
         if ts - self._last_clock_ts > CLOCK_TURN_FRESH_S:
             return []
-        return rec.turn_from_clock(chess.WHITE if running is Side.WHITE else chess.BLACK)
+        return rec.turn_from_clock(running.color)
 
     def _derive_screen_state(self, board_present: bool) -> ScreenState:
         """The screen state from what the pipeline already knows: whether a board is
@@ -916,7 +863,8 @@ class GamePipeline:
             if told is None:
                 told = read_bottom_side(frame, geometry, model.rank_labels)
             for side in [told] if told is not None else [Side.WHITE, Side.BLACK]:
-                if Reconciler._adopt_placement(_loose_placement(readings, side)) is not None:
+                shown = loose_placement(by_square(readings, side))
+                if Reconciler._adopt_placement(shown) is not None:
                     return None if told is not None else "orientation"
         return "unlearned"
 
@@ -948,7 +896,7 @@ class GamePipeline:
         reconciler = Reconciler(bottom=bottom, user_side=bottom)
         # The site's last-move highlight, for what a cold read cannot know: a pawn that has
         # just advanced two squares, and whose move it is (`reconcile.last_move_seen`).
-        highlighted = _highlighted(readings, bottom)
+        highlighted = highlighted_squares(by_square(readings, bottom))
         events = reconciler.start_from(placement, ts, highlighted)
         if not events:
             return []  # the placement is not a legal position; adopt nothing
@@ -1015,16 +963,6 @@ class GamePipeline:
             # position was up (paired as black after watching the pre-game board). The
             # same game goes on, seen from the other side.
             return previous.reorient(self.bottom)
-        events: list[Event] = []
-        if previous is not None and previous.in_progress and not previous.finished:
-            events.append(
-                GameEnded(
-                    game_id=previous.game_id,
-                    result="*",
-                    reason="new game started",
-                    pgn=previous.pgn(),
-                    final_fen=previous.board.fen(),
-                )
-            )
+        events = self._end_in_progress("new game started")
         self.reconciler = Reconciler(bottom=self.bottom, user_side=self.bottom)
         return events

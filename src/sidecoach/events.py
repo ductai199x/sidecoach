@@ -44,6 +44,20 @@ class Side(StrEnum):
     WHITE = "white"
     BLACK = "black"
 
+    @property
+    def color(self) -> bool:
+        """The side as python-chess's colour (`chess.WHITE` is True)."""
+        return self is Side.WHITE
+
+    @property
+    def other(self) -> Side:
+        return Side.BLACK if self is Side.WHITE else Side.WHITE
+
+    @staticmethod
+    def of(color: bool) -> Side:
+        """The side of a python-chess colour."""
+        return Side.WHITE if color else Side.BLACK
+
 
 class BoardLocated(Event):
     monitor: int

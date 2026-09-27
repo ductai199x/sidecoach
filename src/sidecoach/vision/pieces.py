@@ -1,110 +1,56 @@
 """Per-theme piece recognition bootstrapped from the start position.
 
 Every game starts from a known position, which hands us labelled examples of all twelve
-piece kinds on whatever theme is on screen. Recognition then works on silhouettes:
+piece kinds and both square colours on whatever theme is on screen. A cell is read in two
+parts.
 
-1. Each cell's own background colour is the median of a ring just inside its border, so
-   highlights need no special handling and the thin hover outline chess.com draws around
-   the square under the cursor is skipped. A piece rarely reaches that ring.
-2. Foreground is every pixel far from that background, with enclosed pockets filled (a white
-   piece on a light square differs from the square mostly by its outline) and a small
-   opening applied so labels and anti-aliasing do not count.
-3. Each exemplar keeps its silhouette and the brightness profile of its core. A cell is
-   matched against every exemplar of both colours on silhouette overlap (IoU, ignoring the
-   top-right corner where chess.com draws move-quality badges in bot games, after moving
-   the cell's mask onto the exemplar's centroid so a lock a pixel or two off still matches
-   by shape) minus a penalty for brightness that differs from that exemplar's. Colour
-   therefore comes from the nearest reference rendering, not from a global threshold: some
-   piece sets draw a white queen whose interior is half black detail lines, which a
-   threshold gets wrong. Whether the piece has landed is judged separately, by how far its
-   centroid sits from the exemplar's.
-4. When no exemplar overlaps well, the cell is still reported as occupied, with the colour
-   of the exemplar whose brightness is closest, which is enough for the reconciler to
-   explain a move.
-
-What sits on top of the board is told apart by geometry, never by colour:
+What is on the square, from its silhouette (`silhouette`): the square's colour is the
+median of a ring just inside the cell's border; foreground is every pixel far from it,
+enclosed pockets filled, a small opening applied so labels and anti-aliasing do not count.
+How much of the cell that covers tells an empty square (EMPTY_MAX_FRACTION) from a mark
+(below PIECE_MIN_FRACTION) from a piece. What sits over the square is told apart by
+geometry, never by colour:
 
 - A tint (a last-move or selection highlight, the red of a check, a premove queue or a
   right-click mark, in whatever hue a site or theme uses) shifts the cell's ring and the
-  deeper corner blocks of the cell in the same direction, leaving no corner pixel at the
-  square's own colour. The cell stays readable, with `highlighted` set and `tint` naming
-  the hue.
-- A foreign cell has its ring shifted but corners that are clean, in part at least, or
+  deeper corner blocks the same way, leaving no corner pixel at the square's own colour.
+  The cell stays readable, with `highlighted` set and `tint` naming the hue.
+- A foreign cell has its ring shifted but corners that are clean, at least in part, or
   shifted another way: a hover outline thick enough to fill the ring, a capture ring, the
   edge of something drawn over the square. It reads as unknown with `hover` set, so
   nothing commits under it.
 - A cover is an opaque or translucent overlay confirmed by the neighbours: two adjacent
   cells that share one background away from their square colours, or a block of six or
-  more cells that all fit one translucent tint (a dialog fading in). A dialog is a
-  rectangle whose body is not one colour -- a button, a row of buttons, text -- so while
-  it fades in the tint test takes its top and leaves its body as separate shifted cells;
-  cells off their colour that connect to a covered block and fill a rectangle with it
-  are that body (the second live game's mate, read once under the half-faded dialog with
-  the from-square in the body, was the story the cover then confirmed). The cells a cover
-  reaches into read as covered too: unknown, never a hover, and the reconciler may keep
-  their last stable reading for a while. Next to a dialog-sized cover (a block, never a
-  strip), cells that read as junk are relabelled as covered, since nothing is dragged
-  under a dialog.
+  more cells that all fit one translucent tint (a dialog fading in), with the dialog's
+  body -- cells off their colour that fill a rectangle with the block -- and the cells its
+  edges reach into. They read as covered: unknown, never a hover, and the reconciler may
+  keep their last stable reading for a while. Next to a dialog-sized cover, cells that read
+  as junk are covered too, since nothing is dragged under a dialog.
 - A tint over half the board or more is no highlight but a theme this recogniser was not
   built on; those cells read as unknown until the pipeline rebuilds it from a start
   position.
-- A drawing -- an arrow, the edge of a mark -- is saturated colour that is neither the
-  square's own colour nor a colour of the piece set (the fill and the outline of either
-  side, learned from the start position) nor a blend of those where a piece's edge is
-  smoothed onto the square. A cell with more than a sliver of such pixels reads as
-  unknown with `drawn` set until the drawing is gone, since an arrowhead over a piece can
-  look like a different piece, and a move must not commit through it. It is not a hover:
-  nothing is in flight, and the rest of the board reads on. An arrow a player leaves on
-  the board for several moves once held every one of them back.
+- A drawing -- an arrow, the edge of a mark -- is saturated colour off every line between
+  the square's colour, black, white and the set's own colours (its palette, learned at the
+  start). A cell with more than a sliver of it reads as unknown with `drawn` set until the
+  drawing is gone: an arrowhead over a piece can look like another piece.
 
-Two tolerances bound what this can read, and the failures the stress sweep leaves
-(tests/test_stress.py) are all one or the other:
+What the piece is, from a frozen pretrained net (`embedding`): the start position's 64
+cells embedded once, a cell named by the nearest of them -- no threshold on the foreground,
+so a shaded set on a board of its own tone and thin detail at small cells read like any
+other. Every cell is brought to one resolution first (`canonical`), so a board resized
+after its set was learned reads the same. The side is voted by three signals
+(`_vote_side`): the embedding, the fill's brightness against each side's pieces, and the
+fill's own colour under the kind's exemplar mask. Whether the piece has landed is the
+phase correlation of the cell against that piece's start-position crop (`_phase_shift`): a
+piece dragged or in flight is off its centre, and no move commits on a cell that has not
+settled.
 
-- Foreground. A pixel is piece when it lies more than BG_TOLERANCE (25 levels) from the
-  square's colour; the cutoff exists because anti-aliasing and a wood grain put pixels a
-  few levels off the square that are not piece. A shaded set on a board of its own tone
-  (a dark grey knight on a dark grey square) has its lit side 35 off and its shaded side
-  12 off: the shaded side is not in the silhouette, the silhouette is half a knight, and
-  which half depends on the square it stands on, so the knight has two shapes and the
-  one learned on a light square does not match the one seen on a dark one. Lowering the
-  cutoff for every cell was tried twice (18, and the square's own spread): the
-  anti-aliased edge of a coordinate label then counts as piece, touches the rook beside
-  it, and the rook's silhouette grows a lump. What is in: once the set's fills are known
-  a piece whose fill has little contrast against its square is read again at half that
-  contrast, never below BG_TOLERANCE_MIN (8), which recovers a greyish white on a pale
-  board but not a shaded half nearer than that.
-- Landing. A piece has settled when its silhouette's centroid is within SETTLED_TOLERANCE
-  (0.08 of a cell, never under SETTLED_FLOOR_PX = 3 source pixels) of where its exemplar's
-  centroid sat at the start; a dragged or animating piece is further off than that, and
-  no move commits on a cell that has not settled. When the foreground cutoff loses part
-  of a piece, the centroid of what remains is 4 to 7 pixels off at 44-pixel cells, over
-  the limit, and the piece reads as forever in flight: the reconciler carries a stale
-  cell, but a cold start from the theme cache refuses a board with a piece in flight.
-  Loosening the limit would let a piece a third of the way to its square look settled
-  for a frame, which is the phantom move the limit is there to refuse.
-
-Both knobs cost more elsewhere than they buy here (Tai, 2026-09-19: document and leave
-it), so the shaded-set-on-its-own-tone board and a few 44-pixel landings are the known
-limit, about one random game in seventy over every set, theme and size the sweep draws.
-
-This is theme-specific by construction and needs no training. The learned classifier planned
-in DESIGN.md section 5.2 generalises across themes later and can be trained on the crops this
-module labels. A cookie-cutter matcher -- each exemplar laid over the cell, its pixels or its
-foreground compared under and around it -- was built beside the overlap and run against it
-(`cookie`, 2026-09-19): it lost on the sweep and the recordings, for reasons recorded there,
-and stays behind `MATCHER`. The embedding matcher (`embedding`, the same day, the default
-since): the cells of the start position embedded by a frozen pretrained net, a cell named
-by its nearest one -- no threshold on the foreground at all, so the shaded set and the thin
-detail read like any other; whether a piece has landed is the phase correlation of the cell
-against that piece's start crop (`LANDING`), again no threshold; the rules above still
-tell what sits on top of the board, and empties are still the fraction's. The silhouette
-overlap reads on when the net's file is missing, and its numbers stay as the record of
-what the thresholds could do.
+This is theme-specific by construction and needs no training.
 """
 
 from __future__ import annotations
 
-import os
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
@@ -113,7 +59,6 @@ import cv2
 import numpy as np
 
 from sidecoach.events import Side
-from sidecoach.vision import cookie
 from sidecoach.vision.embedding import (
     MIN_MARGIN as EMBED_MIN_MARGIN,
 )
@@ -122,15 +67,6 @@ from sidecoach.vision.embedding import (
     CellEmbedder,
 )
 from sidecoach.vision.squares import CELL, BoardGeometry, is_light, square_at
-
-# What names the piece in a cell: "embed", the nearest of the start position's cells by
-# the embedding of a frozen pretrained net (`embedding`; the default since 2026-09-19:
-# 7 failures to the overlap's 13 on 300 seeds of the sweep, and the two half-resolution
-# recordings the overlap lost a quarter of read whole); "iou", the silhouette overlap
-# against the exemplars learned from the start position, which reads on when the
-# embedding net's file is missing; "pixels" and "binary", the cookie-cutter experiment
-# (`cookie`).
-MATCHER = os.environ.get("SIDECOACH_MATCHER", "embed")
 
 INNER = 0.08
 RING_SKIP = 0.05
@@ -180,9 +116,6 @@ EMPTY_MAX_FRACTION = 0.04
 # Chess.com's legal-move hint dots cover about a tenth of a cell; the smallest piece, a pawn,
 # covers a third. Anything in between is reported as unknown, which carries no evidence.
 PIECE_MIN_FRACTION = 0.16
-MIN_IOU = 0.35
-MIN_MARGIN = 0.03
-BRIGHTNESS_WEIGHT = 1.5
 # A piece's side is read from its brightness first: when it lies within one side's
 # exemplars' range of brightness, widened by this much, and not the other's, the shape
 # is matched among that side's pieces alone. A brightness in both ranges or neither (a
@@ -277,24 +210,27 @@ def _reading(
     tint: str | None = None,
     drawn: bool = False,
 ) -> CellReading:
-    bg = (float(sil.background[0]), float(sil.background[1]), float(sil.background[2]))
     return CellReading(
-        kind,
-        symbol,
-        colour,
-        confidence,
-        sil.fraction,
-        sil.luminance,
-        highlighted,
-        bg,
-        sil.brightness,
-        settled,
-        hover,
-        offset,
-        guess,
-        covered,
-        tint,
-        drawn,
+        kind=kind,
+        symbol=symbol,
+        colour=colour,
+        confidence=confidence,
+        fg_fraction=sil.fraction,
+        luminance=sil.luminance,
+        highlighted=highlighted,
+        background=(
+            float(sil.background[0]),
+            float(sil.background[1]),
+            float(sil.background[2]),
+        ),
+        brightness=sil.brightness,
+        settled=settled,
+        hover=hover,
+        offset=offset,
+        guess=guess,
+        covered=covered,
+        tint=tint,
+        drawn=drawn,
     )
 
 
@@ -312,7 +248,6 @@ class Silhouette:
     luminance: float
     brightness: float
     background: np.ndarray
-    centroid: tuple[float, float]
     hover: bool
     # The inner patch the mask was taken from, and the pixels of the four corner blocks,
     # deeper than the ring: a tint reaches them, an outline does not.
@@ -333,21 +268,13 @@ class Silhouette:
 
 @dataclass(frozen=True)
 class Exemplar:
+    """A piece kind as the start position showed it: its tone mask (see `Silhouette.tone`),
+    fused over the piece's cells, for the fill vote (`_fill_side`), and the median
+    brightness of its fill, for the brightness vote (`_side_of`)."""
+
     symbol: str
-    mask: np.ndarray  # the full silhouette, fused over the piece's cells
-    tone: np.ndarray  # its tone mask (see Silhouette.tone), fused the same way
+    tone: np.ndarray
     brightness: float
-    centroid: tuple[float, float]
-    # Centroid of the tone mask outside the badge corner, the reference a reading's mask is
-    # moved onto before overlap is measured, so a badge on either side moves nothing.
-    align_centroid: tuple[float, float]
-    # The same for the full mask: where the piece's ink sits, which is what decides
-    # whether it has landed. The fuller shape moves less under a lock a pixel off.
-    landing_centroid: tuple[float, float]
-    # The piece's own pixels: the working patch of its start cells and the square
-    # colour under it, one per square colour the piece stood on (the median over the
-    # cells of that colour). The cookie-cutter matcher's references (see `cookie`).
-    references: tuple[cookie.Reference, ...] = ()
 
 
 # The embedder sees every cell at this resolution, whatever the board's size: the crop brought
@@ -357,38 +284,13 @@ class Exemplar:
 # 2026-09-26); at one resolution every size looks alike. 40 px, from the scale benchmark
 # (44 sets, learned at one of 32-128 px and read at another): identity errors 161 -> 13, where
 # 24 px lost the detail that tells some sets' pieces apart (a pirouetti queen read as a
-# bishop). Landing is not brought down to it: a piece in flight read as landed (see LANDING
-# for how it meets a resize).
+# bishop). Landing is not brought down to it: a piece in flight read as landed (see
+# LANDING_SAME_SIZE for how it meets a resize).
 CANONICAL_PX = 40
-# At 40 px the square under a piece weighs more in its embedding than at full detail, and the
-# start position shows each side's king and queen on one square colour only: a black queen
-# on a light square came nearer the black bishop learned on one than the black queen learned
-# on a dark square, and a black king on a dark square nearer the black queen (stress seeds
-# 469: the game stalled; 766: a mid-game board never read cold). So once a piece's side is
-# voted, each kind is as near as the nearest of its cells of either side (`_kind_scores`):
-# the shape is the kind, and the other side shows the king and queen on the other square
-# colour. The mated king under the check glow and the result label came nearer a rook of its
-# own side than its own king (584). The side itself is voted as before. Learning the kings
-# and queens again on the other square colour, their crops' squares recoloured, was tried:
-# it named a black queen on g2 (688), and a set not learned then read as a position with two
-# kings, so the person was never told to show a start position (tests/test_cold_start.py).
 SETTLED_TOLERANCE = 0.08  # of a cell; a dragged piece follows the cursor, far off centre
 SETTLED_FLOOR_PX = 3.0  # source pixels: the lock itself is only good to about a pixel
-# Stillness (SIDECOACH_STILLNESS=1, off by default): a cell whose silhouette is not the
-# last classified frame's -- its mask overlapping the old one under STILL_MIN_IOU, or
-# its centroid STILL_MAX_SHIFT off -- is in motion, and the embedding matcher reads no
-# piece on it as settled. It was built against a phantom: a bishop animated across the
-# board, centred on the square it passed for one stored frame that the recording then
-# repeated, named there as surely as anywhere (motion blur had kept the overlap from
-# naming it). It costs a classified frame of latency, and frames come only when the
-# screen changes: on the recordings (a frame stored every four to six ticks) it lost
-# more moves than the phantom did (g01 79 to 39 plies), and live capture would wait for
-# the clock's repaint. The reconciler's two-frame confirmation is the guard instead; the
-# rule stays for the day a capture repeats moving frames.
-STILLNESS = os.environ.get("SIDECOACH_STILLNESS", "0") == "1"
-STILL_MIN_IOU = 0.9
-# The embedding matcher lets the brightness choose a piece's side only when its own
-# nearest white and nearest black piece lie within this of each other.
+# The embedding votes for a piece's side only when its nearest white and nearest black piece
+# lie at least this far apart (`_vote_side`).
 COLOUR_TIE = 0.05
 # The fill read under the exemplar's mask (`_fill_side`): the mask eroded this many
 # pixels so a piece a little off its place still shows its fill under it, at least this
@@ -396,35 +298,20 @@ COLOUR_TIE = 0.05
 FILL_SIDE_ERODE = 2
 FILL_SIDE_MIN_PIXELS = 30
 FILL_SIDE_RATIO = 1.5
-# Where a piece sits, under the embedding matcher: "phase", the phase correlation of the
-# cell against the named piece's start-position crop, which measures the shift itself
-# (no silhouette: at 0.03, 0.06, 0.1 and 0.2 of a cell off it read 0.031, 0.062, 0.098
-# and 0.199 over eight sets, three sizes, both square colours, highlighted or not, and
-# 0.033 at rest with a pixel of lock jitter; 0.9% of pieces at rest and 0.1% of pieces
-# a tenth off wrongly called at the 0.08 tolerance; unmoved by a badge, the check glow,
-# a hint ring, an arrow, a tint or a label); "centroid", the silhouette's centroid
-# against the exemplar's (the overlap's rule). Both need the hover outline absent. A
-# third was tried and lost: the nearest of the piece's rest copies against shifted
-# copies of them in embedding space -- a pooled embedding is translation-tolerant, and
-# at 43 px cells the shifted copies were as near as the rest ones (g04 28 plies right
-# and 83 wrong; 249 of 900 sweep cases).
-# After a resize the cell and its reference are each a cell of another size blown up to the
-# working size, and the correlation's peak was lost in the detail one has and the other
-# has not: a rook at rest, learned at 40 px and read at 34, measured 0.15 of a cell off and
-# never landed; a pawn three quarters of the way to its square, read at 36, measured 0.08
-# from the square it passed and was committed there (the geometry sweep, 2026-09-27). So
-# a board read at a size more than LANDING_SAME_SIZE from the one its set was learned at is
-# also compared brought down to the coarser of the two sizes, and the surer correlation
-# (the higher peak) gives the shift. Brought down alone it failed at the learned size
-# itself: a cell brought down to the size it was drawn at is at the edge of what its pixels
-# hold, and a rook on a labelled corner square measured half a cell off -- every cold read
-# of a flat set at 44 px was refused (the stress sweep). The scale benchmark (44 sets, 20
-# pairs of learned and read sizes, same-size pairs among them, coordinates drawn, the lock
-# a pixel either way): resting pieces read as not landed 486 -> 102 of 79096, pieces in
-# flight read as landed 38 -> 26 of 15840; at the learned size nothing changes.
-LANDING = os.environ.get("SIDECOACH_LANDING", "phase")
+# Where a piece sits: the phase correlation of the cell against the named piece's
+# start-position crop, which measures the shift itself (at 0.03, 0.06, 0.1 and 0.2 of a
+# cell off it read 0.031, 0.062, 0.098 and 0.199 over eight sets, three sizes, both square
+# colours, highlighted or not, and 0.033 at rest with a pixel of lock jitter; unmoved by a
+# badge, the check glow, a hint ring, an arrow, a tint or a label). After a resize the cell
+# and its reference are each a cell of another size blown up to the working size, and the
+# correlation's peak was lost in the detail one has and the other has not (a rook at rest,
+# learned at 40 px and read at 34, measured 0.15 of a cell off and never landed: the
+# geometry sweep, 2026-09-27). So a board read at a size more than LANDING_SAME_SIZE from
+# the one its set was learned at is also compared brought down to the coarser of the two,
+# and the surer correlation (the higher peak) gives the shift: resting pieces read as not
+# landed 486 -> 102 of 79096, pieces in flight read as landed 38 -> 26 of 15840 (the scale
+# benchmark, 44 sets).
 LANDING_SAME_SIZE = 0.02  # of the cell: a lock's pitch is good to a fraction of a pixel
-STILL_MAX_SHIFT = 0.02  # of the inner patch
 # A white outline over a light square differs from it by only about 50 levels.
 HOVER_TOLERANCE = 30.0
 # The outer band an outline starts in: deep enough for one drawn a pixel inside the edge at
@@ -445,15 +332,11 @@ HOVER_STEP = 10.0
 
 
 def settle_tolerance(cell_px: float | None) -> float:
-    """The landing tolerance in inner-patch units: a fraction of a cell, but never less
-    than a few source pixels, so a small cell does not turn lock jitter into a piece in
-    flight."""
-    if cell_px is None:
+    """The landing tolerance as a share of the cell: SETTLED_TOLERANCE, but never less than
+    a few source pixels, so a small cell does not turn lock jitter into a piece in flight."""
+    if not cell_px:
         return SETTLED_TOLERANCE
-    inner_px = cell_px * (1.0 - 2.0 * INNER)
-    if inner_px <= 0:
-        return SETTLED_TOLERANCE
-    return max(SETTLED_TOLERANCE, SETTLED_FLOOR_PX / inner_px)
+    return max(SETTLED_TOLERANCE, SETTLED_FLOOR_PX / cell_px)
 
 
 def _badge_blind(size: int) -> np.ndarray:
@@ -464,12 +347,6 @@ def _badge_blind(size: int) -> np.ndarray:
 
 
 _BADGE_BLIND = _badge_blind(CELL)
-
-
-def ring_median_color(
-    patch: np.ndarray, skip: float = RING_SKIP, band: float = RING_BAND
-) -> np.ndarray:
-    return _ring_median_and_spread(patch, skip, band)[0]
 
 
 def _ring_median_and_spread(
@@ -696,25 +573,6 @@ def _fill_colour(
     return colour, luminance, tuple((c, w) for c, w, _ in tones)
 
 
-def _centroid(mask: np.ndarray) -> tuple[float, float]:
-    """Centre of mass of a mask in units of its own size; the middle when it is empty."""
-    ys, xs = np.nonzero(mask)
-    if xs.size == 0:
-        return (0.5, 0.5)
-    n = mask.shape[0]
-    return (float(xs.mean()) / n, float(ys.mean()) / n)
-
-
-def _align_centroid(mask: np.ndarray) -> tuple[float, float]:
-    """Where a piece sits for alignment: the centroid of the mask outside the badge corner.
-
-    On the recorded games this lands within a pixel of the true shift of a moved lock
-    (mean 0.9 px, worst 2.7); the strokes of a coordinate label can pull it a pixel off,
-    which is why overlap is also measured in place and the better of the two is kept.
-    """
-    return _centroid(mask & _BADGE_BLIND)
-
-
 def _overlay_blind(size: int) -> np.ndarray:
     """Pixels the overlay measure looks at: everything outside the badge's corner disc."""
     ys, xs = np.mgrid[0:size, 0:size]
@@ -844,7 +702,6 @@ def silhouette(
             mask, fraction, stats = _mask_and_fill(inner, gray, distance, tolerance, pocket, fills)
     luminance = 0.0
     brightness = 0.0
-    centroid = (0.5, 0.5)
     tone = mask.astype(bool)
     core_colour: np.ndarray | None = None
     edge_colour: np.ndarray | None = None
@@ -854,7 +711,6 @@ def silhouette(
         core_colour = core
         tone = _tone_mask(mask.astype(bool), inner, core, background)
         brightness = luminance / 255.0
-        centroid = _centroid(mask)
         outline = mask.astype(bool) & ~tone
         if int(outline.sum()) >= EDGE_MIN_PIXELS:
             edge_colour = np.median(inner[outline], axis=0)
@@ -870,7 +726,6 @@ def silhouette(
         luminance,
         brightness,
         background,
-        centroid,
         hover,
         inner,
         corner_pixels(patch),
@@ -944,17 +799,13 @@ def _same_tint(x: np.ndarray, y: np.ndarray, ex: np.ndarray, ey: np.ndarray) -> 
     return bool(np.all(tint >= -15.0) and np.all(tint <= 270.0))
 
 
-def translucent_cover(
-    backgrounds: np.ndarray, expected: np.ndarray, shifted: np.ndarray
-) -> np.ndarray:
-    """Cells in a block of at least TINT_MIN_CELLS that share one translucent overlay.
-
-    A dialog fades in over a few frames; while it is half transparent the pieces under
-    it are unreadable but the light and dark squares still differ, so the opaque test
-    does not fire and the cells would read as junk. A block of neighbours all consistent
-    with one tint is that fading dialog. A move highlight or a selection tints one to
-    three cells and a right-click mark a few, and stay below the block size.
-    """
+def _blocks(
+    cells: np.ndarray, joined: Callable[[int, int, int, int], bool], fill: float
+) -> list[list[tuple[int, int]]]:
+    """The groups of marked cells, neighbours joined when `joined(r, c, rr, cc)`, that are
+    shaped like a dialog: at least TINT_MIN_CELLS, two cells or more each way, filling
+    `fill` of their bounding box. A file of right-click marks or a queued premove's squares
+    make a line, and a highlight or two a small group; neither is a dialog."""
     parent = list(range(64))
 
     def find(i: int) -> int:
@@ -965,37 +816,50 @@ def translucent_cover(
 
     for r in range(8):
         for c in range(8):
-            if not shifted[r, c]:
+            if not cells[r, c]:
                 continue
             for rr, cc in ((r, c + 1), (r + 1, c)):
-                if (
-                    rr < 8
-                    and cc < 8
-                    and shifted[rr, cc]
-                    and _same_tint(
-                        backgrounds[r, c], backgrounds[rr, cc], expected[r, c], expected[rr, cc]
-                    )
-                ):
+                if rr < 8 and cc < 8 and cells[rr, cc] and joined(r, c, rr, cc):
                     parent[find(r * 8 + c)] = find(rr * 8 + cc)
-    members: dict[int, list[int]] = {}
+    groups: dict[int, list[tuple[int, int]]] = {}
     for i in range(64):
-        if shifted[i // 8, i % 8]:
-            members.setdefault(find(i), []).append(i)
-    covered = np.zeros((8, 8), dtype=bool)
-    for cells in members.values():
-        if len(cells) < TINT_MIN_CELLS:
-            continue
-        # A dialog is a filled rectangle at least two cells wide and high. A file of
-        # right-click marks or the squares of a queued premove make a line, and stay
-        # readable.
-        rows = [i // 8 for i in cells]
-        cols = [i % 8 for i in cells]
+        if cells[i // 8, i % 8]:
+            groups.setdefault(find(i), []).append((i // 8, i % 8))
+    out = []
+    for members in groups.values():
+        rows = [r for r, _ in members]
+        cols = [c for _, c in members]
         height = max(rows) - min(rows) + 1
         width = max(cols) - min(cols) + 1
-        if height < 2 or width < 2 or len(cells) < TINT_BLOCK_FILL * height * width:
-            continue
-        for i in cells:
-            covered[i // 8, i % 8] = True
+        if (
+            len(members) >= TINT_MIN_CELLS
+            and height >= 2
+            and width >= 2
+            and len(members) >= fill * height * width
+        ):
+            out.append(members)
+    return out
+
+
+def translucent_cover(
+    backgrounds: np.ndarray, expected: np.ndarray, shifted: np.ndarray
+) -> np.ndarray:
+    """Cells in a dialog-shaped block (`_blocks`) that share one translucent overlay.
+
+    A dialog fades in over a few frames; while it is half transparent the pieces under
+    it are unreadable but the light and dark squares still differ, so the opaque test
+    does not fire and the cells would read as junk. A block of neighbours all consistent
+    with one tint is that fading dialog. A move highlight or a selection tints one to
+    three cells and a right-click mark a few, and stay below the block size.
+    """
+
+    def tinted(r: int, c: int, rr: int, cc: int) -> bool:
+        return _same_tint(backgrounds[r, c], backgrounds[rr, cc], expected[r, c], expected[rr, cc])
+
+    covered = np.zeros((8, 8), dtype=bool)
+    for block in _blocks(shifted, tinted, TINT_BLOCK_FILL):
+        for r, c in block:
+            covered[r, c] = True
     # A highlighted square or one with the dialog's text over its ring does not fit the
     # tint, yet it lies under the same overlay when its neighbours do.
     for _ in range(2):
@@ -1015,41 +879,15 @@ def translucent_cover(
 
 def cover_body(covered: np.ndarray, shifts: np.ndarray) -> np.ndarray:
     """The covered cells plus the body of each dialog: cells off their square colour that
-    connect (4-neighbours) to a covered block and, with it, fill a rectangle at least two
-    cells each way and TINT_MIN_CELLS in all. A highlight or two beside a tooltip does not
-    fill a rectangle with it; a fading dialog's buttons and text do."""
+    connect (4-neighbours) to a covered block and, with it, make a dialog-shaped block
+    (`_blocks`). A highlight or two beside a tooltip does not fill a rectangle with it; a
+    fading dialog's buttons and text do."""
     candidate = covered | (shifts > COVER_BODY_SHIFT)
-    parent = list(range(64))
-
-    def find(i: int) -> int:
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-
-    for r in range(8):
-        for c in range(8):
-            if not candidate[r, c]:
-                continue
-            for rr, cc in ((r, c + 1), (r + 1, c)):
-                if rr < 8 and cc < 8 and candidate[rr, cc]:
-                    parent[find(r * 8 + c)] = find(rr * 8 + cc)
-    members: dict[int, list[int]] = {}
-    for i in range(64):
-        if candidate[i // 8, i % 8]:
-            members.setdefault(find(i), []).append(i)
     out = covered.copy()
-    for cells in members.values():
-        if len(cells) < TINT_MIN_CELLS or not any(covered[i // 8, i % 8] for i in cells):
-            continue
-        rows = [i // 8 for i in cells]
-        cols = [i % 8 for i in cells]
-        height = max(rows) - min(rows) + 1
-        width = max(cols) - min(cols) + 1
-        if height < 2 or width < 2 or len(cells) < COVER_BODY_FILL * height * width:
-            continue
-        for i in cells:
-            out[i // 8, i % 8] = True
+    for block in _blocks(candidate, lambda r, c, rr, cc: True, COVER_BODY_FILL):
+        if any(covered[r, c] for r, c in block):
+            for r, c in block:
+                out[r, c] = True
     return out
 
 
@@ -1082,26 +920,6 @@ def _has_block(cells: np.ndarray) -> bool:
     return bool((cells[:-1, :-1] & cells[1:, :-1] & cells[:-1, 1:] & cells[1:, 1:]).any())
 
 
-def shift_mask(mask: np.ndarray, dx: int, dy: int) -> np.ndarray:
-    """The mask moved right by `dx` and down by `dy` pixels, zero-filled at the edges."""
-    if dx == 0 and dy == 0:
-        return mask
-    h, w = mask.shape
-    out = np.zeros_like(mask)
-    if abs(dx) >= w or abs(dy) >= h:
-        return out
-    out[max(0, dy) : h + min(0, dy), max(0, dx) : w + min(0, dx)] = mask[
-        max(0, -dy) : h + min(0, -dy), max(0, -dx) : w + min(0, -dx)
-    ]
-    return out
-
-
-def iou(a: np.ndarray, b: np.ndarray, keep: np.ndarray = _BADGE_BLIND) -> float:
-    a, b = a & keep, b & keep
-    union = np.logical_or(a, b).sum()
-    return float(np.logical_and(a, b).sum() / union) if union else 0.0
-
-
 @dataclass
 class ThemeModel:
     exemplars: list[Exemplar] = field(default_factory=list)
@@ -1120,75 +938,27 @@ class ThemeModel:
     # reading made of it, with the covered flag and cell size it was made with. Between
     # one frame and the next most cells do not change a pixel, and a cell that did not
     # change reads the same: its silhouette and reading are reused, most of a frame's cost.
-    # The last frame's silhouette of every cell, for the stillness a settled piece must show.
-    _previous: dict[tuple[int, int], Silhouette] = field(
-        default_factory=dict, repr=False, compare=False
-    )
     _cells: dict[tuple[int, int], tuple[np.ndarray, Silhouette, bool, float, CellReading]] = field(
-        default_factory=dict, repr=False, compare=False
-    )
-    # The cookie cutters built from the exemplars, by symbol and variant, on first use.
-    _cutters: dict[tuple[str, str], tuple[cookie.Cutter, ...]] = field(
         default_factory=dict, repr=False, compare=False
     )
     # The start position's 64 cells as the frozen net embeds them (unit vectors, float16
     # for the cache) and what each held: a piece's symbol, or "empty". The exemplars of
-    # the embedding matcher (see `embedding`).
+    # the net (see `embedding`).
     exemplar_vectors: np.ndarray | None = None
     exemplar_labels: tuple[str, ...] = ()
     # Each piece kind's start-position crop in grey, the reference the phase landing
     # measures a cell's shift against (an instance off the labelled edge cells), and the
-    # cell size it was taken at (0 when not known: a theme cached before it was kept).
+    # cell size it was taken at.
     landing_crops: dict[str, np.ndarray] = field(default_factory=dict)
     landing_px: float = 0.0
 
     def __getstate__(self) -> dict[str, object]:
         # The last frame's cells are this session's, not the theme's: pickled, they made
         # a 60 KB theme file 2.8 MB, and a cached theme would have begun its next game
-        # believing it had read a frame. The cutters are rebuilt from the exemplars, and
-        # the exemplars' references (190 KB of pixels) go with the theme only while the
-        # cookie cutter is the matcher; read back without them, the overlap reads on.
+        # believing it had read a frame.
         state = dict(self.__dict__)
         state["_cells"] = {}
-        state["_previous"] = {}
-        state["_cutters"] = {}
-        if MATCHER not in ("pixels", "binary"):
-            state["exemplars"] = [replace(e, references=()) for e in self.exemplars]
         return state
-
-    def __setstate__(self, state: dict[str, object]) -> None:
-        self.__dict__.update(state)
-        self.__dict__.setdefault("_cells", {})
-        self.__dict__.setdefault("_previous", {})
-        self.__dict__.setdefault("_cutters", {})
-        self.__dict__.setdefault("landing_px", 0.0)
-
-    @property
-    def matcher(self) -> str:
-        """The matcher in use: the embedding when switched on, its net is there and the
-        start position was embedded; the cookie cutter when switched on and the exemplars
-        carry their pixels (a theme cached before they did falls back to the overlap);
-        else the overlap."""
-        if MATCHER == "embed":
-            ready = embedder() is not None and self.exemplar_vectors is not None
-            return "embed" if ready else "iou"
-        if MATCHER == "iou" or any(not e.references for e in self.exemplars):
-            return "iou"
-        return MATCHER
-
-    def _cutter(self, exemplar: Exemplar, variant: str) -> tuple[cookie.Cutter, ...]:
-        key = (exemplar.symbol, variant)
-        cutters = self._cutters.get(key)
-        if cutters is None:
-            cutters = cookie.build_cutters(
-                exemplar.mask, exemplar.tone, exemplar.references, _BADGE_BLIND, variant
-            )
-            self._cutters[key] = cutters
-        return cutters
-
-    @property
-    def symbols(self) -> set[str]:
-        return {e.symbol for e in self.exemplars}
 
     def highlight_kind(self, background: np.ndarray, row: int, col: int) -> str:
         """The hue of a cell's background shift: "none", "move", "red", or "foreign".
@@ -1257,7 +1027,6 @@ class ThemeModel:
         covered: bool,
         cell_px: float | None = None,
         vector: np.ndarray | None = None,
-        still: bool = True,
         crop: np.ndarray | None = None,
     ) -> CellReading:
         kind_of_tint, tint = self.tint_kind(sil, row, col)
@@ -1286,7 +1055,7 @@ class ThemeModel:
             # whatever tint it wears, and a hint dot is no evidence (the embedding read
             # the dotted squares of a drag in progress as empty with such confidence
             # that a resync adopted the rook where the cursor held it).
-            return self._from_embedding(sil, vector, highlighted, tint, cell_px, still, crop)
+            return self._from_embedding(sil, vector, highlighted, tint, cell_px, crop)
         if sil.fraction <= EMPTY_MAX_FRACTION:
             return _reading(
                 sil,
@@ -1297,100 +1066,9 @@ class ThemeModel:
                 hover=sil.hover,
                 tint=tint,
             )
-        if sil.fraction < PIECE_MIN_FRACTION or not self.exemplars:
-            return _reading(sil, "unknown", highlighted=highlighted, hover=sil.hover, tint=tint)
-
-        # Overlap is measured with the mask moved onto the exemplar's centroid as well as in
-        # place, whichever fits better, so a lock a pixel or two off, or a piece drawn
-        # slightly off its square, still matches by shape and a centroid pulled off by
-        # something small on the square costs nothing; where the piece sits is judged by
-        # `offset` on its own. Both shapes are tried and the better overlap counts: the
-        # tone mask tells a piece from another whatever the square did to its outline,
-        # the full mask, fatter, forgives a lock a pixel off on a small cell.
-        align = _align_centroid(sil.tone)
-        size = sil.tone.shape[0]
-        side = self._side_of(sil)
-        candidates = [
-            e for e in self.exemplars if side is None or e.symbol.isupper() == (side == Side.WHITE)
-        ] or self.exemplars
-        matcher = self.matcher
-        best_by_symbol: dict[str, tuple[float, float, Exemplar, tuple[int, int]]] = {}
-        for exemplar in candidates:
-            shift = (0, 0)
-            if matcher == "iou":
-                overlap = max(iou(sil.tone, exemplar.tone), iou(sil.mask, exemplar.mask))
-                dx = int(round((exemplar.align_centroid[0] - align[0]) * size))
-                dy = int(round((exemplar.align_centroid[1] - align[1]) * size))
-                if dx or dy:
-                    overlap = max(
-                        overlap,
-                        iou(shift_mask(sil.tone, dx, dy), exemplar.tone),
-                        iou(shift_mask(sil.mask, dx, dy), exemplar.mask),
-                    )
-            else:
-                # The cutter laid over the cell at every shift in its window: the best
-                # fit names the piece, and its shift is where the piece sits.
-                overlap, shift = cookie.score(
-                    self._cutter(exemplar, matcher), sil.inner, sil.mask, sil.background, matcher
-                )
-            score = overlap
-            if side is None:
-                score -= BRIGHTNESS_WEIGHT * abs(sil.brightness - exemplar.brightness)
-            previous = best_by_symbol.get(exemplar.symbol)
-            if previous is None or score > previous[0]:
-                best_by_symbol[exemplar.symbol] = (score, overlap, exemplar, shift)
-        ranked = sorted(best_by_symbol.items(), key=lambda item: item[1][0], reverse=True)
-        symbol, (score, overlap, exemplar, shift) = ranked[0]
-        runner_up = ranked[1][1][0] if len(ranked) > 1 else -1.0
-        if matcher == "iou":
-            # Where the piece sits, judged outside the badge corner like the alignment
-            # is: a classification badge on a small cell adds enough ink to pull the
-            # whole mask's centroid a tenth of a cell toward the corner, and the piece
-            # under it then never settled, so a move onto a badged square could not
-            # commit until the badge left.
-            landing = _align_centroid(sil.mask)
-            offset = float(
-                np.hypot(
-                    landing[0] - exemplar.landing_centroid[0],
-                    landing[1] - exemplar.landing_centroid[1],
-                )
-            )
-            enough = overlap >= MIN_IOU and score - runner_up >= MIN_MARGIN
-        else:
-            offset = float(np.hypot(shift[0], shift[1])) / size
-            enough = overlap >= cookie.MIN_MATCH and score - runner_up >= cookie.MIN_MATCH_MARGIN
-        settled = offset <= settle_tolerance(cell_px) and not sil.hover
-        if enough:
-            colour = Side.WHITE if symbol.isupper() else Side.BLACK
-            return _reading(
-                sil,
-                "piece",
-                symbol=symbol,
-                colour=colour,
-                confidence=score - runner_up,
-                highlighted=highlighted,
-                settled=settled,
-                hover=sil.hover,
-                offset=offset,
-                tint=tint,
-            )
-        if side is None:
-            nearest = min(self.exemplars, key=lambda e: abs(sil.brightness - e.brightness))
-            side = Side.WHITE if nearest.symbol.isupper() else Side.BLACK
-        colour = side
-        guess = symbol if symbol.isupper() == (colour == Side.WHITE) else None
-        return _reading(
-            sil,
-            "piece",
-            colour=colour,
-            confidence=0.5,
-            highlighted=highlighted,
-            settled=False,  # a piece of no known kind is no evidence of a landed piece
-            hover=sil.hover,
-            offset=offset,
-            guess=guess,
-            tint=tint,
-        )
+        # A mark (a hint dot, a label's end) or, with no net to name it, a piece: no
+        # evidence either way.
+        return _reading(sil, "unknown", highlighted=highlighted, hover=sil.hover, tint=tint)
 
     def _from_embedding(
         self,
@@ -1399,14 +1077,12 @@ class ThemeModel:
         highlighted: bool,
         tint: str | None,
         cell_px: float | None,
-        still: bool,
         crop: np.ndarray | None = None,
     ) -> CellReading:
         """The cell named by the nearest of the start position's cells in embedding space
         (see `embedding`). The side is voted (`_vote_side`); once it is, the kind may be
         named by either side's cells (`_kind_scores`, see CANONICAL_PX). Where the piece
-        sits is LANDING's: the phase correlation against the piece's own start crop by
-        default."""
+        sits is the phase correlation against the piece's own start crop."""
         assert self.exemplar_vectors is not None
         sims = self.exemplar_vectors.astype(np.float32) @ vector
         side = self._vote_side(sil, sims)
@@ -1414,7 +1090,7 @@ class ThemeModel:
         allowed = [
             i
             for i, label in enumerate(self.exemplar_labels)
-            if label == "empty" or side is None or label.isupper() == (side == Side.WHITE)
+            if label == "empty" or side is None or label.isupper() == side.color
         ]
         order = sorted(allowed, key=lambda i: -float(scored[i]))
         best = order[0]
@@ -1454,27 +1130,13 @@ class ThemeModel:
                 hover=sil.hover,
                 tint=tint,
             )
-        colour = Side.WHITE if label.isupper() else Side.BLACK
-        exemplar = next((e for e in self.exemplars if e.symbol == label), None)
+        colour = Side.of(label.isupper())
         offset = 0.0
-        if exemplar is not None:
-            landing = _align_centroid(sil.mask)
-            offset = float(
-                np.hypot(
-                    landing[0] - exemplar.landing_centroid[0],
-                    landing[1] - exemplar.landing_centroid[1],
-                )
-            )
-        if LANDING == "phase" and crop is not None and label in self.landing_crops:
+        if crop is not None and label in self.landing_crops:
             offset = _phase_shift(
                 self.landing_crops[label], crop, self.landing_px, float(cell_px or 0.0)
             )
-            tolerance = SETTLED_TOLERANCE
-            if cell_px:
-                tolerance = max(SETTLED_TOLERANCE, SETTLED_FLOOR_PX / cell_px)
-            settled = offset <= tolerance and not sil.hover and still
-        else:
-            settled = offset <= settle_tolerance(cell_px) and not sil.hover and still
+        settled = offset <= settle_tolerance(cell_px) and not sil.hover
         runner = self.exemplar_labels[
             next(i for i in order[1:] if self.exemplar_labels[i] != label)
         ]
@@ -1541,8 +1203,16 @@ class ThemeModel:
         return Side.WHITE if white > black else Side.BLACK
 
     def _kind_scores(self, sims: np.ndarray) -> np.ndarray:
-        """Each cell's similarity raised to the best of its kind's, either side's (see
-        CANONICAL_PX): what a piece is, is its shape."""
+        """Each cell's similarity raised to the best of its kind's, either side's: what a
+        piece is, is its shape, once its side is voted. At CANONICAL_PX the square under a
+        piece weighs more in its embedding, and the start position shows each side's king
+        and queen on one square colour only: a black queen on a light square came nearer
+        the black bishop learned on one than the black queen learned on a dark square, and
+        a mated king under the check glow nearer a rook of its own side than its own king
+        (stress seeds 469, 584, 766). The other side shows the king and queen on the other
+        square colour. Learning them again on the other colour, their crops' squares
+        recoloured, named a black queen on g2 (688), and a set never learned read as a
+        position with two kings (tests/test_cold_start.py)."""
         scored = sims.copy()
         kinds: dict[str, list[int]] = {}
         for i, label in enumerate(self.exemplar_labels):
@@ -1581,9 +1251,7 @@ class ThemeModel:
         or None when it falls among both or neither."""
         inside = []
         for side in (Side.WHITE, Side.BLACK):
-            values = [
-                e.brightness for e in self.exemplars if e.symbol.isupper() == (side == Side.WHITE)
-            ]
+            values = [e.brightness for e in self.exemplars if e.symbol.isupper() == side.color]
             if values and min(values) - SIDE_MARGIN <= sil.brightness <= max(values) + SIDE_MARGIN:
                 inside.append(side)
         return inside[0] if len(inside) == 1 else None
@@ -1648,7 +1316,7 @@ class ThemeModel:
                 ):
                     fresh.append((r, c))
         vectors: dict[tuple[int, int], np.ndarray] = {}
-        net = embedder() if self.matcher == "embed" else None
+        net = embedder()
         # The net embeds, in one batch, the cells that changed with a piece's worth of ink:
         # only those are named by it (`_classify`). An empty square or a hint dot is the
         # silhouette's to read, and embedding it anyway was most of a full read's cost --
@@ -1666,21 +1334,12 @@ class ThemeModel:
                 if (r, c) not in fresh and last is not None:
                     row_readings.append(last[4])
                     continue
-                before = self._previous.get((r, c))
-                still = not STILLNESS or before is None or _still(before, sils[r][c])
                 reading = self._classify(
-                    sils[r][c], r, c, is_covered, cell_px, vectors.get((r, c)), still, crops[r][c]
+                    sils[r][c], r, c, is_covered, cell_px, vectors.get((r, c)), crops[r][c]
                 )
-                if still or net is None:
-                    self._cells[(r, c)] = (crops[r][c], sils[r][c], is_covered, cell_px, reading)
-                else:
-                    # Read in motion: the next frame, still or not, reads it again.
-                    self._cells.pop((r, c), None)
+                self._cells[(r, c)] = (crops[r][c], sils[r][c], is_covered, cell_px, reading)
                 row_readings.append(reading)
             readings.append(row_readings)
-        for r in range(8):
-            for c in range(8):
-                self._previous[(r, c)] = sils[r][c]
         tinted = sum(1 for row in readings for reading in row if reading.tint is not None)
         if tinted >= THEME_MIN_TINTED:
             # Highlights, marks and queues tint a few squares; a tint over half the board
@@ -1743,24 +1402,15 @@ class ThemeModel:
     def from_start_position(
         cls, frame: np.ndarray, geometry: BoardGeometry, bottom: Side
     ) -> ThemeModel | None:
-        """The recogniser for this game, or None when the start frame is not clean enough.
-
-        A cursor, a hover outline, or a badge on one cell of the start frame would
-        otherwise become that piece's exemplar for the whole game, and the king and the
-        queen have one cell each. So every cell must show a plausible piece: enough
-        foreground, centred, no hover outline. The eight pawns are fused by majority vote,
-        which one odd pawn cannot sway. A pair (knights, bishops, rooks) has no majority:
-        its two silhouettes must agree, on overlap and on centroid, to be fused (their
-        union); when they do not, the member closer to the other colour's fused pair of
-        the same type is kept on its own, since every piece set draws both colours from
-        one silhouette, and when that pair disagrees as well the frame is refused.
-        """
+        """The recogniser for this game, or None when the start frame is not clean enough:
+        a cursor's outline over a piece, a piece hidden (the embeddings say so,
+        `_start_reads_as_start`), or square colours that cannot be told apart -- or when there
+        is no net to embed with (a broken install). The kings and queens have one cell each,
+        and what a start frame shows is every piece's reference for the game."""
         start = chess.Board()
-        # The embedding matcher needs no silhouette exemplars: a start frame the
-        # silhouettes cannot read cleanly (a shaded set on a board of its own tone) still
-        # gives the square colours, the set's palette and the 64 cells to embed.
         net = embedder()
-        lenient = net is not None
+        if net is None:
+            return None
         light_bgs: list[np.ndarray] = []
         dark_bgs: list[np.ndarray] = []
         # Two passes: the first learns the set's colours from every piece, the second
@@ -1782,33 +1432,13 @@ class ThemeModel:
                 if piece is None:
                     (light_bgs if is_light(r, c) else dark_bgs).append(sil.background)
                     continue
-                if not _plausible_exemplar(sil) and not lenient:
-                    return None
-                if lenient and sil.hover:
-                    return None  # the cursor's outline would be in the piece's exemplar
+                if sil.hover:
+                    return None  # the cursor's outline would be in the piece's reference
                 samples.setdefault(piece.symbol(), []).append(sil)
-        fused: dict[str, Exemplar] = {}
-        disagreeing: list[str] = []
-        for symbol, sils in samples.items():
-            if len(sils) == 2 and not _pair_agrees(sils[0], sils[1]) and not lenient:
-                disagreeing.append(symbol)
-                continue
-            fused[symbol] = _fuse(symbol, sils)
-        for symbol in disagreeing:
-            reference = fused.get(symbol.swapcase())
-            if reference is None:
-                return None  # both colours' pairs are spoiled; the next start frame gets a chance
-            reference_tone = reference.tone
-            best = max(samples[symbol], key=lambda sil: iou(sil.tone, reference_tone))
-            fused[symbol] = _fuse(symbol, [best])
         model = cls()
         model.piece_colours = colours
         model.palette = palette
-        for symbol in samples:
-            exemplar = fused[symbol]
-            if float(exemplar.tone.mean()) < EXEMPLAR_MIN_TONE and not lenient:
-                return None
-            model.exemplars.append(exemplar)
+        model.exemplars = [_fuse(symbol, sils) for symbol, sils in samples.items()]
         model.light_bg = np.median(np.array(light_bgs), axis=0)
         model.dark_bg = np.median(np.array(dark_bgs), axis=0)
         gap = float(np.linalg.norm(model.light_bg - model.dark_bg))
@@ -1826,35 +1456,18 @@ class ThemeModel:
                     continue
                 model.landing_crops[symbol] = cv2.cvtColor(crops[r][c], cv2.COLOR_BGR2GRAY)
         model.landing_px = float(geometry.cell_px)
-        if net is not None:
-            cells = [crops[r][c] for r in range(8) for c in range(8)]
-            vectors = net.embed([canonical(cell) for cell in cells])
-            labels = tuple(
-                piece.symbol() if (piece := start.piece_at(square_at(r, c, bottom))) else "empty"
-                for r in range(8)
-                for c in range(8)
-            )
-            if not _start_reads_as_start(vectors, labels):
-                return None  # a piece hidden or spoiled: the next start frame gets a chance
-            model.exemplar_vectors = vectors.astype(np.float16)
-            model.exemplar_labels = labels
+        cells = [crops[r][c] for r in range(8) for c in range(8)]
+        vectors = net.embed([canonical(cell) for cell in cells])
+        labels = tuple(
+            piece.symbol() if (piece := start.piece_at(square_at(r, c, bottom))) else "empty"
+            for r in range(8)
+            for c in range(8)
+        )
+        if not _start_reads_as_start(vectors, labels):
+            return None  # a piece hidden or spoiled: the next start frame gets a chance
+        model.exemplar_vectors = vectors.astype(np.float16)
+        model.exemplar_labels = labels
         return model
-
-
-EXEMPLAR_MAX_FRACTION = 0.9
-# A fused exemplar (a tone mask: the fill without the outline) must keep at least this much
-# of the inner patch; a queen's star is 0.16 of it on the 64-pixel synthetic set.
-EXEMPLAR_MIN_TONE = 0.08
-# A piece is drawn on the middle of its file; how high it sits in the square is its own
-# business (a pawn's centre of mass lies well below the centre, a king's near it).
-EXEMPLAR_MAX_SIDEWAYS = 0.12  # of a cell
-EXEMPLAR_MAX_VERTICAL = 0.28  # of a cell
-# Two cells of one piece kind on a clean start frame overlap at 0.89 or better and sit
-# within 0.043 of a cell of each other on the recorded games (rooks, whose cells carry the
-# coordinate labels and a box a pixel narrower, are the worst); a white strip 18% of the
-# cell tall over one of them moves its centroid by 0.06 or more and 0.075 at 24%.
-PAIR_MIN_IOU = 0.8
-PAIR_MAX_CENTROID = 0.06  # of a cell
 
 
 def _piece_colours(samples: dict[str, list[Silhouette]]) -> PieceColours:
@@ -1921,85 +1534,11 @@ def _pooled_colour(colours: np.ndarray, weight: np.ndarray, group: np.ndarray) -
     return np.array([_weighted_median(picked[:, ch], weights) for ch in range(3)], np.float32)
 
 
-def _plausible_exemplar(sil: Silhouette) -> bool:
-    """A piece drawn on its own square: enough foreground, centred, nothing over it."""
-    if sil.hover or not PIECE_MIN_FRACTION <= sil.fraction <= EXEMPLAR_MAX_FRACTION:
-        return False
-    return (
-        abs(sil.centroid[0] - 0.5) <= EXEMPLAR_MAX_SIDEWAYS
-        and abs(sil.centroid[1] - 0.5) <= EXEMPLAR_MAX_VERTICAL
-    )
-
-
-def _pair_agrees(a: Silhouette, b: Silhouette) -> bool:
-    """Whether two cells of one piece kind show the same silhouette in the same place."""
-    distance = float(np.hypot(a.centroid[0] - b.centroid[0], a.centroid[1] - b.centroid[1]))
-    overlap = max(iou(a.tone, b.tone), iou(a.mask, b.mask))
-    return overlap >= PAIR_MIN_IOU and distance <= PAIR_MAX_CENTROID
-
-
 def _fuse(symbol: str, sils: list[Silhouette]) -> Exemplar:
-    """One exemplar from the silhouettes of the cells holding this piece kind: the pixels
-    at least half of them share (the union of a pair), the median brightness and centroid."""
-    mask = np.mean([sil.mask for sil in sils], axis=0) >= 0.5
+    """One exemplar from the silhouettes of the cells holding this piece kind: the tone
+    pixels at least half of them share (the union of a pair), the median brightness."""
     tone = np.mean([sil.tone for sil in sils], axis=0) >= 0.5
-    brightness = float(np.median([sil.brightness for sil in sils]))
-    centroid = (
-        float(np.median([sil.centroid[0] for sil in sils])),
-        float(np.median([sil.centroid[1] for sil in sils])),
-    )
-    return Exemplar(
-        symbol,
-        mask,
-        tone,
-        brightness,
-        centroid,
-        _align_centroid(tone),
-        _align_centroid(mask),
-        _references(sils),
-    )
-
-
-def _references(sils: list[Silhouette]) -> tuple[cookie.Reference, ...]:
-    """The piece as it stood on each square colour at the start: the cells grouped by
-    their square colour (within COVER_TOLERANCE of one another); each group's median
-    patch and colour, the pixels at least half of them show the piece on (the
-    silhouette less the pockets, which show the square within the pocket tolerance),
-    and the fill."""
-    groups: list[list[Silhouette]] = []
-    for sil in sils:
-        for group in groups:
-            if float(np.linalg.norm(group[0].background - sil.background)) <= COVER_TOLERANCE:
-                group.append(sil)
-                break
-        else:
-            groups.append([sil])
-    references = []
-    for group in groups:
-        shows = []
-        for sil in group:
-            pocket = min(BG_TOLERANCE, max(POCKET_TOLERANCE, 3.0 * sil.spread))
-            away = np.linalg.norm(
-                sil.inner.astype(np.float32) - sil.background.astype(np.float32), axis=2
-            )
-            shows.append(sil.mask & (away > pocket))
-        fills = [sil.core_colour for sil in group if sil.core_colour is not None]
-        piece = np.mean(shows, axis=0) >= 0.5
-        patch = np.median(np.stack([sil.inner for sil in group]), axis=0).astype(np.uint8)
-        fill = (
-            np.median(np.stack(fills), axis=0)
-            if fills
-            else (np.median(patch[piece], axis=0) if piece.any() else np.zeros(3))
-        )
-        references.append(
-            cookie.Reference(
-                patch,
-                np.median(np.stack([sil.background for sil in group]), axis=0),
-                piece,
-                np.asarray(fill, dtype=np.float32),
-            )
-        )
-    return tuple(references)
+    return Exemplar(symbol, tone, float(np.median([sil.brightness for sil in sils])))
 
 
 def occupancy(frame: np.ndarray, geometry: BoardGeometry) -> np.ndarray:
@@ -2038,7 +1577,7 @@ def _phase_shift(
     as a share of the cell, by phase correlation under a Hanning window. When the two
     were taken at cell sizes more than LANDING_SAME_SIZE apart, they are also compared
     brought down to the coarser of the two sizes, and the surer of the two correlations
-    (the higher peak) gives the shift (see LANDING)."""
+    (the higher peak) gives the shift."""
     grey = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     if grey.shape != reference.shape:
         grey = cv2.resize(grey, (reference.shape[1], reference.shape[0]))
@@ -2086,24 +1625,9 @@ def _start_reads_as_start(vectors: np.ndarray, labels: tuple[str, ...]) -> bool:
     return True
 
 
-def _still(before: Silhouette, now: Silhouette) -> bool:
-    """Whether a cell's silhouette is the last frame's (see STILL_MIN_IOU)."""
-    if before is now:
-        return True
-    shift = float(
-        np.hypot(before.centroid[0] - now.centroid[0], before.centroid[1] - now.centroid[1])
-    )
-    if shift > STILL_MAX_SHIFT:
-        return False
-    union = np.logical_or(before.mask, now.mask).sum()
-    if union == 0:
-        return True
-    return float(np.logical_and(before.mask, now.mask).sum() / union) >= STILL_MIN_IOU
-
-
 def embedder() -> CellEmbedder | None:
-    """The embedding net, when the embedding is the matcher and its model file is there."""
-    return CellEmbedder.load() if MATCHER == "embed" else None
+    """The embedding net, or None when its model file is missing (a broken install)."""
+    return CellEmbedder.load()
 
 
 def looks_like_start_position(frame: np.ndarray, geometry: BoardGeometry) -> bool:

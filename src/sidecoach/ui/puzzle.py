@@ -32,7 +32,7 @@ class PuzzleSession:
         self.board = chess.Board(puzzle.fen)
         self.board.push_uci(puzzle.moves[0])  # the opponent's move: the position shown
         self.solver: chess.Color = self.board.turn
-        self.side = Side.WHITE if self.solver == chess.WHITE else Side.BLACK
+        self.side = Side.of(self.solver)
         self.start_fen = self.board.fen()
         self.index = 1  # the next move of the line, the solver's
         self.ply = 0  # plies played on the board since the start

@@ -1,7 +1,7 @@
 """Remember a learned board-and-piece style so recognition is paid once, not every game.
 
 The recogniser (`ThemeModel`) is normally rebuilt from the start position each game: it learns
-the twelve piece silhouettes and the two square colours from the known move-0 layout. That
+the twelve pieces and the two square colours from the known move-0 layout. That
 makes analysing a puzzle or a mid-game position from scratch impossible -- there is no start
 position to learn from.
 
@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import hashlib
 import pickle
-import uuid
 from pathlib import Path
 
 import numpy as np
@@ -34,8 +33,9 @@ from sidecoach.vision.squares import CELL, BoardGeometry, is_light
 # 2: exemplars are tone masks; 3: tone is nearer the core than the square; 4: the set's
 # colours are learned, for the drawing rule; 5, 6: the fill is the depth-weighted median.
 # 10: the start cells' embeddings and landing crops travel with the theme; 11: the
-# embeddings are of the crop at one resolution (pieces.canonical).
-CACHE_VERSION = 11
+# embeddings are of the crop at one resolution (pieces.canonical); 12: the exemplars keep
+# only what the embedding reads (their tone and brightness).
+CACHE_VERSION = 12
 _QUANTUM = 8  # square colours within this many levels share a fingerprint (tolerates lighting)
 MATCH_TOLERANCE = 20.0  # palettes closer than this (in BGR) are treated as the same theme
 
@@ -95,11 +95,10 @@ def sample_palette(
 
 
 def _set_key(model: ThemeModel) -> str:
-    """A name for a learned set among those on the same board colours: from its start
-    cells' embeddings, or a fresh one when it has none."""
-    if model.exemplar_vectors is not None:
-        return hashlib.sha1(np.ascontiguousarray(model.exemplar_vectors).tobytes()).hexdigest()[:8]
-    return uuid.uuid4().hex[:8]
+    """A name for a learned set among those on the same board colours, from its start
+    cells' embeddings."""
+    assert model.exemplar_vectors is not None
+    return hashlib.sha1(np.ascontiguousarray(model.exemplar_vectors).tobytes()).hexdigest()[:8]
 
 
 class ThemeCache:

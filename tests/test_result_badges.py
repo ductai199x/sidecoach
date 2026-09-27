@@ -20,7 +20,7 @@ import pytest
 
 from sidecoach.events import Event, GameEnded, MovePlayed, Region, ScreenState, Side
 from sidecoach.state.pipeline import BADGE_FRAMES, GamePipeline
-from sidecoach.vision.result_badges import Badge, badge_at, badge_on, read_result
+from sidecoach.vision.result_badges import Badge, badge_at, badge_on, result_of
 from sidecoach.vision.squares import BoardGeometry
 from tests.synth import THEMES, draw_result_badge, synthetic_board
 
@@ -54,6 +54,16 @@ def test_the_live_games_badges_read_as_recorded(entry: dict[str, object]) -> Non
     corner_y = float(entry["y0"])  # type: ignore[arg-type]
     want = {"win": Badge.WIN, "loss": Badge.LOSS, "none": None}[str(entry["kind"])]
     assert badge_at(crop, corner_x, corner_y, cell) is want
+
+
+def read_result(frame, geometry, board: chess.Board, bottom: Side) -> str | None:  # noqa: ANN001
+    """The result the badges on the two kings say (`result_of`), as the pipeline pairs them."""
+    white, black = board.king(chess.WHITE), board.king(chess.BLACK)
+    if white is None or black is None:
+        return None
+    return result_of(
+        badge_on(frame, geometry, white, bottom), badge_on(frame, geometry, black, bottom)
+    )
 
 
 # ---- rendered: every theme, size and orientation ----------------------------------------
@@ -204,8 +214,6 @@ def test_a_draw_badge_is_not_read_until_one_is_on_record() -> None:
     g.play("e4", "e5", "Nf3", "Nc6")
     new = g.show(BADGE_FRAMES + 2, highlight=chess.Move.from_uci("b8c6"), result="1/2-1/2")
     assert not any(isinstance(e, GameEnded) for e in new)
-    pipe = GamePipeline()
-    assert pipe._end_reason(chess.Board(), "1/2-1/2") == "draw agreed"
 
 
 def test_a_flag_is_a_loss_on_time() -> None:
@@ -242,11 +250,6 @@ def test_a_mate_on_the_board_ends_the_game_once_whatever_the_badges_say() -> Non
 
 def test_the_reason_comes_from_the_board() -> None:
     pipe = GamePipeline()
-    stalemate = chess.Board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
-    assert stalemate.is_stalemate()
-    assert pipe._end_reason(stalemate, "1/2-1/2") == "stalemate"
-    bare = chess.Board("7k/8/6K1/8/8/8/8/8 w - - 0 1")
-    assert pipe._end_reason(bare, "1/2-1/2") == "insufficient material"
     mate = chess.Board("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
     assert pipe._end_reason(mate, "0-1") == "checkmate"
     assert pipe._end_reason(chess.Board(), "1-0") == "resignation"

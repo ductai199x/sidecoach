@@ -1179,7 +1179,7 @@ def _player(facts: PositionFacts) -> chess.Color | None:
     """The side the coach speaks to, from the facts: whose "your" a draft means."""
     if facts.user_side is None:
         return None
-    return chess.WHITE if facts.user_side == "white" else chess.BLACK
+    return Side(facts.user_side).color
 
 
 def _after_best(request: _Request) -> list[chess.Board]:
@@ -2240,11 +2240,11 @@ class Coach:
 
     @property
     def user_colour(self) -> chess.Color:
-        return chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
+        return self.user_side.color
 
     @property
     def user_to_move(self) -> bool:
-        return self.board.turn == (chess.WHITE if self.user_side == Side.WHITE else chess.BLACK)
+        return self.board.turn == self.user_side.color
 
     # Events in
 

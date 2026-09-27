@@ -2,7 +2,7 @@
 
 Chess.com marks the end of a game on the board itself, before and under its dialog: a
 green disc with a white crown on the winner's king, a red disc on the loser's (the fallen
-king, a flag or a clock, in the loser's colour), a grey disc on both for a draw. The disc
+king, a flag or a clock, in the loser's colour). The disc
 is about a third of a square across and sits just inside the square's top-right corner as
 drawn on screen, pushed inward on the board's top row and right column so it never
 leaves the board. It stays while the game-over dialog is up. Read at the two kings'
@@ -33,7 +33,6 @@ from sidecoach.vision.squares import BoardGeometry, row_col
 class Badge(StrEnum):
     WIN = "win"
     LOSS = "loss"
-    DRAW = "draw"
 
 
 # The disc's radius in squares, and where its centre may lie relative to the square's
@@ -65,19 +64,17 @@ DISTINCT = 25
 
 
 def classes(colours: np.ndarray) -> np.ndarray:
-    """For an array of BGR colours, the badge each is the colour of: 1 win, 2 loss,
-    3 draw, 0 none."""
+    """For an array of BGR colours, the badge each is the colour of: 1 win, 2 loss, 0 none."""
     c = np.asarray(colours, dtype=np.int16).reshape(-1, 3)
     b, g, r = c[:, 0], c[:, 1], c[:, 2]
     win = (g >= 120) & (g - r >= 25) & (g - b >= 60)
     loss = (r >= 150) & (r - g >= 70) & (r - b >= 70)
     # The draw badge is unseen so far. A grey disc was tried for it and read the rounded
-    # end of a white label, so a draw ends the game through the dialog's cover or the
-    # End game menu until one is on record.
+    # end of a white label (`result_of`).
     return np.select([win, loss], [1, 2], default=0)
 
 
-_BADGES = {1: Badge.WIN, 2: Badge.LOSS, 3: Badge.DRAW}
+_BADGES = {1: Badge.WIN, 2: Badge.LOSS}
 
 
 def classify(colour: np.ndarray) -> Badge | None:
@@ -215,27 +212,16 @@ def badge_on(
     return badge_at(frame, corner_x, corner_y, geometry.cell_px)
 
 
-def read_result(
-    frame: np.ndarray, geometry: BoardGeometry, board: chess.Board, bottom: Side
-) -> str | None:
-    """The result the site has stamped on the two kings, as a PGN result string, or None.
+def result_of(white: Badge | None, black: Badge | None) -> str | None:
+    """The result a pair of badges on the two kings says, as a PGN result string, or None.
 
-    Only the pair counts: a win on one king with a loss on the other, or a draw on both.
-    One badge alone, or two that disagree, is nothing -- the rim of a glow, an arrow's
-    head, a mark the site draws for some other reason.
+    Only the pair counts: a win on one king with a loss on the other. One badge alone, or
+    two that disagree, is nothing -- the rim of a glow, an arrow's head, a mark the site
+    draws for some other reason. A draw's badge has never been seen: a draw ends through
+    the dialog's cover or the End game menu, which carries the reason.
     """
-    white_king = board.king(chess.WHITE)
-    black_king = board.king(chess.BLACK)
-    if white_king is None or black_king is None:
-        return None
-    white = badge_on(frame, geometry, white_king, bottom)
-    if white is None:
-        return None
-    black = badge_on(frame, geometry, black_king, bottom)
     if white is Badge.WIN and black is Badge.LOSS:
         return "1-0"
     if white is Badge.LOSS and black is Badge.WIN:
         return "0-1"
-    if white is Badge.DRAW and black is Badge.DRAW:
-        return "1/2-1/2"
     return None

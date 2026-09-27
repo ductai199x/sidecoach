@@ -512,7 +512,7 @@ class Conversation:
         move = record.move
         board_after = chess.Board(move.fen_after)
         board_before = chess.Board(move.fen_before)
-        user_colour = chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
+        user_colour = self.user_side.color
         who = "the player" if move.by_user else "the opponent"
         if not full:
             return f"{self._numbered(move)} ({who}): {self._verdict_line(record, board_before)}"
@@ -705,7 +705,7 @@ class Conversation:
         if not active:
             return None
         record = active[-1]
-        user_colour = chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
+        user_colour = self.user_side.color
         return self._material_words(
             record,
             chess.Board(record.move.fen_before),
@@ -1180,7 +1180,7 @@ class Conversation:
         for entry in self.entries:
             if entry.record is record and entry.frozen is not None:
                 board_before = chess.Board(record.move.fen_before)
-                user_colour = chess.WHITE if self.user_side == Side.WHITE else chess.BLACK
+                user_colour = self.user_side.color
                 name = self._numbered(record.move)
                 if what == "assessment":
                     verdict = self._verdict_text(record, board_before, user_colour)

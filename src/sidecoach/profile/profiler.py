@@ -316,7 +316,7 @@ class Profiler:
         ply.phase = phase_of(before)
         game.plies[key] = ply
         game.last_fen = event.fen_after
-        user = chess.WHITE if game.user_side is Side.WHITE else chess.BLACK
+        user = game.user_side.color
         ply.move_id = self.store.add_move(
             game.game_id,
             game.segment,
@@ -350,7 +350,7 @@ class Profiler:
             if terminal is None:
                 return None
             score = terminal
-        user = chess.WHITE if game.user_side is Side.WHITE else chess.BLACK
+        user = game.user_side.color
         return score if board.turn == user else 1.0 - score
 
     def _analysis(self, game: _Game, event: Analysis) -> list[Event]:

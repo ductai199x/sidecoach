@@ -240,15 +240,12 @@ def coarse_search(
     found: list[BoardCandidate] = []
     size = float(min_cell)
     while size <= limit:
-        factor = min(1.0, work_cell / size)
-        if factor < 1.0:
-            small = cv2.resize(gray, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
-            pad = work_cell // 2
-            small = cv2.copyMakeBorder(small, 0, pad, 0, pad, cv2.BORDER_REPLICATE)
-            cell = work_cell
-        else:
-            small = gray
-            cell = int(round(size))
+        # Every caller searches from well above the work cell, so the frame always shrinks.
+        factor = work_cell / size
+        small = cv2.resize(gray, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
+        pad = work_cell // 2
+        small = cv2.copyMakeBorder(small, 0, pad, 0, pad, cv2.BORDER_REPLICATE)
+        cell = work_cell
         score, contrast = _checker_response(small, cell, min_contrast=min_contrast)
         if score.size:
             mask = (score >= min_score) & (contrast >= min_contrast)

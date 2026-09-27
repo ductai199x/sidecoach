@@ -1,8 +1,7 @@
-"""The embedding matcher (`SIDECOACH_MATCHER=embed`): pieces named by the nearest cell
-of the start position in a frozen pretrained net's embedding space. Its reading of sets
-of every style from a start position of their own, the pipeline following a game with
-it, and the start frame of a shaded set on a board of its own tone, which the overlap's
-bootstrap refuses."""
+"""The embedding: pieces named by the nearest cell of the start position in a frozen
+pretrained net's embedding space. Its reading of sets of every style from a start
+position of their own, the pipeline following a game with it, the start frame of a
+shaded set on a board of its own tone, and no recogniser at all without the net."""
 
 from __future__ import annotations
 
@@ -13,20 +12,10 @@ import pytest
 
 from sidecoach.events import GameStarted, MovePlayed, Region, Side
 from sidecoach.state.pipeline import GamePipeline
-from sidecoach.vision import pieces
-from sidecoach.vision.embedding import MODEL_PATH, CellEmbedder
+from sidecoach.vision.embedding import CellEmbedder
 from sidecoach.vision.pieces import ThemeModel
 from sidecoach.vision.squares import BoardGeometry, square_at
 from tests.synth import synthetic_board
-
-needs_model = pytest.mark.skipif(
-    not MODEL_PATH.exists(), reason="no embedding net at vision/models/yolo26n-embed.onnx"
-)
-
-
-@pytest.fixture
-def embed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(pieces, "MATCHER", "embed")
 
 
 def _frame(board: chess.Board, style: str, theme: str, cell: int, **kw: object):
@@ -42,8 +31,6 @@ def _frame(board: chess.Board, style: str, theme: str, cell: int, **kw: object):
     )
 
 
-@needs_model
-@pytest.mark.usefixtures("embed")
 @pytest.mark.parametrize("style", ["kosal", "pixel", "riohacha", "chess7", "cburnett-wood"])
 @pytest.mark.parametrize("theme", ["green", "dark"])
 def test_reads_a_set_from_its_own_start_position(style: str, theme: str) -> None:
@@ -62,7 +49,7 @@ def test_reads_a_set_from_its_own_start_position(style: str, theme: str) -> None
         model = ThemeModel.from_start_position(
             _frame(chess.Board(), style, theme, cell), geometry, Side.WHITE
         )
-        assert model is not None and model.matcher == "embed"
+        assert model is not None
         readings = model.classify_frame(
             _frame(board, style, theme, cell, highlight=board.move_stack[-1], check=True),
             geometry,
@@ -79,8 +66,6 @@ def test_reads_a_set_from_its_own_start_position(style: str, theme: str) -> None
     assert len(wrong) <= 1, wrong
 
 
-@needs_model
-@pytest.mark.usefixtures("embed")
 def test_the_pipeline_follows_a_game_with_the_embedding() -> None:
     pipe = GamePipeline()
     board = chess.Board()
@@ -99,7 +84,7 @@ def test_the_pipeline_follows_a_game_with_the_embedding() -> None:
             ts += 0.1
 
     show(3)
-    assert pipe.model is not None and pipe.model.matcher == "embed"
+    assert pipe.model is not None
     assert got == ["start"]
     line = ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Bxc6", "dxc6", "O-O", "Bg4"]
     for san in line:
@@ -108,17 +93,14 @@ def test_the_pipeline_follows_a_game_with_the_embedding() -> None:
     assert got[1:] == line
 
 
-@needs_model
-@pytest.mark.usefixtures("embed")
 def test_a_shaded_set_on_its_own_tone_bootstraps() -> None:
-    """The silhouette bootstrap refuses this start frame (the shaded facet of the dark
-    pieces is the square's colour: half a piece, off centre); the embedding needs no
-    silhouette exemplars and reads the start position from it."""
+    """The shaded facet of the dark pieces is the square's colour: their silhouettes are
+    half a piece, off centre. The embedding reads the start position all the same."""
     cell = 64
     frame = _frame(chess.Board(), "riohacha", "dark", cell)
     geometry = BoardGeometry(Region(300, 120, 8 * cell, 8 * cell), float(cell))
     model = ThemeModel.from_start_position(frame, geometry, Side.WHITE)
-    assert model is not None and model.matcher == "embed"
+    assert model is not None
     readings = model.classify_frame(frame, geometry)
     start = chess.Board()
     wrong = [
@@ -131,11 +113,11 @@ def test_a_shaded_set_on_its_own_tone_bootstraps() -> None:
     assert len(wrong) <= 1, wrong
 
 
-def test_without_the_model_the_overlap_reads_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(pieces, "MATCHER", "embed")
+def test_without_the_net_nothing_is_learned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The net ships in the package; a broken install without it learns no set, rather
+    than read pieces some other way."""
     monkeypatch.setattr(CellEmbedder, "load", staticmethod(lambda path=None: None))
     cell = 64
     frame = _frame(chess.Board(), "cburnett", "green", cell)
     geometry = BoardGeometry(Region(300, 120, 8 * cell, 8 * cell), float(cell))
-    model = ThemeModel.from_start_position(frame, geometry, Side.WHITE)
-    assert model is not None and model.matcher == "iou" and model.exemplar_vectors is None
+    assert ThemeModel.from_start_position(frame, geometry, Side.WHITE) is None

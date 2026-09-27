@@ -50,7 +50,7 @@ def test_theme_cache_round_trips_a_learned_model(tmp_path: Path) -> None:
     assert sampled is not None
     loaded = cache.get(*sampled)
     assert loaded is not None and loaded.light_bg is not None
-    assert loaded.symbols == model.symbols
+    assert [e.symbol for e in loaded.exemplars] == [e.symbol for e in model.exemplars]
     assert np.allclose(loaded.light_bg, model.light_bg)
     assert model.light_bg is not None and model.dark_bg is not None
     # A shade of rendering noise still matches (nearest palette within tolerance).

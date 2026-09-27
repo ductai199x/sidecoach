@@ -203,18 +203,11 @@ class BoardTracker:
             if self._cooldown > 0 and (self.last_cell_px is None or self._near_cooldown > 0):
                 return None
 
-        boards = self._detect(gray, full=self._cooldown <= 0)
-        if self.reject is not None and boards:
-            kept = [b for b in boards if not self.reject(frame_bgr, b.region, b.cell_px)]
-            self.rejected += len(boards) - len(kept)
-            boards = kept
-        self.misses = 0
-        self._frames_since_refine = 0
-        self.board = boards[0] if boards else None
-        self.colours = (
-            square_colours(gray, self.board.region, self.board.cell_px) if self.board else None
+        boards = self._kept(frame_bgr, self._detect(gray, full=self._cooldown <= 0))
+        board = boards[0] if boards else None
+        self._lock(
+            gray, board, square_colours(gray, board.region, board.cell_px) if board else None
         )
-        self._adopted(gray)
         if self.board:
             self._cooldown = self._near_cooldown = 0
             self._full_wait = self.redetect_first
@@ -225,15 +218,29 @@ class BoardTracker:
                 self._full_wait = min(2 * self._full_wait, self.redetect_backoff)
         return self.board
 
-    def _adopted(self, gray: np.ndarray) -> None:
-        """A lock was just taken: what it reads is its measure, and the probe starts fresh."""
+    def _lock(
+        self, gray: np.ndarray, board: BoardCandidate | None, colours: Colours | None
+    ) -> None:
+        """A lock taken (or none): what it reads is its measure, and the probe starts fresh."""
+        self.misses = 0
+        self._frames_since_refine = 0
+        self.board = board
+        self.colours = colours
         self._readable = (
-            readable_cells(gray, self.board.region, self.board.cell_px, self.colours)
-            if self.board is not None and self.colours is not None
+            readable_cells(gray, board.region, board.cell_px, colours)
+            if board is not None and colours is not None
             else 0
         )
         self._probe_cooldown = 0
         self._probe_wait = self.probe_backoff
+
+    def _kept(self, frame_bgr: np.ndarray, boards: list[BoardCandidate]) -> list[BoardCandidate]:
+        """The detected boards the veto (`reject`) lets through, the others counted."""
+        if self.reject is None or not boards:
+            return boards
+        kept = [b for b in boards if not self.reject(frame_bgr, b.region, b.cell_px)]
+        self.rejected += len(boards) - len(kept)
+        return kept
 
     def _lost_cells(self, readable: int) -> bool:
         """Whether a row's worth of the cells this lock could read are gone; when they are
@@ -257,10 +264,7 @@ class BoardTracker:
             self._probe_cooldown -= 1
             return None
         self.probes += 1
-        boards = self._detect(gray, full=False, count=False)
-        if self.reject is not None and boards:
-            boards = [b for b in boards if not self.reject(frame_bgr, b.region, b.cell_px)]
-        for board in boards:
+        for board in self._kept(frame_bgr, self._detect(gray, full=False, count=False)):
             if _edge_shift(board.region, lock.region) <= self.refit_deadband_px:
                 continue
             colours = square_colours(gray, board.region, board.cell_px)
@@ -269,13 +273,9 @@ class BoardTracker:
             fit, contrast = fit_score(gray, board.region, board.cell_px, colours)
             cells = readable_cells(gray, board.region, board.cell_px, colours)
             if self._passes(fit, contrast) and cells > self._readable - self.probe_lost_cells:
-                self.misses = 0
-                self._frames_since_refine = 0
-                self.board = replace(board, fit=fit, contrast=contrast)
-                self.colours = colours
-                self.last_cell_px = self.board.cell_px
+                self._lock(gray, replace(board, fit=fit, contrast=contrast), colours)
+                self.last_cell_px = board.cell_px
                 self.detections += 1
-                self._adopted(gray)
                 return self.board
         self._probe_cooldown = self._probe_wait
         self._probe_wait = min(self._probe_wait * 2, self.probe_backoff_max)
