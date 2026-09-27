@@ -299,7 +299,13 @@ object BoardRefine {
      * the best comb whose last tooth runs past the edge by the offset step and the drift of
      * a pitch step, and each of the two is fitted finely within the frame. Past the edge, a
      * comb a cell over, its last tooth hidden beyond the frame, can tie the flush board's in
-     * the coarse pass; the fine pass inside the frame tells them apart.
+     * the coarse pass; the fine pass inside the frame tells them apart. At the near end
+     * likewise the first tooth may sit on the frame's edge, half a pixel before the first
+     * pixel, and the best coarse comb that starts there is fitted finely too: the coarse grid
+     * held a flush board's comb only from the first pixel, half a pixel off its boundaries,
+     * where a pitch a coarse step long moved the far teeth off them, and a comb a cell over,
+     * every tooth on a boundary, won -- a lock a fifth of a cell off a board in the frame's
+     * top-left corner re-fitted a whole cell off it (desktop 44b112f).
      */
     fun combFit(
         profile: DoubleArray,
@@ -312,6 +318,7 @@ object BoardRefine {
         val n = profile.size
         val reach = pitch * offsetCells
         val step = max(0.25, pitch * 0.01)
+        val first = if (blind.start) -0.5 else 0.0
         val last = if (blind.end) n - 0.5 else n - 1.0
         val ends = if (blind.end) doubleArrayOf(last, last + 1.0 + 4.0 * step) else doubleArrayOf(last)
 
@@ -344,11 +351,11 @@ object BoardRefine {
             return bests
         }
 
-        val coarse = bestOver(
-            range(pitch * (1 - search), pitch * (1 + search), step),
-            range(max(0.0, start - reach), min(n - 1.0, start + reach), 1.0),
-            ends,
-        )
+        val pitches = range(pitch * (1 - search), pitch * (1 + search), step)
+        val coarse = bestOver(pitches, range(max(0.0, start - reach), min(n - 1.0, start + reach), 1.0), ends)
+        if (first < 0.0 && start - reach < 0.0) {
+            coarse += bestOver(pitches, doubleArrayOf(first), doubleArrayOf(ends[ends.size - 1]))
+        }
         val span = max(1.0, 4.0 * step)
         val found = ArrayList<Triple<Double, Double, Double>>()
         for ((k, fit) in coarse.withIndex()) {
@@ -356,7 +363,7 @@ object BoardRefine {
             if (s == Double.NEGATIVE_INFINITY || (k > 0 && o == coarse[0].first && p == coarse[0].second)) continue
             found += bestOver(
                 range(p * 0.99, p * 1.01, max(0.05, p * 0.002)),
-                range(max(0.0, o - span), min(n - 1.0, o + span) + 0.01, 0.25),
+                range(max(first, o - span), min(n - 1.0, o + span) + 0.01, 0.25),
                 doubleArrayOf(last),
             )
             if (k == 0) found.add(fit) // within the frame as it stands; a tie goes to the fine
