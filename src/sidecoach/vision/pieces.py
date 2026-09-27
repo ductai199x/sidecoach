@@ -350,6 +350,15 @@ class Exemplar:
     references: tuple[cookie.Reference, ...] = ()
 
 
+# The embedder sees every cell at this resolution, whatever the board's size: the crop brought
+# down to CANONICAL_PX a side and back (canonical). A board drawn larger carries more detail,
+# and the embeddings of a board resized away from the one its set was learned at drifted
+# (bishops read as knights after a board was enlarged half again: the parity audit's sweep,
+# 2026-09-26); at one resolution every size looks alike. 40 px, from the scale benchmark
+# (44 sets, learned at one of 32-128 px and read at another): identity errors 161 -> 13, where
+# 24 px lost the detail that tells some sets' pieces apart (a pirouetti queen read as a
+# bishop). Landing keeps the full detail: brought down too, a piece in flight read as landed.
+CANONICAL_PX = 40
 SETTLED_TOLERANCE = 0.08  # of a cell; a dragged piece follows the cursor, far off centre
 SETTLED_FLOOR_PX = 3.0  # source pixels: the lock itself is only good to about a pixel
 # Stillness (SIDECOACH_STILLNESS=1, off by default): a cell whose silhouette is not the
@@ -1598,7 +1607,7 @@ class ThemeModel:
         # a second on the phone for a board that was mostly empty squares.
         inked = [(r, c) for r, c in fresh if sils[r][c].fraction >= PIECE_MIN_FRACTION]
         if net is not None and inked:
-            embedded = net.embed([crops[r][c] for r, c in inked])
+            embedded = net.embed([canonical(crops[r][c]) for r, c in inked])
             vectors = dict(zip(inked, embedded, strict=True))
         readings: list[list[CellReading]] = []
         for r in range(8):
@@ -1770,7 +1779,7 @@ class ThemeModel:
                 model.landing_crops[symbol] = cv2.cvtColor(crops[r][c], cv2.COLOR_BGR2GRAY)
         if net is not None:
             cells = [crops[r][c] for r in range(8) for c in range(8)]
-            vectors = net.embed(cells)
+            vectors = net.embed([canonical(cell) for cell in cells])
             labels = tuple(
                 piece.symbol() if (piece := start.piece_at(square_at(r, c, bottom))) else "empty"
                 for r in range(8)
@@ -1951,6 +1960,15 @@ def occupancy(frame: np.ndarray, geometry: BoardGeometry) -> np.ndarray:
         for c in range(8):
             grid[r, c] = silhouette(geometry.crop(frame, r, c, size=2 * CELL)).fraction
     return grid
+
+
+def canonical(crop: np.ndarray) -> np.ndarray:
+    """A cell's crop as the embedder sees it: brought down to CANONICAL_PX a side and back,
+    so a board of any size shows the embedder the same detail. Only the embedding goes
+    through it; silhouettes, outlines, tints and landing keep the full-detail crop."""
+    size = crop.shape[0]
+    small = cv2.resize(crop, (CANONICAL_PX, CANONICAL_PX), interpolation=cv2.INTER_AREA)
+    return cv2.resize(small, (size, size), interpolation=cv2.INTER_LINEAR)
 
 
 def _start_shaped(occupied: np.ndarray) -> bool:
