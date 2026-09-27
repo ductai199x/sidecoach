@@ -194,7 +194,7 @@ def test_tracker_holds_through_brief_occlusion_then_redetects() -> None:
     assert tracker.update(occluded) is not None  # miss 2
     assert tracker.update(occluded) is None  # miss 3 drops the lock, detection finds nothing
     board = None
-    for _ in range(tracker.redetect_backoff + 1):  # backoff, then a search that succeeds
+    for _ in range(tracker._full.most + 1):  # backoff, then a search that succeeds
         board = tracker.update(frame)
         if board is not None:
             break
@@ -222,7 +222,7 @@ def test_a_board_back_at_another_size_after_a_moment_is_found_soon() -> None:
         if board is not None and tracker.verified:
             break
     assert board is not None and abs(board.region.x - 200) <= 2 and abs(board.cell_px - 100) <= 1
-    assert frames <= tracker.redetect_first, frames
+    assert frames <= tracker._full.first, frames
 
 
 def test_tracker_relocks_after_resize() -> None:

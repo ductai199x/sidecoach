@@ -42,6 +42,27 @@ def _edge_shift(a: Region, b: Region) -> int:
     )
 
 
+class _Wait:
+    """How long a search that found nothing waits before it runs again: `first` frames, twice
+    that after the next miss, up to `most`; a board found starts it over."""
+
+    def __init__(self, first: int, most: int) -> None:
+        self.first, self.most = first, most
+        self.left = 0  # frames still to wait
+        self.next = first  # the wait after the next miss
+
+    def ready(self) -> bool:
+        """Counts this frame; whether the wait is over."""
+        self.left -= 1
+        return self.left <= 0
+
+    def missed(self) -> None:
+        self.left, self.next = self.next, min(2 * self.next, self.most)
+
+    def reset(self) -> None:
+        self.left, self.next = 0, self.first
+
+
 class BoardTracker:
     def __init__(
         self,
@@ -79,10 +100,9 @@ class BoardTracker:
         # large again, a board that came back from off the screen resized -- and a flat
         # twenty frames kept it unread for two seconds while the moves went on (the
         # geometry sweep, 2026-09-27: five plies played before the board was seen again).
-        self.redetect_first = redetect_first
-        self.redetect_backoff = redetect_backoff
-        self._full_wait = redetect_first
-        self.near_backoff = near_backoff
+        self._full = _Wait(redetect_first, redetect_backoff)
+        # The search near the last cell size is cheap: every `near_backoff` frames.
+        self._near = _Wait(near_backoff, near_backoff)
         # A lock that still validates after the board moved away: the fit counts only the
         # cells that read as square colours, so a board scrolled two and a half cells kept
         # its old lock at fit 0.9 on the cells it left behind, and nothing was read again
@@ -90,8 +110,7 @@ class BoardTracker:
         # read are gone, the cheap near-size detection looks for the board it lost; while
         # it finds nothing better (a dialog over the board) it waits longer each time.
         self.probe_lost_cells = probe_lost_cells
-        self.probe_backoff = probe_backoff
-        self.probe_backoff_max = probe_backoff_max
+        self._probe_wait = _Wait(probe_backoff, probe_backoff_max)
         # A veto on detected boards: called with the colour frame, a candidate's region and
         # cell size; True means "not a board we want" (the panel's own board, see
         # vision.ownboard). Vetoed candidates are dropped before one is adopted.
@@ -103,12 +122,8 @@ class BoardTracker:
         self.misses = 0
         self.detections = 0
         self._frames_since_refine = 0
-        self._cooldown = 0
-        self._near_cooldown = 0
         self.probes = 0
         self._readable = 0  # the most cells this lock has read as square colours
-        self._probe_cooldown = 0
-        self._probe_wait = probe_backoff
 
     @property
     def locked(self) -> bool:
@@ -198,24 +213,27 @@ class BoardTracker:
             # window that comes back, or was covered for a moment, re-locks within a few
             # frames; the full multi-scale search, which costs over a second at 1440p,
             # backs off for longer.
-            self._cooldown -= 1
-            self._near_cooldown -= 1
-            if self._cooldown > 0 and (self.last_cell_px is None or self._near_cooldown > 0):
+            full = self._full.ready()
+            near = self._near.ready() and self.last_cell_px is not None
+            if not full and not near:
                 return None
+            return self._search(gray, frame_bgr, full)
+        return self._search(gray, frame_bgr, True)
 
-        boards = self._kept(frame_bgr, self._detect(gray, full=self._cooldown <= 0))
+    def _search(self, gray: np.ndarray, frame_bgr: np.ndarray, full: bool) -> BoardCandidate | None:
+        """Detection with the lock gone; a board found is locked, and a miss backs off."""
+        boards = self._kept(frame_bgr, self._detect(gray, full=full))
         board = boards[0] if boards else None
         self._lock(
             gray, board, square_colours(gray, board.region, board.cell_px) if board else None
         )
         if self.board:
-            self._cooldown = self._near_cooldown = 0
-            self._full_wait = self.redetect_first
+            self._full.reset()
+            self._near.reset()
         else:
-            self._near_cooldown = self.near_backoff
-            if self._cooldown <= 0:
-                self._cooldown = self._full_wait
-                self._full_wait = min(2 * self._full_wait, self.redetect_backoff)
+            self._near.missed()
+            if full:
+                self._full.missed()
         return self.board
 
     def _lock(
@@ -226,13 +244,14 @@ class BoardTracker:
         self._frames_since_refine = 0
         self.board = board
         self.colours = colours
+        if board is not None:
+            self.last_cell_px = board.cell_px
         self._readable = (
             readable_cells(gray, board.region, board.cell_px, colours)
             if board is not None and colours is not None
             else 0
         )
-        self._probe_cooldown = 0
-        self._probe_wait = self.probe_backoff
+        self._probe_wait.reset()
 
     def _kept(self, frame_bgr: np.ndarray, boards: list[BoardCandidate]) -> list[BoardCandidate]:
         """The detected boards the veto (`reject`) lets through, the others counted."""
@@ -247,8 +266,7 @@ class BoardTracker:
         back, a later loss is probed at once."""
         lost = readable <= self._readable - self.probe_lost_cells
         if not lost:
-            self._probe_cooldown = 0
-            self._probe_wait = self.probe_backoff
+            self._probe_wait.reset()
         return lost
 
     def _probe(
@@ -260,8 +278,7 @@ class BoardTracker:
         window over part of the board a region a cell off read more and was taken. Adopted
         as a new lock. Nothing found (a dialog over the board, an arrow): the lock stands,
         and the next probe waits twice as long. Counted in `probes`, not `detections`."""
-        if self._probe_cooldown > 0:
-            self._probe_cooldown -= 1
+        if not self._probe_wait.ready():
             return None
         self.probes += 1
         for board in self._kept(frame_bgr, self._detect(gray, full=False, count=False)):
@@ -274,11 +291,9 @@ class BoardTracker:
             cells = readable_cells(gray, board.region, board.cell_px, colours)
             if self._passes(fit, contrast) and cells > self._readable - self.probe_lost_cells:
                 self._lock(gray, replace(board, fit=fit, contrast=contrast), colours)
-                self.last_cell_px = board.cell_px
                 self.detections += 1
                 return self.board
-        self._probe_cooldown = self._probe_wait
-        self._probe_wait = min(self._probe_wait * 2, self.probe_backoff_max)
+        self._probe_wait.missed()
         return None
 
     def _detect(
@@ -301,11 +316,7 @@ class BoardTracker:
                 max_cell=int(self.last_cell_px * 1.25) + 1,
             )
             if near:
-                self.last_cell_px = near[0].cell_px
                 return near
         if not full:
             return []
-        boards = detect_boards_gray(gray, min_fit=self.min_fit, min_contrast=self.min_contrast)
-        if boards:
-            self.last_cell_px = boards[0].cell_px
-        return boards
+        return detect_boards_gray(gray, min_fit=self.min_fit, min_contrast=self.min_contrast)
