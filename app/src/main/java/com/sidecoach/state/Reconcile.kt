@@ -825,7 +825,16 @@ class Reconciler(
             for ((ignored, wild) in attempts) {
                 if (!tried.add(ignored to wild)) continue
                 val fresh = diff - ignored
-                if (fresh.isEmpty()) continue
+                if ((fresh - wild).isEmpty()) {
+                    // A story must rest on a disagreement read cleanly -- a square read empty
+                    // or a settled piece of a known kind. When every cell left to explain is
+                    // a wildcard, nothing on the board says a move was played: a board locked
+                    // 0.28 of a cell off (it had slid on after the lock was taken) read every
+                    // piece unsettled, the top of the king on d2 read as a piece on d3, and
+                    // the king's move there was told, d2 and d3 both wildcards (the desktop's
+                    // geometry sweep, 2026-09-27, seed 97).
+                    continue
+                }
                 val liveObs = Observation()
                 for ((sq, r) in obs) if (sq !in ignored) liveObs[sq] = r
                 denied = Observation()
