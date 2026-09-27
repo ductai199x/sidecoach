@@ -208,7 +208,9 @@ class Assessing(
         } ?: assessment.uci
         val best = board?.let { sanLine(it, assessment.best, 4) } ?: assessment.best.joinToString(" ")
         val word = assessment.label?.name?.lowercase() ?: assessment.severity.name.lowercase()
-        val loss = "%.3f".format(assessment.expectedLoss)
+        // `f"{loss:.3f}"`: half to even, and a point whatever the phone's language (a
+        // locale's `%.3f` writes a comma on a German or French phone).
+        val loss = fixed(assessment.expectedLoss, 3)
         return "${assessment.ply}. $played — $word, cost $loss, depth ${assessment.depth}" +
             if (best.isNotEmpty() && assessment.label != Label.BEST) ", best $best" else ""
     }
@@ -235,8 +237,11 @@ class Assessing(
             return parts.joinToString("  ")
         }
 
-        private fun fixed2(value: Double): String =
-            java.math.BigDecimal(value).setScale(2, java.math.RoundingMode.HALF_EVEN).toPlainString()
+        private fun fixed2(value: Double): String = fixed(value, 2)
+
+        /** `f"{value:.Nf}"`: the float's exact value rounded half to even, never the locale's. */
+        private fun fixed(value: Double, places: Int): String =
+            java.math.BigDecimal(value).setScale(places, java.math.RoundingMode.HALF_EVEN).toPlainString()
 
         /**
          * `cli._Assessing(settings, enabled)` with `cli._make_analyser`: the engine running
