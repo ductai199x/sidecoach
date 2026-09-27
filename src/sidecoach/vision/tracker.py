@@ -25,6 +25,7 @@ from sidecoach.vision.board_detect import (
     Colours,
     detect_boards_gray,
     fit_score,
+    readable_cells,
     refine,
     square_colours,
     to_gray,
@@ -54,6 +55,9 @@ class BoardTracker:
         refit_deadband_px: int = 2,
         redetect_backoff: int = 20,
         near_backoff: int = 3,
+        probe_lost_cells: int = 8,
+        probe_backoff: int = 10,
+        probe_backoff_max: int = 80,
         reject: Callable[[np.ndarray, Region, float], bool] | None = None,
     ) -> None:
         self.min_fit = min_fit
@@ -69,6 +73,15 @@ class BoardTracker:
         self.refit_deadband_px = refit_deadband_px
         self.redetect_backoff = redetect_backoff
         self.near_backoff = near_backoff
+        # A lock that still validates after the board moved away: the fit counts only the
+        # cells that read as square colours, so a board scrolled two and a half cells kept
+        # its old lock at fit 0.9 on the cells it left behind, and nothing was read again
+        # (the parity audit, 2026-09-26). When a row's worth of the cells the lock could
+        # read are gone, the cheap near-size detection looks for the board it lost; while
+        # it finds nothing better (a dialog over the board) it waits longer each time.
+        self.probe_lost_cells = probe_lost_cells
+        self.probe_backoff = probe_backoff
+        self.probe_backoff_max = probe_backoff_max
         # A veto on detected boards: called with the colour frame, a candidate's region and
         # cell size; True means "not a board we want" (the panel's own board, see
         # vision.ownboard). Vetoed candidates are dropped before one is adopted.
@@ -82,6 +95,10 @@ class BoardTracker:
         self._frames_since_refine = 0
         self._cooldown = 0
         self._near_cooldown = 0
+        self.probes = 0
+        self._readable = 0  # the most cells this lock has read as square colours
+        self._probe_cooldown = 0
+        self._probe_wait = probe_backoff
 
     @property
     def locked(self) -> bool:
@@ -106,10 +123,20 @@ class BoardTracker:
                 # fresh palette that validates, outer ring included, re-locks the colours.
                 # A dialog over most of the board fails this too, since its palette is the
                 # dialog, so it cannot rewrite the lock.
+                # A new theme keeps the board where it was, its light squares the lighter
+                # ones: a palette whose light and dark swap places is the board read a
+                # cell off (moved 0.8 of a cell up, the lock re-read its colours inverted
+                # and stayed where the board was: the parity audit's sweep, 2026-09-26).
                 fresh_fit, fresh_contrast = fit_score(gray, candidate.region, candidate.cell_px)
-                if self._passes(fresh_fit, fresh_contrast):
-                    self.colours = square_colours(gray, candidate.region, candidate.cell_px)
+                fresh = square_colours(gray, candidate.region, candidate.cell_px)
+                if (
+                    self._passes(fresh_fit, fresh_contrast)
+                    and fresh is not None
+                    and (fresh[0] > fresh[1]) == (self.colours[0] > self.colours[1])
+                ):
+                    self.colours = fresh
                     fit, contrast = fresh_fit, fresh_contrast
+                    self._readable = 0  # a new palette: what it reads is counted afresh
             if self._frames_since_refine >= self.refine_every:
                 self._frames_since_refine = 0
                 refit = refine(
@@ -132,8 +159,18 @@ class BoardTracker:
                 ):
                     candidate = refined
                     fit, contrast = refined.fit, refined.contrast
+            readable = (
+                readable_cells(gray, candidate.region, candidate.cell_px, self.colours)
+                if self.colours is not None and self._passes(fit, contrast)
+                else 0
+            )
+            if self._passes(fit, contrast) and self._lost_cells(readable):
+                moved = self._probe(gray, frame_bgr, candidate, readable)
+                if moved is not None:
+                    return moved
             if self._passes(fit, contrast):
                 self.misses = 0
+                self._readable = max(self._readable, readable)
                 self.board = replace(candidate, fit=fit, contrast=contrast)
                 self.last_cell_px = self.board.cell_px
                 return self.board
@@ -167,6 +204,7 @@ class BoardTracker:
         self.colours = (
             square_colours(gray, self.board.region, self.board.cell_px) if self.board else None
         )
+        self._adopted(gray)
         if self.board:
             self._cooldown = self._near_cooldown = 0
         else:
@@ -175,14 +213,73 @@ class BoardTracker:
                 self._cooldown = self.redetect_backoff
         return self.board
 
-    def _detect(self, gray: np.ndarray, full: bool = True) -> list[BoardCandidate]:
+    def _adopted(self, gray: np.ndarray) -> None:
+        """A lock was just taken: what it reads is its measure, and the probe starts fresh."""
+        self._readable = (
+            readable_cells(gray, self.board.region, self.board.cell_px, self.colours)
+            if self.board is not None and self.colours is not None
+            else 0
+        )
+        self._probe_cooldown = 0
+        self._probe_wait = self.probe_backoff
+
+    def _lost_cells(self, readable: int) -> bool:
+        """Whether a row's worth of the cells this lock could read are gone; when they are
+        back, a later loss is probed at once."""
+        lost = readable <= self._readable - self.probe_lost_cells
+        if not lost:
+            self._probe_cooldown = 0
+            self._probe_wait = self.probe_backoff
+        return lost
+
+    def _probe(
+        self, gray: np.ndarray, frame_bgr: np.ndarray, lock: BoardCandidate, readable: int
+    ) -> BoardCandidate | None:
+        """The board this lock lost, if the near-size detection finds it elsewhere: a board
+        away from the lock that validates in its own colours and reads what the lock read
+        before it lost its cells -- the whole board, not only more than now: under a
+        window over part of the board a region a cell off read more and was taken. Adopted
+        as a new lock. Nothing found (a dialog over the board, an arrow): the lock stands,
+        and the next probe waits twice as long. Counted in `probes`, not `detections`."""
+        if self._probe_cooldown > 0:
+            self._probe_cooldown -= 1
+            return None
+        self.probes += 1
+        boards = self._detect(gray, full=False, count=False)
+        if self.reject is not None and boards:
+            boards = [b for b in boards if not self.reject(frame_bgr, b.region, b.cell_px)]
+        for board in boards:
+            if _edge_shift(board.region, lock.region) <= self.refit_deadband_px:
+                continue
+            colours = square_colours(gray, board.region, board.cell_px)
+            if colours is None:
+                continue
+            fit, contrast = fit_score(gray, board.region, board.cell_px, colours)
+            cells = readable_cells(gray, board.region, board.cell_px, colours)
+            if self._passes(fit, contrast) and cells > self._readable - self.probe_lost_cells:
+                self.misses = 0
+                self._frames_since_refine = 0
+                self.board = replace(board, fit=fit, contrast=contrast)
+                self.colours = colours
+                self.last_cell_px = self.board.cell_px
+                self.detections += 1
+                self._adopted(gray)
+                return self.board
+        self._probe_cooldown = self._probe_wait
+        self._probe_wait = min(self._probe_wait * 2, self.probe_backoff_max)
+        return None
+
+    def _detect(
+        self, gray: np.ndarray, full: bool = True, count: bool = True
+    ) -> list[BoardCandidate]:
         """Detection, trying the last known cell size first.
 
         A window that was moved keeps its cell size, so a narrow scale search around it
         re-locks in a fraction of the full multi-scale search. Only on failure, and only
         when `full` allows it, does the full range run.
         """
-        self.detections += 1
+        if count:
+            self.detections += 1
         if self.last_cell_px is not None:
             near = detect_boards_gray(
                 gray,

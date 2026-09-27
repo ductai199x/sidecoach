@@ -39,6 +39,8 @@ _SIGNS = np.array(
     [[1.0 if (r + c) % 2 == 0 else -1.0 for c in range(8)] for r in range(8)], dtype=np.float64
 )
 MIN_READABLE_CELLS = 24
+# Boards whose width is within this fraction of the largest are one size to the ranking.
+SAME_SIZE = 0.95
 _DILATE = np.ones((3, 3), dtype=np.uint8)
 
 # (light, dark, tolerance): the square colours a board is read with. `light` is the colour of
@@ -57,6 +59,7 @@ class BoardCandidate:
     contrast: float
     fit: float = 0.0
     occupied: int = 0  # cells whose interior differs from their ring: pieces and marks
+    readable: int = 0  # cells whose ring reads as one of the two square colours
 
 
 @dataclass(frozen=True)
@@ -497,6 +500,16 @@ def _score_cells(
     return match, contrast
 
 
+def readable_cells(gray: np.ndarray, region: Region, cell: float, colours: Colours) -> int:
+    """How many of the 64 cells at `region` read as one of `colours`' square colours.
+
+    The fit counts only these, so a board that moved away by two cells and a fraction still
+    fits where it was, on the cells it left behind; what gives it away is how few are left
+    to read (the tracker's probe)."""
+    medians = cell_medians(gray, region, cell)
+    return 0 if medians is None else int(readable_against(medians, colours).sum())
+
+
 def fit_score(
     gray: np.ndarray,
     region: Region,
@@ -690,13 +703,20 @@ def refine(
     region, pitch = fitted.region, fitted.cell_px
     medians = cell_medians(gray, region, pitch)
     if medians is None:
-        fit, contrast, occupied = 0.0, 0.0, 0
+        fit, contrast, occupied, readable = 0.0, 0.0, 0, 0
     else:
         read = colours or palette(medians)
         fit, contrast = _score_cells(gray, region, pitch, medians, read)
         occupied = occupied_cells(gray, region, pitch, medians, read)
+        readable = int(readable_against(medians, read).sum())
     board = replace(
-        cand, region=region, cell_px=pitch, fit=fit, contrast=contrast, occupied=occupied
+        cand,
+        region=region,
+        cell_px=pitch,
+        fit=fit,
+        contrast=contrast,
+        occupied=occupied,
+        readable=readable,
     )
     return Refinement(board, strength, reference)
 
@@ -747,6 +767,15 @@ def detect_boards_gray(
     # pass the threshold on a palette read from itself, never outranks a clean board; the
     # occupied count only decides between boards of one size and fit.
     good.sort(key=lambda c: (c.region.w, c.fit, c.occupied), reverse=True)
+    if good:
+        # Among boards of about the size of the largest, the one that reads more of its cells
+        # as squares comes first: a window 4 px wider, part board and part background (24
+        # cells readable against the board's 64), outranked a board moved two cells away and
+        # the game was never read again (the parity audit's sweep, 2026-09-26).
+        peers = [c for c in good if c.region.w >= SAME_SIZE * good[0].region.w]
+        best = max(peers, key=lambda c: (c.readable, c.fit, c.occupied))
+        good.remove(best)
+        good.insert(0, best)
     return good[:top_k]
 
 

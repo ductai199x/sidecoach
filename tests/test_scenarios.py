@@ -174,3 +174,36 @@ def test_catch_up_after_a_gap_of_a_few_plies(plies: int) -> None:
     for san in line:
         s.board.push_san(san)
     assert s.settle(6) == line
+
+
+@pytest.mark.parametrize(
+    ("cell", "dx", "dy"),
+    [
+        (50, 0.0, 2.4),
+        (50, -2.4, 0.0),
+        (50, 2.0, 0.0),
+        (50, 0.0, -0.8),
+        (48, 3.0, 3.0),
+        # At 48 px the same diagonal re-locks too, but its Nc6 does not land on the highlighted
+        # square: a landing reference learned at one lock offset, read at another
+        # (docs/known-issues.md).
+        (64, -1.4, -1.4),
+    ],
+)
+def test_a_board_moved_any_fraction_of_a_cell_is_found_again(
+    cell: int, dx: float, dy: float
+) -> None:
+    """Moves that kept the old lock: two cells and a fraction (the cells it left behind still
+    fit), 0.8 of a cell (the palette re-read inverted), two whole cells (a window part board
+    and part background ranked first), the diagonals. The lock follows within a few frames
+    and the game goes on (the parity audit's sweep, 2026-09-26)."""
+    s = Session(x0=440, y0=200, cell=cell)
+    s.start()
+    assert s.play("e4", "e5") == ["e4", "e5"]
+    s.x0, s.y0 = int(440 + dx * cell), int(200 + dy * cell)
+    s.settle(8)
+    b = s.pipe.board
+    assert b is not None and abs(b.region.x - s.x0) <= 3 and abs(b.region.y - s.y0) <= 3
+    s.play("Nf3", "Nc6")
+    s.settle(3)
+    assert s.played == ["e4", "e5", "Nf3", "Nc6"]
