@@ -403,7 +403,14 @@ object Situation {
     fun stakesWords(board: Board, stakes: Stakes, opening: String?): String? {
         val kind = stakes.kind
         if (kind == "check") {
-            if (stakes.legal == 1) return "You're in check, and there is only one legal move"
+            if (stakes.legal == 1) {
+                // And whether it saves anything: "only one legal move" of a mated king was read
+                // as "only one move holds; otherwise you are mated" (the test audit, 2026-09-26).
+                if (stakes.top < LOST) {
+                    return "You're in check, and there is only one legal move -- it does not save the game"
+                }
+                return "You're in check, and there is only one legal move"
+            }
             if (stakes.good == 1 && stakes.nextLine != null) {
                 if (stakes.top >= WON) {
                     return "You're in check but winning, and only one way out keeps it that way: " +

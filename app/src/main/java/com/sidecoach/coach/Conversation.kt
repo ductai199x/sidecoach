@@ -1,11 +1,18 @@
 package com.sidecoach.coach
 
 import com.sidecoach.analysis.sanLine
+import com.sidecoach.chess.BISHOP
 import com.sidecoach.chess.BLACK
 import com.sidecoach.chess.Board
+import com.sidecoach.chess.KING
+import com.sidecoach.chess.KNIGHT
 import com.sidecoach.chess.Move
+import com.sidecoach.chess.PAWN
+import com.sidecoach.chess.QUEEN
+import com.sidecoach.chess.ROOK
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.chess.WHITE
+import com.sidecoach.chess.parseSquare
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.DisclosureLevel
 import com.sidecoach.events.GameEnded
@@ -90,6 +97,28 @@ class PlyRecord(val move: MovePlayed) {
 
     /** Before a re-read of the board: the move list restarted. */
     var superseded: Boolean = false
+}
+
+private val PLACED_PIECE = Regex("\\b(king|queen|rook|bishop|knight|pawn) on ([a-h][1-8])\\b")
+private val PLACED_PIECE_TYPES = mapOf(
+    "king" to KING,
+    "queen" to QUEEN,
+    "rook" to ROOK,
+    "bishop" to BISHOP,
+    "knight" to KNIGHT,
+    "pawn" to PAWN,
+)
+
+/**
+ * Whether [text] names a piece on a square that no longer holds that piece on [board].
+ * `conversation._gone`.
+ */
+private fun gone(text: String, board: Board): Boolean {
+    for (match in PLACED_PIECE.findAll(text.lowercase())) {
+        val (word, square) = match.destructured
+        if (board.pieceTypeAt(parseSquare(square)) != PLACED_PIECE_TYPES.getValue(word)) return true
+    }
+    return false
 }
 
 /**
@@ -846,12 +875,19 @@ class Conversation {
     /**
      * The facts of the position the player faced before their move, all of them (it is past):
      * the lesson after the move is taught from them, and the record keeps only one line for
-     * that position.
+     * that position. With [after], the board once the move (and the reply the engine expects)
+     * is played: an idea about a piece that no longer stands there is left out -- "the
+     * opponent's backward d-pawn on d6 is a lasting target" beside Qxc5 dxc5 was said as
+     * "preserving your lasting target on d6" (the test audit, 2026-09-26).
      */
-    fun facedText(facts: PositionFacts, board: Board): String {
+    fun facedText(facts: PositionFacts, board: Board, after: Board? = null): String {
         val visible = visibleFacts(facts, DisclosureLevel.LINE)
         // The hint's questions were for finding the move; the lesson is on the move made.
         for (key in listOf("question", "nudge")) visible.remove(key)
+        val ideas = visible["ideas"] as? List<*>
+        if (after != null && !ideas.isNullOrEmpty()) {
+            visible["ideas"] = ideas.filter { !gone(it.toString(), after) }
+        }
         val lines = factLines(visible, board, "player", past = true)
         return (listOf(positionText(board, legal = false)) + lines).joinToString("\n")
     }
@@ -866,10 +902,14 @@ class Conversation {
         side: String,
         past: Boolean = false,
     ): List<String> {
-        val names = if (past) {
-            FACT_NAMES + ("situation" to "the first hint for that position (to the player, as it stood)")
-        } else {
-            FACT_NAMES
+        var names = FACT_NAMES
+        if (side == "opponent") {
+            // Their best move now, not the player's: "axb4 meets the player's idea" was taken
+            // into the player's better line (the dev audit, 2026-09-26).
+            names = names + ("why" to "the opponent's best move now and what it does")
+        }
+        if (past) {
+            names = names + ("situation" to "the first hint for that position (to the player, as it stood)")
         }
         val out = ArrayList<String>()
         for (key in FACT_KEYS) {
@@ -888,17 +928,30 @@ class Conversation {
                     out.add("  - " + Person.thirdPerson(v.toString(), side = side))
                 }
             } else if (key == "threats") {
-                // A threat is the opponent's move if the side to move passed; what it does
-                // is computed on that position, so the coach can say it in words.
+                // A threat is the other side's move if the side to move passed; what it does is
+                // computed on that position. Named with its owner and moment: "what the other
+                // side threatens" was read as the opponent's where it was the player's ("your
+                // opponent's queen ... e5" of the player's own e5), and a threat as something a
+                // move stopped ("Rae1 before they can use Re3": the test audit).
+                val (owner, mover) = if (side == "player") {
+                    "the opponent's" to "the player"
+                } else {
+                    "the player's" to "the opponent"
+                }
                 out.add(
-                    "$name: " + (value as List<*>).joinToString(", ") {
-                        threatWords(board, it.toString())
+                    "$owner threats, if $mover passed: " + (value as List<*>).joinToString(", ") {
+                        "$owner ${threatWords(board, it.toString())}"
                     }
                 )
             } else if (value is List<*>) {
                 out.add("$name: " + value.joinToString(", ") { it.toString() })
             } else if (key in TO_THE_PLAYER) {
                 out.add("$name: $value")
+            } else if (key == "target" && "free square" in value.toString()) {
+                // The king's free squares as it stands: taken as what a move left them ("Qb4
+                // leaves only e4 and e5" where Qb4 took e4 away: the test audit, 2026-09-26).
+                val said = Person.thirdPerson(value.toString(), side = side)
+                out.add("$name: $said (as it stands, before any move)")
             } else {
                 out.add("$name: " + Person.thirdPerson(value.toString(), side = side))
             }
@@ -1247,7 +1300,8 @@ class Conversation {
             "nudge" to "a question from the target to the move (to the player, as it stands)",
             "why" to "the move and what it does",
             // Whose: the other side's moves, were the side to move to pass.
-            "threats" to "what the other side threatens, if the side to move passed",
+            // Named per side in [factLines]: whose threats, and at what moment.
+            "threats" to "threats",
         )
 
         /** The facts addressed to the player, kept in the second person. */

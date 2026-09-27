@@ -280,6 +280,9 @@ private val ASK_LINE = Regex(
     RegexOption.IGNORE_CASE,
 )
 
+/** A square named in the player's words: `re.search(r"\b[a-h][1-8]\b", text)` in `Coach.ask`. */
+private val NAMED_SQUARE = Regex("\\b[a-h][1-8]\\b")
+
 /** The unlock the user's words earn, if any. */
 fun unlockFor(text: String, board: Board, candidates: List<String>): Unlock? {
     if (ASK_LINE.containsMatchIn(text)) return Unlock.ASK_LINE
@@ -624,14 +627,27 @@ class Coach(
         // "hint", the move or the line. A question about the plan earns the hint's level but
         // not its template -- "What is your opponent's most dangerous idea?" as the first of
         // two answers to "what should I be aiming for?" was noise.
-        val canned = (
-            unlock == Unlock.ASK_MOVE || unlock == Unlock.ASK_LINE ||
+        // The move or the line asked for, or asked about where it is already open: "what
+        // happens after the best move?" at the line level is the line, though it unlocks
+        // nothing (the harness check of the test audit, 2026-09-26).
+        val exact = unlock == Unlock.ASK_MOVE || unlock == Unlock.ASK_LINE || (
+            (level.value >= DisclosureLevel.LINE.value && ASK_LINE.containsMatchIn(text)) ||
+                (level.value >= DisclosureLevel.MOVE.value && ASK_MOVE.containsMatchIn(text))
+            )
+        // A claim to check needs something named: "what happens after the best move?" names
+        // no move or square, whatever its words.
+        val named = mayCarryClaims(text) && (
+            SAN.containsMatchIn(text) || NAMED_SQUARE.containsMatchIn(text)
+            )
+        val canned = (exact && !named) || (
+            (
                 ASK_HINT.matchesAt(text, 0) ||
-                // The first hint is now the lesson a question about the plan asks for (the
-                // stakes, the key fact, the principle), no longer "what is your opponent's most
-                // dangerous idea?": it goes out at once, as for a bare hint.
-                ASK_AIM.containsMatchIn(text)
-            ) && !mayCarryClaims(text)
+                    // The first hint is now the lesson a question about the plan asks for (the
+                    // stakes, the key fact, the principle), no longer "what is your opponent's most
+                    // dangerous idea?": it goes out at once, as for a bare hint.
+                    ASK_AIM.containsMatchIn(text)
+                ) && !mayCarryClaims(text)
+            )
         if (canned) {
             val quick = instruction(
                 Trigger.USER_ASK, where, level, text, emptyList(), null, null
@@ -650,9 +666,7 @@ class Coach(
             )
         }
 
-        if (canned && (unlock == Unlock.ASK_MOVE || unlock == Unlock.ASK_LINE) &&
-            !ASKS_WHY.containsMatchIn(text)
-        ) {
+        if (canned && exact && !ASKS_WHY.containsMatchIn(text)) {
             // The move or the line, asked for bare: the template has said it, each move with what
             // it does, computed. The model's explanations of moves and lines carried a false claim
             // in a quarter to a third of its answers, and the rubric scored the template as high
@@ -1224,6 +1238,9 @@ class Coach(
             val best = facts.candidates.firstOrNull()
             val routine = best == null || best == move.san || isLocal(event.label)
             val blitz = policy.timeControl == TimeControl.BLITZ
+            // Great and brilliant moves get the model's delight (Tai, 2026-09-26 18:57: "They
+            // need to go through the api"), though its delight carried a false claim in 18% of
+            // them on the locked test set: the draft checks stand guard over it.
             val local = routine && !isExciting(event.label) && (localVerdicts || blitz)
             if (!local) {
                 speak(
@@ -1687,7 +1704,21 @@ class Coach(
             // The lesson after a move is taught from the position the player faced, which the
             // record keeps as one line: its sheet goes with the request, and the template's
             // lesson as the floor (parity pass, 2026-09-25).
-            val sheet = synchronized(lock) { conversation.facedText(position.facts!!, position.board) }
+            val after = ArrayList(framesAfter(position, moved).take(2))
+            if (after.size == 1 && assessment != null && assessment.best.size > 1 &&
+                assessment.best[0] == moved.uci
+            ) {
+                // The new position not yet read: the engine's own line names the reply.
+                val reply = Move.fromUciOrNull(assessment.best[1])
+                if (reply != null && after[0].isLegal(reply)) {
+                    val replied = after[0].copy(withStack = false)
+                    replied.push(reply)
+                    after.add(replied)
+                }
+            }
+            val sheet = synchronized(lock) {
+                conversation.facedText(position.facts!!, position.board, after.lastOrNull())
+            }
             if (sheet.isNotEmpty()) faced = "\n\n# The position they faced, before ${moved.san}\n$sheet"
             if (mustName.isNotEmpty() && fallback.isNotEmpty()) {
                 directive += "\n\nThe lesson in the board's own words, all of it true -- your reply says at " +
@@ -2569,8 +2600,8 @@ class Coach(
             directive =
                 "They ask what the opponent threatens, and it is the opponent's move: say what " +
                     "the opponent's best move now is and what it does, from the engine lines (the " +
-                    "opponent's move) -- not 'what the other side threatens', which is the player's " +
-                    "own threat. One or two sentences, no question. " + NO_FIGURES
+                    "opponent's move) -- not 'the player's threats', which are the player's own. " +
+                    "One or two sentences, no question. " + NO_FIGURES
         } else if (ASK_THREAT.containsMatchIn(said)) {
             val threats = facts.threats.take(2)
             fallback = if (threats.isNotEmpty()) {
@@ -2581,8 +2612,8 @@ class Coach(
             }
             directive =
                 "They ask what the opponent threatens. Say it as the facts give it -- each threat " +
-                    "they list, at most two: the move and what it does, from 'what the other side " +
-                    "threatens' -- or, when the facts list " +
+                    "they list, at most two: the move and what it does, from 'the opponent's " +
+                    "threats' -- or, when the facts list " +
                     "none, say plainly that nothing is threatened. One or two sentences, no question. " +
                     NO_FIGURES
         } else {

@@ -84,8 +84,8 @@ const val ELICIT_ANSWER_S = 60.0
  * The word on a move by its label (Tai, 2026-09-20). LOCAL: written from the board, no
  * model -- theory, the engine's own move, and an excellent one (as strong as the best).
  * EXCITING: great and brilliant, the model at its full effort with some delight, since they
- * are rare and worth a real sentence. A good move was a little behind the best, and the
- * model names the better one.
+ * are rare and worth a real sentence (Tai, 2026-09-26: they go through the API). A good move
+ * was a little behind the best, and the model names the better one.
  */
 val LOCAL = setOf("book", "best", "excellent")
 val EXCITING = setOf("great", "brilliant")
