@@ -649,3 +649,104 @@ def test_the_recoloured_kings_and_queens_never_choose_a_side() -> None:
         highlight=chess.Move.from_uci("h5h8"), check=True, result="1-0", badges=True,
     )  # fmt: skip
     assert reading.kind == "piece" and reading.symbol == piece.symbol(), reading
+
+
+def _read_after(
+    style: str,
+    theme: str,
+    learned: tuple[int, int, int],
+    read: tuple[int, int, int],
+    sans: tuple[str, ...],
+    square: str,
+    bottom: Side = Side.WHITE,
+    coordinates: bool = False,
+    **decorations: object,
+) -> CellReading:
+    """A set learned from a start frame at one place and cell size, and a later position read
+    at another, each locked by the detector as the pipeline locks them."""
+    kw: dict[str, Any] = {
+        "width": 1920, "height": 1200, "theme": theme, "style": style, "bottom": bottom,
+        "coordinates": coordinates,
+    }  # fmt: skip
+    start = synthetic_board(x0=learned[0], y0=learned[1], cell=learned[2], **kw)
+    board = chess.Board()
+    for san in sans:
+        board.push_san(san)
+    frame = synthetic_board(x0=read[0], y0=read[1], cell=read[2], board=board, **decorations, **kw)
+    first, now = detect_boards(start)[0], detect_boards(frame)[0]
+    model = ThemeModel.from_start_position(
+        start, BoardGeometry(first.region, first.cell_px), bottom
+    )
+    assert model is not None
+    r, c = row_col(chess.parse_square(square), bottom)
+    return model.classify_frame(frame, BoardGeometry(now.region, now.cell_px))[r][c]
+
+
+@pytest.mark.parametrize(
+    ("style", "theme", "learned", "read", "sans", "square", "lit"),
+    [
+        # A rook just moved, on its lit square, learned at 40 px and read at 34: it measured
+        # 0.15 of a cell off and never landed.
+        (
+            "wooden", "brown", (1124, 191, 40), (1648, 911, 34),
+            ("b3", "h6", "c3", "Nf6", "Qc2", "g5", "Qe4", "Rh7"), "h7", "h8h7",
+        ),
+        # A king learned at 48 px and read at 132: 0.12 off.
+        (
+            "classic", "ice", (559, 284, 48), (607, 44, 132),
+            ("a4", "e5", "Ra2", "Ba3", "Ra1", "f5", "Nh3", "Ke7", "d4", "Kd6"), "d6", "e7d6",
+        ),
+    ],
+)  # fmt: skip
+def test_a_piece_at_rest_lands_on_a_board_resized_since_its_set_was_learned(
+    style: str,
+    theme: str,
+    learned: tuple[int, int, int],
+    read: tuple[int, int, int],
+    sans: tuple[str, ...],
+    square: str,
+    lit: str,
+) -> None:
+    """After a resize the cell and the piece's reference each carry detail the other has not,
+    and the phase correlation's peak was lost in it; the two are also compared brought down
+    to the coarser size, and the surer correlation counts (the geometry sweep, 2026-09-27,
+    seeds 7 and 237)."""
+    reading = _read_after(
+        style, theme, learned, read, sans, square, highlight=chess.Move.from_uci(lit)
+    )
+    want = chess.Board()
+    for san in sans:
+        want.push_san(san)
+    piece = want.piece_at(chess.parse_square(square))
+    assert piece is not None
+    assert reading.kind == "piece" and reading.symbol == piece.symbol(), reading
+    assert reading.settled, reading.offset
+
+
+def test_a_piece_in_flight_on_a_resized_board_does_not_land_on_the_square_it_passes() -> None:
+    """A pawn three quarters of the way from b2 to b4, learned at 40 px and read at 36: it
+    measured 0.08 of a cell from b3's centre and was committed there, a square short (the
+    geometry sweep, 2026-09-27, seed 87)."""
+    move = chess.Move.from_uci("b2b4")
+    reading = _read_after(
+        "spatial", "dark", (1062, 299, 40), (600, 300, 36), ("h3", "f6"), "b3",
+        highlight=move, animating=(move.from_square, move.to_square, 0.75),
+    )  # fmt: skip
+    assert not (reading.kind == "piece" and reading.settled), reading
+
+
+def test_a_rook_on_a_labelled_corner_lands_at_the_size_its_set_was_learned_at() -> None:
+    """Brought down to the size it was drawn at, a cell is at the edge of what its pixels
+    hold: a rook on its labelled corner square measured half a cell off, and the cold read
+    of every flat set at 44 px was refused (the stress sweep, 2026-09-27, seeds 113 and 138).
+    At the size its set was learned at, a cell is compared at full detail only."""
+    sans = (
+        "Nh3", "d6", "Ng5", "e6", "Nc3", "Ne7", "Na4", "Nd7",
+        "d3", "Nb6", "Kd2", "h6", "Ke3", "Rh7", "Nf3", "a5",
+    )  # fmt: skip
+    reading = _read_after(
+        "flat", "green", (300, 120, 64), (300, 120, 64), sans, "h1", bottom=Side.BLACK,
+        coordinates=True,
+    )  # fmt: skip
+    assert reading.kind == "piece" and reading.symbol == "R", reading
+    assert reading.settled, reading.offset
