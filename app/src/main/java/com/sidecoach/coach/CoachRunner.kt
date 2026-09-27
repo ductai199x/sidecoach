@@ -136,7 +136,7 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
                 coach.onEvent(event, ts)
             } catch (exc: Exception) {
                 Log.w(TAG, "coach error on ${event::class.java.simpleName}: $exc")
-                PanelEngine.emit("sys", "warn", "coach error: $exc")
+                PanelEngine.emit("sys", "warn", "coach error: ${PanelEngine.pyRepr(exc)}")
             }
         }
     }

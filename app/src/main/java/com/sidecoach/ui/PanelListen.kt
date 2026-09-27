@@ -354,7 +354,7 @@ object PanelListen {
                     }
                 }
             } catch (exc: Exception) { // a partial is best effort; the final result still comes
-                PanelEngine.emit("voice", "debug", "partial recognition failed: $exc")
+                PanelEngine.emit("voice", "debug", "partial recognition failed: ${exc.message ?: ""}")
             } finally {
                 partialBusy.set(false)
             }

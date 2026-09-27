@@ -91,7 +91,7 @@ class GameWatcher(
     private val puzzles: PuzzleStore? = try {
         Puzzles.openStore(context.filesDir)
     } catch (exc: Exception) {
-        PanelEngine.emit("sys", "warn", "puzzles unavailable: $exc")
+        PanelEngine.emit("sys", "warn", "puzzles unavailable: ${exc.message ?: ""}")
         null
     }
     private val profiler = Profiler(profileStore, ts = System.currentTimeMillis() / 1000.0, puzzles = puzzles)

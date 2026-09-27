@@ -401,7 +401,7 @@ object PanelWarm {
             try {
                 apply()
             } catch (exc: Exception) {
-                PanelEngine.emit("sys", "warn", "${hit.joinToString(", ")}: not applied ($exc)")
+                PanelEngine.emit("sys", "warn", "${hit.joinToString(", ")}: not applied (${exc.message ?: ""})")
                 return
             }
             applied.addAll(hit)
