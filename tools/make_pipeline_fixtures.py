@@ -760,10 +760,11 @@ MOVED = {
     "moved-50+2+0": (50, 2.0, 0.0),
     "moved-50-0-0.8": (50, 0.0, -0.8),
     "moved-48+3+3": (48, 3.0, 3.0),
-    # At 48 px the same diagonal re-locks too, but its Nc6 does not land on the highlighted
-    # square: a landing reference learned at one lock offset, read at another (the desktop's
-    # docs/known-issues.md).
     "moved-64-1.4-1.4": (64, -1.4, -1.4),
+    # Its Nc6 did not land on the highlighted square until the landing compared the reference
+    # and the piece at the detail both have (desktop cfaa416; the case back in the desktop's
+    # test_scenarios.py since 9a568bc).
+    "moved-48-1.4-1.4": (48, -1.4, -1.4),
 }
 
 
