@@ -282,3 +282,11 @@ def test_the_coach_says_one_line_on_the_practice_and_a_word_on_a_fail() -> None:
     coach.quiet = True
     coach.on_event(failed, 4.0)
     assert _messages(coach) == []
+
+
+def test_a_row_too_short_for_a_rating_or_moves_is_skipped(tmp_path: Path) -> None:
+    # csv.DictReader fills a short row with None: int(None) and None.split() crashed the import.
+    path = tmp_path / "short.csv"
+    rows = [HEADER, ROWS[0], "short1,8/8/8/8/8/8/8/K6k w - - 0 1", "short2"]
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    assert PuzzleStore(None).import_csv(path) == 1

@@ -108,36 +108,41 @@ def spoken_forms(board: chess.Board) -> dict[str, str]:
     for move in board.legal_moves:
         san = board.san(move)
         base = speak_notation(san)  # "knight f three", "bishop takes c six", "castles kingside"
-        variants = {base}
+        # In the order they are made (a dict as an ordered set): a set's order changed
+        # with the process's string hashing, and so did which of two equally close forms
+        # a heard phrase matched (the parity audit, 2026-09-26).
+        variants: dict[str, None] = {base: None}
         stem = base.removesuffix(" check").removesuffix(" checkmate")
-        variants.add(stem)
+        variants[stem] = None
         if san.startswith("O-O"):
             side = "queenside" if san.startswith("O-O-O") else "kingside"
-            variants |= {f"castle {side}", f"castles {side}", f"castling {side}", side}
+            variants |= dict.fromkeys(
+                (f"castle {side}", f"castles {side}", f"castling {side}", side)
+            )
         else:
             piece = chess.piece_name(board.piece_type_at(move.from_square) or chess.PAWN)
             to = chess.square_name(move.to_square)
             dest = f"{to[0]} {_WORDS[to[1]]}"
             if piece == "pawn":
-                variants |= {f"pawn {dest}", f"pawn to {dest}", dest}
+                variants |= dict.fromkeys((f"pawn {dest}", f"pawn to {dest}", dest))
                 if board.is_capture(move):
-                    variants.add(f"pawn takes {dest}")
+                    variants[f"pawn takes {dest}"] = None
             else:
-                variants |= {f"{piece} to {dest}", f"{piece} {dest}"}
+                variants |= dict.fromkeys((f"{piece} to {dest}", f"{piece} {dest}"))
                 if board.is_capture(move):
-                    variants |= {f"{piece} takes {dest}", f"{piece} takes on {dest}"}
+                    variants |= dict.fromkeys((f"{piece} takes {dest}", f"{piece} takes on {dest}"))
             if board.is_capture(move) and piece != "pawn":
                 victim = board.piece_type_at(move.to_square)
                 if victim:
-                    variants.add(f"{piece} takes {chess.piece_name(victim)}")
-                    variants.add(f"{piece} takes the {chess.piece_name(victim)}")
+                    variants[f"{piece} takes {chess.piece_name(victim)}"] = None
+                    variants[f"{piece} takes the {chess.piece_name(victim)}"] = None
         promotion = move.promotion
         if promotion:
             # What the pawn becomes is said after the square too: "e eight queen", "e eight
             # equals queen", as well as the notation's "e eight promotes to queen".
             name = chess.piece_name(promotion)
             head = stem.split(" promotes to ")[0]
-            variants |= {f"{head} {name}", f"{head} equals {name}"}
+            variants |= dict.fromkeys((f"{head} {name}", f"{head} equals {name}"))
         for v in variants:
             # A promotion that does not say to what is a queen's: the forms that name no piece
             # belong to it alone. The knight's, generated last, used to take them all, and

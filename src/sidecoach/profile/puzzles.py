@@ -163,16 +163,17 @@ class PuzzleStore:
             for row in csv.DictReader(handle):
                 try:
                     rating = int(row["Rating"])
-                except (KeyError, ValueError):
+                # A row too short to hold a rating reads None there (the parity audit).
+                except (KeyError, ValueError, TypeError):
                     continue
                 if not RATING_MIN <= rating <= RATING_MAX:
                     continue
-                moves = row["Moves"].split()
+                moves = (row.get("Moves") or "").split()
                 if len(moves) < 2:
                     continue
                 try:
                     position = position_key(row["FEN"], moves[0])
-                except ValueError:
+                except (ValueError, TypeError):
                     continue
                 cursor = self._db.execute(
                     "INSERT OR IGNORE INTO puzzles"
