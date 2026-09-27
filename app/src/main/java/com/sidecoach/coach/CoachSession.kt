@@ -1430,7 +1430,7 @@ class Coach(
             ruleSaid(principle)
             return text to ""
         }
-        val note = " Leave out the rule of thumb \"$principle\": the player heard it lately."
+        val note = " $RULE_HELD_MARK: leave out \"$principle\" -- the player heard it lately."
         return without(text, principle) to note
     }
 
@@ -1871,7 +1871,7 @@ class Coach(
         val earlierMoves = before
         if (earlierMoves != null) {
             var shown = GAME_SO_FAR.replace(messages[0].content, "")
-            for (constant in listOf(NO_NUMBERS, NOT_THE_MOVE, TIE_LISTED, NO_EARLIER)) {
+            for (constant in listOf(NO_NUMBERS, NOT_THE_MOVE, NOT_THE_MOVE_HELD, TIE_LISTED, NO_EARLIER)) {
                 shown = shown.replace(constant, " ")
             }
             val sanctioned = HashSet<String>()
@@ -2269,8 +2269,7 @@ class Coach(
                         "to remember, in three sentences at " +
                         "most, then ask one question that makes them find on the board something " +
                         "your reply has not said. " +
-                        "$TIE_TO_THE_GAME $NOT_THE_MOVE $NO_NUMBERS" +
-                        (if (held) " $RULE_HELD" else "")
+                        "$TIE_TO_THE_GAME $NOT_THE_MOVE $NO_NUMBERS"
                 if (!allowed.isNullOrEmpty()) {
                     instructionText += " What ${played.san} allowed, from the engine's line: $allowed."
                 }
@@ -2289,9 +2288,9 @@ class Coach(
                             "sheet names one, why the better move works -- as a pattern to " +
                             "remember, in three sentences at most, then " +
                             "-- instead of a check question -- ask, in one short question of your " +
-                            "own, what they expected their move to do. $NOT_THE_MOVE $NO_NUMBERS" +
-                            (if (held) " $RULE_HELD" else "")
+                            "own, what they expected their move to do. $NOT_THE_MOVE $NO_NUMBERS"
                 }
+                if (held) instructionText = holdRule(instructionText)
             } else if (isExciting(assessment.label)) {
                 // Rare and worth it: the board's own sentence stands in, the model says what
                 // makes it the move, with some delight.
@@ -2349,8 +2348,8 @@ class Coach(
                         "the plan, the tactic -- and only when it is what the move is for. No " +
                         "question, no lecture, no advice, no guess at what it allows or risks, and " +
                         "not the same words as your last such sentence. " +
-                        "$NOT_THE_MOVE $NO_NUMBERS" +
-                        (if (ruleOk(null)) "" else " $RULE_HELD")
+                        "$NOT_THE_MOVE $NO_NUMBERS"
+                if (!ruleOk(null)) instructionText = holdRule(instructionText)
             } else if (assessment.severity == Severity.MISTAKE || assessment.severity == Severity.BLUNDER ||
                 label == "miss"
             ) {
@@ -2386,8 +2385,8 @@ class Coach(
                         "little. One or two sentences: how it rated, in plain words, then the " +
                         "better move, what it does, and the idea behind it as a lesson to keep. No " +
                         "lecture, no question. " +
-                        "$TIE_TO_THE_GAME $NOT_THE_MOVE $NO_NUMBERS" +
-                        (if (held) " $RULE_HELD" else "")
+                        "$TIE_TO_THE_GAME $NOT_THE_MOVE $NO_NUMBERS"
+                if (held) instructionText = holdRule(instructionText)
             }
             return instructionText to fallback
         }
@@ -2715,7 +2714,7 @@ class Coach(
                         "position they face now -- and say why, concretely: ${reason}what $san " +
                         "missed or allowed, naming the pieces, squares or moves, from the sheet of " +
                         "the position they faced (its pattern, and its tactic when it names one)" +
-                        (if (held) " -- but no rule of thumb: they heard one lately." else "") +
+                        (if (held) " -- ${RULE_HELD_MARK.lowercase()}: they heard one lately." else "") +
                         (if (held) "" else " -- and the pattern to keep.") +
                         (if (!allowed.isNullOrEmpty()) " What $san allowed, from the engine's line: $allowed." else "") +
                         (

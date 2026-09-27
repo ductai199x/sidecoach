@@ -466,9 +466,13 @@ const val RECENT_PLIES = 6
 const val RULE_COOLDOWN = 30
 const val RULE_SPACING = 4
 
-/** The model's word while a rule is cooling down: the concrete point, no rule of thumb. */
-const val RULE_HELD =
-    "No rule of thumb this time -- the player heard one lately: only what this position shows."
+/**
+ * The model's word while a rule is cooling down: the concrete point, no rule of thumb. Every held
+ * wording carries [RULE_HELD_MARK], which the desktop's rubric reads (tools/eval/rubric.py:
+ * "transfer" is not asked of a reply told to leave the rule out).
+ */
+const val RULE_HELD_MARK = "No rule of thumb this time"
+const val RULE_HELD = RULE_HELD_MARK + " -- the player heard one lately: only what this position shows."
 
 /** `fresh`'s own split: `re.split(r"(?<=[.?!])\\s+", ...)`. */
 private val LESSON_SENTENCES = Regex("(?<=[.?!])\\s+")
@@ -568,6 +572,26 @@ const val NOT_THE_MOVE =
         "-- what it took, the check, the castling, the promotion: they just played it and see it. " +
         "Say what it means instead: the idea behind it and the pattern to keep -- and, when there " +
         "was a better move, that move and why."
+
+/**
+ * While a rule cools down: the same, without the pattern to keep. Told to hold the rule back at
+ * the end of a directive that still asked for "the pattern to keep", the local model gave one
+ * anyway in 2 of 17 lessons (the free check, 2026-09-27). `coach.NOT_THE_MOVE_HELD`.
+ */
+val NOT_THE_MOVE_HELD = NOT_THE_MOVE.replace("the idea behind it and the pattern to keep", "the idea behind it")
+
+/** [directive] with its ask for a rule to keep taken out, and [RULE_HELD] said. `coach._hold_rule`. */
+internal fun holdRule(directive: String): String {
+    var out = directive
+    for ((asked, held) in listOf(
+        NOT_THE_MOVE to NOT_THE_MOVE_HELD,
+        "as a pattern to remember, in" to "in",
+        " as a lesson to keep" to "",
+    )) {
+        out = out.replace(asked, held)
+    }
+    return "$out $RULE_HELD"
+}
 
 /**
  * A hint, and an answer that is not about a figure: the code faults one ([Speaker.problemsOf]),

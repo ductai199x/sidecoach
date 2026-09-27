@@ -952,12 +952,16 @@ class CoachTest {
         coach.messages += RULE_SPACING
         val (firstInstruction, first) = lesson()
         assertTrue(first, hasRule(first) && RULE_HELD !in firstInstruction)
+        assertTrue(firstInstruction, "pattern to remember" in firstInstruction)
         repeat(RULE_COOLDOWN - 1) {
             coach.messages += 1
             val (held, again) = lesson()
             instruction = held
             assertTrue(again, !hasRule(again))
+            // Held, the directive asks for no rule at all, not for one and then for none: the
+            // local model gave one anyway in 2 of 17 lessons (the free check, desktop 5b3d4bf).
             assertTrue(instruction, RULE_HELD in instruction)
+            assertTrue(instruction, "pattern to remember" !in instruction && "pattern to keep" !in instruction)
         }
         coach.messages += 1
         val (_, back) = lesson()
