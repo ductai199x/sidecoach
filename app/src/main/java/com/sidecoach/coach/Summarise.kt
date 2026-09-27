@@ -24,19 +24,21 @@ const val SUMMARY_SYSTEM =
         "said. Plain text, no headings."
 
 /**
- * The user message the summariser is given: the summary so far and the newest exchanges,
- * each marked with the move it followed. Pure, so it is compared against the desktop's.
+ * The summariser's message for the exchanges being folded ([Conversation.foldable]: the move
+ * each followed, and the entry), after the summary so far. Pure, so the phone's fixture is
+ * made from the desktop's own text rather than from a copy of it (the parity audit).
  */
-fun summaryRequest(pending: List<Pair<String, Entry>>, summaryBefore: String): String {
+fun summaryRequest(pending: List<Pair<String, Entry>>, summaryBefore: String): List<ChatMessage> {
     val lines = pending.map { (after, entry) ->
         val who = if (entry.kind == "ask") "PLAYER" else "COACH"
         "after $after, $who: ${entry.text}"
     }
-    return "Summary so far:\n" +
+    val content = "Summary so far:\n" +
         summaryBefore.ifEmpty { "(nothing yet)" } +
         "\n\nNewest exchanges:\n" +
         lines.joinToString("\n") +
         "\n\nThe new summary:"
+    return listOf(ChatMessage("user", content))
 }
 
 /**
@@ -58,11 +60,10 @@ fun summarise(
         summaryBefore = convo.summary
     }
     if (pending.isEmpty()) return false
-    val content = summaryRequest(pending, summaryBefore)
-    val messages = listOf(ChatMessage("user", content))
+    val messages = summaryRequest(pending, summaryBefore)
     val completion = try {
         // A rewrite, not a reasoning task: no thinking, where the provider can turn it off.
-        provider.chat(SUMMARY_SYSTEM, messages, maxTokens = 400, temperature = 0.1)
+        provider.chat(SUMMARY_SYSTEM, messages, maxTokens = 400, temperature = 0.1, thinking = false)
     } catch (_: Exception) {
         return false
     }

@@ -215,10 +215,16 @@ class ConversationTest {
                         }
                     },
                 )
+                // The desktop's own `summary_request`, as the messages the summariser is sent.
                 check(
                     "$where summary request",
-                    summaryRequest(pending, before),
-                    step.getString("summary_request"),
+                    summaryRequest(pending, before).map { "${it.role}|${it.content}" },
+                    step.getJSONArray("summary_request").let { all ->
+                        (0 until all.length()).map { k ->
+                            val o = all.getJSONObject(k)
+                            "${o.getString("role")}|${o.getString("content")}"
+                        }
+                    },
                 )
                 convo.fold(pending.map { it.second }, step.getString("summary"))
             }
@@ -238,7 +244,10 @@ class ConversationTest {
         check("REPLY_FORMAT", REPLY_FORMAT, prompt.getString("reply_format"))
         check("DEFAULT_PERSONA", DEFAULT_PERSONA, prompt.getString("default_persona"))
         val personas = prompt.getJSONObject("personas")
-        check("persona names", PERSONAS.keys.toList(), personas.keys().asSequence().toList())
+        // The order as an array: a JSON object's keys come back in the parser's order, which
+        // org.json does not promise to keep (the parity audit cc-04).
+        val order = prompt.getJSONArray("persona_order")
+        check("persona names", PERSONAS.keys.toList(), (0 until order.length()).map { order.getString(it) })
         for (name in personas.keys()) {
             val pair = personas.getJSONArray(name)
             check("persona $name label", PERSONAS[name]?.first, pair.getString(0))
