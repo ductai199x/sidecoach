@@ -2,7 +2,6 @@ package com.sidecoach.coach
 
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.analysis.phaseOf
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
@@ -35,11 +34,7 @@ import kotlin.math.abs
 @RunWith(AndroidJUnit4::class)
 class CoachPrimitivesTest {
 
-    private fun fixtures(): JSONObject {
-        val context = InstrumentationRegistry.getInstrumentation().context
-        val text = context.assets.open("chess/coach.json").bufferedReader().use { it.readText() }
-        return JSONObject(text)
-    }
+    private fun fixtures(): JSONObject = fixture("chess/coach.json")
 
     private val failures = ArrayList<String>()
     private var mismatches = 0
@@ -258,29 +253,32 @@ class CoachPrimitivesTest {
                     verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last, pick = { it[0] }),
                     o.getString("sentence") to if (o.isNull("kind")) null else o.getString("kind"),
                 )
-                // Below 1400, from 1800, and from the live coach's bags, the shuffle fixed (TG-12).
+                // From 1800, below 1400 and from the live coach's bags, the shuffle fixed (TG-12),
+                // written where they say something: `strong` where it differs from the sentence,
+                // the plain words drawn last beside the same draw without them where the two
+                // differ (the first wordings are all plain), the bags for a best and a good move.
+                val sentence = o.getString("sentence") to if (o.isNull("kind")) null else o.getString("kind")
                 fun pair(key: String) = o.getJSONArray(key).let { it.getString(0) to if (it.isNull(1)) null else it.getString(1) }
-                // Drawn last, with and without the plain words (the first wordings are all plain).
-                check(
-                    "verdict ${o.getString("move")} $label drawn last",
-                    verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last, pick = { it.last() }),
-                    pair("last_drawn"),
-                )
-                check(
-                    "verdict ${o.getString("move")} $label plain",
-                    verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last, pick = { it.last() }, plain = true),
-                    pair("plain"),
-                )
                 check(
                     "verdict ${o.getString("move")} $label strong",
                     verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last, pick = { it[0] }, strong = true),
-                    pair("strong"),
+                    if (o.has("strong")) pair("strong") else sentence,
                 )
-                check(
-                    "verdict ${o.getString("move")} $label bagged",
-                    verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last, bags = Bags { }),
-                    pair("bagged"),
-                )
+                val drawn = verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last, pick = { it.last() })
+                val plain = verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last, pick = { it.last() }, plain = true)
+                if (o.has("plain")) {
+                    check("verdict ${o.getString("move")} $label drawn last", drawn, pair("last_drawn"))
+                    check("verdict ${o.getString("move")} $label plain", plain, pair("plain"))
+                } else {
+                    check("verdict ${o.getString("move")} $label plain as drawn", plain, drawn)
+                }
+                if (o.has("bagged")) {
+                    check(
+                        "verdict ${o.getString("move")} $label bagged",
+                        verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last, bags = Bags { }),
+                        pair("bagged"),
+                    )
+                }
             }
 
             val mentions = case.getJSONArray("mentions")
@@ -316,7 +314,7 @@ class CoachPrimitivesTest {
      */
     @Test
     fun theDesktopsKnowledgeTestsMatch() {
-        val tests = fixtures().getJSONObject("tests")
+        val tests = fixture("chess/knowledge.json").getJSONObject("tests")
         assertTrue("the desktop's knowledge tests ran", tests.getJSONArray("ran").length() >= 30)
         val calls = tests.getJSONArray("calls")
         for (i in 0 until calls.length()) {
@@ -530,8 +528,17 @@ class CoachPrimitivesTest {
         check("$fen words.piece", IdeaWords.piece(idea, board), opt("piece"))
         check("$fen words.why", IdeaWords.why(idea, board, IdeaWords.Describe(::describeTactic)), opt("why"))
         // With the board, as the facts ask them (`clears_path`; the parity audit ck-09).
-        check("$fen words.question with the board", IdeaWords.question(idea, null, board), opt("question_board"))
-        check("$fen words.nudge with the board", IdeaWords.nudge(idea, board), opt("nudge_board"))
+        // Written only where it differs from the boardless word.
+        check(
+            "$fen words.question with the board",
+            IdeaWords.question(idea, null, board),
+            if (want.has("question_board")) opt("question_board") else opt("question"),
+        )
+        check(
+            "$fen words.nudge with the board",
+            IdeaWords.nudge(idea, board),
+            if (want.has("nudge_board")) opt("nudge_board") else opt("nudge"),
+        )
     }
 
     /** The offline coach's words at each rung, the lessons, and each rung leak-checked. */

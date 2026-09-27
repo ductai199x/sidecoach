@@ -2,7 +2,6 @@ package com.sidecoach.coach
 
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
@@ -54,9 +53,7 @@ class NamedTest {
     }
 
     private fun examinations() {
-        val context = InstrumentationRegistry.getInstrumentation().context
-        val text = context.assets.open("chess/named.json").bufferedReader().use { it.readText() }
-        val cases = JSONObject(text).getJSONArray("cases")
+        val cases = fixture("chess/named.json").getJSONArray("cases")
         var asks = 0
         val began = System.currentTimeMillis()
         for (i in 0 until cases.length()) {
@@ -198,8 +195,7 @@ class NamedTest {
      */
     @Test
     fun theDesktopsNamedTestsAndThePlannerMatch() {
-        val context = InstrumentationRegistry.getInstrumentation().context
-        val root = JSONObject(context.assets.open("chess/named.json").bufferedReader().use { it.readText() })
+        val root = fixture("chess/named.json")
         val tests = root.getJSONObject("tests")
         assertTrue("the desktop's named tests ran", tests.getJSONArray("ran").length() >= 17)
         val calls = tests.getJSONArray("calls")

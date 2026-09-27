@@ -725,7 +725,7 @@ def idea_json(idea: IDEA.Idea) -> dict:
 
 def words_json(idea: IDEA.Idea, board: chess.Board) -> dict:
     """The idea in the coach's words, straight from `idea_words` (the facts add the plan)."""
-    return {
+    out = {
         "pattern": W.pattern(idea),
         "goal": W.goal(idea),
         "mechanism": W.mechanism(idea),
@@ -734,11 +734,16 @@ def words_json(idea: IDEA.Idea, board: chess.Board) -> dict:
         "target": W.target(idea, board),
         "piece": W.piece(idea, board),
         "why": W.why(idea, board, F.describe_tactic),
-        # With the board, as the facts ask them: a line that does not clear its own path is
-        # asked about differently (`clears_path`; the parity audit ck-09).
-        "question_board": W.question(idea, None, board),
-        "nudge_board": W.nudge(idea, board),
     }
+    # With the board, as the facts ask them: a line that does not clear its own path is asked
+    # about differently (`clears_path`; the parity audit ck-09). Written only where it differs;
+    # absent, it is the same as without.
+    question, nudge = W.question(idea, None, board), W.nudge(idea, board)
+    if question != out["question"]:
+        out["question_board"] = question
+    if nudge != out["nudge"]:
+        out["nudge_board"] = nudge
+    return out
 
 
 def played_moves(board: chess.Board, best: str) -> list[str]:
@@ -982,6 +987,33 @@ def case_for(
             last = openers[0] + "." if label == "best" else None
             choices = [o for o in openers if last is None or not last.startswith(o)] or openers
             taught = [found[0]] if found is not None and label == "good" else []
+
+            def variants(sentence: str, kind: str | None) -> dict:
+                """A player of 1800 and up, one below 1400, and the live coach's bags with their
+                shuffle fixed (the parity audit TG-12), written only where they say something:
+                `strong` where it differs from the sentence; the plain words drawn last, beside
+                the same draw without them, where the two differ (the first wordings are all
+                plain); the bags for the praise of a best and a good move."""
+                out: dict = {}
+
+                def said(**kw) -> list:  # noqa: ANN003
+                    return list(
+                        V.verdict(
+                            board, move, label, analysis.tags, phase=facts.phase,
+                            threats=facts.threats, taught=taught, last=last, **kw,
+                        )
+                    )
+
+                strong = said(rng=First(), strong=True)
+                if strong != [sentence, kind]:
+                    out["strong"] = strong
+                drawn, plain = said(rng=Last()), said(rng=Last(), plain=True)
+                if plain != drawn:
+                    out["last_drawn"], out["plain"] = drawn, plain
+                if label in ("best", "good"):
+                    out["bagged"] = said(bags=Bags(rng=Unshuffled()))
+                return out
+
             sentence, kind = V.verdict(
                 board,
                 move,
@@ -1002,39 +1034,8 @@ def case_for(
                     "choices": choices,
                     "lesson": None if found is None else [found[0], found[1]],
                     "sentence": sentence,
-                    # A player below 1400, one of 1800 and up, and the live coach's bags with
-                    # their shuffle fixed (the parity audit TG-12).
-                    # The last wording drawn, with and without the plain words: the first
-                    # wordings are all plain, so drawn first `plain` would change nothing.
-                    "last_drawn": list(
-                        V.verdict(
-                            board, move, label, analysis.tags, phase=facts.phase,
-                            threats=facts.threats, taught=taught, last=last,
-                            rng=Last(),  # type: ignore[arg-type]
-                        )
-                    ),
-                    "plain": list(
-                        V.verdict(
-                            board, move, label, analysis.tags, phase=facts.phase,
-                            threats=facts.threats, taught=taught, last=last,
-                            rng=Last(), plain=True,  # type: ignore[arg-type]
-                        )
-                    ),
-                    "strong": list(
-                        V.verdict(
-                            board, move, label, analysis.tags, phase=facts.phase,
-                            threats=facts.threats, taught=taught, last=last,
-                            rng=First(), strong=True,  # type: ignore[arg-type]
-                        )
-                    ),
-                    "bagged": list(
-                        V.verdict(
-                            board, move, label, analysis.tags, phase=facts.phase,
-                            threats=facts.threats, taught=taught, last=last,
-                            bags=Bags(rng=Unshuffled()),  # type: ignore[arg-type]
-                        )
-                    ),
                     "kind": kind,
+                    **variants(sentence, kind),
                 }
             )
 
@@ -1843,12 +1844,13 @@ def main() -> None:
                 "policy": policy_cases(),
                 "stories": stories,
                 "trap_tests": trap_tests,
-                "tests": desktop_tests(),
             }
         ),
         encoding="utf-8",
     )
     size = (OUT / "coach.json").stat().st_size
+    # The desktop's knowledge tests on their own: coach.json is parsed whole on a phone's heap.
+    (OUT / "knowledge.json").write_text(json.dumps({"tests": desktop_tests()}), encoding="utf-8")
     print(
         f"{len(cases)} positions ({synthesised} synthesised, {len(IDEA_TESTS)} idea tests, "
         f"{themed} Lichess by theme over {len(per_theme)} themes, {rare} rarer goals, "

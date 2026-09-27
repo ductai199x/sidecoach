@@ -2,7 +2,6 @@ package com.sidecoach.coach
 
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.chess.Board
 import com.sidecoach.events.Line
 import org.json.JSONArray
@@ -37,9 +36,7 @@ class ClaimsTest {
 
     @Test
     fun everyClaimAndDraftMatchesThePython() {
-        val context = InstrumentationRegistry.getInstrumentation().context
-        val text = context.assets.open("chess/claims.json").bufferedReader().use { it.readText() }
-        val root = JSONObject(text)
+        val root = fixture("chess/claims.json")
 
         // The prompt is sent to a model, so a drifted copy would not fail anywhere else.
         check("extraction system prompt", EXTRACT_SYSTEM, root.getString("system"))
@@ -127,9 +124,7 @@ class ClaimsTest {
      */
     @Test
     fun theDesktopsClaimTestsAndTheCheckedLinesMatch() {
-        val context = InstrumentationRegistry.getInstrumentation().context
-        val text = context.assets.open("chess/claims.json").bufferedReader().use { it.readText() }
-        val root = JSONObject(text)
+        val root = fixture("chess/claims.json")
         val tests = root.getJSONObject("tests")
         assertTrue("the desktop's claim tests ran", tests.getJSONArray("ran").length() >= 60)
 
