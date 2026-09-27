@@ -27,6 +27,9 @@
   const side = $derived(store.state.user_side as string | null | undefined);
   let closeButton = $state<HTMLButtonElement | null>(null);
   const shell = inShell();
+  // The phone's app marks its page (LocalServer): Debug -> Dump is there too, the one debug
+  // tool it has -- what the coach saw, saved for Tai to pull off the phone.
+  const onPhone = typeof document !== "undefined" && document.documentElement.dataset.app === "phone";
   let onTop = $state(false);
   let version = $state("");
   let dumped = $state("");
@@ -224,6 +227,16 @@
       <span>Reset profile&hellip;</span>
     </button>
   </div>
+
+  {#if onPhone && !shell}
+    <div class="dsec">
+      <div class="dlabel">Debug</div>
+      <button class="ditem" onclick={dump}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zm-6 10h-2v-3H9l4-4 4 4h-3v3z"/></svg>
+        <span>Dump the last frames and the log<span class="hint">{dumped || "What the coach saw just now, saved to show a problem"}</span></span>
+      </button>
+    </div>
+  {/if}
 
   {#if shell}
     <div class="dsec">
