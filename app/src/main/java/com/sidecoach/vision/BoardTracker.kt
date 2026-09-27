@@ -28,6 +28,16 @@ class BoardTracker(
      * 2026-09-23). Sub-cell drift that small costs the reading nothing.
      */
     private val refitDeadbandPx: Int = 2,
+    /**
+     * The full search that finds nothing waits before it runs again, since it costs a second
+     * at 1440p: [redetectFirst] frames the first time, twice that the next, up to
+     * [redetectBackoff]. A board lost for a moment is usually back within that moment at a
+     * size the near search does not cover -- a window dragged small and large again, a board
+     * that came back from off the screen resized -- and a flat twenty frames kept it unread
+     * for two seconds while the moves went on (the desktop's geometry sweep, 2026-09-27: five
+     * plies played before the board was seen again).
+     */
+    val redetectFirst: Int = 5,
     private val redetectBackoff: Int = 20,
     private val nearBackoff: Int = 3,
     /**
@@ -56,6 +66,9 @@ class BoardTracker(
     /** The near-size searches for a board the lock lost ([probe]), counted apart from [detections]. */
     var probes = 0
         private set
+
+    /** The next wait of the full search that finds nothing: [redetectFirst], doubling. */
+    private var fullWait = redetectFirst
 
     private var lastCellPx: Double? = null
     private var misses = 0
@@ -205,9 +218,13 @@ class BoardTracker(
         if (found != null) {
             cooldown = 0
             nearCooldown = 0
+            fullWait = redetectFirst
         } else {
             nearCooldown = nearBackoff
-            if (cooldown <= 0) cooldown = redetectBackoff
+            if (cooldown <= 0) {
+                cooldown = fullWait
+                fullWait = minOf(2 * fullWait, redetectBackoff)
+            }
         }
         return board
     }
