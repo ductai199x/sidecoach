@@ -1471,7 +1471,13 @@ class ThemeModel:
             default=-1.0,
         )
         best_black = max(
-            (float(sims[i]) for i, lab in enumerate(self.exemplar_labels) if lab.islower()),
+            # "empty".islower() is True: the empty squares are no side (the parity
+            # audit, 2026-09-26: they voted as black).
+            (
+                float(sims[i])
+                for i, lab in enumerate(self.exemplar_labels)
+                if lab != "empty" and lab.islower()
+            ),
             default=-1.0,
         )
         if abs(best_white - best_black) >= COLOUR_TIE:

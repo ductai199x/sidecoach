@@ -157,12 +157,23 @@ def pattern_line(counts: Counter[str], losses: dict[str, float], errors: int) ->
     )
 
 
+# How a game ended, as the review's first sentence says it: the reason where it reads as
+# English after "by", these where it does not ("lost by user resigned or lost on time",
+# "won by game over on board": the parity audit, 2026-09-26).
+HOW_IT_ENDED = {
+    "draw agreed": " by agreement",
+    "lost on time": " on time",
+    "fifty-move rule": " by the fifty-move rule",
+    "user resigned or lost on time": " by resignation or on time",
+    "opponent resigned or lost on time": " by resignation or on time",
+    "game over on board": "",
+}
+
+
 def lines_for(review: GameReview, fullmoves: int) -> list[str]:
     """The review in sentences."""
     out: list[str] = []
-    how = f" by {review.reason}" if review.reason and review.reason != "draw agreed" else ""
-    if review.reason == "draw agreed":
-        how = " by agreement"
+    how = HOW_IT_ENDED.get(review.reason, f" by {review.reason}") if review.reason else ""
     colour = review.user_side.value
     outcome = _outcome(review.result, review.user_side)
     if review.result not in ("1-0", "0-1", "1/2-1/2"):

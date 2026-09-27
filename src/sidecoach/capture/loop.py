@@ -36,7 +36,6 @@ def capture_loop(
     rate: Callable[[], float] = fps if callable(fps) else (lambda: float(fps))  # type: ignore[assignment]
     if rate() <= 0:
         raise ValueError(f"fps must be positive, got {rate()}")
-    interval = 1.0 / rate()
     started = time.monotonic()
     next_due = started
     frame_id = 0
@@ -61,7 +60,9 @@ def capture_loop(
         failures = 0
         yield frame_id, now, frame
         frame_id += 1
-        next_due += interval
+        # The rate is read every frame: capture.fps applies now (it was read once,
+        # before the loop: the parity audit, 2026-09-26).
+        next_due += 1.0 / max(rate(), 1e-3)
         delay = next_due - time.monotonic()
         if delay > 0:
             time.sleep(delay)

@@ -133,3 +133,17 @@ def test_default_pipeline_wires_no_clock_and_stays_inert() -> None:
     pipe.board = BOARD
     assert pipe.clock is None
     assert pipe._read_clock(FRAME, 1.0) == []
+
+
+def test_a_reset_forgets_the_last_games_clock() -> None:
+    # A new game must not inherit the old one's clock: the same reading is news again, and the
+    # reader's own memory of who was running goes too (the phone kept both: parity audit).
+    reader = _StubReader(_reading(120_000, 95_000, running="bottom"))
+    pipe = _oriented(reader)
+    assert len(pipe._read_clock(FRAME, 1.0)) == 1
+    pipe.reset()
+    assert reader.resets == 1
+    assert pipe._last_clock is None and pipe._last_clock_ts is None
+    pipe.bottom = Side.WHITE
+    pipe.board = BOARD
+    assert len(pipe._read_clock(FRAME, 5.0)) == 1

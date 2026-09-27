@@ -14,6 +14,7 @@ and their rows are kept with the answer, so what it was read from can be shown.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -223,6 +224,8 @@ def _cell(value: object) -> str:
     if value is None:
         return "NULL"
     if isinstance(value, float):
+        if not math.isfinite(value):
+            return str(value)  # "SELECT 1e999" crashed the ask (the parity audit)
         return f"{value:.3f}".rstrip("0").rstrip(".") if value != int(value) else str(int(value))
     text = str(value)
     return text if len(text) <= CELL_WIDTH else text[: CELL_WIDTH - 1] + "…"

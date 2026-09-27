@@ -82,3 +82,20 @@ def test_primary_monitor_is_the_one_at_the_origin() -> None:
 def test_capture_loop_rejects_a_zero_rate() -> None:
     with pytest.raises(ValueError, match="fps"):
         next(capture_loop(FlakyBackend(failures=0), Region(0, 0, 8, 8), fps=0))
+
+
+def test_capture_loop_reads_the_rate_every_frame() -> None:
+    # capture.fps applies now: the loop asks for the rate at every frame, not once.
+    asked: list[float] = []
+
+    def rate() -> float:
+        asked.append(1000.0)
+        return 1000.0
+
+    frames = capture_loop(FlakyBackend(failures=0), Region(0, 0, 8, 8), fps=rate)
+    for _ in range(5):
+        next(frames)
+    before = len(asked)
+    for _ in range(5):
+        next(frames)
+    assert len(asked) - before == 5

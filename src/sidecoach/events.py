@@ -249,7 +249,8 @@ class MoveAssessment(Event):
     # exact, and a reader deciding whether to act on a small loss should know.
     depth: int = 0
     label: Label | None = None
-    # Per-move accuracy on Lichess's curve, 0 to 100, so a game can be summed up.
+    # Per-move accuracy on a steepened Lichess curve (analysis/score.py), 0 to 100, so a
+    # game can be summed up.
     accuracy: float | None = None
 
 

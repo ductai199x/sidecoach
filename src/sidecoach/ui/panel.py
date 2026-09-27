@@ -699,7 +699,6 @@ class PanelEngine:
                 applied.append(name)  # the session's cost is priced at each poll
         coach = self._coaching.coach if self._coaching is not None else None
         if coach is not None:
-            from sidecoach.analysis.score import Thresholds
             from sidecoach.coach.prompt import system_message
 
             attempt(
@@ -739,35 +738,38 @@ class PanelEngine:
                 self._emit("sys", "info", f"coach: {self._coaching.detail}")
 
             attempt(model_fields, reprovision)
-            analyser = self._assessing.analyser if self._assessing is not None else None
-            if analyser is not None:
-                attempt(
-                    [c for c in changed if c in THRESHOLD_FIELDS],
-                    lambda: setattr(
-                        analyser.annotator, "thresholds", Thresholds.from_settings(new.coach)
-                    ),
-                )
-                engine = analyser.annotator.engine
-                attempt(
-                    ["engine.depth"], lambda: setattr(analyser.annotator, "depth", new.engine.depth)
-                )
+        # The engine's settings apply whether a coach runs or not: nested under the coach,
+        # they were reported "applied now" and left undone with the coach off (the parity
+        # audit, 2026-09-26).
+        from sidecoach.analysis.score import Thresholds
 
-                def multipv() -> None:
-                    analyser.annotator.multipv = new.engine.multipv
-                    engine.multipv = new.engine.multipv
+        analyser = self._assessing.analyser if self._assessing is not None else None
+        if analyser is not None:
+            attempt(
+                [c for c in changed if c in THRESHOLD_FIELDS],
+                lambda: setattr(
+                    analyser.annotator, "thresholds", Thresholds.from_settings(new.coach)
+                ),
+            )
+            engine = analyser.annotator.engine
+            attempt(
+                ["engine.depth"], lambda: setattr(analyser.annotator, "depth", new.engine.depth)
+            )
 
-                attempt(["engine.multipv"], multipv)
-                for name in ("pv_plies", "score_model", "max_seconds"):
-                    attempt(
-                        [f"engine.{name}"],
-                        lambda name=name: setattr(engine, name, getattr(new.engine, name)),
-                    )
+            def multipv() -> None:
+                analyser.annotator.multipv = new.engine.multipv
+                engine.multipv = new.engine.multipv
+
+            attempt(["engine.multipv"], multipv)
+            for name in ("pv_plies", "score_model", "max_seconds"):
                 attempt(
-                    ["engine.threads", "engine.hash_mb"],
-                    lambda: engine.reconfigure(
-                        threads=new.engine.threads, hash_mb=new.engine.hash_mb
-                    ),
+                    [f"engine.{name}"],
+                    lambda name=name: setattr(engine, name, getattr(new.engine, name)),
                 )
+            attempt(
+                ["engine.threads", "engine.hash_mb"],
+                lambda: engine.reconfigure(threads=new.engine.threads, hash_mb=new.engine.hash_mb),
+            )
         return sorted(set(applied))
 
     def _reload_voice(self) -> None:
@@ -1639,7 +1641,7 @@ class PanelEngine:
             self._emit(
                 "sys",
                 "warn",
-                "puzzles: none (run `uv run sidecoach puzzles fetch` for practice after a game)",
+                "puzzles: none (get them in Set up, for practice after a game)",
             )
         first_snapshot = profiler.snapshot()
         self._set(profile=self._profile_state(first_snapshot))

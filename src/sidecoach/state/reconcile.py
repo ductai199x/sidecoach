@@ -1004,7 +1004,9 @@ class Reconciler:
             found: frozenset[chess.Square] | None = None
             for _ in range(self.max_queue_steps):
                 next_frontier: set[chess.Square] = set()
-                for sq in frontier:
+                # In square order: a set's order decided which of two equal routes was
+                # kept, and it differs between Python and the phone (the parity audit).
+                for sq in sorted(frontier):
                     scratch.set_piece_at(sq, piece)
                     for move in scratch.generate_pseudo_legal_moves(chess.BB_SQUARES[sq]):
                         to = move.to_square

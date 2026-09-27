@@ -1243,3 +1243,35 @@ def test_a_game_whose_end_was_not_seen_is_still_reviewed_at_the_next_start() -> 
     short.play("e5")
     assert short.profiler.end_session(short.ts + 1) is None
     assert short.store.game("g") is None
+
+
+def test_the_review_says_how_the_game_ended_in_plain_words() -> None:
+    from sidecoach.events import GameReview
+    from sidecoach.profile.review import lines_for
+
+    def first(result: str, reason: str | None, side: Side = Side.WHITE) -> str:
+        review = GameReview(game_id="g", user_side=side, result=result, reason=reason)
+        return lines_for(review, 17)[0]
+
+    # The End game button's reasons, and the board's own, read as English after the outcome.
+    assert first("0-1", "user resigned or lost on time") == (
+        "You played white and lost by resignation or on time in 17 moves."
+    )
+    assert first("1-0", "opponent resigned or lost on time") == (
+        "You played white and won by resignation or on time in 17 moves."
+    )
+    assert first("0-1", "lost on time") == "You played white and lost on time in 17 moves."
+    assert first("1-0", "game over on board") == "You played white and won in 17 moves."
+    assert first("1/2-1/2", "fifty-move rule") == (
+        "You played white and drew by the fifty-move rule in 17 moves."
+    )
+    assert first("1-0", "checkmate") == "You played white and won by checkmate in 17 moves."
+    assert first("1/2-1/2", "draw agreed") == "You played white and drew by agreement in 17 moves."
+
+
+def test_a_query_answering_infinity_is_shown_not_a_crash() -> None:
+    from sidecoach.profile.ask import _cell
+
+    assert _cell(float("inf")) == "inf"
+    assert _cell(float("nan")) == "nan"
+    assert _cell(2.5) == "2.5"
