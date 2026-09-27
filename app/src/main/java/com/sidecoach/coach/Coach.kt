@@ -937,7 +937,10 @@ class FirstCandidate(
         private set
     var problems: List<String> = emptyList()
         private set
-    private var done = false
+
+    /** The candidate is complete, or the stream stopped: nothing more is read. */
+    var done = false
+        private set
 
     /** The sink refused the first sentence: the voice is not wanted. */
     var declined = false

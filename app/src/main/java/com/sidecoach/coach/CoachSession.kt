@@ -55,7 +55,7 @@ private val HINT = Regex(
 )
 
 /** An overall verdict on the game: "how did I do", "how was my game", "overall", "summary". */
-private val ASK_REVIEW = Regex(
+internal val ASK_REVIEW = Regex(
     "\\b(?:how (?:did|have) i (?:do|play|done|played|playing|doing)|how am i playing|" +
         "how was (?:my|the) game|" +
         "overall|summar(?:y|ise|ize)|review (?:my|the) game|rate my (?:game|play)|" +
@@ -142,7 +142,7 @@ private val ASK_COST = Regex(
 )
 
 /** A bare request for a hint, with nothing claimed: "hint", "give me a hint", "a clue". */
-private val ASK_HINT = Regex(
+internal val ASK_HINT = Regex(
     "^\\W*(?:(?:give me |i need |can i have |i want |any |another |one more )?(?:a |an |some )?" +
         "(?:hint|clue|nudge|help|tip)s?(?: please)?|i'?m stuck|i am stuck|where (?:should|do) i look" +
         "|i don'?t know what to (?:do|play))\\W*\$",
@@ -482,7 +482,7 @@ class Coach(
     val profileAnswers = ArrayList<Pair<String, Any?>>()
 
     /** The player's mistakes this game, for [ELICIT_EVERY]. */
-    private var mistakes = 0
+    internal var mistakes = 0
 
     /** When the coach last asked what the player saw, and whether they answered. */
     private var elicitAsked: Double? = null
@@ -1339,7 +1339,7 @@ class Coach(
      * [ELICIT_EVERY]-th mistake, and never again in a game once one such question went
      * unanswered -- the player is not talking back, and the question is noise.
      */
-    private fun elicitDue(ts: Double): Boolean {
+    internal fun elicitDue(ts: Double): Boolean {
         if (mistakes % ELICIT_EVERY != 0) return false
         if (elicitAsked != null && !elicitAnswered) return false
         elicitAsked = ts
