@@ -26,7 +26,14 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class EngineTest {
 
-    private fun engine(): Engine? {
+    /** The engine, and every process it started, so a test can end one behind its back. */
+    private class Watched(binary: File, net: File) : Engine(binary, net, threads = 2, hashMb = 64, multipv = 3) {
+        val started = ArrayList<Process>()
+
+        override fun launch(): Process = super.launch().also { started.add(it) }
+    }
+
+    private fun engine(): Watched? {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val binary = Engine.binaryIn(context.applicationInfo.nativeLibraryDir)
         if (!binary.exists()) {
@@ -38,7 +45,7 @@ class EngineTest {
             Log.w(TAG, "no network in ${context.filesDir}; run tools/push_net.ps1")
             return null
         }
-        return Engine(binary, net, threads = 2, hashMb = 64, multipv = 3)
+        return Watched(binary, net)
     }
 
     @Test
@@ -87,8 +94,92 @@ class EngineTest {
                     assertEquals("$what: the wrong move", best, top.moves.first())
                 }
                 assertTrue("$what: the depth was not reported", top.depth > 0)
+                if (best == "a1a8") {
+                    // `test_mate_is_reported_as_a_distance_and_a_certain_score`.
+                    assertEquals("$what: the mate distance", 1, top.mate)
+                    assertEquals("$what: a mate is a certain score", 1.0, top.expectedScore, 0.0)
+                }
             }
         }
+    }
+
+    /** `test_the_engine_is_restarted_when_it_dies`: a dead engine is restarted, not the end of a session. */
+    @Test
+    fun theEngineIsRestartedWhenItDies() {
+        val engine = engine()
+        assumeTrue("the engine or its network is missing", engine != null)
+        engine!!.use { sf ->
+            sf.open()
+            val first = sf.started.single()
+            first.destroy()
+            first.waitFor()
+            val lines = sf.analyse(Board(), depth = 10)
+            assertTrue("no lines from the restarted engine", lines.isNotEmpty())
+            assertEquals("the engine was not started again", 2, sf.started.size)
+        }
+    }
+
+    /** `test_no_single_position_may_hold_up_a_game`: a search that would take minutes is cut at the cap. */
+    @Test
+    fun noSinglePositionMayHoldUpAGame() {
+        val engine = engine()
+        assumeTrue("the engine or its network is missing", engine != null)
+        engine!!.use { sf ->
+            // A knight endgame that takes minutes to reach depth 14 with four lines.
+            val slow = Board("8/k7/2p3NP/8/1P1K2P1/2P5/3n4/8 b - - 2 50")
+            sf.maxSeconds = 0.5
+            val began = System.currentTimeMillis()
+            val lines = sf.analyse(slow, depth = 40, multipv = 4)
+            val took = System.currentTimeMillis() - began
+            assertTrue("no lines", lines.isNotEmpty())
+            assertTrue("the cap did not hold: $took ms", took < 5000)
+            assertTrue("the depth asked for was reached: ${lines[0].depth}", lines[0].depth < 40)
+        }
+    }
+
+    /** `test_multipv_is_ordered_best_first_and_bounded_by_the_legal_moves`. */
+    @Test
+    fun theLinesAreBestFirstAndNoMoreThanTheLegalMoves() {
+        val engine = engine()
+        assumeTrue("the engine or its network is missing", engine != null)
+        engine!!.use { sf ->
+            val lines = sf.analyse(Board(), depth = 10, multipv = 4)
+            assertEquals(4, lines.size)
+            assertEquals(lines.map { it.expectedScore }.sortedDescending(), lines.map { it.expectedScore })
+            assertEquals(1, sf.analyse(Board("7k/8/8/8/8/8/6q1/7K w - - 0 1"), depth = 10, multipv = 4).size)
+        }
+    }
+
+    /** `test_the_engine_model_can_be_asked_for_instead`: the engine's own numbers, (W + D/2) / 1000. */
+    @Test
+    fun theEngineModelCanBeAskedForInstead() {
+        val engine = engine()
+        assumeTrue("the engine or its network is missing", engine != null)
+        engine!!.use { sf ->
+            val board = Board(BLACK_WINS)
+            val human = sf.analyse(board, depth = 10)[0]
+            assertTrue(sf.scoreModel == "human" && human.expectedScore < 1.0)
+            sf.scoreModel = "engine"
+            val strict = try {
+                sf.analyse(board, depth = 10)[0]
+            } finally {
+                sf.scoreModel = "human"
+            }
+            val wdl = strict.wdl!!
+            assertEquals((wdl.first + wdl.second / 2.0) / 1000, strict.expectedScore, 1e-9)
+            assertTrue("${strict.expectedScore} <= ${human.expectedScore}", strict.expectedScore > human.expectedScore)
+        }
+    }
+
+    /** `test_san_line_reads_like_a_move_list`: numbered from whoever is to move; a line that does not fit stops. */
+    @Test
+    fun aLineReadsLikeAMoveList() {
+        val board = Board()
+        assertEquals("1. e4 e5 2. Nf3", sanLine(board, listOf("e2e4", "e7e5", "g1f3")))
+        board.push(com.sidecoach.chess.Move.fromUci("e2e4"))
+        assertEquals("1... e5 2. Nf3", sanLine(board, listOf("e7e5", "g1f3")))
+        assertEquals("a line that does not fit the board stops", "", sanLine(board, listOf("e2e4")))
+        assertEquals("", sanLine(board, listOf("nonsense")))
     }
 
     @Test
@@ -177,10 +268,21 @@ class EngineTest {
             )
             assertTrue("white is not winning", white[0].expectedScore > 0.7)
             assertTrue("black is not losing", black[0].expectedScore < 0.3)
+            // `test_lines_come_back_from_the_movers_point_of_view`: the engine's own numbers,
+            // and the centipawns from the mover's side too, at the depth asked for.
+            for ((lines, sign) in listOf(white to 1, black to -1)) {
+                val top = lines[0]
+                assertEquals("the win-draw-loss numbers", 1000, top.wdl!!.toList().sum())
+                assertTrue("the centipawns are not the mover's: ${top.scoreCp}", top.scoreCp == null || top.scoreCp!! * sign > 0)
+                assertTrue("the depth: ${top.depth}", top.depth >= 12)
+            }
         }
     }
 
     companion object {
         private const val TAG = "sidecoach.engine"
+
+        /** Black to move at queen odds: winning, with no mate in sight to hide the numbers. */
+        private const val BLACK_WINS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR b KQkq - 0 1"
     }
 }

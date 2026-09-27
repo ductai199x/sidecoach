@@ -47,9 +47,15 @@ data class Move(val from: Int, val to: Int, val promotion: Int = 0) {
         /** `chess.Move.null()`: hand the turn over without changing anything else. */
         val NULL = Move(0, 0, 0)
 
+        /**
+         * `Move.from_uci`: "e2e4", "e7e8q", "0000". Text that is no move raises, as python-chess's
+         * `InvalidMoveError` (a `ValueError`) does -- [IllegalArgumentException] here -- so a
+         * caller that catches it stops where the desktop stops, rather than reading squares off
+         * the board's edge.
+         */
         fun fromUci(uci: String): Move {
             if (uci == "0000") return NULL
-            return fromSquares(uci)
+            return fromUciOrNull(uci) ?: throw IllegalArgumentException("invalid uci: '$uci'")
         }
 
         /**
@@ -83,12 +89,6 @@ data class Move(val from: Int, val to: Int, val promotion: Int = 0) {
             val rank = RANK_NAMES.indexOf(name[1])
             return if (file < 0 || rank < 0) null else square(file, rank)
         }
-
-        private fun fromSquares(uci: String): Move = Move(
-            parseSquare(uci.substring(0, 2)),
-            parseSquare(uci.substring(2, 4)),
-            if (uci.length > 4) PIECE_SYMBOLS.indexOf(uci.substring(4, 5)) else 0,
-        )
     }
 }
 
@@ -213,27 +213,55 @@ class Board {
         return out
     }
 
+    /**
+     * `set_piece_at`: the piece put on the square, whatever stood there taken off. As
+     * python-chess's `Board` does, the move stack is cleared: the moves no longer lead here.
+     */
     fun setPieceAt(square: Int, piece: Piece?, promotedPiece: Boolean = false) {
         if (piece == null) {
-            removePieceAt(square)
-            return
+            placeOff(square)
+        } else {
+            placeOn(square, piece.pieceType, piece.colour, promotedPiece)
         }
-        removePieceAt(square)
+        clearStack()
+    }
+
+    /**
+     * `remove_piece_at`: the piece type that stood on the square, 0 when it was empty. The
+     * move stack is cleared, as python-chess's `Board` clears it.
+     */
+    fun removePieceAt(square: Int): Int {
+        val type = placeOff(square)
+        clearStack()
+        return type
+    }
+
+    /** `clear_stack`: the moves and the positions [pop] would put back, forgotten. */
+    fun clearStack() {
+        moveStack.clear()
+        stateStack.clear()
+    }
+
+    /** python-chess's `_set_piece_at`: the piece put on the square, the stack left alone. */
+    private fun placeOn(square: Int, pieceType: Int, colour: Boolean, promotedPiece: Boolean = false) {
+        placeOff(square)
         val mask = BB_SQUARES[square]
-        when (piece.pieceType) {
+        when (pieceType) {
             PAWN -> pawns = pawns or mask
             KNIGHT -> knights = knights or mask
             BISHOP -> bishops = bishops or mask
             ROOK -> rooks = rooks or mask
             QUEEN -> queens = queens or mask
             KING -> kings = kings or mask
+            else -> return
         }
         occupied = occupied or mask
-        occupiedCo[if (piece.colour) 1 else 0] = occupiedCo[if (piece.colour) 1 else 0] or mask
+        occupiedCo[if (colour) 1 else 0] = occupiedCo[if (colour) 1 else 0] or mask
         if (promotedPiece) promoted = promoted or mask
     }
 
-    fun removePieceAt(square: Int): Int {
+    /** python-chess's `_remove_piece_at`: the piece type taken off, the stack left alone. */
+    private fun placeOff(square: Int): Int {
         val type = pieceTypeAt(square)
         if (type == 0) return 0
         val mask = BB_SQUARES[square]
@@ -474,6 +502,8 @@ class Board {
     }
 
     fun isPseudoLegal(move: Move): Boolean {
+        // Null moves are not pseudo-legal.
+        if (move.isNull) return false
         val piece = pieceTypeAt(move.from)
         if (piece == 0) return false
         if (colourAt(move.from) != turn) return false
@@ -482,9 +512,13 @@ class Board {
             if (turn == WHITE && squareRank(move.to) != 7) return false
             if (turn == BLACK && squareRank(move.to) != 0) return false
         }
+        // Handle castling. The move is read as python-chess stores castling (`_from_chess960`),
+        // so the king taking its own rook -- e1h1, what some screens and engines send -- is
+        // castling too, and legal wherever e1g1 is.
         if (piece == KING) {
+            val castling = fromChess960(move.from, move.to)
             var castles = false
-            generateCastlingMoves(BB_ALL, BB_ALL) { if (it == move) castles = true }
+            generateCastlingMoves(BB_ALL, BB_ALL) { if (it == castling) castles = true }
             if (castles) return true
         }
         if (occupiedCo[if (turn) 1 else 0] and BB_SQUARES[move.to] != BB_EMPTY) return false
@@ -749,7 +783,7 @@ class Board {
         val toBb = BB_SQUARES[move.to]
 
         var promotedPiece = promoted and fromBb != BB_EMPTY
-        var pieceType = removePieceAt(move.from)
+        var pieceType = placeOff(move.from)
         var captureSquare = move.to
         var capturedPieceType = pieceTypeAt(captureSquare)
 
@@ -775,7 +809,7 @@ class Board {
             ) {
                 val down = if (turn == WHITE) -8 else 8
                 captureSquare = ep + down
-                capturedPieceType = removePieceAt(captureSquare)
+                capturedPieceType = placeOff(captureSquare)
             }
         }
 
@@ -787,18 +821,18 @@ class Board {
         val castling = pieceType == KING && occupiedCo[if (turn) 1 else 0] and toBb != BB_EMPTY
         if (castling) {
             val aSide = squareFile(move.to) < squareFile(move.from)
-            removePieceAt(move.from)
-            removePieceAt(move.to)
+            placeOff(move.from)
+            placeOff(move.to)
             if (aSide) {
-                setPieceAt(if (turn == WHITE) C1 else C8, Piece(KING, turn))
-                setPieceAt(if (turn == WHITE) D1 else D8, Piece(ROOK, turn))
+                placeOn(if (turn == WHITE) C1 else C8, KING, turn)
+                placeOn(if (turn == WHITE) D1 else D8, ROOK, turn)
             } else {
-                setPieceAt(if (turn == WHITE) G1 else G8, Piece(KING, turn))
-                setPieceAt(if (turn == WHITE) F1 else F8, Piece(ROOK, turn))
+                placeOn(if (turn == WHITE) G1 else G8, KING, turn)
+                placeOn(if (turn == WHITE) F1 else F8, ROOK, turn)
             }
         }
 
-        if (!castling) setPieceAt(move.to, Piece(pieceType, turn), promotedPiece)
+        if (!castling) placeOn(move.to, pieceType, turn, promotedPiece)
 
         turn = !turn
     }
@@ -1051,7 +1085,8 @@ class Board {
         val check = isCheck()
         val mate = check && isCheckmate()
         pop()
-        return san + if (mate) "#" else if (check) "+" else ""
+        // The null move takes no suffix, whatever it leaves the other side facing.
+        return san + if (mate && !move.isNull) "#" else if (check && !move.isNull) "+" else ""
     }
 
     private fun algebraicWithoutSuffix(move: Move): String {
@@ -1171,6 +1206,21 @@ class Board {
         return if (found != null) found to null else null to SanFailure.ILLEGAL
     }
 
+    /**
+     * `parse_uci`: the legal move the text names, castling read as python-chess stores it (the
+     * king taking its own rook becomes e1g1), or the null move for "0000". Text that is no move,
+     * or no legal one here, raises [IllegalArgumentException] (python-chess's `InvalidMoveError`
+     * and `IllegalMoveError`).
+     */
+    fun parseUci(uci: String): Move {
+        val given = Move.fromUci(uci)
+        if (uci == "0000") return given
+        val move = toChess960(given)
+        val normal = fromChess960(move.from, move.to, move.promotion)
+        if (!isLegal(normal)) throw IllegalArgumentException("illegal uci: '$uci' in ${fen()}")
+        return normal
+    }
+
     /** `find_move`: the legal move between two squares, promoting to a queen by default. */
     fun findMove(from: Int, to: Int, promotion: Int = 0): Move? {
         var wanted = promotion
@@ -1222,53 +1272,188 @@ class Board {
         return if (builder.isEmpty()) "-" else builder.toString()
     }
 
-    fun fen(): String = "${epd()} $halfmoveClock $fullmoveNumber"
+    /**
+     * `fen(en_passant=...)`: with "legal" (the default) the en passant square is named only
+     * when the capture is legal; with "fen" whenever the board has one, which is how
+     * python-chess hands a position to an engine (`_position`).
+     */
+    fun fen(enPassant: String = "legal"): String = "${epd(enPassant)} $halfmoveClock $fullmoveNumber"
 
     /**
      * The FEN without its move counters: `chess.Board.epd()` with no operations. Two move
      * orders of unequal length reach the same EPD; the en passant square is named only when
      * the capture is legal, as in the FEN.
      */
-    fun epd(): String {
-        val ep = if (hasLegalEnPassant()) squareName(epSquare!!) else "-"
+    fun epd(enPassant: String = "legal"): String {
+        val square = if (enPassant == "fen") epSquare else if (hasLegalEnPassant()) epSquare else null
+        val ep = if (square != null) squareName(square) else "-"
         return "${boardFen()} ${if (turn == WHITE) "w" else "b"} ${castlingXfen()} $ep"
     }
 
+    /**
+     * `ply()`: the half-moves since the start of the game, as the move number and the side to
+     * move tell them.
+     */
+    fun ply(): Int = 2 * (fullmoveNumber - 1) + (if (turn == BLACK) 1 else 0)
+
+    /**
+     * `set_fen`: the position from a FEN, the move stack cleared. A FEN python-chess would
+     * refuse is refused here too, with its words: [IllegalArgumentException] for its
+     * `ValueError`. Missing trailing fields take python-chess's defaults.
+     */
     fun setFen(fen: String) {
-        val parts = fen.trim().split(Regex("\\s+"))
-        clearBoard()
-        var square = 56
-        for (ch in parts[0]) {
-            when {
-                ch == '/' -> square -= 16
-                ch.isDigit() -> square += ch - '0'
-                else -> { setPieceAt(square, Piece.fromSymbol(ch)); square += 1 }
-            }
+        val parts = ArrayDeque(fen.trim().split(Regex("\\s+")).filter { it.isNotEmpty() })
+
+        // Board part.
+        val boardPart = parts.removeFirstOrNull() ?: throw IllegalArgumentException("empty fen")
+
+        // Turn.
+        val turnPart = parts.removeFirstOrNull()
+        val turn = when (turnPart) {
+            null, "w" -> WHITE
+            "b" -> BLACK
+            else -> throw IllegalArgumentException("expected 'w' or 'b' for turn part of fen: '$fen'")
         }
-        turn = parts.size < 2 || parts[1] == "w"
-        castlingRights = BB_EMPTY
-        if (parts.size > 2 && parts[2] != "-") {
-            for (ch in parts[2]) {
-                when (ch) {
-                    'K' -> castlingRights = castlingRights or (BB_RANK_1 and rooks and occupiedCo[1] and BB_FILES[7])
-                    'Q' -> castlingRights = castlingRights or (BB_RANK_1 and rooks and occupiedCo[1] and BB_FILES[0])
-                    'k' -> castlingRights = castlingRights or (BB_RANK_8 and rooks and occupiedCo[0] and BB_FILES[7])
-                    'q' -> castlingRights = castlingRights or (BB_RANK_8 and rooks and occupiedCo[0] and BB_FILES[0])
-                    else -> {
-                        val file = FILE_NAMES.indexOf(ch.lowercaseChar())
-                        if (file >= 0) {
-                            val backrank = if (ch.isUpperCase()) BB_RANK_1 else BB_RANK_8
-                            val side = if (ch.isUpperCase()) 1 else 0
-                            castlingRights = castlingRights or
-                                (backrank and rooks and occupiedCo[side] and BB_FILES[file])
-                        }
+
+        // Validate castling part.
+        val castlingPart = parts.removeFirstOrNull() ?: "-"
+        if (!FEN_CASTLING_REGEX.matches(castlingPart)) {
+            throw IllegalArgumentException("invalid castling part in fen: '$fen'")
+        }
+
+        // En passant square.
+        val epPart = parts.removeFirstOrNull()
+        val epSquare = when {
+            epPart == null || epPart == "-" -> null
+            else -> SQUARE_NAMES.indexOf(epPart).takeIf { it >= 0 }
+                ?: throw IllegalArgumentException("invalid en passant part in fen: '$fen'")
+        }
+
+        // Check that the half-move part is valid.
+        val halfmovePart = parts.removeFirstOrNull()
+        val halfmoveClock = if (halfmovePart == null) 0 else {
+            val clock = halfmovePart.toIntOrNull() ?: throw IllegalArgumentException("invalid half-move clock in fen: '$fen'")
+            if (clock < 0) throw IllegalArgumentException("half-move clock cannot be negative: '$fen'")
+            clock
+        }
+
+        // Check that the full-move number part is valid.
+        // 0 is allowed for compatibility, but later replaced with 1.
+        val fullmovePart = parts.removeFirstOrNull()
+        val fullmoveNumber = if (fullmovePart == null) 1 else {
+            val number = fullmovePart.toIntOrNull() ?: throw IllegalArgumentException("invalid fullmove number in fen: '$fen'")
+            if (number < 0) throw IllegalArgumentException("fullmove number cannot be negative: '$fen'")
+            maxOf(number, 1)
+        }
+
+        // All parts should be consumed now.
+        if (parts.isNotEmpty()) throw IllegalArgumentException("fen string has more parts than expected: '$fen'")
+
+        // Validate the board part and set it.
+        setBoardFen(boardPart)
+
+        // Apply.
+        this.turn = turn
+        setCastlingFen(castlingPart)
+        this.epSquare = epSquare
+        this.halfmoveClock = halfmoveClock
+        this.fullmoveNumber = fullmoveNumber
+        clearStack()
+    }
+
+    /** `_set_board_fen`: the placement, checked row by row as python-chess checks it. */
+    private fun setBoardFen(given: String) {
+        val fen = given.trim()
+        if (" " in fen) throw IllegalArgumentException("expected position part of fen, got multiple parts: '$fen'")
+
+        // Ensure the FEN is valid.
+        val rows = fen.split("/")
+        if (rows.size != 8) throw IllegalArgumentException("expected 8 rows in position part of fen: '$fen'")
+
+        // Validate each row.
+        for (row in rows) {
+            var fieldSum = 0
+            var previousWasDigit = false
+            var previousWasPiece = false
+            for (c in row) {
+                if (c in '1'..'8') {
+                    if (previousWasDigit) {
+                        throw IllegalArgumentException("two subsequent digits in position part of fen: '$fen'")
                     }
+                    fieldSum += c - '0'
+                    previousWasDigit = true
+                    previousWasPiece = false
+                } else if (c == '~') {
+                    if (!previousWasPiece) throw IllegalArgumentException("'~' not after piece in position part of fen: '$fen'")
+                    previousWasDigit = false
+                    previousWasPiece = false
+                } else if (c.lowercaseChar().toString() in PIECE_SYMBOLS) {
+                    fieldSum += 1
+                    previousWasDigit = false
+                    previousWasPiece = true
+                } else {
+                    throw IllegalArgumentException("invalid character in position part of fen: '$fen'")
                 }
             }
+            if (fieldSum != 8) throw IllegalArgumentException("expected 8 columns per row in position part of fen: '$fen'")
         }
-        epSquare = if (parts.size > 3 && parts[3] != "-") parseSquare(parts[3]) else null
-        halfmoveClock = if (parts.size > 4) parts[4].toIntOrNull() ?: 0 else 0
-        fullmoveNumber = if (parts.size > 5) maxOf(parts[5].toIntOrNull() ?: 1, 1) else 1
+
+        // Clear the board.
+        clearBoard()
+
+        // Put pieces on the board.
+        var squareIndex = 0
+        for (c in fen) {
+            if (c in '1'..'8') {
+                squareIndex += c - '0'
+            } else if (c == '~') {
+                promoted = promoted or BB_SQUARES[SQUARES_180[squareIndex - 1]]
+            } else if (c != '/') {
+                val piece = Piece.fromSymbol(c)
+                placeOn(SQUARES_180[squareIndex], piece.pieceType, piece.colour)
+                squareIndex += 1
+            }
+        }
+    }
+
+    /**
+     * `_set_castling_fen`. "K" and "Q" name the outermost rook on the king's side, or the
+     * corner when there is none there -- a right with no rook behind it, which [isValid] then
+     * refuses, as python-chess refuses it.
+     */
+    private fun setCastlingFen(castlingFen: String) {
+        if (castlingFen.isEmpty() || castlingFen == "-") {
+            castlingRights = BB_EMPTY
+            return
+        }
+        if (!FEN_CASTLING_REGEX.matches(castlingFen)) throw IllegalArgumentException("invalid castling fen: '$castlingFen'")
+        castlingRights = BB_EMPTY
+        for (given in castlingFen) {
+            val colour = given.isUpperCase()
+            val flag = given.lowercaseChar()
+            val backrank = if (colour == WHITE) BB_RANK_1 else BB_RANK_8
+            val rooks = occupiedCo[if (colour) 1 else 0] and this.rooks and backrank
+            val king = king(colour)
+            if (flag == 'q') {
+                // Select the leftmost rook. (python-chess's `lsb` of no rooks is -1.)
+                val leftmost = if (rooks == BB_EMPTY) -1 else lsb(rooks)
+                castlingRights = if (king != null && leftmost < king) {
+                    castlingRights or (rooks and (0uL - rooks))
+                } else {
+                    castlingRights or (BB_FILES[0] and backrank)
+                }
+            } else if (flag == 'k') {
+                // Select the rightmost rook.
+                val rook = msb(rooks)
+                castlingRights = if (king != null && king < rook) {
+                    castlingRights or BB_SQUARES[rook]
+                } else {
+                    castlingRights or (BB_FILES[7] and backrank)
+                }
+            } else {
+                castlingRights = castlingRights or (BB_FILES[FILE_NAMES.indexOf(flag)] and backrank)
+            }
+        }
     }
 
     companion object {
@@ -1276,6 +1461,12 @@ class Board {
         private val QUEENSIDE_SAN =
             listOf("O-O-O", "O-O-O+", "O-O-O#", "0-0-0", "0-0-0+", "0-0-0#")
         private val NULL_SAN = listOf("--", "Z0", "0000", "@@@@")
+
+        /** python-chess's `FEN_CASTLING_REGEX`: at most two rights a side, White's first. */
+        private val FEN_CASTLING_REGEX = Regex("(?:-|[KQABCDEFGH]{0,2}[kqabcdefgh]{0,2})")
+
+        /** `chess.SQUARE_NAMES`: a1, b1, ... h8. */
+        private val SQUARE_NAMES = List(64) { squareName(it) }
 
         /** python-chess's own SAN pattern, so the same texts parse and the same ones do not. */
         private val SAN_REGEX =

@@ -4,6 +4,7 @@ import android.os.SystemClock
 import android.util.Log
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
+import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.chess.WHITE
 import com.sidecoach.events.Line
 import java.io.BufferedReader
@@ -21,9 +22,12 @@ class EngineUnavailable(message: String) : RuntimeException(message)
  * A port of `sidecoach/analysis/engine.py`.
  *
  * The desktop drives Stockfish through python-chess; there is no such library here, so the
- * protocol is spoken directly. Everything else is the desktop's: the same options, the same
- * restart-once rule, the same line for each MultiPV index at the last depth reached, and
- * scores from the mover's point of view in expected score, never centipawns.
+ * protocol is spoken directly, as python-chess speaks it: the options sent only when they
+ * change, a new game before the first search, and the position as the game's moves from where
+ * they began, so the engine sees the repetitions in them (`EngineParityTest` holds the phone to
+ * the desktop's transcript). Everything else is the desktop's: the same restart-once rule, the
+ * same line for each MultiPV index at the last depth reached, and scores from the mover's point
+ * of view in expected score, never centipawns.
  *
  * Three things are the phone's own. The executable lives in the APK's library directory,
  * because that is the only place an Android app may execute a file from. The network is a
@@ -55,7 +59,19 @@ open class Engine(
     private var reader: BufferedReader? = null
     private val lock = ReentrantLock()
     private val options = HashSet<String>()
-    private var currentMultipv = -1
+
+    /**
+     * Each option's value as the engine holds it: the default it announced, then what was
+     * set. python-chess's `config`, which `_setoption` holds a value against and sends only
+     * when it differs ([configure]).
+     */
+    private val config = HashMap<String, String>()
+
+    /**
+     * No search asked of this process yet: python-chess's `first_game`, on which its first
+     * analysis tells the engine a new game begins (`ucinewgame`) and waits for it to be ready.
+     */
+    private var firstGame = true
 
     /** What the engine calls itself, for the log. */
     var name: String = binary.name
@@ -77,14 +93,18 @@ open class Engine(
         }
     }
 
+    /** The engine's process, started: the executable in the library directory. */
+    protected open fun launch(): Process =
+        ProcessBuilder(binary.absolutePath)
+            .redirectErrorStream(true)
+            .directory(binary.parentFile)
+            .start()
+
     fun open() {
         if (process != null) return
         if (!binary.exists()) throw EngineUnavailable("no engine at $binary")
         val started = try {
-            ProcessBuilder(binary.absolutePath)
-                .redirectErrorStream(true)
-                .directory(binary.parentFile)
-                .start()
+            launch()
         } catch (exc: IOException) {
             throw EngineUnavailable("cannot start $binary: $exc")
         }
@@ -93,10 +113,14 @@ open class Engine(
         writer = started.outputStream.bufferedWriter()
         reader = BufferedReader(InputStreamReader(started.inputStream))
         options.clear()
+        config.clear()
+        firstGame = true
         send("uci")
         readUntil("uciok") { line ->
             if (line.startsWith("option name ")) {
-                options.add(line.removePrefix("option name ").substringBefore(" type").trim())
+                val option = parseOption(line)
+                options.add(option.first)
+                option.second?.let { config[option.first] = it }
             } else if (line.startsWith("id name ")) {
                 name = line.removePrefix("id name ").trim()
             }
@@ -106,12 +130,11 @@ open class Engine(
         if (net != null && "EvalFile" in options) {
             setOption("EvalFile", net.absolutePath)
         }
-        if ("Threads" in options) setOption("Threads", threads.toString())
-        if ("Hash" in options) setOption("Hash", hashMb.toString())
-        // Real win-draw-loss numbers beat a model fitted to centipawns; ask for them when
-        // the engine has them.
-        if ("UCI_ShowWDL" in options) setOption("UCI_ShowWDL", "true")
-        currentMultipv = -1
+        if ("Threads" in options) configure("Threads", threads.toString())
+        if ("Hash" in options) configure("Hash", hashMb.toString())
+        // Real win-draw-loss numbers beat a model fitted to centipawns; ask for them when the
+        // engine has them, and fall back to python-chess's model when it does not ([line]).
+        if ("UCI_ShowWDL" in options) configure("UCI_ShowWDL", "true")
         send("isready")
         readUntil("readyok") {}
         Log.i(TAG, "$name ready: ${threads} threads, ${hashMb} MB, net ${net?.name ?: "embedded"}")
@@ -125,8 +148,8 @@ open class Engine(
         if (hashMb != null) this.hashMb = hashMb
         if (process == null) return
         runCatching {
-            if ("Threads" in options) setOption("Threads", this.threads.toString())
-            if ("Hash" in options) setOption("Hash", this.hashMb.toString())
+            if ("Threads" in options) configure("Threads", this.threads.toString())
+            if ("Hash" in options) configure("Hash", this.hashMb.toString())
         }
     }
 
@@ -277,7 +300,7 @@ open class Engine(
         val infos = lock.withLock { analyseWithRestart(board, depth, capped, wanted) }
         val plies = pvPlies ?: this.pvPlies
         val lines = infos
-            .mapIndexed { i, info -> line(info, if (carryBest && i == 0) maxOf(plies, MIN_BEST_PLIES) else plies) }
+            .mapIndexed { i, info -> line(info, board, if (carryBest && i == 0) maxOf(plies, MIN_BEST_PLIES) else plies) }
             .filter { it.moves.isNotEmpty() }
             .toMutableList()
         if (carryBest && lines.isNotEmpty() && lines[0].moves.size < MIN_BEST_PLIES) {
@@ -325,94 +348,176 @@ open class Engine(
         throw AssertionError("unreachable")
     }
 
-    /** One `info` line's numbers, kept per MultiPV index at the last depth reached. */
-    private class Info(
-        val depth: Int,
-        val multipv: Int,
-        val scoreCp: Int?,
-        val mate: Int?,
-        val wdl: Triple<Int, Int, Int>?,
-        val pv: List<String>,
-    )
+    /**
+     * The numbers of one `info` line, or of one MultiPV index once its lines are merged as
+     * python-chess merges them (`AnalysisResult.post`): each line's fields update the index's,
+     * the last word on each field wins, and a field a line does not carry stays. A line that
+     * names no index is the first's -- so `info depth 21 currmove e2e4 currmovenumber 1`, which
+     * Stockfish sends once a search has run three seconds, moves the best line's depth on while
+     * its moves stay the last depth's, as the desktop reports it. Null is a field not given.
+     */
+    private class Info {
+        var depth: Int? = null
+        var multipv: Int? = null
+
+        /** A score was given: [scoreCp] or [mate], the other null (python-chess's one `score`). */
+        var score = false
+        var scoreCp: Int? = null
+        var mate: Int? = null
+        var wdl: Triple<Int, Int, Int>? = null
+        var pv: List<String>? = null
+    }
 
     private fun search(board: Board, depth: Int?, timeS: Double?, multipv: Int): List<Info> {
-        if (multipv != currentMultipv) {
-            setOption("MultiPV", multipv.toString())
-            currentMultipv = multipv
+        // What python-chess's analysis sends before the search: pondering off and analysis
+        // mode on where the engine has them, the number of lines, and -- on the process's
+        // first search -- a new game, waited on until the engine is ready.
+        if ("Ponder" in options) configure("Ponder", "false")
+        if ("UCI_AnalyseMode" in options) configure("UCI_AnalyseMode", "true")
+        if ("MultiPV" in options || multipv > 1) configure("MultiPV", multipv.toString())
+        if (firstGame) {
+            send("ucinewgame")
+            firstGame = false
+            send("isready")
+            readUntil("readyok") {}
         }
-        send("position fen ${board.fen()}")
+        position(board)
         val go = StringBuilder("go")
         if (depth != null) go.append(" depth ").append(depth)
         // The time limit is the desktop's `movetime`, kept here ([watch]) so that a pause
         // does not count against it.
         send(go.toString())
         if (timeS != null) arm((timeS * 1000).toLong())
-        val best = HashMap<Int, Info>()
+        // python-chess's `AnalysisResult.multipv`: one merged record per index, the first there
+        // from the start; its moves read against the position sent (`self.engine.board`).
+        val root = board.copy(withStack = false)
+        val infos = arrayListOf(Info())
         try {
             readUntil("bestmove") { line ->
-                if (line.startsWith("info ") && " pv " in " $line ") {
-                    parseInfo(line)?.let { info ->
-                        val kept = best[info.multipv]
-                        // The last word on each line wins, which at a fixed depth is the
-                        // deepest: python-chess keeps the same.
-                        if (kept == null || info.depth >= kept.depth) best[info.multipv] = info
-                    }
-                }
+                val words = words(line)
+                if (words.firstOrNull() == "info") post(infos, parseInfo(words, root))
             }
         } finally {
             if (timeS != null) disarm()
         }
-        return best.entries.sortedBy { it.key }.map { it.value }
+        return infos
     }
 
-    private fun parseInfo(line: String): Info? {
-        val words = line.split(" ")
-        var depth = 0
-        var multipv = 1
-        var scoreCp: Int? = null
-        var mate: Int? = null
-        var wdl: Triple<Int, Int, Int>? = null
-        var pv: List<String> = emptyList()
+    /**
+     * `AnalysisResult.post`: the line's fields into its index's record, the records grown to
+     * the index. Python's negative index for a MultiPV of 0 or less counts from the end.
+     */
+    private fun post(infos: MutableList<Info>, info: Info) {
+        val wanted = info.multipv ?: 1
+        while (infos.size < wanted) infos.add(Info())
+        val at = if (wanted >= 1) wanted - 1 else infos.size + wanted - 1
+        if (at !in infos.indices) return
+        val into = infos[at]
+        info.depth?.let { into.depth = it }
+        info.multipv?.let { into.multipv = it }
+        if (info.score) {
+            into.score = true
+            into.scoreCp = info.scoreCp
+            into.mate = info.mate
+        }
+        info.wdl?.let { into.wdl = it }
+        info.pv?.let { into.pv = it }
+    }
+
+    /**
+     * python-chess's `_parse_uci_info`, for the fields the desktop reads (depth, the MultiPV
+     * index, the score, win-draw-loss, the moves), every other token taken as it takes it.
+     * A field that does not parse is not given, and the words it took stay taken; a line of
+     * moves stops at the first word that is no move, and one with an illegal move in it is no
+     * line at all (`_create_variation_line`, `push_uci`), the words after `pv` read again.
+     */
+    private fun parseInfo(words: List<String>, root: Board): Info {
+        val info = Info()
         var i = 1
+        fun next(): String = if (i < words.size) words[i++] else ""
         while (i < words.size) {
-            when (words[i]) {
-                "depth" -> { depth = words.getOrNull(i + 1)?.toIntOrNull() ?: 0; i += 2 }
-                "multipv" -> { multipv = words.getOrNull(i + 1)?.toIntOrNull() ?: 1; i += 2 }
+            when (next()) {
+                "string" -> i = words.size
+                "depth" -> next().toIntOrNull()?.let { info.depth = it }
+                "multipv" -> next().toIntOrNull()?.let { info.multipv = it }
+                "seldepth", "nodes", "currmovenumber", "hashfull", "nps", "tbhits", "cpuload",
+                "time", "ebf", "currmove" -> next()
                 "score" -> {
-                    when (words.getOrNull(i + 1)) {
-                        "cp" -> { scoreCp = words.getOrNull(i + 2)?.toIntOrNull(); i += 3 }
-                        "mate" -> { mate = words.getOrNull(i + 2)?.toIntOrNull(); i += 3 }
-                        else -> i += 2
+                    val kind = next()
+                    val value = next()
+                    if (i < words.size && (words[i] == "lowerbound" || words[i] == "upperbound")) i++
+                    val number = value.toIntOrNull()
+                    if (number != null && (kind == "cp" || kind == "mate")) {
+                        info.score = true
+                        info.scoreCp = if (kind == "cp") number else null
+                        info.mate = if (kind == "mate") number else null
                     }
                 }
-                "wdl" -> {
-                    val w = words.getOrNull(i + 1)?.toIntOrNull()
-                    val d = words.getOrNull(i + 2)?.toIntOrNull()
-                    val l = words.getOrNull(i + 3)?.toIntOrNull()
-                    if (w != null && d != null && l != null) wdl = Triple(w, d, l)
-                    i += 4
+                "currline" -> if (next().toIntOrNull() != null) {
+                    variation(root, words, i)?.let { i = it.second }
                 }
-                "pv" -> { pv = words.drop(i + 1); i = words.size }
-                else -> i += 1
+                "refutation" -> {
+                    val refuted = root.copy(withStack = false)
+                    val pushed = runCatching { refuted.push(refuted.parseUci(next())) }.isSuccess
+                    if (pushed) variation(refuted, words, i)?.let { i = it.second }
+                }
+                "pv" -> variation(root, words, i)?.let { (moves, after) ->
+                    info.pv = moves
+                    i = after
+                }
+                "wdl" -> {
+                    val wins = next().toIntOrNull()
+                    val draws = next().toIntOrNull()
+                    val losses = next().toIntOrNull()
+                    if (wins != null && draws != null && losses != null) info.wdl = Triple(wins, draws, losses)
+                }
+                else -> Unit
             }
         }
-        if (pv.isEmpty()) return null
-        return Info(depth, multipv, scoreCp, mate, wdl, pv)
+        return info
     }
 
-    private fun line(info: Info, pvPlies: Int): Line = Line(
-        moves = info.pv.take(pvPlies),
-        depth = info.depth,
-        expectedScore = expectedScore(scoreModel, info.scoreCp, info.mate, info.wdl),
-        scoreCp = info.scoreCp,
-        mate = info.mate,
-        wdl = info.wdl,
-    )
+    /**
+     * `engine._line`: a line with no score has no moves either, and is dropped; the numbers
+     * come from the engine when it gives win-draw-loss, else from python-chess's model of
+     * them ([WDL_MODEL]) at the board's ply.
+     */
+    private fun line(info: Info, board: Board, pvPlies: Int): Line {
+        if (!info.score) return Line(moves = emptyList(), depth = 0, expectedScore = 0.5)
+        val wdl = info.wdl ?: modelWdl(info.scoreCp, info.mate, board.ply())
+        return Line(
+            moves = (info.pv ?: emptyList()).take(pvPlies),
+            depth = info.depth ?: 0,
+            expectedScore = expectedScore(scoreModel, info.scoreCp, info.mate, wdl),
+            scoreCp = info.scoreCp,
+            mate = info.mate,
+            wdl = wdl,
+        )
+    }
 
     // The protocol
 
+    /**
+     * python-chess's `_position`: the game's moves from where they began (`startpos` when that
+     * is the standard start), so the engine sees the repetitions they hold; the position
+     * alone, en passant square and all, when the history holds a null move.
+     */
+    private fun position(board: Board) {
+        // Standard chess, as python-chess selects it when the engine offers the choice.
+        if ("UCI_Variant" in options) configure("UCI_Variant", "chess")
+        if ("UCI_Chess960" in options) configure("UCI_Chess960", "false")
+        send(positionCommand(board))
+    }
+
     private fun setOption(name: String, value: String) {
         send("setoption name $name value $value")
+    }
+
+    /** python-chess's `_setoption`: sent only when the engine does not already hold it. */
+    private fun configure(name: String, value: String) {
+        if (config[name] == value) return
+        setOption(name, value)
+        config[name] = value
     }
 
     private fun send(command: String) {
@@ -454,7 +559,141 @@ open class Engine(
 
         /** How many searches may carry one line on. */
         const val EXTEND_TRIES = 3
+
+        /** python-chess's model for turning centipawns into win-draw-loss when an engine will not. */
+        const val WDL_MODEL = "sf"
         const val DEFAULT_SCORE_MODEL = "human"
+
+        /**
+         * The `position` command python-chess sends for [board] (`UciProtocol._position`):
+         * `startpos` when the moves began at the standard start, else the FEN they began
+         * from, then the moves -- the whole stack, so the engine sees the repetitions in it.
+         * A history holding a null move cannot be sent as moves, so the board's own FEN goes
+         * alone. The FEN names the en passant square whenever there is one
+         * (`en_passant="fen"`), legal capture or not.
+         */
+        fun positionCommand(board: Board): String {
+            val builder = StringBuilder("position")
+            val safeHistory = board.moveStack.none { it.isNull }
+            val root = if (safeHistory) board.root() else board
+            val fen = root.fen(enPassant = "fen")
+            if (fen == STARTING_FEN) {
+                builder.append(" startpos")
+            } else {
+                builder.append(" fen ").append(fen)
+            }
+            if (!safeHistory) {
+                Log.w(TAG, "Not transmitting history with null moves to UCI engine")
+            } else if (board.moveStack.isNotEmpty()) {
+                builder.append(" moves")
+                for (move in board.moveStack) builder.append(' ').append(move.uci())
+            }
+            return builder.toString()
+        }
+
+        /**
+         * `Score.wdl(model="sf", ply=ply)`, what the desktop falls back to when the engine
+         * gives no win-draw-loss of its own: python-chess's fit of Stockfish 16.1 for a
+         * centipawn score, and a mate a win or a loss outright.
+         */
+        fun modelWdl(scoreCp: Int?, mate: Int?, ply: Int): Triple<Int, Int, Int>? {
+            if (mate != null) return if (mate > 0) Triple(1000, 0, 0) else Triple(0, 0, 1000)
+            val cp = scoreCp ?: return null
+            val wins = sf161Wins(cp, ply)
+            val losses = sf161Wins(-cp, ply)
+            return Triple(wins, 1000 - wins - losses, losses)
+        }
+
+        /** python-chess's `_sf16_1_wins`. */
+        private fun sf161Wins(cp: Int, ply: Int): Int {
+            // https://github.com/official-stockfish/Stockfish/blob/sf_16.1/src/uci.cpp#L48
+            val normalizeToPawnValue = 356
+            // https://github.com/official-stockfish/Stockfish/blob/sf_16.1/src/uci.cpp#L383-L384
+            val m = minOf(120.0, maxOf(8.0, ply / 2.0 + 1)) / 32
+            val a = (((-1.06249702 * m + 7.42016937) * m + 0.89425629) * m) + 348.60356174
+            val b = (((-5.33122190 * m + 39.57831533) * m + -90.84473771) * m) + 123.40620748
+            val x = minOf(4000.0, maxOf(cp * normalizeToPawnValue / 100.0, -4000.0))
+            return (0.5 + 1000 / (1 + Math.exp((a - x) / b))).toInt()
+        }
+
+        /** python-chess's `UCI_REGEX`, matched at a word's start as `re.match` matches it. */
+        private val UCI_REGEX = Regex("[a-h][1-8][a-h][1-8][pnbrqk]?|[PNBRQK]@[a-h][1-8]|0000\\z")
+
+        /** `str.split()`: the words of an engine's line, runs of whitespace between them. */
+        private fun words(line: String): List<String> {
+            val out = ArrayList<String>()
+            var start = -1
+            for (i in line.indices) {
+                if (line[i].isWhitespace()) {
+                    if (start >= 0) out.add(line.substring(start, i))
+                    start = -1
+                } else if (start < 0) {
+                    start = i
+                }
+            }
+            if (start >= 0) out.add(line.substring(start))
+            return out
+        }
+
+        /**
+         * `_create_variation_line`: the moves from word [start] on, played out from [board],
+         * up to the first word that is no move, and the index of that word; null when a move
+         * cannot be played there (python-chess's `push_uci` raising).
+         */
+        private fun variation(board: Board, words: List<String>, start: Int): Pair<List<String>, Int>? {
+            val walk = board.copy(withStack = false)
+            val moves = ArrayList<String>()
+            var at = start
+            while (at < words.size && UCI_REGEX.matchesAt(words[at], 0)) {
+                val move = try {
+                    walk.parseUci(words[at])
+                } catch (exc: IllegalArgumentException) {
+                    return null
+                }
+                walk.push(move)
+                moves.add(move.uci())
+                at += 1
+            }
+            return moves to at
+        }
+
+        private val OPTION_KEYWORDS = Regex("\\s*\\b(name|type|default|min|max|var)\\b\\s*")
+
+        /**
+         * An `option` line's name and its default as python-chess holds it (`Option.parse`):
+         * a check option true or false, a spin option its number, a button none. The line is
+         * cut at the keywords as python-chess cuts it, so a name may hold spaces.
+         */
+        private fun parseOption(line: String): Pair<String, String?> {
+            val arg = line.removePrefix("option").trim()
+            val tokens = ArrayList<String>()
+            var last = 0
+            for (match in OPTION_KEYWORDS.findAll(arg)) {
+                tokens.add(arg.substring(last, match.range.first))
+                tokens.add(match.groupValues[1])
+                last = match.range.last + 1
+            }
+            tokens.add(arg.substring(last))
+            val parts = linkedMapOf("name" to "", "type" to "", "default" to "", "min" to "", "max" to "")
+            var current: String? = null
+            for (token in tokens) {
+                if (token == "var" || (token in parts && parts[token] == "")) {
+                    current = token
+                } else if (current == "var") {
+                    continue
+                } else if (current != null) {
+                    parts[current] = token
+                }
+            }
+            val default = parts.getValue("default")
+            val value = when (parts.getValue("type")) {
+                "check" -> if (default.isNotEmpty() && default != "false") "true" else "false"
+                "spin" -> default.toIntOrNull()?.toString()
+                "button", "reset", "save" -> null
+                else -> default
+            }
+            return parts.getValue("name") to value
+        }
 
         /** The engine as the packager leaves it: an executable in the library directory. */
         fun binaryIn(nativeLibraryDir: String): File = File(nativeLibraryDir, "libstockfish.so")

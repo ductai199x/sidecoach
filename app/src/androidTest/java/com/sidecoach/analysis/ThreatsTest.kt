@@ -13,9 +13,11 @@ import org.junit.runner.RunWith
 import java.io.File
 
 /**
- * What a quiet best move threatens ([aimLines]): desktop 29ae423's two tests in
- * `tests/test_analysis.py`, on Lichess 06VoP, 32.Qg4 with Qxg7# its point. The second needs the
- * engine's network: `tools/test.ps1` puts one there.
+ * The opponent's threat ([threatLines]) as `tests/test_threats.py` pins its plumbing -- the
+ * position handed over, the guards that must not call the engine at all -- and what a quiet
+ * best move threatens ([aimLines]): desktop 29ae423's two tests in `tests/test_analysis.py`, on
+ * Lichess 06VoP, 32.Qg4 with Qxg7# its point. The last needs the engine's network:
+ * `tools/test.ps1` puts one there.
  */
 @RunWith(AndroidJUnit4::class)
 class ThreatsTest {
@@ -28,6 +30,54 @@ class ThreatsTest {
         }
 
         override fun close() = Unit
+    }
+
+    /** `test_threats.py`'s `_RecordingEngine`: canned lines, and every position it was asked about. */
+    private class RecordingEngine(private val lines: List<Line>) : Engine(File("fake"), null) {
+        val seen = ArrayList<Triple<String, Int?, Int?>>()
+
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> {
+            seen.add(Triple(board.fen(), depth, multipv))
+            return lines
+        }
+
+        override fun close() = Unit
+    }
+
+    /**
+     * `test_the_engine_sees_the_position_with_the_move_handed_over` and
+     * `test_threat_moves_are_the_first_move_of_each_line`: one call, on the position with the
+     * opponent to move and no null move in its history, depth and lines passed through, the
+     * caller's board untouched.
+     */
+    @Test
+    fun theEngineSeesThePositionWithTheMoveHandedOver() {
+        val engine = RecordingEngine(CANNED)
+        val board = Board()
+        assertEquals(CANNED, threatLines(engine, board, depth = 8, multipv = 2))
+        assertEquals(1, engine.seen.size)
+        val (fen, depth, multipv) = engine.seen[0]
+        assertEquals("the opponent is now to move", "b", fen.split(" ")[1])
+        assertEquals("depth and multipv are passed through", 8 to 2, depth to multipv)
+        assertEquals(com.sidecoach.chess.STARTING_FEN, board.fen())
+        assertEquals(listOf("d8d1", "a7a5"), threatMoves(RecordingEngine(CANNED), Board(), depth = 8, multipv = 2))
+    }
+
+    /**
+     * `test_no_threat_and_no_engine_call_when_in_check` and `..._when_the_game_is_over`: you
+     * cannot pass out of check, and a finished game carries no threat to ask about.
+     */
+    @Test
+    fun noThreatAndNoEngineCallInCheckOrWhenTheGameIsOver() {
+        for (fen in listOf(
+            "4k3/8/8/8/8/8/4q3/4K3 w - - 0 1",
+            // Fool's mate: 1. f3 e5 2. g4 Qh4#. White is to move and mated.
+            "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3",
+        )) {
+            val engine = RecordingEngine(CANNED)
+            assertEquals(fen, emptyList<Line>(), threatLines(engine, Board(fen), depth = 8))
+            assertEquals("the engine is never asked: $fen", 0, engine.seen.size)
+        }
     }
 
     /** The desktop test's `engine` fixture: two threads, 64 MB, four lines. */
@@ -68,5 +118,10 @@ class ThreatsTest {
     private companion object {
         // 32.Qg4 in Lichess 06VoP: a quiet queen move whose point is Qxg7#.
         const val QUIET_MATE = "2rr2k1/5pp1/p1qp3p/4pP1N/1p6/1P4PK/PP5P/R2Q4 w - - 5 32"
+
+        val CANNED = listOf(
+            Line(moves = listOf("d8d1"), depth = 8, expectedScore = 0.9),
+            Line(moves = listOf("a7a5"), depth = 8, expectedScore = 0.4),
+        )
     }
 }

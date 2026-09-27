@@ -25,6 +25,10 @@ aimed at a piece (`motifs.TARGETED`) among the move's and the position's tags, w
 [move, *pv] cashes it in -- what the annotator keeps a move's tactic by, and the idea reader its
 blow.
 
+And `hand`: the desktop's own hand-built positions, every tagger call `tests/test_motifs.py`
+makes (recorded by running its tests), each with what the tagger answers -- the shapes each
+tag must and must not be given, which no puzzle sample is sure to hold.
+
     cd D:/chess-coaching-companion
     uv run --no-sync python D:/sidecoach-android/tools/make_motif_fixtures.py [puzzles]
 """
@@ -120,6 +124,68 @@ def choose(cases: list[dict]) -> list[dict]:
     return kept
 
 
+def hand_built() -> list[dict]:
+    """The desktop's own hand-built positions: every call `tests/test_motifs.py` makes to the
+    tagger -- the positives, the negatives the audit of 2026-09-23 added, the illegal moves
+    that tag as nothing -- recorded by running its tests, each with what the tagger answers."""
+    import inspect  # noqa: PLC0415
+
+    sys.path.insert(0, str(DESKTOP / "tests"))
+    import test_motifs  # noqa: PLC0415
+
+    calls: list[tuple] = []
+    real_move, real_position = test_motifs.tags_for_move, test_motifs.tags_for_position
+
+    def move_spy(board, move, *, pv=(), mate_in=None):  # noqa: ANN001, ANN202
+        calls.append(("move", board.fen(), move.uci(), tuple(m.uci() for m in pv), mate_in))
+        return real_move(board, move, pv=pv, mate_in=mate_in)
+
+    def position_spy(board, *, pv=(), mate_in=None):  # noqa: ANN001, ANN202
+        calls.append(("position", board.fen(), None, tuple(m.uci() for m in pv), mate_in))
+        return real_position(board, pv=pv, mate_in=mate_in)
+
+    test_motifs.tags_for_move = move_spy
+    test_motifs.tags_for_position = position_spy
+    try:
+        for name, test in inspect.getmembers(test_motifs, inspect.isfunction):
+            if not name.startswith("test_"):
+                continue
+            marks = [m for m in getattr(test, "pytestmark", []) if m.name == "parametrize"]
+            if not marks:
+                test()
+                continue
+            names, values = marks[0].args
+            names = [n.strip() for n in names.split(",")] if isinstance(names, str) else list(names)
+            for row in values:
+                test(**dict(zip(names, row if len(names) > 1 else (row,), strict=True)))
+    finally:
+        test_motifs.tags_for_move, test_motifs.tags_for_position = real_move, real_position
+
+    out: list[dict] = []
+    seen: set[tuple] = set()
+    for kind, fen, uci, pv, mate_in in calls:
+        key = (kind, fen, uci, pv, mate_in)
+        if key in seen:
+            continue
+        seen.add(key)
+        board = chess.Board(fen)
+        moves = [chess.Move.from_uci(u) for u in pv]
+        tags = (
+            tags_for_move(board, chess.Move.from_uci(uci), pv=moves, mate_in=mate_in)
+            if kind == "move"
+            else tags_for_position(board, pv=moves, mate_in=mate_in)
+        )
+        out.append({
+            "kind": kind,
+            "fen": fen,
+            "move": uci,
+            "pv": list(pv),
+            "mate_in": mate_in,
+            "tags": [tag_json(t) for t in tags],
+        })
+    return out
+
+
 def main() -> None:
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else 100_000
     for path in (PUZZLES, THEMES):
@@ -175,10 +241,14 @@ def main() -> None:
     cases = choose(cases)
     phases = phases[: len(cases)] + phases[-12:]
 
+    hand = hand_built()
+
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "motifs.json").write_text(
-        json.dumps({"cases": cases, "phases": phases}), encoding="utf-8"
+        json.dumps({"cases": cases, "phases": phases, "hand": hand}), encoding="utf-8"
     )
+    print(f"{len(hand)} tagger calls from tests/test_motifs.py "
+          f"({len({h['fen'] for h in hand})} positions)")
     names: dict[str, int] = {}
     for case in cases:
         for tag in case["for_move"] + case["for_position"]:
