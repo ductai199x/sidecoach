@@ -63,12 +63,17 @@ class SttParityTest {
             val case = normalised.getJSONObject(i)
             check("normalise \"${case.getString("raw")}\"", Correct.normalise(case.getString("raw")), case.getString("norm"))
         }
-        // Every spoken form of every legal move, and the move it names.
+        // Every spoken form of every legal move, and the move it names -- in the order they are
+        // made, which decides which of two equally close forms a heard phrase matches: the
+        // desktop's were a set, whose order its string hash seed decided, until 1e2e10f made
+        // them the phone's order.
         val forms = fixtures.getJSONArray("forms")
         for (i in 0 until forms.length()) {
             val case = forms.getJSONObject(i)
             val theirs = case.getJSONObject("forms").let { o -> o.keys().asSequence().associateWith { o.getString(it) } }
-            check("spoken forms on ${case.getString("fen")}", Correct.spokenForms(Board(case.getString("fen"))).toMap(), theirs)
+            val mine = Correct.spokenForms(Board(case.getString("fen")))
+            check("spoken forms on ${case.getString("fen")}", mine.toMap(), theirs)
+            check("the spoken forms' order on ${case.getString("fen")}", mine.keys.toList(), theirs.keys.toList())
         }
         val ratios = fixtures.getJSONArray("ratios")
         for (i in 0 until ratios.length()) {

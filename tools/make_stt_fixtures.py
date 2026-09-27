@@ -239,8 +239,9 @@ def main() -> None:
             events.append([ep.feed(p, coach_speaking=speaking), ep.speaking])
         endpointer.append({"args": kwargs, "feeds": [[p, s] for p, s in feeds], "events": events})
 
-    # Every spoken form of every legal move, and the move it is, board by board. As a map: the
-    # order within a move's forms is a Python set's, which the string hash seed decides.
+    # Every spoken form of every legal move, and the move it is, board by board, in the order
+    # they are made: since desktop 1e2e10f a move's forms are an ordered dict, the phone's
+    # order, where they were a set whose order the string hash seed decided.
     all_forms = [
         {"fen": fen, "forms": spoken_forms(chess.Board(fen))}
         for fen in (*BOARDS, AFTER_G6, PROMOTION, CASTLED)
