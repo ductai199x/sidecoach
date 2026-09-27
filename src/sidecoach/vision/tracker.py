@@ -53,6 +53,7 @@ class BoardTracker:
         refine_offset_cells: float = 1.6,
         refit_gain: float = 1.1,
         refit_deadband_px: int = 2,
+        redetect_first: int = 5,
         redetect_backoff: int = 20,
         near_backoff: int = 3,
         probe_lost_cells: int = 8,
@@ -71,7 +72,16 @@ class BoardTracker:
         # cell moved under it was read again -- a second on the phone (Tai's puzzles on the
         # Pixel, 2026-09-23). Sub-cell drift that small costs the reading nothing.
         self.refit_deadband_px = refit_deadband_px
+        # The full search that finds nothing waits before it runs again, since it costs a
+        # second at 1440p: `redetect_first` frames the first time, twice that the next, up
+        # to `redetect_backoff`. A board lost for a moment is usually back within that
+        # moment at a size the near search does not cover -- a window dragged small and
+        # large again, a board that came back from off the screen resized -- and a flat
+        # twenty frames kept it unread for two seconds while the moves went on (the
+        # geometry sweep, 2026-09-27: five plies played before the board was seen again).
+        self.redetect_first = redetect_first
         self.redetect_backoff = redetect_backoff
+        self._full_wait = redetect_first
         self.near_backoff = near_backoff
         # A lock that still validates after the board moved away: the fit counts only the
         # cells that read as square colours, so a board scrolled two and a half cells kept
@@ -207,10 +217,12 @@ class BoardTracker:
         self._adopted(gray)
         if self.board:
             self._cooldown = self._near_cooldown = 0
+            self._full_wait = self.redetect_first
         else:
             self._near_cooldown = self.near_backoff
             if self._cooldown <= 0:
-                self._cooldown = self.redetect_backoff
+                self._cooldown = self._full_wait
+                self._full_wait = min(2 * self._full_wait, self.redetect_backoff)
         return self.board
 
     def _adopted(self, gray: np.ndarray) -> None:

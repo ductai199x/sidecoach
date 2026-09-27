@@ -787,15 +787,19 @@ def render_board(
 
 
 def _grain(frame: np.ndarray, x0: int, y0: int, side: int, seed: int) -> None:
-    """A wood grain over the board: noise stretched along the rows, a few levels deep."""
+    """A wood grain over the board: noise stretched along the rows, a few levels deep. A
+    board partly off the frame keeps the grain of the part on it."""
     rng = np.random.default_rng(seed + 17)
     rows = rng.normal(0.0, 1.0, (side // 6 + 1, side // 2 + 1)).astype(np.float32)
     grain = cv2.resize(rows, (side, side), interpolation=cv2.INTER_CUBIC)
     grain = np.clip(grain * TEXTURE_AMPLITUDE / 2, -TEXTURE_AMPLITUDE, TEXTURE_AMPLITUDE)
-    patch = frame[y0 : y0 + side, x0 : x0 + side].astype(np.float32)
-    frame[y0 : y0 + side, x0 : x0 + side] = np.clip(patch + grain[..., None], 0, 255).astype(
-        np.uint8
-    )
+    top, left = max(0, y0), max(0, x0)
+    bottom, right = min(frame.shape[0], y0 + side), min(frame.shape[1], x0 + side)
+    if bottom <= top or right <= left:
+        return
+    grain = grain[top - y0 : bottom - y0, left - x0 : right - x0]
+    patch = frame[top:bottom, left:right].astype(np.float32)
+    frame[top:bottom, left:right] = np.clip(patch + grain[..., None], 0, 255).astype(np.uint8)
 
 
 def bulky_pieces(

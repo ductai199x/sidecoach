@@ -357,8 +357,21 @@ class Exemplar:
 # 2026-09-26); at one resolution every size looks alike. 40 px, from the scale benchmark
 # (44 sets, learned at one of 32-128 px and read at another): identity errors 161 -> 13, where
 # 24 px lost the detail that tells some sets' pieces apart (a pirouetti queen read as a
-# bishop). Landing keeps the full detail: brought down too, a piece in flight read as landed.
+# bishop). Landing is not brought down to it: a piece in flight read as landed (see LANDING
+# for how it meets a resize).
 CANONICAL_PX = 40
+# At 40 px the square under a piece weighs more in its embedding than at full detail, and the
+# start position shows each side's king and queen on one square colour only: a black queen
+# on a light square came nearer the black bishop learned on one than the black queen learned
+# on a dark square, and a black king on a dark square nearer the black queen (stress seeds
+# 469: the game stalled; 766: a mid-game board never read cold). So once a piece's side is
+# voted, each kind is as near as the nearest of its cells of either side (`_kind_scores`):
+# the shape is the kind, and the other side shows the king and queen on the other square
+# colour. The mated king under the check glow and the result label came nearer a rook of its
+# own side than its own king (584). The side itself is voted as before. Learning the kings
+# and queens again on the other square colour, their crops' squares recoloured, was tried:
+# it named a black queen on g2 (688), and a set not learned then read as a position with two
+# kings, so the person was never told to show a start position (tests/test_cold_start.py).
 SETTLED_TOLERANCE = 0.08  # of a cell; a dragged piece follows the cursor, far off centre
 SETTLED_FLOOR_PX = 3.0  # source pixels: the lock itself is only good to about a pixel
 # Stillness (SIDECOACH_STILLNESS=1, off by default): a cell whose silhouette is not the
@@ -395,7 +408,22 @@ FILL_SIDE_RATIO = 1.5
 # copies of them in embedding space -- a pooled embedding is translation-tolerant, and
 # at 43 px cells the shifted copies were as near as the rest ones (g04 28 plies right
 # and 83 wrong; 249 of 900 sweep cases).
+# After a resize the cell and its reference are each a cell of another size blown up to the
+# working size, and the correlation's peak was lost in the detail one has and the other
+# has not: a rook at rest, learned at 40 px and read at 34, measured 0.15 of a cell off and
+# never landed; a pawn three quarters of the way to its square, read at 36, measured 0.08
+# from the square it passed and was committed there (the geometry sweep, 2026-09-27). So
+# a board read at a size more than LANDING_SAME_SIZE from the one its set was learned at is
+# also compared brought down to the coarser of the two sizes, and the surer correlation
+# (the higher peak) gives the shift. Brought down alone it failed at the learned size
+# itself: a cell brought down to the size it was drawn at is at the edge of what its pixels
+# hold, and a rook on a labelled corner square measured half a cell off -- every cold read
+# of a flat set at 44 px was refused (the stress sweep). The scale benchmark (44 sets, 20
+# pairs of learned and read sizes, same-size pairs among them, coordinates drawn, the lock
+# a pixel either way): resting pieces read as not landed 486 -> 102 of 79096, pieces in
+# flight read as landed 38 -> 26 of 15840; at the learned size nothing changes.
 LANDING = os.environ.get("SIDECOACH_LANDING", "phase")
+LANDING_SAME_SIZE = 0.02  # of the cell: a lock's pitch is good to a fraction of a pixel
 STILL_MAX_SHIFT = 0.02  # of the inner patch
 # A white outline over a light square differs from it by only about 50 levels.
 HOVER_TOLERANCE = 30.0
@@ -1109,8 +1137,10 @@ class ThemeModel:
     exemplar_vectors: np.ndarray | None = None
     exemplar_labels: tuple[str, ...] = ()
     # Each piece kind's start-position crop in grey, the reference the phase landing
-    # measures a cell's shift against (an instance off the labelled edge cells).
+    # measures a cell's shift against (an instance off the labelled edge cells), and the
+    # cell size it was taken at (0 when not known: a theme cached before it was kept).
     landing_crops: dict[str, np.ndarray] = field(default_factory=dict)
+    landing_px: float = 0.0
 
     def __getstate__(self) -> dict[str, object]:
         # The last frame's cells are this session's, not the theme's: pickled, they made
@@ -1131,6 +1161,7 @@ class ThemeModel:
         self.__dict__.setdefault("_cells", {})
         self.__dict__.setdefault("_previous", {})
         self.__dict__.setdefault("_cutters", {})
+        self.__dict__.setdefault("landing_px", 0.0)
 
     @property
     def matcher(self) -> str:
@@ -1372,23 +1403,26 @@ class ThemeModel:
         crop: np.ndarray | None = None,
     ) -> CellReading:
         """The cell named by the nearest of the start position's cells in embedding space
-        (see `embedding`). The side comes from the piece's brightness only where the
-        embedding's nearest white and black lie close (`_side_of`, COLOUR_TIE). Where the
-        piece sits is LANDING's: the phase correlation against the piece's own start
-        crop by default."""
+        (see `embedding`). The side is voted (`_vote_side`); once it is, the kind may be
+        named by either side's cells (`_kind_scores`, see CANONICAL_PX). Where the piece
+        sits is LANDING's: the phase correlation against the piece's own start crop by
+        default."""
         assert self.exemplar_vectors is not None
         sims = self.exemplar_vectors.astype(np.float32) @ vector
         side = self._vote_side(sil, sims)
+        scored = self._kind_scores(sims) if side is not None else sims
         allowed = [
             i
             for i, label in enumerate(self.exemplar_labels)
             if label == "empty" or side is None or label.isupper() == (side == Side.WHITE)
         ]
-        order = sorted(allowed, key=lambda i: -float(sims[i]))
+        order = sorted(allowed, key=lambda i: -float(scored[i]))
         best = order[0]
         label = self.exemplar_labels[best]
-        similarity = float(sims[best])
-        other = next((float(sims[i]) for i in order[1:] if self.exemplar_labels[i] != label), -1.0)
+        similarity = float(scored[best])
+        other = next(
+            (float(scored[i]) for i in order[1:] if self.exemplar_labels[i] != label), -1.0
+        )
         margin = similarity - other
         if similarity < MIN_SIMILARITY:
             # Nothing on the start position looks like this, yet a piece's worth of
@@ -1432,7 +1466,9 @@ class ThemeModel:
                 )
             )
         if LANDING == "phase" and crop is not None and label in self.landing_crops:
-            offset = _phase_shift(self.landing_crops[label], crop)
+            offset = _phase_shift(
+                self.landing_crops[label], crop, self.landing_px, float(cell_px or 0.0)
+            )
             tolerance = SETTLED_TOLERANCE
             if cell_px:
                 tolerance = max(SETTLED_TOLERANCE, SETTLED_FLOOR_PX / cell_px)
@@ -1503,6 +1539,18 @@ class ThemeModel:
         if white == black:
             return None
         return Side.WHITE if white > black else Side.BLACK
+
+    def _kind_scores(self, sims: np.ndarray) -> np.ndarray:
+        """Each cell's similarity raised to the best of its kind's, either side's (see
+        CANONICAL_PX): what a piece is, is its shape."""
+        scored = sims.copy()
+        kinds: dict[str, list[int]] = {}
+        for i, label in enumerate(self.exemplar_labels):
+            if label != "empty":
+                kinds.setdefault(label.lower(), []).append(i)
+        for members in kinds.values():
+            scored[members] = sims[members].max()
+        return scored
 
     def _fill_side(self, sil: Silhouette, label: str) -> Side | None:
         """The side whose fill the pixels under the named kind's fill show: the median
@@ -1777,6 +1825,7 @@ class ThemeModel:
                 if symbol in model.landing_crops and (c == 0 or r == 7):
                     continue
                 model.landing_crops[symbol] = cv2.cvtColor(crops[r][c], cv2.COLOR_BGR2GRAY)
+        model.landing_px = float(geometry.cell_px)
         if net is not None:
             cells = [crops[r][c] for r in range(8) for c in range(8)]
             vectors = net.embed([canonical(cell) for cell in cells])
@@ -1982,15 +2031,37 @@ def _start_shaped(occupied: np.ndarray) -> bool:
     return int((occupied != expected).sum()) <= 1
 
 
-def _phase_shift(reference: np.ndarray, crop: np.ndarray) -> float:
+def _phase_shift(
+    reference: np.ndarray, crop: np.ndarray, reference_px: float = 0.0, crop_px: float = 0.0
+) -> float:
     """How far the piece in `crop` (BGR) sits from where it sits in `reference` (grey),
-    as a share of the cell, by phase correlation under a Hanning window."""
+    as a share of the cell, by phase correlation under a Hanning window. When the two
+    were taken at cell sizes more than LANDING_SAME_SIZE apart, they are also compared
+    brought down to the coarser of the two sizes, and the surer of the two correlations
+    (the higher peak) gives the shift (see LANDING)."""
     grey = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     if grey.shape != reference.shape:
         grey = cv2.resize(grey, (reference.shape[1], reference.shape[0]))
-    window = cv2.createHanningWindow((reference.shape[1], reference.shape[0]), cv2.CV_32F)
-    (dx, dy), _ = cv2.phaseCorrelate(reference.astype(np.float32), grey.astype(np.float32), window)
-    return float(np.hypot(dx, dy)) / reference.shape[0]
+    tries = [(reference, grey)]
+    if reference_px > 0 and crop_px > 0:
+        coarser, finer = sorted((reference_px, crop_px))
+        size = int(round(coarser))
+        if finer > coarser * (1.0 + LANDING_SAME_SIZE) and 8 <= size < reference.shape[0]:
+            tries.append(
+                (
+                    cv2.resize(reference, (size, size), interpolation=cv2.INTER_AREA),
+                    cv2.resize(grey, (size, size), interpolation=cv2.INTER_AREA),
+                )
+            )
+    shift, surest = 0.0, -np.inf
+    for ref, cell in tries:
+        window = cv2.createHanningWindow((ref.shape[1], ref.shape[0]), cv2.CV_32F)
+        (dx, dy), response = cv2.phaseCorrelate(
+            ref.astype(np.float32), cell.astype(np.float32), window
+        )
+        if response > surest:
+            shift, surest = float(np.hypot(dx, dy)) / ref.shape[0], response
+    return shift
 
 
 def _start_reads_as_start(vectors: np.ndarray, labels: tuple[str, ...]) -> bool:

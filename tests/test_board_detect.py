@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
-from sidecoach.events import Region
+from sidecoach.events import Region, Side
 from sidecoach.vision.board_detect import detect_boards, fit_score, square_colours, to_gray
 from tests.synth import DARK, LIGHT, bulky_pieces, render_board, synthetic_board, with_overlays
 
@@ -209,3 +209,48 @@ def test_board_flush_with_the_frame_corner() -> None:
     boards = detect_boards(frame)
     assert boards and abs(boards[0].cell_px - 64) <= 0.5
     assert abs(boards[0].region.x - 288) <= 2 and abs(boards[0].region.y - 88) <= 2
+
+
+@pytest.mark.parametrize(
+    ("style", "x", "y"),
+    [
+        ("chess7", 1920 - 8 * 136, 80),  # against the right edge: was not found at all
+        ("pixel", 1920 - 8 * 136, 80),
+        ("cardinal", 10, 1200 - 8 * 136),  # against the bottom edge: was found 10-19 px high
+        ("governor", 10, 1200 - 8 * 136),
+    ],
+)
+def test_a_board_flush_with_the_right_or_bottom_edge_is_found_where_it_is(
+    style: str, x: int, y: int
+) -> None:
+    """At 136 px cells the coarse scale nearest the board's is a few percent larger, and its
+    window on a board against the right or bottom edge ran past the frame; the boundary comb
+    could not lay its last tooth on the frame's edge, where the board's boundary lies (the
+    geometry sweep, 2026-09-27)."""
+    frame = synthetic_board(width=1920, height=1200, x0=x, y0=y, cell=136, theme="ice", style=style)
+    boards = detect_boards(frame)
+    assert boards, "not found"
+    best = boards[0]
+    assert abs(best.region.x - x) <= 2 and abs(best.region.y - y) <= 2, best
+    assert abs(best.cell_px - 136) <= 1.0
+
+
+def test_a_candidate_off_a_board_by_a_fraction_is_refused_though_its_outer_row_is_cut() -> None:
+    """A board two pixels above the frame's bottom and a candidate two thirds of a cell
+    above it: the candidate's row of outer cells above it is off the frame and the row below
+    it a third off, and neither was read, so the candidate validated with every cell across
+    two squares (the geometry sweep, 2026-09-27, seed 260). The outer cells are read on the
+    part the frame shows when that is half a cell or more."""
+    board = chess.Board()
+    for san in (
+        "f3", "Nc6", "g4", "e5", "b4", "b6", "Bh3", "Na5",
+        "Kf2", "Bxb4", "c4", "Nxc4", "Bf1", "Nb2", "a3", "d5",
+    ):  # fmt: skip
+        board.push_san(san)
+    frame = synthetic_board(
+        width=1920, height=1200, x0=583, y0=110, cell=136, theme="wood", style="pixel",
+        bottom=Side.BLACK, board=board,
+    )  # fmt: skip
+    gray = to_gray(frame)
+    assert fit_score(gray, Region(583, 110, 1088, 1088), 136.0)[0] >= 0.95
+    assert fit_score(gray, Region(582, 24, 1090, 1090), 136.2)[0] == 0.0

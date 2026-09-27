@@ -1,13 +1,17 @@
+from typing import Any
+
 import chess
 import cv2
 import numpy as np
 import pytest
 
 from sidecoach.events import Region, Side
+from sidecoach.vision.board_detect import detect_boards
 from sidecoach.vision.pieces import (
     CELL,
     HIGHLIGHT_TOLERANCE,
     HOVER_TOLERANCE,
+    CellReading,
     ThemeModel,
     iou,
     looks_like_start_position,
@@ -563,3 +567,169 @@ def test_a_fractional_cell_never_wears_a_phantom_hover_outline() -> None:
         for r in range(8)
         for c in range(8)
     )
+
+
+def _read_final(
+    style: str,
+    theme: str,
+    cell: int,
+    bottom: Side,
+    sans: tuple[str, ...],
+    square: str,
+    coordinates: bool = True,
+    **decorations: Any,
+) -> tuple[CellReading, chess.Piece]:
+    """A set learned from its start frame, then the position after `sans` read at the same
+    place and size, each locked by the detector as the pipeline locks them (the stress
+    sweep's frames), and what stands on `square` there."""
+    size: dict[str, Any] = {
+        "width": 8 * cell + 600, "height": 8 * cell + 240, "x0": 300, "y0": 120, "cell": cell,
+        "theme": theme, "style": style, "bottom": bottom, "coordinates": coordinates,
+    }  # fmt: skip
+    board = chess.Board()
+    for san in sans:
+        board.push_san(san)
+    start = synthetic_board(**size)
+    frame = synthetic_board(board=board, **size, **decorations)
+    first, now = detect_boards(start)[0], detect_boards(frame)[0]
+    model = ThemeModel.from_start_position(
+        start, BoardGeometry(first.region, first.cell_px), bottom
+    )
+    assert model is not None
+    r, c = row_col(chess.parse_square(square), bottom)
+    piece = board.piece_at(chess.parse_square(square))
+    assert piece is not None
+    return model.classify_frame(frame, BoardGeometry(now.region, now.cell_px))[r][c], piece
+
+
+@pytest.mark.parametrize(
+    ("style", "theme", "cell", "bottom", "sans", "square"),
+    [
+        # A black king on a dark square, learned only on a light one: read as the queen, and
+        # the final position was never read cold (stress seed 766).
+        ("wooden", "wood", 64, Side.BLACK, ("d3", "e6", "Nd2", "Ke7"), "e7"),
+        # A black queen on a light square, learned only on a dark one: read as a bishop, and
+        # the game stalled (469).
+        (
+            "flat", "dark", 96, Side.WHITE,
+            ("h3", "g5", "a4", "b6", "d4", "Bg7", "Bxg5", "d5", "c4", "Bf6", "cxd5", "Qxd5",
+             "a5"),
+            "d5",
+        ),
+    ],
+)  # fmt: skip
+def test_a_king_or_queen_is_named_on_the_other_square_colour(
+    style: str,
+    theme: str,
+    cell: int,
+    bottom: Side,
+    sans: tuple[str, ...],
+    square: str,
+) -> None:
+    """The start position shows each side's king and queen on one square colour only, and at
+    the embedder's 40 px the square weighs in the embedding: once a piece's side is voted,
+    its kind may be named by either side's cells and by the kings and queens recoloured onto
+    the other square colour."""
+    reading, piece = _read_final(style, theme, cell, bottom, sans, square)
+    assert reading.kind == "piece" and reading.symbol == piece.symbol(), reading
+
+
+def _read_after(
+    style: str,
+    theme: str,
+    learned: tuple[int, int, int],
+    read: tuple[int, int, int],
+    sans: tuple[str, ...],
+    square: str,
+    bottom: Side = Side.WHITE,
+    coordinates: bool = False,
+    **decorations: object,
+) -> CellReading:
+    """A set learned from a start frame at one place and cell size, and a later position read
+    at another, each locked by the detector as the pipeline locks them."""
+    kw: dict[str, Any] = {
+        "width": 1920, "height": 1200, "theme": theme, "style": style, "bottom": bottom,
+        "coordinates": coordinates,
+    }  # fmt: skip
+    start = synthetic_board(x0=learned[0], y0=learned[1], cell=learned[2], **kw)
+    board = chess.Board()
+    for san in sans:
+        board.push_san(san)
+    frame = synthetic_board(x0=read[0], y0=read[1], cell=read[2], board=board, **decorations, **kw)
+    first, now = detect_boards(start)[0], detect_boards(frame)[0]
+    model = ThemeModel.from_start_position(
+        start, BoardGeometry(first.region, first.cell_px), bottom
+    )
+    assert model is not None
+    r, c = row_col(chess.parse_square(square), bottom)
+    return model.classify_frame(frame, BoardGeometry(now.region, now.cell_px))[r][c]
+
+
+@pytest.mark.parametrize(
+    ("style", "theme", "learned", "read", "sans", "square", "lit"),
+    [
+        # A rook just moved, on its lit square, learned at 40 px and read at 34: it measured
+        # 0.15 of a cell off and never landed.
+        (
+            "wooden", "brown", (1124, 191, 40), (1648, 911, 34),
+            ("b3", "h6", "c3", "Nf6", "Qc2", "g5", "Qe4", "Rh7"), "h7", "h8h7",
+        ),
+        # A king learned at 48 px and read at 132: 0.12 off.
+        (
+            "classic", "ice", (559, 284, 48), (607, 44, 132),
+            ("a4", "e5", "Ra2", "Ba3", "Ra1", "f5", "Nh3", "Ke7", "d4", "Kd6"), "d6", "e7d6",
+        ),
+    ],
+)  # fmt: skip
+def test_a_piece_at_rest_lands_on_a_board_resized_since_its_set_was_learned(
+    style: str,
+    theme: str,
+    learned: tuple[int, int, int],
+    read: tuple[int, int, int],
+    sans: tuple[str, ...],
+    square: str,
+    lit: str,
+) -> None:
+    """After a resize the cell and the piece's reference each carry detail the other has not,
+    and the phase correlation's peak was lost in it; the two are also compared brought down
+    to the coarser size, and the surer correlation counts (the geometry sweep, 2026-09-27,
+    seeds 7 and 237)."""
+    reading = _read_after(
+        style, theme, learned, read, sans, square, highlight=chess.Move.from_uci(lit)
+    )
+    want = chess.Board()
+    for san in sans:
+        want.push_san(san)
+    piece = want.piece_at(chess.parse_square(square))
+    assert piece is not None
+    assert reading.kind == "piece" and reading.symbol == piece.symbol(), reading
+    assert reading.settled, reading.offset
+
+
+def test_a_piece_in_flight_on_a_resized_board_does_not_land_on_the_square_it_passes() -> None:
+    """A pawn three quarters of the way from b2 to b4, learned at 40 px and read at 36: it
+    measured 0.08 of a cell from b3's centre and was committed there, a square short (the
+    geometry sweep, 2026-09-27, seed 87)."""
+    move = chess.Move.from_uci("b2b4")
+    reading = _read_after(
+        "spatial", "dark", (1062, 299, 40), (600, 300, 36), ("h3", "f6"), "b3",
+        highlight=move, animating=(move.from_square, move.to_square, 0.75),
+    )  # fmt: skip
+    assert not (reading.kind == "piece" and reading.settled), reading
+
+
+def test_a_rook_on_a_labelled_corner_lands_at_the_size_its_set_was_learned_at() -> None:
+    """Brought down to the size it was drawn at, a cell is at the edge of what its pixels
+    hold: a rook on its labelled corner square measured half a cell off, and the cold read
+    of every flat set at 44 px was refused (the stress sweep, 2026-09-27, seeds 113 and 138).
+    At the size its set was learned at, a cell is compared at full detail only."""
+    sans = (
+        "Nh3", "d6", "Ng5", "e6", "Nc3", "Ne7", "Na4", "Nd7",
+        "d3", "Nb6", "Kd2", "h6", "Ke3", "Rh7", "Nf3", "a5",
+    )  # fmt: skip
+    reading = _read_after(
+        "flat", "green", (300, 120, 64), (300, 120, 64), sans, "h1", bottom=Side.BLACK,
+        coordinates=True,
+    )  # fmt: skip
+    assert reading.kind == "piece" and reading.symbol == "R", reading
+    assert reading.settled, reading.offset

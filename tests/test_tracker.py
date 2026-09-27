@@ -5,10 +5,17 @@ import cv2
 import numpy as np
 import pytest
 
-from sidecoach.events import Region
+from sidecoach.events import Region, Side
 from sidecoach.vision.board_detect import fit_score, to_gray
 from sidecoach.vision.tracker import BoardTracker
-from tests.synth import DARK, LIGHT, bulky_pieces, render_board, synthetic_board
+from tests.synth import (
+    DARK,
+    LIGHT,
+    bulky_pieces,
+    busy_background,
+    render_board,
+    synthetic_board,
+)
 
 pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
 
@@ -67,6 +74,40 @@ def test_sub_cell_nudge_is_recovered_by_the_refit() -> None:
     assert board is not None and abs(board.region.x - 313) <= 2, board
     assert abs(board.region.y - 120) <= 2 and abs(board.cell_px - 43) <= 0.5
     assert tracker.detections == 1
+
+
+@pytest.mark.parametrize(
+    ("cell", "before", "after"),
+    [
+        (136, (0, 0), (0, 5)),  # against the top-left corner, nudged down
+        (88, (985, 0), (993, 0)),  # against the top, nudged right
+        (64, (0, 300), (0, 309)),  # against the left, nudged down
+        (97, (1920 - 776, 318), (1920 - 776, 291)),  # against the right, nudged up
+        (64, (500, 1200 - 512), (509, 1200 - 512)),  # against the bottom, nudged right
+        (80, (4, 16), (0, 0)),  # moved into the top-left corner: re-fitted a cell off it
+        (80, (734, 76), (726, 81)),  # a cell below the top: re-fitted a cell up, onto the edge
+    ],
+)
+def test_a_board_flush_with_an_edge_is_followed_when_nudged(
+    cell: int, before: tuple[int, int], after: tuple[int, int]
+) -> None:
+    """The frame's edge shows no boundary (the gradient is taken with the border reflected),
+    so the re-fit's comb a cell over, its ninth tooth on whatever lay beyond the board,
+    outscored the right one, failed validation, and the lock stayed where the board had been
+    (the geometry sweep, 2026-09-27). Against the left or top edge the comb could not start
+    on the frame's edge, half a pixel before the first pixel, where the board's boundary
+    lies, and a comb a cell over, every tooth on a boundary, outscored it. A cell or less
+    from the edge, the comb a cell nearer it, its tooth on the edge unseen, scored as much
+    as the right one; now the cells decide between them."""
+    tracker = BoardTracker()
+    tracker.update(synthetic_board(width=1920, height=1200, x0=before[0], y0=before[1], cell=cell))
+    moved = synthetic_board(width=1920, height=1200, x0=after[0], y0=after[1], cell=cell)
+    board = None
+    for _ in range(tracker.refine_every + 2):
+        board = tracker.update(moved)
+    assert board is not None and tracker.verified
+    assert abs(board.region.x - after[0]) <= 2 and abs(board.region.y - after[1]) <= 2, board
+    assert abs(board.cell_px - cell) <= 0.5
 
 
 def test_refit_wins_on_boundary_strength_not_on_the_fit_score() -> None:
@@ -161,6 +202,29 @@ def test_tracker_holds_through_brief_occlusion_then_redetects() -> None:
     assert tracker.detections == 3
 
 
+def test_a_board_back_at_another_size_after_a_moment_is_found_soon() -> None:
+    """The board gone for a moment (the full search at the loss finds nothing), then back at
+    a size the near search does not cover: the next full search comes `redetect_first`
+    frames later, not twenty (the geometry sweep, 2026-09-27: five plies played before a
+    board shrunk to nothing and back was seen again)."""
+    tracker = BoardTracker()
+    tracker.update(synthetic_board(width=1400, height=1000, x0=300, y0=120, cell=64))
+    gone = busy_background(1400, 1000, 0)
+    for _ in range(tracker.max_misses + 1):
+        tracker.update(gone)
+    assert not tracker.locked
+    back = synthetic_board(width=1400, height=1000, x0=200, y0=60, cell=100)
+    frames = 0
+    board = None
+    while frames < 30:
+        frames += 1
+        board = tracker.update(back)
+        if board is not None and tracker.verified:
+            break
+    assert board is not None and abs(board.region.x - 200) <= 2 and abs(board.cell_px - 100) <= 1
+    assert frames <= tracker.redetect_first, frames
+
+
 def test_tracker_relocks_after_resize() -> None:
     tracker = BoardTracker(max_misses=2)
     tracker.update(synthetic_board(x0=300, y0=120, cell=64))
@@ -251,8 +315,9 @@ def test_refit_cannot_turn_a_passing_frame_into_a_miss(monkeypatch) -> None:
 
 def test_tracker_thresholds_reach_detection() -> None:
     """Six light cells painted dark leave a fit of 58/64: the default threshold accepts the
-    board, a tracker asking for 0.95 never locks, and, without a lock, it searches once and
-    backs off rather than searching every frame."""
+    board, a tracker asking for 0.95 never locks, and, without a lock, it searches and backs
+    off rather than searching every frame: again `redetect_first` frames later, then twice
+    that, up to `redetect_backoff`."""
     frame = synthetic_board(x0=300, y0=120, cell=64, pieces=False)
     spoiled = frame.copy()
     for r, c in ((0, 0), (0, 2), (2, 0), (4, 4), (6, 2), (2, 6)):
@@ -261,7 +326,7 @@ def test_tracker_thresholds_reach_detection() -> None:
     tracker = BoardTracker(min_fit=0.95)
     results = [tracker.update(spoiled) for _ in range(12)]
     assert all(board is None for board in results)
-    assert tracker.detections == 1
+    assert tracker.detections == 2  # on the first frame and the sixth; the next on the 16th
 
 
 def test_held_frames_report_the_measured_fit() -> None:
@@ -289,3 +354,29 @@ def test_periodic_refit_is_stable_on_a_busy_frame() -> None:
         )
         assert abs(board.cell_px - first.cell_px) <= 0.1
     assert tracker.detections == 1
+
+
+def test_a_board_resized_to_near_the_frame_s_bottom_is_locked_where_it_is() -> None:
+    """A board resized from 105 to 136 px cells, two pixels above the frame's bottom: the
+    near search (84-132 px) found it at 126 and fitted it to 136 two thirds of a cell high,
+    and that validated, since the rows of outer cells that would have shown it ran off the
+    frame. Every cell then read across two squares (the geometry sweep, 2026-09-27, seed
+    260)."""
+    board = chess.Board()
+    for san in (
+        "f3", "Nc6", "g4", "e5", "b4", "b6", "Bh3", "Na5",
+        "Kf2", "Bxb4", "c4", "Nxc4", "Bf1", "Nb2", "a3", "d5",
+    ):  # fmt: skip
+        board.push_san(san)
+    kw: dict[str, Any] = {
+        "width": 1920, "height": 1200, "theme": "wood", "style": "pixel",
+        "bottom": Side.BLACK, "board": board,
+    }  # fmt: skip
+    tracker = BoardTracker()
+    tracker.update(synthetic_board(x0=833, y0=360, cell=105, **kw))
+    resized = synthetic_board(x0=583, y0=110, cell=136, **kw)
+    locked = None
+    for _ in range(tracker.max_misses + 3):
+        locked = tracker.update(resized)
+    assert locked is not None and tracker.verified
+    assert abs(locked.region.x - 583) <= 2 and abs(locked.region.y - 110) <= 2, locked
