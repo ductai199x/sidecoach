@@ -155,6 +155,14 @@ class LlmTest {
             check("$label usage", usageOf(provider.usage), one.getJSONObject("usage").toMap())
         }
 
+        // 4b. What the healthcheck says of each answer to `GET /models`.
+        val healths = root.getJSONArray("healthchecks")
+        for (i in 0 until healths.length()) {
+            val one = healths.getJSONObject(i)
+            val provider = providerOf(spec, "none", null, emptyMap(), transportOf(one.getInt("status"), one.getString("reply")))
+            check("healthcheck ${one.getString("label")}", provider.healthcheck(), one.getBoolean("ok") to one.getString("detail"))
+        }
+
         // 5. The ledger, record by record.
         val priceSets = root.getJSONArray("prices").let { all ->
             (0 until all.length()).map { pricesFrom(all.getJSONObject(it)) }

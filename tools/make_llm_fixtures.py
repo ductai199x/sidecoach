@@ -184,6 +184,20 @@ STREAM_REPLIES: list[tuple[str, int, str, int]] = [
 ]
 
 
+# What a server answers `GET /models`, for the healthcheck: the model served or not, and the
+# statuses it refuses with (worded by httpx's `raise_for_status`).
+HEALTH_REPLIES: list[tuple[str, int, str]] = [
+    ("served", 200, json.dumps({"data": [{"id": "b-model"}, {"id": "a-model"}]})),
+    ("not served", 200, json.dumps({"data": [{"id": "b-model"}]})),
+    ("no data", 200, "{}"),
+    ("unauthorised", 401, '{"error": "bad key"}'),
+    ("not found", 404, "nope"),
+    ("rate limited", 429, "slow down"),
+    ("server error", 500, "boom"),
+    ("unavailable", 503, ""),
+]
+
+
 def provider_for(body_of, *, control: str, effort: str | None = None, extra=None):
     """A provider whose transport answers with `body_of(request)`."""
 
@@ -428,6 +442,14 @@ def main() -> None:
         entry["usage"] = usage_json(provider.usage)
         streams.append(entry)
     payload["streams"] = streams
+
+    # 4b. What the healthcheck says of each answer to `GET /models`.
+    healths = []
+    for label, status, text in HEALTH_REPLIES:
+        provider = provider_for(lambda r, s=status, t=text: (s, t), control="none")
+        ok, detail = provider.healthcheck()
+        healths.append({"label": label, "status": status, "reply": text, "ok": ok, "detail": detail})
+    payload["healthchecks"] = healths
 
     # 5. The ledger by hand: every shape of stats a server has sent.
     records = [

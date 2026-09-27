@@ -55,6 +55,9 @@ class SettingsStore(private val context: Context) {
         null
     }
 
+    /** The settings the phone starts from, every field in the settings' own order. */
+    fun defaults(): JSONObject = JSONObject(defaults.toString())
+
     /** The settings as they stand: the defaults, with whatever was saved over them. */
     fun values(): JSONObject {
         val out = JSONObject(defaults.toString())
@@ -216,6 +219,9 @@ class SettingsStore(private val context: Context) {
     fun localVerdicts(): Boolean = section("coach").optBoolean("local_verdicts", true)
 
     fun verify(): String = section("coach").optString("verify", "")
+
+    /** The model the second opinion uses, when a provider is named: `coach.verify_model`. */
+    fun verifyModel(): String? = nullable(section("coach"), "verify_model")
 
     private fun nullable(o: JSONObject, key: String): String? =
         if (o.isNull(key)) null else o.optString(key).ifEmpty { null }

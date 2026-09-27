@@ -13,7 +13,8 @@ import java.net.URL
  * so the app carries no HTTP library of its own.
  */
 
-data class HttpReply(val status: Int, val text: String)
+/** A reply: its status, its body, and the reason phrase the server sent, when the transport has it. */
+data class HttpReply(val status: Int, val text: String, val reason: String? = null)
 
 interface Transport {
     fun get(url: String, headers: Map<String, String>, timeoutMs: Int): HttpReply
@@ -38,7 +39,7 @@ class UrlTransport : Transport {
 
     override fun get(url: String, headers: Map<String, String>, timeoutMs: Int): HttpReply =
         open(url, "GET", headers, null, timeoutMs).use { connection ->
-            HttpReply(connection.responseCode, readAll(connection))
+            HttpReply(connection.responseCode, readAll(connection), connection.responseMessage)
         }
 
     override fun post(
