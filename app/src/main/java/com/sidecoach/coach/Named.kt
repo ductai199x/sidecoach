@@ -360,7 +360,9 @@ fun examine(
     } else {
         1.0 - lines[0].expectedScore
     }
-    var tail = "after $played the expected score is ${"%.2f".format(score)} from the player's side"
+    // `f"{score:.2f}"`: never a comma, and a tie rounded half to even, whatever the device's
+    // locale (the parity audit cc-02: "%.2f" read "0,53" to the model and the voice).
+    var tail = "after $played the expected score is ${formatted(score, 2)} from the player's side"
     // Their move first ("if they take on b4") is the player passing, which is no move of theirs:
     // measured against the best it came out "after pass axb4 you are losing, a serious step down
     // from the best (the best is Bxc3)" (the simulated students).
@@ -374,7 +376,7 @@ fun examine(
             gap = 0.0
         }
         if (gap > 0.005) {
-            tail += ", ${"%.2f".format(gap)} behind the engine's best"
+            tail += ", ${formatted(gap, 2)} behind the engine's best"
             if (level.value >= DisclosureLevel.LINE.value && best.moves.isNotEmpty()) {
                 tail += " (${board.san(Move.fromUci(best.moves[0]))})"
             }
