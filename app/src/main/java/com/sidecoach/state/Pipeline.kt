@@ -145,10 +145,11 @@ class GamePipeline(
 
     /**
      * The last clock observation emitted, so an unchanged reading is not repeated, and when
-     * it was read.
+     * it was read. `internal` for the desktop's tests, which set `_last_clock` as a clock
+     * reader would have left it.
      */
-    private var lastClock: Triple<Int?, Int?, Side?>? = null
-    private var lastClockTs: Double? = null
+    internal var lastClock: Triple<Int?, Int?, Side?>? = null
+    internal var lastClockTs: Double? = null
 
     private var startSeen = 0
     private var startOnScreen = false
@@ -475,7 +476,8 @@ class GamePipeline(
         return rec.end(result, endReason(rec.board, result))
     }
 
-    private fun endReason(board: Board, result: String): String {
+    /** Why the game ended, from what the pipeline knows. `internal` for the desktop's tests. */
+    internal fun endReason(board: Board, result: String): String {
         if (result == "1/2-1/2") {
             if (board.isStalemate()) return "stalemate"
             if (board.isInsufficientMaterial()) return "insufficient material"
@@ -497,9 +499,10 @@ class GamePipeline(
      *
      * Never raises, never reports a clock the board is not oriented for, and repeats nothing:
      * a missing, hidden, or misread clock simply produces no event, so the coach's cadence
-     * falls back to its untimed defaults rather than breaking.
+     * falls back to its untimed defaults rather than breaking. `internal` for the desktop's
+     * tests of the clock path, which call `_read_clock`.
      */
-    private fun readClock(frame: Mat, ts: Double): MutableList<Event> {
+    internal fun readClock(frame: Mat, ts: Double): MutableList<Event> {
         val reader = clock ?: return mutableListOf()
         val side = bottom ?: return mutableListOf()
         val where = board ?: return mutableListOf()
@@ -547,6 +550,8 @@ class GamePipeline(
         startSeen = 0
         startOnScreen = false
         screenState = ScreenState.UNKNOWN
+        lastClock = null
+        lastClockTs = null
         coldTried = null
         coldCandidate = null
         coldLast = null
@@ -558,6 +563,7 @@ class GamePipeline(
         covered = false
         badges = null
         badgeFrame = null
+        clock?.reset()
     }
 
     /**
@@ -690,9 +696,11 @@ class GamePipeline(
 
     /**
      * The screen state from what the pipeline already knows: whether a board is locked, and
-     * where its game sits in its life.
+     * where its game sits in its life. DESIGN's first slice reads it from board presence and
+     * the game lifecycle (running clocks refine live-versus-analysis later); there is no
+     * separate classifier. `internal` for the desktop's tests.
      */
-    private fun deriveScreenState(boardPresent: Boolean): ScreenState {
+    internal fun deriveScreenState(boardPresent: Boolean): ScreenState {
         if (!boardPresent) return ScreenState.UNKNOWN  // a menu, the lobby, or scrolled off
         val rec = reconciler
         if (rec == null || !rec.started) return ScreenState.UNKNOWN  // no game recognised yet
@@ -720,10 +728,10 @@ class GamePipeline(
      * Whether the recogniser reads the frame as the start position it was built on. Nothing
      * may contradict the start, bar one cell for a badge or a lifted piece; and most of the
      * board must be readable at all, since a new theme reads as unknown almost everywhere
-     * without contradicting anything.
+     * without contradicting anything. `internal` for the desktop's test of a stray reading.
      */
-    private fun readsAsStart(readings: Readings, at: Side? = null): Boolean {
-        val bottomSide = at ?: bottom ?: return false
+    internal fun readsAsStart(readings: Readings, at: Side? = null): Boolean {
+        val bottomSide = checkNotNull(at ?: bottom)
         val start = Board()
         var contradictions = 0
         var unknown = 0
@@ -746,7 +754,12 @@ class GamePipeline(
 
     private fun shouldBootstrap(): Boolean = startOnScreen && startSeen >= startFramesNeeded
 
-    private fun rebuildModel(frame: Mat, geometry: BoardGeometry): Boolean {
+    /**
+     * A recogniser learned from the start position on screen, and the orientation with it: a
+     * new game, whose clock is not the last one's. `internal` for the test that a rebuild
+     * forgets the clock.
+     */
+    internal fun rebuildModel(frame: Mat, geometry: BoardGeometry): Boolean {
         val whiteAtBottom = ThemeModel.orientationFromStart(ThemeModel.occupancy(frame, geometry))
         val built = ThemeModel.fromStartPosition(frame, geometry, whiteAtBottom, embedder)
         startSeen = 0
@@ -758,6 +771,8 @@ class GamePipeline(
         cache?.let { it.save(built, learnedSet(it, built, frame, geometry, side)) }
         coldSince = null
         coldNoticed = false
+        lastClock = null
+        clock?.reset()
         reconciler?.let {
             it.bottom = side
             it.userSide = side
@@ -931,7 +946,7 @@ class GamePipeline(
         val tried = coldTried
         if (tried != null && ts - tried < COLD_START_EVERY_S) return mutableListOf()
         coldTried = ts
-        val lock = board ?: return mutableListOf()
+        val lock = checkNotNull(board)
         val seen = Triple(lock.region, Math.round(lock.cellPx * 100.0) / 100.0, forcedBottom)
         val last = coldLast
         val read = if (last == null || last.first != seen) {

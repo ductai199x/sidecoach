@@ -14,8 +14,23 @@ sealed class Event {
     var sourceFrameId: Int? = null
 }
 
-/** `ScreenState`: what the screen is showing, as the pipeline can tell. */
-enum class ScreenState { UNKNOWN, LIVE_GAME, ANALYSIS, PUZZLE, GAME_OVER, COVERED }
+/** `ScreenState`: what the screen is showing, as the pipeline can tell; the desktop's members. */
+enum class ScreenState {
+    LIVE_GAME,
+    ANALYSIS,
+    PUZZLES,
+    LESSON,
+    LOBBY,
+    GAME_OVER,
+
+    /**
+     * A dialog or a large overlay over the board of a live game: the game may be over (a
+     * resignation, a flag, the site's game-over dialog) or merely interrupted; the board cannot
+     * say which, so the game stays open and the coach stays quiet.
+     */
+    COVERED,
+    UNKNOWN,
+}
 
 class ScreenStateChanged(val state: ScreenState) : Event()
 
@@ -145,7 +160,10 @@ class MoveAssessment(
      */
     val depth: Int = 0,
     val label: Label? = null,
-    /** Per-move accuracy on the steepened curve, 0 to 100, so a game can be summed up. */
+    /**
+     * Per-move accuracy on a steepened Lichess curve (`analysis/Score.kt`), 0 to 100, so a game
+     * can be summed up.
+     */
     val accuracy: Double? = null,
 ) : Event()
 
