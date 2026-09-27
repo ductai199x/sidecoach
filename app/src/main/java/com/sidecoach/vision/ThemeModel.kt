@@ -369,8 +369,8 @@ class ThemeModel(
 
     /**
      * The cell named by the nearest of the start position's cells in embedding space. The
-     * side comes from the piece's brightness only where the embedding's nearest white and
-     * nearest black lie close. Where the piece sits is [Pieces.LANDING]'s: the phase
+     * side is voted on the start position's own cells ([voteSide]); once it is, the kind aids
+     * join (see [Pieces.OTHER_SQUARE]). Where the piece sits is [Pieces.LANDING]'s: the phase
      * correlation against the piece's own start crop by default.
      */
     private fun fromEmbedding(
@@ -388,17 +388,20 @@ class ThemeModel(
             for (k in row.indices) dot += row[k] * vector[k]
             sims[i] = dot
         }
-        val side = voteSide(sil, sims)
+        val side = voteSide(sil, sims.copyOf(min(sims.size, Pieces.START_CELLS)))
+        val scored = if (side != null) kindScores(sims) else sims
         val allowed = exemplarLabels.indices.filter { i ->
             val label = exemplarLabels[i]
-            label == "empty" || side == null || label[0].isUpperCase() == (side == Pieces.Side.WHITE)
+            label == "empty" ||
+                (side == null && i < Pieces.START_CELLS) ||
+                (side != null && label[0].isUpperCase() == (side == Pieces.Side.WHITE))
         }
-        val order = allowed.sortedByDescending { sims[it] }
+        val order = allowed.sortedByDescending { scored[it] }
         val best = order.first()
         val label = exemplarLabels[best]
-        val similarity = sims[best]
+        val similarity = scored[best]
         val runnerIndex = order.drop(1).firstOrNull { exemplarLabels[it] != label }
-        val other = runnerIndex?.let { sims[it] } ?: -1f
+        val other = runnerIndex?.let { scored[it] } ?: -1f
         val margin = similarity - other
         if (similarity < CellEmbedder.MIN_SIMILARITY) {
             // Nothing on the start position looks like this, yet a piece's worth of
@@ -488,9 +491,10 @@ class ThemeModel(
      */
     private fun voteSide(sil: Sil, sims: FloatArray): Pieces.Side? {
         val votes = ArrayList<Pieces.Side>(3)
+        // Over the cells [sims] holds, the start position's own (see Pieces.OTHER_SQUARE).
         var bestWhite = -1f
         var bestBlack = -1f
-        for (i in exemplarLabels.indices) {
+        for (i in sims.indices) {
             val label = exemplarLabels[i]
             if (label == "empty") continue
             if (label[0].isUpperCase()) bestWhite = max(bestWhite, sims[i])
@@ -502,7 +506,7 @@ class ThemeModel(
         sideOf(sil)?.let { votes.add(it) }
         var nearest = "empty"
         var nearestSim = Float.NEGATIVE_INFINITY
-        for (i in exemplarLabels.indices) {
+        for (i in sims.indices) {
             if (sims[i] > nearestSim) { nearestSim = sims[i]; nearest = exemplarLabels[i] }
         }
         if (nearest != "empty") fillSide(sil, nearest)?.let { votes.add(it) }
@@ -510,6 +514,25 @@ class ThemeModel(
         val black = votes.size - white
         if (white == black) return null
         return if (white > black) Pieces.Side.WHITE else Pieces.Side.BLACK
+    }
+
+    /**
+     * Each cell's similarity raised to the best of its kind's, either side's (see
+     * [Pieces.OTHER_SQUARE]): what a piece is, is its shape (`_kind_scores`).
+     */
+    private fun kindScores(sims: FloatArray): FloatArray {
+        val scored = sims.copyOf()
+        val kinds = LinkedHashMap<String, MutableList<Int>>()
+        for (i in exemplarLabels.indices) {
+            val label = exemplarLabels[i]
+            if (label != "empty") kinds.getOrPut(label.lowercase()) { ArrayList() }.add(i)
+        }
+        for (members in kinds.values) {
+            var best = Float.NEGATIVE_INFINITY
+            for (i in members) best = max(best, sims[i])
+            for (i in members) scored[i] = best
+        }
+        return scored
     }
 
     /**
@@ -775,15 +798,34 @@ class ThemeModel(
                 // Embedded at one resolution, as every later read is (`Pieces.canonical`); the
                 // landing crops above keep the full detail.
                 val seen = crops.map { Pieces.canonical(it) }
-                val vectors = try {
+                val startVectors = try {
                     embedder.embed(seen)
                 } finally {
                     seen.forEach { it.release() }
                 }
-                if (!startReadsAsStart(vectors, labels)) {
+                if (!startReadsAsStart(startVectors, labels)) {
                     Log.i(TAG, "a piece is hidden or spoiled; the next start frame gets a chance")
                     return null
                 }
+                // The kings and queens again, on the other square colour (Pieces.OTHER_SQUARE).
+                val light = FloatArray(3) { lightBg[it].toFloat() }
+                val dark = FloatArray(3) { darkBg[it].toFloat() }
+                val others = (0 until 64).filter { labels[it] != "empty" && labels[it].lowercase() in Pieces.OTHER_SQUARE }
+                val moved = others.map { i ->
+                    val recoloured = if (Squares.isLight(i / 8, i % 8)) {
+                        onOtherSquare(crops[i], light, dark, palette)
+                    } else {
+                        onOtherSquare(crops[i], dark, light, palette)
+                    }
+                    Pieces.canonical(recoloured).also { recoloured.release() }
+                }
+                val movedVectors = try {
+                    embedder.embed(moved)
+                } finally {
+                    moved.forEach { it.release() }
+                }
+                val vectors = arrayOf(*startVectors, *movedVectors)
+                val exemplarLabels = labels + others.map { labels[it] }
                 return ThemeModel(
                     exemplars = samples.map { (symbol, sils) -> fuse(symbol, sils) },
                     lightBg = lightBg,
@@ -795,13 +837,54 @@ class ThemeModel(
                     exemplarVectors = Array(vectors.size) { v ->
                         FloatArray(vectors[v].size) { halfPrecision(vectors[v][it]) }
                     },
-                    exemplarLabels = labels,
+                    exemplarLabels = exemplarLabels,
                     whiteAtBottom = whiteAtBottom,
                     landingCrops = landingCrops,
                 )
             } finally {
                 crops.forEach { it.release() }
             }
+        }
+
+        /**
+         * A piece's crop with its square recoloured from [own] to [other]: each pixel moves
+         * toward the other colour by the share of the way it lies from the set's nearest ink
+         * to the square ([palette]), so the square moves all the way, the piece not at all,
+         * and a smoothed edge -- ink blended onto the square -- comes out blended onto the
+         * other square (`pieces._on_other_square`, in single precision as the desktop's
+         * float32). The caller releases what it returns.
+         */
+        internal fun onOtherSquare(crop: Mat, own: FloatArray, other: FloatArray, palette: List<DoubleArray>): Mat {
+            val rows = crop.rows()
+            val cols = crop.cols()
+            val bytes = ByteArray(rows * cols * 3)
+            crop.get(0, 0, bytes)
+            val inks = palette.map { ink -> FloatArray(3) { ink[it].toFloat() } }
+            val shift = FloatArray(3) { other[it] - own[it] }
+            val out = ByteArray(bytes.size)
+            val pixel = FloatArray(3)
+            for (p in 0 until rows * cols) {
+                for (k in 0 until 3) pixel[k] = (bytes[p * 3 + k].toInt() and 0xFF).toFloat()
+                val toSquare = norm3(pixel, own)
+                var toInk = Float.POSITIVE_INFINITY
+                for (ink in inks) toInk = min(toInk, norm3(pixel, ink))
+                val share = if (toInk.isInfinite()) 1f else toInk / (toInk + toSquare + 1e-6f)
+                for (k in 0 until 3) {
+                    val value = (pixel[k] + share * shift[k]).coerceIn(0f, 255f)
+                    out[p * 3 + k] = value.toInt().toByte()
+                }
+            }
+            val mat = Mat(rows, cols, CvType.CV_8UC3)
+            mat.put(0, 0, out)
+            return mat
+        }
+
+        /** `np.linalg.norm(a - b)` over three float32 channels. */
+        private fun norm3(a: FloatArray, b: FloatArray): Float {
+            val d0 = a[0] - b[0]
+            val d1 = a[1] - b[1]
+            val d2 = a[2] - b[2]
+            return sqrt(d0 * d0 + d1 * d1 + d2 * d2)
         }
 
         /**

@@ -128,6 +128,27 @@ object Pieces {
      */
     const val CANONICAL_PX = 40
 
+    /**
+     * At 40 px the square under a piece weighs more in its embedding than at full detail, and
+     * the start position shows each side's king and queen on one square colour only: a black
+     * queen on a light square came nearer the black bishop, or the black knight, learned on
+     * one than the black queen learned on a dark square, and a black king on a dark square
+     * nearer the black queen (the desktop's stress seeds 469 and 688: the mate never
+     * committed; 766: a mid-game board never read cold). Two aids name a piece's kind once
+     * its side is voted, both from what the start position shows: each kind is as near as the
+     * nearest of its cells of either side, the shape being the kind (`ThemeModel.kindScores`:
+     * the mated king under the check glow and the result label came nearer a rook of its own
+     * side than its own king, 584), and the kings and queens are learned again on the other
+     * square colour, their start crops' squares recoloured (`ThemeModel.onOtherSquare`), after
+     * the start position's 64 cells ([START_CELLS]). Neither is evidence of a side: the side
+     * vote, and a piece whose side is not voted, see the 64 cells alone -- a white queen on a
+     * dark square came nearer the black queen recoloured onto a light one than its own, where
+     * the vote was split (stress seed 372). The kinds, as the start labels name them in lower
+     * case: `pieces.OTHER_SQUARE`, (chess.KING, chess.QUEEN).
+     */
+    val OTHER_SQUARE = listOf("k", "q")
+    const val START_CELLS = 64
+
     const val SETTLED_TOLERANCE = 0.08  // of a cell; a dragged piece follows the cursor
     const val SETTLED_FLOOR_PX = 3.0    // source pixels: the lock is only good to about one
 
