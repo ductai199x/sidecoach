@@ -12,7 +12,6 @@ import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
@@ -104,7 +103,7 @@ object SilhouetteReader {
         val patchPixels = FloatArray(patchBytes.size) { (patchBytes[it].toInt() and 0xFF).toFloat() }
 
         val (background, spread) = ringMedianAndSpread(patchPixels, n, patch.cols())
-        val border = (n * Pieces.INNER).roundToInt()
+        val border = pyRound(n * Pieces.INNER)
         val side = n - 2 * border
         if (side < 4) {
             return Sil(
@@ -119,13 +118,20 @@ object SilhouetteReader {
         cut.release()
         val innerBytes = ByteArray(size * size * 3)
         innerMat.get(0, 0, innerBytes)
+        // The grey OpenCV makes of the 8-bit patch, `cv2.cvtColor(inner, cv2.COLOR_BGR2GRAY)`:
+        // whole levels, rounded its own way, which the Otsu split and the luminance read.
+        val grayMat = Mat()
+        Imgproc.cvtColor(innerMat, grayMat, Imgproc.COLOR_BGR2GRAY)
+        val grayBytes = ByteArray(size * size)
+        grayMat.get(0, 0, grayBytes)
+        grayMat.release()
         innerMat.release()
         val inner = FloatArray(innerBytes.size) { (innerBytes[it].toInt() and 0xFF).toFloat() }
 
         // Distance of every inner pixel from the square's colour, and its chroma.
         val distance = FloatArray(size * size)
         val chroma = FloatArray(size * size)
-        val gray = FloatArray(size * size)
+        val gray = FloatArray(size * size) { (grayBytes[it].toInt() and 0xFF).toFloat() }
         for (i in 0 until size * size) {
             val b = inner[i * 3]
             val g = inner[i * 3 + 1]
@@ -135,7 +141,6 @@ object SilhouetteReader {
             val dr = r - background[2]
             distance[i] = sqrt(db * db + dg * dg + dr * dr).toFloat()
             chroma[i] = max(b, max(g, r)) - min(b, min(g, r))
-            gray[i] = (0.114f * b + 0.587f * g + 0.299f * r)
         }
 
         val overlay = overlayFraction(inner, size, background, distance, chroma, palette)
@@ -169,11 +174,10 @@ object SilhouetteReader {
             tone = toneMask(built.mask, size, inner, stats.colour, background)
             brightness = luminance / 255.0
             centroid = centroidOf(built.mask, size)
+            val outline = BooleanArray(built.mask.size) { built.mask[it] && !tone[it] }
             var outlinePixels = 0
-            for (i in built.mask.indices) if (built.mask[i] && !tone[i]) outlinePixels++
-            if (outlinePixels >= Pieces.EDGE_MIN_PIXELS) {
-                edgeColour = medianColour(inner) { i -> built.mask[i] && !tone[i] }
-            }
+            for (on in outline) if (on) outlinePixels++
+            if (outlinePixels >= Pieces.EDGE_MIN_PIXELS) edgeColour = medianColour(inner, outline, outlinePixels)
         }
         // Chess.com's hover outline is about 5% of the cell wide and sits at its edge, so
         // the ring the background is read from stays clean and serves as the reference.
@@ -196,16 +200,24 @@ object SilhouetteReader {
         skip: Double = Pieces.RING_SKIP,
         band: Double = Pieces.RING_BAND,
     ): Pair<DoubleArray, Double> {
-        val outer = max(1, (n * skip).roundToInt())
-        val inner = outer + max(1, (n * band).roundToInt())
-        val bs = ArrayList<Float>(4 * n * (inner - outer))
-        val gs = ArrayList<Float>(bs.size)
-        val rs = ArrayList<Float>(bs.size)
+        val outer = max(1, pyRound(n * skip))
+        val inner = outer + max(1, pyRound(n * band))
+        val ringed = n - outer > outer && inner < n - inner
+        val capacity = if (ringed) {
+            2 * (inner - outer) * (n - 2 * outer) + 2 * (n - 2 * inner) * (inner - outer)
+        } else {
+            n * width
+        }
+        val bs = FloatArray(capacity)
+        val gs = FloatArray(capacity)
+        val rs = FloatArray(capacity)
+        var count = 0
         fun take(y: Int, x: Int) {
             val i = (y * width + x) * 3
-            bs.add(pixels[i]); gs.add(pixels[i + 1]); rs.add(pixels[i + 2])
+            bs[count] = pixels[i]; gs[count] = pixels[i + 1]; rs[count] = pixels[i + 2]
+            count++
         }
-        if (n - outer > outer && inner < n - inner) {
+        if (ringed) {
             for (y in outer until inner) for (x in outer until n - outer) take(y, x)
             for (y in n - inner until n - outer) for (x in outer until n - outer) take(y, x)
             for (y in inner until n - inner) {
@@ -213,18 +225,22 @@ object SilhouetteReader {
                 for (x in n - inner until n - outer) take(y, x)
             }
         }
-        if (bs.isEmpty()) {  // a patch too small to have a ring at all
+        if (count == 0) {  // a patch too small to have a ring at all
             for (y in 0 until n) for (x in 0 until width) take(y, x)
         }
-        val median = doubleArrayOf(medianOf(bs), medianOf(gs), medianOf(rs))
-        val distances = ArrayList<Float>(bs.size)
-        for (i in bs.indices) {
+        val median = doubleArrayOf(medianOf(bs, count), medianOf(gs, count), medianOf(rs, count))
+        // In doubles, as numpy measures a float32 ring against a float64 median.
+        val distances = DoubleArray(count)
+        for (i in 0 until count) {
             val db = bs[i] - median[0]
             val dg = gs[i] - median[1]
             val dr = rs[i] - median[2]
-            distances.add(sqrt(db * db + dg * dg + dr * dr).toFloat())
+            distances[i] = sqrt(db * db + dg * dg + dr * dr)
         }
-        return median to medianOf(distances)
+        distances.sort()
+        val spread = if (count % 2 == 1) distances[count / 2]
+        else (distances[count / 2 - 1] + distances[count / 2]) / 2.0
+        return median to spread
     }
 
     /**
@@ -237,14 +253,15 @@ object SilhouetteReader {
         width: Int,
         inset: Pair<Double, Double> = Pieces.CORNER_INSET,
     ): FloatArray {
-        val outer = (n * inset.first).roundToInt()
-        val inner = max(outer + 1, (n * inset.second).roundToInt())
-        val out = ArrayList<Float>(4 * (inner - outer) * (inner - outer) * 3)
+        val outer = pyRound(n * inset.first)
+        val inner = max(outer + 1, pyRound(n * inset.second))
+        val out = FloatArray(4 * (inner - outer) * (inner - outer) * 3)
+        var count = 0
         fun block(y0: Int, y1: Int, x0: Int, x1: Int) {
             for (y in max(0, y0) until min(n, y1)) {
                 for (x in max(0, x0) until min(width, x1)) {
                     val i = (y * width + x) * 3
-                    out.add(pixels[i]); out.add(pixels[i + 1]); out.add(pixels[i + 2])
+                    out[count++] = pixels[i]; out[count++] = pixels[i + 1]; out[count++] = pixels[i + 2]
                 }
             }
         }
@@ -252,8 +269,8 @@ object SilhouetteReader {
         block(outer, inner, n - inner, n - outer)
         block(n - inner, n - outer, outer, inner)
         block(n - inner, n - outer, n - inner, n - outer)
-        if (out.isEmpty()) return pixels.copyOf()  // a patch too small to have corners
-        return FloatArray(out.size) { out[it] }
+        if (count == 0) return pixels.copyOf()  // a patch too small to have corners
+        return if (count == out.size) out else out.copyOf(count)
     }
 
     private class Built(val mask: BooleanArray, val fraction: Double, val stats: Fill?)
@@ -279,8 +296,10 @@ object SilhouetteReader {
         pocket: Double,
         fills: List<DoubleArray>,
     ): Built {
+        // numpy compares a float32 map with a Python float in float32 (NEP 50): so here.
+        val cutoff = tolerance.toFloat()
         val foreground = ByteArray(size * size)
-        for (i in foreground.indices) if (distance[i] > tolerance) foreground[i] = 1
+        for (i in foreground.indices) if (distance[i] > cutoff) foreground[i] = 1
         val mat = Mat(size, size, CvType.CV_8U)
         mat.put(0, 0, foreground)
         val kernel = Mat.ones(3, 3, CvType.CV_8U)
@@ -304,7 +323,8 @@ object SilhouetteReader {
         var anyBadge = false
         for (i in mask.indices) if (mask[i] && BADGE_BLIND[i]) { anyBadge = true; break }
         val keep = if (anyBadge) BADGE_BLIND else BooleanArray(size * size) { true }
-        var ink = BooleanArray(size * size) { mask[it] && distance[it] > pocket }
+        val pocketCut = pocket.toFloat()
+        var ink = BooleanArray(size * size) { mask[it] && distance[it] > pocketCut }
         var anyInk = false
         for (v in ink) if (v) { anyInk = true; break }
         if (!anyInk) ink = mask
@@ -397,11 +417,8 @@ object SilhouetteReader {
         for (i in mask.indices) {
             if (!mask[i]) continue
             maskOn++
-            val b = inner[i * 3].toDouble()
-            val g = inner[i * 3 + 1].toDouble()
-            val r = inner[i * 3 + 2].toDouble()
-            val toCore = distanceOf(doubleArrayOf(b, g, r), coreColour)
-            val toSquare = distanceOf(doubleArrayOf(b, g, r), background)
+            val toCore = distanceAt(inner, i, coreColour)
+            val toSquare = distanceAt(inner, i, background)
             if (toCore < toSquare) { core[i] = true; on++ }
         }
         if (on < max(Pieces.TONE_MIN_SHARE * maskOn, Pieces.TONE_MIN_AREA * size * size)) return mask
@@ -433,19 +450,21 @@ object SilhouetteReader {
             classes = List(fills.size) { BooleanArray(size * size) }
             for (i in ink.indices) {
                 if (!ink[i]) continue
-                val pixel = doubleArrayOf(inner[i * 3].toDouble(), inner[i * 3 + 1].toDouble(), inner[i * 3 + 2].toDouble())
                 var best = 0
                 var bestDistance = Double.MAX_VALUE
-                for ((k, fill) in fills.withIndex()) {
-                    val d = distanceOf(pixel, fill)
+                for (k in fills.indices) {
+                    val d = distanceAt(inner, i, fills[k])
                     if (d < bestDistance) { bestDistance = d; best = k }
                 }
                 classes[best][i] = true
             }
         } else {
-            val values = ArrayList<Float>()
-            for (i in ink.indices) if (ink[i]) values.add(gray[i])
-            if (values.isEmpty()) return null
+            var count = 0
+            for (i in ink.indices) if (ink[i]) count++
+            if (count == 0) return null
+            val values = ByteArray(count)
+            var at = 0
+            for (i in ink.indices) if (ink[i]) values[at++] = gray[i].toInt().toByte()
             val split = otsu(values)
             classes = listOf(
                 BooleanArray(size * size) { ink[it] && gray[it] > split },
@@ -471,8 +490,8 @@ object SilhouetteReader {
             var sum = 0.0
             for (w in weights) sum += w
             if (sum <= 0) for (i in tone.indices) if (tone[i]) weights[i] = 1f
-            val colour = DoubleArray(3) { ch -> weightedMedianOf(tone, weights) { i -> inner[i * 3 + ch] } }
-            val luminance = weightedMedianOf(tone, weights) { i -> gray[i] }
+            val colour = DoubleArray(3) { ch -> weightedMedianOf(tone, weights, inner, 3, ch) }
+            val luminance = weightedMedianOf(tone, weights, gray, 1, 0)
             tones.add(Triple(colour, deepest, luminance))
         }
         if (tones.isEmpty()) return null
@@ -487,8 +506,8 @@ object SilhouetteReader {
      * A badge, a dialog edge or a blended boundary marks one or two sides, never all four.
      */
     private fun hoverOutline(pixels: FloatArray, n: Int, width: Int, background: DoubleArray): Boolean {
-        val band = max(1, (n * Pieces.HOVER_BAND).roundToInt())
-        val edge = max(1, (n * Pieces.HOVER_EDGE).roundToInt())
+        val band = max(1, pyRound(n * Pieces.HOVER_BAND))
+        val edge = max(1, pyRound(n * Pieces.HOVER_EDGE))
         if (2 * band >= n) return false  // a patch too small to have an outer band
         val distance = FloatArray(n * width)
         for (y in 0 until n) {
@@ -531,24 +550,31 @@ object SilhouetteReader {
             }
             strong[sideIndex] = bestStrong
             weak[sideIndex] = bestWeak
-            val edgeValues = ArrayList<Float>(edge * n)
-            for (k in 0 until edge) for (along in 0 until n) edgeValues.add(distance[at(k, along)])
-            medians[sideIndex] = medianOf(edgeValues)
+            val edgeValues = FloatArray(edge * n)
+            var edgeCount = 0
+            for (k in 0 until edge) for (along in 0 until n) edgeValues[edgeCount++] = distance[at(k, along)]
+            medians[sideIndex] = medianOf(edgeValues, edgeCount)
             // An outline is a step between one row and the next, and it runs through both
             // ends of the side; a tint that fades toward the edge is a ramp of a few levels
             // a row, and a piece's base or a label reaches one end at most.
-            val reach = max(2, (n * Pieces.HOVER_CORNER).roundToInt())
+            val reach = max(2, pyRound(n * Pieces.HOVER_CORNER))
             var worst = Double.MAX_VALUE
             for ((lo, hi) in listOf(band to band + reach, n - band - reach to n - band)) {
                 val lines = ArrayList<DoubleArray>()
+                val from = max(0, lo)
+                val until = min(n, hi)
+                val bs = FloatArray(max(0, until - from))
+                val gs = FloatArray(bs.size)
+                val rs = FloatArray(bs.size)
                 for (k in 0 until min(n, 2 * band + 1)) {
-                    val bs = ArrayList<Float>(); val gs = ArrayList<Float>(); val rs = ArrayList<Float>()
-                    for (along in max(0, lo) until min(n, hi)) {
+                    var count = 0
+                    for (along in from until until) {
                         val p = at(k, along) * 3
-                        bs.add(pixels[p]); gs.add(pixels[p + 1]); rs.add(pixels[p + 2])
+                        bs[count] = pixels[p]; gs[count] = pixels[p + 1]; rs[count] = pixels[p + 2]
+                        count++
                     }
-                    if (bs.isEmpty()) continue
-                    lines.add(doubleArrayOf(medianOf(bs), medianOf(gs), medianOf(rs)))
+                    if (count == 0) continue
+                    lines.add(doubleArrayOf(medianOf(bs, count), medianOf(gs, count), medianOf(rs, count)))
                 }
                 var biggest = 0.0
                 for (k in 0 until lines.size - 1) {
@@ -578,28 +604,50 @@ object SilhouetteReader {
         palette: List<DoubleArray>,
     ): Double {
         val blind = if (size == CELL) OVERLAY_BLIND else overlayBlind(size)
-        val candidates = ArrayList<Int>()
+        var any = false
         for (i in 0 until size * size) {
             if (distance[i] > Pieces.OVERLAY_DISTANCE && chroma[i] > Pieces.OVERLAY_CHROMA && blind[i]) {
-                candidates.add(i)
+                any = true
+                break
             }
         }
-        if (candidates.isEmpty()) return 0.0
+        if (!any) return 0.0
         val colours = ArrayList<DoubleArray>()
         colours.add(doubleArrayOf(0.0, 0.0, 0.0))
         colours.add(doubleArrayOf(255.0, 255.0, 255.0))
         colours.addAll(palette)
-        val segments = ArrayList<Pair<DoubleArray, DoubleArray>>()
-        for (colour in colours) segments.add(background to colour)
-        for (i in colours.indices) for (j in i + 1 until colours.size) segments.add(colours[i] to colours[j])
+        // The segments laid out once, each as its start, its direction and its squared length
+        // (1 when it has none), so the pixels are measured against them without a single
+        // allocation: with the set's sixteen colours there are 171 of them.
+        val count = colours.size + colours.size * (colours.size - 1) / 2
+        val starts = DoubleArray(count * 3)
+        val directions = DoubleArray(count * 3)
+        val lengths = DoubleArray(count)
+        var s = 0
+        fun segment(start: DoubleArray, end: DoubleArray) {
+            var length = 0.0
+            for (c in 0 until 3) {
+                starts[s * 3 + c] = start[c]
+                val d = end[c] - start[c]
+                directions[s * 3 + c] = d
+                length += d * d
+            }
+            lengths[s] = if (length == 0.0) 1.0 else length
+            s++
+        }
+        for (colour in colours) segment(background, colour)
+        for (i in colours.indices) for (j in i + 1 until colours.size) segment(colours[i], colours[j])
         var drawn = 0
-        for (index in candidates) {
-            val pixel = doubleArrayOf(
-                inner[index * 3].toDouble(), inner[index * 3 + 1].toDouble(), inner[index * 3 + 2].toDouble(),
-            )
+        for (index in 0 until size * size) {
+            if (!(distance[index] > Pieces.OVERLAY_DISTANCE && chroma[index] > Pieces.OVERLAY_CHROMA && blind[index])) {
+                continue
+            }
+            val b = inner[index * 3].toDouble()
+            val g = inner[index * 3 + 1].toDouble()
+            val r = inner[index * 3 + 2].toDouble()
             var nearest = Double.MAX_VALUE
-            for ((start, end) in segments) {
-                nearest = min(nearest, offLine(pixel, start, end))
+            for (k in 0 until count) {
+                nearest = min(nearest, offLine(b, g, r, starts, directions, lengths, k))
                 if (nearest <= Pieces.OVERLAY_OFF_LINE) break
             }
             if (nearest > Pieces.OVERLAY_OFF_LINE) drawn++
@@ -607,20 +655,38 @@ object SilhouetteReader {
         return drawn.toDouble() / (size * size)
     }
 
-    /** How far a pixel lies from the segment of colours between [start] and [end]. */
-    private fun offLine(pixel: DoubleArray, start: DoubleArray, end: DoubleArray): Double {
-        var length = 0.0
-        val direction = DoubleArray(3) { end[it] - start[it] }
-        for (d in direction) length += d * d
-        if (length == 0.0) length = 1.0
+    /**
+     * How far the pixel (b, g, r) lies from segment [k] of colours: its start, direction and
+     * squared length laid out in the arrays (see [overlayFraction]).
+     */
+    private fun offLine(
+        b: Double,
+        g: Double,
+        r: Double,
+        starts: DoubleArray,
+        directions: DoubleArray,
+        lengths: DoubleArray,
+        k: Int,
+    ): Double {
+        val at = k * 3
+        val d0 = directions[at]
+        val d1 = directions[at + 1]
+        val d2 = directions[at + 2]
+        val s0 = starts[at]
+        val s1 = starts[at + 1]
+        val s2 = starts[at + 2]
         var dot = 0.0
-        for (i in 0 until 3) dot += (pixel[i] - start[i]) * direction[i]
-        val along = (dot / length).coerceIn(0.0, 1.0)
+        dot += (b - s0) * d0
+        dot += (g - s1) * d1
+        dot += (r - s2) * d2
+        val along = (dot / lengths[k]).coerceIn(0.0, 1.0)
+        val e0 = b - (s0 + along * d0)
+        val e1 = g - (s1 + along * d1)
+        val e2 = r - (s2 + along * d2)
         var sum = 0.0
-        for (i in 0 until 3) {
-            val d = pixel[i] - (start[i] + along * direction[i])
-            sum += d * d
-        }
+        sum += e0 * e0
+        sum += e1 * e1
+        sum += e2 * e2
         return sqrt(sum)
     }
 
@@ -669,64 +735,95 @@ object SilhouetteReader {
         return sqrt(sum)
     }
 
-    private fun medianOf(values: List<Float>): Double {
-        if (values.isEmpty()) return 0.0
-        val sorted = values.sorted()
-        val n = sorted.size
-        return if (n % 2 == 1) sorted[n / 2].toDouble()
-        else (sorted[n / 2 - 1].toDouble() + sorted[n / 2].toDouble()) / 2.0
+    /** The distance of inner pixel [i] (BGR floats, row after row) from [colour]. */
+    private fun distanceAt(inner: FloatArray, i: Int, colour: DoubleArray): Double {
+        val db = inner[i * 3].toDouble() - colour[0]
+        val dg = inner[i * 3 + 1].toDouble() - colour[1]
+        val dr = inner[i * 3 + 2].toDouble() - colour[2]
+        var sum = 0.0
+        sum += db * db
+        sum += dg * dg
+        sum += dr * dr
+        return sqrt(sum)
     }
 
-    private fun medianColour(inner: FloatArray, where: (Int) -> Boolean): DoubleArray {
-        val bs = ArrayList<Float>(); val gs = ArrayList<Float>(); val rs = ArrayList<Float>()
-        for (i in 0 until inner.size / 3) {
-            if (!where(i)) continue
-            bs.add(inner[i * 3]); gs.add(inner[i * 3 + 1]); rs.add(inner[i * 3 + 2])
+    /** numpy's median of the first [count] values: the middle one, or the two middle ones' mean. */
+    private fun medianOf(values: FloatArray, count: Int = values.size): Double {
+        if (count == 0) return 0.0
+        val sorted = values.copyOf(count)
+        sorted.sort()
+        return if (count % 2 == 1) sorted[count / 2].toDouble()
+        else (sorted[count / 2 - 1].toDouble() + sorted[count / 2].toDouble()) / 2.0
+    }
+
+    /** The median colour of the inner pixels [where] marks, [count] of them. */
+    private fun medianColour(inner: FloatArray, where: BooleanArray, count: Int): DoubleArray {
+        val bs = FloatArray(count)
+        val gs = FloatArray(count)
+        val rs = FloatArray(count)
+        var at = 0
+        for (i in where.indices) {
+            if (!where[i]) continue
+            bs[at] = inner[i * 3]; gs[at] = inner[i * 3 + 1]; rs[at] = inner[i * 3 + 2]
+            at++
         }
-        return doubleArrayOf(medianOf(bs), medianOf(gs), medianOf(rs))
+        return doubleArrayOf(medianOf(bs, at), medianOf(gs, at), medianOf(rs, at))
     }
 
-    private fun weightedMedianOf(mask: BooleanArray, weights: FloatArray, value: (Int) -> Float): Double {
-        val picked = ArrayList<Pair<Float, Float>>()
-        var total = 0.0
+    /**
+     * `pieces._weighted_median` of `values[i * stride + offset]` over the pixels [mask] marks,
+     * with float32 weights: numpy's cumulative sum of them is a float32 one, run in order of
+     * value, and the median is where it first reaches half its end. The values are pixel
+     * levels, never negative, so their bits sort as they do; packed above the pixel's index,
+     * one sort of longs orders them by value and then by place, as a stable sort would.
+     */
+    private fun weightedMedianOf(
+        mask: BooleanArray,
+        weights: FloatArray,
+        values: FloatArray,
+        stride: Int,
+        offset: Int,
+    ): Double {
+        var count = 0
+        for (on in mask) if (on) count++
+        if (count == 0) return 0.0
+        val keys = LongArray(count)
+        var k = 0
         for (i in mask.indices) {
             if (!mask[i]) continue
-            picked.add(value(i) to weights[i])
-            total += weights[i]
+            val bits = java.lang.Float.floatToIntBits(values[i * stride + offset]).toLong()
+            keys[k++] = (bits shl 32) or i.toLong()
         }
-        if (picked.isEmpty()) return 0.0
-        picked.sortBy { it.first }
-        var running = 0.0
-        for ((v, w) in picked) {
-            running += w
-            if (running >= total / 2) return v.toDouble()
+        keys.sort()
+        val cumulative = FloatArray(count)
+        var running = 0f
+        for (j in 0 until count) {
+            running += weights[(keys[j] and 0xffffffffL).toInt()]
+            cumulative[j] = running
         }
-        return picked.last().first.toDouble()
+        val half = cumulative[count - 1] / 2
+        var pick = count - 1
+        for (j in 0 until count) {
+            if (cumulative[j] >= half) {
+                pick = j
+                break
+            }
+        }
+        return java.lang.Float.intBitsToFloat((keys[pick] ushr 32).toInt()).toDouble()
     }
 
-    /** Otsu's threshold over the ink's grey values. */
-    private fun otsu(values: List<Float>): Float {
-        val histogram = IntArray(256)
-        for (v in values) histogram[v.toInt().coerceIn(0, 255)]++
-        val total = values.size
-        var sum = 0.0
-        for (i in 0 until 256) sum += i * histogram[i]
-        var sumB = 0.0
-        var weightB = 0
-        var best = 0.0
-        var threshold = 0
-        for (t in 0 until 256) {
-            weightB += histogram[t]
-            if (weightB == 0) continue
-            val weightF = total - weightB
-            if (weightF == 0) break
-            sumB += t * histogram[t]
-            val meanB = sumB / weightB
-            val meanF = (sum - sumB) / weightF
-            val between = weightB.toDouble() * weightF * (meanB - meanF) * (meanB - meanF)
-            if (between > best) { best = between; threshold = t }
-        }
-        return threshold.toFloat()
+    /**
+     * Otsu's threshold over the ink's grey levels, by OpenCV's own
+     * (`cv2.threshold(values, 0, 255, THRESH_BINARY + THRESH_OTSU)`).
+     */
+    private fun otsu(values: ByteArray): Float {
+        val column = Mat(values.size, 1, CvType.CV_8U)
+        column.put(0, 0, values)
+        val out = Mat()
+        val split = Imgproc.threshold(column, out, 0.0, 255.0, Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU)
+        column.release()
+        out.release()
+        return split.toFloat()
     }
 
     /** The L2 distance transform of a mask, measured from the patch's edge as well. */

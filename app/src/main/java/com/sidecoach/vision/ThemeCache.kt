@@ -4,7 +4,6 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
 import java.security.MessageDigest
-import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
@@ -26,12 +25,14 @@ import kotlin.math.sqrt
 object ThemeCache {
 
     /**
-     * 2: the landing crops travel with the theme (the desktop's 10). 1, the first Android
-     * format, has none and still reads: its pieces land by the centroid until the set is
-     * learned again from a start position. The desktop's numbering is its own file's.
+     * 2: the landing crops travel with the theme (the desktop's 10); 3: the palette is the
+     * desktop's k-means and the start cells' embeddings are held at half precision, as the
+     * desktop holds them (the parity audit, 2026-09-26). A file of any other version is
+     * ignored and the theme relearned, as the desktop ignores one (`theme_cache._read`): a
+     * version 1 set, with no landing crops, once read on and landed its pieces by the
+     * centroid. The desktop's numbering is its own file's.
      */
-    const val CACHE_VERSION = 2
-    const val CACHE_VERSION_NO_CROPS = 1
+    const val CACHE_VERSION = 3
 
     /** Square colours within this many levels share a fingerprint (tolerates lighting). */
     private const val QUANTUM = 8
@@ -62,9 +63,9 @@ object ThemeCache {
     fun paletteKey(lightBg: DoubleArray, darkBg: DoubleArray): String {
         val quantised = IntArray(6) {
             val v = if (it < 3) lightBg[it] else darkBg[it - 3]
-            (v / QUANTUM).roundToInt()
+            pyRound(v / QUANTUM)  // `np.round`: halves to even
         }
-        // numpy hashes the int64 buffer; the bytes here are ours, and only have to be stable.
+        // The int64 buffer numpy hashes, little-endian: the desktop's key for the same colours.
         val bytes = ByteArray(6 * 8)
         for (i in 0 until 6) {
             var v = quantised[i].toLong()
@@ -206,11 +207,12 @@ class ThemeStore(private val directory: File) {
      */
     private fun setKey(model: ThemeModel): String {
         if (model.exemplarVectors.isEmpty()) return java.util.UUID.randomUUID().toString().replace("-", "").take(8)
+        // The half-precision buffer the desktop hashes, little-endian.
         val digest = MessageDigest.getInstance("SHA-1")
-        val bytes = java.nio.ByteBuffer.allocate(4 * model.exemplarVectors[0].size).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        val bytes = java.nio.ByteBuffer.allocate(2 * model.exemplarVectors[0].size).order(java.nio.ByteOrder.LITTLE_ENDIAN)
         for (vector in model.exemplarVectors) {
             bytes.clear()
-            for (v in vector) bytes.putFloat(v)
+            for (v in vector) bytes.putShort(halfBits(v))
             digest.update(bytes.array(), 0, bytes.position())
         }
         return digest.digest().joinToString("") { "%02x".format(it) }.take(8)
@@ -230,10 +232,7 @@ class ThemeStore(private val directory: File) {
         if (!palettes.containsKey(key)) {
             palettes[key] = try {
                 DataInputStream(file.inputStream().buffered()).use { stream ->
-                    val version = stream.readInt()
-                    if (version != ThemeCache.CACHE_VERSION && version != ThemeCache.CACHE_VERSION_NO_CROPS) {
-                        return@use null
-                    }
+                    if (stream.readInt() != ThemeCache.CACHE_VERSION) return@use null
                     val light = DoubleArray(3) { stream.readDouble() }
                     val dark = DoubleArray(3) { stream.readDouble() }
                     light to dark
@@ -272,7 +271,8 @@ class ThemeStore(private val directory: File) {
         for (colour in model.palette) for (v in colour) out.writeDouble(v)
         out.writeInt(model.exemplarVectors.size)
         out.writeInt(if (model.exemplarVectors.isEmpty()) 0 else model.exemplarVectors[0].size)
-        for (vector in model.exemplarVectors) for (v in vector) out.writeFloat(v)
+        // Half precision, as the desktop pickles them: the model holds them at it already.
+        for (vector in model.exemplarVectors) for (v in vector) out.writeShort(halfBits(v).toInt())
         out.writeInt(model.exemplarLabels.size)
         for (label in model.exemplarLabels) out.writeUTF(label)
         out.writeInt(model.rankLabels.size)
@@ -290,8 +290,7 @@ class ThemeStore(private val directory: File) {
     }
 
     private fun read(input: DataInputStream): ThemeModel? {
-        val version = input.readInt()
-        if (version != ThemeCache.CACHE_VERSION && version != ThemeCache.CACHE_VERSION_NO_CROPS) return null
+        if (input.readInt() != ThemeCache.CACHE_VERSION) return null
         val lightBg = DoubleArray(3) { input.readDouble() }
         val darkBg = DoubleArray(3) { input.readDouble() }
         val whiteAtBottom = input.readBoolean()
@@ -316,7 +315,7 @@ class ThemeStore(private val directory: File) {
         repeat(input.readInt()) { palette.add(DoubleArray(3) { input.readDouble() }) }
         val vectorCount = input.readInt()
         val dim = input.readInt()
-        val vectors = Array(vectorCount) { FloatArray(dim) { input.readFloat() } }
+        val vectors = Array(vectorCount) { FloatArray(dim) { halfToFloat(input.readShort()) } }
         val labels = ArrayList<String>()
         repeat(input.readInt()) { labels.add(input.readUTF()) }
         val rankLabels = LinkedHashMap<Int, BooleanArray>()
@@ -325,15 +324,13 @@ class ThemeStore(private val directory: File) {
             rankLabels[rank] = readBits(input)
         }
         val landingCrops = LinkedHashMap<String, LandingCrop>()
-        if (version == ThemeCache.CACHE_VERSION) {
-            repeat(input.readInt()) {
-                val symbol = input.readUTF()
-                val rows = input.readInt()
-                val cols = input.readInt()
-                val pixels = ByteArray(rows * cols)
-                input.readFully(pixels)
-                landingCrops[symbol] = LandingCrop(rows, cols, pixels)
-            }
+        repeat(input.readInt()) {
+            val symbol = input.readUTF()
+            val rows = input.readInt()
+            val cols = input.readInt()
+            val pixels = ByteArray(rows * cols)
+            input.readFully(pixels)
+            landingCrops[symbol] = LandingCrop(rows, cols, pixels)
         }
         val model = ThemeModel(
             exemplars = exemplars,

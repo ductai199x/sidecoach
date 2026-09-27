@@ -1,9 +1,12 @@
 package com.sidecoach.vision
 
 import android.util.Log
+import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.core.Point
 import org.opencv.core.Size
+import org.opencv.core.TermCriteria
 import org.opencv.imgproc.Imgproc
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -68,9 +71,8 @@ class ThemeModel(
     val whiteAtBottom: Boolean,
     /**
      * Each piece kind's start-position crop in grey, the reference the phase landing measures a
-     * cell's shift against (an instance off the labelled edge cells). Empty for a set learned
-     * before the phone kept them: its pieces land by the centroid, as the desktop's do for a
-     * kind with no crop.
+     * cell's shift against (an instance off the labelled edge cells). A kind with none lands by
+     * the centroid, as the desktop's does; a set learned from a start position has them all.
      */
     val landingCrops: Map<String, LandingCrop> = emptyMap(),
 ) {
@@ -85,6 +87,9 @@ class ThemeModel(
     )
 
     private val cells = HashMap<Int, Cell>()
+
+    /** The silhouette cell [i] of the last frame read was taken as, for the parity tests. */
+    internal fun silAt(i: Int): Sil? = cells[i]?.sil
 
     /**
      * The rank-digit exemplars from the board's left edge, learned with the theme: how a
@@ -138,14 +143,22 @@ class ThemeModel(
         var clean = 0
         var shiftedCount = 0
         for (i in 0 until corners) {
-            val shift = DoubleArray(3) { sil.cornerPixels[i * 3 + it].toDouble() - expected[it] }
-            val magnitude = norm(shift)
+            val s0 = sil.cornerPixels[i * 3].toDouble() - expected[0]
+            val s1 = sil.cornerPixels[i * 3 + 1].toDouble() - expected[1]
+            val s2 = sil.cornerPixels[i * 3 + 2].toDouble() - expected[2]
+            var squares = 0.0
+            squares += s0 * s0
+            squares += s1 * s1
+            squares += s2 * s2
+            val magnitude = sqrt(squares)
             if (magnitude <= Pieces.TINT_MIN_CORNER_SHIFT) {
                 clean++
                 continue
             }
             var dot = 0.0
-            for (k in 0 until 3) dot += shift[k] * shallow[k]
+            dot += s0 * shallow[0]
+            dot += s1 * shallow[1]
+            dot += s2 * shallow[2]
             if (dot / (max(magnitude, 1e-6) * shallowNorm) >= Pieces.TINT_MIN_COSINE) shiftedCount++
         }
         val known = clean + shiftedCount
@@ -498,7 +511,7 @@ class ThemeModel(
      * sides' fills learned at the start. Null when the mask is too small to read or the
      * colour lies about as near one fill as the other.
      */
-    private fun fillSide(sil: Sil, label: String): Pieces.Side? {
+    internal fun fillSide(sil: Sil, label: String): Pieces.Side? {
         if (pieceColours.size < 2) return null
         val masks = exemplars.filter { it.symbol.uppercase() == label.uppercase() }.map { it.tone }
         if (masks.isEmpty()) return null
@@ -584,26 +597,24 @@ class ThemeModel(
         sil.background, sil.brightness, settled, hover, offset, guess, covered, tint, drawn,
     )
 
+    /**
+     * `cv2.erode(mask, ones(3, 3), iterations=times)`, by OpenCV itself: outside the patch
+     * counts as set (the default border for an erosion), so a mask reaching the patch's edge
+     * is not eaten from it. The phone's own erosion ate it, and 38 of 88 sets' fill masks
+     * differed from the desktop's by up to 352 pixels (the parity audit, 2026-09-26).
+     */
     private fun erode(mask: BooleanArray, size: Int, times: Int): BooleanArray {
-        var current = mask
-        repeat(times) {
-            val next = BooleanArray(current.size)
-            for (y in 0 until size) {
-                for (x in 0 until size) {
-                    var all = true
-                    for (dy in -1..1) {
-                        for (dx in -1..1) {
-                            val yy = y + dy
-                            val xx = x + dx
-                            if (yy !in 0 until size || xx !in 0 until size || !current[yy * size + xx]) all = false
-                        }
-                    }
-                    next[y * size + x] = all
-                }
-            }
-            current = next
-        }
-        return current
+        val src = Mat(size, size, CvType.CV_8U)
+        src.put(0, 0, ByteArray(mask.size) { if (mask[it]) 1 else 0 })
+        val kernel = Mat.ones(3, 3, CvType.CV_8U)
+        val out = Mat()
+        Imgproc.erode(src, out, kernel, Point(-1.0, -1.0), times)
+        val bytes = ByteArray(mask.size)
+        out.get(0, 0, bytes)
+        src.release()
+        kernel.release()
+        out.release()
+        return BooleanArray(mask.size) { bytes[it].toInt() != 0 }
     }
 
     companion object {
@@ -713,7 +724,9 @@ class ThemeModel(
             val crops = ArrayList<Mat>(64)
             for (r in 0 until 8) for (c in 0 until 8) crops.add(geometry.crop(frame, r, c, 2 * Squares.CELL))
             try {
-                val first = HashMap<String, MutableList<Sil>>()
+                // In the order the Python's dicts keep: the piece kinds as the cells first
+                // show them. The palette clusters the ink in that order.
+                val first = LinkedHashMap<String, MutableList<Sil>>()
                 for (i in 0 until 64) {
                     if (labels[i] == "empty") continue
                     first.getOrPut(labels[i]) { ArrayList() }.add(SilhouetteReader.of(crops[i]))
@@ -721,7 +734,7 @@ class ThemeModel(
                 val colours = pieceColoursOf(first)
                 val palette = setPalette(first)
 
-                val samples = HashMap<String, MutableList<Sil>>()
+                val samples = LinkedHashMap<String, MutableList<Sil>>()
                 val lightBgs = ArrayList<DoubleArray>()
                 val darkBgs = ArrayList<DoubleArray>()
                 for (i in 0 until 64) {
@@ -764,7 +777,11 @@ class ThemeModel(
                     darkBg = darkBg,
                     pieceColours = colours,
                     palette = palette,
-                    exemplarVectors = vectors,
+                    // Held at half precision, as the desktop holds them (`astype(np.float16)`)
+                    // and every similarity is taken against them.
+                    exemplarVectors = Array(vectors.size) { v ->
+                        FloatArray(vectors[v].size) { halfPrecision(vectors[v][it]) }
+                    },
                     exemplarLabels = labels,
                     whiteAtBottom = whiteAtBottom,
                     landingCrops = landingCrops,
@@ -808,9 +825,9 @@ class ThemeModel(
             val size = Squares.CELL * Squares.CELL
             val mask = BooleanArray(size) { i -> sils.count { it.mask[i] } * 2 >= sils.size }
             val tone = BooleanArray(size) { i -> sils.count { it.tone[i] } * 2 >= sils.size }
-            val brightness = median(sils.map { it.brightness.toFloat() })
-            val centroid = median(sils.map { it.centroid.first.toFloat() }) to
-                median(sils.map { it.centroid.second.toFloat() })
+            val brightness = medianOfDoubles(sils.map { it.brightness })
+            val centroid = medianOfDoubles(sils.map { it.centroid.first }) to
+                medianOfDoubles(sils.map { it.centroid.second })
             return Exemplar(
                 symbol, mask, tone, brightness, centroid,
                 SilhouetteReader.alignCentroid(tone), SilhouetteReader.alignCentroid(mask),
@@ -863,28 +880,95 @@ class ThemeModel(
         }
 
         /**
-         * Every colour the set draws with, the palette a drawing over a square is told
-         * from. The desktop clusters up to 30,000 ink pixels with k-means; the tones the
-         * silhouettes already carry are those clusters' centres by another road -- each
-         * piece's ink is split into its two tones and their colours are what k-means finds
-         * -- and they cost nothing more. A detail colour that is neither tone (a gold
-         * crown on a teal king) is missed, and the cell it is on reads as drawn until it
-         * is gone; k-means at bootstrap is the fallback if that shows up on a phone.
+         * Every colour the set draws with: the ink of all its pieces on the start frame,
+         * clustered (`pieces._set_palette`). A set's fills and outlines are two colours a
+         * side; its details may be more (a pink emblem and red lettering on a navy piece, a
+         * gold crown on a teal king), and each is a colour a drawing is told from.
+         *
+         * The ink is taken in the Python's order -- the piece kinds as the start position
+         * first shows them, their cells in screen order, each silhouette's pixels row by row
+         * -- and thinned the way numpy thins it, so the same pixels are clustered. k-means
+         * seeds itself from OpenCV's random generator, the calling thread's, as the desktop's
+         * does. The phone's tones stood in for this until the parity audit (2026-09-26): a
+         * detail colour that is neither tone read as a drawing on every board, three cells of
+         * every anarcandy board among them.
          */
-        private fun setPalette(samples: Map<String, List<Sil>>): List<DoubleArray> {
-            val out = ArrayList<DoubleArray>()
+        internal fun setPalette(samples: Map<String, List<Sil>>): List<DoubleArray> {
+            var count = 0
+            for (sils in samples.values) for (sil in sils) for (on in sil.mask) if (on) count++
+            if (count == 0) return emptyList()
+            val ink = FloatArray(count * 3)
+            var at = 0
             for (sils in samples.values) {
                 for (sil in sils) {
-                    for ((colour, _) in sil.tones) {
-                        if (out.none { distance(it, colour) <= Pieces.COVER_TOLERANCE }) out.add(colour)
+                    for (i in sil.mask.indices) {
+                        if (!sil.mask[i]) continue
+                        ink[at++] = sil.inner[i * 3]
+                        ink[at++] = sil.inner[i * 3 + 1]
+                        ink[at++] = sil.inner[i * 3 + 2]
                     }
                 }
             }
-            return out
+            val pixels: FloatArray
+            if (count > PALETTE_SAMPLE) {
+                val picked = linspaceIndices(count, PALETTE_SAMPLE)
+                pixels = FloatArray(picked.size * 3)
+                for ((k, i) in picked.withIndex()) {
+                    pixels[k * 3] = ink[i * 3]
+                    pixels[k * 3 + 1] = ink[i * 3 + 1]
+                    pixels[k * 3 + 2] = ink[i * 3 + 2]
+                }
+            } else {
+                pixels = ink
+            }
+            val n = pixels.size / 3
+            val k = min(PALETTE_COLOURS, n)
+            if (k < 1) return emptyList()
+            val data = Mat(n, 3, CvType.CV_32F)
+            data.put(0, 0, pixels)
+            val labels = Mat()
+            val centres = Mat()
+            try {
+                val criteria = TermCriteria(TermCriteria.EPS + TermCriteria.MAX_ITER, 20, 1.0)
+                Core.kmeans(data, k, labels, criteria, 3, Core.KMEANS_PP_CENTERS, centres)
+                val assigned = IntArray(n)
+                labels.get(0, 0, assigned)
+                val counts = IntArray(k)
+                for (label in assigned) counts[label]++
+                val centre = FloatArray(k * 3)
+                centres.get(0, 0, centre)
+                val out = ArrayList<DoubleArray>(k)
+                for (c in 0 until k) {
+                    if (counts[c] < PALETTE_MIN_SHARE * n) continue
+                    out.add(DoubleArray(3) { centre[c * 3 + it].toDouble() })
+                }
+                return out
+            } finally {
+                data.release()
+                labels.release()
+                centres.release()
+            }
         }
 
+        /**
+         * Clusters of the set's ink, and the share of the ink a cluster must hold to be a
+         * colour of the set: a queen's crown is one piece of thirty-two, a gold highlight a
+         * sliver of every gold piece, and both were drawings at eight clusters and one percent.
+         */
+        const val PALETTE_COLOURS = 16
+        const val PALETTE_MIN_SHARE = 0.002
+        const val PALETTE_SAMPLE = 30000 // ink pixels clustered, at most
+
         private fun medianColour(colours: List<DoubleArray>): DoubleArray =
-            DoubleArray(3) { ch -> median(colours.map { it[ch].toFloat() }) }
+            DoubleArray(3) { ch -> medianOfDoubles(colours.map { it[ch] }) }
+
+        /** numpy's median of float64 values, kept in doubles. */
+        private fun medianOfDoubles(values: List<Double>): Double {
+            if (values.isEmpty()) return 0.0
+            val sorted = values.sorted()
+            val n = sorted.size
+            return if (n % 2 == 1) sorted[n / 2] else (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        }
 
         private fun weightedMedian(values: List<Double>, weights: List<Double>): Double {
             if (values.isEmpty()) return 0.0
