@@ -381,16 +381,22 @@ class Coach(
     var streamSink: ((Trigger, Int?) -> ((String) -> Boolean)?)? = null
 
     var summariser: LLMProvider = summariser ?: provider
-    var system: String = systemMessage(persona = persona, rating = rating)
+
+    /** The system message, and the templates' register for the player: set by [reword]. */
+    var system: String = ""
 
     /** A player below 1400 hears no term of art in the templates ([JARGON]). */
-    var plainWords: Boolean = rating != null && rating.second < PLAIN_BELOW
+    var plainWords: Boolean = false
 
     /**
      * A player of 1800 and up hears no textbook rule: the strong simulated students listed about
      * 4.5 a session they already knew ("rooks belong on open files", 75 times).
      */
-    var strongPlayer: Boolean = rating != null && rating.first >= STRONG_FROM
+    var strongPlayer: Boolean = false
+
+    init {
+        reword(persona, rating)
+    }
 
     /**
      * Run the claims check on the caller's thread (replay and evaluation) instead of a
@@ -457,7 +463,7 @@ class Coach(
      * just ended, for the coach's summary.
      */
     var profile: ProfileSnapshot? = null
-    private var reviewLines: List<String> = emptyList()
+    internal var reviewLines: List<String> = emptyList()
 
     /**
      * The causes of the session's mistakes, from the player model: the pattern is said when
@@ -846,6 +852,20 @@ class Coach(
 
     // Internals
 
+    /**
+     * The system message and the templates' register for the player: set at the start and
+     * again when the persona or the rating is saved (the register was kept until the coach was
+     * rebuilt: the parity audit, 2026-09-26). `Coach.reword`.
+     */
+    fun reword(persona: String?, rating: Pair<Int, Int>?) {
+        system = systemMessage(persona = persona, rating = rating)
+        // A player below 1400 hears no term of art in the templates ([JARGON]).
+        plainWords = rating != null && rating.second < PLAIN_BELOW
+        // A player of 1800 and up hears no textbook rule: the strong simulated students listed
+        // about 4.5 a session they already knew ("rooks belong on open files", 75 times).
+        strongPlayer = rating != null && rating.first >= STRONG_FROM
+    }
+
     private fun newGame(event: GameStarted, ts: Double) {
         gameId = event.gameId
         userSide = event.userSide
@@ -855,6 +875,9 @@ class Coach(
         moves = LinkedHashMap()
         conversation.newGame(event, profile = profileLines())
         mistakes = 0
+        // The review is the game's own: a new game answered "how did I do overall?" with the
+        // last game's sentences when the model failed (the parity audit, 2026-09-26).
+        reviewLines = emptyList()
         elicitAsked = null
         elicitAnswered = false
         pendingAsk = null

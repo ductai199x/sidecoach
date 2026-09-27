@@ -1238,6 +1238,32 @@ class CoachTest {
         assertTrue(frames.any { it.pieceAt(parseSquare("f7")) == Piece(QUEEN, WHITE) })
     }
 
+    /**
+     * Game 2 answered "how did I do overall?" with game 1's sentences when the model failed
+     * (the parity audit, 2026-09-26; desktop c5c488f).
+     */
+    @Test
+    fun aNewGameForgetsTheLastGamesReview() {
+        val (coach, _) = coach(emptyList())
+        start(coach)
+        coach.reviewLines = listOf("You played white and won by checkmate in 4 moves.")
+        start(coach)
+        assertEquals(emptyList<String>(), coach.reviewLines)
+    }
+
+    /**
+     * Saving a new rating rewords the system message and the templates alike: the register was
+     * kept until the coach was rebuilt (desktop c5c488f). PanelWarm's Save calls [Coach.reword].
+     */
+    @Test
+    fun aSavedRatingChangesTheTemplatesRegister() {
+        val coach = Coach(ScriptedProvider(emptyList()), rating = 800 to 1100)
+        assertTrue(coach.plainWords && !coach.strongPlayer)
+        coach.reword(null, 2000 to 2300)
+        assertTrue(!coach.plainWords && coach.strongPlayer)
+        assertTrue("2000" in coach.system)
+    }
+
     companion object {
         // 1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6??: white to move, Qxf7 mates.
         private const val SCHOLAR = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
