@@ -9,7 +9,6 @@ import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 import kotlin.math.sign
 
 /** The two square colours a board is read with, and how far a cell may stray from either. */
@@ -32,14 +31,14 @@ object BoardRefine {
     private val TEETH = DoubleArray(9) { it.toDouble() }
 
     fun cellBounds(region: Region, cell: Double, r: Int, c: Int): IntArray {
-        val x0 = (region.x + c * cell).roundToInt()
-        val y0 = (region.y + r * cell).roundToInt()
-        val x1 = (region.x + (c + 1) * cell).roundToInt()
-        val y1 = (region.y + (r + 1) * cell).roundToInt()
+        val x0 = pyRound(region.x + c * cell)
+        val y0 = pyRound(region.y + r * cell)
+        val x1 = pyRound(region.x + (c + 1) * cell)
+        val y1 = pyRound(region.y + (r + 1) * cell)
         return intArrayOf(x0, y0, x1, y1)
     }
 
-    fun ringBand(cell: Double): Int = max(1, (cell * 0.12).roundToInt())
+    fun ringBand(cell: Double): Int = max(1, pyRound(cell * 0.12))
 
     /** Median of a cell's border ring, or null when the cell is not wholly in the frame. */
     fun ringMedian(gray: Plane, box: IntArray, band: Int): Double? {
@@ -324,7 +323,7 @@ object BoardRefine {
             // faint boundary on a low-contrast theme.
             for (r in 0 until 8) {
                 for (c in 0 until 8) {
-                    val inset = (cell * (if (readable[r * 8 + c]) 0.2 else 0.08)).roundToInt()
+                    val inset = pyRound(cell * (if (readable[r * 8 + c]) 0.2 else 0.08))
                     val (bx0, by0, bx1, by1) = cellBounds(fitted.region, cell, r, c)
                     val x0 = bx0 - xLo + inset
                     val y0 = by0 - yLo + inset
@@ -350,10 +349,10 @@ object BoardRefine {
             strength = sx + sy
             val pitch = (px + py) / 2.0
             val region = Region(
-                (xLo + ox).roundToInt(),
-                (yLo + oy).roundToInt(),
-                (8 * pitch).roundToInt(),
-                (8 * pitch).roundToInt(),
+                pyRound(xLo + ox),
+                pyRound(yLo + oy),
+                pyRound(8 * pitch),
+                pyRound(8 * pitch),
             )
             val moved = abs(pitch - cell) > 0.005 * cell ||
                 abs(region.x - fitted.region.x) > 2 ||
@@ -432,11 +431,11 @@ object BoardRefine {
         val hi = max(read.light, read.dark) + read.tolerance
         // The first pass does not know where the lines are to within the search window, so
         // its bands span the window; the passes after it know to a few pixels.
-        val band = if (attempt > 0) 3 else (cell * offsetCells).roundToInt() + 3
+        val band = if (attempt > 0) 3 else pyRound(cell * offsetCells) + 3
         val onLine = BooleanArray(crop.width * crop.height)
         for (k in 1 until 8) {
-            val gx = (fitted.region.x - xLo + k * cell).roundToInt()
-            val gy = (fitted.region.y - yLo + k * cell).roundToInt()
+            val gx = pyRound(fitted.region.x - xLo + k * cell)
+            val gy = pyRound(fitted.region.y - yLo + k * cell)
             for (x in max(0, gx - band)..min(crop.width - 1, gx + band)) {
                 for (y in 0 until crop.height) onLine[y * crop.width + x] = true
             }
@@ -449,8 +448,8 @@ object BoardRefine {
         // outside: dropping the outer side moved the last tooth a pixel in.
         val bx0 = max(0, fitted.region.x - xLo)
         val by0 = max(0, fitted.region.y - yLo)
-        val bx1 = min(crop.width, fitted.region.x - xLo + (8 * cell).roundToInt())
-        val by1 = min(crop.height, fitted.region.y - yLo + (8 * cell).roundToInt())
+        val bx1 = min(crop.width, fitted.region.x - xLo + pyRound(8 * cell))
+        val by1 = min(crop.height, fitted.region.y - yLo + pyRound(8 * cell))
         val onEdge = BooleanArray(crop.width * crop.height)
         for (y in max(0, by0 - band)..min(crop.height - 1, by0 + band)) {
             val row = y * crop.width

@@ -8,7 +8,6 @@ import kotlin.math.ceil
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 
 /**
  * The site's result badges: a disc on each king when the game ends.
@@ -115,8 +114,8 @@ object ResultBadges {
             }
         }
         if (kept.size <= SAMPLES) return kept.toTypedArray()
-        val step = (kept.size - 1).toDouble() / (SAMPLES - 1)
-        return Array(SAMPLES) { kept[(it * step).toInt()] }
+        val picked = linspaceIndices(kept.size, SAMPLES)
+        return Array(SAMPLES) { kept[picked[it]] }
     }
 
     /**
@@ -228,7 +227,7 @@ object ResultBadges {
      */
     fun squareColour(frame: FramePixels, cornerX: Double, cornerY: Double, cell: Double): DoubleArray {
         val inset = 0.05 * cell
-        val size = max(2, (0.08 * cell).roundToInt())
+        val size = max(2, pyRound(0.08 * cell))
         val xLeft = cornerX - cell + inset
         val xRight = cornerX - inset - size
         val yTop = cornerY + inset
@@ -236,8 +235,8 @@ object ResultBadges {
         val channels = Array(3) { ArrayList<Int>() }
         var any = false
         for ((x, y) in listOf(xLeft to yTop, xLeft to yBottom, xRight to yBottom)) {
-            val xi = x.roundToInt()
-            val yi = y.roundToInt()
+            val xi = pyRound(x)
+            val yi = pyRound(y)
             val x0 = max(0, xi)
             val y0 = max(0, yi)
             val x1 = min(frame.width, xi + size)

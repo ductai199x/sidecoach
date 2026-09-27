@@ -7,7 +7,6 @@ import org.opencv.imgproc.Imgproc
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 
 /**
  * Classical board detection, ported from the desktop's `sidecoach/vision/board_detect.py`,
@@ -102,16 +101,16 @@ object BoardDetect {
                 cell = workCell
             } else {
                 small = gray
-                cell = size.roundToInt()
+                cell = pyRound(size)
             }
             val response = checkerResponse(small, cell, minContrast)
             if (response != null) {
                 val fullCell = cell / factor
-                val side = (8 * fullCell).roundToInt()
+                val side = pyRound(8 * fullCell)
                 for ((y, x) in localMaxima(response, cell, radius = 4 * cell, limit = perScale, minScore = minScore, minContrast = minContrast)) {
                     val region = Region(
-                        (x / factor).roundToInt(),
-                        (y / factor).roundToInt(),
+                        pyRound(x / factor),
+                        pyRound(y / factor),
                         side,
                         side,
                     )
@@ -119,8 +118,8 @@ object BoardDetect {
                         BoardCandidate(
                             region = region,
                             cellPx = fullCell,
-                            score = response.score[y * response.width + x].toDouble(),
-                            contrast = response.amplitude[y * response.width + x].toDouble(),
+                            score = response.score[y * response.width + x],
+                            contrast = response.amplitude[y * response.width + x],
                         ),
                     )
                 }
@@ -169,13 +168,17 @@ object BoardDetect {
                 }
             }
         }
-        val amplitude = FloatArray(h * w)
+        // In doubles, as numpy has them: a plateau of scores round a board that float32 would
+        // round to one value has its own highest point in float64, and the phone took the
+        // first of the tie instead -- a board a cell off found a pixel off (the parity audit,
+        // 2026-09-26).
+        val amplitude = DoubleArray(h * w)
         val boardMean = DoubleArray(h * w)
         for (i in 0 until h * w) {
-            amplitude[i] = (abs(acc[i]) / 64.0).toFloat()
+            amplitude[i] = abs(acc[i]) / 64.0
             boardMean[i] = total[i] / 64.0
         }
-        val score = FloatArray(h * w)
+        val score = DoubleArray(h * w)
         // The deviation is not separable; it is summed only where the amplitude passes the
         // gate -- a few thousand positions of a frame's million -- and the score is zero
         // elsewhere.
@@ -191,7 +194,7 @@ object BoardDetect {
                         deviation += abs(means.data[row + c * cell] - mean)
                     }
                 }
-                score[i] = (abs(acc[i]) / (deviation + 1e-6)).toFloat()
+                score[i] = abs(acc[i]) / (deviation + 1e-6)
             }
         }
         return Response(w, h, score, amplitude)
@@ -213,18 +216,14 @@ object BoardDetect {
     ): List<Pair<Int, Int>> {
         val w = response.width
         val h = response.height
-        val gated = FloatArray(w * h)
-        for (i in 0 until w * h) {
-            if (response.score[i] >= minScore && response.amplitude[i] >= minContrast) {
-                gated[i] = response.score[i]
-            }
-        }
-        val mat = Mat(h, w, CvType.CV_32F)
-        mat.put(0, 0, gated)
+        val mask = BooleanArray(w * h) { response.score[it] >= minScore && response.amplitude[it] >= minContrast }
+        val gated = DoubleArray(w * h) { if (mask[it]) response.score[it] else 0.0 }
+        val mat = Mat(h, w, CvType.CV_64F)
+        mat.put(0, 0, *gated)
         val dilated = Mat()
         val kernel = Mat.ones(cell, cell, CvType.CV_8U)
         Imgproc.dilate(mat, dilated, kernel)
-        val peakOf = FloatArray(w * h)
+        val peakOf = DoubleArray(w * h)
         dilated.get(0, 0, peakOf)
         mat.release()
         dilated.release()
@@ -232,11 +231,11 @@ object BoardDetect {
 
         val ys = ArrayList<Int>()
         val xs = ArrayList<Int>()
-        val values = ArrayList<Float>()
+        val values = ArrayList<Double>()
         for (y in 0 until h) {
             for (x in 0 until w) {
                 val i = y * w + x
-                if (gated[i] > 0f && gated[i] >= peakOf[i]) {
+                if (mask[i] && gated[i] >= peakOf[i]) {
                     ys.add(y); xs.add(x); values.add(gated[i])
                 }
             }
@@ -245,7 +244,7 @@ object BoardDetect {
         val peaks = ArrayList<Pair<Int, Int>>()
         while (peaks.size < limit) {
             var best = -1
-            var bestValue = Float.NEGATIVE_INFINITY
+            var bestValue = Double.NEGATIVE_INFINITY
             for (i in ys.indices) {
                 if (!taken[i] && values[i] > bestValue) {
                     bestValue = values[i]; best = i
@@ -262,8 +261,8 @@ object BoardDetect {
         return peaks
     }
 
-    /** Mean of the border ring of every cell-sized window, at stride 1. */
-    fun ringMeans(gray: Plane, cell: Int, band: Int = 1): Plane {
+    /** Mean of the border ring of every cell-sized window, at stride 1, in doubles as cv2's integral. */
+    fun ringMeans(gray: Plane, cell: Int, band: Int = 1): Means {
         if (cell <= 2 * band + 1) return cellMeans(gray, cell)
         val ii = integral(gray)
         val outer = windowSums(ii, gray.width, gray.height, cell)
@@ -272,28 +271,31 @@ object BoardDetect {
         val w = gray.width - cell + 1
         val h = gray.height - cell + 1
         val innerW = gray.width - innerSize + 1
-        val denominator = (cell * cell - innerSize * innerSize).toFloat()
-        val out = FloatArray(w * h)
+        val denominator = (cell * cell - innerSize * innerSize).toDouble()
+        val out = DoubleArray(w * h)
         for (y in 0 until h) {
             for (x in 0 until w) {
                 val o = outer[y * w + x]
                 val i = inner[(y + band) * innerW + (x + band)]
-                out[y * w + x] = ((o - i) / denominator).toFloat()
+                out[y * w + x] = (o - i) / denominator
             }
         }
-        return Plane(w, h, out)
+        return Means(w, h, out)
     }
 
     /** Mean of every cell-sized window at stride 1. */
-    fun cellMeans(gray: Plane, cell: Int): Plane {
+    fun cellMeans(gray: Plane, cell: Int): Means {
         val sums = windowSums(integral(gray), gray.width, gray.height, cell)
         val w = gray.width - cell + 1
         val h = gray.height - cell + 1
-        val out = FloatArray(w * h)
-        val denominator = (cell * cell).toFloat()
-        for (i in 0 until w * h) out[i] = (sums[i] / denominator).toFloat()
-        return Plane(w, h, out)
+        val out = DoubleArray(w * h)
+        val denominator = (cell * cell).toDouble()
+        for (i in 0 until w * h) out[i] = sums[i] / denominator
+        return Means(w, h, out)
     }
+
+    /** A map of window means, in doubles. */
+    class Means(val width: Int, val height: Int, val data: DoubleArray)
 
     /** The summed-area table, (width + 1) by (height + 1). */
     fun integral(plane: Plane): DoubleArray {
@@ -353,7 +355,7 @@ object BoardDetect {
     }
 
     /** The score and amplitude maps of one scale. */
-    class Response(val width: Int, val height: Int, val score: FloatArray, val amplitude: FloatArray)
+    class Response(val width: Int, val height: Int, val score: DoubleArray, val amplitude: DoubleArray)
 }
 
 /** A pixel rectangle, as `sidecoach.events.Region` is on the desktop. */

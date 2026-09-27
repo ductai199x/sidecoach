@@ -13,7 +13,7 @@ The frames are the ones already in the assets (the boards fixtures and the pipel
 slide frames), so nothing new is committed but this file's numbers.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_landing_fixtures.py
+    uv run --no-sync python <checkout>/tools/make_landing_fixtures.py
 """
 
 from __future__ import annotations
@@ -33,7 +33,8 @@ from sidecoach.vision import pieces  # noqa: E402
 from sidecoach.vision.pieces import ThemeModel  # noqa: E402
 from sidecoach.vision.squares import BoardGeometry  # noqa: E402
 
-ASSETS = Path("D:/sidecoach-android/app/src/androidTest/assets")
+# Next to this file, so a worktree reads and writes its own assets.
+ASSETS = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets"
 OUT = ASSETS / "boards" / "landing.json"
 # The slide scenarios' board: `make_pipeline_fixtures.SLIDE_BOARD`.
 SLIDE = (300, 120, 64)

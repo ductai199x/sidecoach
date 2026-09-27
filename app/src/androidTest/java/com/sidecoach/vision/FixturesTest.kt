@@ -105,9 +105,12 @@ object Fixtures {
     }
 
     /** The fixture as BGR, the way a captured frame reaches the pipeline. */
-    fun mat(fixture: Fixture): org.opencv.core.Mat {
+    fun mat(fixture: Fixture): org.opencv.core.Mat = asset("boards/${fixture.file}")
+
+    /** A PNG among the test assets as BGR. */
+    fun asset(path: String): org.opencv.core.Mat {
         val context = InstrumentationRegistry.getInstrumentation().context
-        val bitmap = context.assets.open("boards/${fixture.file}").use {
+        val bitmap = context.assets.open(path).use {
             android.graphics.BitmapFactory.decodeStream(it)
         }
         val rgba = org.opencv.core.Mat()

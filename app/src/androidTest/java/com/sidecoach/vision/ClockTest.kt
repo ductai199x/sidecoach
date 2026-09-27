@@ -22,7 +22,8 @@ import org.opencv.imgproc.Imgproc
  * ten single frames over several cell sizes, polarities, page colours and box colours
  * (including two the desktop itself reads poorly, which the port must read just as poorly),
  * a sequence of eight where the running clock is decided from the digits falling and the
- * icon's hand sweeping and then goes stale, and a board with no clocks at all.
+ * icon's hand sweeping and then goes stale, a board with no clocks at all, and the frame's
+ * edges: a clock scrolled off it or cut through, and boards no reader can use.
  *
  * Every box is compared in full -- where it was found, its background and text levels, each
  * glyph with its correlation and margin, the icon's rectangle -- so a failure says which
@@ -124,6 +125,23 @@ class ClockTest {
             )
         } finally {
             bareFrame.release()
+        }
+
+        // The frame's edges: a clock scrolled off the frame or cut through by its edge, and
+        // boards no reader can use -- nothing raises, nothing half there is read.
+        val edges = root.getJSONArray("edges")
+        for (i in 0 until edges.length()) {
+            val one = edges.getJSONObject(i)
+            val frame = load(one.getString("frame"))
+            try {
+                val reading = runCatching {
+                    ClockReader(templates).read(frame, boardOf(one.getJSONObject("board")), 1.0)
+                }
+                reading.exceptionOrNull()?.let { check("${one.getString("label")} raised", it.toString(), null) }
+                checkReading(one.getString("label"), reading.getOrNull(), one.opt("reading"))
+            } finally {
+                frame.release()
+            }
         }
 
         val took = System.currentTimeMillis() - began

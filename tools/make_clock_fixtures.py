@@ -11,7 +11,9 @@ The templates themselves ship with the app: the desktop's `clock_templates.npz` 
 out as `app/src/main/assets/vision/clock_templates.json`.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_clock_fixtures.py
+    uv run --no-sync python <checkout>/tools/make_clock_fixtures.py
+
+It writes next to itself, into that checkout's assets.
 """
 
 from __future__ import annotations
@@ -201,6 +203,60 @@ def render(case: dict[str, Any], templates: GlyphTemplates) -> tuple[np.ndarray,
     return cropped(*board_with_clocks(case["top"], case["bottom"], **kwargs))
 
 
+def board_dict(board: Any) -> dict[str, Any]:
+    cell = board.cell_px
+    return {
+        "x": board.region.x,
+        "y": board.region.y,
+        "w": board.region.w,
+        "h": board.region.h,
+        # JSON has no NaN; the Kotlin reads the word back as one.
+        "cell": "NaN" if cell != cell else cell,
+    }
+
+
+def edge_cases(templates: GlyphTemplates) -> list[dict[str, Any]]:
+    """The frame's edges (`tests/test_clock.py`): a page scrolled until the top clock is off
+    the frame, a frame cut through both boxes, and boards no reader can use -- none of
+    them raises, and none reads a clock that is not wholly there."""
+    from sidecoach.events import Region  # noqa: PLC0415
+    from sidecoach.vision.board_detect import BoardCandidate  # noqa: PLC0415
+
+    out: list[dict[str, Any]] = []
+
+    def record(label: str, frame: np.ndarray, board: Any, name: str | None = None) -> None:
+        if name is None:
+            name = f"edge-{label}.png"
+            cv2.imwrite(str(FRAMES / name), frame)
+            frame = cv2.imread(str(FRAMES / name), cv2.IMREAD_COLOR)
+        reading = ClockReader(templates).read(frame, board, 1.0)
+        out.append({"label": label, "frame": name, "board": board_dict(board), "reading": reading_json(reading)})
+
+    frame, board = board_with_clocks("16:18", "15:34", cell=43, y0=60, height=800, templates=templates)
+    # Scrolled up until the board's top edge is off screen: the clock above it has gone with
+    # it, the one below is still there.
+    scrolled = frame[200:, :]
+    moved = BoardCandidate(
+        Region(board.region.x, board.region.y - 200, board.region.w, board.region.h),
+        board.cell_px, 1.0, 60.0, 1.0,
+    )
+    record("scrolled-off", *cropped(scrolled, moved))
+    # Cut just left of the clocks' right edge, so both boxes are half there.
+    edge = board.region.x + board.region.w - 20
+    record("cut-off", *cropped(frame[:, :edge], board))
+    # Boards no reader can use, on the first case's frame.
+    first = cv2.imread(str(FRAMES / f"{CASES[0]['label']}.png"), cv2.IMREAD_COLOR)
+    for label, region, cell in (
+        ("empty-region", Region(300, 120, 0, 0), 43.0),
+        ("no-cell", Region(300, 120, 344, 344), 0.0),
+        ("above-left", Region(-500, -500, 344, 344), 43.0),
+        ("far-off", Region(9000, 9000, 344, 344), 43.0),
+        ("nan-cell", Region(300, 120, 344, 344), float("nan")),
+    ):
+        record(label, first, BoardCandidate(region, cell, 1.0, 60.0, 1.0), f"{CASES[0]['label']}.png")
+    return out
+
+
 def main() -> None:
     templates = GlyphTemplates.load()
 
@@ -325,6 +381,7 @@ def main() -> None:
             },
             "reading": reading_json(bare_reading),
         },
+        "edges": edge_cases(templates),
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(payload), encoding="utf-8")

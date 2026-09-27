@@ -65,9 +65,6 @@ class CaptureService : Service() {
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
     private var stats: CaptureStats? = null
-    private var lastFrameAt = 0L
-    private var minIntervalMs = 1000L / TARGET_FPS
-    private var buffer: ByteArray? = null
     // The frame as pixels we own, reused: the reader's buffer is handed back the moment
     // the image is closed, so nothing may be kept from it.
     private var frame: Bitmap? = null
@@ -90,7 +87,6 @@ class CaptureService : Service() {
     private var visionHandler: Handler? = null
     private var reading = false
     private val frameLock = Any()
-    private var lastReadAt = 0L
     private var lastPlacement: String? = null
     private var lastOutcomeAt = 0L
 
@@ -222,10 +218,22 @@ class CaptureService : Service() {
             null,
             handler,
         )
-        // The setting's rate (`capture.fps`), read at each Start; ten unless changed.
-        val fps = com.sidecoach.ui.SettingsStore(this).captureFps()
-        minIntervalMs = 1000L / fps
+        // The setting's rate (`capture.fps`); ten unless changed. `capture_loop` reads it every
+        // frame, so a saved rate applies at once: it is read again whenever the settings are
+        // saved, not parsed out of them ten times a second.
+        fps = com.sidecoach.ui.SettingsStore(this).captureFps()
+        getSharedPreferences(SETTINGS, MODE_PRIVATE).registerOnSharedPreferenceChangeListener(settingsSaved)
         Log.i(TAG, "capturing ${width}x$height at $fps fps")
+        nextDue = SystemClock.elapsedRealtime().toDouble()
+        handler?.post(again)
+    }
+
+    /** `capture.fps`, as the settings hold it now. */
+    @Volatile private var fps = TARGET_FPS
+
+    /** Held here: the preferences keep their listeners by weak reference. */
+    private val settingsSaved = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        fps = com.sidecoach.ui.SettingsStore(this).captureFps()
     }
 
     /** The screen turned, or the captured window changed size. */
@@ -239,35 +247,32 @@ class CaptureService : Service() {
         }.onFailure { Log.w(TAG, "resize failed: $it") }
     }
 
+    /**
+     * A frame from the display, kept as the newest: every one of them, as the desktop's
+     * capture keeps every frame Windows hands it (`wgc_backend`) and its loop reads the
+     * newest at its own rate. The display sends a frame only when the screen changes, so the
+     * last frame of a slide is the one the vision must read until the screen changes again;
+     * dropping the frames that came within a tick of the last one kept lost it, and the
+     * vision read a piece halfway across the board until something else moved (the parity
+     * audit, 2026-09-26). The read rate is the tick's alone ([tick]).
+     */
     private fun onFrame(reader: ImageReader) {
         val image = runCatching { reader.acquireLatestImage() }.getOrNull() ?: return
         try {
-            val now = SystemClock.elapsedRealtime()
-            if (now - lastFrameAt < minIntervalMs) {
-                stats?.skipped()
-                return
-            }
-            lastFrameAt = now
             val began = SystemClock.elapsedRealtimeNanos()
             val plane = image.planes[0]
-            val size = plane.rowStride * image.height
-            val into = buffer?.takeIf { it.size == size } ?: ByteArray(size).also { buffer = it }
-            // What the vision pipeline will pay on every frame: the pixels out of the
-            // reader's buffer and into memory we own.
-            plane.buffer.rewind()
-            plane.buffer.get(into)
-            val copyMs = ((SystemClock.elapsedRealtimeNanos() - began) / 1_000_000).toInt()
-            stats?.frame(copyMs, size)
+            // What every frame costs: the pixels out of the reader's buffer and into memory
+            // we own. The reader's buffer is handed back at once: a board read with the image
+            // still open starved the display's queue and the frames stopped coming.
             keepTheFrame(image, plane.rowStride)
+            val copyMs = ((SystemClock.elapsedRealtimeNanos() - began) / 1_000_000).toInt()
+            stats?.frame(copyMs, plane.rowStride * image.height)
             keepForScreen(image.width, image.height)
         } catch (exc: Exception) {
             Log.w(TAG, "frame dropped: $exc")
         } finally {
             image.close()
         }
-        // Only now, with the reader's buffer handed back: a board read with the image
-        // still open starved the display's queue and the frames stopped coming.
-        askForARead()
         val stats = stats ?: return
         if (stats.due()) {
             val snapshot = stats.take()
@@ -327,11 +332,17 @@ class CaptureService : Service() {
         state.value = state.value.copy(preview = small)
     }
 
-    /** The tick: the newest frame through the vision, [TICK_MS] after the last. */
-    private val again = Runnable { askForARead() }
+    /** The tick: the newest frame through the vision, when [nextDue] comes. */
+    private val again = Runnable { tick() }
 
     /**
-     * Ask the vision for the newest frame, unless it is still busy with the last one.
+     * When the next tick is due, in elapsed-realtime milliseconds: `capture_loop`'s `next_due`.
+     * Written by the read that ends ([nextTick]), on the vision thread, one read at a time.
+     */
+    @Volatile private var nextDue = 0.0
+
+    /**
+     * The vision reads the newest frame: one tick of `capture_loop`.
      *
      * The display hands us a frame only when the screen changes, so a board sitting still
      * produces none and the tick is what keeps the pipeline running over it. That is not a
@@ -341,35 +352,40 @@ class CaptureService : Service() {
      * of a covered cell, how long a cell may stay unexplained before a resync. Reading a
      * couple of times a second stretched every one of them sevenfold, and a board that had
      * locked a few pixels out stayed that way through four moves. So the phone ticks at the
-     * rate those constants were written for. What it does not do is the expensive part: the
-     * change gate sits on the board's own region and a tick that finds nothing new costs a
-     * handful of milliseconds.
+     * rate those constants were written for, `capture.fps`. What it does not do is the
+     * expensive part: the change gate sits on the board's own region and a tick that finds
+     * nothing new costs a handful of milliseconds.
      */
-    private fun askForARead() {
-        handler?.removeCallbacks(again)
-        handler?.postDelayed(again, TICK_MS)
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastReadAt < TICK_MS) return
+    private fun tick() {
+        synchronized(frameLock) {
+            if (reading) return // the read in flight asks for the next tick when it ends
+            reading = true
+        }
         // Our own screens are not a game: see SidecoachApp.inFront. What is read meanwhile is
         // the last frame of the game before them, again: a move on it that was still settling
         // commits while the panel is up, where it waited for the panel to close (Tai,
         // 2026-09-23: a move checked at once in the bubble showed ten seconds later). The
         // coach gets its tick with it, so a question asked from the panel is answered.
-        if (SidecoachApp.inFront) {
-            synchronized(frameLock) {
-                if (reading) return
-                reading = true
-            }
-            lastReadAt = now
-            visionHandler?.post { readTheBoard(still = true) } ?: run { reading = false }
-            return
+        val still = SidecoachApp.inFront
+        visionHandler?.post { readTheBoard(still) } ?: synchronized(frameLock) { reading = false }
+    }
+
+    /**
+     * The tick after a read, as `capture_loop` paces it: one interval after the last tick was
+     * due, the rate read as it stands now; a read that ran past that is followed by the next
+     * at once, not a whole interval later.
+     */
+    private fun nextTick() {
+        val handler = handler ?: return
+        nextDue += 1000.0 / maxOf(fps.toDouble(), 1e-3)
+        val now = SystemClock.elapsedRealtime().toDouble()
+        val delay = nextDue - now
+        if (delay > 0) {
+            handler.postDelayed(again, kotlin.math.ceil(delay).toLong())
+        } else {
+            nextDue = now
+            handler.post(again)
         }
-        synchronized(frameLock) {
-            if (reading) return
-            reading = true
-        }
-        lastReadAt = now
-        visionHandler?.post { readTheBoard() } ?: run { reading = false }
     }
 
     /** The newest frame through the vision, on the vision's own thread. */
@@ -443,6 +459,7 @@ class CaptureService : Service() {
             }
         } finally {
             synchronized(frameLock) { reading = false }
+            nextTick()
         }
     }
 
@@ -452,6 +469,7 @@ class CaptureService : Service() {
         runCatching { display?.release() }
         runCatching { reader?.close() }
         runCatching { projection?.stop() }
+        getSharedPreferences(SETTINGS, MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(settingsSaved)
         handler?.removeCallbacks(again)
         thread?.quitSafely()
         display = null
@@ -459,7 +477,6 @@ class CaptureService : Service() {
         projection = null
         thread = null
         handler = null
-        buffer = null
         // The session closes on the vision thread, after any read in flight: the engine's
         // backlog, the review, the coach's last replies, the stores. Only then is it over.
         val worker = visionThread
@@ -557,12 +574,8 @@ class CaptureService : Service() {
         private const val PREVIEW_WIDTH = 360
         private const val PREVIEW_INTERVAL_MS = 500L
 
-        /**
-         * The desktop's ten frames a second, which is what everything downstream counts in.
-         * A read takes as long as it takes and the next is not asked for until it is done,
-         * so this is a ceiling, not a promise.
-         */
-        private const val TICK_MS = 100L
+        /** The preferences [com.sidecoach.ui.SettingsStore] keeps the settings in. */
+        private const val SETTINGS = "settings"
 
         private val state = MutableStateFlow(State())
         val capture: StateFlow<State> = state.asStateFlow()
