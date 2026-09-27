@@ -263,6 +263,9 @@ class Assessing(
                     scoreModel = config.scoreModel,
                     maxSeconds = config.maxSeconds,
                 )
+                // `open_analyser`: the engine started when the analyser is built, so an engine
+                // that will not start is said here rather than failing every search after.
+                engine.open()
                 Analyser(
                     GameAnnotator(
                         engine,
