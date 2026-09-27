@@ -106,9 +106,14 @@ object Insights {
     fun round(value: Double, places: Int): Double =
         BigDecimal(value).setScale(places, RoundingMode.HALF_EVEN).toDouble()
 
-    /** Python's `f"{x:.nf}"`. */
-    fun fixed(value: Double, places: Int): String =
-        BigDecimal(value).setScale(places, RoundingMode.HALF_EVEN).toPlainString()
+    /**
+     * Python's `f"{x:.nf}"`. A negative that rounds to zero keeps its sign ("-0.000"), as
+     * Python writes it; a BigDecimal has no negative zero.
+     */
+    fun fixed(value: Double, places: Int): String {
+        val text = BigDecimal(value).setScale(places, RoundingMode.HALF_EVEN).toPlainString()
+        return if ((value < 0 || 1.0 / value < 0) && !text.startsWith("-")) "-$text" else text
+    }
 
     /** Python's `f"{x:.0%}"`: times a hundred as a float, then no decimals. */
     fun percent(value: Double): String =

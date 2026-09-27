@@ -30,6 +30,7 @@ import com.sidecoach.events.ScreenStateChanged
 import com.sidecoach.events.Takeback
 import com.sidecoach.events.Unexplained
 import com.sidecoach.analysis.sanLine
+import com.sidecoach.voice.VoiceLog
 import org.json.JSONArray
 import org.json.JSONObject
 import java.math.BigDecimal
@@ -117,6 +118,8 @@ object PanelEngine {
 
     init {
         reset()
+        // `_VoiceLogHandler`: the voice's warnings (a failed load, a failed line) to the log.
+        VoiceLog.handler = { level, message -> emit("voice", level, message) }
     }
 
     private fun reset() {

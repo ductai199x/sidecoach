@@ -52,7 +52,7 @@ from sidecoach.voice.notation import speak_notation  # noqa: E402
 sys.path.insert(0, str(Path(__file__).parent))
 import phone_speech  # noqa: E402
 
-ANDROID = Path("D:/sidecoach-android")
+ANDROID = Path(__file__).resolve().parent.parent
 OUT = ANDROID / "app" / "src" / "androidTest" / "assets" / "voice" / "voice.json"
 SESSION = ANDROID / "app" / "src" / "androidTest" / "assets" / "chess" / "session.json"
 MODEL_DIR = Path("D:/chess-coaching-companion/data/models/kokoro")
@@ -83,6 +83,32 @@ EDGES = [
     "What were you expecting after Nxe5?",
     "Rf1 -- very good.",
     "12... Bg5 13. Nxg5 O-O",
+    # tests/test_voice_notation.py's, every one.
+    "e4",
+    "Nf3",
+    "Bxc6",
+    "exd5",
+    "O-O",
+    "O-O-O",
+    "Qh5+",
+    "Qh7#",
+    "O-O-O#",
+    "e8=Q",
+    "exd8=Q+",
+    "Nbd7",
+    "R1e2",
+    "1-0",
+    "0-1",
+    "1/2-1/2",
+    "The move Nf3 develops and eyes e5; after O-O you are safe.",
+    "Try Qh5+! now",
+    "a backup plan, rated 1400, is fine",
+    "1.e4 e5 2.Nf3 Nc6",
+    # The results as a line says them: "½" is a word character to Python and not to ICU.
+    "½-½",
+    "It ended ½-½ after 40 moves.",
+    "The game was drawn, 1/2-1/2.",
+    "White resigned: 0-1.",
 ]
 
 LONG = [

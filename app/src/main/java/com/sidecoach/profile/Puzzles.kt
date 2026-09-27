@@ -99,47 +99,193 @@ object Puzzles {
         return PuzzleOutcome(gameId = "puzzle-$puzzleId", puzzleId = puzzleId, motif = motif, solved = solved, level = level)
     }
 
-    /**
-     * The rows of a CSV file as Python's `csv` module reads them: fields split on commas,
-     * a quoted field may hold commas, newlines and doubled quotes.
-     */
+    /** The records of a CSV text as `list(csv.reader(io.StringIO(text, newline="")))` reads them. */
     fun csvRows(text: String): List<List<String>> {
+        val reader = CsvReader(java.io.StringReader(text))
         val rows = ArrayList<List<String>>()
-        var row = ArrayList<String>()
-        val field = StringBuilder()
-        var quoted = false
+        while (true) rows.add(reader.next() ?: break)
+        return rows
+    }
+
+    /**
+     * Python's `int(text)`: whitespace around it, a sign, decimal digits of any script with
+     * single underscores between them; null where Python raises ValueError.
+     */
+    fun pyInt(text: String): Long? {
+        val s = com.sidecoach.voice.Py.strip(text)
         var i = 0
-        var sawAny = false
-        while (i < text.length) {
-            val ch = text[i]
-            if (quoted) {
-                if (ch == '"') {
-                    if (i + 1 < text.length && text[i + 1] == '"') {
-                        field.append('"')
-                        i++
-                    } else {
-                        quoted = false
-                    }
-                } else {
-                    field.append(ch)
+        var negative = false
+        if (s.startsWith("+") || s.startsWith("-")) {
+            negative = s[0] == '-'
+            i = 1
+        }
+        var value = 0L
+        var afterDigit = false
+        var digits = 0
+        while (i < s.length) {
+            val cp = s.codePointAt(i)
+            i += Character.charCount(cp)
+            if (cp == '_'.code) {
+                if (!afterDigit) return null
+                afterDigit = false
+                continue
+            }
+            val d = Character.digit(cp, 10)
+            if (d < 0) return null
+            // Python's int has no ceiling; past a Long's, the number is only ever out of range.
+            value = if (value > (Long.MAX_VALUE - d) / 10) Long.MAX_VALUE else value * 10 + d
+            afterDigit = true
+            digits++
+        }
+        if (digits == 0 || !afterDigit) return null
+        return if (negative) -value else value
+    }
+}
+
+/**
+ * Python's `csv.reader` (the excel dialect, not strict) over a text opened with `newline=""`:
+ * `_csv.c`'s states, one character at a time, a record read on as far as a quoted field runs.
+ * A line ends at "\n", "\r\n" or a lone "\r", as Python's file splits it; a blank line is an
+ * empty record, which `csv.DictReader` skips; a quote is special only at a field's start, and
+ * after a quoted field's closing quote whatever follows is kept as it is. Streamed: the whole
+ * Lichess database is a gigabyte (the parity audit, 2026-09-26: the phone read the file whole,
+ * dropped a lone "\r" and let a quote open anywhere).
+ */
+class CsvReader(input: java.io.Reader) {
+    private val input = if (input is java.io.BufferedReader) input else java.io.BufferedReader(input)
+
+    /** The character read after a "\r" that was not "\n", for the next line; -2 for none. */
+    private var ahead = -2
+
+    private val fields = ArrayList<String>()
+    private val field = StringBuilder()
+    private var state = START_RECORD
+
+    private fun read(): Int {
+        if (ahead != -2) {
+            val c = ahead
+            ahead = -2
+            return c
+        }
+        return input.read()
+    }
+
+    /** The next record, or null at the end: `Reader_iternext`. */
+    fun next(): List<String>? {
+        fields.clear()
+        field.setLength(0)
+        state = START_RECORD
+        do {
+            var c = read()
+            if (c == -1) {
+                // The end: a record under way is saved, as the lenient reader does.
+                if (field.isNotEmpty() || state == IN_QUOTED_FIELD) {
+                    save()
+                    return ArrayList(fields)
                 }
-            } else {
-                when (ch) {
-                    '"' -> quoted = true
-                    ',' -> { row.add(field.toString()); field.setLength(0) }
-                    '\r' -> Unit
-                    '\n' -> { row.add(field.toString()); field.setLength(0); rows.add(row); row = ArrayList(); sawAny = false; i++; continue }
-                    else -> field.append(ch)
+                return null
+            }
+            // One line, as Python's file iterator gives it, then its end.
+            while (true) {
+                process(c)
+                if (c == '\n'.code) break
+                if (c == '\r'.code) {
+                    val n = read()
+                    if (n == '\n'.code) process(n) else if (n != -1) ahead = n
+                    break
+                }
+                c = read()
+                if (c == -1) break
+            }
+            process(EOL)
+        } while (state != START_RECORD)
+        return ArrayList(fields)
+    }
+
+    private fun save() {
+        fields.add(field.toString())
+        field.setLength(0)
+    }
+
+    private fun endOfLine(c: Int): Boolean = c == '\n'.code || c == '\r'.code || c == EOL
+
+    /** `parse_process_char`. */
+    private fun process(c: Int) {
+        when (state) {
+            START_RECORD -> when {
+                c == EOL -> Unit // a blank line: an empty record
+                c == '\n'.code || c == '\r'.code -> state = EAT_CRNL
+                else -> startField(c)
+            }
+            START_FIELD -> startField(c)
+            IN_FIELD -> when {
+                endOfLine(c) -> {
+                    save()
+                    state = if (c == EOL) START_RECORD else EAT_CRNL
+                }
+                c == ','.code -> {
+                    save()
+                    state = START_FIELD
+                }
+                else -> field.append(c.toChar())
+            }
+            IN_QUOTED_FIELD -> when {
+                c == EOL -> Unit // the field runs on to the next line
+                c == '"'.code -> state = QUOTE_IN_QUOTED_FIELD
+                else -> field.append(c.toChar())
+            }
+            QUOTE_IN_QUOTED_FIELD -> when {
+                c == '"'.code -> {
+                    field.append('"')
+                    state = IN_QUOTED_FIELD
+                }
+                c == ','.code -> {
+                    save()
+                    state = START_FIELD
+                }
+                endOfLine(c) -> {
+                    save()
+                    state = if (c == EOL) START_RECORD else EAT_CRNL
+                }
+                else -> {
+                    field.append(c.toChar())
+                    state = IN_FIELD
                 }
             }
-            sawAny = true
-            i++
+            EAT_CRNL -> when {
+                c == '\n'.code || c == '\r'.code -> Unit
+                c == EOL -> state = START_RECORD
+                else -> throw IllegalStateException("new-line character seen in unquoted field")
+            }
         }
-        if (sawAny || field.isNotEmpty()) {
-            row.add(field.toString())
-            rows.add(row)
+    }
+
+    private fun startField(c: Int) {
+        when {
+            endOfLine(c) -> {
+                save()
+                state = if (c == EOL) START_RECORD else EAT_CRNL
+            }
+            c == '"'.code -> state = IN_QUOTED_FIELD
+            c == ','.code -> {
+                save()
+                state = START_FIELD
+            }
+            else -> {
+                field.append(c.toChar())
+                state = IN_FIELD
+            }
         }
-        return rows
+    }
+
+    private companion object {
+        const val EOL = -3
+        const val START_RECORD = 0
+        const val START_FIELD = 1
+        const val IN_FIELD = 2
+        const val IN_QUOTED_FIELD = 3
+        const val QUOTE_IN_QUOTED_FIELD = 4
+        const val EAT_CRNL = 5
     }
 }
 
@@ -210,47 +356,62 @@ class PuzzleStore(val path: File?) {
      * the rating band; returns how many were added.
      */
     fun importCsv(file: File, limit: Int? = null): Int {
-        val rows = Puzzles.csvRows(file.readText(Charsets.UTF_8))
-        if (rows.isEmpty()) return 0
-        val header = rows[0]
         var added = 0
-        lock.withLock {
-            db.beginTransaction()
-            try {
-                val insert = db.compileStatement(
-                    "INSERT OR IGNORE INTO puzzles (id, fen, moves, rating, popularity, plays, themes, position)" +
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                )
-                for (values in rows.drop(1)) {
-                    val row = header.zip(values).toMap()
-                    val rating = row["Rating"]?.toIntOrNull() ?: continue
-                    if (rating < Puzzles.RATING_MIN || rating > Puzzles.RATING_MAX) continue
-                    val moves = (row["Moves"] ?: "").split(Regex("\\s+")).filter { it.isNotEmpty() }
-                    if (moves.size < 2) continue
-                    val position = try {
-                        Puzzles.positionKey(row["FEN"] ?: "", moves[0])
-                    } catch (_: Exception) {
-                        continue
+        file.bufferedReader(Charsets.UTF_8).use { text ->
+            // `csv.DictReader`: the first record names the fields; a blank line is skipped; a
+            // field a short row lacks is None (null), a long row's extra fields are not read.
+            val records = CsvReader(text)
+            val header = records.next() ?: return 0
+            lock.withLock {
+                db.beginTransaction()
+                try {
+                    val insert = db.compileStatement(
+                        "INSERT OR IGNORE INTO puzzles (id, fen, moves, rating, popularity, plays, themes, position)" +
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    )
+                    while (true) {
+                        var values = records.next() ?: break
+                        while (values.isEmpty()) values = records.next() ?: break
+                        if (values.isEmpty()) break
+                        val row = HashMap<String, String?>()
+                        for ((i, name) in header.withIndex()) row[name] = values.getOrNull(i)
+                        // A row too short to hold a rating (None) is skipped: the desktop's
+                        // int(None) raises TypeError there, which its import does not catch.
+                        val rating = row["Rating"]?.let { Puzzles.pyInt(it) } ?: continue
+                        if (rating < Puzzles.RATING_MIN || rating > Puzzles.RATING_MAX) continue
+                        val moves = com.sidecoach.voice.Py.split(row["Moves"] ?: "")
+                        if (moves.size < 2) continue
+                        val position = try {
+                            Puzzles.positionKey(row["FEN"] ?: "", moves[0])
+                        } catch (_: Exception) {
+                            continue
+                        }
+                        insert.clearBindings()
+                        insert.bindString(1, row["PuzzleId"] ?: "")
+                        insert.bindString(2, row["FEN"] ?: "")
+                        insert.bindString(3, row["Moves"] ?: "")
+                        insert.bindLong(4, rating)
+                        insert.bindLong(5, count(row["Popularity"]))
+                        insert.bindLong(6, count(row["NbPlays"]))
+                        insert.bindString(7, row["Themes"] ?: "")
+                        insert.bindString(8, position)
+                        added += insert.executeUpdateDelete()
+                        if (limit != null && added >= limit) break
                     }
-                    insert.clearBindings()
-                    insert.bindString(1, row["PuzzleId"] ?: "")
-                    insert.bindString(2, row["FEN"] ?: "")
-                    insert.bindString(3, row["Moves"] ?: "")
-                    insert.bindLong(4, rating.toLong())
-                    insert.bindLong(5, (row["Popularity"]?.takeIf { it.isNotEmpty() }?.toLong() ?: 0))
-                    insert.bindLong(6, (row["NbPlays"]?.takeIf { it.isNotEmpty() }?.toLong() ?: 0))
-                    insert.bindString(7, row["Themes"] ?: "")
-                    insert.bindString(8, position)
-                    added += insert.executeUpdateDelete()
-                    if (limit != null && added >= limit) break
+                    insert.close()
+                    db.setTransactionSuccessful()
+                } finally {
+                    db.endTransaction()
                 }
-                insert.close()
-                db.setTransactionSuccessful()
-            } finally {
-                db.endTransaction()
             }
         }
         return added
+    }
+
+    /** `int(row.get(name) or 0)`: raises, as Python's does, on what is not a number. */
+    private fun count(text: String?): Long {
+        if (text.isNullOrEmpty()) return 0
+        return Puzzles.pyInt(text) ?: throw NumberFormatException("invalid literal for int() with base 10: '$text'")
     }
 
     private fun puzzles(sql: String, args: Array<String>?): List<Puzzle> = lock.withLock {

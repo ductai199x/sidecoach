@@ -130,20 +130,52 @@ class ProfileTest {
             same("query $i rows", q.getJSONArray("rows"), JSONArray(rows.map { JSONArray(it) }))
             assertEquals("query $i rendered: ${q.getString("question")}", q.getString("rendered"), Ask.renderRows(columns, rows))
         }
+        // What is refused, and in the words the model reads ("Query refused: {exc}."): the
+        // authorizer's "not authorized" for a write inside a WITH and the pragmas' functions,
+        // SQLite's own message for the rest (parity pv-02).
         val refused = data.getJSONArray("refused")
         for (i in 0 until refused.length()) {
             val r = refused.getJSONObject(i)
-            val wasRefused = try {
+            val error = try {
                 store.query(r.getString("sql"))
-                false
-            } catch (_: QueryRefused) {
-                true
+                null
+            } catch (exc: QueryRefused) {
+                exc.message
             }
-            assertEquals("refused: '${r.getString("sql")}'", r.getBoolean("refused"), wasRefused)
+            assertEquals("refused: '${r.getString("sql")}'", r.getBoolean("refused"), error != null)
+            assertEquals("refused: '${r.getString("sql")}' says", if (r.isNull("error")) null else r.getString("error"), error)
         }
         // Still writable after a refusal: the read-only switch was put back.
         store.setSetting("after", "refusals")
         assertEquals("refusals", store.setting("after"))
+        // A runaway query is interrupted, and the row cap holds.
+        val bounded = data.getJSONObject("bounded")
+        val runaway = try {
+            store.query(bounded.getString("runaway"), seconds = 0.2)
+            null
+        } catch (exc: QueryRefused) {
+            exc.message
+        }
+        assertEquals("the runaway query", bounded.getString("runaway_error"), runaway)
+        assertEquals("the row cap", bounded.getInt("capped_rows"), store.query(bounded.getString("capped"), maxRows = 10).second.size)
+        // Values as Python's str() shows them in the rows: infinities, wide floats, blobs, a cut text.
+        val renders = data.getJSONArray("renders")
+        for (i in 0 until renders.length()) {
+            val r = renders.getJSONObject(i)
+            val (columns, rows) = store.query(r.getString("sql"))
+            assertEquals("rendered: ${r.getString("sql")}", r.getString("rendered"), Ask.renderRows(columns, rows))
+        }
+        val cellValues = data.getJSONArray("cell_values")
+        for (i in 0 until cellValues.length()) {
+            val c = cellValues.getJSONObject(i)
+            val value = when (val v = c.getString("value")) {
+                "inf" -> Double.POSITIVE_INFINITY
+                "-inf" -> Double.NEGATIVE_INFINITY
+                "nan" -> Double.NaN
+                else -> v.toDouble()
+            }
+            assertEquals("the cell of ${c.getString("value")}", c.getString("cell"), Ask.cell(value))
+        }
 
         val conversations = data.getJSONArray("conversations")
         for (i in 0 until conversations.length()) {
@@ -158,7 +190,7 @@ class ProfileTest {
                 JSONObject().put("sql", e.sql).put("columns", JSONArray(e.columns))
                     .put("rows", JSONArray(e.rows.map { JSONArray(it) })).put("refused", e.error != null)
             })
-            // A refused query's rows and columns are empty on both sides; the message differs.
+            // A refused query's rows and columns are empty on both sides.
             same("conversation $i exchanges", want.getJSONArray("exchanges"), exchanges)
             val seen = JSONArray(provider.seen.map { messages ->
                 JSONArray(messages.map { JSONObject().put("role", it.role).put("content", it.content) })
@@ -328,7 +360,7 @@ class ProfileTest {
         }
     }
 
-    /** Messages compared as text: the refused query's words are the one place the two differ. */
+    /** Messages compared as text, a refused query's words included (parity pv-02). */
     private fun sameMessages(where: String, want: JSONArray, got: JSONArray) {
         assertEquals("$where calls", want.length(), got.length())
         for (i in 0 until want.length()) {
@@ -338,12 +370,7 @@ class ProfileTest {
             for (j in 0 until w.length()) {
                 val wc = w.getJSONObject(j).getString("content")
                 val gc = g.getJSONObject(j).getString("content")
-                if (wc.startsWith("Rows:\nQuery refused:")) {
-                    assertTrue("$where[$i][$j] refused on both", gc.startsWith("Rows:\nQuery refused:"))
-                    assertEquals("$where[$i][$j] hint", wc.substringAfter("SELECT."), gc.substringAfter("SELECT."))
-                } else {
-                    assertEquals("$where[$i][$j]", wc, gc)
-                }
+                assertEquals("$where[$i][$j]", wc, gc)
                 assertEquals("$where[$i][$j] role", w.getJSONObject(j).getString("role"), g.getJSONObject(j).getString("role"))
             }
         }
@@ -357,10 +384,83 @@ class ProfileTest {
     }
 
     /**
+     * `tests/test_profile.py`'s profiler tests as the desktop ran them: every call on a profiler
+     * (the events in and what came out, a tick, a flush, a correction, the session's end, the
+     * snapshot) replayed here, and every table of every store compared at the end -- the review
+     * waiting for the verdicts, the grace period and the close, the next game flushing the last,
+     * a resync's segment, a correction, the words after a lesson, a position never recorded, a
+     * game joined from the middle, the turn the clock settles, an end not seen.
+     */
+    @Test
+    fun theDesktopTestsScenariosReplayAsTheyDid() {
+        val scenarios = fixture().getJSONArray("scenarios")
+        assertTrue(scenarios.length() > 0)
+        for (s in 0 until scenarios.length()) {
+            val scenario = scenarios.getJSONObject(s)
+            val name = scenario.getString("name")
+            val stores = ArrayList<Store>()
+            val profilers = ArrayList<Profiler>()
+            val steps = scenario.getJSONArray("steps")
+            for (i in 0 until steps.length()) {
+                val step = steps.getJSONObject(i)
+                val where = "$name, step $i"
+                when {
+                    step.has("new_store") -> stores.add(Store(null))
+                    step.has("new_profiler") -> profilers.add(
+                        Profiler(
+                            stores[step.getInt("store")],
+                            sessionId = if (step.isNull("session")) null else step.getString("session"),
+                            ts = step.getDouble("ts"),
+                        ),
+                    )
+                    step.has("event") -> {
+                        val event = step.getJSONObject("event")
+                        val out = profilers[step.getInt("profiler")].onEvent(event(event), step.getDouble("ts"))
+                        same("$where ${event.getString("type")}", step.getJSONArray("out"), JSONArray(out.map { dump(it) }))
+                    }
+                    else -> {
+                        val profiler = profilers[step.getInt("profiler")]
+                        when (val call = step.getString("call")) {
+                            "tick" -> same("$where tick", step.getJSONArray("out"), JSONArray(profiler.tick(step.getDouble("ts")).map { dump(it) }))
+                            "flush" -> same("$where flush", step.getJSONArray("out"), JSONArray(profiler.flush(step.getDouble("ts")).map { dump(it) }))
+                            "snapshot" -> same("$where snapshot", step.getJSONArray("out"), JSONArray(listOf(dump(profiler.snapshot()))))
+                            "end_session" -> assertEquals(
+                                "$where end_session",
+                                if (step.isNull("summary")) null else step.getString("summary"),
+                                profiler.endSession(step.getDouble("ts")),
+                            )
+                            "correct" -> {
+                                val args = step.getJSONArray("args")
+                                val cause = if (args.isNull(3)) null else args.getString(3)
+                                assertEquals("$where correct", step.getBoolean("ok"), profiler.correct(args.getString(0), args.getInt(1), args.getInt(2), cause))
+                            }
+                            else -> fail("$where: unknown call $call")
+                        }
+                    }
+                }
+            }
+            val tables = scenario.getJSONArray("tables")
+            assertEquals("$name stores", tables.length(), stores.size)
+            for ((k, store) in stores.withIndex()) {
+                val want = tables.getJSONObject(k)
+                for (table in want.keys()) {
+                    val (columns, rows) = store.query("SELECT * FROM $table ORDER BY rowid", maxRows = 100_000)
+                    same("$name store $k $table columns", want.getJSONObject(table).getJSONArray("columns"), JSONArray(columns))
+                    same("$name store $k $table rows", want.getJSONObject(table).getJSONArray("rows"), JSONArray(rows.map { JSONArray(it) }))
+                }
+                store.close()
+            }
+        }
+    }
+
+    /**
      * `causes.wins_material` for every capture of the puzzle sample's first positions and the
      * desktop test's own -- taking back read by the rules (`exchange.can_retake`), so a guard
      * pinned to its own king takes nothing back -- and `causes.classify` on the pinned-guard
-     * blunder of the desktop test.
+     * blunder of the desktop test; and `tests/test_profile.py`'s cause cases (time pressure
+     * first, a tactic allowed, a chance let go, a line miscalculated, a piece left to be taken,
+     * a tactic never considered, the phase naming the rest), what counts as a tactic, the
+     * causes read from the player's words, and the motifs in words (f2/f7, x-ray).
      */
     @Test
     fun winsMaterialAndTheCauseMatchThePython() {
@@ -385,7 +485,88 @@ class ProfileTest {
             val want = o.getString("cause") to (if (o.isNull("motif")) null else o.getString("motif"))
             if ((cause to motif) != want) failures.add("${o.getString("fen")}: kotlin ${cause to motif}, python $want")
         }
+        val tables = fixture().getJSONObject("cause_tables")
+        val cases = tables.getJSONArray("classify")
+        for (i in 0 until cases.length()) {
+            val o = cases.getJSONObject(i)
+            val a = o.getJSONObject("args")
+            fun tagsOf(key: String) = if (a.has(key)) tags(a.getJSONArray(key)) else emptyList()
+            val got = Causes.classify(
+                com.sidecoach.chess.Board(o.getString("fen")),
+                com.sidecoach.chess.Move.fromUci(o.getString("move")),
+                playedTags = tagsOf("played_tags"),
+                availableTags = tagsOf("available_tags"),
+                allowedTags = tagsOf("allowed_tags"),
+                reply = if (a.has("reply")) a.getString("reply") else null,
+                replyMate = if (a.has("reply_mate")) a.getInt("reply_mate") else null,
+                phase = a.optString("phase", "middlegame"),
+                leftBook = a.optBoolean("left_book", false),
+                clockMs = if (a.has("clock_ms")) a.getInt("clock_ms") else null,
+                missedChance = a.optBoolean("missed_chance", false),
+            )
+            val want = o.getString("cause") to (if (o.isNull("motif")) null else o.getString("motif"))
+            if (got != want) failures.add("classify ${o.getString("move")} $a: kotlin $got, python $want")
+        }
+        val tactical = tables.getJSONArray("tactical")
+        for (i in 0 until tactical.length()) {
+            val o = tactical.getJSONObject(i)
+            val want = if (o.isNull("motif")) null else o.getString("motif")
+            val got = Causes.tactical(tags(o.getJSONArray("tags")))
+            if (got != want) failures.add("tactical ${o.getJSONArray("tags")}: kotlin $got, python $want")
+        }
+        assertEquals("the tactics", strings(tables.getJSONArray("tactical_set")).toSet(), Causes.TACTICAL)
+        val words = tables.getJSONArray("from_words")
+        for (i in 0 until words.length()) {
+            val o = words.getJSONObject(i)
+            val want = if (o.isNull("cause")) null else o.getString("cause")
+            if (Causes.fromWords(o.getString("text")) != want) failures.add("from_words '${o.getString("text")}': python $want")
+        }
+        val motifs = tables.getJSONArray("motif_words")
+        for (i in 0 until motifs.length()) {
+            val o = motifs.getJSONObject(i)
+            if (Insights.motifWords(o.getString("motif")) != o.getString("words")) failures.add("motif_words ${o.getString("motif")}")
+        }
         assertTrue("${wins.length()} captures: " + failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /**
+     * The review's first sentence says how the game ended in words (`review.HOW_IT_ENDED`,
+     * desktop d446f43): "lost by resignation or on time", "lost on time", "won in 17 moves" for
+     * a game over on the board -- never the reason verbatim after "by".
+     */
+    @Test
+    fun theReviewSaysHowTheGameEndedInPlainWords() {
+        val endings = fixture().getJSONArray("endings")
+        assertTrue(endings.length() > 0)
+        for (i in 0 until endings.length()) {
+            val e = endings.getJSONObject(i)
+            val review = GameReview(
+                gameId = "g",
+                userSide = side(e.getString("user_side")),
+                result = e.getString("result"),
+                reason = if (e.isNull("reason")) null else e.getString("reason"),
+            )
+            assertEquals("${e.getString("result")} ${e.opt("reason")}", e.getString("line"), Review.linesFor(review, 17)[0])
+        }
+    }
+
+    /** A list in the record as `json.dumps` writes it: DEL and everything past ASCII escaped (parity pv-04). */
+    @Test
+    fun theRecordsListsAreWrittenAsPythonWritesThem() {
+        val cases = fixture().getJSONArray("json_lists")
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val items = strings(case.getJSONArray("items"))
+            assertEquals("$items", case.getString("json"), Store.jsonList(items))
+        }
+    }
+
+    /** `test_a_query_answering_infinity_is_shown_not_a_crash`. */
+    @Test
+    fun aQueryAnsweringInfinityIsShownNotACrash() {
+        assertEquals("inf", Ask.cell(Double.POSITIVE_INFINITY))
+        assertEquals("nan", Ask.cell(Double.NaN))
+        assertEquals("2.5", Ask.cell(2.5))
     }
 
     private class Scripted(replies: List<String>) : LLMProvider {

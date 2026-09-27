@@ -124,7 +124,7 @@ object PanelListen {
                 made,
                 onUtterance = ::onUtterance,
                 onSpeechStart = ::onSpeechStart,
-                coachSpeaking = { PanelVoice.tts?.busy == true },
+                coachSpeaking = { PanelVoice.voiceOut()?.busy == true },
                 onEvent = { level, text -> PanelEngine.emit("voice", level, text) },
                 onPartial = ::onPartial,
                 onDropped = ::onDropped,
@@ -306,7 +306,7 @@ object PanelListen {
         PanelEngine.emit(
             "voice",
             "info",
-            "microphone test heard: ${repr(raw)}" + (if (heard != raw) " -> ${repr(heard)}" else ""),
+            "microphone test heard: ${Py.repr(raw)}" + (if (heard != raw) " -> ${Py.repr(heard)}" else ""),
         )
     }
 
@@ -428,7 +428,7 @@ object PanelListen {
      */
     internal fun onSpeechStart() {
         if (!hearTestOn) dictationHold()
-        val voice = PanelVoice.tts
+        val voice = PanelVoice.voiceOut()
         if (voice != null && voice.busy) {
             voice.stop()
             PanelEngine.emit("voice", "debug", "barge-in: the coach was cut off")
@@ -509,22 +509,4 @@ object PanelListen {
     /** `f"{x:.1f}"`. */
     private fun format1(value: Double): String =
         BigDecimal(value).setScale(1, RoundingMode.HALF_EVEN).toPlainString()
-
-    /** A string as Python's `repr` writes it, for the log's `{raw!r}`. */
-    private fun repr(text: String): String {
-        val quote = if ('\'' in text && '"' !in text) '"' else '\''
-        val out = StringBuilder().append(quote)
-        for (ch in text) {
-            when {
-                ch == '\\' -> out.append("\\\\")
-                ch == quote -> out.append('\\').append(ch)
-                ch == '\n' -> out.append("\\n")
-                ch == '\r' -> out.append("\\r")
-                ch == '\t' -> out.append("\\t")
-                ch.code < 0x20 || ch.code == 0x7f -> out.append("\\x%02x".format(ch.code))
-                else -> out.append(ch)
-            }
-        }
-        return out.append(quote).toString()
-    }
 }

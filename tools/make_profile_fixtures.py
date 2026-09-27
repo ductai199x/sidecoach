@@ -25,8 +25,11 @@ feeds it -- a clock before each move, the move, its verdict, the analysis of whe
 
 Then the session ends (its summary), a second session reads the first's summary back, and
 the ask side is recorded against the database the games left: the system message, SQL found
-in replies, the nine worked queries run and rendered, three refused, and two conversations
-with a scripted model -- one answered, one that never writes prose.
+in replies, the nine worked queries run and rendered, the statements refused and passed with
+the words the model reads (the authorizer's "not authorized", SQLite's messages), a runaway
+query interrupted and the row cap, values rendered as Python's str() shows them (infinities,
+wide floats, blobs), and two conversations with a scripted model -- one answered, one that
+never writes prose. And the review's first sentence for every way a game ends.
 
 The puzzle draw is fixed (no shuffle) and the session id given, so nothing random is left.
 
@@ -42,9 +45,11 @@ desktop test's pinned-guard blunder.
 from __future__ import annotations
 
 import csv
+import io
 import json
 import random
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +69,7 @@ from sidecoach.events import (  # noqa: E402
     CoachMessage,
     DisclosureLevel,
     GameEnded,
+    GameReview,
     GameStarted,
     MovePlayed,
     Resync,
@@ -75,7 +81,9 @@ from sidecoach.events import (  # noqa: E402
 from sidecoach.llm.base import Completion  # noqa: E402
 from sidecoach.profile import ask, causes  # noqa: E402
 from sidecoach.profile.profiler import Profiler  # noqa: E402
+from sidecoach.profile.insights import motif_words  # noqa: E402
 from sidecoach.profile.puzzles import PuzzleStore  # noqa: E402
+from sidecoach.profile.review import lines_for  # noqa: E402
 from sidecoach.profile.store import QueryRefused, Store  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "profile"
@@ -296,6 +304,282 @@ def causes_cases(sample: Path) -> dict:
     return {"wins_material": wins, "classify": classified}
 
 
+# The coach's SQL the store must refuse, and some it must not: the desktop test's nine, a write
+# inside a WITH and the pragmas' table-valued functions (which the authorizer denies as "not
+# authorized"), SQLite's own errors, and reads that pass. Each with the words the model reads.
+REFUSALS = [
+    "DELETE FROM games",
+    "UPDATE games SET result = '1-0'",
+    "INSERT INTO sessions (session_id, started_at) VALUES ('x', 0)",
+    "DROP TABLE games",
+    "PRAGMA table_info(games)",
+    "ATTACH DATABASE 'x.db' AS x",
+    "SELECT 1; DELETE FROM games",
+    "",
+    "SELECT * FROM nowhere",
+    "   ;; ",
+    "SELECT 1; SELECT 2",
+    "PRAGMA table_info(moves)",
+    "DELETE FROM moves",
+    "SELECT nope FROM games",
+    "SELEC 1",
+    "SELECT FROM",
+    "WITH x AS (SELECT 1) DELETE FROM games",
+    "WITH x AS (SELECT 1) UPDATE games SET result = '1-0'",
+    "WITH x AS (SELECT 1) INSERT INTO settings (key, value) VALUES ('a', 'b')",
+    "WITH x AS (SELECT 1) REPLACE INTO settings (key, value) VALUES ('a', 'b')",
+    "WITH x AS (SELECT 1) DELETE FROM nowhere",
+    "SELECT * FROM pragma_table_info('games')",
+    "SELECT name FROM pragma_database_list",
+    "select * from PRAGMA_TABLE_INFO('moves')",
+    "SELECT * FROM \"pragma_table_info\"('games')",
+    "SELECT * FROM main.pragma_table_info('games')",
+    # Not "SELECT load_extension('x')": refused on both, but Android's SQLite is built without
+    # the function ("no such function: load_extension") where the desktop's denies it.
+    "SELECT 'pragma_table_info' AS word",
+    "select count(*) as n from games ;",
+    "WITH g AS (SELECT * FROM games) SELECT COUNT(*) AS n FROM g",
+    "SELECT json_each.value FROM games, json_each('[1,2]')",
+    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+]
+RUNAWAY = "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT COUNT(*) FROM n"
+CAPPED = "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n LIMIT 500) SELECT x FROM n"
+RENDERS = [
+    "SELECT 1e999 AS big, -1e999 AS small, 2.5 AS half, 1e20 AS huge, 0.1235 AS r, 3.0 AS three,"
+    " -2.0 AS minus, x'0141ff27' AS blob, x'22' AS dq, x'' AS empty, 'it''s' AS s, NULL AS n, 7 AS i,"
+    " '" + "y" * 70 + "' AS long",
+    "SELECT 123456789012345678901234567890.0 AS wide, 1e300 AS vast, -0.0005 AS tiny, 0.0015 AS tie,"
+    " -0.0001 AS signed, -0.0 AS nought",
+]
+# Texts as Python's csv module reads them (newline=""): line ends of every kind, quoted fields
+# holding commas, quotes and line breaks, a quote inside an unquoted field, text after a closing
+# quote, blank lines, no final line end, a quoted field the text ends in.
+CSV_TEXTS = [
+    "a,b\r\nc,d\r\n",
+    "a,b\rc,d\r",
+    'a,"b,c"\n"d""e",f\n',
+    'x,"multi\nline\r\nfield",y\n',
+    'p,q"r,s\n',
+    '"ab"cd,e\n',
+    "\n\na,b\n\n",
+    "a,b",
+    'a,"unterminated\nstill',
+    "a,\r\n,\n",
+    '"a"\r\n',
+    "a,b\r\r\nc",
+    '"",x,""\n',
+]
+# A puzzle file with all of that in it, and rows `import_csv` must keep or skip: a short row
+# (no GameUrl, no OpeningTags), a rating with spaces and underscores, a rating that is no
+# number, a rating below the band, no popularity, one move only, an illegal first move.
+CSV_IMPORT = (
+    "PuzzleId,FEN,Moves,Rating,RatingDeviation,Popularity,NbPlays,Themes,GameUrl,OpeningTags\r\n"
+    "fork1,r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2,g8f6 f3e5 c6e5,"
+    '1000,80,90,500,"fork opening short",https://lichess.org/x#3,\r\n'
+    "\r\n"
+    "pin01,rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2,d7d6 f1b5 c7c6,"
+    " 1_200 ,80,,400,pin opening short\r"
+    "mate1,6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1,g1h1  a1a8,900,70,95,900,"
+    '"mateIn1 backRankMate","https://lichess.org/z#1","a ""b"", c"\n'
+    "bad01,6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1,g1h1 a1a8,twelve,70,95,900,fork,,\n"
+    "low01,6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1,g1h1 a1a8,599,70,95,900,fork,,\n"
+    "one01,6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1,g1h1,900,70,95,900,fork,,\n"
+    "ill01,6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1,h2h5 a8a1,900,70,95,900,fork,,"
+)
+JSON_LISTS = [
+    [],
+    ["fork", "pin"],
+    ["del\x7f", "tab\t", "nl\n", "bell\x07", "quote\"", "back\\slash", "slash/"],
+    ["café", "½", "\U0001f600", " ", "~ !"],
+]
+ENDINGS = [
+    ("0-1", "user resigned or lost on time", Side.WHITE),
+    ("1-0", "opponent resigned or lost on time", Side.WHITE),
+    ("0-1", "lost on time", Side.WHITE),
+    ("1-0", "lost on time", Side.BLACK),
+    ("1-0", "game over on board", Side.WHITE),
+    ("1/2-1/2", "fifty-move rule", Side.WHITE),
+    ("1-0", "checkmate", Side.WHITE),
+    ("1/2-1/2", "draw agreed", Side.WHITE),
+    ("1/2-1/2", "stalemate", Side.BLACK),
+    ("0-1", None, Side.BLACK),
+    ("0-1", "", Side.BLACK),
+    ("*", "user resigned or lost on time", Side.WHITE),
+]
+
+
+# tests/test_profile.py's profiler tests, run as they are (their own asserts hold) with every
+# call on a profiler recorded: its events in and out, a tick, a flush, a correction, the
+# session's end, and at the end every table of every store it wrote. The phone replays them.
+SCENARIOS = [
+    ("test_a_mistake_becomes_evidence_once_its_analysis_arrives", ()),
+    ("test_the_opponents_mistakes_and_fine_moves_are_not_evidence", ()),
+    ("test_the_clock_makes_it_time_pressure", ()),
+    ("test_the_game_ends_with_a_review_and_a_snapshot", ()),
+    ("test_a_takeback_withdraws_the_moves_and_their_evidence", ()),
+    ("test_a_resync_starts_a_new_segment_and_keeps_the_earlier_moves", ()),
+    ("test_the_session_summary_carries_to_the_next_session", ()),
+    ("test_a_correction_moves_the_evidence", ()),
+    ("test_the_player_may_be_either_colour", (Side.WHITE,)),
+    ("test_the_player_may_be_either_colour", (Side.BLACK,)),
+    ("test_the_review_waits_for_the_engines_last_verdicts", ()),
+    ("test_a_review_left_waiting_is_built_when_the_grace_period_is_up_or_at_the_close", ()),
+    ("test_the_next_game_flushes_the_last_games_review", ()),
+    ("test_the_players_words_after_a_lesson_are_kept_beside_the_mistake", ()),
+    ("test_a_position_is_coached_but_never_recorded", ()),
+    ("test_a_game_joined_from_the_middle_is_still_a_game", ()),
+    ("test_a_position_that_ends_early_leaves_nothing_behind", ()),
+    ("test_puzzles_one_after_another_never_add_up_to_a_game", ()),
+    ("test_a_joined_game_whose_turn_the_clock_settles_is_still_a_game", ()),
+    ("test_a_game_whose_end_was_not_seen_is_still_reviewed_at_the_next_start", ()),
+]
+
+
+def scenarios() -> list[dict]:
+    import tests.test_profile as tp
+
+    real = tp.Profiler
+    out = []
+    for name, args in SCENARIOS:
+        steps: list[dict] = []
+        stores: dict[int, tuple[int, Store]] = {}
+        made = [0]
+
+        def recording(store: Store, session_id: str | None = None, ts: float = 0.0, puzzles: Any = None) -> Any:
+            if id(store) not in stores:
+                stores[id(store)] = (len(stores), store)
+                steps.append({"new_store": stores[id(store)][0]})
+            index = made[0]
+            made[0] += 1
+            steps.append({"new_profiler": index, "store": stores[id(store)][0], "session": session_id, "ts": ts})
+            return _Recorded(real(store, session_id=session_id, ts=ts, puzzles=puzzles), index, steps)
+
+        tp.Profiler = recording  # type: ignore[assignment]
+        try:
+            getattr(tp, name)(*args)
+        finally:
+            tp.Profiler = real  # type: ignore[assignment]
+        out.append({
+            "name": name + ("" if not args else f"[{args[0].value}]"),
+            "steps": steps,
+            "tables": [tables(store) for _, store in sorted(stores.values(), key=lambda v: v[0])],
+        })
+    return out
+
+
+class _Recorded:
+    """A profiler whose every call is written down."""
+
+    def __init__(self, profiler: Profiler, index: int, steps: list[dict]) -> None:
+        self._p = profiler
+        self._i = index
+        self._steps = steps
+
+    def on_event(self, event: Any, ts: float) -> list[Any]:
+        got = self._p.on_event(event, ts)
+        self._steps.append({"profiler": self._i, "ts": ts, "event": dump(event), "out": [dump(e) for e in got]})
+        return got
+
+    def _call(self, name: str, ts: float) -> list[Any]:
+        got = getattr(self._p, name)(ts)
+        self._steps.append({"profiler": self._i, "ts": ts, "call": name, "out": [dump(e) for e in got]})
+        return got
+
+    def tick(self, ts: float) -> list[Any]:
+        return self._call("tick", ts)
+
+    def flush(self, ts: float) -> list[Any]:
+        return self._call("flush", ts)
+
+    def end_session(self, ts: float) -> str | None:
+        summary = self._p.end_session(ts)
+        self._steps.append({"profiler": self._i, "ts": ts, "call": "end_session", "summary": summary})
+        return summary
+
+    def correct(self, game_id: str, segment: int, ply: int, cause: str | None) -> bool:
+        ok = self._p.correct(game_id, segment, ply, cause)
+        self._steps.append({"profiler": self._i, "call": "correct", "args": [game_id, segment, ply, cause], "ok": ok})
+        return ok
+
+    def snapshot(self) -> Any:
+        snap = self._p.snapshot()
+        self._steps.append({"profiler": self._i, "call": "snapshot", "out": [dump(snap)]})
+        return snap
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._p, name)
+
+
+def causes_tables() -> dict:
+    """tests/test_profile.py's cause cases (`classify` with every argument it takes, `tactical`),
+    and the words: `from_words`, `motif_words`."""
+    import tests.test_profile as tp
+
+    tag = lambda t: {"name": t.name, "squares": list(t.squares), "move": t.move}  # noqa: E731
+    fork, sac, capture = tp.FORK, tp.SAC, tp.CAPTURE
+    start = chess.STARTING_FEN
+    nxe5 = "r1bqkbnr/pppp1ppp/8/4p3/2BnP3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
+    qh4 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2"
+    pinned = "4k3/8/5n2/8/1b6/2N2B2/8/4K3 w - - 0 1"
+    bxf7 = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
+    cases = [
+        (start, "e2e4", {"allowed_tags": [fork], "clock_ms": 8_000}),
+        (start, "e2e4", {"allowed_tags": [fork]}),
+        (start, "f2f3", {"reply_mate": 2}),
+        (start, "e2e4", {"available_tags": [fork], "allowed_tags": [fork], "missed_chance": True}),
+        (start, "e2e4", {"available_tags": [fork], "allowed_tags": [fork]}),
+        (start, "e2e4", {"available_tags": [fork], "reply_mate": 1, "missed_chance": True}),
+        (nxe5, "f3e5", {"allowed_tags": [fork]}),
+        (nxe5, "f3e5", {"reply_mate": 2}),
+        (qh4, "d8h4", {"reply": "f3h4"}),
+        (pinned, "f3e4", {"reply": "f6e4"}),
+        (bxf7, "c4f7", {"played_tags": [sac, capture]}),
+        (bxf7, "c4f7", {"played_tags": [capture], "available_tags": [fork]}),
+        (start, "a2a3", {"available_tags": [fork]}),
+        (start, "a2a3", {"phase": "endgame"}),
+        (start, "a2a3", {"phase": "opening"}),
+        (start, "a2a3", {"phase": "middlegame", "left_book": True}),
+        (start, "a2a3", {"phase": "middlegame"}),
+        (start, "a2a3", {"allowed_tags": [capture], "clock_ms": 30_000}),
+    ]
+    classify = []
+    for fen, uci, kwargs in cases:
+        cause, motif = causes.classify(chess.Board(fen), chess.Move.from_uci(uci), **kwargs)
+        given = {k: ([tag(t) for t in v] if k.endswith("_tags") else v) for k, v in kwargs.items()}
+        classify.append({"fen": fen, "move": uci, "args": given, "cause": cause, "motif": motif})
+    tactical = [
+        {"tags": [tag(t) for t in tags], "motif": causes.tactical(tags)}
+        for tags in ([capture], [capture, fork], [sac, fork], [])
+    ]
+    words = [
+        "ok", "what should I play now?", "I completely missed it", "no time, I premoved",
+        "I saw the knight coming but thought the queen was safe", "I was rushing",
+        "I didn't see the queen coming to g5 at all",
+    ]
+    motifs_ = ["hangingPiece", "mateIn2", "attackingF2F7", "xRayAttack", "fork", "mate", "backRankMate"]
+    return {
+        "classify": classify,
+        "tactical": tactical,
+        "tactical_set": sorted(causes.TACTICAL),
+        "from_words": [{"text": w, "cause": causes.from_words(w)} for w in words],
+        "motif_words": [{"motif": m, "words": motif_words(m)} for m in motifs_],
+    }
+
+
+def csv_import() -> dict:
+    """What `import_csv` keeps of CSV_IMPORT, row by row."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "tricky.csv"
+        path.write_bytes(CSV_IMPORT.encode("utf-8"))
+        store = PuzzleStore(None)
+        added = store.import_csv(path)
+        rows = [list(r) for r in store._db.execute(
+            "SELECT id, fen, moves, rating, popularity, plays, themes, position FROM puzzles ORDER BY id"
+        ).fetchall()]
+        store.close()
+    return {"text": CSV_IMPORT, "added": added, "rows": rows}
+
+
 def tables(store: Store) -> dict:
     out = {}
     for table in ("games", "moves", "evidence", "dialogue", "sessions", "recommendations",
@@ -368,12 +652,33 @@ def main() -> None:
         queries.append({"question": question, "sql": sql, "columns": columns,
                         "rows": [list(r) for r in rows_], "rendered": ask.render_rows(columns, rows_)})
     refused = []
-    for sql in ("DELETE FROM moves", "SELECT 1; SELECT 2", "PRAGMA table_info(moves)", ""):
+    for sql in REFUSALS:
         try:
             store.query(sql)
-            refused.append({"sql": sql, "refused": False})
-        except QueryRefused:
-            refused.append({"sql": sql, "refused": True})
+            refused.append({"sql": sql, "refused": False, "error": None})
+        except QueryRefused as exc:
+            refused.append({"sql": sql, "refused": True, "error": str(exc)})
+    # A runaway query is interrupted, and the row cap holds (the desktop test's two).
+    try:
+        store.query(RUNAWAY, seconds=0.2)
+        runaway = None
+    except QueryRefused as exc:
+        runaway = str(exc)
+    _, capped = store.query(CAPPED, rows=10)
+    bounded = {"runaway": RUNAWAY, "runaway_error": runaway, "capped": CAPPED, "capped_rows": len(capped)}
+    # Values the rows show as Python's str() shows them: infinities, a float past 2**63,
+    # blobs, a long text cut (`ask._cell`).
+    renders = []
+    for sql in RENDERS:
+        columns, rows_ = store.query(sql)
+        renders.append({"sql": sql, "rendered": ask.render_rows(columns, rows_)})
+    cell_values = [{"value": v, "cell": ask._cell(float(v))} for v in ("inf", "-inf", "nan", "-0.0", "1e20")]
+    # The review's first sentence, for every way a game ends (`review.HOW_IT_ENDED`).
+    endings = []
+    for result, reason, side in ENDINGS:
+        review = GameReview(game_id="g", user_side=side, result=result, reason=reason)
+        endings.append({"result": result, "reason": reason, "user_side": side.value,
+                        "line": lines_for(review, 17)[0]})
     extracts = [
         {"text": t, "sql": ask.extract_sql(t)}
         for t in (
@@ -416,6 +721,16 @@ def main() -> None:
         "system": ask.system_message(),
         "queries": queries,
         "refused": refused,
+        "bounded": bounded,
+        "renders": renders,
+        "cell_values": cell_values,
+        "endings": endings,
+        # A list as the record writes it (json.dumps): every character outside ' '..'~' escaped.
+        "json_lists": [{"items": items, "json": json.dumps(items)} for items in JSON_LISTS],
+        "csv_texts": [{"text": t, "records": list(csv.reader(io.StringIO(t, newline="")))} for t in CSV_TEXTS],
+        "csv_import": csv_import(),
+        "scenarios": scenarios(),
+        "cause_tables": causes_tables(),
         "extracts": extracts,
         "conversations": conversations,
         "cells": [c.__dict__ for c in store.cells()],

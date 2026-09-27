@@ -17,7 +17,8 @@ import java.nio.ByteOrder
 import kotlin.math.abs
 
 /**
- * The listening against the desktop's own (`tools/make_stt_fixtures.py`): the chess correction and
+ * The listening against the desktop's own (`tools/make_stt_fixtures.py`): the chess correction (every
+ * string of `tests/test_voice_correct.py` among them), every spoken form of the legal moves, and
  * difflib's ratio, exactly; Silero's probabilities within a tolerance and the endpointer's events
  * exactly; Parakeet int8's transcript and tokens for speech clips.
  */
@@ -62,6 +63,13 @@ class SttParityTest {
             val case = normalised.getJSONObject(i)
             check("normalise \"${case.getString("raw")}\"", Correct.normalise(case.getString("raw")), case.getString("norm"))
         }
+        // Every spoken form of every legal move, and the move it names.
+        val forms = fixtures.getJSONArray("forms")
+        for (i in 0 until forms.length()) {
+            val case = forms.getJSONObject(i)
+            val theirs = case.getJSONObject("forms").let { o -> o.keys().asSequence().associateWith { o.getString(it) } }
+            check("spoken forms on ${case.getString("fen")}", Correct.spokenForms(Board(case.getString("fen"))).toMap(), theirs)
+        }
         val ratios = fixtures.getJSONArray("ratios")
         for (i in 0 until ratios.length()) {
             val case = ratios.getJSONObject(i)
@@ -69,6 +77,39 @@ class SttParityTest {
             check("ratio \"${case.getString("a")}\" ~ \"${case.getString("b")}\"", mine, case.getDouble("ratio"))
         }
         assertTrue(failures.take(20).joinToString("\n\n") + "\n(${failures.size} failures)", failures.isEmpty())
+    }
+
+    /**
+     * The endpointer on scripted probabilities, with its thresholds changed and the coach
+     * speaking and not (`tests/test_voice_hearing.py`'s cases among them: a start after two
+     * frames, an end after the silence, a blip dropped, 0.85 while the coach speaks).
+     */
+    @Test
+    fun theEndpointerKeepsTheDesktopsThresholds() {
+        val cases = fixtures.getJSONArray("endpointer")
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val a = case.getJSONObject("args")
+            val endpointer = Endpointer(
+                start = a.optDouble("start", 0.5),
+                end = a.optDouble("end", 0.35),
+                startFrames = a.optInt("start_frames", 2),
+                endMs = a.optInt("end_ms", 400),
+                startWhileSpeaking = a.optDouble("start_while_speaking", 0.85),
+                minUtteranceMs = a.optInt("min_utterance_ms", 250),
+                frameMs = a.optInt("frame_ms", 32),
+            )
+            val feeds = case.getJSONArray("feeds")
+            val events = case.getJSONArray("events")
+            for (k in 0 until feeds.length()) {
+                val feed = feeds.getJSONArray(k)
+                val want = events.getJSONArray(k)
+                val event = endpointer.feed(feed.getDouble(0), coachSpeaking = feed.getBoolean(1))
+                check("endpointer #$i $a frame $k event", event, if (want.isNull(0)) null else want.getString(0))
+                check("endpointer #$i $a frame $k speaking", endpointer.speaking, want.getBoolean(1))
+            }
+        }
+        assertTrue(failures.take(20).joinToString("\n\n"), failures.isEmpty())
     }
 
     @Test

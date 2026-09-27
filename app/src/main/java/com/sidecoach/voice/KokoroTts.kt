@@ -41,8 +41,8 @@ class KokoroTts(
     @Volatile var voice: String = "af_sarah",
     @Volatile var speed: Float = 1.0f,
     private val lang: String = "en-us",
-) {
-    val name = "kokoro"
+) : TtsProvider {
+    override val name = "kokoro"
 
     private val onnxPath: File get() = File(modelDir, ONNX_FILE)
     val voicesPath: File get() = File(modelDir, VOICES_FILE)
@@ -120,7 +120,7 @@ class KokoroTts(
      * Whether the voice can speak, checked without loading the model: the two model files must
      * be present; the model itself is loaded once, by [load] or on the first line.
      */
-    fun healthcheck(): Pair<Boolean, String> {
+    override fun healthcheck(): Pair<Boolean, String> {
         val missing = listOf(onnxPath, voicesPath).filter { !it.exists() }.map { it.name }
         if (missing.isNotEmpty()) return false to "model files missing from $modelDir: ${missing.joinToString(", ")}"
         val where = if (kokoro != null) "cpu" else "cpu (not loaded yet)"
@@ -145,7 +145,7 @@ class KokoroTts(
                 loadSeconds = (SystemClock.elapsedRealtime() - began) / 1000.0
                 true
             } catch (exc: Throwable) { // any load failure degrades to silence
-                Log.w(TAG, "Kokoro voice unavailable, going silent: $exc")
+                VoiceLog.warn("Kokoro voice unavailable, going silent: ${VoiceLog.said(exc)}")
                 failed = true
                 false
             }
@@ -173,7 +173,7 @@ class KokoroTts(
      * Queue a line to be spoken. Notation in it is read aloud in words. [voice] speaks this line
      * in another voice (a preview) without changing the coach's.
      */
-    fun say(text: String, voice: String? = null) {
+    override fun say(text: String, voice: String?) {
         if (failed) return
         val spoken = Py.strip(Notation.speak(text))
         if (spoken.isEmpty()) return
@@ -182,10 +182,10 @@ class KokoroTts(
     }
 
     /** Whether a line is playing or waiting to play. */
-    val busy: Boolean get() = playing || queue.isNotEmpty()
+    override val busy: Boolean get() = playing || queue.isNotEmpty()
 
     /** Drop everything queued and silence anything now playing. */
-    fun stop() {
+    override fun stop() {
         synchronized(lock) {
             generation += 1
             lock.notifyAll()
@@ -320,7 +320,7 @@ class KokoroTts(
                 }
             }
         } catch (exc: Exception) { // a bad line must not kill the voice
-            Log.w(TAG, "Kokoro synthesis failed for \"${line.spoken}\": $exc")
+            VoiceLog.warn("Kokoro synthesis failed for ${Py.repr(line.spoken)}: ${VoiceLog.said(exc)}")
             return
         } finally {
             shared.unlock()
@@ -384,7 +384,7 @@ class KokoroTts(
             } catch (_: InterruptedException) {
                 return
             } catch (exc: Exception) { // audio errors are not fatal
-                Log.w(TAG, "Kokoro playback failed: $exc")
+                VoiceLog.warn("Kokoro playback failed: ${VoiceLog.said(exc)}")
             } finally {
                 chunk.done?.countDown()
             }
