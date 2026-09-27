@@ -149,6 +149,8 @@ class CaptionsGestureTest {
         try {
             answersTapsDoubleTapsAndADrag()
         } finally {
+            // The move list this test put on the page is no game's.
+            PanelEngine.set("moves" to emptyList<String>(), "labels" to emptyMap<String, String>())
             if (hidden == "null" || hidden.isEmpty()) {
                 shell("settings delete global hide_error_dialogs")
             } else {

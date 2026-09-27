@@ -56,6 +56,9 @@ class PanelParityTest {
     fun everyEventIsWrittenDownAsTheDesktopWritesIt() {
         val steps = fixture.getJSONArray("dispatch")
         var opening: String? = null
+        // The desktop's engine is a fresh one; the phone's is the app's, which other tests have
+        // written on (a GameStarted leaves the badges as they were, as the desktop's does).
+        PanelEngine.set("labels" to emptyMap<String, String>(), "game_id" to null, "user_side" to null, "clock" to null)
         for (i in 0 until steps.length()) {
             val step = steps.getJSONObject(i)
             val event = eventOf(step.getJSONObject("event"))
