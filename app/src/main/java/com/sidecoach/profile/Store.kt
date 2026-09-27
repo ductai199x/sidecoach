@@ -631,8 +631,10 @@ CREATE INDEX IF NOT EXISTS attempts_puzzle ON puzzle_attempts (puzzle_id, ts)
          * A list of strings as Python's `json.dumps` writes it -- `["capture", "check"]`, a space
          * after each comma, non-ASCII escaped -- since the coach's own SQL can read it back.
          */
+        /** `json.dumps(list(items))`: Python's separators, and every character outside ' '..'~' escaped. */
         fun jsonList(items: List<String>): String = items.joinToString(", ", "[", "]") { pyJsonString(it) }
 
+        /** A string as `json.dumps` (`ensure_ascii`) writes it; DEL too (the parity audit, 2026-09-26). */
         private fun pyJsonString(s: String): String {
             val out = StringBuilder("\"")
             for (ch in s) {
@@ -644,7 +646,7 @@ CREATE INDEX IF NOT EXISTS attempts_puzzle ON puzzle_attempts (puzzle_id, ts)
                     ch == '\t' -> out.append("\\t")
                     ch == '\b' -> out.append("\\b")
                     ch == '\u000C' -> out.append("\\f")
-                    ch.code < 0x20 || ch.code > 0x7f -> out.append("\\u%04x".format(ch.code))
+                    ch.code < 0x20 || ch.code >= 0x7f -> out.append(String.format(Locale.ROOT, "\\u%04x", ch.code))
                     else -> out.append(ch)
                 }
             }
