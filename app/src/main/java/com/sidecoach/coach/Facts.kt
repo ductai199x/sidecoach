@@ -125,8 +125,12 @@ val THEMES: List<Pair<String, String>> = listOf(
     "exposedKing" to "your opponent's exposed king",
     "attackingF2F7" to "the weak point next to the king",
     "promotion" to "a passed pawn",
-    "advancedPawn" to "a passed pawn",
-    "xRayAttack" to "a piece attacked through another",
+    // A pawn on the sixth or seventh rank, passed or not: "a passed pawn" was said of b6+ with
+    // their pawn on b7 in front (the test audit, 2026-09-26).
+    "advancedPawn" to "a pawn deep in their half",
+    // "A piece attacked through another" was read as "attacks your knight through another
+    // piece" of a direct attack; the x-ray is the attack running on past its target.
+    "xRayAttack" to "an x-ray: the attack runs on through one piece to the one behind it",
     "interference" to "a line that can be cut",
     "clearance" to "a square that can be cleared",
 )

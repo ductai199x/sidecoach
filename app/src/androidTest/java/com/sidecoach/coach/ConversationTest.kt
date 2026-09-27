@@ -329,6 +329,42 @@ class ConversationTest {
         situation = nullable(o, "situation"),
     )
 
+    /**
+     * Qxe5 takes their queen and Rxe5 takes back: with the new position not yet analysed, the
+     * engine's own line for the move names the recapture. Without it "up a queen for a pawn"
+     * was said, and the model called the queen trade a queen won (the dev audit, 2026-09-26).
+     * test_conversation's `test_a_capture_the_engine_takes_back_is_said_as_such_before_the_position_is_read`.
+     */
+    @Test
+    fun aCaptureTheEngineTakesBackIsSaidAsSuchBeforeThePositionIsRead() {
+        val before = Board("1r5r/pbp3p1/5nkp/4Qq2/8/2N2P2/PP2R1PP/R1B3K1 b - - 6 19")
+        val move = before.parseSan("Qxe5")!!
+        val after = before.copy()
+        after.push(move)
+        val record = PlyRecord(
+            MovePlayed(
+                gameId = "g",
+                ply = 38,
+                san = "Qxe5",
+                uci = move.uci(),
+                fenBefore = before.fen(),
+                fenAfter = after.fen(),
+                byUser = true,
+            ),
+        )
+        record.assessment = MoveAssessment(
+            gameId = "g",
+            ply = 38,
+            uci = move.uci(),
+            expectedLoss = 0.0,
+            severity = Severity.NONE,
+            best = listOf(move.uci(), "e2e5", "h8e8"),
+            label = Label.GREAT,
+        )
+        val found = Conversation().expectedRecapture(record, before, after)
+        assertTrue("$found", found != null && found.first == "Rxe5")
+    }
+
     private fun nullable(o: JSONObject, key: String): String? =
         if (o.isNull(key)) null else o.getString(key)
 

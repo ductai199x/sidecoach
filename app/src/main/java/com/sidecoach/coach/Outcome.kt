@@ -1,11 +1,14 @@
 package com.sidecoach.coach
 
 import com.sidecoach.analysis.isPassed
+import com.sidecoach.chess.BISHOP
 import com.sidecoach.chess.BLACK
 import com.sidecoach.chess.Board
+import com.sidecoach.chess.KNIGHT
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.PAWN
 import com.sidecoach.chess.QUEEN
+import com.sidecoach.chess.ROOK
 import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.squareFile
 import com.sidecoach.chess.squareName
@@ -54,6 +57,69 @@ private fun amount(diff: Int): String {
     return "material worth $n pawns"
 }
 
+private val OUTCOME_ORDER = intArrayOf(QUEEN, ROOK, BISHOP, KNIGHT, PAWN)
+private val OUTCOME_NAMES = mapOf(
+    QUEEN to "queen",
+    ROOK to "rook",
+    BISHOP to "bishop",
+    KNIGHT to "knight",
+    PAWN to "pawn",
+)
+private val OUTCOME_COUNT = mapOf(
+    1 to "a", 2 to "two", 3 to "three", 4 to "four", 5 to "five", 6 to "six", 7 to "seven", 8 to "eight",
+)
+
+/** "a rook and two pawns". `outcome._pieces_said`. */
+private fun piecesSaid(counts: Map<Int, Int>): String {
+    val parts = ArrayList<String>()
+    for (kind in OUTCOME_ORDER) {
+        val n = counts[kind] ?: 0
+        if (n > 0) parts.add("${OUTCOME_COUNT[n] ?: n.toString()} ${OUTCOME_NAMES.getValue(kind)}${if (n > 1) "s" else ""}")
+    }
+    if (parts.isEmpty()) return ""
+    return if (parts.size == 1) parts[0] else parts.dropLast(1).joinToString(", ") + " and ${parts.last()}"
+}
+
+/**
+ * What the line takes and gives, piece by piece: "the exchange: a rook for a bishop", "a
+ * knight and a pawn". A sum in pawns' worth said a rook for a bishop as "two pawns", and the
+ * model added the two pawns to the exchange (the test audit, 2026-09-26). The pawns' worth
+ * stands where a pawn promotes, when the pieces no longer add up. `outcome._trade`.
+ */
+private fun trade(board: Board, after: Board, us: Boolean, diff: Int): String {
+    val them = !us
+    val lost = HashMap<Boolean, HashMap<Int, Int>>()
+    for (colour in listOf(us, them)) {
+        val counts = HashMap<Int, Int>()
+        for (kind in OUTCOME_ORDER) {
+            val change = board.pieces(kind, colour).size - after.pieces(kind, colour).size
+            if (change < 0) return amount(diff) // a piece made on the way: the sum, not the pieces
+            counts[kind] = change
+        }
+        lost[colour] = counts
+    }
+    val won = lost.getValue(them)
+    val given = lost.getValue(us)
+    for (kind in OUTCOME_ORDER) { // like for like is no gain
+        val n = minOf(won.getValue(kind), given.getValue(kind))
+        won[kind] = won.getValue(kind) - n
+        given[kind] = given.getValue(kind) - n
+    }
+    for ((a, b) in listOf(BISHOP to KNIGHT, KNIGHT to BISHOP)) {
+        val n = minOf(won.getValue(a), given.getValue(b)) // a bishop for a knight is a trade too
+        won[a] = won.getValue(a) - n
+        given[b] = given.getValue(b) - n
+    }
+    val taken = piecesSaid(won)
+    val paid = piecesSaid(given)
+    if (taken.isEmpty()) return amount(diff)
+    val minors = given.getValue(BISHOP) + given.getValue(KNIGHT)
+    if (taken == "a rook" && minors == 1 && given.getValue(PAWN) == 0) {
+        return "the exchange: a rook for $paid"
+    }
+    return if (paid.isNotEmpty()) "$taken for $paid" else taken
+}
+
 /** What the board looks like after `moves` (UCI), how many were played, and who castled. */
 fun playOut(board: Board, moves: List<String>): Triple<Board, Int, Map<Boolean, Boolean>> {
     val after = board.copy(withStack = false)
@@ -82,9 +148,9 @@ fun lineOutcome(board: Board, moves: List<String>, userColour: Boolean): String 
     val parts = ArrayList<String>()
     val diff = material(after, us) - material(board, us)
     if (diff > 0) {
-        parts.add("the player wins ${amount(diff)}")
+        parts.add("the player wins ${trade(board, after, us, diff)}")
     } else if (diff < 0) {
-        parts.add("the player gives up ${amount(diff)}")
+        parts.add("the player gives up ${trade(board, after, them, -diff)}")
     }
     val newOurs = passed(after, us) - passed(board, us)
     val newTheirs = passed(after, them) - passed(board, them)

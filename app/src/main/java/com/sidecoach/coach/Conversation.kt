@@ -667,17 +667,26 @@ class Conversation {
      * When the move was a capture and the engine's reply takes back on the same square:
      * that reply in SAN, and the board after it.
      */
-    private fun expectedRecapture(
+    internal fun expectedRecapture(
         record: PlyRecord,
         boardBefore: Board,
         boardAfter: Board,
     ): Pair<String, Board>? {
         val analysis = record.analysis
-        if (analysis == null || analysis.lines.isEmpty() || analysis.lines[0].moves.isEmpty()) {
+        val best = record.assessment?.best ?: emptyList()
+        val expected = if (analysis != null && analysis.lines.isNotEmpty() && analysis.lines[0].moves.isNotEmpty()) {
+            analysis.lines[0].moves[0]
+        } else if (best.size > 1 && best[0] == record.move.uci) {
+            // The position's own analysis not in yet: the engine's line for the move played
+            // names the reply. Without it "up a queen for a pawn" was said of a queen about to
+            // be taken back, and the model called the queen trade a queen won (the dev audit,
+            // 2026-09-26).
+            best[1]
+        } else {
             return null
         }
         val played = Move.fromUciOrNull(record.move.uci) ?: return null
-        val reply = Move.fromUciOrNull(analysis.lines[0].moves[0]) ?: return null
+        val reply = Move.fromUciOrNull(expected) ?: return null
         if (!boardBefore.isCapture(played) || !boardAfter.legalMoves().contains(reply)) return null
         if (reply.to != played.to || !boardAfter.isCapture(reply)) return null
         val then = boardAfter.copy(withStack = false)
