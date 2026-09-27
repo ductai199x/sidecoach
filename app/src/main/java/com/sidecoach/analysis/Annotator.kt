@@ -423,9 +423,10 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
      * ignores an event for a game that is over.
      */
     fun reset() {
+        // Everything queued goes, the stop that [close] puts there included, as the desktop's
+        // `get_nowait` loop takes it.
         while (true) {
-            val taken = requests.poll() ?: break
-            if (taken === stop) { requests.put(stop); break }
+            requests.poll() ?: break
             settle()
         }
         annotator.reset()
@@ -466,13 +467,11 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
     private fun submit(request: Request) {
         if (requests.size >= maxPending) {
             // The engine is further behind than a game can get; the newest position still
-            // matters more than an old one, so the oldest goes.
-            val taken = requests.poll()
-            if (taken != null && taken !== stop) {
+            // matters more than an old one, so the oldest goes -- whatever it is, as the
+            // desktop's `get_nowait` takes it.
+            if (requests.poll() != null) {
                 dropped += 1
                 settle()
-            } else if (taken === stop) {
-                requests.put(stop)
             }
         }
         synchronized(countLock) { outstanding += 1 }

@@ -111,7 +111,8 @@ class MotifsTest {
             } else {
                 Motifs.tagsForPosition(board, pv, mateIn)
             }
-            compare("${case.getString("fen")} $kind ${case.optString("move")} $pv $mateIn", mine, case.getJSONArray("tags"), failures)
+            val move = if (case.isNull("move")) "" else case.getString("move")
+            compare("${case.getString("fen")} $kind $move $pv $mateIn", mine, case.getJSONArray("tags"), failures)
         }
         Log.i(TAG, "${data.length()} hand-built tagger calls checked")
         assertTrue(failures.take(8).joinToString("\n"), failures.isEmpty())

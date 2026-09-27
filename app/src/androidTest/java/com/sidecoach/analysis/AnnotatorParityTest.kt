@@ -122,7 +122,8 @@ class AnnotatorParityTest {
                 val (assessment, analysis) = annotator.assess(name, board, move, ply)
                 board.push(move)
                 val where = "$name ply $ply ${want.getString("uci")}"
-                assertEquals("$where label", want.optString("label").ifEmpty { null }, assessment.label?.name?.lowercase())
+                // A JSON null is no label (Android's `optString` would read it as "null").
+                assertEquals("$where label", if (want.isNull("label")) null else want.getString("label"), assessment.label?.name?.lowercase())
                 assertEquals("$where severity", want.getString("severity"), assessment.severity.name.lowercase())
                 assertEquals("$where loss", want.getDouble("expected_loss"), assessment.expectedLoss, 1e-9)
                 assertEquals("$where best", strings(want.getJSONArray("best")), assessment.best)
@@ -269,6 +270,38 @@ class AnnotatorParityTest {
         repeat(5) { stuck.submitPosition("g", Board(), 0) }
         assertEquals(3, stuck.dropped)
         assertEquals(2, stuck.pending)
+    }
+
+    /**
+     * `Analyser.reset` takes everything queued, the stop a closing analyser put there included,
+     * as the desktop's `get_nowait` loop does: nothing is left pending (the phone put the stop
+     * back and left it counted).
+     */
+    @Test
+    fun aResetTakesTheQueueAndTheStopInIt() {
+        val searching = java.util.concurrent.CountDownLatch(1)
+        val go = java.util.concurrent.CountDownLatch(1)
+        val held = object : FakeEngine() {
+            override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> {
+                searching.countDown()
+                go.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest)
+            }
+        }
+        val analyser = Analyser(GameAnnotator(held, depth = 6, withThreats = false))
+        analyser.submitMove("g", Board(), Move.fromUci("e2e4"), 1)
+        analyser.start()
+        assertTrue("the worker never started", searching.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        val after = Board()
+        after.push(Move.fromUci("e2e4"))
+        analyser.submitMove("g", after, Move.fromUci("e7e5"), 2)
+        // Closing while the worker is held: the stop goes in behind ply 2, then it waits.
+        val closer = Thread { analyser.close() }.apply { start() }
+        val until = System.currentTimeMillis() + 5000
+        while (closer.state != Thread.State.TIMED_WAITING && System.currentTimeMillis() < until) Thread.sleep(5)
+        analyser.reset()
+        assertEquals("ply 1 in the engine, ply 2 and the stop taken", 0, analyser.pending)
+        go.countDown()
     }
 
     /**
