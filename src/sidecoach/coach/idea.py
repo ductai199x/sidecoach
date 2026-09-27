@@ -16,7 +16,7 @@ turns this into words, each at its level.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 
 import chess
 
@@ -164,7 +164,6 @@ class Idea:
     # A second tactic the line also cashes in, besides the blow: the fork that is also a
     # discovered attack (Lichess tags both; the coach named one).
     also: str | None = None
-    pv_moves: tuple[str, ...] = field(default_factory=tuple)
     # The player's sacrifices on the way to the point: (ply, what is given), "queen",
     # "rook", "exchange", "bishop", "knight", "pawn" -- material the reply keeps.
     sacrifices: tuple[tuple[int, str], ...] = ()
