@@ -224,7 +224,7 @@ class PuzzleRoom(
                 System.currentTimeMillis() / 1000.0,
             )
         } catch (exc: Exception) { // the record must not break the puzzle
-            emit("sys", "error", "profile error: $exc")
+            emit("sys", "error", "profile error: ${PanelEngine.pyRepr(exc)}")
             return
         }
         emit(

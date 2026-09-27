@@ -276,12 +276,15 @@ class TakebackTest {
         for ((i, san) in "e4 e5 Nf3 Nc6".split(" ").withIndex()) {
             val move = played(board, san, i + 1)
             com.sidecoach.ui.PanelEngine.onGameEvent(move)
-            com.sidecoach.ui.PanelEngine.onEngineEvent(
-                MoveAssessment(
-                    gameId = "g", ply = i + 1, uci = move.uci, expectedLoss = 0.0,
-                    severity = com.sidecoach.events.Severity.NONE, best = emptyList(),
-                    label = com.sidecoach.events.Label.BEST,
+            com.sidecoach.ui.PanelEngine.onEngineEvents(
+                listOf(
+                    MoveAssessment(
+                        gameId = "g", ply = i + 1, uci = move.uci, expectedLoss = 0.0,
+                        severity = com.sidecoach.events.Severity.NONE, best = emptyList(),
+                        label = com.sidecoach.events.Label.BEST,
+                    ),
                 ),
+                null,
             )
         }
         fun labels(): Set<String> {

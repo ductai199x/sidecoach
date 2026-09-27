@@ -1,6 +1,7 @@
 package com.sidecoach.ui
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.voice.FrameSource
 import com.sidecoach.voice.HOP
 import com.sidecoach.voice.Listener
@@ -45,7 +46,8 @@ class PanelListenTest {
         }
     }
 
-    private val asked = LinkedBlockingQueue<Pair<String, Boolean>>()
+    /** What was asked of the session's loop (`engine._commands`). */
+    private val asked = PanelEngine.commands
     private var recogniser = WordsByLength()
 
     @Before
@@ -56,12 +58,14 @@ class PanelListenTest {
         recogniser = WordsByLength()
         PanelListen.stt = recogniser
         // A session: the ask is queued for its loop.
-        PanelEngine.onAsk = { text, spoken -> asked.put(text to spoken) }
+        asked.clear()
+        PanelEngine.set("running" to true)
     }
 
     @After
     fun tearDown() {
-        PanelEngine.onAsk = null
+        PanelEngine.set("running" to false)
+        asked.clear()
         PanelListen.sendDelayS = PanelListen.DICTATION_SEND_DELAY_S
         PanelListen.cancelDictation()
     }
@@ -99,7 +103,7 @@ class PanelListenTest {
         PanelListen.onUtterance(silence(0.5), 0.5)
         assertEquals("hello hello hello hello hello hello", dictation().getString("text"))
         // ...and after the quiet, one ask with everything, and the box is clear.
-        assertEquals("hello hello hello hello hello hello" to true, asked.poll(2, TimeUnit.SECONDS))
+        assertEquals("ask_spoken" to "hello hello hello hello hello hello", asked.poll(2, TimeUnit.SECONDS))
         assertDictation("", live = false, sends = false)
         // A partial still being recognised when its utterance ends is dropped: the final
         // result has those words, and they must not show twice.
@@ -139,7 +143,7 @@ class PanelListenTest {
         assertDictation("hello hello", live = true, sends = false)
         PanelListen.onDropped() // ...and is dropped
         assertDictation("hello hello", live = false, sends = true)
-        assertEquals("hello hello" to true, asked.poll(2, TimeUnit.SECONDS))
+        assertEquals("ask_spoken" to "hello hello", asked.poll(2, TimeUnit.SECONDS))
         // With nothing said before it, the box simply stops listening.
         PanelListen.onSpeechStart()
         PanelListen.onDropped()
@@ -148,14 +152,49 @@ class PanelListenTest {
 
     @Test
     fun anAskBeforeStartIsAnsweredAtOnceNotKeptForALaterSession() {
-        PanelEngine.onAsk = null
+        PanelEngine.set("running" to false)
         val before = PanelEngine.poll(0).getInt("cursor")
         PanelEngine.ask("what should I play")
+        assertTrue("an ask with no session was queued", asked.isEmpty())
         val lines = PanelEngine.poll(before).getJSONArray("lines")
         val texts = (0 until lines.length()).map { lines.getJSONObject(it) }
         assertTrue(texts.any { it.getString("text") == "you: what should I play" })
         val reply = texts.first { it.getString("chan") == "coach" && "Press Start first" in it.getString("text") }
         assertTrue(reply.getJSONObject("data").getString("full").startsWith("Press Start first"))
+    }
+
+    /**
+     * The settings page's live test (`test_the_microphone_test_keeps_what_it_hears_and_asks_no_
+     * coach`): while it is on, an utterance is transcribed and corrected into the test's list,
+     * the coach is not asked, and the listening mode it interrupted comes back when it stops.
+     */
+    @Test
+    fun theMicrophoneTestKeepsWhatItHearsAndAsksNoCoach() {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext
+        InstrumentationRegistry.getInstrumentation().uiAutomation
+            .grantRuntimePermission(app.packageName, android.Manifest.permission.RECORD_AUDIO)
+        PanelListen.build(app)
+        PanelListen.stt = recogniser
+        PanelEngine.set("fen" to com.sidecoach.chess.STARTING_FEN)
+        val mode = PanelListen.listener?.mode
+        val status = PanelListen.hearStatus()
+        assertTrue(!status.getBoolean("on") && status.getJSONArray("heard").length() == 0)
+        val started = PanelListen.setHearTest(true)
+        org.junit.Assume.assumeTrue("no microphone here: $started", started.getBoolean("ok"))
+        try {
+            assertTrue(started.getBoolean("on") && PanelListen.listener?.mode != "off")
+            PanelListen.hear(silence(1.0))
+            val heard = PanelListen.hearStatus()
+            assertTrue(heard.getBoolean("ok") && heard.has("level"))
+            val first = heard.getJSONArray("heard").getJSONObject(0)
+            assertEquals("hello hello", first.getString("heard"))
+            assertTrue(first.getString("raw").isNotEmpty() && first.getLong("stt_ms") >= 0)
+            assertTrue("nothing was asked of the coach", asked.isEmpty())
+        } finally {
+            assertTrue(!PanelListen.setHearTest(false).getBoolean("on"))
+            assertEquals(mode, PanelListen.listener?.mode)
+            PanelEngine.set("fen" to null)
+        }
     }
 
     /** A voice gate that answers a script of probabilities, one per frame. */

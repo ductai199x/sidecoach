@@ -21,6 +21,11 @@ class PanelApi(
     private val files: File,
     /** The puzzle rooms (`server._rooms_for`), made on the first call that needs them. */
     private val rooms: () -> PuzzleRooms,
+    /**
+     * Where Debug > Dump writes (`data_dir/dumps` on the desktop): the app's own folder on
+     * shared storage, where `adb pull` reaches it.
+     */
+    private val dumps: File = File(files, "dumps"),
 ) : LocalServer.Api {
 
     override fun handle(
@@ -30,6 +35,9 @@ class PanelApi(
         body: String,
         raw: ByteArray,
     ): LocalServer.Reply? {
+        // A route the server does not serve, or a method the route does not take: the local
+        // server answers as the desktop's does (404 or 405).
+        if (!serves(method, path)) return null
         val json = if (body.isBlank()) JSONObject() else runCatching { JSONObject(body) }
             .getOrElse { JSONObject() }
         return when {
@@ -38,7 +46,7 @@ class PanelApi(
                     put("ok", true)
                     put("version", version)
                     put("pid", android.os.Process.myPid())
-                    put("running", PanelEngine.poll(Int.MAX_VALUE).getJSONObject("state").optBoolean("running"))
+                    put("running", PanelEngine.running)
                     put("warm", PanelWarm.status())
                 }
             )
@@ -58,20 +66,23 @@ class PanelApi(
             path == "/api/hint" -> ask(QUICK.getValue("hint"))
             path == "/api/move" -> ask(QUICK.getValue("move"))
             path == "/api/line" -> ask(QUICK.getValue("line"))
-            path == "/api/ask" -> ask(json.optString("text"))
+            path == "/api/ask" -> if (json.has("text")) ask(json.optString("text")) else unprocessable()
 
+            // With no session running these wait for the next Start (`panel.command`).
             path == "/api/flip" -> {
-                PanelEngine.onFlip?.invoke()
+                PanelEngine.command("flip")
                 ok(done())
             }
 
+            // An outcome the panel does not know is refused (`end_game`'s ValueError).
             path == "/api/end" -> {
-                PanelEngine.onEnd?.invoke(json.optString("outcome"))
+                if (!json.has("outcome")) return unprocessable()
+                PanelEngine.endGame(json.optString("outcome"))
                 ok(done())
             }
 
             path == "/api/analyze" -> {
-                PanelEngine.onAnalyze?.invoke()
+                PanelEngine.command("analyze")
                 ok(done())
             }
 
@@ -90,11 +101,9 @@ class PanelApi(
             // The page's own frame meter. The phone keeps no perf files.
             path == "/api/perf" -> ok(done())
 
-            path == "/api/dump" -> {
-                val lines = PanelEngine.all()
-                PanelEngine.emit("sys", "info", "${lines.size} records in the log")
-                ok(JSONObject().apply { put("ok", true); put("path", JSONObject.NULL) })
-            }
+            // The frames the engine keeps in memory, and its log, written out: the one way
+            // anything about a live session reaches the disk in the app.
+            path == "/api/dump" -> ok(JSONObject().put("ok", true).put("path", PanelEngine.dump(dumps)))
 
             // The panel's own board cannot be on the phone's screen behind the page; the
             // app simply does not read while its own window is in front.
@@ -191,9 +200,9 @@ class PanelApi(
         }
     }
 
+    /** `PanelApi.ask`: the ask for the session's loop, whatever it says (an empty one too). */
     private fun ask(text: String): LocalServer.Reply {
-        if (text.isBlank()) return ok(done())
-        PanelEngine.ask(text)
+        PanelEngine.command("ask", text)
         return ok(done())
     }
 
@@ -307,6 +316,40 @@ class PanelApi(
 
     companion object {
         private const val TAG = "sidecoach.panel"
+
+        /**
+         * Every route `server.build_app` serves, by method: what the page may call. Anything
+         * else is answered as the desktop's server answers it (see `LocalServer`).
+         */
+        val ROUTES: Map<String, Set<String>> = mapOf(
+            "GET" to setOf(
+                "/api/health", "/api/poll", "/api/hear_test", "/api/settings", "/api/setup/status",
+            ),
+            "POST" to setOf(
+                "/api/perf", "/api/client_log", "/api/dump", "/api/start", "/api/stop", "/api/hint",
+                "/api/move", "/api/line", "/api/flip", "/api/analyze", "/api/ask", "/api/hear_test",
+                "/api/say", "/api/voice", "/api/muted", "/api/dictation/cancel", "/api/record",
+                "/api/exclude", "/api/end", "/api/setup/start", "/api/setup/cancel",
+                "/api/setup/remove_pack", "/api/reset_profile", "/api/clear_caches", "/api/correct",
+                "/api/listen", "/api/ptt", "/api/hear",
+            ),
+            "PUT" to setOf("/api/settings"),
+        )
+
+        /** A puzzle room's routes, `/api/puzzle/{puzzle_id}/<action>`, by method. */
+        val PUZZLE_ROUTES: Map<String, Set<String>> = mapOf(
+            "GET" to setOf("poll"),
+            "POST" to setOf("open", "targets", "move", "retract", "giveup", "ask", "voice", "close"),
+        )
+
+        /** Whether the server serves [method] [path]. */
+        fun serves(method: String, path: String): Boolean {
+            if (path in ROUTES[method].orEmpty()) return true
+            if (!path.startsWith("/api/puzzle/")) return false
+            // `{puzzle_id}` is one segment of the path, as Starlette matches it.
+            val parts = path.removePrefix("/api/puzzle/").split('/')
+            return parts.size == 2 && parts[0].isNotEmpty() && parts[1] in PUZZLE_ROUTES[method].orEmpty()
+        }
 
         /**
          * The panel's three quick pills and what each asks the coach (`panel.hint`, `.move`,

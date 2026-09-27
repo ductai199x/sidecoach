@@ -170,20 +170,24 @@ class CaptionsGestureTest {
         var buttons: Map<String, Rect> = emptyMap()
         instrumentation.runOnMainSync { buttons = Captions.buttonsAt() }
         assertEquals(listOf("mute", "hint", "move", "line"), buttons.keys.toList())
+        // A session running, so the pills' asks are queued for its loop (`engine._commands`).
+        val wasRunning = PanelEngine.running
+        PanelEngine.commands.clear()
+        PanelEngine.set("running" to true)
         val asked = mutableListOf<String>()
-        val session = PanelEngine.onAsk
-        PanelEngine.onAsk = { text, _ -> synchronized(asked) { asked.add(text) } }
         try {
             for (name in listOf("hint", "move", "line")) {
                 val at = buttons.getValue(name)
                 tap(at.centerX(), at.centerY())
                 Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
             }
-            assertTrue("the pills asked ${synchronized(asked) { asked.toList() }}", waitFor {
-                synchronized(asked) { asked.toList() } == listOf("hint", "what should I play", "show me the line")
+            assertTrue("the pills asked $asked", waitFor {
+                while (true) asked.add(PanelEngine.commands.poll()?.second?.toString() ?: break)
+                asked == listOf("hint", "what should I play", "show me the line")
             })
         } finally {
-            PanelEngine.onAsk = session
+            PanelEngine.set("running" to wasRunning)
+            PanelEngine.commands.clear()
         }
         val wasMuted = PanelVoice.muted
         val speaker = buttons.getValue("mute")

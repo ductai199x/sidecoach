@@ -21,18 +21,21 @@ import com.sidecoach.profile.PuzzleStore
 import com.sidecoach.profile.Puzzles
 import com.sidecoach.profile.Store
 import com.sidecoach.analysis.Assessing
-import com.sidecoach.events.Label
 import com.sidecoach.events.MoveAssessment
 import com.sidecoach.coach.CoachRunner
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.state.GamePipeline
 import com.sidecoach.ui.PanelEngine
 import com.sidecoach.ui.PanelVoice
+import org.json.JSONArray
+import org.json.JSONObject
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Mat
 import org.opencv.imgproc.Imgproc
 import java.io.File
+import java.math.BigDecimal
+import java.math.RoundingMode
 
 /**
  * A frame of the screen, watched: the board found and kept, its theme learned from the start
@@ -41,7 +44,9 @@ import java.io.File
  * This is the desktop's live loop (`cli.py`'s watcher and `ui/panel.py`'s) rather than a
  * reader of positions: a frame goes through the change gate -- gated on the board's own
  * region, so a board that has not moved costs nothing however busy the rest of the screen
- * is -- and then through the pipeline, which answers with the game's events.
+ * is -- and then through the pipeline, which answers with the game's events. What the loop
+ * learns goes to the panel's log as `panel._run` writes it: the board locked and lost, the
+ * start position, a degraded reading, a tick that stalled; and the status strip, once a second.
  */
 class GameWatcher(
     context: Context,
@@ -54,6 +59,11 @@ class GameWatcher(
     private val embedder: CellEmbedder?,
     private val assessing: Assessing,
     private val coaching: CoachRunner,
+    /**
+     * The player model's file: a live session teaches the profile on disk; null keeps it in
+     * memory, forgotten with the session, as the desktop's replay does (and a test).
+     */
+    profilePath: File? = File(context.filesDir, "profile.sqlite"),
 ) : AutoCloseable {
 
     private val store = themeDirectory?.let { ThemeStore(it) }
@@ -77,7 +87,7 @@ class GameWatcher(
      * The player model: a session teaches the profile on disk (`panel._run`). Practice is a
      * nicety, so the session runs without puzzles when there are none.
      */
-    private val profileStore = Store(File(context.filesDir, "profile.sqlite"))
+    private val profileStore = Store(profilePath)
     private val puzzles: PuzzleStore? = try {
         Puzzles.openStore(context.filesDir)
     } catch (exc: Exception) {
@@ -92,9 +102,26 @@ class GameWatcher(
     /** The word that a joined position has become a game, said once per game. */
     private var promotionLogged = false
 
+    // What `panel._run` keeps across its ticks: the vision's last transitions, the opening the
+    // engine last named, and the numbers the status strip and the stall warning are made of.
+    private var locked = false
+    private var verified = false
+    private var bootstraps = 0
+    private var degraded = false
+    private var opening: String? = null
+    private var ticks = 0
+    private val pipelineMs = ArrayList<Double>()
+    private var lastHealth = SystemClock.elapsedRealtime() / 1000.0
+    private var lastTs = SystemClock.elapsedRealtime() / 1000.0
+    private var tickEnd = System.nanoTime()
+    private var tGrab = 0L
+    private var tBegun = 0L
+    private var tVision = 0L
+    private var tickFrame = 0
+
     init {
         PanelEngine.profiler = profiler
-        PanelEngine.emit("sys", "info", "profile: ${profileStore.path?.path}")
+        PanelEngine.emit("sys", "info", "profile: ${profileStore.path?.path ?: "in memory (replay)"}")
         if (puzzles != null) {
             PanelEngine.emit(
                 "sys",
@@ -102,7 +129,7 @@ class GameWatcher(
                 "puzzles: ${puzzles.count()} from ${puzzles.path?.path}, level ${profiler.puzzleLevel()}",
             )
         } else {
-            PanelEngine.emit("sys", "warn", "puzzles: none (get them in Setup for practice after a game)")
+            PanelEngine.emit("sys", "warn", "puzzles: none (get them in Set up, for practice after a game)")
         }
         val first = profiler.snapshot()
         PanelEngine.set("profile" to PanelEngine.profileState(first))
@@ -110,19 +137,8 @@ class GameWatcher(
         // A question about the player over their games: the coach's model writes the queries
         // itself (profile/Ask), read-only over this store.
         coaching.useRecord(profileStore)
-        PanelEngine.onAsk = { text, spoken -> command(if (spoken) "ask_spoken" else "ask", text) }
-        PanelEngine.onEnd = { outcome -> command("end", outcome) }
-        PanelEngine.onFlip = { command("flip") }
-        PanelEngine.onAnalyze = { command("analyze") }
         PanelEngine.set("status" to "waiting for a board", "coach_on" to coaching.on, "analysis_on" to assessing.on)
     }
-
-    /**
-     * What the page asked for between frames. The panel's buttons are pressed from another
-     * thread; the vision's own thread drains them where `panel._drain_commands` drains its
-     * queue, so their events join the frame's.
-     */
-    private val commands = ArrayDeque<Pair<String, String>>()
 
     /**
      * The last frame read, and the board on it: `latest` and `latest_geom` in the desktop's
@@ -189,21 +205,37 @@ class GameWatcher(
      */
     fun read(bitmap: Bitmap?, ts: Double): Watch? {
         val pipeline = pipeline ?: return null
+        tGrab = System.nanoTime()
         val same = bitmap == null
         val bgr = (if (same) lastFrame else toBgr(bitmap!!)) ?: return null
         try {
             var began = SystemClock.elapsedRealtime()
+            lastTs = ts
             val pixels = lastPixels.takeIf { same } ?: FramePixels.of(bgr)
             // The desktop moves the gate onto the board before deciding a frame changed.
             gate.region = ChangeGate.boardGate(pipeline.board, pixels.width, pixels.height)
             val changed = if (same) gate.changedAgain(pixels, ts) else gate.changed(pixels, ts)
             lastPixels = pixels
             val gateMs = SystemClock.elapsedRealtime() - began
+            // The frames a Dump writes out: those that changed, in memory only.
+            if (changed) PanelEngine.frames.push(ts, bgr)
             began = SystemClock.elapsedRealtime()
-            val events = pipeline.process(bgr, ts, changed, frameId++, pixels, sameFrame = same)
+            tBegun = System.nanoTime()
+            tickFrame = frameId++
+            val events: MutableList<Event> = try {
+                pipeline.process(bgr, ts, changed, tickFrame, pixels, sameFrame = same)
+            } catch (exc: Exception) {  // a pipeline bug must not end the panel
+                PanelEngine.emit("sys", "error", "pipeline error at frame $tickFrame: ${PanelEngine.pyRepr(exc)}")
+                mutableListOf()
+            }
+            tVision = System.nanoTime()
+            pipelineMs.add((tVision - tBegun) / 1e6)
+            ticks += 1
             val took = SystemClock.elapsedRealtime() - began
             val geometry = pipeline.board?.let { BoardGeometry(it.region, it.cellPx) }
             events += drainCommands(pipeline, bgr, geometry, ts)
+            transitions(pipeline)
+            degraded = PanelEngine.checkDegraded(pipeline.readings, degraded)
             dispatch(events, ts)
             dispatched = true
             if (++reads % 5 == 1) {
@@ -252,6 +284,49 @@ class GameWatcher(
     }
 
     /**
+     * Vision transitions, as `panel._run` logs them: only the changes, never every frame --
+     * the board locked or lost, the lock verified or in doubt, a start position learned.
+     */
+    private fun transitions(pipeline: GamePipeline) {
+        if ((pipeline.board != null) != locked) {
+            locked = pipeline.board != null
+            PanelEngine.set("locked" to locked)
+            val b = pipeline.board
+            if (locked && b != null) {
+                val r = b.region
+                PanelEngine.emit(
+                    "vision",
+                    "info",
+                    "board locked at (${r.x},${r.y}) ${r.w}x${r.h}, cell ${PanelEngine.format1(b.cellPx)}px, " +
+                        "fit ${PanelEngine.format2(b.fit)}",
+                    JSONObject().apply {
+                        put("region", JSONArray(listOf(r.x, r.y, r.w, r.h)))
+                        put("cell_px", round(b.cellPx, 2))
+                        put("fit", round(b.fit, 3))
+                    },
+                )
+            } else {
+                PanelEngine.emit("vision", "warn", "board lost")
+            }
+        }
+        if (locked && pipeline.tracker.verified != verified) {
+            verified = pipeline.tracker.verified
+            PanelEngine.emit("vision", "debug", if (verified) "lock verified" else "lock in doubt")
+        }
+        if (pipeline.bootstraps != bootstraps) {
+            bootstraps = pipeline.bootstraps
+            val bottom = pipeline.bottom?.name?.lowercase() ?: "?"
+            val labels = pipeline.model?.rankLabels?.size ?: 0
+            PanelEngine.emit(
+                "vision",
+                "info",
+                "start position seen, $bottom at the bottom; theme learned" +
+                    "${if (store != null) " and cached" else ""}, $labels/8 rank labels",
+            )
+        }
+    }
+
+    /**
      * The events of a frame -- or of a command drained between frames -- through the log,
      * the page, the engine, the profile and the coach, in the order `panel`'s loop runs them.
      */
@@ -267,10 +342,8 @@ class GameWatcher(
         // period for it.
         val idle = assessing.idle
         val assessed = assessing.drain()
-        for (event in assessed) {
-            note(event)
-            PanelEngine.onEngineEvent(event)
-        }
+        for (event in assessed) note(event)
+        opening = PanelEngine.onEngineEvents(assessed, opening)
         val profiled = PanelEngine.profile(profiler, events + assessed, tick = true, flush = idle)
         // The coach, in the order the desktop's loop runs it: the game's events, the engine's
         // word on them, then the profile's. The tick and the drain are the loop's own, and
@@ -280,12 +353,10 @@ class GameWatcher(
         coaching.events(profiled, ts)
     }
 
-    /** Queue one of the panel's commands for the vision thread. */
-    private fun command(name: String, payload: String = "") {
-        synchronized(commands) { commands.addLast(name to payload) }
-    }
-
-    /** `panel._drain_commands`: an ask, and the game's three buttons. */
+    /**
+     * `panel._drain_commands`: an ask, and the game's three buttons, from the engine's queue
+     * (`PanelEngine.commands`) -- what was pressed before this session started too.
+     */
     private fun drainCommands(
         pipeline: GamePipeline,
         frame: Mat?,
@@ -294,18 +365,19 @@ class GameWatcher(
     ): MutableList<Event> {
         val events = mutableListOf<Event>()
         while (true) {
-            val (name, payload) = synchronized(commands) { commands.removeFirstOrNull() } ?: break
+            val (name, payload) = PanelEngine.commands.poll() ?: break
             when (name) {
                 "ask", "ask_spoken" -> if (coaching.on) {
                     // Spoken or typed, the ask is a turn of the conversation on the page.
                     val spoken = name == "ask_spoken"
-                    PanelEngine.heard(payload, spoken)
-                    coaching.ask(payload, ts)
-                    PanelEngine.recordDialogue(UserUtterance(payload, source = if (spoken) "voice" else "text"))
+                    val text = payload.toString()
+                    PanelEngine.heard(text, spoken)
+                    coaching.ask(text, ts)
+                    PanelEngine.recordDialogue(UserUtterance(text, source = if (spoken) "voice" else "text"))
                 } else {
                     PanelEngine.emit("user", "warn", "no coach to ask: $payload")
                 }
-                "end" -> events += endGame(pipeline, payload, ts)
+                "end" -> events += endGame(pipeline, payload.toString(), ts)
                 "flip" -> events += flip(pipeline, frame, geometry, ts)
                 "analyze" -> events += analyse(pipeline, frame, geometry, ts)
             }
@@ -320,7 +392,7 @@ class GameWatcher(
             PanelEngine.emit("user", "warn", "no game to end")
             return mutableListOf()
         }
-        val (result, reason) = outcomeResult(outcome, PanelEngine.userSide())
+        val (result, reason) = PanelEngine.outcomeResult(outcome, PanelEngine.userSide())
         val events = pipeline.endGame(result, reason, ts)
         if (events.isNotEmpty()) {
             PanelEngine.emit("user", "info", "you ended the game: $reason ($result)")
@@ -397,7 +469,7 @@ class GameWatcher(
             return mutableListOf()
         }
         val events = runCatching { pipeline.coldStart(frame, geometry, forcedBottom, ts) }
-            .onFailure { PanelEngine.emit("vision", "error", "analyse failed: $it") }
+            .onFailure { PanelEngine.emit("vision", "error", "analyse failed: ${PanelEngine.pyRepr(it)}") }
             .getOrNull() ?: return mutableListOf()
         if (events.isEmpty()) {
             PanelEngine.emit(
@@ -413,7 +485,8 @@ class GameWatcher(
     }
 
     /**
-     * Time passing for the coach, and whatever it has finished saying.
+     * Time passing for the coach, and whatever it has finished saying; then the page's state,
+     * the status strip once a second, and a word on a tick that stalled.
      *
      * Once a tick, whether or not a frame was read: the app does not read the screen while
      * its own window is in front, and a question asked from that window still wants its
@@ -421,6 +494,7 @@ class GameWatcher(
      */
     fun coachTick(ts: Double) {
         val pipeline = pipeline
+        val read = dispatched
         if (pipeline != null) {
             val events = drainCommands(pipeline, lastFrame, lastGeometry, ts)
             // The loop's pass over the engine and the profile, once a tick: a frame read this
@@ -432,22 +506,49 @@ class GameWatcher(
         coaching.tick(ts)
         coaching.drain()
         PanelVoice.sayHeldWord(coaching.coach, ts)
-        if (pipeline != null) refreshState(pipeline)
+        if (pipeline == null) return
+        refreshState(pipeline)
+        val now = SystemClock.elapsedRealtime() / 1000.0
+        if (now - lastHealth >= PanelEngine.HEALTH_EVERY_S) {
+            PanelEngine.health(pipeline, coaching, ticks, pipelineMs, now - lastHealth, lastTs)
+            ticks = 0
+            pipelineMs.clear()
+            lastHealth = now
+        }
+        val tDone = System.nanoTime()
+        if (read && (tDone - tickEnd) / 1e9 > PanelEngine.STALL_WARN_S) {
+            PanelEngine.emit(
+                "sys",
+                "warn",
+                "tick $tickFrame took ${seconds(tDone - tickEnd)}s: capture " +
+                    "${seconds(tGrab - tickEnd)}s, recorder ${seconds(tBegun - tGrab)}s, vision " +
+                    "${seconds(tVision - tBegun)}s, engine/coach ${seconds(tDone - tVision)}s",
+            )
+        }
+        if (read) tickEnd = tDone
     }
 
     /**
-     * `panel._refresh_state`'s status. A joined position that has run long enough is a game
-     * of the record (the profile's call, `Profiler.PROVISIONAL_PLIES`): the page says so once.
+     * `panel._refresh_state`: the position, the move list and the last move's highlight from
+     * the game's own moves as the desktop reads them every tick -- a position adopted without a
+     * new game (a puzzle after an unfinished one) or a takeback shows only what the game now
+     * holds (Tai, 2026-09-24: the last puzzle's moves and its gxh3 highlight stayed on the
+     * next) -- the side at the bottom, and the status. A joined position that has run long
+     * enough is a game of the record (the profile's call, `Profiler.PROVISIONAL_PLIES`): the
+     * page says so once.
      */
     private fun refreshState(pipeline: GamePipeline) {
         val rec = pipeline.reconciler
+        val fen = rec?.board?.fen()
+        val ucis = rec?.board?.moveStack?.map { it.uci() } ?: emptyList()
+        val (sans, fens) = if (rec != null) sansOf(rec.baseFen, rec.board.moveStack) else Pair(emptyList(), emptyList())
         val aGame = rec != null && (rec.kind == "game" || profiler.followingAGame)
         if (aGame && rec.kind != "game" && !promotionLogged) {
             promotionLogged = true
             PanelEngine.emit(
                 "game",
                 "info",
-                "${rec.board.moveStack.size} plies on the joined position: a game joined late, recorded " +
+                "${ucis.size} plies on the joined position: a game joined late, recorded " +
                     "from the join and reviewed at the end",
             )
         }
@@ -458,18 +559,16 @@ class GameWatcher(
             aGame -> "following a game"
             else -> "following a position"
         }
-        // The move list and the last move's highlight, from the game's own moves as the
-        // desktop reads them every tick: a position adopted without a new game (a puzzle
-        // after an unfinished one) or a takeback shows only what the game now holds (Tai,
-        // 2026-09-24: the last puzzle's moves and its gxh3 highlight stayed on the next).
-        val ucis = rec?.board?.moveStack?.map { it.uci() } ?: emptyList()
-        val (sans, fens) = if (rec != null) sansOf(rec.baseFen, rec.board.moveStack) else Pair(emptyList(), emptyList())
         PanelEngine.set(
-            "status" to status,
+            "fen" to fen,
             "moves" to sans,
             "fens" to fens,
             "ucis" to ucis,
             "last_move" to ucis.lastOrNull(),
+            "ply" to ucis.size,
+            "following" to (pipeline.model != null),
+            "bottom" to pipeline.bottom?.name?.lowercase(),
+            "status" to status,
         )
     }
 
@@ -495,7 +594,8 @@ class GameWatcher(
         when (event) {
             is MoveAssessment -> {
                 val word = event.label?.name?.lowercase() ?: event.severity.name.lowercase()
-                verdicts.add("${event.ply}. $word (${"%.2f".format(event.expectedLoss)})")
+                // `f"{x:.2f}"`: half to even, never the device's locale (a comma in Germany).
+                verdicts.add("${event.ply}. $word (${PanelEngine.format2(event.expectedLoss)})")
                 if (verdicts.size > 20) verdicts.removeAt(0)
             }
             is GameStarted -> {
@@ -547,26 +647,24 @@ class GameWatcher(
     /**
      * The end of a session: `panel._run`'s `finally`, on the vision thread. A Stop waits a few
      * seconds for the engine's backlog, so the review has every verdict; the coach's replies
-     * in flight are waited for; Stockfish and the coach stay for the next Start (only the
-     * screen stops), the engine's game dropped; the session is summarised for the next one's
-     * coach, and the stores are closed.
+     * in flight are waited for; the strip is brought up to date once more; Stockfish and the
+     * coach stay for the next Start (only the screen stops), the engine's game dropped; the
+     * session is summarised for the next one's coach, and the stores are closed.
      */
     override fun close() {
-        PanelEngine.onAsk = null
-        PanelEngine.onEnd = null
-        PanelEngine.onFlip = null
-        PanelEngine.onAnalyze = null
         try {
             val late = assessing.wait(5.0)
             coaching.events(late, SystemClock.elapsedRealtime() / 1000.0)
             coaching.events(PanelEngine.profile(profiler, late, flush = true), SystemClock.elapsedRealtime() / 1000.0)
             coaching.wait()
+            // The strip once more, with the replies that came after the last tick.
+            pipeline?.let { one -> runCatching { PanelEngine.health(one, coaching, ticks, pipelineMs, 1.0, lastTs) } }
             assessing.reset()
             try {
                 val summary = profiler.endSession(System.currentTimeMillis() / 1000.0)
                 if (!summary.isNullOrEmpty()) PanelEngine.emit("game", "info", "session: $summary")
             } catch (exc: Exception) {  // the profile must not block the shutdown
-                PanelEngine.emit("sys", "error", "profile error at close: $exc")
+                PanelEngine.emit("sys", "error", "profile error at close: ${PanelEngine.pyRepr(exc)}")
             }
         } finally {
             PanelEngine.profiler = null
@@ -581,18 +679,12 @@ class GameWatcher(
     companion object {
         private const val TAG = "sidecoach.game"
 
-        /** The PGN result and the reason for an outcome, from the user's side. */
-        fun outcomeResult(outcome: String, userSide: String?): Pair<String, String> {
-            val userWhite = userSide != "black"
-            return when (outcome) {
-                "resigned" ->
-                    (if (userWhite) "0-1" else "1-0") to "user resigned or lost on time"
-                "won" ->
-                    (if (userWhite) "1-0" else "0-1") to "opponent resigned or lost on time"
-                "draw" -> "1/2-1/2" to "draw agreed"
-                else -> "*" to "abandoned by the user"
-            }
-        }
+        /** `f"{x:.1f}"` of a span of nanoseconds, in seconds. */
+        private fun seconds(nanos: Long): String = PanelEngine.format1(nanos / 1e9)
+
+        /** Python's `round(x, places)`. */
+        private fun round(value: Double, places: Int): Double =
+            BigDecimal(value).setScale(places, RoundingMode.HALF_EVEN).toDouble()
 
         /** OpenCV's native library, loaded once for the process. */
         val loaded: Boolean by lazy {

@@ -196,13 +196,27 @@ class LocalServer(
             val reply = try {
                 api.handle(request.method, request.path, request.query, request.body, request.raw)
             } catch (exc: Exception) {
+                // What Starlette answers an exception a route did not catch.
                 Log.w(TAG, "${request.path} failed: $exc")
-                return Reply(500, "application/json; charset=utf-8", """{"ok":false}""".toByteArray())
+                return Reply(500, "text/plain; charset=utf-8", "Internal Server Error".toByteArray())
             }
-            return reply ?: Reply(404, "application/json; charset=utf-8", """{"ok":false}""".toByteArray())
+            return reply ?: unserved(request.method)
         }
+        // The static files take a GET (or a HEAD) and nothing else, as `StaticFiles` does.
+        if (request.method != "GET" && request.method != "HEAD") return unserved(request.method)
         return file(request.path)
     }
+
+    /**
+     * A route the desktop's server does not serve: its static files answer, as the mount at
+     * "/" does there -- 404 to a GET, 405 to any other method.
+     */
+    private fun unserved(method: String): Reply =
+        if (method == "GET" || method == "HEAD") {
+            Reply(404, "application/json; charset=utf-8", """{"detail":"Not Found"}""".toByteArray())
+        } else {
+            Reply(405, "application/json; charset=utf-8", """{"detail":"Method Not Allowed"}""".toByteArray())
+        }
 
     /**
      * A file of the shipped page. The frontend is one page with client-side routing, so a

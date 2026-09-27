@@ -12,7 +12,9 @@ import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.llm.OpenAICompatProvider
 import com.sidecoach.llm.combine
+import com.sidecoach.llm.modelOf
 import com.sidecoach.llm.pricesFor
+import com.sidecoach.llm.usageOf
 import com.sidecoach.vision.BoardDetect
 import com.sidecoach.vision.BoardTracker
 import com.sidecoach.vision.CellEmbedder
@@ -158,13 +160,13 @@ object PanelWarm {
                 // The session builds what is missing. A Throwable, not only an Exception:
                 // on Android an Error on this thread (a native library not loaded) would
                 // take the whole app down with it.
-                PanelEngine.emit("sys", "warn", "warm-up: $exc")
+                PanelEngine.emit("sys", "warn", "warm-up: ${PanelEngine.pyRepr(exc)}")
                 synchronized(lock) {
                     for (one in stages.values) {
                         val state = one.optString("state")
                         if (state == "pending" || state == "loading") {
                             one.put("state", "off")
-                            one.put("detail", "$exc")
+                            one.put("detail", PanelEngine.pyRepr(exc))
                         }
                     }
                 }
@@ -379,7 +381,7 @@ object PanelWarm {
                 temperature = 0.0,
             )
         } catch (exc: Exception) {
-            PanelEngine.emit("sys", "warn", "coach: the local model did not answer a warm-up: ${exc.message}")
+            PanelEngine.emit("sys", "warn", "coach: the local model did not answer a warm-up: ${exc.message ?: ""}")
             return
         }
         PanelEngine.emit("sys", "info", "coach: local model answered in ${f1((System.nanoTime() - began) / 1e9)}s")
@@ -479,28 +481,16 @@ object PanelWarm {
 
     /**
      * The session's model calls for the status strip: the game coach's ledger and the puzzle
-     * rooms', combined; null when the coach has no model that keeps one. `_health`'s `llm`.
+     * rooms', combined -- the offline coach's too, which has one with nothing on it; null when
+     * there is no coach. `_health`'s `llm`, asked once a second with the rest of the strip.
      */
-    fun usage(): Map<String, Any?>? {
-        // Health is refreshed every tick, the desktop's once a second: so is this.
-        val now = System.nanoTime()
-        if (now - usageAt < 1_000_000_000L) return usageLast
-        usageAt = now
-        usageLast = computeUsage()
-        return usageLast
-    }
-
-    @Volatile private var usageAt = 0L
-    @Volatile private var usageLast: Map<String, Any?>? = null
-
-    private fun computeUsage(): Map<String, Any?>? {
-        val provider = coaching?.coach?.speaker?.provider as? OpenAICompatProvider ?: return null
-        val store = SettingsStore(appContext)
+    fun usage(runner: CoachRunner?): Map<String, Any?>? {
+        val provider = runner?.coach?.speaker?.provider
+        val usage = usageOf(provider) ?: return null
+        val prices = pricesFor(SettingsStore(appContext).llm(), modelOf(provider))
         val ledgers = ArrayList<Map<String, Any?>>()
-        ledgers.add(provider.usage.summary(pricesFor(store.llm(), provider.model)))
-        for (room in PuzzleRooms.sharedOrNull()?.usages().orEmpty()) {
-            ledgers.add(room.summary(pricesFor(store.llm(), provider.model)))
-        }
+        ledgers.add(usage.summary(prices))
+        runCatching { for (room in PuzzleRooms.sharedOrNull()?.usages().orEmpty()) ledgers.add(room.summary(prices)) }
         return combine(ledgers)
     }
 
