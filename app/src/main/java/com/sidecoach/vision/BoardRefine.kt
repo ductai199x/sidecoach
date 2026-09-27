@@ -403,6 +403,17 @@ object BoardRefine {
     /**
      * Sub-pixel boundaries from gradient peaks, then validation. [offsetCells] is how far,
      * in cells, the boundaries may move from the candidate.
+     *
+     * A comb with a tooth on the frame's edge, where no boundary shows, is scored as if one
+     * were there ([combFit]): that is a board flush with the edge. A board a cell or less
+     * from the edge has a comb a cell nearer the edge that scores the same -- its tooth on
+     * the edge unseen, the board's far boundary left out -- and the re-fit of a lock nudged
+     * a few pixels took it about as often as the right one, failed validation, and kept the
+     * lock where the board had been (the desktop's geometry sweep's near-edge cases,
+     * 2026-09-27: a board 81 px below the frame's top re-fitted to 0). The comb cannot tell
+     * the two apart; the cells can. So when the fitted comb leans on a tooth on the frame's
+     * edge, the fit without that credit is made as well, and the one that validates better
+     * is kept (the flush one on a tie).
      */
     fun refine(
         gray: Plane,
@@ -411,21 +422,42 @@ object BoardRefine {
         offsetCells: Double = 0.6,
         colours: Colours? = null,
     ): Refinement {
+        val (fitted, hidden) = fit(gray, candidate, search, offsetCells, colours, credit = true)
+        if (!hidden) return fitted
+        val (seen, _) = fit(gray, candidate, search, offsetCells, colours, credit = false)
+        return if (seen.board.fit > fitted.board.fit) seen else fitted
+    }
+
+    /**
+     * [refine]'s fit, and whether its comb has a tooth on the frame's edge (`_refine`).
+     * Without [credit] the frame's edges are not taken as blind: no comb scores a tooth there.
+     */
+    private fun fit(
+        gray: Plane,
+        candidate: BoardCandidate,
+        search: Double,
+        offsetCells: Double,
+        colours: Colours?,
+        credit: Boolean,
+    ): Pair<Refinement, Boolean> {
         var cell = candidate.cellPx
         val margin = cell * (offsetCells + 0.1)
         val xLo = max(0.0, floor(candidate.region.x - margin)).toInt()
         val yLo = max(0.0, floor(candidate.region.y - margin)).toInt()
         val xHi = min(gray.width.toDouble(), ceil(candidate.region.x + 8 * cell + margin)).toInt()
         val yHi = min(gray.height.toDouble(), ceil(candidate.region.y + 8 * cell + margin)).toInt()
-        if (xHi <= xLo || yHi <= yLo) return Refinement(candidate, 0.0, 0.0)
+        if (xHi <= xLo || yHi <= yLo) return Refinement(candidate, 0.0, 0.0) to false
         val crop = gray.crop(xLo, yLo, xHi, yHi)
         // Where the crop meets the frame's edge, the profiles cannot show a boundary.
         val blindX = Blind(xLo == 0, xHi == gray.width)
         val blindY = Blind(yLo == 0, yHi == gray.height)
+        val combX = if (credit) blindX else SIGHTED
+        val combY = if (credit) blindY else SIGHTED
 
         var fitted = candidate
         var reference = 0.0
         var strength = 0.0
+        var hidden = false
         for (attempt in 0 until 3) {
             cell = fitted.cellPx
             val weight = FloatArray(crop.width * crop.height) { 1f }
@@ -438,7 +470,7 @@ object BoardRefine {
                     // Too few cells to place the mask; the candidate stays where it is and
                     // carries the fit measured there, which is a fit of zero.
                     val (fit, contrast) = fitScore(gray, candidate.region, candidate.cellPx, colours)
-                    return Refinement(candidate.copy(fit = fit, contrast = contrast), 0.0, 0.0)
+                    return Refinement(candidate.copy(fit = fit, contrast = contrast), 0.0, 0.0) to false
                 }
                 applyMask(crop, weight, gray, fitted, cell, medians, read, xLo, yLo, attempt, offsetCells)
             }
@@ -463,13 +495,17 @@ object BoardRefine {
             val profileY = gradientProfile(crop, axis = 0, weight = weight)
             val startX = (fitted.region.x - xLo).toDouble()
             val startY = (fitted.region.y - yLo).toDouble()
-            val (ox, px, sx) = combFit(profileX, startX, cell, search, offsetCells, blindX)
-            val (oy, py, sy) = combFit(profileY, startY, cell, search, offsetCells, blindY)
+            val (ox, px, sx) = combFit(profileX, startX, cell, search, offsetCells, combX)
+            val (oy, py, sy) = combFit(profileY, startY, cell, search, offsetCells, combY)
             // The strength the candidate itself has on this pass's profiles, so the caller
             // can weigh the re-fit against it.
             reference = combStrength(profileX, (candidate.region.x - xLo).toDouble(), candidate.cellPx, blindX) +
                 combStrength(profileY, (candidate.region.y - yLo).toDouble(), candidate.cellPx, blindY)
             strength = sx + sy
+            if (!credit) { // scored as the reference is, so the two still compare
+                strength = combStrength(profileX, ox, px, blindX) + combStrength(profileY, oy, py, blindY)
+            }
+            hidden = leansOnTheEdge(ox, px, profileX.size, blindX) || leansOnTheEdge(oy, py, profileY.size, blindY)
             val pitch = (px + py) / 2.0
             val region = Region(
                 pyRound(xLo + ox),
@@ -505,8 +541,12 @@ object BoardRefine {
             occupied = occupied,
             readable = readable,
         )
-        return Refinement(board, strength, reference)
+        return Refinement(board, strength, reference) to (credit && hidden)
     }
+
+    /** Whether any tooth of the comb at ([offset], [pitch]) is one the frame cannot show. */
+    private fun leansOnTheEdge(offset: Double, pitch: Double, n: Int, blind: Blind): Boolean =
+        TEETH.any { !seen(offset + pitch * it, n, blind) }
 
     /**
      * Only the strips around the cell boundaries take part in the fit, and in them only the
