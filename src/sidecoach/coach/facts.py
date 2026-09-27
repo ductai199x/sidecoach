@@ -1062,6 +1062,11 @@ def facts_from_analysis(
         situation_text += " " + question
     if situation_text:
         situation_text = situation.spoken(situation.within_budget(situation_text))
+    # The principle as the hint says it, when it says it: the coach leaves it out while it
+    # cools down.
+    principle_said = situation.spoken(situation.sentence(principle)) if principle and key else None
+    if principle_said and (not situation_text or principle_said not in situation_text):
+        principle_said = None
     # A quiet move's own reason, said at the move rung: the key fact it answers.
     if why is None and move_reason and best is not None:
         why = f"{board.san(best)}: {move_reason[0].lower() + move_reason[1:]}"
@@ -1110,4 +1115,5 @@ def facts_from_analysis(
         trap=trap,
         choices=choices,
         situation=situation_text,
+        principle=principle_said,
     )

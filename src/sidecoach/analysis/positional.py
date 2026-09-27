@@ -1213,6 +1213,10 @@ def best_move_idea(
     if piece_type is None or move.promotion is not None:
         # A new queen needs no idea read into it ("prophylaxis" was said of c8=Q).
         return None
+    if board.is_check():
+        # Out of check is the way out, not a plan: "in the endgame the king is a fighting
+        # piece" was said of a king driven off by a check (the lesson audit, 2026-09-27).
+        return None
     after = board.copy(stack=False)
     after.push(move)
     to = _name(move.to_square)
@@ -1223,9 +1227,15 @@ def best_move_idea(
         )
 
     # A rescue needs the square the piece goes to to be safe as well: a knight that runs from
-    # one pawn onto a square another pawn takes is not brought to safety.
+    # one pawn onto a square another pawn takes is not brought to safety. And the piece must
+    # be what their threat goes after (`threat`, the engine's best move for them were it
+    # theirs): a piece that could be taken but is not what they would take was "a piece in
+    # danger comes first" of a rook check that led to mate (the lesson audit, 2026-09-27).
     if (
-        _piece_is_attacked(board, move.from_square, us)
+        threat is not None
+        and threat.to_square == move.from_square
+        and piece_type != chess.PAWN  # a pawn that steps on from an attack is a push
+        and _piece_is_attacked(board, move.from_square, us)
         and not board.is_capture(move)
         and not _piece_is_attacked(after, move.to_square, us)
     ):
@@ -1251,9 +1261,18 @@ def best_move_idea(
             (to,),
         )
 
+    # The king fights for something: a bare king against a piece is only running from mate
+    # ("the king is a fighting piece" of a lone king before a queen and a knight, the lesson
+    # audit, 2026-09-27).
+    men = board.piece_map().values()
+    bare = sum(p.color == us for p in men) == 1 and any(
+        p.color != us and p.piece_type not in (chess.KING, chess.PAWN) for p in men
+    )
     if (
         phase == "endgame"
         and piece_type == chess.KING
+        and not bare
+        and not board.is_capture(move)
         and _center_distance(move.to_square) < _center_distance(move.from_square)
     ):
         return PositionalFact(
@@ -1329,7 +1348,13 @@ def best_move_idea(
             "activate", f"this brings your most passive piece, the {name}, to life on {to}", (to,)
         )
 
-    storm_side = _pawn_storm_side(board, move, us)
+    # A storm and space are middlegame ideas: in an ending with pieces a pawn goes forward to
+    # queen or to make a passer ("pawns thrown at their king" of h4 with a queen against a
+    # bishop, the lesson audit, 2026-09-27). A pawn ending keeps them: the coach's facts read
+    # them there as the passer's race (`facts._PAWN_ENDING_PLAN`).
+    pawn_ending = all(p.piece_type in (chess.KING, chess.PAWN) for p in board.piece_map().values())
+    middle = phase != "endgame" or pawn_ending
+    storm_side = _pawn_storm_side(board, move, us) if middle else None
     if storm_side is not None:
         return PositionalFact(
             "pawnStorm",
@@ -1341,6 +1366,7 @@ def best_move_idea(
     # and h3 make room for the King or keep a piece out; they take no space).
     if (
         phase != "opening"
+        and middle
         and piece_type == chess.PAWN
         and quiet
         and _relative_rank(move.to_square, us) >= 4
@@ -1350,7 +1376,17 @@ def best_move_idea(
             side = "queenside" if file_ <= 1 else "kingside"
             return PositionalFact("space", f"gain space on the {side} with the pawn to {to}", (to,))
 
-    if board.is_capture(move) and _material_diff(board, us) >= 3:
+    # A trade is a capture that is taken back for as much: one that wins something is the
+    # win, not a simplification ("trades bring the win closer" was said of taking a loose
+    # bishop, the lesson audit, 2026-09-27). And a trade of pieces: ahead, the pawns are
+    # what you keep.
+    if (
+        board.is_capture(move)
+        and board.piece_type_at(move.to_square) not in (None, chess.PAWN)
+        and _material_diff(board, us) >= 3
+        and exchange.exchange(board, move) == 0
+        and exchange.can_retake(board, move)
+    ):
         return PositionalFact(
             "simplify", "you are up material, so this trade simplifies toward the win", (to,)
         )

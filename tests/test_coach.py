@@ -512,6 +512,9 @@ def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
     good = blunder.model_copy(
         update={"expected_loss": 0.03, "severity": Severity.NONE, "label": Label.GOOD}
     )
+    from sidecoach.coach.coach import RULE_SPACING
+
+    coach._messages += RULE_SPACING  # past the decisive question's rule of thumb
     _, fallback = coach._instruction(
         Trigger.POST_MOVE, position, DisclosureLevel.LINE, None, (), good, played
     )
@@ -531,6 +534,98 @@ def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
     assert "it is mate" not in again
     assert not any(f"{lead.capitalize()}:" in again for lead in KEEP_LEADS), again
     assert "Do not open with the move they played" in instruction
+
+
+def test_a_rule_of_thumb_cools_down_across_games_and_puzzles() -> None:
+    """Tai, 2026-09-27, after a run of puzzles: "it keeps on nagging me about some lessons
+    like 'A rule to take with you' ... there has to be a cooldown of some number of messages
+    before it can appear again". A rule is not said again for RULE_COOLDOWN of the coach's
+    messages, whatever game or puzzle they fall in, and no two rules come within
+    RULE_SPACING messages; the model is told to leave it out while it cools."""
+    from sidecoach.coach.coach import KEEP_LEADS, RULE_COOLDOWN, RULE_HELD, RULE_SPACING
+
+    coach, _ = _coach([])
+    _play_to_scholar(coach)
+    coach.on_event(_mate_analysis(6), 6.5)
+    position = coach.positions[6]
+    board = chess.Board(SCHOLAR)
+    move = board.parse_san("a3")
+    played = MovePlayed(
+        game_id="g",
+        ply=7,
+        san="a3",
+        uci=move.uci(),
+        fen_before=SCHOLAR,
+        fen_after=SCHOLAR,
+        by_user=True,
+    )
+    mistake = MoveAssessment(
+        game_id="g",
+        ply=7,
+        uci=move.uci(),
+        expected_loss=0.5,
+        severity=Severity.MISTAKE,
+        best=["h5f7"],
+        label=Label.MISTAKE,
+    )
+
+    def lesson() -> tuple[str, str]:
+        coach.conversation.entries.clear()  # a new puzzle: nothing said in this game yet
+        return coach._instruction(
+            Trigger.POST_MISTAKE, position, DisclosureLevel.LINE, None, (), mistake, played
+        )
+
+    def has_rule(text: str) -> bool:
+        return any(f"{lead.capitalize()}:" in text for lead in KEEP_LEADS)
+
+    # The decisive question's first hint said its principle: no rule for a few messages.
+    instruction, soon = lesson()
+    assert not has_rule(soon) and RULE_HELD in instruction
+    coach._messages += RULE_SPACING
+    instruction, first = lesson()
+    assert has_rule(first) and RULE_HELD not in instruction
+    for _ in range(RULE_COOLDOWN - 1):
+        coach._messages += 1
+        instruction, again = lesson()
+        assert not has_rule(again), again
+        assert RULE_HELD in instruction
+    coach._messages += 1
+    _, back = lesson()
+    assert has_rule(back), "back after the cooldown"
+    # Any two rules keep their distance, and a sound move's principle is a rule too.
+    assert not coach._rule_ok("a different rule")
+    assert "takeFile" in coach._verdict_taught()
+    coach._messages += RULE_SPACING
+    assert coach._rule_ok("a different rule")
+    coach._taught_by_verdict("takeFile")
+    assert "takeFile" in coach._verdict_taught() and not coach._rule_ok(None)
+    coach._messages += RULE_SPACING
+    assert "takeFile" in coach._verdict_taught() and "castle" not in coach._verdict_taught()
+    coach._messages += RULE_COOLDOWN
+    assert coach._rule_ok("takeFile")  # cooled; the last few lessons' memory is its own
+
+
+def test_a_hints_principle_cools_down_too() -> None:
+    """The first hint's principle ("A move that attacks something they must then defend keeps
+    you a step ahead: ...") came 218 times in the master games' hints, 59 of them again in
+    the same game: it is a rule of thumb like the lesson's, left out while it cools."""
+    from sidecoach.coach.coach import RULE_COOLDOWN
+    from sidecoach.coach.disclosure import PositionFacts
+
+    coach, _ = _coach([])
+    rule = "A move that attacks something they must then defend keeps you a step ahead."
+    hint = f"You can take the initiative. {rule} Their pawn on d3 can be hit."
+    facts = PositionFacts(
+        fen=SCHOLAR, side_to_move="white", phase="middlegame", situation=hint, principle=rule
+    )
+    said, note = coach._cool_hint(facts, hint)
+    assert said == hint and not note
+    coach._messages += RULE_COOLDOWN - 1
+    said, note = coach._cool_hint(facts, hint)
+    assert said == "You can take the initiative. Their pawn on d3 can be hit."
+    assert rule in note and "heard it lately" in note
+    coach._messages += 1
+    assert coach._cool_hint(facts, hint) == (hint, "")
 
 
 def test_a_lesson_is_said_of_the_board_the_player_sees_and_not_twice() -> None:

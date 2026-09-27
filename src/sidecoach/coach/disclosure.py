@@ -120,6 +120,11 @@ class PositionFacts(BaseModel):
     trap: str | None = None
     choices: list[str] = Field(default_factory=list)
     situation: str | None = None
+    # The principle's sentence as `situation` says it ("A move that attacks something they
+    # must then defend keeps you a step ahead: ..."), so the coach can leave it out while it
+    # cools down (coach.RULE_COOLDOWN): it came 218 times in the master games' hints, 59 of
+    # them again in the same game. Not on the model's sheet: `situation` carries it.
+    principle: str | None = None
 
 
 _ALWAYS: tuple[str, ...] = (

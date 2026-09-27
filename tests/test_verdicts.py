@@ -9,13 +9,17 @@ import random
 
 import chess
 
-from sidecoach.coach.verdicts import MATE, OPENERS, PRINCIPLES, lesson, verdict
+from sidecoach.coach.verdicts import MATE, MATE_THREAT, OPENERS, PRINCIPLES, lesson, verdict
 from sidecoach.events import MotifTag
 
 SCHOLAR = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
 # What the player sees on the board for themselves: never said back to them (Tai,
 # 2026-09-23).
 PLAIN = ("taking the", "takes the", "with check", "castling", "castles", "promoting", "promotes")
+
+
+# A rook to the open d-file, the king with a square to go to: the file is the point.
+OPEN_FILE = "6k1/5pp1/7p/8/8/8/5PPP/R5K1 w - - 0 1"
 
 
 def _uci(fen: str, uci: str) -> tuple[chess.Board, chess.Move]:
@@ -35,7 +39,7 @@ def test_the_lesson_is_what_the_board_teaches_not_what_the_move_did() -> None:
         "rnbqk2r/pppp1ppp/5n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4", "e1g1"
     )
     assert lesson(board, castle, phase="opening") == ("castle", list(PRINCIPLES["castle"]))
-    board, rook = _uci("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1", "a1d1")
+    board, rook = _uci(OPEN_FILE, "a1d1")
     assert lesson(board, rook, phase="endgame") == ("takeFile", list(PRINCIPLES["takeFile"]))
     # A pawn to the centre is a lesson only with what it opens: e4 lets the bishop out; a
     # bare "the fight is for the centre" after every pawn move taught nothing (Tai,
@@ -64,7 +68,7 @@ def test_the_verdict_is_praise_then_the_lesson_and_varies() -> None:
     board, mate = _uci(SCHOLAR, "h5f7")
     text, kind = verdict(board, mate, "best", rng=random.Random(3))
     assert text in MATE and kind == "mate"
-    board, rook = _uci("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1", "a1d1")
+    board, rook = _uci(OPEN_FILE, "a1d1")
     text, kind = verdict(board, rook, "best", phase="endgame", rng=random.Random(1))
     praise, clause = text.split(" -- ")
     assert praise in OPENERS["best"] and clause.rstrip(".") in PRINCIPLES["takeFile"]
@@ -256,3 +260,44 @@ def test_a_player_of_1800_and_up_hears_no_textbook_principle(monkeypatch) -> Non
     assert kind is None and "rook" not in text
     text, kind = verdict(chess.Board(), move, "good", rng=random.Random(1))
     assert kind == "takeFile"
+
+
+def test_a_principle_only_when_it_is_the_moves_reason() -> None:
+    """Tai, 2026-09-27: "rooks on open files" of a rook that checked, set up mate, pinned or
+    skewered; "passed pawns must be pushed" of the push that mated. "If it says something it
+    should be relevant". A move with a concrete point gets that point or the praise alone."""
+    # Rd1 on the back rank with no luft threatens Rd8 mate: that is the lesson, not the file.
+    board, rook = _uci("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1", "a1d1")
+    assert lesson(board, rook, phase="endgame") == ("mateThreat", list(MATE_THREAT))
+    assert lesson(board, rook, phase="endgame", taught=["mateThreat"]) is None
+    # The same file, with a check: the check is its point.
+    board, check = _uci("3k4/5pp1/7p/8/8/8/5PPP/R5K1 w - - 0 1", "a1d1")
+    assert board.gives_check(check)
+    assert lesson(board, check, phase="endgame") is None
+    # A line that mates (the annotator's mate tag), a sacrifice, a deflection: no principle.
+    board, rook = _uci(OPEN_FILE, "a1d1")
+    for name in ("mate", "mateIn3", "sacrifice", "deflection", "clearance", "pin"):
+        tag = MotifTag(name=name, squares=["d1"])
+        assert lesson(board, rook, [tag], phase="endgame") is None, name
+    # A rook that lines up on a knight in front of a rook (a pin the line does not cash in,
+    # so untagged): the pin is its point.
+    board, pin = _uci("3r2k1/5pp1/3n3p/8/8/8/5PPP/R5K1 w - - 0 1", "a1d1")
+    assert lesson(board, pin, phase="endgame") is None
+    # A move that makes a threat to win a piece: the threat is its point.
+    board, hit = _uci("6k1/5pp1/7p/3n4/8/8/5PPP/R5K1 w - - 0 1", "a1d1")
+    assert lesson(board, hit, phase="endgame") is None
+    # A capture that wins material is about the material: bxc3 taking back the knight was
+    # "that lets your bishop out".
+    board, take = _uci("rnbqkb1r/ppp1pp1p/6p1/8/3PP3/2n5/PP3PPP/R1BQKBNR w KQkq - 0 6", "b2c3")
+    assert lesson(board, take, phase="opening") is None
+
+
+def test_a_threat_met_is_said_as_one_and_a_pawn_ending_has_no_pieces_to_free() -> None:
+    # Nc3 guards e4 against Nxe4: their threat met, not "prophylaxis".
+    board, nc3 = _uci("rnbqkb1r/pppp1ppp/5n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3", "b1c3")
+    said = lesson(board, nc3, phase="opening", threats=["Nxe4"])
+    assert said is not None and said[0] in ("defend", "develop")
+    # A pawn break in a pawn ending: no pieces for the lines to open.
+    board, push = _uci("8/5k2/8/4p3/3P4/8/5K2/8 w - - 0 1", "d4d5")
+    said = lesson(board, push, phase="endgame")
+    assert said is None or said[0] not in ("break", "centre", "space", "pawnStorm")

@@ -93,8 +93,29 @@ def test_best_move_idea_reads_the_strategic_point_of_the_move() -> None:
 def test_best_move_idea_rescues_a_piece_in_danger() -> None:
     # The bishop on b5 is attacked by the a6 pawn; moving it away is a rescue, not development.
     board = chess.Board("rnbqkbnr/1ppp1ppp/p7/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 3")
-    idea = P.best_move_idea(board, board.parse_san("Ba4"), chess.WHITE, phase="opening")
+    axb5 = chess.Move.from_uci("a6b5")
+    idea = P.best_move_idea(
+        board, board.parse_san("Ba4"), chess.WHITE, phase="opening", threat=axb5
+    )
     assert idea is not None and idea.kind == "rescue"
+
+
+def test_a_rescue_is_of_the_piece_their_threat_goes_after() -> None:
+    """A piece that could be taken is in danger only when taking it is their threat (the
+    engine's best move for them, were it theirs): "a piece in danger comes first" was said of
+    a rook check that led to mate, and of moves whose threat was elsewhere (the lesson audit,
+    2026-09-27). A pawn that steps on from an attack is a push, not a rescue."""
+    board = chess.Board("rnbqkbnr/1ppp1ppp/p7/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 3")
+    ba4 = board.parse_san("Ba4")
+    assert P.best_move_idea(board, ba4, chess.WHITE, phase="opening") is None or (
+        _idea_kind(board, "Ba4", chess.WHITE, phase="opening") != "rescue"
+    )
+    elsewhere = chess.Move.from_uci("d8h4")  # their threat is not the bishop
+    assert _idea_kind(board, "Ba4", chess.WHITE, phase="opening", threat=elsewhere) != "rescue"
+    # The e4 pawn attacked by the d5 pawn steps on to e5: no rescue.
+    pawn = chess.Board("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1")
+    dxe4 = chess.Move.from_uci("d5e4")
+    assert _idea_kind(pawn, "e5", chess.WHITE, threat=dxe4) != "rescue"
 
 
 def test_a_rescue_needs_a_piece_that_can_be_won_and_a_safe_square() -> None:
@@ -111,8 +132,9 @@ def test_a_rescue_needs_a_piece_that_can_be_won_and_a_safe_square() -> None:
     # takes it, is no rescue, and e3 is.
     board = chess.Board("4k3/p7/8/3p4/2N5/8/8/4K3 w - - 0 1")
     assert P._piece_is_attacked(board, chess.C4, chess.WHITE)
-    assert _idea_kind(board, "Nb6", chess.WHITE) != "rescue"
-    assert _idea_kind(board, "Ne3", chess.WHITE) == "rescue"
+    dxc4 = chess.Move.from_uci("d5c4")
+    assert _idea_kind(board, "Nb6", chess.WHITE, threat=dxc4) != "rescue"
+    assert _idea_kind(board, "Ne3", chess.WHITE, threat=dxc4) == "rescue"
 
 
 def test_top_features_are_ranked_deduped_and_capped() -> None:

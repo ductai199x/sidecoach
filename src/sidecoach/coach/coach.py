@@ -52,7 +52,7 @@ from sidecoach.coach.named import spoken as spoken_examination
 from sidecoach.coach.policy import InterjectionPolicy, TimeControl, time_control_of
 from sidecoach.coach.prompt import system_message
 from sidecoach.coach.summarise import summarise
-from sidecoach.coach.verdicts import OPENERS
+from sidecoach.coach.verdicts import OPENERS, PRINCIPLES
 from sidecoach.coach.verdicts import verdict as local_verdict
 from sidecoach.events import (
     Analysis,
@@ -376,6 +376,31 @@ def _recapture(board: chess.Board | None, best: str, played: str | None) -> str 
     )
 
 
+RECAPTURE_RULE = "when two pieces can take, ask which you want to keep where it is"
+
+
+def rule_of(
+    facts: PositionFacts,
+    best: str,
+    *,
+    board: chess.Board | None = None,
+    played: str | None = None,
+) -> str | None:
+    """The rule to keep that `lesson_template` would add after the move: the recapture's,
+    the pattern's (`PATTERN_LESSONS`, a mating attack's for a mate), or the plan's mechanism;
+    None when there is none. The coach holds it back while it is cooling down (`Coach.
+    _rule_ok`)."""
+    if _recapture(board, best, played) is not None:
+        return RECAPTURE_RULE
+    theme = facts.theme or ""
+    keep = PATTERN_LESSONS.get(theme)
+    if keep is None and any(word in theme for word in _MATES):
+        keep = PATTERN_LESSONS["a mating attack"]
+    if keep is None and facts.plan and facts.mechanism:
+        keep = facts.mechanism.split(": ", 1)[-1]
+    return keep or None
+
+
 def lesson_template(
     facts: PositionFacts,
     best: str,
@@ -384,31 +409,27 @@ def lesson_template(
     board: chess.Board | None = None,
     played: str | None = None,
     allowed: str | None = None,
-    keep_lead: str = KEEP_LEADS[0],
+    keep_lead: str | None = KEEP_LEADS[0],
     strong: bool = False,
 ) -> str:
     """After a move that cost something: the better move, what it does, what the move made
     allowed, and the pattern to keep. `opener` is the rotated "That one cost you: {best} was
     better"; `board` and `played` (UCI) are the position the player faced and the move made,
     `allowed` what it let the opponent do (`idea_words.allowed`), when known, and `keep_lead`
-    how the rule to keep is introduced (`KEEP_LEADS`, rotated by the coach). `strong` (a
-    player of 1800 and up) leaves the rule out: the concrete point is the lesson."""
+    how the rule to keep is introduced (`KEEP_LEADS`, rotated by the coach), None to leave
+    the rule out (it was said lately: `Coach._rule_ok`). `strong` (a player of 1800 and up)
+    leaves the rule out too: the concrete point is the lesson."""
     text = opener
     why = facts.why or ""
+    rule = None if strong or keep_lead is None else rule_of(facts, best, board=board, played=played)
     other_piece = _recapture(board, best, played)
     if other_piece is not None:
         text += f" -- {other_piece}"
         if allowed:
             text = _sentence(text) + " " + allowed
-        if strong:
+        if rule is None:
             return _sentence(text)
-        return (
-            _sentence(text)
-            + " "
-            + _sentence(
-                f"{keep_lead}: when two pieces can take, ask which you want to keep where it is"
-            )
-        )
+        return _sentence(text) + " " + _sentence(f"{keep_lead}: {rule}")
     if why.startswith(best):
         rest = why[len(best) :].lstrip(" ,:;")
         if rest.startswith("and ") and not rest.startswith("and after"):
@@ -432,15 +453,14 @@ def lesson_template(
     text = _sentence(text)
     if allowed:
         text += " " + _sentence(allowed)
-    theme = facts.theme or ""
-    keep = PATTERN_LESSONS.get(theme)
-    if keep is None and any(word in theme for word in _MATES):
-        keep = PATTERN_LESSONS["a mating attack"]
-    if keep is None and facts.plan and facts.mechanism:
-        keep = facts.mechanism.split(": ", 1)[-1]
-    if keep and not strong and not _said(keep, text):
-        text += " " + _sentence(f"{keep_lead}: {keep}")
+    if rule is not None and not _said(rule, text):
+        text += " " + _sentence(f"{keep_lead}: {rule}")
     return text
+
+
+def _without(text: str, sentence: str) -> str:
+    """`text` with `sentence` taken out, the spaces closed up."""
+    return " ".join(text.replace(sentence, " ").split())
 
 
 def _stale(reason: str, played: str | None) -> bool:
@@ -463,6 +483,18 @@ def _stale(reason: str, played: str | None) -> bool:
 # in amateur games "fine, but not the best" comes move after move, and the same "keep this
 # one" came with it -- 27% of them within three moves in twenty Nova bot games (2026-09-25).
 RECENT_PLIES = 6
+# A rule of thumb -- "a rule to take with you: ...", "rooks belong on open files" -- is not
+# said again for this many of the coach's messages, across games and puzzles alike, and no
+# two rules come within RULE_SPACING messages of each other (Tai, 2026-09-27, after a run of
+# puzzles: "it keeps on nagging me ... there has to be a cooldown of some number of messages
+# before it can appear again"). A puzzle is a new game, so a memory per game started over at
+# every one.
+RULE_COOLDOWN = 30
+RULE_SPACING = 4
+# The model's word while a rule is cooling down: the concrete point, no rule of thumb.
+RULE_HELD = (
+    "No rule of thumb this time -- the player heard one lately: only what this position shows."
+)
 
 
 def fresh(text: str, recent: str, opener: str | None = None) -> str:
@@ -2144,6 +2176,11 @@ class Coach:
         self._bags = Bags()
         # The kinds of lesson the last sound moves' words taught (verdicts.lesson).
         self._taught: deque[str] = deque(maxlen=TAUGHT_MEMORY)
+        # The coach's messages so far this session, and the rules of thumb said, each with
+        # the count it was said at: kept across games and puzzles (RULE_COOLDOWN).
+        self._messages = 0
+        self._rules: dict[str, int] = {}
+        self._last_rule: int | None = None
         # The last template said from each rotating list, keyed by the list.
         # What the game is (GameStarted.kind): a game from the start, or a position -- a
         # puzzle, an analysis board -- where the mating move gets no word and the end no
@@ -2511,6 +2548,7 @@ class Coach:
                     self.conversation.coach_said(
                         spoken.message.text, nod=spoken.message.trigger is Trigger.POST_MOVE
                     )
+            self._messages += 1
             out.append(spoken.message)
         return out
 
@@ -2921,13 +2959,12 @@ class Coach:
                     event.tags,
                     phase=before.facts.phase,
                     threats=before.facts.threats,
-                    taught=tuple(self._taught),
+                    taught=self._verdict_taught(),
                     bags=self._bags,
                     plain=self.plain_words,
                     strong=self.strong_player,
                 )
-                if kind is not None:
-                    self._taught.append(kind)
+                self._taught_by_verdict(kind)
             else:
                 text = self._verdict(label)
             marks = annotations_for(
@@ -3004,21 +3041,88 @@ class Coach:
         """The first hint's wordings taken from their bags once the hint is said: this turn's
         template is the position's first hint, or holds it."""
         facts = position.facts
-        if facts is not None and facts.situation and facts.situation in template:
+        if (
+            facts is not None
+            and facts.situation
+            and (
+                facts.situation in template
+                or (facts.principle and _without(facts.situation, facts.principle) in template)
+            )
+        ):
             for key, wording in position.leads.items():
                 self._bags.take(key, wording)
             position.leads = {}
 
-    def _fresh_lesson(self, opener: str, lesson: Callable[[str], str]) -> str:
+    def _cool_hint(self, facts: PositionFacts, text: str) -> tuple[str, str]:
+        """A hint's template with its principle (`PositionFacts.principle`) left out while it
+        cools down, and the word to the model that goes with it; counted as said when it
+        stays in."""
+        principle = facts.principle
+        if not principle or principle not in text:
+            return text, ""
+        if self._rule_ok(principle):
+            self._rule_said(principle)
+            return text, ""
+        note = f' Leave out the rule of thumb "{principle}": the player heard it lately.'
+        return _without(text, principle), note
+
+    def _fresh_lesson(
+        self,
+        opener: str,
+        lesson: Callable[[str | None], str],
+        rule: str | None,
+        facts: PositionFacts | None = None,
+    ) -> tuple[str, bool]:
         """`lesson`, opening with `opener`, written with the next rule-to-keep lead from its
-        bag, less what was said lately (`fresh`). The lead is taken from the bag only when the
-        lesson still says it: one with no rule to keep, or whose rule was said lately, leaves
-        it for the next."""
-        lead = self._bags.peek("keep", KEEP_LEADS)
+        bag, less what was said lately (`fresh`), and whether the rule was held back: said
+        within RULE_COOLDOWN messages, or another within RULE_SPACING. The rule is the
+        template's (`rule`, `rule_of`) or, for the model -- asked for "a pattern to remember"
+        on every lesson, it stated one every time -- the pattern it teaches (`facts`' theme
+        or plan). A held rule is left out: the lesson gets no lead, and the model is told
+        (RULE_HELD). The lead is taken from the bag, and the rule counted as said, only when
+        the lesson still says it -- or, with a model, when the model is asked for it."""
+        key = rule or (facts.theme or facts.plan if facts is not None else None) or None
+        held = not self._rule_ok(key)
+        lead = None if held else self._bags.peek("keep", KEEP_LEADS)
         text = fresh(lesson(lead), self._recently_said(), opener)
-        if f"{lead}:" in text.lower():
+        if lead is not None and f"{lead}:" in text.lower():
             self._bags.take("keep", lead)
-        return text
+            if rule is not None:
+                self._rule_said(rule)
+        elif not held and key is not None and not self._offline:
+            self._rule_said(key)
+        return text, held
+
+    @property
+    def _offline(self) -> bool:
+        """No model: every word is the templates' (llm.provider = none)."""
+        return bool(getattr(self.speaker.provider, "offline", False))
+
+    def _rule_ok(self, rule: str | None) -> bool:
+        """Whether a rule of thumb may be said now: none said in the last RULE_SPACING
+        messages, and this one (by its words, or a sound move's lesson kind) not in the last
+        RULE_COOLDOWN. `rule` None asks only the first."""
+        if self._last_rule is not None and self._messages - self._last_rule < RULE_SPACING:
+            return False
+        said = self._rules.get(rule) if rule is not None else None
+        return said is None or self._messages - said >= RULE_COOLDOWN
+
+    def _rule_said(self, rule: str) -> None:
+        self._rules[rule] = self._last_rule = self._messages
+
+    def _verdict_taught(self) -> tuple[str, ...]:
+        """What a sound move's word may not teach now: the kinds of the last few lessons
+        (TAUGHT_MEMORY), and every principle that may not be said (`_rule_ok`)."""
+        return (*self._taught, *(kind for kind in PRINCIPLES if not self._rule_ok(kind)))
+
+    def _taught_by_verdict(self, kind: str | None) -> None:
+        """A sound move's word taught `kind`: remembered for the next words, and counted as
+        a rule when it is a principle."""
+        if kind is None:
+            return
+        self._taught.append(kind)
+        if kind in PRINCIPLES:
+            self._rule_said(kind)
 
     def _recently_said(self) -> str:
         """What the coach has said over the last RECENT_PLIES plies, as one text."""
@@ -3679,15 +3783,18 @@ class Coach:
                 " ".join(self._review_lines[:4]),
             )
         if trigger is Trigger.DECISIVE_QUESTION:
-            return (f"{idea_directive(facts)} {NO_FIGURES}", idea_template(facts))
+            template, note = self._cool_hint(facts, idea_template(facts))
+            return (f"{idea_directive(facts)} {NO_FIGURES}{note}", template)
         if trigger is Trigger.STUCK:
             directive = FOCUS_DIRECTIVE if level >= DisclosureLevel.FOCUS else idea_directive(facts)
+            template, note = self._cool_hint(facts, hint_template(facts, level))
             return (
                 "The player has been thinking for a while and is stuck. "
                 + directive
                 + " Take a different angle from anything already said about this position. "
-                + NO_FIGURES,
-                hint_template(facts, level),
+                + NO_FIGURES
+                + note,
+                template,
             )
         if trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE) and assessment and played:
             # The better move is the engine's own from the position the player faced
@@ -3716,7 +3823,7 @@ class Coach:
                     else None
                 )
                 opener = self._bags.draw("cost", COST_YOU).format(best=best)
-                fallback = self._fresh_lesson(
+                fallback, held = self._fresh_lesson(
                     opener,
                     lambda lead: lesson_template(
                         facts,
@@ -3728,6 +3835,8 @@ class Coach:
                         keep_lead=lead,
                         strong=self.strong_player,
                     ),
+                    rule_of(facts, best, board=position.board, played=played.uci),
+                    facts,
                 )
                 instruction = (
                     f"The player just played {played.san}, which was {_rated(label)}: it cost "
@@ -3739,6 +3848,7 @@ class Coach:
                     "most, then ask one question that makes them find on the board something "
                     "your reply has not said. "
                     f"{TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_NUMBERS}"
+                    + (f" {RULE_HELD}" if held else "")
                 )
                 if allowed:
                     instruction += f" What {played.san} allowed, from the engine's line: {allowed}."
@@ -3760,22 +3870,27 @@ class Coach:
                         "to remember, in three sentences at most, then -- instead of a check "
                         "question -- ask, in one short question of your own, what they "
                         f"expected their move to do. {NOT_THE_MOVE} {NO_NUMBERS}"
+                        + (f" {RULE_HELD}" if held else "")
                     )
             elif _exciting(assessment.label):
                 # Rare and worth it: the board's own sentence stands in, the model says
                 # what makes it the move, with some delight.
-                fallback, _ = local_verdict(
+                fallback, kind = local_verdict(
                     position.board,
                     chess.Move.from_uci(played.uci),
                     label,
                     assessment.tags,
                     phase=facts.phase,
                     threats=facts.threats,
-                    taught=tuple(self._taught),
+                    taught=self._verdict_taught(),
                     bags=self._bags,
                     plain=self.plain_words,
                     strong=self.strong_player,
                 )
+                # Said by the model or, when its reply fails, by this sentence: either way
+                # the idea is taught ("the king is a fighting piece" after a great Kd6, then
+                # again after Kd5: the offline sweep, 2026-09-27).
+                self._taught_by_verdict(kind)
                 meaning = {
                     "brilliant": "a sound sacrifice",
                     "great": _great_meaning(facts),
@@ -3808,9 +3923,11 @@ class Coach:
                     f"The player just played {played.san}: {label} -- {meaning}. One short "
                     "sentence, fifteen words at most, in your own voice: a word of praise, and "
                     "the idea behind the move as a lesson to keep when a message gives one -- "
-                    "the plan, the tactic. No question, no lecture, no advice, no guess at what "
-                    "it allows or risks, and not the same words as your last such sentence. "
+                    "the plan, the tactic -- and only when it is what the move is for. No "
+                    "question, no lecture, no advice, no guess at what it allows or risks, and "
+                    "not the same words as your last such sentence. "
                     f"{NOT_THE_MOVE} {NO_NUMBERS}"
+                    + ("" if self._rule_ok(None) else f" {RULE_HELD}")
                 )
             elif assessment.severity in (Severity.MISTAKE, Severity.BLUNDER) or label == "miss":
                 # A mistake in blitz: the policy keeps it to the word after the move (no
@@ -3824,7 +3941,7 @@ class Coach:
             else:
                 # The better move and what it does, when the sheet has it, is the lesson.
                 opener = self._bags.draw("fine", FINE_TIGHTER).format(best=best)
-                fallback = self._fresh_lesson(
+                fallback, held = self._fresh_lesson(
                     opener,
                     lambda lead: lesson_template(
                         facts,
@@ -3835,6 +3952,8 @@ class Coach:
                         keep_lead=lead,
                         strong=self.strong_player,
                     ),
+                    rule_of(facts, best, board=position.board, played=played.uci),
+                    facts,
                 )
                 instruction = (
                     f"The player just played {played.san}, which was {_rated(label)}: "
@@ -3843,6 +3962,7 @@ class Coach:
                     "better move, what it does, and the idea behind it as a lesson to keep. No "
                     "lecture, no question. "
                     f"{TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_NUMBERS}"
+                    + (f" {RULE_HELD}" if held else "")
                 )
             return instruction, fallback
         # An explicit ask. The player's words are already the last message of the
@@ -4081,7 +4201,7 @@ class Coach:
                 # Sound but not the best: said as the word after it said it ("Fine, but a3
                 # was a little tighter"), never "it cost nothing" (the runtime audit).
                 opener = self._bags.draw("fine", FINE_TIGHTER).format(best=best)
-                fallback = self._fresh_lesson(
+                fallback, held = self._fresh_lesson(
                     opener,
                     lambda lead: lesson_template(
                         facts,
@@ -4091,6 +4211,8 @@ class Coach:
                         keep_lead=lead,
                         strong=self.strong_player,
                     ),
+                    rule_of(facts, best, played=record.move.uci),
+                    facts,
                 )
                 directive = (
                     f"They ask about the move they already played, {san}. It was {label}: sound, "
@@ -4119,12 +4241,13 @@ class Coach:
                     else None
                 )
                 faced = position.ply == record.move.ply - 1
+                held = False
                 if best:
                     # The better move played out and the pattern to keep, as the lesson says
                     # it -- not "the idea was a pin" and nothing more.
                     # Asked about the move just taught, the lesson is not said twice.
                     opener = f"{best} was better"
-                    fallback = (fallback + " " if fallback else "") + self._fresh_lesson(
+                    lesson, held = self._fresh_lesson(
                         opener,
                         lambda lead: lesson_template(
                             facts,
@@ -4136,7 +4259,15 @@ class Coach:
                             keep_lead=lead,
                             strong=self.strong_player,
                         ),
+                        rule_of(
+                            facts,
+                            best,
+                            board=position.board if faced else None,
+                            played=record.move.uci,
+                        ),
+                        facts,
                     )
+                    fallback = (fallback + " " if fallback else "") + lesson
                 elif allowed:
                     fallback = (fallback + " " if fallback else "") + _sentence(
                         allowed[0].upper() + allowed[1:]
@@ -4158,8 +4289,9 @@ class Coach:
                     "nothing about it is withheld; the disclosure level binds only the position "
                     f"they face now -- and say why, concretely: {reason}what {san} missed or "
                     "allowed, naming the pieces, squares or moves, from the sheet of the "
-                    "position they faced (its pattern, and its tactic when it names one) -- and "
-                    "the pattern to keep."
+                    "position they faced (its pattern, and its tactic when it names one)"
+                    + (" -- but no rule of thumb: they heard one lately." if held else "")
+                    + ("" if held else " -- and the pattern to keep.")
                     + (
                         f" What {san} allowed, from the engine's line: {allowed}."
                         if allowed
@@ -4259,4 +4391,5 @@ class Coach:
             )
             if followup and not asks and not engine_words:
                 fallback = ""  # a nod needs no template: nothing, rather than a hint again
-        return f"{checks}{directive}", fallback
+        fallback, note = self._cool_hint(facts, fallback)
+        return f"{checks}{directive}{note}", fallback
