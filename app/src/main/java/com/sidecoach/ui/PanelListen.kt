@@ -124,7 +124,7 @@ object PanelListen {
                 made,
                 onUtterance = ::onUtterance,
                 onSpeechStart = ::onSpeechStart,
-                coachSpeaking = { PanelVoice.tts?.busy == true },
+                coachSpeaking = { PanelVoice.voiceOut()?.busy == true },
                 onEvent = { level, text -> PanelEngine.emit("voice", level, text) },
                 onPartial = ::onPartial,
                 onDropped = ::onDropped,
@@ -428,7 +428,7 @@ object PanelListen {
      */
     internal fun onSpeechStart() {
         if (!hearTestOn) dictationHold()
-        val voice = PanelVoice.tts
+        val voice = PanelVoice.voiceOut()
         if (voice != null && voice.busy) {
             voice.stop()
             PanelEngine.emit("voice", "debug", "barge-in: the coach was cut off")

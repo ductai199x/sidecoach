@@ -1,19 +1,59 @@
 package com.sidecoach.ui
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.sidecoach.chess.Board
+import com.sidecoach.coach.Coach
+import com.sidecoach.events.GameStarted
+import com.sidecoach.events.MovePlayed
+import com.sidecoach.events.Trigger
+import com.sidecoach.llm.OfflineProvider
+import com.sidecoach.vision.Pieces
+import com.sidecoach.voice.TtsProvider
+import com.sidecoach.voice.Voices
+import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.Collections
 
 /**
  * The voice never talks about a position the board has left behind: `PanelVoice.voiceAction`
- * against `tests/test_panel_voice_policy.py`'s cases and `test_coach.py`'s fast-game one.
+ * against `tests/test_panel_voice_policy.py`'s cases and `test_coach.py`'s fast-game one; what
+ * speaking does to the voice (a cut-in stops it first), the way from a move to its first sound,
+ * a word held back in a fast game and said once the player slows, and the settings page's
+ * preview line (`test_voices_personas.py`).
  */
 @RunWith(AndroidJUnit4::class)
 class PanelVoicePolicyTest {
 
     private val long = "Your knight on f5 is loose; the queen check on g6 wins it. What defends it?"
     private val short = "exf5: good."
+
+    /** A voice that writes down what it is asked to do (`FakeTTS`). */
+    private class FakeTts(private val ready: Boolean = true) : TtsProvider {
+        override val name = "fake"
+        val calls: MutableList<String> = Collections.synchronizedList(ArrayList())
+        @Volatile override var busy = false
+        override fun healthcheck() = ready to (if (ready) "fake" else "fake: no model")
+        override fun say(text: String, voice: String?) {
+            calls.add("say:" + text + (if (voice != null) " in $voice" else ""))
+        }
+        override fun stop() {
+            calls.add("stop")
+        }
+    }
+
+    @After
+    fun tearDown() {
+        PanelVoice.setMuted(false)
+        PanelVoice.speaker = null
+        PanelVoice.voicing = null
+        PanelVoice.coach = null
+        PanelEngine.set("ply" to 0)
+    }
 
     private fun act(
         trigger: String,
@@ -70,5 +110,143 @@ class PanelVoicePolicyTest {
         assertEquals("an ask is answered aloud", "speak", act("user_ask", "Yes.", 7, 7, false, null, true))
         assertEquals("speak", act("review", "You won.", 7, 7, false, null, true))
         assertEquals("speak", act("post_move", "Qxf7#: mate.", 7, 7, false, null, false))
+    }
+
+    /** `test_speak_records_the_action_and_stops_before_cutting_in`. */
+    @Test
+    fun speakRecordsTheActionAndStopsBeforeCuttingIn() {
+        val fake = FakeTts()
+        PanelVoice.speaker = fake
+        PanelEngine.set("ply" to 12)
+        assertEquals("speak", PanelVoice.speak("post_mistake", long, 12))
+        assertEquals(listOf("say:$long"), fake.calls.toList())
+        fake.calls.clear()
+        fake.busy = true
+        assertEquals("the lesson playing is current", "speak", PanelVoice.speak("stuck", long, 12))
+        assertEquals(listOf("say:$long"), fake.calls.toList())
+        fake.calls.clear()
+        PanelEngine.set("ply" to 16) // the board moved on past what is playing
+        assertEquals("supersede", PanelVoice.speak("stuck", long, 16))
+        assertEquals(listOf("stop", "say:$long"), fake.calls.toList())
+        fake.calls.clear()
+        PanelEngine.set("ply" to 12)
+        PanelVoice.voicing = "post_move" to 11
+        assertEquals("skip", PanelVoice.speak("post_move", short, 12))
+        assertEquals("stale", PanelVoice.speak("post_move", short, 8))
+        assertEquals(emptyList<String>(), fake.calls.toList())
+        PanelVoice.setMuted(true)
+        assertEquals("muted", PanelVoice.speak("stuck", long, 12))
+    }
+
+    /** `test_the_way_from_a_move_to_its_first_sound_is_timed`. */
+    @Test
+    fun theWayFromAMoveToItsFirstSoundIsTimed() {
+        PanelVoice.speaker = FakeTts()
+        PanelEngine.set("ply" to 1)
+        val before = PanelVoice.latency()
+        val n = before["move_to_speech_n"] as Int
+        PanelVoice.noteMove(1)
+        assertEquals(n, PanelVoice.latency()["move_to_speech_n"])
+        val sink = PanelVoice.streamSink(Trigger.POST_MOVE, 0)
+        assertNotNull(sink)
+        Thread.sleep(50)
+        assertTrue(sink!!("e4: best.")) // the first line of the word on ply 1, queued
+        Thread.sleep(50)
+        PanelVoice.onAudioStarts("e4: best.") // the voice: playing now
+        var lat = PanelVoice.latency()
+        assertEquals(n + 1, lat["move_to_speech_n"])
+        val last = lat["move_to_speech_last_s"] as Double
+        assertTrue("$lat", last in 0.08..2.0)
+        if (n == 0) assertEquals(last, lat["move_to_speech_s"])
+        // A line nobody waited for, or a stuck hint, is not a move's latency.
+        PanelVoice.onAudioStarts("something else")
+        val hint = PanelVoice.streamSink(Trigger.STUCK, 1)
+        assertTrue(hint != null && hint("Look at the centre."))
+        assertEquals(n + 1, PanelVoice.latency()["move_to_speech_n"])
+        // The model's first token, amortised the same way.
+        val tokens = before["first_token_n"] as Int
+        PanelVoice.noteFirstToken(1.0)
+        PanelVoice.noteFirstToken(2.0)
+        lat = PanelVoice.latency()
+        assertEquals(tokens + 2, lat["first_token_n"])
+        assertEquals(2.0, lat["first_token_last_s"])
+        if (tokens == 0) assertEquals(1.5, lat["first_token_s"])
+    }
+
+    /**
+     * A word the fast game kept on the page is said once the player has been thinking in that
+     * position as long as the pace allows (`_say_held_word`); one about a position the board
+     * has left, or after the game is over, is dropped.
+     */
+    @Test
+    fun aWordHeldInAFastGameIsSaidWhenThePlayerSlows() {
+        val fake = FakeTts()
+        PanelVoice.speaker = fake
+        val coach = Coach(OfflineProvider())
+        coach.onEvent(GameStarted("g", Pieces.Side.WHITE, Board().fen()), 0.0)
+        val board = Board()
+        for ((i, san) in listOf("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6").withIndex()) {
+            val ply = i + 1
+            val move = board.parseSan(san)!!
+            val before = board.fen()
+            board.push(move)
+            coach.onEvent(MovePlayed("g", ply, san, move.uci(), before, board.fen(), byUser = ply % 2 == 1, thinkMs = 1000), ply.toDouble())
+        }
+        assertTrue(coach.fastNow(7.0))
+        PanelVoice.coach = coach
+        PanelVoice.loopTs = 7.0
+        PanelEngine.set("ply" to 6)
+        assertEquals("text", PanelVoice.speak("post_move", "Nf6: good.", 5))
+        assertEquals(emptyList<String>(), fake.calls.toList())
+        PanelVoice.sayHeldWord(coach, 7.0) // a second into the position: still fast
+        assertEquals(emptyList<String>(), fake.calls.toList())
+        PanelVoice.sayHeldWord(coach, 13.0) // thinking longer than the pace: the game slowed
+        assertEquals(listOf("say:Nf6: good."), fake.calls.toList())
+        PanelVoice.sayHeldWord(coach, 20.0) // said once
+        assertEquals(1, fake.calls.size)
+        // A word about a position the board has left is dropped, not said late.
+        assertEquals("text", PanelVoice.speak("stuck", "Look at f7.", 6))
+        PanelEngine.set("ply" to 7)
+        PanelVoice.sayHeldWord(coach, 30.0)
+        PanelEngine.set("ply" to 6)
+        PanelVoice.sayHeldWord(coach, 30.0)
+        assertEquals(1, fake.calls.size)
+        // Nor after the game: the review speaks, not a late verdict.
+        assertEquals("text", PanelVoice.speak("post_move", "Nf6: good.", 5))
+        coach.finished = true
+        PanelVoice.sayHeldWord(coach, 30.0)
+        coach.finished = false
+        PanelVoice.sayHeldWord(coach, 30.0)
+        assertEquals(1, fake.calls.size)
+    }
+
+    /**
+     * The settings page's Listen button (`test_the_preview_line_says_whether_the_voice_could_speak`,
+     * `test_voice_labels_read_as_accent_sex_and_name`): a voice that cannot speak says so and
+     * nothing breaks; one that can says the line in the voice asked for, under its label, and
+     * the coach's own voice is untouched.
+     */
+    @Test
+    fun thePreviewSaysWhetherTheVoiceCouldSpeak() {
+        val voice = PanelVoice.voice
+        PanelVoice.speaker = FakeTts(ready = false)
+        assertFalse(PanelVoice.saySample("bf_emma"))
+        val fake = FakeTts()
+        PanelVoice.speaker = fake
+        val cursor = PanelEngine.poll(Int.MAX_VALUE).getInt("cursor")
+        assertTrue(PanelVoice.saySample("bf_emma"))
+        assertEquals(listOf("stop", "say:${PanelVoice.VOICE_SAMPLE} in bf_emma"), fake.calls.toList())
+        val lines = PanelEngine.poll(cursor).getJSONArray("lines")
+        val said = (0 until lines.length()).map { lines.getJSONObject(it).getString("text") }
+        assertTrue(said.toString(), "preview in British Female, Emma: ${PanelVoice.VOICE_SAMPLE}" in said)
+        assertEquals("the coach's own voice is untouched", voice, PanelVoice.voice)
+        // The labels: accent, sex and name; outside the scheme, the name as it is.
+        assertEquals("American Female, Sarah", Voices.label("af_sarah"))
+        assertEquals("British Male, George", Voices.label("bm_george"))
+        assertEquals("American Male, Michael", Voices.label("am_michael"))
+        assertEquals("jf_alpha", Voices.label("jf_alpha"))
+        assertFalse(Voices.isEnglish("jf_alpha"))
+        assertTrue(Voices.ENGLISH_VOICES.all { Voices.isEnglish(it) })
+        assertEquals(setOf("af", "am", "bf", "bm"), Voices.ENGLISH_VOICES.map { it.take(2) }.toSet())
     }
 }
