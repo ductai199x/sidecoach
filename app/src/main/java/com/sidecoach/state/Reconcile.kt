@@ -34,6 +34,7 @@ import com.sidecoach.vision.Pieces.CellReading
 import com.sidecoach.vision.Pieces.Kind
 import com.sidecoach.vision.Pieces.Side
 import com.sidecoach.vision.Squares.squareAt
+import com.sidecoach.vision.pyRound
 import java.util.UUID
 
 /**
@@ -278,40 +279,61 @@ fun singleExplanations(board: Board, obs: Observation, diff: Set<Int>): List<Lis
 class Reconciler(
     var bottom: Side,
     var userSide: Side = Side.WHITE,
-) {
-    val settleFrames = 2
-    val maxPlies = 4
-
+    // The tunables are the desktop dataclass's fields, in its order and with its defaults, so
+    // its tests (which build one with `settle_frames=1`, or set `stale_after = 2`) port as they
+    // stand (`tools/make_reconcile_fixtures.py`).
+    var settleFrames: Int = 2,
+    var maxPlies: Int = 4,
     /**
      * Positions the missed-move search may expand per depth. Only moves that touch an
-     * unexplained square are expanded.
+     * unexplained square are expanded, so a four-ply gap in a middlegame costs a few hundred;
+     * counting every legal move looked at, as before, spent the budget on the thirty rejected
+     * for each one expanded and left four-ply gaps unbridged.
      */
-    val searchBudget = 4000
-    val historyDepth = 40
-    val staleAfter = 5
-    val resyncCells = 3
-    val resyncAfter = 150
+    var searchBudget: Int = 4000,
+    var historyDepth: Int = 40,
+    var staleAfter: Int = 5,
+    var resyncCells: Int = 3,
+    var resyncAfter: Int = 150,
     /**
-     * A position resync adopts a board held this many frames; or, when at least
-     * [resyncJumpCells] cells disagree (a new position, not a move), at least [resyncMinFrames]
-     * spanning [resyncHoldS]: at seven frames a second, ten frames were a second and a half,
-     * and more when the frames were slow ones (Tai's puzzles on the Pixel, 2026-09-23). A move
-     * is a handful of cells, and one whose squares wear the site's badges waits for the stale
-     * retry to explain it: adopted early, the mating move under the result badges went
-     * unrecorded (the desktop's stress seed 839).
+     * Position resync: adopt a fully readable, stable board that no move story explains --
+     * held this many frames; or, when at least [resyncJumpCells] cells disagree (a new
+     * position, not a move), at least [resyncMinFrames] spanning [resyncHoldS]: on a phone
+     * reading seven frames a second, ten frames were a second and a half, and more when the
+     * frames were slow ones (Tai's puzzles on the Pixel, 2026-09-23). A move is a handful of
+     * cells, and one whose squares wear the site's badges waits for the stale retry to explain
+     * it: adopted early, the mating move under the result badges went unrecorded (the desktop's
+     * stress seed 839).
      */
-    val resyncHoldFrames = 10
-    val resyncMinFrames = 3
-    val resyncHoldS = 0.4
-    val resyncJumpCells = 12
-    val maxStaleSubsetCells = 4
-    val pendingMaxAge = 40
-    val maxChainPlies = 8
-    val maxQueueSteps = 6
-    val resyncMaxSoft = 2
-    val memoryFrames = 30
-    val memoryGapTicks = 5
-    val minReadableCells = 32
+    var resyncHoldFrames: Int = 10,
+    var resyncMinFrames: Int = 3,
+    var resyncHoldS: Double = 0.4,
+    var resyncJumpCells: Int = 12,
+    var maxStaleSubsetCells: Int = 4,
+    /**
+     * A pending story survives frames a drag blocks, up to this many, and may be extended by
+     * the moves that follow it, up to this many plies in all.
+     */
+    var pendingMaxAge: Int = 40,
+    var maxChainPlies: Int = 8,
+    var maxQueueSteps: Int = 6,
+    var resyncMaxSoft: Int = 2,
+    /**
+     * Last stable reading of every cell and the frame it was seen in, remembered for this
+     * many frames under a cover.
+     */
+    var memoryFrames: Int = 30,
+    /**
+     * The board unseen for this many ticks (lost, covered, minimised: the pipeline reports each
+     * such tick) means anything remembered about covered cells may have changed.
+     */
+    var memoryGapTicks: Int = 5,
+    /**
+     * Fewer readable cells than this is no evidence of anything: a theme the recogniser was not
+     * built for, or a page-wide overlay.
+     */
+    var minReadableCells: Int = 32,
+) {
 
     var board: Board = Board()
     var gameId: String = UUID.randomUUID().toString().replace("-", "").take(8)
@@ -324,16 +346,24 @@ class Reconciler(
     private var pending: Pair<PendingKey, Int>? = null
     private val stale = HashMap<Int, Pair<StaleKey, Int>>()
     private var unexplainedFrames = 0
-    private var startedFlag = false
-    private var finishedFlag = false
+
+    // `internal` for the desktop's tests, which set `_started`, `_finished` and `_base_fen`
+    // on a reconciler as they stand (`tools/make_reconcile_fixtures.py`).
+    internal var startedFlag = false
+    internal var finishedFlag = false
     private var resultValue: String? = null
     private var pendingAge = 0
-    private var baseFenValue: String = STARTING_FEN
+    internal var baseFenValue: String = STARTING_FEN
     private var turnUnknownFlag = false
     /** The placement the resync would adopt, how many frames have shown it, and since when. */
     private var resyncCandidate: Triple<String, Int, Double>? = null
     private var unseen = 0
-    private val lastSeen = HashMap<Int, Pair<CellReading, Int>>()
+
+    /**
+     * Last stable reading of every cell and the frame it was seen in. `internal` for the
+     * desktop's tests of the memory, which look at `_last_seen`.
+     */
+    internal val lastSeen = HashMap<Int, Pair<CellReading, Int>>()
     private val previous = HashMap<Int, StaleKey>()
     private var drawn = HashSet<Int>()
     private var denied: Observation = Observation()
@@ -370,8 +400,10 @@ class Reconciler(
      * still uncovered then keeps settling under the dialog. Only an exact, settled reading
      * repeated in two consecutive frames is remembered, and a cell seen clearly with
      * something else on it forgets its memory at once.
+     *
+     * `internal` for the desktop's tests, which call `_observe` on a frame of their own.
      */
-    private fun observe(readings: Readings): Observation {
+    internal fun observe(readings: Readings): Observation {
         frameIndex += 1
         val out = Observation()
         drawn = HashSet()
@@ -972,13 +1004,15 @@ class Reconciler(
         val slider = piece.pieceType == QUEEN || piece.pieceType == ROOK || piece.pieceType == BISHOP
         val ways = ArrayList<QueueWay>()
         for (stopAtRed in if (slider) booleanArrayOf(true, false) else booleanArrayOf(false)) {
-            var frontier = setOf(origin)
+            var frontier: Set<Int> = setOf(origin)
             val parent = HashMap<Int, Int?>()
             parent[origin] = null
             var found: Set<Int>? = null
             for (step in 0 until maxQueueSteps) {
                 val nextFrontier = HashSet<Int>()
-                for (sq in frontier) {
+                // In square order: a set's order decided which of two equal routes was kept,
+                // and it differs between Python and the phone (the parity audit).
+                for (sq in frontier.sorted()) {
                     scratch.setPieceAt(sq, piece)
                     val moves = ArrayList<Move>()
                     scratch.generatePseudoLegalMoves(BB_SQUARES[sq]) { moves.add(it) }
@@ -1171,6 +1205,7 @@ class Reconciler(
         if (board.turn == colour) return mutableListOf()
         // The turn stays open only until the first commit, so nothing has been played from
         // the position yet: the base is the position with the turn corrected.
+        check(board.moveStack.isEmpty())
         board.turn = colour
         baseFenValue = board.fen()
         val name = if (colour == WHITE) "white" else "black"
@@ -1597,9 +1632,9 @@ class Reconciler(
      * The sequence of moves taking the user's piece from origin to target. When the site tints
      * the queued squares, the route through exactly those squares is the queue, however long;
      * otherwise the unique shortest way is assumed. Several equally short ways are an
-     * ambiguity and nothing is assumed.
+     * ambiguity and nothing is assumed. `internal` for the desktop's tests of `_queue_path`.
      */
-    private fun queuePath(
+    internal fun queuePath(
         origin: Int,
         target: Int,
         symbol: String,
@@ -1802,7 +1837,8 @@ class Reconciler(
         }
     }
 
-    private fun commit(move: Move): MutableList<Event> {
+    /** One move played on the game. `internal` for the desktop's test that calls `_commit`. */
+    internal fun commit(move: Move): MutableList<Event> {
         if (finishedFlag) {
             // Defensive: nothing is played on a finished game. A new game starts it over.
             pending = null
@@ -1826,7 +1862,8 @@ class Reconciler(
         // it all to its first move and leaves the others open.
         var thinkMs: Int? = null
         val since = lastCommitTs
-        if (since != null && tsValue > since) thinkMs = Math.round((tsValue - since) * 1000.0).toInt()
+        // `int(round(...))`: Python rounds half to even.
+        if (since != null && tsValue > since) thinkMs = pyRound((tsValue - since) * 1000.0)
         lastCommitTs = tsValue
         board.push(move)
         val ply = board.moveStack.size

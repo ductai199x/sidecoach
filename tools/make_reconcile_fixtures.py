@@ -1,4 +1,5 @@
-"""Record what the desktop reconciler makes of a game, frame by frame.
+"""Record what the desktop reconciler makes of a game, frame by frame -- and of every test the
+desktop holds it to.
 
 The reconciler is the hardest thing in the pipeline to get right and the easiest to get
 subtly wrong: it decides when a move has settled, when a drag is only a drag, when a badge
@@ -9,8 +10,21 @@ for frame.
 This renders games with the desktop's own renderer (`tests/synth.py`, the real chess.com
 themes and piece sets), reads every frame with the desktop's own recogniser, writes down
 the readings it produced, and runs the desktop's `Reconciler` over them, writing down every
-event it emitted on every frame. `ChessReconcileTest` on the phone feeds the same readings
-to the ported reconciler and must produce the same events in the same order.
+event it emitted on every frame. `ReconcileTest` on the phone feeds the same readings to the
+ported reconciler and must produce the same events in the same order.
+
+The second half (`reconcile_ops.json`) runs the desktop's own tests of the reconciler --
+`tests/test_reconcile.py`, `test_premoves.py`, and the pipeline tests whose games go through
+one (`RECORDED`) -- as they stand, with every reconciler they build swapped for one that writes
+down what is done to it: built with which tunables, each frame of readings it is given and the
+events it answers, every call from outside (`start_from`, `turn_from_clock`, `end`,
+`board_unseen`, `commit_pending_terminal`, `reorient`, and the tests' own `_commit`,
+`_queue_path`, `_observe`), every field a test sets on it (`rec.board = ...`, `rec._base_fen`,
+`rec.stale_after = 2`), and after each of those what it then says of itself (the position, the
+record, whether it is browsing, whose turn is open, whether a story is pending, ...). The
+tests' own assertions run as well, so a fixture is only written from tests that pass.
+`ReconcileOpsTest` on the phone does the same things to the ported reconciler and must answer
+the same, op for op (the parity audit's st-T01, st-T02).
 
 Run from the desktop repo, whose environment has python-chess and the test helpers:
 
@@ -20,8 +34,13 @@ Run from the desktop repo, whose environment has python-chess and the test helpe
 
 from __future__ import annotations
 
+import functools
+import importlib
+import inspect
+import itertools
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 import chess
@@ -291,6 +310,352 @@ def run(name: str, states: list[dict]) -> dict:
     }
 
 
+# ---- The desktop's own tests, recorded -------------------------------------------------
+
+# The desktop tests whose games go through a reconciler, by module: None for every test in
+# the module (a test that builds no reconciler records nothing and is left out).
+RECORDED: dict[str, list[str] | None] = {
+    "tests.test_reconcile": None,
+    "tests.test_premoves": None,
+    "tests.test_pipeline": None,
+    "tests.test_scenarios": None,
+    "tests.test_screen_state": None,
+    "tests.test_fast_puzzles": None,
+    "tests.test_occlusion": [
+        "test_mating_move_commits_while_the_game_over_dialog_covers_the_board",
+        "test_mate_in_the_middle_commits_from_two_uncovered_frames",
+        "test_move_out_from_under_a_cover_waits_for_the_memory_to_expire",
+        "test_fading_dialog_reads_as_covered_and_keeps_the_memory_clean",
+        "test_a_dialog_that_stays_over_a_live_board_covers_the_game_but_ends_nothing",
+        "test_the_dialog_confirms_a_mate_read_once",
+    ],
+    "tests.test_result_badges": [
+        "test_a_resignation_ends_the_game_with_the_sites_result",
+        "test_a_draw_badge_is_not_read_until_one_is_on_record",
+        "test_a_flag_is_a_loss_on_time",
+        "test_one_frame_of_badges_is_not_enough",
+        "test_a_mate_on_the_board_ends_the_game_once_whatever_the_badges_say",
+    ],
+    "tests.test_cold_start": [
+        "test_cold_start_reads_a_rendered_mid_game_board",
+        "test_asked_to_reread_a_board_with_a_piece_left_selected",
+        "test_cold_start_without_coordinates_takes_the_side_it_is_told",
+        "test_cold_start_reads_the_real_frames_the_same",
+        "test_a_game_joined_from_the_middle_is_adopted_without_being_asked",
+        "test_the_side_to_move_of_an_adopted_position_comes_from_the_running_clock",
+        "test_a_stale_clock_does_not_settle_the_side_to_move",
+        "test_a_board_mid_move_is_never_adopted_and_a_start_position_bootstraps",
+        "test_a_position_for_black_is_read_from_the_labels_and_coached_for_black",
+        "test_flip_re_reads_a_joined_position_the_other_way_up",
+        "test_a_resync_onto_a_board_the_other_way_up_reads_the_labels",
+        "test_two_piece_sets_on_one_board_are_both_kept_and_each_read",
+        "test_a_selected_piece_is_not_explained",
+        "test_a_board_without_coordinates_is_explained_as_its_orientation",
+        "test_the_next_puzzle_from_the_other_side_is_turned_round_at_once",
+        "test_a_new_position_on_a_slow_stream_is_taken_after_a_moment_not_ten_frames",
+    ],
+    "tests.test_slides": ["test_a_move_seen_sliding_across_squares_is_one_move"],
+}
+
+# The reconciler's tunables: dataclass fields a test may build it with or set.
+TUNABLES = (
+    "settle_frames",
+    "max_plies",
+    "search_budget",
+    "history_depth",
+    "stale_after",
+    "resync_cells",
+    "resync_after",
+    "resync_hold_frames",
+    "resync_min_frames",
+    "resync_hold_s",
+    "resync_jump_cells",
+    "max_stale_subset_cells",
+    "pending_max_age",
+    "max_chain_plies",
+    "max_queue_steps",
+    "resync_max_soft",
+    "memory_frames",
+    "memory_gap_ticks",
+    "min_readable_cells",
+)
+# What a test (or the pipeline) sets on a reconciler from outside; anything else stops the run.
+SETTABLE = frozenset(TUNABLES) | {"board", "_base_fen", "_started", "_finished", "bottom", "user_side"}
+
+KINDS = {"empty": "e", "piece": "p", "unknown": "u"}
+TINTS = {None: "-", "yellow": "y", "red": "r", "other": "o"}
+
+
+def cell_code(reading) -> str:
+    """One reading in six characters: kind, symbol, colour, the flags (settled 1, hover 2,
+    covered 4, drawn 8, highlighted 16, from 'A'), the tint and the guess. The fields the
+    reconciler reads, as `reading_json` has them; nothing else crosses over."""
+    flags = (
+        (1 if reading.settled else 0)
+        | (2 if reading.hover else 0)
+        | (4 if reading.covered else 0)
+        | (8 if reading.drawn else 0)
+        | (16 if reading.highlighted else 0)
+    )
+    colour = "-" if reading.colour is None else reading.colour.value[0]
+    if reading.tint not in TINTS:
+        raise SystemExit(f"a tint the fixture cannot write: {reading.tint!r}")
+    for one in (reading.symbol, reading.guess):
+        if one is not None and len(one) != 1:
+            raise SystemExit(f"a symbol the fixture cannot write: {one!r}")
+    return (
+        KINDS[reading.kind]
+        + (reading.symbol or "-")
+        + colour
+        + chr(ord("A") + flags)
+        + TINTS[reading.tint]
+        + (reading.guess or "-")
+    )
+
+
+class _Log:
+    """What was done to every reconciler of the test running now, and what it answered."""
+
+    def __init__(self) -> None:
+        self.table: list[str] = []
+        self.index: dict[str, int] = {}
+        self.runs: list[dict] = []
+        self.ops: list[dict] | None = None
+        self.name = ""
+        self.ids: dict[int, int] = {}
+        self.games: dict[str, int] = {}
+        self.states: dict[int, dict] = {}
+
+    def begin(self, name: str) -> None:
+        self.name = name
+        self.ops = []
+        self.ids = {}
+        self.games = {}
+        self.states = {}
+
+    def end(self) -> int:
+        ops = self.ops or []
+        if ops:
+            self.runs.append({"name": self.name, "ops": ops})
+        self.ops = None
+        return len(ops)
+
+    def frame(self, readings) -> int:
+        code = "".join(cell_code(readings[r][c]) for r in range(8) for c in range(8))
+        if code not in self.index:
+            self.index[code] = len(self.table)
+            self.table.append(code)
+        return self.index[code]
+
+    def state(self, rec) -> dict:
+        """What the reconciler says of itself: the fields the desktop's tests look at."""
+        if rec.game_id not in self.games:
+            self.games[rec.game_id] = len(self.games)
+        return {
+            "fen": rec.board.fen(),
+            "base": rec.base_fen,
+            "pgn": rec.pgn(),
+            "viewing": rec.viewing,
+            "turn_unknown": rec.turn_unknown,
+            "started": rec.started,
+            "finished": rec.finished,
+            "result": rec.result,
+            "kind": rec.kind,
+            "pending": rec.pending_story,
+            "blocked": rec.blocked,
+            "unexplained": rec.unexplained_frames,
+            "agrees": rec.agrees,
+            "game": self.games[rec.game_id],
+            "last_seen": sorted(rec._last_seen),
+        }
+
+    def record(self, rec, op: str, **fields) -> None:
+        if self.ops is None:
+            return  # built outside a recorded test
+        key = id(rec)
+        if key not in self.ids:
+            self.ids[key] = len(self.ids)
+        entry = {"r": self.ids[key], "op": op, **fields}
+        # The state as it changed since the last op on this reconciler.
+        now = self.state(rec)
+        before = self.states.get(key, {})
+        entry["state"] = {k: v for k, v in now.items() if before.get(k, object()) != v}
+        self.states[key] = now
+        self.ops.append(entry)
+
+
+LOG = _Log()
+
+
+def _board_json(board: chess.Board) -> dict:
+    return {"fen": board.root().fen(), "moves": [m.uci() for m in board.move_stack]}
+
+
+def _value_json(name: str, value):
+    if name == "board":
+        return _board_json(value)
+    if isinstance(value, Side):
+        return value.value
+    return value
+
+
+class _Recording(Reconciler):
+    """The desktop's reconciler, writing down what is done to it from outside."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        object.__setattr__(self, "_rec_depth", 1)
+        unknown = set(kwargs) - {"bottom", "user_side", *TUNABLES}
+        if unknown or len(args) > 2:
+            raise SystemExit(f"{LOG.name}: a reconciler built with {sorted(unknown)} {args}")
+        super().__init__(*args, **kwargs)
+        object.__setattr__(self, "_rec_depth", 0)
+        made = {name: getattr(self, name) for name in TUNABLES}
+        made["bottom"] = self.bottom.value
+        made["user_side"] = self.user_side.value
+        LOG.record(self, "new", args=made)
+
+    def __setattr__(self, name: str, value) -> None:
+        object.__setattr__(self, name, value)
+        if getattr(self, "_rec_depth", 1) == 0:
+            if name not in SETTABLE:
+                raise SystemExit(f"{LOG.name}: a test set reconciler.{name}, which no fixture says")
+            LOG.record(self, "set", name=name, value=_value_json(name, value))
+
+
+def _events(out) -> dict:
+    return {"events": [event_json(e) for e in out]}
+
+
+def _nothing(out) -> dict:
+    return {}
+
+
+# The calls written down: what each takes, as the fixture has it, and what it answers.
+CALLS = {
+    "update": (lambda a: {"readings": LOG.frame(a["readings"]), "ts": a["ts"]}, _events),
+    "board_unseen": (lambda a: {}, _nothing),
+    "start": (lambda a: {}, _events),
+    "start_from": (
+        lambda a: {
+            "fen": a["placement"].fen(),
+            "ts": a["ts"],
+            "highlighted": sorted(a["highlighted"]),
+        },
+        _events,
+    ),
+    "turn_from_clock": (lambda a: {"colour": a["colour"]}, _events),
+    "end": (lambda a: {"result": a["result"], "reason": a["reason"]}, _events),
+    "commit_pending_terminal": (lambda a: {}, _events),
+    "reorient": (lambda a: {"bottom": a["bottom"].value}, _events),
+    "_commit": (lambda a: {"uci": a["move"].uci()}, _events),
+    "_queue_path": (
+        lambda a: {
+            "origin": a["origin"],
+            "target": a["target"],
+            "symbol": a["symbol"],
+            "tinted": sorted(a["tinted"]),
+            "board": None if a["board"] is None else a["board"].fen(),
+        },
+        lambda out: {"path": None if out is None else [m.uci() for m in out]},
+    ),
+    "_observe": (
+        lambda a: {"readings": LOG.frame(a["readings"])},
+        lambda out: {"seen": sorted(out)},
+    ),
+}
+
+
+def _wrap(name: str) -> None:
+    base = getattr(Reconciler, name)
+    signature = inspect.signature(base)
+    takes, gives = CALLS[name]
+
+    @functools.wraps(base)
+    def method(self, *args, **kwargs):  # noqa: ANN001, ANN202
+        if self._rec_depth:
+            return base(self, *args, **kwargs)
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        fields = takes(bound.arguments)
+        object.__setattr__(self, "_rec_depth", 1)
+        try:
+            out = base(self, *args, **kwargs)
+        finally:
+            object.__setattr__(self, "_rec_depth", 0)
+        LOG.record(self, name.lstrip("_"), **fields, **gives(out))
+        return out
+
+    setattr(_Recording, name, method)
+
+
+for _name in CALLS:
+    _wrap(_name)
+
+
+def _cases(func) -> list[tuple[str, dict]]:
+    """The parameter sets pytest would run `func` with: every `parametrize` crossed."""
+    grids: list[list[tuple[str, dict]]] = []
+    for mark in reversed(getattr(func, "pytestmark", [])):
+        if mark.name != "parametrize":
+            continue
+        names, values = mark.args[0], mark.args[1]
+        names = [n.strip() for n in names.split(",")] if isinstance(names, str) else list(names)
+        rows = []
+        for row, value in enumerate(values):
+            value = getattr(value, "values", value)  # a pytest.param
+            one = dict(zip(names, value if len(names) > 1 else (value,), strict=True))
+            short = [
+                str(getattr(v, "value", v))
+                for v in one.values()
+                if isinstance(v, Side | bool | int | float) or (isinstance(v, str) and len(v) <= 10)
+            ]
+            label = "-".join(short) if len(short) == len(one) else f"#{row}"
+            rows.append((label, one))
+        grids.append(rows)
+    cases = []
+    for combo in itertools.product(*grids):
+        label = "-".join(part for part, _ in combo)
+        params: dict = {}
+        for _, one in combo:
+            params.update(one)
+        cases.append((label, params))
+    return cases or [("", {})]
+
+
+def record_tests() -> dict:
+    """Every recorded desktop test run with the recording reconciler in place."""
+    import pytest
+
+    from sidecoach.state import pipeline as pipeline_module
+
+    pipeline_module.Reconciler = _Recording
+    for module_name, wanted in RECORDED.items():
+        module = importlib.import_module(module_name)
+        if hasattr(module, "Reconciler"):
+            module.Reconciler = _Recording
+        names = wanted or [n for n in dir(module) if n.startswith("test_")]
+        for test_name in names:
+            func = getattr(module, test_name)
+            for label, params in _cases(func):
+                name = f"{module_name.split('.')[-1]}::{test_name}" + (f"[{label}]" if label else "")
+                with tempfile.TemporaryDirectory() as tmp:
+                    patch = pytest.MonkeyPatch()
+                    kwargs = dict(params)
+                    wants = inspect.signature(func).parameters
+                    if "tmp_path" in wants:
+                        kwargs["tmp_path"] = Path(tmp)
+                    if "monkeypatch" in wants:
+                        kwargs["monkeypatch"] = patch
+                    LOG.begin(name)
+                    try:
+                        func(**kwargs)
+                    finally:
+                        patch.undo()
+                        ops = LOG.end()
+                print(f"  {name}: {ops} ops")
+    return {"readings": LOG.table, "runs": LOG.runs}
+
+
 def main() -> None:
     runs = []
     for name, build in SCENARIOS.items():
@@ -306,6 +671,15 @@ def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "reconcile.json").write_text(json.dumps({"runs": runs}), encoding="utf-8")
     print(f"-> {OUT / 'reconcile.json'}")
+
+    print("the desktop's tests, recorded:")
+    ops = record_tests()
+    (OUT / "reconcile_ops.json").write_text(json.dumps(ops), encoding="utf-8")
+    count = sum(len(r["ops"]) for r in ops["runs"])
+    print(
+        f"-> {OUT / 'reconcile_ops.json'}: {len(ops['runs'])} tests, {count} ops, "
+        f"{len(ops['readings'])} distinct frames"
+    )
 
 
 if __name__ == "__main__":
