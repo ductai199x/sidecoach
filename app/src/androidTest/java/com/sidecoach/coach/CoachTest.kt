@@ -1239,6 +1239,93 @@ class CoachTest {
     }
 
     /**
+     * `test_verdicts._played`: a sound move of the player's from the scholar's-mate position,
+     * [san], labelled [label], losing [loss]; what the coach said.
+     */
+    private fun soundMove(coach: Coach, san: String, label: Label, loss: Double = 0.01): List<String> {
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        val board = Board(SCHOLAR)
+        val move = board.parseSan(san)!!
+        board.push(move)
+        coach.onEvent(
+            MovePlayed(gameId = "g", ply = 7, san = san, uci = move.uci(), fenBefore = SCHOLAR, fenAfter = board.fen(), byUser = true),
+            8.0,
+        )
+        coach.onEvent(
+            MoveAssessment(
+                gameId = "g", ply = 7, uci = move.uci(), expectedLoss = loss, severity = Severity.NONE,
+                best = listOf("h5f7"), label = label,
+            ),
+            8.5,
+        )
+        return messages(coach).map { it.text }
+    }
+
+    /**
+     * Who writes the word on a sound move, by its label (Tai, 2026-09-20 and 2026-09-26: "They need
+     * to go through the api"): theory, the engine's own move and an excellent one get the board's
+     * sentence and no call (the routine model's, with the local verdicts off); a good move goes to
+     * the model, which names the better one; a great or brilliant move to the MAIN model at its
+     * full effort, told to show some delight, the board's line standing in when the reply fails.
+     * The routine model is a separate one here, so a delight asked of it would show.
+     * `test_verdicts.py`: the coach writes a sound move's word itself; a good move goes to the
+     * model; a great or brilliant move gets the model's delight.
+     */
+    @Test
+    fun aSoundMovesWordIsRoutedByItsLabel() {
+        fun routed(replies: List<String>, localVerdicts: Boolean = true): Triple<Coach, ScriptedProvider, ScriptedProvider> {
+            val main = ScriptedProvider(replies)
+            val routine = ScriptedProvider(replies)
+            val coach = Coach(
+                main,
+                policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)),
+                routineProvider = routine,
+                localVerdicts = localVerdicts,
+            )
+            return Triple(coach, main, routine)
+        }
+        // The board's own word: no call at all.
+        for ((san, label) in listOf("Qxf7#" to Label.BEST, "Nc3" to Label.EXCELLENT, "Nc3" to Label.BOOK)) {
+            val (coach, main, routine) = routed(listOf("never used"))
+            val texts = soundMove(coach, san, label)
+            assertTrue("$label: $texts", texts.size == 1 && !texts[0].startsWith(san.trimEnd('#', '+')))
+            assertTrue("$label: no model", main.prompts.isEmpty() && routine.prompts.isEmpty())
+            if (label == Label.BEST) assertTrue(texts[0], texts[0] in MATE)
+            if (label == Label.EXCELLENT) {
+                assertTrue(texts[0], texts[0].split(" -- ")[0].trimEnd('.') in OPENERS.getValue("excellent"))
+            }
+        }
+        // The local verdicts off, the routine model writes it.
+        run {
+            val (coach, main, routine) = routed(listOf("[p=1.0] Mate on the board -- well played."), localVerdicts = false)
+            assertEquals(listOf("Mate on the board -- well played."), soundMove(coach, "Qxf7#", Label.BEST))
+            assertTrue(main.prompts.isEmpty() && routine.prompts.size == 1)
+        }
+        // A good move: the main model names the better one, the label said in its sense.
+        run {
+            val (coach, main, routine) = routed(listOf("[p=1.0] Fine, but Qxf7# was there: the mate."))
+            assertEquals(listOf("Fine, but Qxf7# was there: the mate."), soundMove(coach, "Nc3", Label.GOOD, loss = 0.03))
+            assertTrue(main.prompts.size == 1 && routine.prompts.isEmpty())
+            val task = directive(main)
+            assertTrue(task, "which was good: playable, not the strongest" in task && "Qxf7#" in task)
+            assertTrue(task, "Do not open with the move they played" in task)
+        }
+        // Great and brilliant: the main model, with delight; the board's line if it fails.
+        for (label in listOf(Label.GREAT, Label.BRILLIANT)) {
+            val (coach, main, routine) = routed(listOf("[p=1.0] Yes -- the one move, and it ends the game."))
+            assertEquals(listOf("Yes -- the one move, and it ends the game."), soundMove(coach, "Qxf7#", label, loss = 0.0))
+            assertTrue("$label: the main model", main.prompts.size == 1 && routine.prompts.isEmpty())
+            val task = directive(main)
+            assertTrue(task, "Show some delight" in task && label.name.lowercase() in task)
+            assertTrue(task, "Do not open with the move they played" in task)
+            val (failing, _, _) = routed(listOf("", ""))
+            val fallback = soundMove(failing, "Qxf7#", label, loss = 0.0)
+            assertTrue("$label: $fallback", fallback.size == 1 && fallback[0] in MATE)
+        }
+    }
+
+    /**
      * Game 2 answered "how did I do overall?" with game 1's sentences when the model failed
      * (the parity audit, 2026-09-26; desktop c5c488f).
      */
