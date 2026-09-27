@@ -23,6 +23,14 @@ odd. This records, compactly, one table per part:
   a fraction, two whole cells, 0.8 of a cell up, the diagonals -- with the cells readable at
   the old lock and the new place (`readable_cells`), and the tracker following each (its
   `probes` beside its `detections`).
+- edges: the desktop's detector and tracker tests of its cfa8544 vision work (80b1194, 44b112f,
+  1271cf5, 0c957b5, 2669d9c) on their own 1920 by 1200 pages, the background well away from
+  the board flattened: boards flush with the right or bottom edge found, a candidate a
+  fraction of a cell off refused though its outer row is cut, boards flush with an edge or a
+  cell from it followed through a nudge, a board resized to near the bottom locked where it
+  is, a board gone and back at another size found within `redetect_first` frames, and a
+  tracker asking for 0.95 searching on the first frame and the sixth. Each passes the
+  desktop's own assertions here, or the generator stops.
 
     cd D:/chess-coaching-companion
     uv run --no-sync python <worktree>/tools/make_vision_fixtures.py
@@ -64,7 +72,14 @@ from sidecoach.vision.result_badges import (  # noqa: E402
 )
 from sidecoach.vision.squares import BoardGeometry  # noqa: E402
 from sidecoach.vision.tracker import BoardTracker  # noqa: E402
-from tests.synth import bulky_pieces, draw_dialog, render_board, synthetic_board  # noqa: E402
+from tests.synth import (  # noqa: E402
+    DARK,
+    bulky_pieces,
+    busy_background,
+    draw_dialog,
+    render_board,
+    synthetic_board,
+)
 
 OUT = Path(__file__).resolve().parents[1] / "app" / "src" / "androidTest" / "assets" / "vision"
 BADGES = DESKTOP / "tests" / "fixtures" / "badges"
@@ -372,11 +387,165 @@ def track(what: str, settings: dict, sequence: list[str], frames: dict, files: d
     return {"what": what, "settings": settings, "frames": [files[n] for n in sequence], "states": states}
 
 
+# ---- boards at the frame's edge: the desktop's tests of cfa8544's vision work ----------------
+#
+# Desktop 80b1194, 44b112f, 1271cf5, 0c957b5 and 2669d9c test the detector and the tracker on
+# full 1920 x 1200 pages (tests/test_board_detect.py, tests/test_tracker.py): boards flush with
+# an edge, nudged along it, a cell from it, resized near it, gone and back at another size. The
+# frames are theirs, but for the busy background well away from the board, which is flattened
+# (EDGE_PAD cells from it and more: past the reach of the tracker's re-fit, 1.7 cells), so a
+# page costs a fraction of its megabyte; each case is checked here to pass the desktop's own
+# assertions on the flattened page, or it is no fixture of that test.
+
+EDGE_W, EDGE_H = 1920, 1200
+EDGE_PAD = 2.0
+FLAT = (32, 32, 32)
+
+
+def flatten_around(frame: np.ndarray, boards: list[tuple[int, int, int]]) -> np.ndarray:
+    """Everything more than EDGE_PAD cells from every board in `boards` (x0, y0, cell) set
+    to one colour; the boards and what lies around them untouched. No boards: all of it."""
+    keep = np.zeros(frame.shape[:2], dtype=bool)
+    for x0, y0, cell in boards:
+        pad = int(round(EDGE_PAD * cell))
+        keep[max(0, y0 - pad) : max(0, y0 + 8 * cell + pad), max(0, x0 - pad) : max(0, x0 + 8 * cell + pad)] = True
+    out = frame.copy()
+    out[~keep] = FLAT
+    return out
+
+
+def edge_page(x0: int, y0: int, cell: int, **kw) -> np.ndarray:  # noqa: ANN003
+    kw.setdefault("width", EDGE_W)
+    kw.setdefault("height", EDGE_H)
+    return flatten_around(synthetic_board(x0=x0, y0=y0, cell=cell, **kw), [(x0, y0, cell)])
+
+
+def near(board: BoardCandidate | None, x: int, y: int, cell: float, px: float, pitch: float) -> bool:
+    return (
+        board is not None
+        and abs(board.region.x - x) <= px
+        and abs(board.region.y - y) <= px
+        and abs(board.cell_px - cell) <= pitch
+    )
+
+
+def edge_cases() -> dict:
+    frames: dict[str, np.ndarray] = {}
+    detections = []
+    runs = []
+    files: dict[str, str] = {}
+
+    def keep(name: str, frame: np.ndarray) -> str:
+        frames[name] = frame
+        files[name] = png(f"edge-{name}.png", frame)
+        return name
+
+    # test_board_detect: a board flush with the right or bottom edge is found where it is.
+    for style, x, y in (
+        ("chess7", EDGE_W - 8 * 136, 80),
+        ("pixel", EDGE_W - 8 * 136, 80),
+        ("cardinal", 10, EDGE_H - 8 * 136),
+        ("governor", 10, EDGE_H - 8 * 136),
+    ):
+        name = keep(f"flush-{style}", edge_page(x, y, 136, theme="ice", style=style))
+        found = detect_boards(frames[name])
+        if not found or not near(found[0], x, y, 136, 2, 1.0):
+            raise SystemExit(f"{name}: the desktop did not find the board at ({x}, {y}): {found[:1]}")
+        detections.append({"file": files[name], "boards": [candidate_of(b) for b in found], "fits": []})
+
+    # test_board_detect: a candidate a fraction of a cell off is refused though its outer row is
+    # cut; and test_tracker: the board resized near the frame's bottom is locked where it is.
+    board = chess.Board()
+    for san in (
+        "f3", "Nc6", "g4", "e5", "b4", "b6", "Bh3", "Na5",
+        "Kf2", "Bxb4", "c4", "Nxc4", "Bf1", "Nb2", "a3", "d5",
+    ):  # fmt: skip
+        board.push_san(san)
+    kw = {"theme": "wood", "style": "pixel", "bottom": Side.BLACK, "board": board}
+    resized = keep("resized-near-bottom", edge_page(583, 110, 136, **kw))
+    before = keep("resized-from", edge_page(833, 360, 105, **kw))
+    gray = to_gray(frames[resized])
+    fits = []
+    for region, cell in ((Region(583, 110, 1088, 1088), 136.0), (Region(582, 24, 1090, 1090), 136.2)):
+        fit, contrast = fit_score(gray, region, cell)
+        fits.append([region.x, region.y, region.w, region.h, r6(cell), r6(fit), r6(contrast)])
+    if not (fits[0][5] >= 0.95 and fits[1][5] == 0.0):
+        raise SystemExit(f"resized-near-bottom: the desktop's fits {fits}")
+    detections.append(
+        {"file": files[resized], "boards": [candidate_of(b) for b in detect_boards(frames[resized])], "fits": fits}
+    )
+    run = track(
+        "resized to near the frame's bottom: locked where it is", {},
+        [before] + [resized] * (BoardTracker().max_misses + 3), frames, files,
+    )  # fmt: skip
+    last = run["states"][-1]
+    if not (last[1] and last[3] and abs(last[3][0] - 583) <= 2 and abs(last[3][1] - 110) <= 2):
+        raise SystemExit(f"resized-near-bottom: the desktop's tracker ended at {last}")
+    runs.append(run)
+
+    # test_tracker: a board flush with an edge is followed when nudged.
+    for cell, (bx, by), (ax, ay) in (
+        (136, (0, 0), (0, 5)),
+        (88, (985, 0), (993, 0)),
+        (64, (0, 300), (0, 309)),
+        (97, (EDGE_W - 776, 318), (EDGE_W - 776, 291)),
+        (64, (500, EDGE_H - 512), (509, EDGE_H - 512)),
+        (80, (4, 16), (0, 0)),
+        (80, (734, 76), (726, 81)),
+    ):
+        first = keep(f"nudge-{cell}-{bx}-{by}", edge_page(bx, by, cell))
+        moved = keep(f"nudge-{cell}-{ax}-{ay}", edge_page(ax, ay, cell))
+        run = track(
+            f"flush, {cell} px, ({bx}, {by}) nudged to ({ax}, {ay})", {},
+            [first] + [moved] * (BoardTracker().refine_every + 2), frames, files,
+        )  # fmt: skip
+        last = run["states"][-1]
+        if not (last[1] and last[3] and abs(last[3][0] - ax) <= 2 and abs(last[3][1] - ay) <= 2
+                and abs(last[3][4] - cell) <= 0.5):  # fmt: skip
+            raise SystemExit(f"nudge {cell} ({ax}, {ay}): the desktop's tracker ended at {last}")
+        runs.append(run)
+
+    # test_tracker: a board back at another size after a moment is found soon.
+    small = {"width": 1400, "height": 1000}
+    home = keep("back-home", edge_page(300, 120, 64, **small))
+    gone = keep("back-gone", flatten_around(busy_background(1400, 1000, 0), []))
+    back = keep("back-again", edge_page(200, 60, 100, **small))
+    tracker = BoardTracker()
+    sequence = [home] + [gone] * (tracker.max_misses + 1)
+    for name in sequence:
+        tracker.update(frames[name])
+    if tracker.locked:
+        raise SystemExit("back: the desktop's tracker kept its lock on the empty page")
+    count = 0
+    while count < 30:
+        count += 1
+        sequence.append(back)
+        board_back = tracker.update(frames[back])
+        if board_back is not None and tracker.verified:
+            break
+    if not (near(board_back, 200, 60, 100, 2, 1.0) and count <= tracker.redetect_first):
+        raise SystemExit(f"back: the desktop found {board_back} after {count} frames")
+    runs.append(track("gone, then back at another size: found soon", {}, sequence, frames, files))
+
+    # test_tracker: the thresholds reach detection -- a fit of 58/64, and a tracker asking
+    # for 0.95 searches on the first frame and the sixth.
+    spoiled = synthetic_board(x0=300, y0=120, cell=64, pieces=False)
+    for r, c in ((0, 0), (0, 2), (2, 0), (4, 4), (6, 2), (2, 6)):
+        spoiled[120 + r * 64 : 184 + r * 64, 300 + c * 64 : 364 + c * 64] = DARK
+    name = keep("spoiled", flatten_around(spoiled, [(300, 120, 64)]))
+    runs.append(track("six light cells painted dark: locked", {}, [name], frames, files))
+    run = track("six light cells painted dark, asking 0.95", {"min_fit": 0.95}, [name] * 12, frames, files)
+    if runs[-1]["states"][0][3] is None or run["states"][-1][2] != 2 or any(s[3] for s in run["states"]):
+        raise SystemExit(f"spoiled: the desktop's trackers {runs[-1]['states']} {run['states'][-1]}")
+    runs.append(run)
+    return {"detections": detections, "runs": runs}
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     for old in OUT.glob("*.png"):
         old.unlink()
-    out = {"gate": gate_cases(), "badges": badge_cases(), "boards": board_cases()}
+    out = {"gate": gate_cases(), "badges": badge_cases(), "boards": board_cases(), "edges": edge_cases()}
     (OUT / "index.json").write_text(json.dumps(out, separators=(",", ":")) + "\n", encoding="utf-8")
     size = sum(p.stat().st_size for p in OUT.iterdir())
     gate = out["gate"]
@@ -390,6 +559,13 @@ def main() -> None:
         print("track", run["what"], last[3][:5] if last[3] else None, "detections", last[2], "probes", last[4])
     for r in out["boards"]["readable"]:
         print("readable", r["file"], r["region"][:2], r["readable"])
+    for d in out["edges"]["detections"]:
+        print("edge detect", d["file"], d["boards"][:1], [f[5] for f in d["fits"]])
+    for run in out["edges"]["runs"]:
+        last = run["states"][-1]
+        print("edge track", run["what"], last[3][:5] if last[3] else None, "detections", last[2])
+    edge_bytes = sum(p.stat().st_size for p in OUT.glob("edge-*.png"))
+    print(f"edge pages: {edge_bytes / 1e6:.1f} MB")
     print(f"{size / 1e6:.1f} MB -> {OUT}")
 
 

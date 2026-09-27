@@ -130,47 +130,9 @@ class VisionParityTest {
             BoardDetect.toGray(mat).also { mat.release() }
         }
         val detections = boards.getJSONArray("detections")
-        for (d in 0 until detections.length()) {
-            val case = detections.getJSONObject(d)
-            val file = case.getString("file")
-            val found = BoardDetect.detect(gray(file))
-            val want = case.getJSONArray("boards")
-            val got = found.map { show(it) }
-            val theirs = (0 until want.length()).map { show(want.getJSONArray(it)) }
-            if (got != theirs) failures.add("$file detected: phone $got, desktop $theirs")
-            val fits = case.getJSONArray("fits")
-            for (f in 0 until fits.length()) {
-                val at = fits.getJSONArray(f)
-                val region = Region(at.getInt(0), at.getInt(1), at.getInt(2), at.getInt(3))
-                val (fit, contrast) = BoardRefine.fitScore(gray(file), region, at.getDouble(4))
-                if (abs(fit - at.getDouble(5)) > EXACT || abs(contrast - at.getDouble(6)) > EXACT) {
-                    failures.add("$file fit at $region: phone $fit, $contrast, desktop ${at.getDouble(5)}, ${at.getDouble(6)}")
-                }
-            }
-        }
+        for (d in 0 until detections.length()) checkDetection(detections.getJSONObject(d), ::gray, failures)
         val runs = boards.getJSONArray("runs")
-        for (r in 0 until runs.length()) {
-            val run = runs.getJSONObject(r)
-            val settings = run.getJSONObject("settings")
-            val tracker = BoardTracker(
-                maxMisses = settings.optInt("max_misses", 3),
-                refineEvery = settings.optInt("refine_every", 10),
-            )
-            val frames = run.getJSONArray("frames")
-            val states = run.getJSONArray("states")
-            for (i in 0 until frames.length()) {
-                val board = tracker.update(gray(frames.getString(i)))
-                val state = states.getJSONArray(i)
-                val got = "locked=${tracker.locked} verified=${tracker.verified} detections=${tracker.detections} " +
-                    "probes=${tracker.probes} " + (board?.let { show(it) } ?: "none")
-                val want = "locked=${state.getBoolean(0)} verified=${state.getBoolean(1)} detections=${state.getInt(2)} " +
-                    "probes=${state.getInt(4)} " + (if (state.isNull(3)) "none" else show(state.getJSONArray(3)))
-                if (got != want) {
-                    failures.add("${run.getString("what")}, update ${i + 1} (${frames.getString(i)}): phone $got, desktop $want")
-                    break
-                }
-            }
-        }
+        for (r in 0 until runs.length()) checkRun(runs.getJSONObject(r), ::gray, failures)
         // The cells a lock reads in its own colours, at the old place and the new
         // (`readable_cells`): what gives a moved board away.
         val readable = boards.getJSONArray("readable")
@@ -186,6 +148,83 @@ class VisionParityTest {
             }
         }
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /**
+     * The desktop's tests of its vision work on boards at the frame's edge (desktop 80b1194,
+     * 44b112f, 1271cf5, 0c957b5, 2669d9c; `tools/make_vision_fixtures.py`'s `edges`), on their
+     * own 1920 by 1200 pages: boards flush with the right or bottom edge found where they are
+     * (test_board_detect); a candidate two thirds of a cell off a board near the bottom
+     * refused, its fit zero beside the board's (test_board_detect); boards flush with an edge,
+     * or a cell from it, followed through a nudge; a board resized to near the bottom locked
+     * where it is; a board gone and back at another size found within `redetect_first`
+     * frames; a tracker asking for 0.95 searching on the first frame and the sixth
+     * (test_tracker). Every candidate, fit and tracker state as the desktop's. A page is
+     * read once per case and let go after it: a 1920 by 1200 grey plane is nine megabytes.
+     */
+    @Test
+    fun boardsAtTheFramesEdgeAreFoundAndFollowedAsTheDesktopFindsThem() {
+        val edges = index.getJSONObject("edges")
+        val failures = ArrayList<String>()
+        val grays = HashMap<String, Plane>()
+        fun gray(file: String): Plane = grays.getOrPut(file) {
+            val mat = Fixtures.asset("vision/$file")
+            BoardDetect.toGray(mat).also { mat.release() }
+        }
+        val detections = edges.getJSONArray("detections")
+        for (d in 0 until detections.length()) {
+            checkDetection(detections.getJSONObject(d), ::gray, failures)
+            grays.clear()
+        }
+        val runs = edges.getJSONArray("runs")
+        for (r in 0 until runs.length()) {
+            checkRun(runs.getJSONObject(r), ::gray, failures)
+            grays.clear()
+        }
+        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /** What the detector finds on a page, and the fit at the regions the desktop read. */
+    private fun checkDetection(case: JSONObject, gray: (String) -> Plane, failures: MutableList<String>) {
+        val file = case.getString("file")
+        val found = BoardDetect.detect(gray(file))
+        val want = case.getJSONArray("boards")
+        val got = found.map { show(it) }
+        val theirs = (0 until want.length()).map { show(want.getJSONArray(it)) }
+        if (got != theirs) failures.add("$file detected: phone $got, desktop $theirs")
+        val fits = case.getJSONArray("fits")
+        for (f in 0 until fits.length()) {
+            val at = fits.getJSONArray(f)
+            val region = Region(at.getInt(0), at.getInt(1), at.getInt(2), at.getInt(3))
+            val (fit, contrast) = BoardRefine.fitScore(gray(file), region, at.getDouble(4))
+            if (abs(fit - at.getDouble(5)) > EXACT || abs(contrast - at.getDouble(6)) > EXACT) {
+                failures.add("$file fit at $region: phone $fit, $contrast, desktop ${at.getDouble(5)}, ${at.getDouble(6)}")
+            }
+        }
+    }
+
+    /** A tracker fed the run's frames: its lock after every update, as the desktop's. */
+    private fun checkRun(run: JSONObject, gray: (String) -> Plane, failures: MutableList<String>) {
+        val settings = run.getJSONObject("settings")
+        val tracker = BoardTracker(
+            minFit = settings.optDouble("min_fit", 0.85),
+            maxMisses = settings.optInt("max_misses", 3),
+            refineEvery = settings.optInt("refine_every", 10),
+        )
+        val frames = run.getJSONArray("frames")
+        val states = run.getJSONArray("states")
+        for (i in 0 until frames.length()) {
+            val board = tracker.update(gray(frames.getString(i)))
+            val state = states.getJSONArray(i)
+            val got = "locked=${tracker.locked} verified=${tracker.verified} detections=${tracker.detections} " +
+                "probes=${tracker.probes} " + (board?.let { show(it) } ?: "none")
+            val want = "locked=${state.getBoolean(0)} verified=${state.getBoolean(1)} detections=${state.getInt(2)} " +
+                "probes=${state.getInt(4)} " + (if (state.isNull(3)) "none" else show(state.getJSONArray(3)))
+            if (got != want) {
+                failures.add("${run.getString("what")}, update ${i + 1} (${frames.getString(i)}): phone $got, desktop $want")
+                return
+            }
+        }
     }
 
     /** A flat grey frame with each rectangle (x, y, w, h, levels) raised by some levels. */
