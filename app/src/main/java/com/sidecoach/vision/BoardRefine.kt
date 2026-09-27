@@ -238,21 +238,68 @@ object BoardRefine {
         return count
     }
 
-    /** Summed profile at the nine teeth of a comb; teeth past the profile's end read zero. */
-    fun combStrength(profile: DoubleArray, offset: Double, pitch: Double): Double {
-        var sum = 0.0
+    /**
+     * Where a profile starts, and where it ends, at the frame's own edge (`blind` in
+     * `board_detect._comb_fit`): no boundary shows there.
+     */
+    data class Blind(val start: Boolean, val end: Boolean)
+
+    /** A profile whose ends are both inside the frame. */
+    val SIGHTED = Blind(false, false)
+
+    /**
+     * `board_detect._seen`: whether a tooth at [position] shows on a profile of [n] values:
+     * every one does, but for one on the frame's own edge when the profile starts or ends
+     * there ([blind]). The gradient is taken with the border reflected, so it reads nothing
+     * on the frame's first and last pixel: a board flush with the frame's edge has a
+     * boundary there that no profile shows.
+     */
+    private fun seen(position: Double, n: Int, blind: Blind): Boolean =
+        (!blind.start || position >= 1.0) && (!blind.end || position <= n - 2.0)
+
+    /**
+     * Summed profile at the nine teeth of a comb; teeth past the profile's end read zero,
+     * and a tooth on the frame's edge, or past it, reads as the mean of the ones the frame
+     * shows (as [combFit] scores it).
+     */
+    fun combStrength(profile: DoubleArray, offset: Double, pitch: Double, blind: Blind = SIGHTED): Double {
+        val n = profile.size
+        var total = 0.0
+        var counted = 0
+        var hidden = 0
         for (t in TEETH) {
             val position = offset + pitch * t
-            if (position < 0 || position > profile.size - 1) continue
-            sum += interpolate(profile, position)
+            if (!seen(position, n, blind)) {
+                hidden++
+                continue
+            }
+            if (position < 0 || position > n - 1) continue
+            total += interpolate(profile, position)
+            counted++
         }
-        return sum
+        if (counted == 0) return 0.0
+        return total * (counted + hidden).toDouble() / counted.toDouble()
     }
 
     /**
      * Best (offset, pitch, strength) of a nine-tooth comb over a gradient profile: whole
      * pixels and one-percent pitch steps over the window first, then quarter pixels and
      * 0.2 percent steps around the best.
+     *
+     * [blind] says the profile starts, or ends, at the frame's own edge, where no boundary
+     * shows ([seen]). A tooth there is scored as the mean of the others: a board flush with
+     * the frame's edge has only eight boundaries to show, and a comb a cell over, its ninth
+     * tooth on whatever lay beyond the board's far edge, outscored it by that much -- the
+     * lock of a board pushed against the screen's edge was never corrected again (the
+     * desktop's geometry sweep, 2026-09-27). At the far end the last tooth may sit on the
+     * frame's edge itself, half a pixel past the last pixel, where a flush board's boundary
+     * lies, and no further. The coarse grid, a pixel and a percent apart, may hold no comb of
+     * a flush board's pitch that stops there (the last tooth a pixel past it, or the teeth a
+     * pixel off the boundaries, and a comb a cell over won): so the coarse pass also keeps
+     * the best comb whose last tooth runs past the edge by the offset step and the drift of
+     * a pitch step, and each of the two is fitted finely within the frame. Past the edge, a
+     * comb a cell over, its last tooth hidden beyond the frame, can tie the flush board's in
+     * the coarse pass; the fine pass inside the frame tells them apart.
      */
     fun combFit(
         profile: DoubleArray,
@@ -260,36 +307,65 @@ object BoardRefine {
         pitch: Double,
         search: Double,
         offsetCells: Double = 0.6,
+        blind: Blind = SIGHTED,
     ): Triple<Double, Double, Double> {
         val n = profile.size
-
-        fun bestOver(pitches: DoubleArray, offsets: DoubleArray): Triple<Double, Double, Double> {
-            var best = Triple(start, pitch, Double.NEGATIVE_INFINITY)
-            for (p in pitches) {
-                for (o in offsets) {
-                    if (o + p * 8 > n - 1) continue
-                    var strength = 0.0
-                    for (t in TEETH) strength += interpolate(profile, o + p * t)
-                    if (strength > best.third) best = Triple(o, p, strength)
-                }
-            }
-            return best
-        }
-
         val reach = pitch * offsetCells
         val step = max(0.25, pitch * 0.01)
+        val last = if (blind.end) n - 0.5 else n - 1.0
+        val ends = if (blind.end) doubleArrayOf(last, last + 1.0 + 4.0 * step) else doubleArrayOf(last)
+
+        /** The best comb whose last tooth lies at or before each of [limits]. */
+        fun bestOver(pitches: DoubleArray, offsets: DoubleArray, limits: DoubleArray): MutableList<Triple<Double, Double, Double>> {
+            val bests = MutableList(limits.size) { Triple(start, pitch, Double.NEGATIVE_INFINITY) }
+            if (offsets.isEmpty() || pitches.isEmpty()) return bests
+            for (p in pitches) {
+                for (o in offsets) {
+                    val lastTooth = o + p * 8
+                    if (lastTooth > limits[limits.size - 1]) continue
+                    // A tooth the frame cannot show counts for nothing, and the comb is
+                    // scored as the mean of the ones it shows; past the profile's end a
+                    // tooth reads zero (np.interp's `right`).
+                    var sum = 0.0
+                    var count = 0
+                    for (t in TEETH) {
+                        val position = o + p * t
+                        if (!seen(position, n, blind)) continue
+                        count++
+                        if (position > n - 1) continue
+                        sum += interpolate(profile, position)
+                    }
+                    val strength = sum * TEETH.size.toDouble() / max(count, 1).toDouble()
+                    for (k in limits.indices) {
+                        if (lastTooth <= limits[k] && strength > bests[k].third) bests[k] = Triple(o, p, strength)
+                    }
+                }
+            }
+            return bests
+        }
+
         val coarse = bestOver(
             range(pitch * (1 - search), pitch * (1 + search), step),
             range(max(0.0, start - reach), min(n - 1.0, start + reach), 1.0),
+            ends,
         )
-        if (coarse.third == Double.NEGATIVE_INFINITY) return Triple(start, pitch, 0.0)
-        val (o, p, _) = coarse
         val span = max(1.0, 4.0 * step)
-        val fine = bestOver(
-            range(p * 0.99, p * 1.01, max(0.05, p * 0.002)),
-            range(max(0.0, o - span), min(n - 1.0, o + span) + 0.01, 0.25),
-        )
-        return if (fine.third >= coarse.third) fine else coarse
+        val found = ArrayList<Triple<Double, Double, Double>>()
+        for ((k, fit) in coarse.withIndex()) {
+            val (o, p, s) = fit
+            if (s == Double.NEGATIVE_INFINITY || (k > 0 && o == coarse[0].first && p == coarse[0].second)) continue
+            found += bestOver(
+                range(p * 0.99, p * 1.01, max(0.05, p * 0.002)),
+                range(max(0.0, o - span), min(n - 1.0, o + span) + 0.01, 0.25),
+                doubleArrayOf(last),
+            )
+            if (k == 0) found.add(fit) // within the frame as it stands; a tie goes to the fine
+        }
+        // Python's max: the first of the best.
+        var best: Triple<Double, Double, Double>? = null
+        for (fit in found) if (best == null || fit.third > best.third) best = fit
+        if (best == null || best.third == Double.NEGATIVE_INFINITY) return Triple(start, pitch, 0.0)
+        return best
     }
 
     /**
@@ -311,6 +387,9 @@ object BoardRefine {
         val yHi = min(gray.height.toDouble(), ceil(candidate.region.y + 8 * cell + margin)).toInt()
         if (xHi <= xLo || yHi <= yLo) return Refinement(candidate, 0.0, 0.0)
         val crop = gray.crop(xLo, yLo, xHi, yHi)
+        // Where the crop meets the frame's edge, the profiles cannot show a boundary.
+        val blindX = Blind(xLo == 0, xHi == gray.width)
+        val blindY = Blind(yLo == 0, yHi == gray.height)
 
         var fitted = candidate
         var reference = 0.0
@@ -352,12 +431,12 @@ object BoardRefine {
             val profileY = gradientProfile(crop, axis = 0, weight = weight)
             val startX = (fitted.region.x - xLo).toDouble()
             val startY = (fitted.region.y - yLo).toDouble()
-            val (ox, px, sx) = combFit(profileX, startX, cell, search, offsetCells)
-            val (oy, py, sy) = combFit(profileY, startY, cell, search, offsetCells)
+            val (ox, px, sx) = combFit(profileX, startX, cell, search, offsetCells, blindX)
+            val (oy, py, sy) = combFit(profileY, startY, cell, search, offsetCells, blindY)
             // The strength the candidate itself has on this pass's profiles, so the caller
             // can weigh the re-fit against it.
-            reference = combStrength(profileX, (candidate.region.x - xLo).toDouble(), candidate.cellPx) +
-                combStrength(profileY, (candidate.region.y - yLo).toDouble(), candidate.cellPx)
+            reference = combStrength(profileX, (candidate.region.x - xLo).toDouble(), candidate.cellPx, blindX) +
+                combStrength(profileY, (candidate.region.y - yLo).toDouble(), candidate.cellPx, blindY)
             strength = sx + sy
             val pitch = (px + py) / 2.0
             val region = Region(

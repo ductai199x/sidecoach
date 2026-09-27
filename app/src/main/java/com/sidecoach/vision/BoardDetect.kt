@@ -96,6 +96,15 @@ object BoardDetect {
      * Candidates from the multi-scale checker response, before refinement. Each scale
      * contributes at most [perScale] peaks, no two within half a board of each other, so a
      * plateau of perfect scores around one board cannot hide a second board.
+     *
+     * The shrunken frame is padded on the right and at the bottom by half a work cell, its
+     * last pixels repeated: at a scale a few percent larger than the board's cells, the
+     * window that sits on a board flush with the frame's right or bottom edge runs a pixel
+     * or two past the shrunken frame, and without the pad the best window left was one a
+     * whole cell off, which the refinement cannot reach (a 136 px board against the right
+     * edge of a 1920 px frame was not found at all: the desktop's geometry sweep,
+     * 2026-09-27). The board's left and top edges need no pad: there the window starts
+     * where the board does.
      */
     fun coarseSearch(
         gray: Plane,
@@ -115,7 +124,7 @@ object BoardDetect {
             val small: Plane
             val cell: Int
             if (factor < 1.0) {
-                small = gray.resized(factor)
+                small = gray.resized(factor).padded(workCell / 2)
                 cell = workCell
             } else {
                 small = gray
@@ -406,6 +415,25 @@ class Plane(val width: Int, val height: Int, val data: FloatArray) {
         mat.release()
         out.release()
         return plane
+    }
+
+    /**
+     * The plane with [pad] pixels more on the right and at the bottom, its last column and
+     * row repeated: `cv2.copyMakeBorder(plane, 0, pad, 0, pad, cv2.BORDER_REPLICATE)`.
+     */
+    fun padded(pad: Int): Plane {
+        if (pad <= 0) return this
+        val w = width + pad
+        val h = height + pad
+        val out = FloatArray(w * h)
+        for (y in 0 until h) {
+            val from = min(y, height - 1) * width
+            val row = y * w
+            System.arraycopy(data, from, out, row, width)
+            val edge = data[from + width - 1]
+            for (x in width until w) out[row + x] = edge
+        }
+        return Plane(w, h, out)
     }
 
     fun toMat(): Mat {
