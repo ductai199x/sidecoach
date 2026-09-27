@@ -218,8 +218,41 @@ object Pieces {
         /** Something drawn over the square: no move commits through it. */
         val drawn: Boolean = false,
     ) {
-        override fun equals(other: Any?): Boolean = this === other
-        override fun hashCode(): Int = System.identityHashCode(this)
+        /**
+         * Equal field by field, as the desktop's frozen dataclass is: the background too, by
+         * its values (a data class would compare the array by identity).
+         */
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is CellReading) return false
+            return kind == other.kind && symbol == other.symbol && colour == other.colour &&
+                confidence == other.confidence && fgFraction == other.fgFraction &&
+                luminance == other.luminance && highlighted == other.highlighted &&
+                background.contentEquals(other.background) && brightness == other.brightness &&
+                settled == other.settled && hover == other.hover && offset == other.offset &&
+                guess == other.guess && covered == other.covered && tint == other.tint &&
+                drawn == other.drawn
+        }
+
+        override fun hashCode(): Int {
+            var h = kind.hashCode()
+            h = 31 * h + (symbol?.hashCode() ?: 0)
+            h = 31 * h + (colour?.hashCode() ?: 0)
+            h = 31 * h + confidence.hashCode()
+            h = 31 * h + fgFraction.hashCode()
+            h = 31 * h + luminance.hashCode()
+            h = 31 * h + highlighted.hashCode()
+            h = 31 * h + background.contentHashCode()
+            h = 31 * h + brightness.hashCode()
+            h = 31 * h + settled.hashCode()
+            h = 31 * h + hover.hashCode()
+            h = 31 * h + offset.hashCode()
+            h = 31 * h + (guess?.hashCode() ?: 0)
+            h = 31 * h + covered.hashCode()
+            h = 31 * h + (tint?.hashCode() ?: 0)
+            h = 31 * h + drawn.hashCode()
+            return h
+        }
     }
 
     /**
