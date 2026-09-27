@@ -1435,6 +1435,8 @@ class Coach(
             // Pieces and squares as the board stands now, whatever position the question is
             // about.
             piecesBoard = board,
+            // The lines the sheet already shows: a move they start is read from them.
+            known = position.analysis?.lines ?: emptyList(),
         )
     } catch (exc: Exception) {
         speaker.lastError = "named analysis: ${exc::class.java.simpleName}: ${exc.message}"
@@ -1717,7 +1719,12 @@ class Coach(
                 }
             }
             val sheet = synchronized(lock) {
-                conversation.facedText(position.facts!!, position.board, after.lastOrNull())
+                conversation.facedText(
+                    position.facts!!,
+                    position.board,
+                    after.lastOrNull(),
+                    after.firstOrNull(),
+                )
             }
             if (sheet.isNotEmpty()) faced = "\n\n# The position they faced, before ${moved.san}\n$sheet"
             if (mustName.isNotEmpty() && fallback.isNotEmpty()) {
@@ -2186,21 +2193,29 @@ class Coach(
                 ).first
                 val meaning = when (label) {
                     "brilliant" -> "a sound sacrifice"
-                    else -> "the one move that keeps the advantage, or the chance taken"
+                    else -> greatMeaning(facts)
+                }
+                // Only the reason that holds: offered "the sacrifice that works" beside a great
+                // move, the model called 11...Nxf3+ gxf3, a knight for a knight, "the knight
+                // sacrifice" (the dev audit, 2026-09-26).
+                val reason = if (label == "brilliant") {
+                    "the sacrifice that works"
+                } else {
+                    meaning.split(":", limit = 2)[0]
                 }
                 instructionText =
                     "The player just played ${played.san}: $label -- $meaning. Show some " +
                         "delight, in your own voice, in one or two sentences: name what makes it " +
-                        "the move -- the chance taken, the only move, the sacrifice that works, " +
-                        "the idea it serves -- from the messages above, nothing invented. No " +
-                        "question, no advice, and not the same words as your last such sentence. " +
+                        "the move -- $reason, and the idea it serves -- from the messages above, " +
+                        "nothing invented. No question, no advice, and not the same words as your " +
+                        "last such sentence. " +
                         "$NOT_THE_MOVE $NO_NUMBERS"
             } else if (routine) {
                 fallback = verdictWord(label)
                 val meaning = when (label) {
                     "book" -> "opening theory"
                     "brilliant" -> "a sound sacrifice"
-                    "great" -> "the one move that keeps the advantage"
+                    "great" -> greatMeaning(facts)
                     "best" -> "the engine's own choice"
                     "excellent" -> "as strong as the best move"
                     "good" -> "a sound move, a little behind the best"
@@ -2602,6 +2617,15 @@ class Coach(
                     "the opponent's best move now is and what it does, from the engine lines (the " +
                     "opponent's move) -- not 'the player's threats', which are the player's own. " +
                     "One or two sentences, no question. " + NO_FIGURES
+        } else if (ASK_THREAT.containsMatchIn(said) && position.board.isCheck()) {
+            // In check there is no "if you passed": the sheet lists no threat, and "nothing is
+            // threatened" was said with their queen checking and hitting a pawn (dev audit,
+            // 2026-09-26). The check is the threat, and what else the checker attacks.
+            fallback = inCheckThreat(position.board)
+            directive =
+                "They ask what the opponent threatens, and they are in check: the check is " +
+                    "the threat. Say it as the board gives it: $fallback One or two sentences, " +
+                    "no question. " + NO_FIGURES
         } else if (ASK_THREAT.containsMatchIn(said)) {
             val threats = facts.threats.take(2)
             fallback = if (threats.isNotEmpty()) {

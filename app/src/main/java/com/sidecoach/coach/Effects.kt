@@ -11,6 +11,7 @@ import com.sidecoach.chess.PAWN
 import com.sidecoach.chess.Piece
 import com.sidecoach.chess.QUEEN
 import com.sidecoach.chess.ROOK
+import com.sidecoach.chess.between
 import com.sidecoach.chess.square
 import com.sidecoach.chess.squareFile
 import com.sidecoach.chess.squareName
@@ -173,7 +174,14 @@ fun describeEffects(board: Board, move: Move, limit: Int = 3, hazards: Boolean =
         val s = byOthers[0]
         val attacker = hitters(after, us, s).firstOrNull { it != move.to }
         if (attacker != null) {
-            out.add("uncovers an attack on ${nameAt(after, s)} by ${nameAt(after, attacker)}")
+            // Uncovered only where the moved piece stood between them; otherwise the move let a
+            // pinned piece loose ("Ke7 uncovers an attack ... by the knight on d6", of a knight
+            // unpinned from the d-file: the v2 sample check, 2026-09-26).
+            if (between(attacker, s) and BB_SQUARES[move.from] != BB_EMPTY) {
+                out.add("uncovers an attack on ${nameAt(after, s)} by ${nameAt(after, attacker)}")
+            } else {
+                out.add("frees ${nameAt(after, attacker)} to attack ${nameAt(after, s)}")
+            }
         }
     }
 
@@ -300,6 +308,7 @@ private val GERUND = mapOf(
     "gives" to "giving",
     "gets" to "getting",
     "uncovers" to "uncovering",
+    "frees" to "freeing",
     "pins" to "pinning",
     "defends" to "defending",
     "forks" to "forking",

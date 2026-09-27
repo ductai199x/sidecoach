@@ -309,7 +309,12 @@ private fun replayMoves(board: Board, sans: List<String>): List<Move> {
     return out
 }
 
-/** The engine's word on one probe, one line of text for the object. */
+/**
+ * The engine's word on one probe, one line of text for the object. A probe that one of the
+ * position's own lines ([known]) begins with is read from that line: a second, shallower search
+ * after it answered Bd2 with Kh6 where the lines above had Rxh3, and the model, shown both, said
+ * Bd2 avoided Rxh3 (the dev audit, 2026-09-26).
+ */
 fun examine(
     probe: Probe,
     board: Board,
@@ -318,6 +323,7 @@ fun examine(
     userColour: Boolean,
     level: DisclosureLevel,
     depth: Int = 14,
+    known: List<Line> = emptyList(),
 ): String {
     val head = "Engine on ${probe.label}, which the player asked about:"
     if (probe.parsed.isEmpty()) return "$head ${probe.illegal} is not a legal move here."
@@ -330,7 +336,22 @@ fun examine(
         parts.add("the game is over after $played (${after.result()}).")
         return parts.joinToString(" ")
     }
-    val lines = engine.analyse(after, depth)
+    val moves = probe.parsed.map { it.uci() }
+    val own = known.firstOrNull { line ->
+        line.moves.size > moves.size && line.moves.subList(0, moves.size) == moves
+    }
+    val lines = if (own != null && probe.parsed.all { !it.isNull }) {
+        listOf(
+            Line(
+                moves = own.moves.subList(moves.size, own.moves.size),
+                depth = own.depth,
+                // From the side to move after the probe, as a fresh search would give it.
+                expectedScore = if (moves.size % 2 == 0) own.expectedScore else 1.0 - own.expectedScore,
+            ),
+        )
+    } else {
+        engine.analyse(after, depth)
+    }
     if (lines.isEmpty()) {
         return "$head the engine has nothing to say about the position after $played."
     }
@@ -525,6 +546,7 @@ fun analyseNamed(
     depth: Int = 14,
     static: Boolean = false,
     piecesBoard: Board? = null,
+    known: List<Line> = emptyList(),
 ): List<String> {
     var probes = plannedProbes ?: probesByWords(text, board)
     if ((board.turn != userColour && engine != null) || (engine == null && !static)) {
@@ -536,7 +558,7 @@ fun analyseNamed(
     val out = ArrayList<String>()
     var best: Line? = null
     if (engine != null && probes.any { it.square == null }) {
-        val before = engine.analyse(board, depth)
+        val before = known.toList().ifEmpty { engine.analyse(board, depth) }
         best = before.firstOrNull()
     }
     for (p in probes) {
@@ -546,7 +568,7 @@ fun analyseNamed(
             // the player's bishop on b5 (the students' round 6).
             p.square != null -> out.add(examinePiece(p, piecesBoard ?: board, userColour))
             engine == null -> out.add(examineStatic(p, board))
-            else -> out.add(examine(p, board, engine, best, userColour, level, depth))
+            else -> out.add(examine(p, board, engine, best, userColour, level, depth, known = known))
         }
     }
     return out

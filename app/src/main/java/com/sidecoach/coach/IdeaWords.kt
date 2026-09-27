@@ -578,8 +578,35 @@ object IdeaWords {
         return text
     }
 
+    /**
+     * Whether the first move of a promotion idea clears the queening pawn's way: the pawn itself
+     * goes, or a piece leaves (or takes on) a square in front of it. A rook stepping off a5 behind
+     * 57...a4, with White's rook still on a3, was asked "Which move clears its way?" and taught
+     * as "that rook is blocking your passed pawn's route" (the test audit, 2026-09-26).
+     * `idea_words.clears_path`.
+     */
+    fun clearsPath(idea: Idea, board: Board): Boolean {
+        val first = idea.first ?: return true
+        val pawn = queeningPawn(idea, board)
+        val piece = board.pieceAt(pawn)
+        if (piece == null || piece.pieceType != PAWN || first.from == pawn) return true
+        val step = if (piece.colour == WHITE) 8 else -8
+        val ahead = HashSet<Int>()
+        var square = pawn + step
+        while (square in 0 until 64) {
+            ahead.add(square)
+            square += step
+        }
+        return first.from in ahead || (board.isCapture(first) && first.to in ahead)
+    }
+
+    /** A promotion whose first move is no clearing: the pawn needs a piece's help, not a road. */
+    const val PROMOTE_HELP_QUESTION =
+        "What does your pawn need to get through, and which of your pieces can give it?"
+    const val PROMOTE_HELP_NUDGE = "Which move helps it through?"
+
     /** The idea rung's question: the one that sets the player looking the right way. */
-    fun question(idea: Idea, planKind: String?): String {
+    fun question(idea: Idea, planKind: String?, board: Board? = null): String {
         val name = idea.blow?.name
         if (idea.goal == "convert") return "Which trade leaves them nothing to fight with?"
         if (idea.goal == "king") {
@@ -613,7 +640,10 @@ object IdeaWords {
             return "Which check drives their king into the open?"
         }
         if (idea.goal == "win") return "Which of their pieces is loose or attacked more times than it is defended?"
-        if (idea.goal == "promote") return "What stands in your pawn's way, and how do you remove it?"
+        if (idea.goal == "promote") {
+            if (board != null && !clearsPath(idea, board)) return PROMOTE_HELP_QUESTION
+            return "What stands in your pawn's way, and how do you remove it?"
+        }
         if (idea.goal == "defend") {
             return "If you passed, what would they play -- and how do you stop it without losing ground?"
         }
@@ -626,7 +656,7 @@ object IdeaWords {
     }
 
     /** The focus rung's question: the one that leads from the target to the move. */
-    fun nudge(idea: Idea): String? {
+    fun nudge(idea: Idea, board: Board? = null): String? {
         val name = idea.blow?.name
         if (idea.goal == "mate") return if (idea.mateIn == 1) "Which check is it?" else "Which check comes first?"
         if (idea.goal == "draw") return if (idea.draw == "perpetual") "Which check starts it?" else "Which move is it?"
@@ -636,7 +666,10 @@ object IdeaWords {
         if (idea.goal == "attack") {
             return if (idea.sacrifices.isNotEmpty()) "Which sacrifice opens it?" else "Which check comes first?"
         }
-        if (idea.goal == "promote") return "Which move clears its way?"
+        if (idea.goal == "promote") {
+            if (board != null && !clearsPath(idea, board)) return PROMOTE_HELP_NUDGE
+            return "Which move clears its way?"
+        }
         if (idea.goal == "defend") return "Which move stops it and keeps your pieces working?"
         if (name != null && name in NUDGE) return NUDGE.getValue(name)
         if (idea.goal == "win" && idea.gainPly > 0) return "What has to happen first, before you can take it?"

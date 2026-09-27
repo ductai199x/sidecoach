@@ -852,15 +852,33 @@ object Situation {
 
     /**
      * What the way out of check does, at the move rung: takes the checker, blocks, or steps away
-     * ("The move is Re4." said nothing).
+     * ("The move is Re4." said nothing). A king step says what sets its square apart only when
+     * something does: every legal king move lands where nothing attacks it, so "a square nothing
+     * of theirs can reach" read as a reason no other king move had (dev audit, 2026-09-26).
      */
     fun evasionWhy(board: Board, best: Move): String? {
         if (!board.isCheck()) return null
         val san = board.san(best)
         val checkers = board.checkersMask()
         if (checkers and BB_SQUARES[best.to] != BB_EMPTY) return "$san takes the piece giving check"
-        if (board.pieceTypeAt(best.from) == KING) return "$san steps out of check to a square nothing of theirs can reach"
+        if (board.pieceTypeAt(best.from) == KING) {
+            val others = board.legalMoves().filter { it != best && board.pieceTypeAt(it.from) == KING }
+            if (others.isNotEmpty() &&
+                checksAfter(board, best) == 0 &&
+                others.all { checksAfter(board, it) != 0 }
+            ) {
+                return "$san steps out of check to the one square where no check follows"
+            }
+            return "$san steps out of check"
+        }
         return "$san blocks the check"
+    }
+
+    /** The checks the opponent has once [move] is played. `situation._checks_after`. */
+    private fun checksAfter(board: Board, move: Move): Int {
+        val after = board.copy(withStack = false)
+        after.push(move)
+        return after.legalMoves().count { after.givesCheck(it) }
     }
 
     /** The square of the enemy piece the player's move at `ply` takes, as it stands now. */

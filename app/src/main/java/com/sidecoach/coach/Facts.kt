@@ -440,6 +440,42 @@ fun describeMove(board: Board, move: Move): String {
 private fun toMove(uci: String): Move? = runCatching { Move.fromUci(uci) }.getOrNull()
 
 /**
+ * What makes the other side's move after a pass a threat, as the sheet names its effects: it
+ * mates, takes, checks, or attacks something. A move that only defends, retreats or takes a file
+ * is what they would do with a free move, not a threat ("They threaten Rc3." of a rook guarding
+ * the third rank against a mate in three: dev audit, 2026-09-26).
+ */
+private val THREAT_EFFECTS = listOf(
+    "checkmate",
+    "takes ",
+    "gives check",
+    "forks ",
+    "attacks ",
+    "uncovers an attack",
+    "frees ",
+    "pins ",
+)
+
+/** `facts._threatens`. */
+internal fun threatens(passed: Board, move: Move): Boolean {
+    if (move.promotion != 0) return true
+    val effects = describeEffects(passed, move, limit = 8, hazards = false)
+    if (effects.any { e -> THREAT_EFFECTS.any { e.startsWith(it) } }) return true
+    // A quiet move that threatens mate on an empty square attacks nothing yet.
+    val again = passed.copy(withStack = false)
+    again.push(move)
+    if (again.isCheck() || again.isGameOver()) return false
+    again.push(Move.NULL)
+    for (reply in again.legalMoves().toList()) {
+        again.push(reply)
+        val mate = again.isCheckmate()
+        again.pop()
+        if (mate) return true
+    }
+    return false
+}
+
+/**
  * A line whose play-out gains this much material (in pawns' worth) is a tactic even when its
  * first move is quiet: a discovered attack, a knight move that forks next.
  */
@@ -558,7 +594,9 @@ fun factsFromAnalysis(
         for (uci in analysis.threats) {
             val move = toMove(uci)
             if (move != null && passed.isLegal(move)) {
-                threats.add(passed.san(move))
+                // Their best move if you passed stays the prophylactic question's ("if you let
+                // them, their best is Kc2"); it is listed as a threat only when it is one.
+                if (threatens(passed, move)) threats.add(passed.san(move))
                 if (threatMove == null) threatMove = move
             }
         }
@@ -635,7 +673,7 @@ fun factsFromAnalysis(
     if (mechanism == null && planKind != null && planKind in IdeaWords.PLAN_WHY) {
         mechanism = "$plan: ${IdeaWords.PLAN_WHY.getValue(planKind)}"
     }
-    var question: String? = IdeaWords.question(idea, planKind)
+    var question: String? = IdeaWords.question(idea, planKind, board)
     if (board.isCheck() && question in Situation.ANY_POSITION) {
         // In check the question is the check: "a quiet improvement -- which of your pieces has
         // no job right now?" was the hint in seven of ten AI sessions' check positions, and the
@@ -644,7 +682,7 @@ fun factsFromAnalysis(
         if (nature != null && nature.startsWith("quiet")) nature = IN_CHECK_NATURE
     }
     var target = IdeaWords.target(idea, board)
-    var nudge = IdeaWords.nudge(idea)
+    var nudge = IdeaWords.nudge(idea, board)
     var why = IdeaWords.why(idea, board, IdeaWords.Describe(::describeTactic))
     var goal = IdeaWords.goal(idea)
     if (moveThreat != null && best != null) {

@@ -1,10 +1,14 @@
 package com.sidecoach.coach
 
+import com.sidecoach.analysis.Exchange
 import com.sidecoach.chess.Board
+import com.sidecoach.chess.KING
 import com.sidecoach.chess.Move
+import com.sidecoach.chess.PAWN
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.squareName
+import com.sidecoach.chess.squaresOf
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.Annotation
 import com.sidecoach.events.ClockObservation
@@ -94,6 +98,17 @@ internal fun isLocal(label: Label?): Boolean = label != null && label.name.lower
 
 internal fun isExciting(label: Label?): Boolean =
     label != null && label.name.lowercase() in EXCITING
+
+/**
+ * Why a move is great (score.label_move), from the sheet of the position it was played in: the
+ * only move there, or the best reply to the opponent's error. Offered both, the model called a
+ * punished error "the one move that keeps the advantage" (dev audit, 2026-09-26).
+ * `coach._great_meaning`.
+ */
+internal fun greatMeaning(facts: PositionFacts): String {
+    if (facts.onlyMove) return "the only good move: every other move lost a lot"
+    return "the chance taken: their last move was an error, and this is the best reply to it"
+}
 
 /**
  * How many of the last lessons a sound move's word may not teach again ([lesson]): "develop
@@ -242,6 +257,38 @@ fun theirMoveNow(board: Board, facts: PositionFacts): String {
     val does = effectsText(board, move, hazards = false)
     if (does.isNotEmpty()) return "It's their move, and their best is $san ($does)."
     return "It's their move, and their best is a quiet one, $san: it takes nothing at once."
+}
+
+/**
+ * What the opponent threatens when the player is in check: the check, and what else the
+ * checking piece can win, read from the board ("their queen on e6 gives check, and it also
+ * attacks your pawn on c6"). `coach.in_check_threat`.
+ */
+fun inCheckThreat(board: Board): String {
+    val us = board.turn
+
+    fun kind(square: Int): Int = board.pieceTypeAt(square).let { if (it == 0) PAWN else it }
+
+    fun name(square: Int): String = "${COACH_PIECE_NAMES[kind(square)]} on ${squareName(square)}"
+
+    val checkers = squaresOf(board.checkersMask())
+    if (checkers.isEmpty()) return "Nothing is threatened right now: no move of theirs wins anything."
+    var text = "Their ${checkers.joinToString(" and ") { name(it) }} "
+    text += if (checkers.size == 1) "gives check" else "give check"
+    if (checkers.size == 1) {
+        // What it can win next, besides the king: undefended, or worth more than it.
+        val worth = Exchange.VALUE[kind(checkers[0])]
+        val hit = squaresOf(board.attacksMask(checkers[0]) and board.occupiedCo[if (us) 1 else 0])
+            .filter {
+                kind(it) != KING &&
+                    (Exchange.defenders(board, us, it).isEmpty() || Exchange.VALUE[kind(it)] > worth)
+            }
+            .sortedWith(compareBy({ -Exchange.VALUE[kind(it)] }, { it }))
+        if (hit.isNotEmpty()) {
+            text += ", and it also attacks " + hit.take(2).joinToString(" and ") { "your ${name(it)}" }
+        }
+    }
+    return "$text."
 }
 
 /**

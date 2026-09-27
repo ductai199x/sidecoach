@@ -36,7 +36,7 @@ import kotlin.random.Random
 val OPENERS: Map<String, List<String>> = mapOf(
     "book" to listOf("Book", "Still theory", "Known territory"),
     "brilliant" to listOf("Brilliant", "What a find", "Yes, that's the shot"),
-    "great" to listOf("Great move", "Yes, the one move that works", "That's it"),
+    "great" to listOf("Great move", "Yes, you found it", "That's it"),
     "best" to listOf("Best", "That's the move", "Spot on", "Exactly", "Just what the position wanted"),
     "excellent" to listOf("Excellent", "Strong", "Very good", "Nice"),
     "good" to listOf("Good", "Fine", "Solid", "Sound"),

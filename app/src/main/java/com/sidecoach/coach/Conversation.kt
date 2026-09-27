@@ -122,6 +122,19 @@ private fun gone(text: String, board: Board): Boolean {
 }
 
 /**
+ * The threat the better move's reason says it stops, when the move played stopped it too: on
+ * the board right after it, the threat can no longer be played. `conversation._also_stopped`.
+ */
+internal fun alsoStopped(facts: PositionFacts, played: Board?): String? {
+    if (played == null || facts.threats.isEmpty() || facts.why.isNullOrEmpty()) return null
+    val threat = facts.threats[0]
+    if ("stops $threat" !in facts.why) return null
+    // `parse_san` raising: illegal, ambiguous or no move at all.
+    if (played.parseSanFully(threat).second != null) return threat
+    return null
+}
+
+/**
  * One message of the conversation. A ply entry renders itself from its record until it is
  * frozen; every other kind is plain text.
  *
@@ -878,9 +891,12 @@ class Conversation {
      * that position. With [after], the board once the move (and the reply the engine expects)
      * is played: an idea about a piece that no longer stands there is left out -- "the
      * opponent's backward d-pawn on d6 is a lasting target" beside Qxc5 dxc5 was said as
-     * "preserving your lasting target on d6" (the test audit, 2026-09-26).
+     * "preserving your lasting target on d6" (the test audit, 2026-09-26). With [played], the
+     * board right after the move: a better move that "stops" their threat, where the move played
+     * stopped it too, says so -- "Qc4+ ... stops gxh1=Q+" beside 19.Qxg2, which took the pawn,
+     * was taught as "the priority was to stop the promotion" (the dev audit, 2026-09-26).
      */
-    fun facedText(facts: PositionFacts, board: Board, after: Board? = null): String {
+    fun facedText(facts: PositionFacts, board: Board, after: Board? = null, played: Board? = null): String {
         val visible = visibleFacts(facts, DisclosureLevel.LINE)
         // The hint's questions were for finding the move; the lesson is on the move made.
         for (key in listOf("question", "nudge")) visible.remove(key)
@@ -888,7 +904,9 @@ class Conversation {
         if (after != null && !ideas.isNullOrEmpty()) {
             visible["ideas"] = ideas.filter { !gone(it.toString(), after) }
         }
-        val lines = factLines(visible, board, "player", past = true)
+        val lines = ArrayList(factLines(visible, board, "player", past = true))
+        val stopped = alsoStopped(facts, played)
+        if (!stopped.isNullOrEmpty()) lines.add("the move played also stops $stopped")
         return (listOf(positionText(board, legal = false)) + lines).joinToString("\n")
     }
 
