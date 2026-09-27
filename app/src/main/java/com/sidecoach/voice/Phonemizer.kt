@@ -267,6 +267,30 @@ object Py {
         return out.append(quote).toString()
     }
 
+    /**
+     * `bytes` as Python's `str`/`repr` writes them: `b'...'`, quoted as a string is; backslash,
+     * the quote, tab, newline and return escaped, and every byte outside printable ASCII as `\xNN`.
+     */
+    fun bytesRepr(data: ByteArray): String {
+        val hasSingle = data.any { it == '\''.code.toByte() }
+        val hasDouble = data.any { it == '"'.code.toByte() }
+        val quote = if (hasSingle && !hasDouble) '"' else '\''
+        val out = StringBuilder("b").append(quote)
+        for (byte in data) {
+            val b = byte.toInt() and 0xff
+            when {
+                b == '\\'.code -> out.append("\\\\")
+                b == quote.code -> out.append('\\').append(quote)
+                b == '\t'.code -> out.append("\\t")
+                b == '\n'.code -> out.append("\\n")
+                b == '\r'.code -> out.append("\\r")
+                b < 0x20 || b >= 0x7f -> out.append(String.format(java.util.Locale.ROOT, "\\x%02x", b))
+                else -> out.append(b.toChar())
+            }
+        }
+        return out.append(quote).toString()
+    }
+
     /** `str.isprintable` for one character: not "Other" (Cc, Cf, Cs, Co, Cn) nor a separator but space. */
     private fun printable(cp: Int): Boolean = when (Character.getType(cp).toByte()) {
         Character.CONTROL, Character.FORMAT, Character.SURROGATE, Character.PRIVATE_USE,

@@ -3,6 +3,8 @@ package com.sidecoach.profile
 import com.sidecoach.coach.ProfileAnswer
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.LLMProvider
+import com.sidecoach.voice.Py
+import java.math.BigDecimal
 
 /**
  * Ask the profile: the coach writes its own SQL over the record (DESIGN section 5.6).
@@ -42,17 +44,23 @@ object Ask {
     /** The one SQL block of a reply, or null when the reply is prose. */
     fun extractSql(text: String): String? = FENCE.find(text)?.groupValues?.get(1)?.trim()
 
-    /** A value as the rows show it: `ask._cell`. */
+    /**
+     * A value as the rows show it: `ask._cell`, with Python's `str` of each value -- an
+     * infinite or NaN float as "inf", "-inf" or "nan", a whole float as its integer however
+     * large, a blob as `b'...'` -- and the width counted in characters, not UTF-16 units.
+     */
     fun cell(value: Any?): String {
         if (value == null) return "NULL"
         if (value is Double) {
-            if (value != Math.floor(value) || value.isInfinite()) {
-                return Insights.fixed(value, 3).trimEnd('0').trimEnd('.')
-            }
-            return value.toLong().toString()
+            // "SELECT 1e999" crashed the ask (the parity audit).
+            if (value.isNaN()) return "nan"
+            if (value.isInfinite()) return if (value > 0) "inf" else "-inf"
+            if (value != Math.floor(value)) return Insights.fixed(value, 3).trimEnd('0').trimEnd('.')
+            return BigDecimal(value).toBigInteger().toString()
         }
-        val text = value.toString()
-        return if (text.length <= CELL_WIDTH) text else text.take(CELL_WIDTH - 1) + "…"
+        val text = if (value is ByteArray) Py.bytesRepr(value) else value.toString()
+        if (text.codePointCount(0, text.length) <= CELL_WIDTH) return text
+        return text.substring(0, text.offsetByCodePoints(0, CELL_WIDTH - 1)) + "…"
     }
 
     /** The rows as a plain table the model can read. */

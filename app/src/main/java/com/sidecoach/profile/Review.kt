@@ -176,11 +176,25 @@ object Review {
         "brilliant", "great", "best", "excellent", "good", "book", "inaccuracy", "mistake", "miss", "blunder",
     )
 
+    /**
+     * How a game ended, as the review's first sentence says it: the reason where it reads as
+     * English after "by", these where it does not ("lost by user resigned or lost on time",
+     * "won by game over on board": the parity audit, 2026-09-26).
+     */
+    val HOW_IT_ENDED = mapOf(
+        "draw agreed" to " by agreement",
+        "lost on time" to " on time",
+        "fifty-move rule" to " by the fifty-move rule",
+        "user resigned or lost on time" to " by resignation or on time",
+        "opponent resigned or lost on time" to " by resignation or on time",
+        "game over on board" to "",
+    )
+
     /** The review in sentences. */
     fun linesFor(review: GameReview, fullmoves: Int): List<String> {
         val out = ArrayList<String>()
-        var how = if (!review.reason.isNullOrEmpty() && review.reason != "draw agreed") " by ${review.reason}" else ""
-        if (review.reason == "draw agreed") how = " by agreement"
+        val reason = review.reason
+        val how = if (!reason.isNullOrEmpty()) HOW_IT_ENDED[reason] ?: " by $reason" else ""
         val colour = review.userSide.name.lowercase()
         val outcome = outcome(review.result, review.userSide)
         if (review.result != "1-0" && review.result != "0-1" && review.result != "1/2-1/2") {

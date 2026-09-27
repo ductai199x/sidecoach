@@ -3,11 +3,14 @@ package com.sidecoach.profile
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteException
+import android.database.sqlite.SQLiteReadOnlyDatabaseException
 import android.database.sqlite.SQLiteStatement
 import android.os.CancellationSignal
 import android.os.OperationCanceledException
+import com.sidecoach.voice.Py
 import org.json.JSONArray
 import java.io.File
+import java.util.Locale
 import java.util.Timer
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.schedule
@@ -35,7 +38,8 @@ import kotlin.concurrent.withLock
  * code's own numbers, never text from outside) and only strings are bound. And there is no
  * authorizer for the coach's read-only SQL: `PRAGMA query_only` gives the same guarantee --
  * the database refuses every write while the coach's statement runs -- beside the same
- * statement checks the desktop makes first.
+ * statement checks the desktop makes first, and what the authorizer denies is refused in its
+ * words ([query]).
  */
 class Store(val path: File?) {
 
@@ -439,16 +443,25 @@ class Store(val path: File?) {
 
     /**
      * Run one read-only statement and return (column names, rows), at most [maxRows] of them.
-     * Anything but a single SELECT (or WITH ... SELECT) is refused before it runs, and the
-     * database refuses any write while it runs; a statement still running after [seconds] is
-     * interrupted. Used by the coach's own queries (Ask.kt).
+     * Anything but a single SELECT (or WITH ... SELECT) over the tables is refused before it
+     * runs, and the database refuses any write while it runs; a statement still running after
+     * [seconds] is interrupted. Used by the coach's own queries (Ask.kt).
+     *
+     * The desktop's authorizer allows reading tables and running functions and nothing else,
+     * and the model reads what it refused as "not authorized". The phone says the same where it
+     * refuses the same (the parity audit, 2026-09-26): a write inside a WITH, which `query_only`
+     * stops as "attempt to write a readonly database", and the pragmas' table-valued functions
+     * (`pragma_table_info(...)`), which `query_only` lets run and the authorizer does not, so
+     * they are refused before they run. SQLite's other refusals are its own message, as Python's
+     * sqlite3 gives it, without the code and the statement Android adds.
      */
     fun query(sql: String, maxRows: Int = QUERY_ROWS, seconds: Double = QUERY_SECONDS): Pair<List<String>, List<List<Any?>>> {
-        val text = sql.trim().trimEnd(';').trim()
+        val text = Py.strip(Py.strip(sql).trimEnd(';'))
         if (text.isEmpty()) throw QueryRefused("empty query")
         if (';' in text) throw QueryRefused("one statement at a time")
-        val head = text.split(Regex("\\s+"), limit = 2)[0].uppercase()
+        val head = Py.split(text)[0].uppercase(Locale.ROOT)
         if (head != "SELECT" && head != "WITH") throw QueryRefused("only SELECT queries are allowed")
+        if (PRAGMA_FUNCTION.containsMatchIn(text.replace(STRING_LITERAL, "''"))) throw QueryRefused(NOT_AUTHORIZED)
         return lock.withLock {
             val cancel = CancellationSignal()
             val timer = Timer("profile-query", true)
@@ -463,8 +476,10 @@ class Store(val path: File?) {
                     }
                     names to out.take(maxRows)
                 }
+            } catch (exc: SQLiteReadOnlyDatabaseException) {
+                throw QueryRefused(NOT_AUTHORIZED)
             } catch (exc: SQLiteException) {
-                throw QueryRefused(exc.message ?: exc.toString())
+                throw QueryRefused(sqliteMessage(exc))
             } catch (exc: OperationCanceledException) {
                 throw QueryRefused("interrupted")
             } finally {
@@ -482,9 +497,29 @@ class Store(val path: File?) {
         else -> cursor.getString(i)
     }
 
+    /**
+     * SQLite's message, as Python's `str(exc)` gives it: Android appends the result code and,
+     * for a statement that did not compile, the statement (" (code 1 SQLITE_ERROR): , while
+     * compiling: ...").
+     */
+    private fun sqliteMessage(exc: SQLiteException): String {
+        val message = exc.message ?: return exc.toString()
+        val at = message.indexOf(" (code ")
+        return if (at >= 0) message.substring(0, at) else message
+    }
+
     companion object {
         const val QUERY_ROWS = 200
         const val QUERY_SECONDS = 2.0
+
+        /** What the desktop's authorizer answers a statement it denies (`SQLITE_DENY`). */
+        private const val NOT_AUTHORIZED = "not authorized"
+
+        /** A pragma's table-valued function (`pragma_table_info`), quoted or not, any case. */
+        private val PRAGMA_FUNCTION = Regex("\\bpragma_\\w+", RegexOption.IGNORE_CASE)
+
+        /** A string literal ('it''s'), which is data, not a name: blanked before [PRAGMA_FUNCTION] looks. */
+        private val STRING_LITERAL = Regex("'(?:[^']|'')*'")
 
         const val SCHEMA = """
 CREATE TABLE IF NOT EXISTS games (

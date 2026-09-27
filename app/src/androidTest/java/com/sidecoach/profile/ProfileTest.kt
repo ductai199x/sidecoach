@@ -130,20 +130,52 @@ class ProfileTest {
             same("query $i rows", q.getJSONArray("rows"), JSONArray(rows.map { JSONArray(it) }))
             assertEquals("query $i rendered: ${q.getString("question")}", q.getString("rendered"), Ask.renderRows(columns, rows))
         }
+        // What is refused, and in the words the model reads ("Query refused: {exc}."): the
+        // authorizer's "not authorized" for a write inside a WITH and the pragmas' functions,
+        // SQLite's own message for the rest (parity pv-02).
         val refused = data.getJSONArray("refused")
         for (i in 0 until refused.length()) {
             val r = refused.getJSONObject(i)
-            val wasRefused = try {
+            val error = try {
                 store.query(r.getString("sql"))
-                false
-            } catch (_: QueryRefused) {
-                true
+                null
+            } catch (exc: QueryRefused) {
+                exc.message
             }
-            assertEquals("refused: '${r.getString("sql")}'", r.getBoolean("refused"), wasRefused)
+            assertEquals("refused: '${r.getString("sql")}'", r.getBoolean("refused"), error != null)
+            assertEquals("refused: '${r.getString("sql")}' says", if (r.isNull("error")) null else r.getString("error"), error)
         }
         // Still writable after a refusal: the read-only switch was put back.
         store.setSetting("after", "refusals")
         assertEquals("refusals", store.setting("after"))
+        // A runaway query is interrupted, and the row cap holds.
+        val bounded = data.getJSONObject("bounded")
+        val runaway = try {
+            store.query(bounded.getString("runaway"), seconds = 0.2)
+            null
+        } catch (exc: QueryRefused) {
+            exc.message
+        }
+        assertEquals("the runaway query", bounded.getString("runaway_error"), runaway)
+        assertEquals("the row cap", bounded.getInt("capped_rows"), store.query(bounded.getString("capped"), maxRows = 10).second.size)
+        // Values as Python's str() shows them in the rows: infinities, wide floats, blobs, a cut text.
+        val renders = data.getJSONArray("renders")
+        for (i in 0 until renders.length()) {
+            val r = renders.getJSONObject(i)
+            val (columns, rows) = store.query(r.getString("sql"))
+            assertEquals("rendered: ${r.getString("sql")}", r.getString("rendered"), Ask.renderRows(columns, rows))
+        }
+        val cellValues = data.getJSONArray("cell_values")
+        for (i in 0 until cellValues.length()) {
+            val c = cellValues.getJSONObject(i)
+            val value = when (val v = c.getString("value")) {
+                "inf" -> Double.POSITIVE_INFINITY
+                "-inf" -> Double.NEGATIVE_INFINITY
+                "nan" -> Double.NaN
+                else -> v.toDouble()
+            }
+            assertEquals("the cell of ${c.getString("value")}", c.getString("cell"), Ask.cell(value))
+        }
 
         val conversations = data.getJSONArray("conversations")
         for (i in 0 until conversations.length()) {
@@ -158,7 +190,7 @@ class ProfileTest {
                 JSONObject().put("sql", e.sql).put("columns", JSONArray(e.columns))
                     .put("rows", JSONArray(e.rows.map { JSONArray(it) })).put("refused", e.error != null)
             })
-            // A refused query's rows and columns are empty on both sides; the message differs.
+            // A refused query's rows and columns are empty on both sides.
             same("conversation $i exchanges", want.getJSONArray("exchanges"), exchanges)
             val seen = JSONArray(provider.seen.map { messages ->
                 JSONArray(messages.map { JSONObject().put("role", it.role).put("content", it.content) })
@@ -328,7 +360,7 @@ class ProfileTest {
         }
     }
 
-    /** Messages compared as text: the refused query's words are the one place the two differ. */
+    /** Messages compared as text, a refused query's words included (parity pv-02). */
     private fun sameMessages(where: String, want: JSONArray, got: JSONArray) {
         assertEquals("$where calls", want.length(), got.length())
         for (i in 0 until want.length()) {
@@ -338,12 +370,7 @@ class ProfileTest {
             for (j in 0 until w.length()) {
                 val wc = w.getJSONObject(j).getString("content")
                 val gc = g.getJSONObject(j).getString("content")
-                if (wc.startsWith("Rows:\nQuery refused:")) {
-                    assertTrue("$where[$i][$j] refused on both", gc.startsWith("Rows:\nQuery refused:"))
-                    assertEquals("$where[$i][$j] hint", wc.substringAfter("SELECT."), gc.substringAfter("SELECT."))
-                } else {
-                    assertEquals("$where[$i][$j]", wc, gc)
-                }
+                assertEquals("$where[$i][$j]", wc, gc)
                 assertEquals("$where[$i][$j] role", w.getJSONObject(j).getString("role"), g.getJSONObject(j).getString("role"))
             }
         }
@@ -386,6 +413,35 @@ class ProfileTest {
             if ((cause to motif) != want) failures.add("${o.getString("fen")}: kotlin ${cause to motif}, python $want")
         }
         assertTrue("${wins.length()} captures: " + failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /**
+     * The review's first sentence says how the game ended in words (`review.HOW_IT_ENDED`,
+     * desktop d446f43): "lost by resignation or on time", "lost on time", "won in 17 moves" for
+     * a game over on the board -- never the reason verbatim after "by".
+     */
+    @Test
+    fun theReviewSaysHowTheGameEndedInPlainWords() {
+        val endings = fixture().getJSONArray("endings")
+        assertTrue(endings.length() > 0)
+        for (i in 0 until endings.length()) {
+            val e = endings.getJSONObject(i)
+            val review = GameReview(
+                gameId = "g",
+                userSide = side(e.getString("user_side")),
+                result = e.getString("result"),
+                reason = if (e.isNull("reason")) null else e.getString("reason"),
+            )
+            assertEquals("${e.getString("result")} ${e.opt("reason")}", e.getString("line"), Review.linesFor(review, 17)[0])
+        }
+    }
+
+    /** `test_a_query_answering_infinity_is_shown_not_a_crash`. */
+    @Test
+    fun aQueryAnsweringInfinityIsShownNotACrash() {
+        assertEquals("inf", Ask.cell(Double.POSITIVE_INFINITY))
+        assertEquals("nan", Ask.cell(Double.NaN))
+        assertEquals("2.5", Ask.cell(2.5))
     }
 
     private class Scripted(replies: List<String>) : LLMProvider {

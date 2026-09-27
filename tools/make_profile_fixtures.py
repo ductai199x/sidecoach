@@ -25,8 +25,11 @@ feeds it -- a clock before each move, the move, its verdict, the analysis of whe
 
 Then the session ends (its summary), a second session reads the first's summary back, and
 the ask side is recorded against the database the games left: the system message, SQL found
-in replies, the nine worked queries run and rendered, three refused, and two conversations
-with a scripted model -- one answered, one that never writes prose.
+in replies, the nine worked queries run and rendered, the statements refused and passed with
+the words the model reads (the authorizer's "not authorized", SQLite's messages), a runaway
+query interrupted and the row cap, values rendered as Python's str() shows them (infinities,
+wide floats, blobs), and two conversations with a scripted model -- one answered, one that
+never writes prose. And the review's first sentence for every way a game ends.
 
 The puzzle draw is fixed (no shuffle) and the session id given, so nothing random is left.
 
@@ -64,6 +67,7 @@ from sidecoach.events import (  # noqa: E402
     CoachMessage,
     DisclosureLevel,
     GameEnded,
+    GameReview,
     GameStarted,
     MovePlayed,
     Resync,
@@ -76,6 +80,7 @@ from sidecoach.llm.base import Completion  # noqa: E402
 from sidecoach.profile import ask, causes  # noqa: E402
 from sidecoach.profile.profiler import Profiler  # noqa: E402
 from sidecoach.profile.puzzles import PuzzleStore  # noqa: E402
+from sidecoach.profile.review import lines_for  # noqa: E402
 from sidecoach.profile.store import QueryRefused, Store  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "profile"
@@ -296,6 +301,69 @@ def causes_cases(sample: Path) -> dict:
     return {"wins_material": wins, "classify": classified}
 
 
+# The coach's SQL the store must refuse, and some it must not: the desktop test's nine, a write
+# inside a WITH and the pragmas' table-valued functions (which the authorizer denies as "not
+# authorized"), SQLite's own errors, and reads that pass. Each with the words the model reads.
+REFUSALS = [
+    "DELETE FROM games",
+    "UPDATE games SET result = '1-0'",
+    "INSERT INTO sessions (session_id, started_at) VALUES ('x', 0)",
+    "DROP TABLE games",
+    "PRAGMA table_info(games)",
+    "ATTACH DATABASE 'x.db' AS x",
+    "SELECT 1; DELETE FROM games",
+    "",
+    "SELECT * FROM nowhere",
+    "   ;; ",
+    "SELECT 1; SELECT 2",
+    "PRAGMA table_info(moves)",
+    "DELETE FROM moves",
+    "SELECT nope FROM games",
+    "SELEC 1",
+    "SELECT FROM",
+    "WITH x AS (SELECT 1) DELETE FROM games",
+    "WITH x AS (SELECT 1) UPDATE games SET result = '1-0'",
+    "WITH x AS (SELECT 1) INSERT INTO settings (key, value) VALUES ('a', 'b')",
+    "WITH x AS (SELECT 1) REPLACE INTO settings (key, value) VALUES ('a', 'b')",
+    "WITH x AS (SELECT 1) DELETE FROM nowhere",
+    "SELECT * FROM pragma_table_info('games')",
+    "SELECT name FROM pragma_database_list",
+    "select * from PRAGMA_TABLE_INFO('moves')",
+    "SELECT * FROM \"pragma_table_info\"('games')",
+    "SELECT * FROM main.pragma_table_info('games')",
+    # Not "SELECT load_extension('x')": refused on both, but Android's SQLite is built without
+    # the function ("no such function: load_extension") where the desktop's denies it.
+    "SELECT 'pragma_table_info' AS word",
+    "select count(*) as n from games ;",
+    "WITH g AS (SELECT * FROM games) SELECT COUNT(*) AS n FROM g",
+    "SELECT json_each.value FROM games, json_each('[1,2]')",
+    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+]
+RUNAWAY = "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT COUNT(*) FROM n"
+CAPPED = "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n LIMIT 500) SELECT x FROM n"
+RENDERS = [
+    "SELECT 1e999 AS big, -1e999 AS small, 2.5 AS half, 1e20 AS huge, 0.1235 AS r, 3.0 AS three,"
+    " -2.0 AS minus, x'0141ff27' AS blob, x'22' AS dq, x'' AS empty, 'it''s' AS s, NULL AS n, 7 AS i,"
+    " '" + "y" * 70 + "' AS long",
+    "SELECT 123456789012345678901234567890.0 AS wide, 1e300 AS vast, -0.0005 AS tiny, 0.0015 AS tie,"
+    " -0.0001 AS signed, -0.0 AS nought",
+]
+ENDINGS = [
+    ("0-1", "user resigned or lost on time", Side.WHITE),
+    ("1-0", "opponent resigned or lost on time", Side.WHITE),
+    ("0-1", "lost on time", Side.WHITE),
+    ("1-0", "lost on time", Side.BLACK),
+    ("1-0", "game over on board", Side.WHITE),
+    ("1/2-1/2", "fifty-move rule", Side.WHITE),
+    ("1-0", "checkmate", Side.WHITE),
+    ("1/2-1/2", "draw agreed", Side.WHITE),
+    ("1/2-1/2", "stalemate", Side.BLACK),
+    ("0-1", None, Side.BLACK),
+    ("0-1", "", Side.BLACK),
+    ("*", "user resigned or lost on time", Side.WHITE),
+]
+
+
 def tables(store: Store) -> dict:
     out = {}
     for table in ("games", "moves", "evidence", "dialogue", "sessions", "recommendations",
@@ -368,12 +436,33 @@ def main() -> None:
         queries.append({"question": question, "sql": sql, "columns": columns,
                         "rows": [list(r) for r in rows_], "rendered": ask.render_rows(columns, rows_)})
     refused = []
-    for sql in ("DELETE FROM moves", "SELECT 1; SELECT 2", "PRAGMA table_info(moves)", ""):
+    for sql in REFUSALS:
         try:
             store.query(sql)
-            refused.append({"sql": sql, "refused": False})
-        except QueryRefused:
-            refused.append({"sql": sql, "refused": True})
+            refused.append({"sql": sql, "refused": False, "error": None})
+        except QueryRefused as exc:
+            refused.append({"sql": sql, "refused": True, "error": str(exc)})
+    # A runaway query is interrupted, and the row cap holds (the desktop test's two).
+    try:
+        store.query(RUNAWAY, seconds=0.2)
+        runaway = None
+    except QueryRefused as exc:
+        runaway = str(exc)
+    _, capped = store.query(CAPPED, rows=10)
+    bounded = {"runaway": RUNAWAY, "runaway_error": runaway, "capped": CAPPED, "capped_rows": len(capped)}
+    # Values the rows show as Python's str() shows them: infinities, a float past 2**63,
+    # blobs, a long text cut (`ask._cell`).
+    renders = []
+    for sql in RENDERS:
+        columns, rows_ = store.query(sql)
+        renders.append({"sql": sql, "rendered": ask.render_rows(columns, rows_)})
+    cell_values = [{"value": v, "cell": ask._cell(float(v))} for v in ("inf", "-inf", "nan", "-0.0", "1e20")]
+    # The review's first sentence, for every way a game ends (`review.HOW_IT_ENDED`).
+    endings = []
+    for result, reason, side in ENDINGS:
+        review = GameReview(game_id="g", user_side=side, result=result, reason=reason)
+        endings.append({"result": result, "reason": reason, "user_side": side.value,
+                        "line": lines_for(review, 17)[0]})
     extracts = [
         {"text": t, "sql": ask.extract_sql(t)}
         for t in (
@@ -416,6 +505,10 @@ def main() -> None:
         "system": ask.system_message(),
         "queries": queries,
         "refused": refused,
+        "bounded": bounded,
+        "renders": renders,
+        "cell_values": cell_values,
+        "endings": endings,
         "extracts": extracts,
         "conversations": conversations,
         "cells": [c.__dict__ for c in store.cells()],
