@@ -18,7 +18,10 @@ import kotlin.math.abs
  * Where a piece sits, held to the desktop's phase landing (`pieces._phase_shift`, desktop
  * de58ca7): `tools/make_landing_fixtures.py` learned a model from a start frame and read frames
  * one after another -- pieces at rest on the phone-sized boards, pieces caught mid-slide with a
- * trail on the slide scenarios' frames -- and wrote every cell's kind, symbol, settled flag and
+ * trail on the slide scenarios' frames, and the desktop's tests of a set learned at one place
+ * and size and read at another (a king or a queen on the square colour its start never showed
+ * it on, pieces at rest on a resized board, a pawn in flight on one, a rook on its labelled
+ * corner: desktop aac94ac, cfaa416) -- and wrote every cell's kind, symbol, settled flag and
  * offset. The phone learns from the same frame, reads the same frames in the same order, and
  * must agree on every kind, symbol and settled flag, and on every piece's shift to 1e-3 of a
  * cell (its OpenCV is another build than the desktop's).
@@ -41,12 +44,18 @@ class LandingTest {
             for (k in 0 until cases.length()) {
                 val case = cases.getJSONObject(k)
                 val name = case.getString("name")
-                val cell = case.getInt("cell")
-                val geometry = BoardGeometry(
-                    Region(case.getInt("x"), case.getInt("y"), 8 * cell, 8 * cell), cell.toDouble(),
-                )
+                // One geometry for the start and every frame; or, for the desktop's tests of a
+                // set learned at one place and size and read at another (desktop aac94ac,
+                // cfaa416), each frame's own, as the desktop's detector locked it.
+                val geometry = if (case.has("start_region")) {
+                    BoardGeometry(region(case.getJSONArray("start_region")), case.getDouble("start_cell"))
+                } else {
+                    val cell = case.getInt("cell")
+                    BoardGeometry(Region(case.getInt("x"), case.getInt("y"), 8 * cell, 8 * cell), cell.toDouble())
+                }
+                val whiteAtBottom = case.optBoolean("white_at_bottom", true)
                 val start = load(case.getString("start"))
-                val model = ThemeModel.fromStartPosition(start, geometry, true, embedder)
+                val model = ThemeModel.fromStartPosition(start, geometry, whiteAtBottom, embedder)
                 start.release()
                 if (model == null || model.landingCrops.isEmpty()) {
                     failures.add("$name: no model with landing crops")
@@ -56,7 +65,12 @@ class LandingTest {
                 for (f in 0 until frames.length()) {
                     val frame = frames.getJSONObject(f)
                     val mat = load(frame.getString("file"))
-                    val readings = model.classifyFrame(mat, geometry, embedder)
+                    val at = if (frame.has("region")) {
+                        BoardGeometry(region(frame.getJSONArray("region")), frame.getDouble("cell"))
+                    } else {
+                        geometry
+                    }
+                    val readings = model.classifyFrame(mat, at, embedder)
                     mat.release()
                     val cells = frame.getJSONArray("cells")
                     for (i in 0 until 64) {
@@ -97,6 +111,8 @@ class LandingTest {
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
         assertTrue("the worst shift differs by $worst at $worstAt", worst <= 1e-3)
     }
+
+    private fun region(a: org.json.JSONArray) = Region(a.getInt(0), a.getInt(1), a.getInt(2), a.getInt(3))
 
     private fun load(path: String): Mat {
         val context = InstrumentationRegistry.getInstrumentation().context
