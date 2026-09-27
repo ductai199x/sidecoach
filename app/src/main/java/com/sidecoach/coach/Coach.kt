@@ -884,10 +884,13 @@ internal fun parseCandidates(raw: String): List<Pair<Double, String>> {
     return out
 }
 
-/** The first JSON object in a model's answer, or null. */
-internal fun jsonObject(text: String): org.json.JSONObject? {
+/**
+ * The first JSON object in a model's answer, or null: `json.loads` of the span, strict as
+ * Python's (the parity audit cc-05). `coach._json_object`.
+ */
+internal fun jsonObject(text: String): Any? {
     val m = JSON_OBJECT.find(text) ?: return null
-    return runCatching { org.json.JSONObject(m.value) }.getOrNull()
+    return pyJsonOr(m.value, null)
 }
 
 /** Sample one reply, weighted by its stated likelihood; ties and zeros still get a chance. */
@@ -1775,9 +1778,9 @@ class Speaker(
                 return emptyList() // the verifier failed: the candidate is not held against it
             }
             val found = jsonObject(completion.text)
-            val items = found?.optJSONArray("unsupported") ?: return emptyList()
-            return (0 until items.length()).map { items.opt(it).toString() }
-                .filter { it.trim().isNotEmpty() }
+            val items = (found as? Map<*, *>)?.get("unsupported")
+            if (items !is List<*>) return emptyList()
+            return pyIter(items).map { pyStr(it) }.filter { it.trim().isNotEmpty() }
         }
 
         val pool = Executors.newFixedThreadPool(maxOf(1, passed.size))
@@ -1811,7 +1814,9 @@ class Speaker(
                 return Triple(emptyList(), verified, false)
             }
             val found = jsonObject(completion.text)
-            val mended = (found?.opt("reply")?.toString() ?: "").trim()
+            // `str(found.get("reply") or "")`: a null reply is none, not the word "null".
+            val reply = (found as? Map<*, *>)?.get("reply")
+            val mended = (if (pyTruthy(reply)) pyStr(reply) else "").trim()
             if (mended.isEmpty()) return Triple(emptyList(), verified, false)
             val faultsNow = problemsOf(mended, request)
             if (faultsNow.isEmpty()) return Triple(listOf(prob to mended), verified, true)

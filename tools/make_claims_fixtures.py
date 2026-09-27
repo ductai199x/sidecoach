@@ -88,6 +88,47 @@ REPLIES = [
     '[{"kind":"threatens","subject":"I","target":null,"move":"Qxf7#","text":"mate on f7"}]',
     "null",
     '   \n\n [{"kind":"hanging","subject":"the knight","target":null,"move":null,"text":"hangs"}] ',
+    # Read as Python's json.loads reads them, strict (the parity audit cc-05): org.json alone
+    # took unquoted keys, single quotes, comments and trailing text; a field's value is
+    # str()'d as Python writes it, and a falsy one is "".
+    '[{kind: "hanging", target: "e4", text: "unquoted keys"}]',
+    "[{'kind': 'hanging', 'target': 'e4', 'text': 'single quotes'}]",
+    '[{"kind": "hanging", /* a comment */ "target": "e4", "text": "a comment"}]',
+    '[{"kind": "hanging", "target": "e4", "text": "hash"}] # trailing',
+    '{"kind": "safe", "target": "e4", "text": "one"} {"kind": "safe"}',
+    '[{"kind": "hanging", "target": "e4", "text": null}, {"kind": "safe", "text": true}, '
+    '{"kind": "safe", "text": false}, {"kind": "safe", "text": ["e4", 1, null, 2.5]}, '
+    '{"kind": "safe", "text": {"a": null}}, {"kind": "safe", "text": 1.0}, '
+    '{"kind": "safe", "text": 0}, {"kind": "safe", "text": ""}, {"kind": "safe", "text": []}]',
+    '[{"kind": "best", "move": NaN, "text": NaN}, {"kind": "best", "text": 1e20}, '
+    '{"kind": "best", "text": -0.0}, {"kind": "best", "text": 1e-05}]',
+    '[{"kind": "hanging", "target": "e4", "text": "caf\\u00e9 \\"quoted\\" \\\\ tab\\t"}]',
+    '[{"kind": "hanging", "target": "e4", "text": "a raw\ttab"}]',
+    '[{"kind": "hanging", "target": "e4", "text": "a", "text": "last key wins"}]',
+    '[{"kind": "hanging", "target": "e4", "text": "trailing comma",}]',
+    "[01]",
+    '[{"kind": "safe", "text": "x"}, 1.]',
+]
+
+# Claim texts as the model is shown them once checked: `f"{v.claim.text!r}: ..."` in
+# `cli._claims_check`, Python's repr (the parity audit cm-01).
+LINE_TEXTS = [
+    "my knight is safe",
+    "it's hanging",
+    'the "free" pawn',
+    "both ' and \"",
+    "a back\\slash",
+    "tab\there",
+    "new\nline and\rreturn",
+    "bell\x07 and del\x7f",
+    "café, naïve",
+    "no break",
+    "zero​width",
+    "line sep",
+    "emoji \U0001F600",
+    "private ",
+    "c1 control \x85",
+    "",
 ]
 
 
@@ -438,6 +479,154 @@ def case_for(board: chess.Board) -> dict:
     }
 
 
+def line_json(line: Line) -> dict:
+    return {
+        "moves": list(line.moves),
+        "depth": line.depth,
+        "expected_score": line.expected_score,
+        "score_cp": line.score_cp,
+    }
+
+
+def desktop_tests() -> dict:
+    """Every call `tests/test_claims.py` makes to verify_claims, check_draft and
+    extract_claims, with what the desktop answered: the tests' own positions, claims, drafts
+    and model replies, replayed on the phone (TG-02, TG-03). Each test runs as pytest would;
+    the one that needs the local model is left out, as `-m 'not slow'` and its skip leave it.
+    """
+    import importlib
+    import inspect
+
+    tests = importlib.import_module("tests.test_claims")
+    real_verify, real_draft, real_extract = (
+        tests.verify_claims,
+        tests.check_draft,
+        tests.extract_claims,
+    )
+    out: dict[str, list] = {"verify": [], "drafts": [], "extract": []}
+    current = {"test": ""}
+
+    def verify(claims, board, *, facts=None, engine=None, depth=12):  # noqa: ANN001, ANN202
+        seen: dict[str, list[dict]] = {}
+        recording = None
+        if engine is not None:
+
+            class Recording:
+                def analyse(self, b, *, depth=None):  # noqa: ANN001, ANN202
+                    lines = engine.analyse(b, depth=depth)
+                    seen[b.fen()] = [line_json(one) for one in lines]
+                    return lines
+
+            recording = Recording()
+        verdicts = real_verify(claims, board, facts=facts, engine=recording, depth=depth)
+        out["verify"].append(
+            {
+                "test": current["test"],
+                "fen": board.fen(),
+                "claims": [claim_json(c) for c in claims],
+                "facts": None if facts is None else facts_json(facts),
+                "engine": None if engine is None else seen,
+                "depth": depth,
+                "verdicts": verdicts_json(verdicts),
+            }
+        )
+        return verdicts
+
+    def draft(text, board, *, after=(), us=None):  # noqa: ANN001, ANN202
+        problems = real_draft(text, board, after=after, us=us)
+        out["drafts"].append(
+            {
+                "test": current["test"],
+                "fen": board.fen(),
+                "text": text,
+                "after": [frame.fen() for frame in after],
+                "us": us,
+                "problems": [{"text": p.text, "reason": p.reason} for p in problems],
+            }
+        )
+        return problems
+
+    def extract(text, board, provider, *, thinking=True, max_tokens=4000):  # noqa: ANN001, ANN202
+        calls: list[dict] = []
+
+        class Recording:
+            name = "recording"
+
+            def chat(self, system, messages, *, max_tokens=1500, temperature=0.7, thinking=False):  # noqa: ANN001, ANN202
+                call = {
+                    "system": system,
+                    "messages": [dict(m) for m in messages],
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "thinking": thinking,
+                }
+                calls.append(call)
+                try:
+                    completion = provider.chat(
+                        system,
+                        messages,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        thinking=thinking,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    call["raises"] = repr(exc)
+                    raise
+                call["reply"] = completion.text
+                return completion
+
+        claims = real_extract(text, board, Recording(), thinking=thinking, max_tokens=max_tokens)
+        out["extract"].append(
+            {
+                "test": current["test"],
+                "text": text,
+                "fen": board.fen(),
+                "thinking": thinking,
+                "max_tokens": max_tokens,
+                "calls": calls,
+                "claims": [claim_json(c) for c in claims],
+            }
+        )
+        return claims
+
+    tests.verify_claims, tests.check_draft, tests.extract_claims = verify, draft, extract
+    ran = []
+    try:
+        for name, fn in inspect.getmembers(tests, inspect.isfunction):
+            if not name.startswith("test_") or fn.__module__ != tests.__name__:
+                continue
+            if inspect.signature(fn).parameters or name == "test_extract_with_the_local_provider":
+                continue
+            current["test"] = name
+            fn()  # the desktop's own assertions hold as the calls are recorded
+            ran.append(name)
+    finally:
+        tests.verify_claims, tests.check_draft, tests.extract_claims = (
+            real_verify,
+            real_draft,
+            real_extract,
+        )
+    out["ran"] = ran
+    return out
+
+
+def claim_lines() -> list[dict]:
+    """Each LINE_TEXTS claim checked on the opening board, and the line the model is shown."""
+    board = chess.Board()
+    out = []
+    for text in LINE_TEXTS:
+        one = C.Claim(kind=C.ClaimKind("hanging"), subject=None, target="e4", move=None, text=text)
+        verdict = C.verify_claims([one], board)[0]
+        out.append(
+            {
+                "claim": claim_json(one),
+                # cli._claims_check's own format.
+                "line": f"{verdict.claim.text!r}: {verdict.result}, {verdict.reason}",
+            }
+        )
+    return out
+
+
 def main() -> None:
     boards = [chess.Board()]
     opening = chess.Board()
@@ -490,7 +679,13 @@ def main() -> None:
                for text in REPLIES]
 
     OUT.mkdir(parents=True, exist_ok=True)
-    payload = {"system": C.EXTRACT_SYSTEM, "replies": replies, "cases": cases}
+    payload = {
+        "system": C.EXTRACT_SYSTEM,
+        "replies": replies,
+        "cases": cases,
+        "lines": claim_lines(),
+        "tests": desktop_tests(),
+    }
     (OUT / "claims.json").write_text(json.dumps(payload), encoding="utf-8")
     size = (OUT / "claims.json").stat().st_size
     print(

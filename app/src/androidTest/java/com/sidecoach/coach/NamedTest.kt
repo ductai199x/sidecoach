@@ -38,8 +38,22 @@ class NamedTest {
         }
     }
 
+    /**
+     * Read under a locale that writes a decimal comma: the figures are Python's whatever the
+     * phone's language ("0,53" reached the model and the voice: the parity audit cc-02).
+     */
     @Test
     fun everyExaminationMatchesThePython() {
+        val locale = java.util.Locale.getDefault()
+        java.util.Locale.setDefault(java.util.Locale.GERMANY)
+        try {
+            examinations()
+        } finally {
+            java.util.Locale.setDefault(locale)
+        }
+    }
+
+    private fun examinations() {
         val context = InstrumentationRegistry.getInstrumentation().context
         val text = context.assets.open("chess/named.json").bufferedReader().use { it.readText() }
         val cases = JSONObject(text).getJSONArray("cases")
@@ -48,6 +62,7 @@ class NamedTest {
         for (i in 0 until cases.length()) {
             val case = cases.getJSONObject(i)
             val board = Board(case.getString("fen"))
+            val moved = Board(case.getString("moved"))
             val fenLabel = case.getString("fen")
             val us = board.turn
             val engine = recorded(case.getJSONObject("engine"))
@@ -115,6 +130,17 @@ class NamedTest {
                         analyseNamed(words, board, null, us, level, static = false),
                         strings(want.getJSONArray("named_none")),
                     )
+                    // The sheet's own lines, and the pieces read on the board as it stands (TG-04).
+                    check(
+                        "\"$words\" at $levelKey named known",
+                        analyseNamed(words, board, engine, us, level, depth = 14, known = before),
+                        strings(want.getJSONArray("named_known")),
+                    )
+                    check(
+                        "\"$words\" at $levelKey named pieces",
+                        analyseNamed(words, board, null, us, level, piecesBoard = moved),
+                        strings(want.getJSONArray("named_pieces")),
+                    )
                 }
             }
 
@@ -162,99 +188,115 @@ class NamedTest {
         assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
     }
 
-    /** `_Engine`: scripted lines keyed by the position's FEN board part. */
-    private fun scripted(lines: Map<String, List<Line>>) = EngineLike { board, _ -> lines[board.boardFen()] ?: emptyList() }
-
     /**
-     * Searched again after it is played, the best move came back a hair off its own score:
-     * "12. Nc3: ... a hair behind the best (the best is Nc3)" (the simulated students; desktop
-     * 797094c).
+     * Every call the desktop's `tests/test_named.py` and `tests/test_inventory.py` make, replayed
+     * with the desktop's answers (TG-04, TG-05): a pinned piece attacking and defending, a king in
+     * check, a pinned controller, hanging and undefended, a move recited from the examined line,
+     * the inventory's hanging pieces, pins, batteries, skewers and forks, a piece named with its
+     * square. And the planner (TG-06): each reply read as Python reads it -- a null label is no
+     * label, a null move "None", a reply Python cannot iterate raises -- and the request it is sent.
      */
     @Test
-    fun theEnginesOwnBestMoveIsNeverBehindTheBest() {
-        val board = Board(ITALIAN_START)
-        val after = board.copy()
-        after.push(after.parseSan("Bb5")!!)
-        val engine = scripted(mapOf(after.boardFen() to listOf(Line(depth = 14, moves = listOf("a7a6"), expectedScore = 0.46))))
-        val best = Line(depth = 14, moves = listOf("f1b5"), expectedScore = 0.55)
-        val fact = examine(
-            parseProbe("your Bb5", listOf("Bb5"), board), board, engine, best,
-            userColour = WHITE, level = DisclosureLevel.LINE,
-        )
-        assertTrue(fact, "as good as the engine's best" in fact && "behind" !in fact)
+    fun theDesktopsNamedTestsAndThePlannerMatch() {
+        val context = InstrumentationRegistry.getInstrumentation().context
+        val root = JSONObject(context.assets.open("chess/named.json").bufferedReader().use { it.readText() })
+        val tests = root.getJSONObject("tests")
+        assertTrue("the desktop's named tests ran", tests.getJSONArray("ran").length() >= 17)
+        val calls = tests.getJSONArray("calls")
+        for (i in 0 until calls.length()) {
+            val call = calls.getJSONObject(i)
+            val fn = call.getString("fn")
+            val a = call.getJSONObject("args")
+            val board = if (a.has("fen")) Board(a.getString("fen")) else Board()
+            val engine = recorded(call.getJSONObject("engine"))
+            val level = if (a.has("level")) DisclosureLevel.of(a.getInt("level")) else DisclosureLevel.LINE
+            val out = call.opt("out")
+            fun squares(pair: Pair<Int, Int>?) = pair?.let { listOf(squareName(it.first), squareName(it.second)) }
+            val (mine, theirs) = when (fn) {
+                "probes_by_words" -> probesByWords(a.getString("text"), board).map { showProbe(it) } to
+                    probeStrings(out as JSONArray)
+                "pieces_by_words" -> piecesByWords(a.getString("text"), board).map { showProbe(it) } to
+                    probeStrings(out as JSONArray)
+                "parse_probe" -> showProbe(parseProbe(a.getString("label"), strings(a.getJSONArray("moves")), board)) to
+                    probeStrings(JSONArray().put(out)).single()
+                "examine" -> examine(
+                    probeFrom(a.getJSONObject("probe"), board), board, engine,
+                    if (a.isNull("best")) null else lineFrom(a.getJSONObject("best")),
+                    a.getBoolean("user_white"), level, a.getInt("depth"), known = lines(a.getJSONArray("known")),
+                ) to out
+                "examine_piece" -> examinePiece(probeFrom(a.getJSONObject("probe"), board), board, a.getBoolean("user_white")) to out
+                "spoken" -> spoken(a.getString("fact")) to out
+                "disclosed_frames" -> disclosedFrames(board, strings(a.getJSONArray("facts"))).map { it.fen() } to
+                    strings(out as JSONArray)
+                "analyse_named" -> analyseNamed(
+                    a.getString("text"), board, if (a.getBoolean("engine")) engine else null,
+                    a.getBoolean("user_white"), level, depth = a.getInt("depth"), static = a.getBoolean("static"),
+                    piecesBoard = if (a.isNull("pieces_fen")) null else Board(a.getString("pieces_fen")),
+                    known = lines(a.getJSONArray("known")),
+                ) to strings(out as JSONArray)
+                "check_draft" -> checkDraft(
+                    a.getString("text"), board, strings(a.getJSONArray("after")).map { Board(it) },
+                    if (a.isNull("us")) null else a.getBoolean("us"),
+                ).map { "${it.text}|${it.reason}" } to (out as JSONArray).let { all ->
+                    (0 until all.length()).map { all.getJSONObject(it).let { p -> "${p.getString("text")}|${p.getString("reason")}" } }
+                }
+                "inventory_text" -> inventoryText(board, a.getBoolean("white")) to out
+                "pin_target" -> squares(pinTarget(board, parseSquare(a.getString("square")))) to
+                    (if (out == JSONObject.NULL) null else strings(out as JSONArray))
+                "skewer_target" -> squares(skewerTarget(board, parseSquare(a.getString("square")))) to
+                    (if (out == JSONObject.NULL) null else strings(out as JSONArray))
+                "batteries" -> batteries(board, a.getBoolean("white")).map { group -> group.map { squareName(it) } } to
+                    (out as JSONArray).let { all -> (0 until all.length()).map { strings(all.getJSONArray(it)) } }
+                "forks_in_place" -> forksInPlace(board, a.getBoolean("white"))
+                    .map { (from, targets) -> listOf(squareName(from), targets.map { squareName(it) }) } to
+                    (out as JSONArray).let { all ->
+                        (0 until all.length()).map { k ->
+                            all.getJSONArray(k).let { listOf(it.getString(0), strings(it.getJSONArray(1))) }
+                        }
+                    }
+                else -> throw IllegalArgumentException("no replay for $fn")
+            }
+            check("${call.getString("test")} $fn ${a.toString().take(120)}", mine, theirs)
+        }
+
+        val planner = root.getJSONArray("planner")
+        for (i in 0 until planner.length()) {
+            val one = planner.getJSONObject(i)
+            val board = Board(one.getString("fen"))
+            val text = one.getString("text")
+            val request = one.getJSONObject("request")
+            val label = "planner on ${one.getString("reply").take(60)}"
+            check("$label: system", PLAN_SYSTEM, request.getString("system"))
+            check("$label: request", planRequest(text, board, one.getBoolean("user_white")), request.getString("content"))
+            val probes = try {
+                probesFromPlan(one.getString("reply"), text, board).map { showProbe(it) }
+            } catch (_: IllegalArgumentException) {
+                null // Python's TypeError: the named analysis is dropped by the coach's catch
+            }
+            if (one.isNull("raises")) {
+                check("$label: probes", probes, probeStrings(one.getJSONArray("probes")))
+            } else {
+                check("$label: raises", probes, null)
+            }
+        }
+        assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
     }
 
-    /**
-     * "if they take on b4" is the player passing, no move of theirs: it came out "after pass axb4
-     * you are losing, a serious step down from the best (the best is Bxc3)" (desktop e7b5915).
-     */
-    @Test
-    fun theirMoveFirstIsNotMeasuredAgainstTheBestAndIsSaidAsTheirMove() {
-        val board = Board(ITALIAN_START)
-        val after = board.copy()
-        after.push(Move.NULL)
-        after.push(after.parseSan("Nd4")!!)
-        val engine = scripted(mapOf(after.boardFen() to listOf(Line(depth = 14, moves = listOf("d2d3"), expectedScore = 0.40))))
-        val best = Line(depth = 14, moves = listOf("f1b5"), expectedScore = 0.55)
-        val fact = examine(
-            parseProbe("if they play Nd4", listOf("pass", "Nd4"), board), board, engine, best,
-            userColour = WHITE, level = DisclosureLevel.LINE,
-        )
-        assertTrue(fact, "best" !in fact)
-        val said = spoken(fact)
-        assertTrue(said, said.startsWith("if they play Nd4: if they got to play Nd4 now, "))
-        assertTrue(said, "pass" !in said)
-    }
+    private fun probeFrom(o: JSONObject, board: Board): Probe =
+        if (o.isNull("square")) {
+            parseProbe(o.getString("label"), strings(o.getJSONArray("moves")), board)
+        } else {
+            Probe(label = o.getString("label"), moves = emptyList(), square = parseSquare(o.getString("square")))
+        }
 
-    /**
-     * A piece or square is read on the board as it stands, whatever position the question is
-     * about (desktop f85c2bf): the position before 3.Bb5 asked about, the board after it read.
-     */
-    @Test
-    fun aPieceIsReadOnTheBoardGiven() {
-        val before = Board(ITALIAN_START)
-        val now = before.copy()
-        now.push(now.parseSan("Bb5")!!)
-        val there = analyseNamed("is my bishop on b5 safe?", before, null, WHITE, DisclosureLevel.LINE, piecesBoard = now)
-        assertTrue(there.toString(), there.size == 1 && "the player's bishop on b5 stands there" in there[0])
-        val past = analyseNamed("is my bishop on b5 safe?", before, null, WHITE, DisclosureLevel.LINE)
-        assertTrue(past.toString(), past.size == 1 && "b5 is empty" in past[0])
-    }
+    private fun lineFrom(o: JSONObject) = Line(
+        moves = strings(o.getJSONArray("moves")),
+        depth = o.getInt("depth"),
+        expectedScore = o.getDouble("expected_score"),
+        scoreCp = if (o.isNull("score_cp")) null else o.getInt("score_cp"),
+    )
 
-    /** `_piece`: the examination of the piece or square [square], as analyseNamed makes it. */
-    private fun piece(fen: String, square: String, userColour: Boolean): String =
-        examinePiece(Probe(label = square, moves = emptyList(), square = parseSquare(square)), Board(fen), userColour)
-
-    /**
-     * A simulated student's 9.Nf3? -- the square the student named went out as written for the
-     * model: "f3: the player's knight on f3 stands there; it can go to ..." (2026-09-26; desktop
-     * f733318).
-     */
-    @Test
-    fun aPieceExaminedIsSaidToThePlayer() {
-        val fen = "r3kbnr/pbpp1ppp/1pn1p3/8/8/4PN1P/PPPPQPP1/RNB1KB1R w KQkq - 0 1"
-        val said = spoken(piece(fen, "f3", WHITE))
-        assertTrue(said, said.startsWith("Your knight on f3 can go to "))
-        assertTrue(said, "the player" !in said && "stands there" !in said)
-        assertEquals(
-            "d4 is empty; you control it with the pawn on e3 and the knight on f3; they control it" +
-                " with the knight on c6.",
-            spoken(piece(fen, "d4", WHITE)),
-        )
-    }
-
-    /**
-     * "they would answer 9... Bxg2 10. Kxg2 Qd7 11. d5 Na6 12. Nc3 O-O" came before every answer
-     * the AI then gave in words: aloud, the reply's first two moves (desktop 6d9ba6f).
-     */
-    @Test
-    fun aLineSaidAloudIsItsFirstReply() {
-        val fact = "Engine on your Qc3, which the player asked about: after 6... Qc3 the expected score " +
-            "is 0.45 from the player's side, 0.05 behind the engine's best; the opponent's reply " +
-            "would be 7. Nf3 Nd7 8. Rc1 Qa5 9. d4; what Qc3 does: attacks the pawn on d3."
-        val said = spoken(fact)
-        assertTrue(said, "they would answer 7. Nf3 Nd7;" in said && "Rc1" !in said)
-    }
+    private fun lines(array: JSONArray): List<Line> = (0 until array.length()).map { lineFrom(array.getJSONObject(it)) }
 
     /** The stub the generator used: the same lines for the same position, read from the file. */
     private fun recorded(seen: JSONObject): EngineLike = EngineLike { board, _ ->

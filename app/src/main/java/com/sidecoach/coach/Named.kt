@@ -577,38 +577,45 @@ fun analyseNamed(
 }
 
 /**
+ * The message `plan_probes` sends the planner: the position, whose move and whose side the
+ * player is, the legal moves, and their words.
+ */
+fun planRequest(text: String, board: Board, userColour: Boolean): String {
+    val side = if (board.turn == com.sidecoach.chess.WHITE) "White" else "Black"
+    val player = if (userColour == com.sidecoach.chess.WHITE) "White" else "Black"
+    val legal = board.legalMoves().map { board.san(it) }.sorted().joinToString(" ")
+    return "Position (FEN): ${board.fen()}\n$side to move. The player is $player.\n" +
+        "Legal moves: $legal\n\nThe player says: \"${text.trim()}\"\n\nJSON only."
+}
+
+/**
  * The planner's JSON turned into probes on the board, with the words as the fallback. The call
  * to the model itself belongs to the caller, which owns the provider.
  */
 fun probesFromPlan(json: String?, text: String, board: Board): List<Probe> {
-    val data = json?.let { JSON_BLOCK.find(it)?.value }
+    // `json.loads(_JSON.search(completion.text or "").group(0))`, anything unreadable {}: read
+    // as Python reads it, strict, a null label None rather than "null" (the parity audit cc-05).
+    val found = JSON_BLOCK.find(json ?: "")?.value
+    val data = if (found != null) pyJsonOr(found, emptyMap<String, Any?>()) else emptyMap<String, Any?>()
     val probes = ArrayList<Probe>()
-    if (data != null) {
-        val parsed = runCatching { org.json.JSONObject(data) }.getOrNull()
-        val items = parsed?.optJSONArray("probes")
-        if (items != null) {
-            for (i in 0 until items.length()) {
-                val item = items.optJSONObject(i) ?: continue
-                val square = item.optString("square", "").trim().lowercase()
-                if (square.isNotEmpty() && Regex("[a-h][1-8]").matches(square)) {
-                    val label = item.optString("label", "").ifEmpty { square }
-                    probes.add(Probe(label = label, moves = emptyList(), square = parseSquare(square)))
-                } else {
-                    val movesArray = item.optJSONArray("moves")
-                    val moves = ArrayList<String>()
-                    if (movesArray != null) {
-                        for (k in 0 until movesArray.length()) {
-                            val move = movesArray.optString(k, "")
-                            if (move.isNotBlank()) moves.add(move)
-                        }
-                    }
-                    if (moves.isEmpty()) continue
-                    val label = item.optString("label", "").ifEmpty { moves.joinToString(" ") }
-                    probes.add(parseProbe(label, moves, board))
-                }
-                if (probes.size >= 4) break
-            }
+    val items = (data as? Map<*, *>)?.get("probes")
+    for (item in if (pyTruthy(items)) pyIter(items) else emptyList()) {
+        if (item !is Map<*, *>) continue
+        val squareRaw = item["square"]
+        val square = (if (pyTruthy(squareRaw)) pyStr(squareRaw) else "").trim().lowercase()
+        val labelRaw = item["label"]
+        if (square.isNotEmpty() && Regex("[a-h][1-8]").matches(square)) {
+            val label = if (pyTruthy(labelRaw)) pyStr(labelRaw) else square
+            probes.add(Probe(label = label, moves = emptyList(), square = parseSquare(square)))
+        } else {
+            // `item.get("moves", [])`: a null there is no list, and raises as Python's does.
+            val movesRaw = if (item.containsKey("moves")) item["moves"] else emptyList<Any?>()
+            val moves = pyIter(movesRaw).map { pyStr(it) }.filter { it.trim().isNotEmpty() }
+            if (moves.isEmpty()) continue
+            val label = if (pyTruthy(labelRaw)) pyStr(labelRaw) else moves.joinToString(" ")
+            probes.add(parseProbe(label, moves, board))
         }
+        if (probes.size >= 4) break
     }
     return probes.ifEmpty { probesByWords(text, board) }
 }
