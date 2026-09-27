@@ -8,7 +8,14 @@ import pytest
 from sidecoach.events import Region
 from sidecoach.vision.board_detect import fit_score, to_gray
 from sidecoach.vision.tracker import BoardTracker
-from tests.synth import DARK, LIGHT, bulky_pieces, render_board, synthetic_board
+from tests.synth import (
+    DARK,
+    LIGHT,
+    bulky_pieces,
+    busy_background,
+    render_board,
+    synthetic_board,
+)
 
 pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
 
@@ -189,6 +196,29 @@ def test_tracker_holds_through_brief_occlusion_then_redetects() -> None:
     assert tracker.detections == 3
 
 
+def test_a_board_back_at_another_size_after_a_moment_is_found_soon() -> None:
+    """The board gone for a moment (the full search at the loss finds nothing), then back at
+    a size the near search does not cover: the next full search comes `redetect_first`
+    frames later, not twenty (the geometry sweep, 2026-09-27: five plies played before a
+    board shrunk to nothing and back was seen again)."""
+    tracker = BoardTracker()
+    tracker.update(synthetic_board(width=1400, height=1000, x0=300, y0=120, cell=64))
+    gone = busy_background(1400, 1000, 0)
+    for _ in range(tracker.max_misses + 1):
+        tracker.update(gone)
+    assert not tracker.locked
+    back = synthetic_board(width=1400, height=1000, x0=200, y0=60, cell=100)
+    frames = 0
+    board = None
+    while frames < 30:
+        frames += 1
+        board = tracker.update(back)
+        if board is not None and tracker.verified:
+            break
+    assert board is not None and abs(board.region.x - 200) <= 2 and abs(board.cell_px - 100) <= 1
+    assert frames <= tracker.redetect_first, frames
+
+
 def test_tracker_relocks_after_resize() -> None:
     tracker = BoardTracker(max_misses=2)
     tracker.update(synthetic_board(x0=300, y0=120, cell=64))
@@ -279,8 +309,9 @@ def test_refit_cannot_turn_a_passing_frame_into_a_miss(monkeypatch) -> None:
 
 def test_tracker_thresholds_reach_detection() -> None:
     """Six light cells painted dark leave a fit of 58/64: the default threshold accepts the
-    board, a tracker asking for 0.95 never locks, and, without a lock, it searches once and
-    backs off rather than searching every frame."""
+    board, a tracker asking for 0.95 never locks, and, without a lock, it searches and backs
+    off rather than searching every frame: again `redetect_first` frames later, then twice
+    that, up to `redetect_backoff`."""
     frame = synthetic_board(x0=300, y0=120, cell=64, pieces=False)
     spoiled = frame.copy()
     for r, c in ((0, 0), (0, 2), (2, 0), (4, 4), (6, 2), (2, 6)):
@@ -289,7 +320,7 @@ def test_tracker_thresholds_reach_detection() -> None:
     tracker = BoardTracker(min_fit=0.95)
     results = [tracker.update(spoiled) for _ in range(12)]
     assert all(board is None for board in results)
-    assert tracker.detections == 1
+    assert tracker.detections == 2  # on the first frame and the sixth; the next on the 16th
 
 
 def test_held_frames_report_the_measured_fit() -> None:
