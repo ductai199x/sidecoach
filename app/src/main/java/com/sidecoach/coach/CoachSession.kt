@@ -55,7 +55,7 @@ private val HINT = Regex(
 )
 
 /** An overall verdict on the game: "how did I do", "how was my game", "overall", "summary". */
-private val ASK_REVIEW = Regex(
+internal val ASK_REVIEW = Regex(
     "\\b(?:how (?:did|have) i (?:do|play|done|played|playing|doing)|how am i playing|" +
         "how was (?:my|the) game|" +
         "overall|summar(?:y|ise|ize)|review (?:my|the) game|rate my (?:game|play)|" +
@@ -142,7 +142,7 @@ private val ASK_COST = Regex(
 )
 
 /** A bare request for a hint, with nothing claimed: "hint", "give me a hint", "a clue". */
-private val ASK_HINT = Regex(
+internal val ASK_HINT = Regex(
     "^\\W*(?:(?:give me |i need |can i have |i want |any |another |one more )?(?:a |an |some )?" +
         "(?:hint|clue|nudge|help|tip)s?(?: please)?|i'?m stuck|i am stuck|where (?:should|do) i look" +
         "|i don'?t know what to (?:do|play))\\W*\$",
@@ -381,16 +381,22 @@ class Coach(
     var streamSink: ((Trigger, Int?) -> ((String) -> Boolean)?)? = null
 
     var summariser: LLMProvider = summariser ?: provider
-    var system: String = systemMessage(persona = persona, rating = rating)
+
+    /** The system message, and the templates' register for the player: set by [reword]. */
+    var system: String = ""
 
     /** A player below 1400 hears no term of art in the templates ([JARGON]). */
-    var plainWords: Boolean = rating != null && rating.second < PLAIN_BELOW
+    var plainWords: Boolean = false
 
     /**
      * A player of 1800 and up hears no textbook rule: the strong simulated students listed about
      * 4.5 a session they already knew ("rooks belong on open files", 75 times).
      */
-    var strongPlayer: Boolean = rating != null && rating.first >= STRONG_FROM
+    var strongPlayer: Boolean = false
+
+    init {
+        reword(persona, rating)
+    }
 
     /**
      * Run the claims check on the caller's thread (replay and evaluation) instead of a
@@ -457,7 +463,7 @@ class Coach(
      * just ended, for the coach's summary.
      */
     var profile: ProfileSnapshot? = null
-    private var reviewLines: List<String> = emptyList()
+    internal var reviewLines: List<String> = emptyList()
 
     /**
      * The causes of the session's mistakes, from the player model: the pattern is said when
@@ -476,7 +482,7 @@ class Coach(
     val profileAnswers = ArrayList<Pair<String, Any?>>()
 
     /** The player's mistakes this game, for [ELICIT_EVERY]. */
-    private var mistakes = 0
+    internal var mistakes = 0
 
     /** When the coach last asked what the player saw, and whether they answered. */
     private var elicitAsked: Double? = null
@@ -846,6 +852,20 @@ class Coach(
 
     // Internals
 
+    /**
+     * The system message and the templates' register for the player: set at the start and
+     * again when the persona or the rating is saved (the register was kept until the coach was
+     * rebuilt: the parity audit, 2026-09-26). `Coach.reword`.
+     */
+    fun reword(persona: String?, rating: Pair<Int, Int>?) {
+        system = systemMessage(persona = persona, rating = rating)
+        // A player below 1400 hears no term of art in the templates ([JARGON]).
+        plainWords = rating != null && rating.second < PLAIN_BELOW
+        // A player of 1800 and up hears no textbook rule: the strong simulated students listed
+        // about 4.5 a session they already knew ("rooks belong on open files", 75 times).
+        strongPlayer = rating != null && rating.first >= STRONG_FROM
+    }
+
     private fun newGame(event: GameStarted, ts: Double) {
         gameId = event.gameId
         userSide = event.userSide
@@ -855,6 +875,9 @@ class Coach(
         moves = LinkedHashMap()
         conversation.newGame(event, profile = profileLines())
         mistakes = 0
+        // The review is the game's own: a new game answered "how did I do overall?" with the
+        // last game's sentences when the model failed (the parity audit, 2026-09-26).
+        reviewLines = emptyList()
         elicitAsked = null
         elicitAnswered = false
         pendingAsk = null
@@ -1316,7 +1339,7 @@ class Coach(
      * [ELICIT_EVERY]-th mistake, and never again in a game once one such question went
      * unanswered -- the player is not talking back, and the question is noise.
      */
-    private fun elicitDue(ts: Double): Boolean {
+    internal fun elicitDue(ts: Double): Boolean {
         if (mistakes % ELICIT_EVERY != 0) return false
         if (elicitAsked != null && !elicitAnswered) return false
         elicitAsked = ts
@@ -1475,11 +1498,7 @@ class Coach(
      * inside `analyse_named`; here the provider belongs to the caller, so the call is here.
      */
     private fun planProbeJson(text: String, board: Board): String? {
-        val side = if (board.turn == WHITE) "White" else "Black"
-        val player = if (userColour == WHITE) "White" else "Black"
-        val legal = board.legalMoves().map { board.san(it) }.sorted().joinToString(" ")
-        val content = "Position (FEN): ${board.fen()}\n$side to move. The player is $player.\n" +
-            "Legal moves: $legal\n\nThe player says: \"${text.trim()}\"\n\nJSON only."
+        val content = planRequest(text, board, userColour)
         return try {
             // Parsing their words into moves is no lesson: the routine effort, not the coach's
             // (at medium it was a second model call's worth of waiting).
@@ -1755,7 +1774,10 @@ class Coach(
         // And the board before the last move played: an answer about it says what it took
         // ("15...Qxe7 took your knight on e7"), which the board after it no longer shows.
         val records = synchronized(lock) { conversation.activeRecords() }
-        if (records.isNotEmpty()) frames = frames + Board(records.last().move.fenBefore)
+        if (records.isNotEmpty()) {
+            // `with suppress(ValueError)`: a record's FEN the board cannot read adds no frame.
+            runCatching { Board(records.last().move.fenBefore) }.getOrNull()?.let { frames = frames + it }
+        }
         val messages: List<ChatMessage>
         synchronized(lock) {
             conversation.level = renderLevel
@@ -1980,7 +2002,8 @@ class Coach(
                 val best = r.assessment?.best
                 if (!best.isNullOrEmpty()) {
                     val move = Move.fromUciOrNull(best[0])
-                    if (move != null) out.add(Board(r.move.fenBefore).san(move))
+                    // `with suppress(ValueError)`, as the desktop reads it.
+                    if (move != null) runCatching { Board(r.move.fenBefore).san(move) }.getOrNull()?.let { out.add(it) }
                 }
             }
         }
@@ -2264,7 +2287,7 @@ class Coach(
         }
         // An explicit ask. The player's words are already the last message of the
         // conversation; the directive says only how to answer them.
-        val said = userText ?: "hint"
+        val said = userText?.ifEmpty { null } ?: "hint" // `user_text or "hint"`
         var checks = ""
         val claimsChecked = verdicts.filter { !it.startsWith("Engine on ") }
         val engineWords = verdicts.filter { it.startsWith("Engine on ") }
@@ -2484,14 +2507,18 @@ class Coach(
             var best = ""
             if (own.best.isNotEmpty()) {
                 val move = Move.fromUciOrNull(own.best[0])
-                best = if (move != null) Board(lastOwn.move.fenBefore).san(move) else ""
+                best = try {
+                    if (move != null) Board(lastOwn.move.fenBefore).san(move) else ""
+                } catch (_: Exception) {
+                    "" // `except ValueError`
+                }
             }
             if (best == san) best = ""
             // The request's facts are those of the position the move was played from when the
             // coach has them (ask() chose that position); the idea is theirs. The theme or the
             // plan, never a static feature: "the idea was the isolated d-pawn ..." became the
             // reason a bishop retreat was an inaccuracy.
-            val idea = facts.theme ?: facts.plan ?: ""
+            val idea = facts.theme?.ifEmpty { null } ?: facts.plan ?: "" // `facts.theme or facts.plan or ""`
             if (own.severity == Severity.NONE && best.isNotEmpty() && loss >= 0.005) {
                 // Sound but not the best: said as the word after it said it ("Fine, but a3 was a
                 // little tighter"), never "it cost nothing" (the runtime audit).

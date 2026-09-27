@@ -12,6 +12,7 @@ import com.sidecoach.chess.parseSquare
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.CoachMessage
 import com.sidecoach.events.DisclosureLevel
+import com.sidecoach.events.GameEnded
 import com.sidecoach.events.GameReview
 import com.sidecoach.events.GameStarted
 import com.sidecoach.events.Label
@@ -1236,6 +1237,595 @@ class CoachTest {
         val frames = coach.analysisFrames(position)
         assertTrue(frames.any { it.pieceAt(parseSquare("e7")) == Piece(KING, BLACK) })
         assertTrue(frames.any { it.pieceAt(parseSquare("f7")) == Piece(QUEEN, WHITE) })
+    }
+
+    /**
+     * `test_verdicts._played`: a sound move of the player's from the scholar's-mate position,
+     * [san], labelled [label], losing [loss]; what the coach said.
+     */
+    private fun soundMove(coach: Coach, san: String, label: Label, loss: Double = 0.01): List<String> {
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        val board = Board(SCHOLAR)
+        val move = board.parseSan(san)!!
+        board.push(move)
+        coach.onEvent(
+            MovePlayed(gameId = "g", ply = 7, san = san, uci = move.uci(), fenBefore = SCHOLAR, fenAfter = board.fen(), byUser = true),
+            8.0,
+        )
+        coach.onEvent(
+            MoveAssessment(
+                gameId = "g", ply = 7, uci = move.uci(), expectedLoss = loss, severity = Severity.NONE,
+                best = listOf("h5f7"), label = label,
+            ),
+            8.5,
+        )
+        return messages(coach).map { it.text }
+    }
+
+    /**
+     * Who writes the word on a sound move, by its label (Tai, 2026-09-20 and 2026-09-26: "They need
+     * to go through the api"): theory, the engine's own move and an excellent one get the board's
+     * sentence and no call (the routine model's, with the local verdicts off); a good move goes to
+     * the model, which names the better one; a great or brilliant move to the MAIN model at its
+     * full effort, told to show some delight, the board's line standing in when the reply fails.
+     * The routine model is a separate one here, so a delight asked of it would show.
+     * `test_verdicts.py`: the coach writes a sound move's word itself; a good move goes to the
+     * model; a great or brilliant move gets the model's delight.
+     */
+    @Test
+    fun aSoundMovesWordIsRoutedByItsLabel() {
+        fun routed(replies: List<String>, localVerdicts: Boolean = true): Triple<Coach, ScriptedProvider, ScriptedProvider> {
+            val main = ScriptedProvider(replies)
+            val routine = ScriptedProvider(replies)
+            val coach = Coach(
+                main,
+                policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)),
+                routineProvider = routine,
+                localVerdicts = localVerdicts,
+            )
+            return Triple(coach, main, routine)
+        }
+        // The board's own word: no call at all.
+        for ((san, label) in listOf("Qxf7#" to Label.BEST, "Nc3" to Label.EXCELLENT, "Nc3" to Label.BOOK)) {
+            val (coach, main, routine) = routed(listOf("never used"))
+            val texts = soundMove(coach, san, label)
+            assertTrue("$label: $texts", texts.size == 1 && !texts[0].startsWith(san.trimEnd('#', '+')))
+            assertTrue("$label: no model", main.prompts.isEmpty() && routine.prompts.isEmpty())
+            if (label == Label.BEST) assertTrue(texts[0], texts[0] in MATE)
+            if (label == Label.EXCELLENT) {
+                assertTrue(texts[0], texts[0].split(" -- ")[0].trimEnd('.') in OPENERS.getValue("excellent"))
+            }
+        }
+        // The local verdicts off, the routine model writes it.
+        run {
+            val (coach, main, routine) = routed(listOf("[p=1.0] Mate on the board -- well played."), localVerdicts = false)
+            assertEquals(listOf("Mate on the board -- well played."), soundMove(coach, "Qxf7#", Label.BEST))
+            assertTrue(main.prompts.isEmpty() && routine.prompts.size == 1)
+        }
+        // A good move: the main model names the better one, the label said in its sense.
+        run {
+            val (coach, main, routine) = routed(listOf("[p=1.0] Fine, but Qxf7# was there: the mate."))
+            assertEquals(listOf("Fine, but Qxf7# was there: the mate."), soundMove(coach, "Nc3", Label.GOOD, loss = 0.03))
+            assertTrue(main.prompts.size == 1 && routine.prompts.isEmpty())
+            val task = directive(main)
+            assertTrue(task, "which was good: playable, not the strongest" in task && "Qxf7#" in task)
+            assertTrue(task, "Do not open with the move they played" in task)
+        }
+        // Great and brilliant: the main model, with delight; the board's line if it fails.
+        for (label in listOf(Label.GREAT, Label.BRILLIANT)) {
+            val (coach, main, routine) = routed(listOf("[p=1.0] Yes -- the one move, and it ends the game."))
+            assertEquals(listOf("Yes -- the one move, and it ends the game."), soundMove(coach, "Qxf7#", label, loss = 0.0))
+            assertTrue("$label: the main model", main.prompts.size == 1 && routine.prompts.isEmpty())
+            val task = directive(main)
+            assertTrue(task, "Show some delight" in task && label.name.lowercase() in task)
+            assertTrue(task, "Do not open with the move they played" in task)
+            val (failing, _, _) = routed(listOf("", ""))
+            val fallback = soundMove(failing, "Qxf7#", label, loss = 0.0)
+            assertTrue("$label: $fallback", fallback.size == 1 && fallback[0] in MATE)
+        }
+    }
+
+    /** `_mate_in_one_played`: the user plays Qxf7#, the engine's own move, after the scholar's position. */
+    private fun mateInOnePlayed(coach: Coach, gameId: String = "g", ply: Int = 7, start: String = SCHOLAR, ts: Double = 10.0) {
+        val board = Board(start)
+        val move = board.parseSan("Qxf7#")!!
+        board.push(move)
+        coach.onEvent(MovePlayed(gameId = gameId, ply = ply, san = "Qxf7#", uci = move.uci(), fenBefore = start, fenAfter = board.fen(), byUser = true), ts)
+        coach.onEvent(
+            MoveAssessment(gameId = gameId, ply = ply, uci = move.uci(), expectedLoss = 0.0, severity = Severity.NONE, best = listOf("h5f7"), label = Label.BEST),
+            ts + 0.5,
+        )
+    }
+
+    /** `_play` of the given moves from the start, the user White, each at its ply's second. */
+    private fun playFromStart(coach: Coach, sans: List<String>, thinkMs: Int? = null): Board {
+        start(coach)
+        val board = Board()
+        for ((i, san) in sans.withIndex()) {
+            val ply = i + 1
+            val move = board.parseSan(san)!!
+            val before = board.fen()
+            board.push(move)
+            coach.onEvent(
+                MovePlayed(gameId = "g", ply = ply, san = san, uci = move.uci(), fenBefore = before, fenAfter = board.fen(), byUser = ply % 2 == 1, thinkMs = thinkMs),
+                ply.toDouble(),
+            )
+        }
+        return board
+    }
+
+    /** Naming the move yourself earns the candidate level (`test_coach.py`). */
+    @Test
+    fun namingTheMoveYourselfEarnsTheCandidateLevel() {
+        val (coach, _) = coach(listOf("What do you think?", "Yes, Qxf7 is mate."))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 7.0)
+        messages(coach)
+        coach.ask("Is Qxf7 mate?", 8.0)
+        assertEquals(DisclosureLevel.MOVE, messages(coach)[0].level)
+        val board = Board(SCHOLAR)
+        assertEquals(Unlock.USER_NAMED_MOVE, unlockFor("Is Qxf7 mate?", board, listOf("Qxf7#")))
+        assertEquals("not the candidate", null, unlockFor("What about Bxf7?", board, listOf("Qxf7#")))
+        assertEquals(Unlock.ASK_LINE, unlockFor("show me the line", board, emptyList()))
+        assertEquals(Unlock.HINT, unlockFor("HINT please", board, emptyList()))
+        assertEquals(Unlock.ASK_MOVE, unlockFor("what should I play here", board, emptyList()))
+        assertEquals(null, unlockFor("how are you", board, emptyList()))
+    }
+
+    /**
+     * The model offers a leaky reply and a clean one in one distribution: the checked one is kept
+     * at the first attempt; and a stump ("Given"), clean by default, never wins -- both calls are
+     * kept for the log (`test_coach.py`, `test_coach_verbalized.py`).
+     */
+    @Test
+    fun theCheckedCandidateIsKeptAndAStumpNeverWins() {
+        val checker = DraftCheck { text, _, _, _ -> if ("rook on f7" in text) listOf("the rook on f7 is not there") else emptyList() }
+        fun checked(replies: List<String>): Pair<Coach, List<CoachMessage>> {
+            val coach = Coach(ScriptedProvider(replies), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)), draftCheck = checker)
+            playToScholar(coach)
+            coach.onEvent(mateAnalysis(6), 7.0)
+            return coach to messages(coach)
+        }
+        var (coach, out) = checked(listOf("[p=0.6] Your rook on f7 is strong.\n[p=0.4] Their king on e8 is short of squares, is it not?"))
+        assertEquals("Their king on e8 is short of squares, is it not?", out[0].text)
+        assertTrue(coach.spoken.last().attempts == 1 && coach.speaker.fallbacks == 0)
+        val first = "[p=0.6] Your rook on f7 is strong. What next?\n[p=0.4] Given"
+        val second = "[p=0.7] Their king on e8 is short of squares. What is their threat?"
+        val stump = checked(listOf(first, second))
+        coach = stump.first
+        out = stump.second
+        assertEquals("Their king on e8 is short of squares. What is their threat?", out[0].text)
+        val spoken = coach.spoken.last()
+        assertEquals(2, spoken.attempts)
+        assertEquals(listOf(first, second), spoken.calls.map { it.raw })
+        assertEquals(listOf(1 to 0, 1 to 1), spoken.calls.map { it.candidates to it.passed })
+    }
+
+    /**
+     * "hint" carries no claim: prompted to be honest about "their claim", the model answered its
+     * own previous message as though the player had said it (`test_coach_verbalized.py`).
+     */
+    @Test
+    fun aBareHintIsAskedForAsAHintNotAsAClaim() {
+        for (said in listOf("hint", "Hint", "give me a hint", "a clue please", "help", "any tips?")) {
+            assertTrue(said, ASK_HINT.matchesAt(said, 0))
+        }
+        for (said in listOf("what should I play", "is Nf3 a good idea", "help me with the knight")) {
+            assertFalse(said, ASK_HINT.matchesAt(said, 0))
+        }
+        val (coach, provider) = coach(listOf("Where is their king weakest?"))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        coach.hint(8.0)
+        messages(coach)
+        val prompt = given(provider, 0).last().content
+        assertTrue(prompt, "They asked for a hint" in prompt)
+        assertTrue(prompt, "their own claim" !in prompt && "anything said earlier" in prompt)
+    }
+
+    /** A re-read of the board is a message and the numbering restarts (`test_coach.py`). */
+    @Test
+    fun aRereadOfTheBoardIsAMessageAndTheNumberingRestarts() {
+        val (coach, provider) = coach(listOf("Understood."))
+        playToScholar(coach)
+        val fen = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/2N5/PPPP1PPP/R1B1K1NR b KQkq - 5 4"
+        coach.onEvent(Resync(gameId = "g", fen = fen, reason = "position adopted after 3 unexplained cells"), 20.0)
+        val board = Board(fen)
+        val move = board.parseSan("d6")!!
+        board.push(move)
+        coach.onEvent(MovePlayed(gameId = "g", ply = 1, san = "d6", uci = move.uci(), fenBefore = fen, fenAfter = board.fen(), byUser = false), 21.0)
+        coach.onEvent(
+            Analysis(gameId = "g", fen = board.fen(), ply = 1, lines = listOf(Line(moves = listOf("c3d5"), depth = 12, expectedScore = 0.6)), decisive = false, onlyMove = false),
+            22.0,
+        )
+        coach.ask("what now?", 23.0)
+        messages(coach)
+        val text = harness(given(provider))
+        assertTrue(text, "    EVENT: The board was re-read" in text && "Moves may have gone unseen" in text)
+        // The numbering follows the position the board was read at, not a ply count.
+        assertTrue("4... d6 by the opponent" in currentMoveMessage(given(provider)))
+    }
+
+    /**
+     * The claims in the player's words are checked off the caller's thread -- the caller never
+     * waits -- and only when there are any: a bare hint never runs the check (`test_coach.py`).
+     */
+    @Test
+    fun claimsAreCheckedOffTheCallersThreadAndOnlyWhenThereAreAny() {
+        assertFalse(mayCarryClaims("hint"))
+        assertFalse(mayCarryClaims("what should I play"))
+        assertFalse(mayCarryClaims("show me the line"))
+        assertTrue(mayCarryClaims("is Nf3 good here"))
+        assertTrue(mayCarryClaims("my knight is hanging"))
+        assertTrue(mayCarryClaims("can I castle"))
+        val threads = java.util.Collections.synchronizedList(ArrayList<String>())
+        val started = java.util.concurrent.CountDownLatch(1)
+        val done = java.util.concurrent.CountDownLatch(1)
+        val provider = ScriptedProvider(listOf("Not quite. What is your most active piece already eyeing?"))
+        val coach = Coach(
+            provider,
+            policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)),
+            claims = ClaimsCheck { _, _, _ ->
+                threads.add(Thread.currentThread().name)
+                started.countDown()
+                Thread.sleep(200)
+                listOf("'Nf3 is good': not the strongest, Qxf7# mates").also { done.countDown() }
+            },
+        )
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        val begun = System.nanoTime()
+        coach.ask("is Nf3 good here", 8.0)
+        assertTrue("the caller never waits on the check", System.nanoTime() - begun < 100_000_000L)
+        assertTrue(started.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        assertTrue(done.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        Thread.sleep(200) // the worker hands the request over after the check
+        assertTrue(threads.toString(), threads.isNotEmpty() && threads[0] != Thread.currentThread().name)
+        assertEquals(listOf("Not quite. What is your most active piece already eyeing?"), messages(coach).map { it.text })
+        assertTrue("Their claims, checked against the board" in given(provider, 0).last().content)
+        coach.hint(9.0) // a bare hint never runs the check
+        messages(coach)
+        assertEquals(1, threads.size)
+    }
+
+    /**
+     * "How did I do overall?" was answered "you were down a queen" to a player who had won one:
+     * the material is the user's side's, a finished game withholds nothing, the overall verdict
+     * is drawn from the tally, and when the model's review fails the template is the record
+     * (`test_coach.py`).
+     */
+    @Test
+    fun materialIsAlwaysFromTheUsersSideAndTheReviewDrawsOnTheTally() {
+        val (coach, provider) = coach(listOf("You kept it clean: nothing lost, and the finish was sharp."))
+        val board = playFromStart(coach, listOf("e4", "e5", "Qh5", "Nc6", "Qxe5+"))
+        coach.onEvent(
+            Analysis(gameId = "g", fen = board.fen(), ply = 5, lines = listOf(Line(moves = listOf("f8e7"), depth = 12, expectedScore = 0.4)), decisive = false, onlyMove = false),
+            6.0,
+        )
+        val facts = coach.positions[5]!!.facts!!
+        assertEquals("from the user's side, not the mover's", "you are up a pawn", facts.material)
+        assertTrue(facts.userSide == "white" && facts.sideToMove == "black")
+        assertTrue("Material: the player is up a pawn." in coach.conversation.renderPly(coach.conversation.records.last(), DisclosureLevel.LINE))
+        for ((ply, pair) in mapOf(1 to ("e2e4" to Label.BOOK), 3 to ("d1h5" to Label.INACCURACY), 5 to ("h5e5" to Label.BEST))) {
+            val (uci, label) = pair
+            val inaccuracy = label == Label.INACCURACY
+            coach.onEvent(
+                MoveAssessment(
+                    gameId = "g", ply = ply, uci = uci, expectedLoss = if (inaccuracy) 0.03 else 0.0,
+                    severity = if (inaccuracy) Severity.INACCURACY else Severity.NONE, best = listOf(uci), label = label,
+                ),
+                7.0,
+            )
+        }
+        messages(coach)
+        coach.onEvent(GameEnded(gameId = "g", result = "1-0", reason = "resigned", pgn = "", finalFen = board.fen()), 8.0)
+        coach.ask("how did I do overall this game?", 9.0)
+        val out = messages(coach)
+        assertTrue(out.isNotEmpty() && out.last().level == DisclosureLevel.LINE)
+        val directive = directiveOf(given(provider))
+        assertTrue(directive, "They asked how they did overall" in directive)
+        assertTrue(directive, "do not infer the course of the game from the position" in directive)
+        val text = harness(given(provider))
+        assertTrue(text, "The player's moves so far (3 judged): 1 best, 1 book, 1 inaccuracy." in text)
+        assertTrue(text, "Ground lost most at: 2. Qh5 (inaccuracy)" in text)
+        assertTrue(text, "    EVENT: Game over: 1-0" in text)
+        for (words in listOf("what do I keep missing?", "where did I lose it?", "how am I playing so far?")) {
+            assertTrue(words, ASK_REVIEW.containsMatchIn(words))
+        }
+        assertFalse(ASK_REVIEW.containsMatchIn("what's the plan so far?"))
+        provider.replies.clear()
+        provider.replies.addAll(listOf("", ""))
+        coach.ask("what do I keep missing?", 10.0)
+        assertEquals(
+            "1 of your 3 moves were best or excellent. You lost the most ground at 2. Qh5 (inaccuracy).",
+            messages(coach).last().text,
+        )
+    }
+
+    /**
+     * The quick answer is a turn before the model is asked to build on it, and a failed reply
+     * adds nothing in its place -- the same line a second time (`test_coach.py`).
+     */
+    @Test
+    fun aQuickAnswerIsATurnBeforeTheModelAndAFailedReplyAddsNothing() {
+        val (coach, provider) = coach(listOf("", ""))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        coach.ask("hint", 8.0)
+        val out = messages(coach)
+        assertTrue(out.map { it.text }.toString(), out.size == 1 && "mate in one" in out[0].text.split(".")[0])
+        val quick = out[0].text
+        val first = given(provider, 0)
+        val said = currentMoveMessage(first).substringAfter("## Said here").trim('\n').lines()
+        assertEquals("    PLAYER said: \"hint\"", said[said.size - 2])
+        assertEquals("    YOU (the coach) said: \"$quick\"", said.last())
+        val directive = directiveOf(first)
+        assertTrue(directive, "build on it" in directive && "Do not repeat it" in directive && "PLAYER said" !in directive)
+        val rejected = coach.spoken.filter { it.message.text.isEmpty() }
+        assertTrue(rejected.size == 1 && rejected[0].attempts == 2 && rejected[0].problems.isNotEmpty())
+        assertEquals(listOf(quick), coach.conversation.entries.filter { it.role == "assistant" }.map { it.text })
+    }
+
+    /** A question about a fine last move says it was fine and invents no fault (`test_coach.py`). */
+    @Test
+    fun aQuestionAboutAFineLastMoveSaysItWasFine() {
+        val (coach, provider) = coach(listOf("...", ""))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 7.0)
+        messages(coach)
+        mateInOnePlayed(coach, ts = 10.0)
+        messages(coach)
+        coach.ask("was that a mistake?", 12.0)
+        messages(coach)
+        val directive = directiveOf(given(provider))
+        assertTrue(directive, "It was not bad: the verdict was best" in directive && "do not invent a fault" in directive)
+    }
+
+    /**
+     * Asked why the opponent played their last move, the coach names it: a move already played
+     * may be discussed in full, never a leak (`test_coach.py`).
+     */
+    @Test
+    fun aMoveOfTheGameSoFarIsNeverALeak() {
+        val (coach, _) = coach(listOf("[p=1.0] Nf6 develops with a threat; what does it leave behind?"))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        coach.ask("why did he play that?", 8.0)
+        val out = messages(coach)
+        assertTrue(out.isNotEmpty() && out.last().text.startsWith("Nf6 develops"))
+        assertEquals(DisclosureLevel.IDEA, out.last().level)
+    }
+
+    /**
+     * A question about the player over their games goes to the record's answerer off the coach's
+     * thread; the answer is the coach's turn, the lookup noted; a question about this game stays
+     * with the game (`test_coach.py`).
+     */
+    @Test
+    fun aQuestionAboutThePlayerOverTheirGamesGoesToTheRecord() {
+        val (coach, _) = coach(listOf("Keep looking."))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 6.5)
+        val asked = java.util.Collections.synchronizedList(ArrayList<String>())
+        coach.profileAsk = { question ->
+            asked.add(question)
+            ProfileAnswer(
+                text = "Over 9 games you left the opening ahead 7 times and were behind by move 25.",
+                exchanges = listOf("SELECT 1"),
+                calls = 2,
+            )
+        }
+        coach.ask("why am I always losing in the middlegame?", 7.0)
+        // The answer lands on the lookup's own thread: gathered until it is out.
+        val said = ArrayList<CoachMessage>()
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (said.none { it.text.startsWith("Over 9 games") } && System.nanoTime() < deadline) {
+            said.addAll(messages(coach))
+            Thread.sleep(20)
+        }
+        assertEquals(listOf("why am I always losing in the middlegame?"), asked.toList())
+        assertTrue(said.isNotEmpty() && said.last().text.startsWith("Over 9 games") && said.last().trigger == Trigger.USER_ASK)
+        assertEquals("answer", coach.profileAnswers[0].first)
+        val record = coach.conversation.render()
+        assertTrue("PLAYER said: \"why am I always losing in the middlegame?\"" in record)
+        assertTrue("looked the question up in the record (1 query)" in record)
+        coach.ask("what should I play here?", 8.0)
+        assertEquals(1, asked.size)
+    }
+
+    /**
+     * Every third mistake ends by asking what the player saw, in the coach's own words, while the
+     * player answers; one that goes unanswered is the last of the game (`test_coach.py`).
+     */
+    @Test
+    fun everyThirdMistakeEndsByAskingWhatThePlayerSaw() {
+        val (coach, _) = coach(emptyList())
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 6.5)
+        val position = coach.positions[6]!!
+        val played = MovePlayed(gameId = "g", ply = 7, san = "a3", uci = "a2a3", fenBefore = SCHOLAR, fenAfter = SCHOLAR, byUser = true)
+        val assessment = MoveAssessment(gameId = "g", ply = 7, uci = "a2a3", expectedLoss = 0.5, severity = Severity.BLUNDER, best = listOf("h5f7"), label = Label.BLUNDER)
+        var (instruction, fallback) = coach.instruction(Trigger.POST_MISTAKE, position, DisclosureLevel.LINE, null, emptyList(), assessment, played)
+        assertTrue("expected" !in instruction && "expecting" !in fallback)
+        val asked = coach.instruction(Trigger.POST_MISTAKE, position, DisclosureLevel.LINE, null, emptyList(), assessment, played, elicit = true)
+        instruction = asked.first
+        fallback = asked.second
+        assertTrue(instruction, "what they expected their move to do" in instruction)
+        assertTrue(instruction, "misjudge" !in instruction && "altogether" !in instruction)
+        assertTrue(fallback, fallback.endsWith("What were you expecting that move to do?"))
+        val due = ArrayList<Boolean>()
+        for (n in 1..2 * ELICIT_EVERY) {
+            coach.mistakes = n
+            due.add(coach.elicitDue(10.0 * n))
+            if (due.last()) coach.ask("I thought the queen would have to move", 10.0 * n + ELICIT_ANSWER_S / 2)
+        }
+        assertEquals((1..2 * ELICIT_EVERY).map { it % ELICIT_EVERY == 0 }, due)
+        coach.mistakes = 3 * ELICIT_EVERY
+        assertTrue("answered: asked again", coach.elicitDue(1000.0))
+        coach.mistakes = 4 * ELICIT_EVERY
+        assertFalse("unanswered: not again this game", coach.elicitDue(2000.0))
+        coach.mistakes = 5 * ELICIT_EVERY
+        coach.ask("hint", 2000.0 + ELICIT_ANSWER_S + 1)
+        assertFalse("a minute later is not an answer", coach.elicitDue(3000.0))
+        start(coach)
+        coach.mistakes = ELICIT_EVERY
+        assertTrue("a new game starts afresh", coach.elicitDue(4001.0))
+    }
+
+    /**
+     * A puzzle or an analysis board: the coach hears it is a position with no history; the mating
+     * move on it gets no word and the end no summary, and nothing calls the model; a move that
+     * does not end it gets its word as in a game (`test_coach.py`).
+     */
+    @Test
+    fun aPositionIsNotAGameAndAPuzzleSolvedByMateGetsNoWord() {
+        val (told, _) = coach(emptyList())
+        val setup = "r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R b KQkq - 0 1"
+        told.onEvent(GameStarted(gameId = "p", userSide = Pieces.Side.BLACK, startFen = setup, kind = "position"), 0.0)
+        val record = told.conversation.render()
+        assertTrue(record, "You coach Black." in record && "This is a position, not a game from the start" in record)
+        assertTrue(record, "joined in progress" !in record)
+
+        val (coach, provider) = coach(emptyList())
+        for (n in 0 until 2) {
+            val id = "p$n"
+            coach.onEvent(GameStarted(gameId = id, userSide = Pieces.Side.WHITE, startFen = SCHOLAR, kind = "position"), 10.0 * n)
+            coach.onEvent(mateAnalysis(0).let { Analysis(gameId = id, fen = it.fen, ply = 0, lines = it.lines, decisive = it.decisive, onlyMove = it.onlyMove, tags = it.tags) }, 10.0 * n + 0.5)
+            messages(coach) // the decisive-moment nudge on the position itself
+            provider.prompts.clear()
+            mateInOnePlayed(coach, gameId = id, ply = 1, ts = 10.0 * n + 1.0)
+            assertEquals("the mating move is not commented on", emptyList<CoachMessage>(), messages(coach))
+            coach.onEvent(GameEnded(gameId = id, result = "1-0", reason = "game over on board", pgn = "1. Qxf7#"), 10.0 * n + 2.0)
+            assertEquals("no summary of a puzzle", emptyList<CoachMessage>(), messages(coach))
+        }
+        assertTrue("no model call at all", provider.prompts.isEmpty())
+        coach.onEvent(GameStarted(gameId = "q", userSide = Pieces.Side.WHITE, startFen = SCHOLAR, kind = "position"), 50.0)
+        coach.onEvent(mateAnalysis(0).let { Analysis(gameId = "q", fen = it.fen, ply = 0, lines = it.lines, decisive = it.decisive, onlyMove = it.onlyMove, tags = it.tags) }, 50.5)
+        messages(coach)
+        val board = Board(SCHOLAR)
+        val move = board.parseSan("Nf3")!!
+        board.push(move)
+        coach.onEvent(MovePlayed(gameId = "q", ply = 1, san = "Nf3", uci = move.uci(), fenBefore = SCHOLAR, fenAfter = board.fen(), byUser = true), 51.0)
+        coach.onEvent(
+            MoveAssessment(gameId = "q", ply = 1, uci = move.uci(), expectedLoss = 0.5, severity = Severity.BLUNDER, best = listOf("h5f7"), label = Label.BLUNDER),
+            51.5,
+        )
+        assertEquals(listOf(Trigger.POST_MISTAKE), messages(coach).map { it.trigger })
+    }
+
+    /**
+     * The user's think times set the pace: in a fast game the word on a move is the template, at
+     * once, with no model call; what the player asks still goes to the model; a player who slows
+     * down -- in the game, or thinking longer than the pace in the position -- gets the model back
+     * (Tai, 2026-09-22; `test_coach.py`).
+     */
+    @Test
+    fun aFastGameGetsTheTemplatesAndSlowingDownBringsTheModelBack() {
+        val (coach, provider) = coach(listOf("never used for a move", "[p=1.0] Asked and answered."))
+        coach.localVerdicts = false
+        val board = playFromStart(coach, listOf("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"), thinkMs = (FAST_PACE_S * 1000 / 3).toInt())
+        assertTrue("two quick moves of the user's and the game counts as fast", coach.fastPace)
+        assertTrue(coach.userToMove && coach.fastNow(6.0 + 1.0))
+        assertFalse("thinking longer than the pace: slowed", coach.fastNow(6.0 + FAST_PACE_S + 1))
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        mateInOnePlayed(coach)
+        var out = messages(coach)
+        assertTrue(out.size == 1 && out[0].trigger == Trigger.POST_MOVE && out[0].text.isNotEmpty())
+        assertTrue("no model call in a fast game", provider.prompts.isEmpty())
+        coach.ask("what was that about", 12.0)
+        out = messages(coach)
+        assertTrue(out.isNotEmpty() && out.last().trigger == Trigger.USER_ASK)
+        assertTrue("the ask goes to the model", provider.prompts.isNotEmpty())
+        for (ply in listOf(8, 9)) {
+            coach.onEvent(
+                MovePlayed(gameId = "g", ply = ply, san = "a3", uci = "a2a3", fenBefore = board.fen(), fenAfter = board.fen(), byUser = true, thinkMs = (FAST_PACE_S * 3000).toInt()),
+                20.0 + ply,
+            )
+        }
+        assertFalse(coach.fastPace)
+    }
+
+    /**
+     * No model at all (llm.provider none): the factory's offline provider; a decisive moment
+     * gets the question template, the player's best move the verdict from the board, a typed
+     * question the hint template -- and nothing is ever called (`test_offline_coach.py`).
+     */
+    @Test
+    fun offlineTheTemplatesSpeakAndNothingIsCalled() {
+        // The factory gives the offline provider, and it reports itself (the desktop's usage
+        // ledger has no phone counterpart: nothing is priced).
+        val none = com.sidecoach.llm.makeProvider(com.sidecoach.llm.LLMSettings(provider = "none"))
+        assertTrue(none is OfflineProvider && none.offline)
+        val (ok, detail) = none.healthcheck()
+        assertTrue(detail, ok && "offline" in detail)
+        assertTrue((none as OfflineProvider).withEffort("low") === none)
+        val coach = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 7.0)
+        var out = messages(coach)
+        assertTrue(out.size == 1 && out[0].trigger == Trigger.DECISIVE_QUESTION && "?" in out[0].text)
+        assertEquals(1, coach.speaker.fallbacks)
+        coach.ask("hint", 8.0)
+        out = messages(coach)
+        assertTrue("a hint from the templates", out.size == 1 && out[0].text.isNotEmpty())
+        assertEquals(out[0].fen, Board(out[0].fen).fen())
+        mateInOnePlayed(coach)
+        out = messages(coach)
+        assertTrue(out.size == 1 && out[0].trigger == Trigger.POST_MOVE)
+        assertTrue(out[0].text, out[0].text in MATE && "Qxf7#" !in out[0].text)
+        assertEquals("nothing was ever called", 0, coach.speaker.failures)
+    }
+
+    /**
+     * 9...Nxd4 in a Dragon drew "This is a moment to slow down": when the opponent has just
+     * captured and the engine's move takes back there, no decisive question; a zwischenzug as
+     * the best move keeps it (`test_offline_coach.py`).
+     */
+    @Test
+    fun noDecisiveQuestionOnAnObviousRecapture() {
+        val coach = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+        val board = playFromStart(coach, listOf("e4", "c5", "Nf3", "d6", "d4", "cxd4"))
+        fun analysed(first: String, second: String, ts: Double) = coach.onEvent(
+            Analysis(
+                gameId = "g", fen = board.fen(), ply = 6,
+                lines = listOf(Line(moves = listOf(first), depth = 12, expectedScore = 0.52), Line(moves = listOf(second), depth = 12, expectedScore = 0.35)),
+                decisive = true, onlyMove = false,
+            ),
+            ts,
+        )
+        analysed("f3d4", "c2c3", 7.0)
+        assertEquals("the recapture is the move; no question", emptyList<CoachMessage>(), messages(coach))
+        analysed("f1b5", "f3d4", 8.0)
+        val out = messages(coach)
+        assertTrue(out.size == 1 && out[0].trigger == Trigger.DECISIVE_QUESTION)
+    }
+
+    /**
+     * Game 2 answered "how did I do overall?" with game 1's sentences when the model failed
+     * (the parity audit, 2026-09-26; desktop c5c488f).
+     */
+    @Test
+    fun aNewGameForgetsTheLastGamesReview() {
+        val (coach, _) = coach(emptyList())
+        start(coach)
+        coach.reviewLines = listOf("You played white and won by checkmate in 4 moves.")
+        start(coach)
+        assertEquals(emptyList<String>(), coach.reviewLines)
+    }
+
+    /**
+     * Saving a new rating rewords the system message and the templates alike: the register was
+     * kept until the coach was rebuilt (desktop c5c488f). PanelWarm's Save calls [Coach.reword].
+     */
+    @Test
+    fun aSavedRatingChangesTheTemplatesRegister() {
+        val coach = Coach(ScriptedProvider(emptyList()), rating = 800 to 1100)
+        assertTrue(coach.plainWords && !coach.strongPlayer)
+        coach.reword(null, 2000 to 2300)
+        assertTrue(!coach.plainWords && coach.strongPlayer)
+        assertTrue("2000" in coach.system)
     }
 
     companion object {

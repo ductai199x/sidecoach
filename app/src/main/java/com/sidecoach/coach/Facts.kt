@@ -800,7 +800,7 @@ fun factsFromAnalysis(
     } else if (plain != null) {
         // The free piece first, then what the line wins after it.
         val named = "on ${squareName(plain.square)}"
-        val rest = if (!key.isNullOrEmpty() && named !in key) ". After that, ${key[0].lowercaseChar() + key.substring(1)}" else ""
+        val rest = if (!key.isNullOrEmpty() && named !in key) ". After that, ${key.replaceFirstChar { it.lowercase() }}" else ""
         key = plain.key + rest
     }
     // The key the move itself answers, and so its reason at the move rung; the fallbacks below
@@ -1086,7 +1086,7 @@ fun factsFromAnalysis(
     situationText = situationText?.let { if (it.isNotEmpty()) Situation.spoken(Situation.withinBudget(it)) else it }
     // A quiet move's own reason, said at the move rung: the key fact it answers.
     if (why == null && !moveReason.isNullOrEmpty() && best != null) {
-        why = "${board.san(best)}: ${moveReason[0].lowercaseChar() + moveReason.substring(1)}"
+        why = "${board.san(best)}: ${moveReason.replaceFirstChar { it.lowercase() }}"
     }
 
     val candidates = ArrayList<String>()

@@ -25,10 +25,6 @@ import com.sidecoach.chess.squaresOf
 import com.sidecoach.events.Line
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.LLMProvider
-import org.json.JSONArray
-import org.json.JSONException
-import org.json.JSONObject
-import org.json.JSONTokener
 
 /**
  * Claim verification, both directions: `sidecoach/coach/claims.py`. DESIGN.md section 5.5.
@@ -189,51 +185,49 @@ fun parseClaims(text: String): List<Claim> {
     val fenced = FENCE.find(cleaned)
     if (fenced != null) cleaned = fenced.groupValues[1].trim()
     var data = loadJson(cleaned)
-    if (data is JSONObject) {
-        val inner = data.optJSONArray("claims")
-        data = inner ?: JSONArray().put(data)
+    if (data is Map<*, *>) {
+        val inner = data["claims"]
+        data = if (inner is List<*>) inner else listOf(data)
     }
-    if (data !is JSONArray) return emptyList()
+    if (data !is List<*>) return emptyList()
     val claims = ArrayList<Claim>()
-    for (i in 0 until data.length()) {
-        val claim = claimFrom(data.opt(i))
+    for (item in data) {
+        val claim = claimFrom(item)
         if (claim != null) claims.add(claim)
     }
     return claims
 }
 
+/** What [loadJson] hands back where nothing reads: Python's `None` is a value it can return. */
+private val UNREAD = Any()
+
 private fun loadJson(text: String): Any? {
-    strictJson(text)?.let { return it }
+    // `json.loads`, strict as Python's: org.json alone took trailing text, unquoted keys,
+    // single quotes and comments (the parity audit cc-05).
+    pyJsonOr(text, UNREAD).let { if (it !== UNREAD) return it }
     for ((opener, closer) in listOf('[' to ']', '{' to '}')) {
         val start = text.indexOf(opener)
         val end = text.lastIndexOf(closer)
         if (start in 0 until end) {
-            strictJson(text.substring(start, end + 1))?.let { return it }
+            pyJsonOr(text.substring(start, end + 1), UNREAD).let { if (it !== UNREAD) return it }
         }
     }
     return null
 }
 
-/** `json.loads`: one document and nothing after it, where JSONTokener alone would allow more. */
-private fun strictJson(text: String): Any? = try {
-    val tokener = JSONTokener(text)
-    val value = tokener.nextValue()
-    if (tokener.nextClean() != 0.toChar()) null else value
-} catch (_: JSONException) {
-    null
-}
-
 private fun claimFrom(item: Any?): Claim? {
-    if (item !is JSONObject) return null
-    val kindRaw = item.opt("kind")
+    if (item !is Map<*, *>) return null
+    val kindRaw = item["kind"]
     if (kindRaw !is String) return null
     val kind = ClaimKind.of(kindRaw.trim().lowercase()) ?: return null
+    // `str(item.get("text") or "")`: a missing, null, false, zero or empty field is "".
+    val text = item["text"]
     return Claim(
         kind = kind,
-        subject = textOrNull(item.opt("subject")),
-        target = textOrNull(item.opt("target")),
-        move = textOrNull(item.opt("move")),
-        text = falsyToEmpty(item.opt("text")).trim(),
+        subject = textOrNull(item["subject"]),
+        target = textOrNull(item["target"]),
+        move = textOrNull(item["move"]),
+        text = (if (pyTruthy(text)) pyStr(text) else "").trim(),
     )
 }
 
@@ -242,13 +236,6 @@ private fun textOrNull(value: Any?): String? {
     val stripped = value.trim()
     if (stripped.isEmpty() || stripped.lowercase() in listOf("null", "none")) return null
     return stripped
-}
-
-/** `str(value or "")`: a missing, null, false or zero field is the empty string. */
-private fun falsyToEmpty(value: Any?): String {
-    if (value == null || value === JSONObject.NULL || value == false) return ""
-    if (value is Number && value.toDouble() == 0.0) return ""
-    return value.toString()
 }
 
 // --- Direction one: verification ------------------------------------------------------------

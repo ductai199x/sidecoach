@@ -2,7 +2,6 @@ package com.sidecoach.coach
 
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.analysis.phaseOf
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
@@ -35,11 +34,7 @@ import kotlin.math.abs
 @RunWith(AndroidJUnit4::class)
 class CoachPrimitivesTest {
 
-    private fun fixtures(): JSONObject {
-        val context = InstrumentationRegistry.getInstrumentation().context
-        val text = context.assets.open("chess/coach.json").bufferedReader().use { it.readText() }
-        return JSONObject(text)
-    }
+    private fun fixtures(): JSONObject = fixture("chess/coach.json")
 
     private val failures = ArrayList<String>()
     private var mismatches = 0
@@ -258,6 +253,32 @@ class CoachPrimitivesTest {
                     verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last, pick = { it[0] }),
                     o.getString("sentence") to if (o.isNull("kind")) null else o.getString("kind"),
                 )
+                // From 1800, below 1400 and from the live coach's bags, the shuffle fixed (TG-12),
+                // written where they say something: `strong` where it differs from the sentence,
+                // the plain words drawn last beside the same draw without them where the two
+                // differ (the first wordings are all plain), the bags for a best and a good move.
+                val sentence = o.getString("sentence") to if (o.isNull("kind")) null else o.getString("kind")
+                fun pair(key: String) = o.getJSONArray(key).let { it.getString(0) to if (it.isNull(1)) null else it.getString(1) }
+                check(
+                    "verdict ${o.getString("move")} $label strong",
+                    verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last, pick = { it[0] }, strong = true),
+                    if (o.has("strong")) pair("strong") else sentence,
+                )
+                val drawn = verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last, pick = { it.last() })
+                val plain = verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last, pick = { it.last() }, plain = true)
+                if (o.has("plain")) {
+                    check("verdict ${o.getString("move")} $label drawn last", drawn, pair("last_drawn"))
+                    check("verdict ${o.getString("move")} $label plain", plain, pair("plain"))
+                } else {
+                    check("verdict ${o.getString("move")} $label plain as drawn", plain, drawn)
+                }
+                if (o.has("bagged")) {
+                    check(
+                        "verdict ${o.getString("move")} $label bagged",
+                        verdict(board, move, label, analysis.tags, facts.phase, facts.threats, taught, last, bags = Bags { }),
+                        pair("bagged"),
+                    )
+                }
             }
 
             val mentions = case.getJSONArray("mentions")
@@ -278,6 +299,135 @@ class CoachPrimitivesTest {
         )
         assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
     }
+
+    /**
+     * Every call the desktop's knowledge tests make, replayed with the desktop's answers
+     * (ck-05, ck-06, ck-07, TG-08): `test_effects_legal.py` (a pinned piece or a king that
+     * cannot take attacks nothing, attacked and defended by legal captures, a defence that
+     * saves, a fork that wins from a square it keeps, a pin broken at a profit, a check
+     * answered), `test_facts.py` (the threat that becomes prophylaxis, a move and a tactic in
+     * words, a fork the best move creates, only enemy targets, forcing or quiet, a quiet move
+     * whose line wins), `test_coach_policy.py`'s facts (theme, region, piece and candidates, a
+     * line the board cannot play, near-equal candidates, a demoted tactic, a decisive one, the
+     * theme's ranking, regions, phase and material) and `test_coach_annotations.py` (the marks
+     * by level, a played move's colour, the mentions).
+     */
+    @Test
+    fun theDesktopsKnowledgeTestsMatch() {
+        val tests = fixture("chess/knowledge.json").getJSONObject("tests")
+        assertTrue("the desktop's knowledge tests ran", tests.getJSONArray("ran").length() >= 30)
+        val calls = tests.getJSONArray("calls")
+        for (i in 0 until calls.length()) {
+            val call = calls.getJSONObject(i)
+            val fn = call.getString("fn")
+            val a = call.getJSONObject("args")
+            val board = if (a.has("fen")) Board(a.getString("fen")) else Board()
+            fun colour(key: String): Boolean? = if (a.isNull(key)) null else a.getBoolean(key)
+            val out = call.get("out")
+            val (mine, theirs) = when (fn) {
+                "facts_from_analysis" -> {
+                    val o = a.getJSONObject("analysis")
+                    val facts = factsFromAnalysis(
+                        board, analysisFrom(o.getString("fen"), o),
+                        lastMove = if (a.isNull("last_move")) null else a.getString("last_move"),
+                        inBook = a.getBoolean("in_book"), user = colour("user"),
+                    )
+                    facts.asMap() to factsMap(out as JSONObject)
+                }
+                "visible_facts" ->
+                    visibleFacts(factsFrom(a.getJSONObject("facts")), DisclosureLevel.of(a.getInt("level"))) to
+                        factsMap(out as JSONObject)
+                "describe_move" -> describeMove(board, Move.fromUci(a.getString("move"))) to out
+                "describe_tactic" -> describeTactic(
+                    board, a.getString("name"), strings(a.getJSONArray("squares")),
+                    if (a.isNull("best")) null else Move.fromUci(a.getString("best")),
+                ) to (if (out == JSONObject.NULL) null else out)
+                "describe_effects" -> describeEffects(
+                    board, Move.fromUci(a.getString("move")), limit = a.getInt("limit"), hazards = a.getBoolean("hazards"),
+                ) to strings(out as JSONArray)
+                "line_notes" -> lineNotes(board, strings(a.getJSONArray("moves")), limit = a.getInt("limit"), player = colour("player")) to out
+                "line_spoken" -> lineSpoken(board, strings(a.getJSONArray("moves")), limit = a.getInt("limit")) to out
+                "theme_of" -> themeOf(tagsFrom(a.getJSONArray("tags")))?.let { showTag(it.name, it.squares, it.move) } to
+                    (if (out == JSONObject.NULL) null else (out as JSONObject).let { t ->
+                        showTag(t.getString("name"), strings(t.getJSONArray("squares")), if (t.isNull("move")) null else t.getString("move"))
+                    })
+                "region_of" -> regionOf(strings(a.getJSONArray("squares"))) to (if (out == JSONObject.NULL) null else out)
+                "phase_of" -> phaseOf(board, a.getBoolean("in_book")) to out
+                "material_text" -> materialText(board, colour("perspective")) to out
+                "annotations_for" -> annotationsFor(
+                    factsFrom(a.getJSONObject("facts")), DisclosureLevel.of(a.getInt("level")), board,
+                    Trigger.entries.first { it.slug == a.getString("trigger") },
+                    if (a.isNull("played_san")) null else a.getString("played_san"),
+                    if (a.isNull("severity")) null else a.getString("severity"),
+                ).map { showMark(it) } to annotations(out as JSONArray)
+                "mentions_in" -> mentionsIn(a.getString("text"), board).map { showMark(it) } to annotations(out as JSONArray)
+                else -> throw IllegalArgumentException("no replay for $fn")
+            }
+            check("${call.getString("test")} $fn ${a.toString().take(160)}", mine, theirs)
+        }
+        assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /** A facts dump as the Kotlin's [PositionFacts.asMap] has it: lists, booleans, strings, nulls. */
+    private fun factsMap(o: JSONObject): Map<String, Any?> = o.keys().asSequence().associateWith { key -> plainJson(o.get(key)) }
+
+    private fun plainJson(value: Any?): Any? = when (value) {
+        JSONObject.NULL, null -> null
+        is JSONArray -> (0 until value.length()).map { plainJson(value.get(it)) }
+        is JSONObject -> value.keys().asSequence().associateWith { plainJson(value.get(it)) }
+        else -> value
+    }
+
+    private fun tagsFrom(a: JSONArray): List<MotifTag> = List(a.length()) { k ->
+        val t = a.getJSONObject(k)
+        MotifTag(
+            name = t.getString("name"),
+            squares = strings(t.getJSONArray("squares")),
+            move = if (t.isNull("move")) null else t.getString("move"),
+        )
+    }
+
+    private fun nullable(o: JSONObject, key: String): String? = if (o.isNull(key)) null else o.getString(key)
+
+    /** PositionFacts from the desktop's `model_dump()`. */
+    private fun factsFrom(o: JSONObject) = PositionFacts(
+        fen = o.getString("fen"),
+        sideToMove = o.getString("side_to_move"),
+        userSide = nullable(o, "user_side"),
+        phase = o.getString("phase"),
+        material = nullable(o, "material"),
+        lastMove = nullable(o, "last_move"),
+        decisive = o.getBoolean("decisive"),
+        onlyMove = o.getBoolean("only_move"),
+        nature = nullable(o, "nature"),
+        goal = nullable(o, "goal"),
+        theme = nullable(o, "theme"),
+        mechanism = nullable(o, "mechanism"),
+        region = nullable(o, "region"),
+        target = nullable(o, "target"),
+        piece = nullable(o, "piece"),
+        why = nullable(o, "why"),
+        question = nullable(o, "question"),
+        nudge = nullable(o, "nudge"),
+        focus = strings(o.getJSONArray("focus")),
+        tactic = nullable(o, "tactic"),
+        plan = nullable(o, "plan"),
+        ideas = strings(o.getJSONArray("ideas")),
+        candidates = strings(o.getJSONArray("candidates")),
+        threats = strings(o.getJSONArray("threats")),
+        line = strings(o.getJSONArray("line")),
+        userClaims = o.getJSONArray("user_claims").let { all ->
+            (0 until all.length()).map { k ->
+                val entry = all.getJSONObject(k)
+                entry.keys().asSequence().associateWith { key -> if (entry.isNull(key)) null else entry.opt(key) }
+            }
+        },
+        stakes = nullable(o, "stakes"),
+        key = nullable(o, "key"),
+        trap = nullable(o, "trap"),
+        choices = strings(o.getJSONArray("choices")),
+        situation = nullable(o, "situation"),
+    )
 
     /** Every field of the idea, squares by name and moves in UCI, as the generator wrote it. */
     private fun checkIdea(fen: String, idea: Idea, want: JSONObject) {
@@ -316,6 +466,8 @@ class CoachPrimitivesTest {
             "also" to idea.also,
             "sacrifices" to idea.sacrifices.map { "${it.first}:${it.second}" },
             "winning" to idea.winning,
+            "score" to idea.score,
+            "back" to idea.back,
         )
         val blow = if (want.isNull("blow")) {
             null
@@ -358,6 +510,8 @@ class CoachPrimitivesTest {
                 List(a.length()) { k -> a.getJSONArray(k).let { "${it.getInt(0)}:${it.getString(1)}" } }
             },
             "winning" to want.getBoolean("winning"),
+            "score" to if (want.isNull("score")) null else want.getDouble("score"),
+            "back" to want.getBoolean("back"),
         )
         for ((key, value) in mine) check("$fen idea.$key", value, theirs[key])
     }
@@ -373,6 +527,18 @@ class CoachPrimitivesTest {
         check("$fen words.target", IdeaWords.target(idea, board), opt("target"))
         check("$fen words.piece", IdeaWords.piece(idea, board), opt("piece"))
         check("$fen words.why", IdeaWords.why(idea, board, IdeaWords.Describe(::describeTactic)), opt("why"))
+        // With the board, as the facts ask them (`clears_path`; the parity audit ck-09).
+        // Written only where it differs from the boardless word.
+        check(
+            "$fen words.question with the board",
+            IdeaWords.question(idea, null, board),
+            if (want.has("question_board")) opt("question_board") else opt("question"),
+        )
+        check(
+            "$fen words.nudge with the board",
+            IdeaWords.nudge(idea, board),
+            if (want.has("nudge_board")) opt("nudge_board") else opt("nudge"),
+        )
     }
 
     /** The offline coach's words at each rung, the lessons, and each rung leak-checked. */

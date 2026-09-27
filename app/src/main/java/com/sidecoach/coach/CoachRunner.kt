@@ -347,9 +347,7 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
         // Reasoning off: a local model spends the whole budget thinking otherwise, and the
         // claims come out the same in a fifth of the time.
         val found = extractClaims(text, board, provider, thinking = false)
-        verifyClaims(found, board, facts = facts).map {
-            "'${it.claim.text}': ${it.result.slug}, ${it.reason}"
-        }
+        verifyClaims(found, board, facts = facts).map { claimLine(it) }
     }
 
     /** The verifier the settings ask for: none, the coach's own model, or another. */
@@ -381,5 +379,13 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
 
     companion object {
         private const val TAG = "sidecoach.coach"
+
+        /**
+         * One checked claim as the model is shown it: `f"{v.claim.text!r}: {v.result}, {v.reason}"`.
+         * The text in Python's repr -- double quotes around "it's", a backslash escaped -- where
+         * the phone had put it in single quotes whatever it held (the parity audit cm-01).
+         */
+        internal fun claimLine(verdict: Verdict): String =
+            "${pyRepr(verdict.claim.text)}: ${verdict.result.slug}, ${verdict.reason}"
     }
 }

@@ -178,7 +178,7 @@ class InterjectionPolicy(
         val said = saidTs
         val from = if (said != null) maxOf(began, said) else began
         if (ts - from < threshold) {
-            return silent("waiting for a stuck hint at ${"%.0f".format(threshold)}s")
+            return silent("waiting for a stuck hint at ${formatted(threshold, 0)}s")
         }
         lastReason = null
         return Trigger.STUCK

@@ -7,7 +7,6 @@ import com.sidecoach.analysis.EngineAssets
 import com.sidecoach.analysis.OpeningBook
 import com.sidecoach.chess.Board
 import com.sidecoach.coach.CoachRunner
-import com.sidecoach.coach.systemMessage
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.llm.OpenAICompatProvider
@@ -440,7 +439,7 @@ object PanelWarm {
                 coach.policy.settings = coach.policy.settings.copy(quiet = section.optBoolean("quiet", false))
             }
             attempt(listOf("coach.persona", "profile.rating_low", "profile.rating_high")) {
-                coach.system = systemMessage(persona = store.persona(), rating = store.rating())
+                coach.reword(store.persona(), store.rating())
             }
             attempt(listOf("coach.local_verdicts")) { coach.localVerdicts = store.localVerdicts() }
             attempt(listOf("coach.verbalized_sampling")) { coach.verbalizedSampling = store.verbalizedSampling() }

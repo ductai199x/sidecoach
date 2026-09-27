@@ -3,6 +3,7 @@ package com.sidecoach
 import android.app.Activity
 import android.app.Application
 import android.os.Bundle
+import com.sidecoach.coach.Corrections
 import com.sidecoach.debug.BoardActivity
 
 /**
@@ -23,6 +24,11 @@ class SidecoachApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // C, the lessons at the end of the coach's system message, read once before any coach
+        // is built (a coach writes its system message when it is made). The desktop reads its
+        // file on first use (`prompt.corrections`); nothing on the phone read the asset, and
+        // every model call went without the lessons (the parity audit cc-01, 2026-09-26).
+        Corrections.load(assets)
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityResumed(activity: Activity) {
                 if (activity !is BoardActivity) showing++

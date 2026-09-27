@@ -33,7 +33,7 @@ from sidecoach.analysis.engine import Engine  # noqa: E402
 from sidecoach.analysis.score import Thresholds  # noqa: E402
 from sidecoach.coach import prompt as PROMPT  # noqa: E402
 from sidecoach.coach import summarise as SUM  # noqa: E402
-from sidecoach.coach.conversation import Conversation, Entry  # noqa: E402
+from sidecoach.coach.conversation import Conversation  # noqa: E402
 from sidecoach.coach.facts import facts_from_analysis  # noqa: E402
 from sidecoach.config import Settings, find_stockfish  # noqa: E402
 from sidecoach.events import (  # noqa: E402
@@ -156,6 +156,22 @@ def play(
 
     facts = facts_from_analysis(after, analysis, last_move=played_san, user=user_colour)
     script.convo.analysed(analysis, facts)
+    # The position's facts as the lesson after the engine's move would read them, past: the
+    # board once the move (and the reply) is played leaves out an idea about a piece gone
+    # from its square, and the board right after it says a threat the move stopped too
+    # (`faced_text`; the parity audit TG-09).
+    played_board = then_board = None
+    if analysis.lines and analysis.lines[0].moves:
+        first = chess.Move.from_uci(analysis.lines[0].moves[0])
+        if first in after.legal_moves:
+            played_board = after.copy(stack=False)
+            played_board.push(first)
+            then_board = played_board
+            if len(analysis.lines[0].moves) > 1:
+                reply = chess.Move.from_uci(analysis.lines[0].moves[1])
+                if reply in played_board.legal_moves:
+                    then_board = played_board.copy(stack=False)
+                    then_board.push(reply)
     script.record(
         {
             "op": "analysed",
@@ -168,6 +184,12 @@ def play(
             "tags": [tag_json(t) for t in analysis.tags],
             "opening": analysis.opening,
             "facts": facts_json(facts),
+            "faced": {
+                "after": None if then_board is None else then_board.fen(),
+                "played": None if played_board is None else played_board.fen(),
+                "text": script.convo.faced_text(facts, after, then_board, played_board),
+                "text_bare": script.convo.faced_text(facts, after),
+            },
         }
     )
     return after
@@ -292,9 +314,8 @@ def run(annotator: GameAnnotator, compact: bool) -> dict[str, Any]:
             "op": "fold",
             "keep": 4,
             "pending": [{"after": after, "kind": e.kind, "text": e.text} for after, e in pending],
-            "summary_request": SUM.summary_request(pending, summary_before)
-            if hasattr(SUM, "summary_request")
-            else _summary_request(pending, summary_before),
+            # The desktop's own request (summarise.summary_request, desktop c5c488f).
+            "summary_request": [dict(m) for m in SUM.summary_request(pending, summary_before)],
             "summary": summary,
         }
     )
@@ -342,21 +363,6 @@ def run(annotator: GameAnnotator, compact: bool) -> dict[str, Any]:
     return {"compact": compact, "steps": script.steps, "last_ply": plies}
 
 
-def _summary_request(pending: list[tuple[str, Entry]], summary_before: str) -> str:
-    """The desktop builds this inline in `summarise`; the same text, for the comparison."""
-    lines = []
-    for after, entry in pending:
-        who = "PLAYER" if entry.kind == "ask" else "COACH"
-        lines.append(f"after {after}, {who}: {entry.text}")
-    return (
-        "Summary so far:\n"
-        + (summary_before or "(nothing yet)")
-        + "\n\nNewest exchanges:\n"
-        + "\n".join(lines)
-        + "\n\nThe new summary:"
-    )
-
-
 def prompts() -> dict[str, Any]:
     """The system message, every persona and both with and without C."""
     out: dict[str, Any] = {
@@ -367,6 +373,8 @@ def prompts() -> dict[str, Any]:
         "reply_format": PROMPT.REPLY_FORMAT,
         "default_persona": PROMPT.DEFAULT_PERSONA,
         "personas": {k: list(v) for k, v in PROMPT.PERSONAS.items()},
+        # The order too, as an array: a JSON object's key order is the parser's to keep.
+        "persona_order": list(PROMPT.PERSONAS),
         "cases": [],
     }
     names = [None, "", *PROMPT.PERSONAS, "no such persona"]

@@ -137,6 +137,11 @@ def case_for(board: chess.Board) -> dict:
         N.parse_probe("straight to nonsense", ["Zz9"], board),
         N.parse_probe("the opponent first", ["pass", *legal[1:2]], board),
     ]
+    # The board a move later: where the pieces stand now when the question is about the
+    # position before (`pieces_board`).
+    moved = board.copy(stack=False)
+    if any(True for _ in board.legal_moves):
+        moved.push(next(iter(board.legal_moves)))
     asks = []
     for text in ASKS:
         probes = N.probes_by_words(text, board)
@@ -174,6 +179,14 @@ def case_for(board: chess.Board) -> dict:
                 "named_none": N.analyse_named(
                     text, board, None, user_colour=us, level=level, static=False
                 ),
+                # The lines the sheet already shows (a move they start is read from them), and
+                # the pieces read on the board as it stands now (TG-04).
+                "named_known": N.analyse_named(
+                    text, board, engine, user_colour=us, level=level, depth=14, known=before
+                ),
+                "named_pieces": N.analyse_named(
+                    text, board, None, user_colour=us, level=level, pieces_board=moved
+                ),
             }
         asks.append(entry)
     before = engine.analyse(board)
@@ -207,11 +220,230 @@ def case_for(board: chess.Board) -> dict:
     ]
     return {
         "fen": board.fen(),
+        "moved": moved.fen(),
         "asks": asks,
         "planned": planned_out,
         "squares": squares,
         "engine": engine.seen,
     }
+
+
+def line_json(line: Line) -> dict:
+    return {
+        "moves": list(line.moves),
+        "depth": line.depth,
+        "expected_score": line.expected_score,
+        "score_cp": line.score_cp,
+    }
+
+
+# What a planner might answer (`plan_probes`), read as the desktop reads it (TG-06; the parity
+# audit cc-05): squares and lines, labels missing or null, a move that is null or a number,
+# the list cut at four, JSON that Python refuses, and no JSON at all.
+PLANNER_ASKS = [
+    ("what about Nf3 and my knight on c3?", [
+        '{"probes": [{"label": "Nf3", "moves": ["Nf3"]}, {"label": "my knight", "square": "c3"}]}',
+        'Sure: {"probes": [{"moves": ["e4", "e5", "Nf3"]}, {"square": "E4"}]} hope that helps',
+        '{"probes": [{"label": null, "moves": ["Nf3", null, 5]}, {"label": 0, "square": "d4"}]}',
+        '{"probes": [{"moves": ["Nf3"]}, {"moves": ["d4"]}, {"moves": ["e4"]}, {"moves": ["c4"]},'
+        ' {"moves": ["g3"]}]}',
+        '{"probes": [{"label": "pass first", "moves": ["pass", "e5"]}, {"square": "z9"}, "e4", 7]}',
+        '{"probes": [{"label": "nothing", "moves": []}, {"label": "blank", "moves": ["  "]}]}',
+        '{"probes": "e4"}',
+        '{"probes": {"moves": ["e4"]}}',
+        '{"probes": []}',
+        "{probes: [{moves: ['Nf3']}]}",
+        '{"probes": [{"moves": ["Nf3"]}]} {"extra": 1}',
+        '{"probes": [{"moves": "Nf3"}]}',
+        '{"probes": 5}',
+        '{"probes": [{"moves": null}]}',
+        "no JSON at all",
+        "",
+    ]),
+]
+
+
+def planner_cases() -> list[dict]:
+    """`plan_probes` on the opening board with each planner reply: the probes it hands over,
+    and the request the planner was sent. A reply Python cannot iterate raises, as there."""
+
+    class Stub:
+        name = "stub"
+
+        def __init__(self, reply: str) -> None:
+            self.reply = reply
+            self.calls: list[dict] = []
+
+        def chat(self, system, messages, *, max_tokens=1500, temperature=0.7, thinking=False):  # noqa: ANN001, ANN202
+            from sidecoach.llm.base import Completion
+
+            self.calls.append(
+                {
+                    "system": system,
+                    "content": messages[0]["content"],
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+            )
+            return Completion(text=self.reply)
+
+    out = []
+    for fen in (chess.STARTING_FEN, "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"):
+        board = chess.Board(fen)
+        for text, replies in PLANNER_ASKS:
+            for reply in replies:
+                for user in (chess.WHITE, chess.BLACK):
+                    stub = Stub(reply)
+                    try:
+                        probes = [probe_json(p) for p in N.plan_probes(text, board, stub, user_colour=user)]
+                        raises = None
+                    except Exception as exc:  # noqa: BLE001
+                        probes, raises = [], type(exc).__name__
+                    out.append(
+                        {
+                            "fen": fen,
+                            "text": text,
+                            "user_white": user == chess.WHITE,
+                            "reply": reply,
+                            "request": stub.calls[0],
+                            "probes": probes,
+                            "raises": raises,
+                        }
+                    )
+    return out
+
+
+def desktop_tests() -> dict:
+    """Every call `tests/test_named.py` and `tests/test_inventory.py` make to the named and
+    inventory functions (and to check_draft), with what the desktop answered: their positions
+    -- a pinned piece attacking and defending, a king in check, a pinned controller, hanging
+    and undefended, a line recited from the examined one, the inventory's hanging pieces, pins,
+    batteries and forks -- replayed on the phone (TG-04, TG-05)."""
+    import importlib
+    import inspect
+
+    from sidecoach.coach import inventory as INV
+
+    out: dict[str, list] = {"calls": [], "ran": []}
+    current = {"test": ""}
+
+    def board_arg(board: chess.Board) -> str:
+        return board.fen()
+
+    def probe_arg(probe: N.Probe) -> dict:
+        return {
+            "label": probe.label,
+            "moves": list(probe.moves),
+            "square": None if probe.square is None else chess.square_name(probe.square),
+        }
+
+    def recording_engine(engine, seen: dict):  # noqa: ANN001, ANN202
+        if engine is None:
+            return None
+
+        class Recording:
+            def analyse(self, b, *, depth=None):  # noqa: ANN001, ANN202
+                lines = engine.analyse(b, depth=depth)
+                seen[b.fen()] = [line_json(one) for one in lines]
+                return lines
+
+        return Recording()
+
+    def wrap(real, fn: str, show):  # noqa: ANN001, ANN202
+        def call(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            seen: dict = {}
+            if fn in ("examine", "analyse_named"):
+                args = list(args)
+                args[2] = recording_engine(args[2], seen)
+            result = real(*args, **kwargs)
+            record = {"test": current["test"], "fn": fn, "args": show(*args, **kwargs), "out": None}
+            record["engine"] = seen
+            if fn in ("probes_by_words", "pieces_by_words"):
+                record["out"] = [probe_json(p) for p in result]
+            elif fn == "parse_probe":
+                record["out"] = probe_json(result)
+            elif fn == "disclosed_frames":
+                record["out"] = [b.fen() for b in result]
+            elif fn == "check_draft":
+                record["out"] = [{"text": p.text, "reason": p.reason} for p in result]
+            elif fn in ("pin_target", "skewer_target"):
+                record["out"] = None if result is None else [chess.square_name(s) for s in result]
+            elif fn == "batteries":
+                record["out"] = [[chess.square_name(s) for s in group] for group in result]
+            elif fn == "forks_in_place":
+                record["out"] = [
+                    [chess.square_name(s), [chess.square_name(t) for t in targets]]
+                    for s, targets in result
+                ]
+            else:
+                record["out"] = result
+            out["calls"].append(record)
+            return result
+
+        return call
+
+    shows = {
+        "probes_by_words": lambda text, board: {"text": text, "fen": board_arg(board)},
+        "pieces_by_words": lambda text, board: {"text": text, "fen": board_arg(board)},
+        "parse_probe": lambda label, moves, board: {
+            "label": label, "moves": list(moves), "fen": board_arg(board)
+        },
+        "examine": lambda probe, board, engine, best, *, user_colour, level, depth=14, known=(): {
+            "probe": probe_arg(probe),
+            "fen": board_arg(board),
+            "best": None if best is None else line_json(best),
+            "user_white": user_colour == chess.WHITE,
+            "level": int(level),
+            "depth": depth,
+            "known": [line_json(one) for one in known],
+        },
+        "examine_piece": lambda probe, board, *, user_colour: {
+            "probe": probe_arg(probe), "fen": board_arg(board), "user_white": user_colour == chess.WHITE
+        },
+        "spoken": lambda fact: {"fact": fact},
+        "disclosed_frames": lambda board, facts: {"fen": board_arg(board), "facts": list(facts)},
+        "analyse_named": lambda text, board, engine, *, user_colour, level, planner=None, depth=14,
+        static=False, pieces_board=None, known=(): {
+            "text": text,
+            "fen": board_arg(board),
+            "engine": engine is not None,
+            "user_white": user_colour == chess.WHITE,
+            "level": int(level),
+            "depth": depth,
+            "static": static,
+            "pieces_fen": None if pieces_board is None else pieces_board.fen(),
+            "known": [line_json(one) for one in known],
+        },
+        "check_draft": lambda text, board, *, after=(), us=None: {
+            "text": text, "fen": board_arg(board), "after": [b.fen() for b in after], "us": us
+        },
+        "inventory_text": lambda board, colour: {"fen": board_arg(board), "white": colour == chess.WHITE},
+        "pin_target": lambda board, sq: {"fen": board_arg(board), "square": chess.square_name(sq)},
+        "skewer_target": lambda board, sq: {"fen": board_arg(board), "square": chess.square_name(sq)},
+        "batteries": lambda board, colour: {"fen": board_arg(board), "white": colour == chess.WHITE},
+        "forks_in_place": lambda board, colour: {"fen": board_arg(board), "white": colour == chess.WHITE},
+    }
+    for module_name in ("tests.test_named", "tests.test_inventory"):
+        tests = importlib.import_module(module_name)
+        saved = {}
+        for fn, show in shows.items():
+            if hasattr(tests, fn):
+                saved[fn] = getattr(tests, fn)
+                setattr(tests, fn, wrap(saved[fn], fn, show))
+        try:
+            for name, test in inspect.getmembers(tests, inspect.isfunction):
+                if not name.startswith("test_") or test.__module__ != tests.__name__:
+                    continue
+                if inspect.signature(test).parameters:
+                    continue
+                current["test"] = f"{module_name}.{name}"
+                test()  # the desktop's own assertions hold as the calls are recorded
+                out["ran"].append(current["test"])
+        finally:
+            for fn, real in saved.items():
+                setattr(tests, fn, real)
+    assert INV  # the inventory tests call it through their own imports
+    return out
 
 
 def main() -> None:
@@ -255,7 +487,8 @@ def main() -> None:
         cases.append(case_for(board))
 
     OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / "named.json").write_text(json.dumps({"cases": cases}), encoding="utf-8")
+    payload = {"cases": cases, "planner": planner_cases(), "tests": desktop_tests()}
+    (OUT / "named.json").write_text(json.dumps(payload), encoding="utf-8")
     size = (OUT / "named.json").stat().st_size
     print(f"{len(cases)} positions x {len(ASKS)} asks -> {OUT / 'named.json'} ({size/1e6:.1f} MB)")
 
