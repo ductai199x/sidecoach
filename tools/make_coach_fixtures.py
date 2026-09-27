@@ -99,6 +99,7 @@ from sidecoach.coach import plans as PL  # noqa: E402
 from sidecoach.coach import situation as SIT  # noqa: E402
 from sidecoach.coach import policy as P  # noqa: E402
 from sidecoach.coach import verdicts as V  # noqa: E402
+from sidecoach.coach.bag import Bags  # noqa: E402
 from sidecoach.coach.coach import (  # noqa: E402
     COST_YOU,
     FINE_TIGHTER,
@@ -504,6 +505,14 @@ IDEA_TESTS = [
 # in-between move, a second tactic, two sacrifices, a won position with nothing to take. No
 # cached line reaches "breakthrough": the pawn that runs to the seventh makes the line a
 # promotion first (`idea._read`), on the desktop as on the phone.
+# In check, the best move the one king step after which no check follows: the move rung says
+# so ("Ke7 steps out of check to the one square where no check follows"). Found in random games.
+NO_CHECK_FOLLOWS = [
+    ("r1b2kn1/p5pr/np1pN3/2p2p1p/Pb2qP2/1R1P2K1/2P3PP/1NQ1BB1R b - - 1 27", "f8e7"),
+    ("4kbr1/1rnq1pp1/pnp5/2P1NP2/pP2P2p/6Pb/1Q1BBRK1/7R w - - 0 36", "g2g1"),
+    ("5r1k/Qbp2p2/3pP2p/p1nP4/PpP1PpPP/1PB5/3NK3/Rq3BR1 b - - 0 36", "h8h7"),
+]
+
 RARE = [
     ("convert", "5r2/3P1k2/1b6/1P1R4/7P/3K4/8/8 w - - 5 48"),
     ("convert", "6k1/6p1/8/p7/P7/2P4r/2R1K3/8 b - - 1 39"),
@@ -707,6 +716,10 @@ def idea_json(idea: IDEA.Idea) -> dict:
         "also": idea.also,
         "sacrifices": [[ply, kind] for ply, kind in idea.sacrifices],
         "winning": idea.winning,
+        # The best line's expected score for the player, and whether what the line takes is
+        # won back (the parity audit ck-09: neither was recorded).
+        "score": idea.score,
+        "back": idea.back,
     }
 
 
@@ -721,6 +734,10 @@ def words_json(idea: IDEA.Idea, board: chess.Board) -> dict:
         "target": W.target(idea, board),
         "piece": W.piece(idea, board),
         "why": W.why(idea, board, F.describe_tactic),
+        # With the board, as the facts ask them: a line that does not clear its own path is
+        # asked about differently (`clears_path`; the parity audit ck-09).
+        "question_board": W.question(idea, None, board),
+        "nudge_board": W.nudge(idea, board),
     }
 
 
@@ -946,6 +963,18 @@ def case_for(
         def choice(self, seq):  # noqa: ANN001, ANN202
             return list(seq)[0]
 
+    class Last:
+        """An rng whose every draw is the last choice."""
+
+        def choice(self, seq):  # noqa: ANN001, ANN202
+            return list(seq)[-1]
+
+    class Unshuffled:
+        """A bag's rng that leaves the wordings in their order: the Kotlin's Bags { }."""
+
+        def shuffle(self, seq):  # noqa: ANN001, ANN202
+            return None
+
     for move in (sample[:4] if deep else []):
         found = V.lesson(board, move, analysis.tags, phase=facts.phase, threats=facts.threats)
         for label in ("best", "great", "excellent", "good", "book", "brilliant", None):
@@ -973,6 +1002,38 @@ def case_for(
                     "choices": choices,
                     "lesson": None if found is None else [found[0], found[1]],
                     "sentence": sentence,
+                    # A player below 1400, one of 1800 and up, and the live coach's bags with
+                    # their shuffle fixed (the parity audit TG-12).
+                    # The last wording drawn, with and without the plain words: the first
+                    # wordings are all plain, so drawn first `plain` would change nothing.
+                    "last_drawn": list(
+                        V.verdict(
+                            board, move, label, analysis.tags, phase=facts.phase,
+                            threats=facts.threats, taught=taught, last=last,
+                            rng=Last(),  # type: ignore[arg-type]
+                        )
+                    ),
+                    "plain": list(
+                        V.verdict(
+                            board, move, label, analysis.tags, phase=facts.phase,
+                            threats=facts.threats, taught=taught, last=last,
+                            rng=Last(), plain=True,  # type: ignore[arg-type]
+                        )
+                    ),
+                    "strong": list(
+                        V.verdict(
+                            board, move, label, analysis.tags, phase=facts.phase,
+                            threats=facts.threats, taught=taught, last=last,
+                            rng=First(), strong=True,  # type: ignore[arg-type]
+                        )
+                    ),
+                    "bagged": list(
+                        V.verdict(
+                            board, move, label, analysis.tags, phase=facts.phase,
+                            threats=facts.threats, taught=taught, last=last,
+                            bags=Bags(rng=Unshuffled()),  # type: ignore[arg-type]
+                        )
+                    ),
                     "kind": kind,
                 }
             )
@@ -1310,6 +1371,146 @@ def opening_cases(book: OpeningBook | None) -> list[tuple[chess.Board, Analysis]
     return out
 
 
+def desktop_tests() -> dict:
+    """Every call the desktop's knowledge tests make to the facts, effects, disclosure and
+    annotation functions, with the desktop's answers (the parity audit ck-05, ck-06, ck-07,
+    TG-08): `tests/test_effects_legal.py`, `tests/test_facts.py`, `tests/test_coach_policy.py`
+    and `tests/test_coach_annotations.py`, each run as pytest would. The functions are wrapped
+    where the tests find them -- their own imports, and the modules a test imports from inside
+    a test."""
+    import importlib
+    import inspect
+
+    from sidecoach.analysis import phase as PH
+
+    out: dict[str, list] = {"calls": [], "ran": []}
+    current = {"test": ""}
+
+    def tags_arg(tags) -> list[dict]:  # noqa: ANN001
+        return [{"name": t.name, "squares": list(t.squares), "move": t.move} for t in tags]
+
+    def colour(c) -> bool | None:  # noqa: ANN001
+        return None if c is None else c == chess.WHITE
+
+    shows = {
+        "facts_from_analysis": lambda board, analysis, *, last_move=None, in_book=False, user=None, pick=None: {
+            "fen": board.fen(),
+            "analysis": {**analysis_json(analysis), "fen": analysis.fen},
+            "last_move": last_move,
+            "in_book": in_book,
+            "user": colour(user),
+        },
+        "visible_facts": lambda facts, level: {"facts": facts_json(facts), "level": int(level)},
+        "describe_move": lambda board, move: {"fen": board.fen(), "move": move.uci()},
+        "describe_tactic": lambda board, name, squares, best_move=None: {
+            "fen": board.fen(), "name": name, "squares": list(squares),
+            "best": None if best_move is None else best_move.uci(),
+        },
+        "describe_effects": lambda board, move, *, limit=3, hazards=True: {
+            "fen": board.fen(), "move": move.uci(), "limit": limit, "hazards": hazards
+        },
+        "line_notes": lambda board, moves, *, limit=8, player=None: {
+            "fen": board.fen(), "moves": list(moves), "limit": limit, "player": colour(player)
+        },
+        "line_spoken": lambda board, moves, *, limit=6: {"fen": board.fen(), "moves": list(moves), "limit": limit},
+        "theme_of": lambda tags: {"tags": tags_arg(tags)},
+        "region_of": lambda squares: {"squares": list(squares)},
+        "phase_of": lambda board, in_book=False: {"fen": board.fen(), "in_book": in_book},
+        "material_text": lambda board, perspective=None: {"fen": board.fen(), "perspective": colour(perspective)},
+        "annotations_for": lambda facts, level, board, *, trigger, played_san=None, severity=None: {
+            "facts": facts_json(facts), "level": int(level), "fen": board.fen(),
+            "trigger": trigger.value, "played_san": played_san, "severity": severity,
+        },
+        "mentions_in": lambda text, board: {"text": text, "fen": board.fen()},
+    }
+
+    def shown(fn: str, result):  # noqa: ANN001, ANN202
+        if fn == "facts_from_analysis":
+            return facts_json(result)
+        if fn == "visible_facts":
+            return {k: (list(v) if isinstance(v, (list, tuple)) else v) for k, v in result.items()}
+        if fn == "theme_of":
+            return tag_json(result)
+        if fn in ("annotations_for", "mentions_in"):
+            return [annotation_json(mark) for mark in result]
+        return result
+
+    depth = {"n": 0}
+
+    def wrap(real, fn: str):  # noqa: ANN001, ANN202
+        def call(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            # Only the test's own calls: the ones these functions make of each other are
+            # replayed inside them.
+            depth["n"] += 1
+            try:
+                result = real(*args, **kwargs)
+            finally:
+                depth["n"] -= 1
+            if depth["n"] == 0:
+                out["calls"].append(
+                    {"test": current["test"], "fn": fn, "args": shows[fn](*args, **kwargs), "out": shown(fn, result)}
+                )
+            return result
+
+        call.__wrapped_real__ = real  # type: ignore[attr-defined]
+        return call
+
+    # Where a test may find each function: its own module, and the source modules it imports
+    # from inside a test body.
+    homes = {
+        "facts_from_analysis": [F],
+        "visible_facts": [D],
+        "describe_move": [F],
+        "describe_tactic": [F],
+        "describe_effects": [E],
+        "line_notes": [E],
+        "line_spoken": [E],
+        "theme_of": [F],
+        "region_of": [F],
+        "phase_of": [F, PH],
+        "material_text": [F],
+        "annotations_for": [A],
+        "mentions_in": [A],
+    }
+    for module_name in (
+        "tests.test_effects_legal",
+        "tests.test_facts",
+        "tests.test_coach_policy",
+        "tests.test_coach_annotations",
+    ):
+        tests = importlib.import_module(module_name)
+        saved: list[tuple[object, str, object]] = []
+        for fn, modules in homes.items():
+            real = getattr(modules[0], fn)
+            for module in [tests, *modules]:
+                if hasattr(module, fn) and getattr(module, fn) is real:
+                    saved.append((module, fn, real))
+                    setattr(module, fn, wrap(real, fn))
+        try:
+            for name, test in inspect.getmembers(tests, inspect.isfunction):
+                if not name.startswith("test_") or test.__module__ != tests.__name__:
+                    continue
+                if inspect.signature(test).parameters:
+                    continue
+                current["test"] = f"{module_name}.{name}"
+                test()  # the desktop's own assertions hold as the calls are recorded
+                out["ran"].append(current["test"])
+        finally:
+            for module, fn, real in saved:
+                setattr(module, fn, real)
+    # The played move's colour by every severity, and none: an inaccuracy is "warn" (TG-08),
+    # an empty severity is "none"'s (the parity audit cc-07).
+    ann = importlib.import_module("tests.test_coach_annotations")
+    current["test"] = "severities"
+    for severity in ("none", "inaccuracy", "mistake", "blunder", "", None, "unheard"):
+        wrap(A.annotations_for, "annotations_for")(
+            ann.FACTS, DisclosureLevel.LINE, ann.BOARD, trigger=Trigger.POST_MISTAKE,
+            played_san="Bxc6", severity=severity,
+        )
+    out["ran"].append(current["test"])
+    return out
+
+
 def main() -> None:
     rng = random.Random(20260922)
     path = find_stockfish(load_settings())
@@ -1424,6 +1625,11 @@ def main() -> None:
             }
         )
         cases.append(case_for(board, analysis, deep=True, source=f"test_story: {name}"))
+
+    # The move rung's words for the one king step no check follows (the parity audit ck-09).
+    for fen, best in NO_CHECK_FOLLOWS:
+        board = chess.Board(fen)
+        cases.append(case_for(board, analysis_for(board, [best], False, False), deep=True, source="no check follows"))
 
     # Traps made by hand: the ranking and the words.
     trap_tests = []
@@ -1637,6 +1843,7 @@ def main() -> None:
                 "policy": policy_cases(),
                 "stories": stories,
                 "trap_tests": trap_tests,
+                "tests": desktop_tests(),
             }
         ),
         encoding="utf-8",
