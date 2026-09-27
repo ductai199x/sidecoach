@@ -483,9 +483,7 @@ fun spoken(fact: String): String {
         .replace("the engine then plays", "then the engine plays")
     // Said aloud, a line is its first reply: "they would answer 9... Bxg2 10. Kxg2 Qd7 11. d5 Na6
     // 12. Nc3 O-O 13. a3 h6" came before every answer the AI then gave in words (the simulated
-    // students' transcripts, 2026-09-26). The whole line stays in the fact. (The desktop makes
-    // this substitution twice over; the second finds every line already cut, so once is the
-    // same.)
+    // students' transcripts, 2026-09-26). The whole line stays in the fact.
     body = Regex("(they would answer|then the engine plays) ([^;]+)").replace(body) { mm ->
         "${mm.groupValues[1]} ${firstMoves(mm.groupValues[2], 2)}"
     }
