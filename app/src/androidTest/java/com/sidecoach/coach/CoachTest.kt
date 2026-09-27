@@ -1618,9 +1618,13 @@ class CoachTest {
             )
         }
         coach.ask("why am I always losing in the middlegame?", 7.0)
+        // The answer lands on the lookup's own thread: gathered until it is out.
+        val said = ArrayList<CoachMessage>()
         val deadline = System.nanoTime() + 5_000_000_000L
-        while (coach.profileAnswers.isEmpty() && System.nanoTime() < deadline) Thread.sleep(20)
-        val said = messages(coach)
+        while (said.none { it.text.startsWith("Over 9 games") } && System.nanoTime() < deadline) {
+            said.addAll(messages(coach))
+            Thread.sleep(20)
+        }
         assertEquals(listOf("why am I always losing in the middlegame?"), asked.toList())
         assertTrue(said.isNotEmpty() && said.last().text.startsWith("Over 9 games") && said.last().trigger == Trigger.USER_ASK)
         assertEquals("answer", coach.profileAnswers[0].first)
@@ -1744,12 +1748,19 @@ class CoachTest {
     }
 
     /**
-     * No model at all (llm.provider none): a decisive moment gets the question template, the
-     * player's best move the verdict from the board, a typed question the hint template -- and
-     * nothing is ever called (`test_offline_coach.py`).
+     * No model at all (llm.provider none): the factory's offline provider; a decisive moment
+     * gets the question template, the player's best move the verdict from the board, a typed
+     * question the hint template -- and nothing is ever called (`test_offline_coach.py`).
      */
     @Test
     fun offlineTheTemplatesSpeakAndNothingIsCalled() {
+        // The factory gives the offline provider, and it reports itself (the desktop's usage
+        // ledger has no phone counterpart: nothing is priced).
+        val none = com.sidecoach.llm.makeProvider(com.sidecoach.llm.LLMSettings(provider = "none"))
+        assertTrue(none is OfflineProvider && none.offline)
+        val (ok, detail) = none.healthcheck()
+        assertTrue(detail, ok && "offline" in detail)
+        assertTrue((none as OfflineProvider).withEffort("low") === none)
         val coach = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6), 7.0)
