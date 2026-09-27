@@ -90,6 +90,15 @@ class PanelEngineTest {
         assertEquals("white", state.getString("bottom"))
         assertTrue(state.getBoolean("following") && state.getBoolean("locked"))
         assertEquals("ptt", state.getString("listen"))
+        // The game reaches the profile, kept in memory for this session as a replay's is: its
+        // review (no engine, so no verdicts) on the page and in the coach's stream, and the
+        // session summed up (`test_the_profile_records_the_game_and_the_review_reaches_the_page`).
+        assertTrue(!state.isNull("profile"))
+        if (texts.any { "game over" in it }) {
+            assertEquals(0, state.getJSONObject("review").getInt("moves"))
+            assertTrue(lines.any { it.getString("chan") == "coach" && it.getJSONObject("data").has("review") })
+            assertTrue(texts.toString(), texts.any { it.startsWith("session:") })
+        }
         val health = state.getJSONObject("health")
         assertEquals("following", health.getString("stage"))
         assertTrue(health.toString(), health.getString("lock").startsWith("locked, fit "))
