@@ -7,6 +7,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -78,6 +79,54 @@ class OpeningsTest {
         val cached = OpeningBook.load(folder)
         assertNotNull("the cache loads", cached)
         check(cached!!, data, "cached")
+    }
+
+    /** SAN to the moves a game would hand the book: `test_openings.moves`. */
+    private fun moves(line: String): List<Move> {
+        val board = com.sidecoach.chess.Board()
+        return line.split(" ").filter { it.isNotEmpty() && !it[0].isDigit() }.map { san ->
+            board.parseSan(san)!!.also { board.push(it) }
+        }
+    }
+
+    private fun folder(name: String): File =
+        File(instrumentation.targetContext.cacheDir, name).apply {
+            deleteRecursively()
+            mkdirs()
+        }
+
+    /**
+     * The cache beside the tables (`test_cache_is_written_and_reused`,
+     * `test_changed_tables_recompile`, `test_corrupt_cache_is_ignored`): written by the first
+     * load and answering the next, dropped when a table changes, ignored when it is corrupt.
+     */
+    @Test
+    fun theCacheFollowsItsTables() {
+        val folder = folder("openings-cache")
+        instrumentation.context.assets.open("openings_sample/c.tsv").use { input ->
+            File(folder, "c.tsv").outputStream().use { input.copyTo(it) }
+        }
+        val italian = moves("1. e4 e5 2. Nf3 Nc6 3. Bc4")
+        val first = OpeningBook.load(folder)!!
+        val cache = File(folder, OpeningBook.CACHE_FILE)
+        assertTrue("the first load writes the cache", cache.isFile)
+        assertEquals(first.identify(italian), OpeningBook.load(folder)!!.identify(italian))
+
+        cache.writeText("{not json")
+        assertEquals(Opening("C50", "Italian Game", 5), OpeningBook.load(folder)!!.identify(italian))
+
+        File(folder, "c.tsv").writeText("eco\tname\tpgn\nA00\tAmar Opening\t1. Nh3\n")
+        val rebuilt = OpeningBook.load(folder)!!
+        assertEquals(Opening("A00", "Amar Opening", 1), rebuilt.identify(moves("1. Nh3")))
+        assertNull(rebuilt.identify(moves("1. e4")))
+    }
+
+    /** `test_unparsable_line_is_skipped`: a line that cannot be played costs only itself. */
+    @Test
+    fun anUnparsableLineIsSkipped() {
+        val folder = folder("openings-unparsable")
+        File(folder, "x.tsv").writeText("eco\tname\tpgn\nA00\tNonsense\t1. Qz9\nA00\tAmar Opening\t1. Nh3\n")
+        assertEquals(Opening("A00", "Amar Opening", 1), OpeningBook.load(folder)!!.identify(moves("1. Nh3")))
     }
 
     @Test

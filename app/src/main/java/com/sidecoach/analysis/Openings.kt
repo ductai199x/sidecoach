@@ -142,15 +142,15 @@ class OpeningBook(private val names: Map<String, String>, private val positions:
             val positions = HashSet<String>().apply { add(Board().epd()) }
             for (table in tables) {
                 val text = table.readText(Charsets.UTF_8)
-                for ((number, line) in text.lines().withIndex()) {
+                for ((number, line) in splitLines(text).withIndex()) {
                     val fields = line.split("\t")
                     if (fields.size != 3 || fields[0] == "eco") continue
                     val (eco, name, pgn) = fields
                     val board = Board()
                     val walked = ArrayList<String>()
                     var bad = false
-                    for (token in pgn.split(Regex("\\s+"))) {
-                        if (token.isEmpty() || token[0].isDigit()) continue
+                    for (token in splitWords(pgn)) {
+                        if (token[0].isDigit()) continue
                         val move = board.parseSan(token)
                         if (move == null) {
                             Log.w(TAG, "${table.name} line ${number + 1}: cannot play $token ($name)")
@@ -166,6 +166,37 @@ class OpeningBook(private val names: Map<String, String>, private val positions:
                 }
             }
             return names to positions
+        }
+
+        /** Python's line boundaries (`str.splitlines`), past the three a Kotlin `lines()` knows. */
+        private val LINE_BREAKS = Regex("\r\n|[\n\r\u000B\u000C\u001C\u001D\u001E\u0085  ]")
+
+        /** `text.splitlines()`: no empty line after a final break. */
+        private fun splitLines(text: String): List<String> {
+            if (text.isEmpty()) return emptyList()
+            val lines = text.split(LINE_BREAKS)
+            val last = text.last()
+            return if (lines.isNotEmpty() && lines.last().isEmpty() && LINE_BREAKS.matches(last.toString())) {
+                lines.dropLast(1)
+            } else {
+                lines
+            }
+        }
+
+        /** `text.split()`: runs of Python's whitespace, no empty words. */
+        private fun splitWords(text: String): List<String> {
+            val words = ArrayList<String>()
+            val word = StringBuilder()
+            for (c in text) {
+                if (c.isWhitespace() || c == '\u0085') {
+                    if (word.isNotEmpty()) words.add(word.toString())
+                    word.setLength(0)
+                } else {
+                    word.append(c)
+                }
+            }
+            if (word.isNotEmpty()) words.add(word.toString())
+            return words
         }
 
         /** The cached index, or null when it is missing, stale or unreadable. */
