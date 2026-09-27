@@ -546,8 +546,11 @@ internal fun iconChanged(
  *
  * A reader without templates (the asset is missing or unreadable) reads nothing rather than
  * raising, so a broken install costs the clocks and not the session.
+ *
+ * Open, as the desktop's class is, for the tests that give the pipeline a reader of their own
+ * (`tests/test_clock_pipeline.py`'s `_StubReader`).
  */
-class ClockReader(
+open class ClockReader(
     val templates: GlyphTemplates? = null,
     val minConfidence: Double = 0.35,
     val staleAfterS: Double = 3.0,
@@ -560,7 +563,7 @@ class ClockReader(
     private var state = mutableMapOf(Which.TOP to BoxState(), Which.BOTTOM to BoxState())
     private var calls = 0
 
-    fun reset() {
+    open fun reset() {
         state = mutableMapOf(Which.TOP to BoxState(), Which.BOTTOM to BoxState())
         last = mutableMapOf(Which.TOP to null, Which.BOTTOM to null)
     }
@@ -570,7 +573,7 @@ class ClockReader(
      * game, a lobby, the board scrolled so the clocks are off screen). Never raises on a bad
      * frame.
      */
-    fun read(frame: Mat, board: BoardCandidate, ts: Double? = null): ClockReading? = try {
+    open fun read(frame: Mat, board: BoardCandidate, ts: Double? = null): ClockReading? = try {
         readOrThrow(frame, board, ts)
     } catch (_: Exception) {
         // A bad frame must never take the session down.
