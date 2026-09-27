@@ -418,6 +418,9 @@ object Captions {
         }
 
         private var moving = false
+
+        /** The finger has travelled past the touch slop since it came down. */
+        private var dragged = false
         private var downX = 0f
         private var downY = 0f
         private var startX = 0
@@ -530,14 +533,16 @@ object Captions {
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         busy = true
+                        dragged = false
                         downX = event.rawX
                         downY = event.rawY
                         startX = params.x
                         startY = params.y
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        if (!moving && hypot((event.rawX - downX).toDouble(), (event.rawY - downY).toDouble()) > slop) {
-                            startMoving()
+                        if (hypot((event.rawX - downX).toDouble(), (event.rawY - downY).toDouble()) > slop) {
+                            dragged = true
+                            if (!moving) startMoving()
                         }
                         if (moving) {
                             params.x = startX + (event.rawX - downX).roundToInt()
@@ -810,7 +815,11 @@ object Captions {
             val bin = target
             target = null
             bin?.detach()
-            if (bin != null && bin.over(at)) {
+            // Only a box carried onto the cross turns captions off. In its first place, low on
+            // the screen, the box already sits within the cross's reach, and a touch held
+            // without moving -- the start of a move, or a tap a busy phone was late to deliver
+            // -- turned them off where it was let go (the gesture test's screenshot, 2026-09-26).
+            if (bin != null && dragged && bin.over(at)) {
                 turnOff()
                 return
             }

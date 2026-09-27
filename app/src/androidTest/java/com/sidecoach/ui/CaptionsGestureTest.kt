@@ -130,8 +130,19 @@ class CaptionsGestureTest {
         // main too; the screenshots showed the dialog, then after a reboot the lock screen). The
         // screen is woken and unlocked, the dialog closed and new ones kept off for the test;
         // the setting goes back after.
-        shell("input keyevent KEYCODE_WAKEUP")
-        shell("wm dismiss-keyguard")
+        val power = app.getSystemService(android.os.PowerManager::class.java)
+        val keyguard = app.getSystemService(android.app.KeyguardManager::class.java)
+        val awake = SystemClock.uptimeMillis() + 20_000
+        while (!(power.isInteractive && !keyguard.isKeyguardLocked) && SystemClock.uptimeMillis() < awake) {
+            shell("input keyevent KEYCODE_WAKEUP")
+            shell("wm dismiss-keyguard")
+            Thread.sleep(1000)
+        }
+        assertTrue(
+            "the screen is not awake and unlocked (interactive ${power.isInteractive}, " +
+                "locked ${keyguard.isKeyguardLocked})",
+            power.isInteractive && !keyguard.isKeyguardLocked,
+        )
         val hidden = shell("settings get global hide_error_dialogs")
         shell("settings put global hide_error_dialogs 1")
         shell("am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS")
@@ -167,6 +178,16 @@ class CaptionsGestureTest {
             instrumentation.runOnMainSync { drawn = Captions.drawn() }
             drawn
         })
+        // ...and on the screen: woken from sleep, a starved emulator's display showed black for
+        // seconds after it said it was on, and the taps sent meanwhile came so late that the
+        // first became a long press (the screenshot showed the cross and no box).
+        assertTrue("the screen never showed the box", waitFor(20_000) {
+            val at = box() ?: return@waitFor false
+            val image = automation.takeScreenshot() ?: return@waitFor false
+            val pixel = image.getPixel(at.centerX().coerceIn(0, image.width - 1), at.centerY().coerceIn(0, image.height - 1))
+            image.recycle()
+            pixel and 0xFFFFFF != 0
+        })
         Thread.sleep(400)
         assertTrue("the box is not where it asked to be", waitFor { settled() })
         val first = box()!!
@@ -177,7 +198,15 @@ class CaptionsGestureTest {
         tap(cx, cy)
         Thread.sleep(80)
         tap(cx, cy)
-        assertTrue("a double-tap showed no more lines", waitFor { (box()?.height() ?: 0) > first.height() })
+        val grew = waitFor { (box()?.height() ?: 0) > first.height() }
+        if (!grew) shot("1b_no_more_lines")
+        assertTrue(
+            "a double-tap showed no more lines (interactive " +
+                "${app.getSystemService(android.os.PowerManager::class.java).isInteractive}, locked " +
+                "${app.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked}, " +
+                "focus ${shell("dumpsys window | grep mCurrentFocus")})",
+            grew,
+        )
         assertTrue("the taller box is not where it asked to be", waitFor { settled() })
         Thread.sleep(300)
         val tall = box()!!
@@ -240,6 +269,14 @@ class CaptionsGestureTest {
         val withButtons = box()!!
         tap(withButtons.left + withButtons.width() * 3 / 4, withButtons.bottom - 40)
         assertTrue("a second tap kept the buttons", waitFor { (box()?.height() ?: 0) == first.height() })
+
+        // A touch held and let go where it is: the box stays, and so do the captions. In its
+        // first place the box is within the cross's reach, and a hold alone turned them off.
+        Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
+        val still = box()!!
+        holdAndDrag(still.centerX() to still.centerY(), still.centerX() to still.centerY())
+        Thread.sleep(300)
+        assertTrue("a hold let go in place turned captions off", Captions.enabled && box() != null)
 
         // Touch, hold and drag: the box goes where it is let go, and stays there.
         Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
