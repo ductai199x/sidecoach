@@ -1204,12 +1204,14 @@ class _Profiling:
     def attach(self, coaching: _Coaching) -> None:
         """Let the coach answer questions about the player from the record, its model
         writing the queries (profile/ask.py)."""
-        if coaching.coach is None:
+        coach = coaching.coach
+        if coach is None:
             return
         from sidecoach.profile import ask as profile_ask
 
-        store, provider = self.store, coaching.coach.speaker.provider
-        coaching.coach.profile_ask = lambda q: profile_ask.answer(q, store, provider)
+        store = self.store
+        # The provider as it is when asked: a model changed on Save answers at once.
+        coach.profile_ask = lambda q: profile_ask.answer(q, store, coach.speaker.provider)
 
     def close(self, indent: str = "") -> None:
         try:

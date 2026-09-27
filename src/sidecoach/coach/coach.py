@@ -2120,12 +2120,7 @@ class Coach:
         # The engine that analyses a move or line the player names, on demand; without
         # one, a named move is only checked against the candidates the facts hold.
         self.engine = engine
-        self.system = system_message(persona=persona, rating=rating)
-        # A player below 1400 hears no term of art in the templates (verdicts.JARGON).
-        self.plain_words = rating is not None and rating[1] < PLAIN_BELOW
-        # A player of 1800 and up hears no textbook rule: the strong simulated students listed
-        # about 4.5 a session they already knew ("rooks belong on open files", 75 times).
-        self.strong_player = rating is not None and rating[0] >= STRONG_FROM
+        self.reword(persona, rating)
         # Run the claims check on the caller's thread (replay and evaluation) instead of a
         # worker: live it is threaded so a button press never stalls the pipeline.
         self.sync_claims = False
@@ -2521,6 +2516,17 @@ class Coach:
 
     # Internals
 
+    def reword(self, persona: str | None, rating: tuple[int, int] | None) -> None:
+        """The system message and the templates' register for the player: set at the start
+        and again when the persona or the rating is saved (the register was kept until the
+        coach was rebuilt: the parity audit, 2026-09-26)."""
+        self.system = system_message(persona=persona, rating=rating)
+        # A player below 1400 hears no term of art in the templates (verdicts.JARGON).
+        self.plain_words = rating is not None and rating[1] < PLAIN_BELOW
+        # A player of 1800 and up hears no textbook rule: the strong simulated students listed
+        # about 4.5 a session they already knew ("rooks belong on open files", 75 times).
+        self.strong_player = rating is not None and rating[0] >= STRONG_FROM
+
     def _new_game(self, event: GameStarted, ts: float) -> None:
         self.game_id = event.game_id
         self.user_side = event.user_side
@@ -2530,6 +2536,9 @@ class Coach:
         self.moves = {}
         self.conversation.new_game(event, profile=self._profile_lines())
         self._mistakes = 0
+        # The review is the game's own: a new game answered "how did I do overall?" with
+        # the last game's sentences when the model failed (the parity audit, 2026-09-26).
+        self._review_lines = []
         self._elicit_asked, self._elicit_answered = None, False
         self._pending_ask = None
         self.finished = False

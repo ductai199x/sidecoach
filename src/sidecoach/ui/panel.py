@@ -699,8 +699,6 @@ class PanelEngine:
                 applied.append(name)  # the session's cost is priced at each poll
         coach = self._coaching.coach if self._coaching is not None else None
         if coach is not None:
-            from sidecoach.coach.prompt import system_message
-
             attempt(
                 ["coach.stuck_seconds"],
                 lambda: setattr(coach.policy.settings, "stuck_seconds", new.coach.stuck_seconds),
@@ -710,10 +708,7 @@ class PanelEngine:
             )
 
             def reword() -> None:
-                coach.system = system_message(
-                    persona=new.coach.persona,
-                    rating=(new.profile.rating_low, new.profile.rating_high),
-                )
+                coach.reword(new.coach.persona, (new.profile.rating_low, new.profile.rating_high))
 
             attempt(["coach.persona", "profile.rating_low", "profile.rating_high"], reword)
             for name in ("local_verdicts", "verbalized_sampling", "summarise_every"):
@@ -1651,8 +1646,10 @@ class PanelEngine:
             # queries itself (profile/ask.py), read-only over this store.
             from sidecoach.profile import ask as profile_ask
 
-            provider = coaching.coach.speaker.provider
-            coaching.coach.profile_ask = lambda q: profile_ask.answer(q, store, provider)
+            # The provider as it is when asked: a model changed on Save answers at once.
+            coaching.coach.profile_ask = lambda q: profile_ask.answer(
+                q, store, coaching.coach.speaker.provider
+            )
         if not self._warm_done.is_set():  # no warm-up loaded the voice (replay, tests)
             threading.Thread(target=self._warm_voice, name="voice-load", daemon=True).start()
         self._set(status="waiting for a board", coach_on=coaching.on, analysis_on=assessing.on)

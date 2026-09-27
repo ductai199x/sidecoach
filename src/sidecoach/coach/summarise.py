@@ -26,6 +26,24 @@ SUMMARY_SYSTEM = (
 )
 
 
+def summary_request(pending: list, summary_before: str | None) -> list[ChatMessage]:
+    """The summariser's message for the exchanges being folded (`Conversation.foldable`: the
+    move each followed, and the entry), after the summary so far. Pure, so the phone's
+    fixture is made from this text rather than from a copy of it (the parity audit)."""
+    lines = []
+    for after, entry in pending:
+        who = "PLAYER" if entry.kind == "ask" else "COACH"
+        lines.append(f"after {after}, {who}: {entry.text}")
+    content = (
+        "Summary so far:\n"
+        + (summary_before or "(nothing yet)")
+        + "\n\nNewest exchanges:\n"
+        + "\n".join(lines)
+        + "\n\nThe new summary:"
+    )
+    return [{"role": "user", "content": content}]
+
+
 def summarise(
     convo: Conversation,
     provider: LLMProvider,
@@ -42,18 +60,7 @@ def summarise(
         summary_before = convo.summary
     if not pending:
         return False
-    lines = []
-    for after, entry in pending:
-        who = "PLAYER" if entry.kind == "ask" else "COACH"
-        lines.append(f"after {after}, {who}: {entry.text}")
-    content = (
-        "Summary so far:\n"
-        + (summary_before or "(nothing yet)")
-        + "\n\nNewest exchanges:\n"
-        + "\n".join(lines)
-        + "\n\nThe new summary:"
-    )
-    messages: list[ChatMessage] = [{"role": "user", "content": content}]
+    messages = summary_request(pending, summary_before)
     try:
         # A rewrite, not a reasoning task: no thinking, where the provider can turn it off.
         completion = provider.chat(

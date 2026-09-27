@@ -524,14 +524,6 @@ def spoken(fact: str) -> str:
         lambda mm: f"{mm.group(1)} {_first_moves(mm.group(2), 2)}",
         body,
     )
-    # Said aloud, a line is its first reply: "they would answer 9... Bxg2 10. Kxg2 Qd7 11. d5
-    # Na6 12. Nc3 O-O 13. a3 h6" came before every answer the AI then gave in words (the
-    # simulated students' transcripts, 2026-09-26). The whole line stays in the fact.
-    body = re.sub(
-        r"(they would answer|then the engine plays) ([^;]+)",
-        lambda mm: f"{mm.group(1)} {_first_moves(mm.group(2), 2)}",
-        body,
-    )
     body = re.sub(r"what (\S+) does: ", r"\1 ", body)
     # A piece or a square examined (`examine_piece`) is said to the player, not about them:
     # "f3: the player's knight on f3 stands there; it can go to ..." went out as it was

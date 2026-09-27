@@ -1028,6 +1028,11 @@ class Conversation:
                 out.append(f"{name}: {third_person(str(value), side=side)}")
         return out
 
+    def _index(self, record: PlyRecord) -> int:
+        """Where `record` itself stands in the records: by identity, as two records can be
+        equal field for field (the parity audit, 2026-09-26)."""
+        return next(i for i, r in enumerate(self.records) if r is record)
+
     def _tally_text(self, through: PlyRecord) -> str:
         """The player's moves judged so far, as of `through`: the tally reads as the game
         went, and the last move's message holds the whole of it."""
@@ -1035,7 +1040,7 @@ class Conversation:
         lost: list[tuple[float, str]] = []
         n = 0
         for record in self.judged_records():
-            if self.records.index(record) > self.records.index(through):
+            if self._index(record) > self._index(through):
                 break
             if not record.move.by_user or record.assessment is None:
                 continue
@@ -1071,7 +1076,7 @@ class Conversation:
 
     def _opening_through(self, through: PlyRecord) -> str | None:
         """The last opening name the book gave, up to `through`."""
-        for record in reversed(self.records[: self.records.index(through) + 1]):
+        for record in reversed(self.records[: self._index(through) + 1]):
             if record.withdrawn or record.analysis is None:
                 continue
             if record.analysis.opening:

@@ -2319,3 +2319,22 @@ def test_a_legal_move_called_illegal_is_a_fault() -> None:
     # A claim inside a line is about a later position; a true one is no fault.
     assert false_illegal("After Bh7+ Kh8, Qxf7+ is illegal.", board) == []
     assert false_illegal("Qh4 is not legal: the pawn blocks it.", chess.Board()) == []
+
+
+def test_a_new_game_forgets_the_last_games_review() -> None:
+    # Game 2 answered "how did I do overall?" with game 1's sentences when the model failed.
+    coach, _ = _coach([])
+    _start(coach)
+    coach._review_lines = ["You played white and won by checkmate in 4 moves."]
+    _start(coach)
+    assert coach._review_lines == []
+
+
+def test_a_saved_rating_changes_the_templates_register() -> None:
+    # Saving a new rating rewords the system message and the templates alike (the register
+    # was kept until the coach was rebuilt).
+    coach = Coach(ScriptedProvider([]), rating=(800, 1100))
+    assert coach.plain_words and not coach.strong_player
+    coach.reword(None, (2000, 2300))
+    assert not coach.plain_words and coach.strong_player
+    assert "2000" in coach.system
