@@ -819,7 +819,14 @@ class Reconciler:
                     continue
                 tried.add((ignored, wild))
                 fresh = diff - ignored
-                if not fresh:
+                if not fresh - wild:
+                    # A story must rest on a disagreement read cleanly -- a square read
+                    # empty or a settled piece of a known kind. When every cell left to
+                    # explain is a wildcard, nothing on the board says a move was played:
+                    # a board locked 0.28 of a cell off (it had slid on after the lock was
+                    # taken) read every piece unsettled, the top of the king on d2 read as
+                    # a piece on d3, and the king's move there was told, d2 and d3 both
+                    # wildcards (the geometry sweep, 2026-09-27, seed 97).
                     continue
                 live_obs = {sq: r for sq, r in obs.items() if sq not in ignored}
                 self._denied = {
