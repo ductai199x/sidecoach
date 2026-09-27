@@ -15,7 +15,9 @@ import org.junit.runner.RunWith
  * samples from sixty random games -- every legal move in the order the Python yields it,
  * its SAN, the position it leads to, and what the Python makes of the position: check,
  * mate, stalemate, material, the result, and whether it is valid with either side to move.
- * The reconciler depends on all of it, so the port must agree on all of it.
+ * The reconciler depends on all of it, so the port must agree on all of it. And the rest the
+ * desktop leans on: `parse_san`'s failure classes, the draw rules ply by ply, the null move,
+ * moves the generator never yields (king-takes-rook castling), and FENs with odd fields.
  */
 @RunWith(AndroidJUnit4::class)
 class ChessTest {
@@ -139,6 +141,138 @@ class ChessTest {
         }
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
     }
+
+    /** `parse_san`: the move, or which of python-chess's three exceptions the text raises. */
+    @Test
+    fun sanParsesAsPythonChessParsesIt() {
+        val cases = fixtures().getJSONArray("parse_san")
+        val failures = ArrayList<String>()
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val (move, failure) = Board(case.getString("fen")).parseSanFully(case.getString("san"))
+            val mine = "${move?.uci()} ${failure?.name?.lowercase()}"
+            val theirs = "${case.str("uci")} ${case.str("failure")}"
+            if (mine != theirs) failures.add("${case.getString("fen")} '${case.getString("san")}': $mine, python $theirs")
+        }
+        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /** Repetitions, the fifty- and seventy-five-move rules, claimable or not, ply by ply. */
+    @Test
+    fun theDrawRulesMatchPlyByPly() {
+        val games = fixtures().getJSONArray("draws")
+        val failures = ArrayList<String>()
+        for (g in 0 until games.length()) {
+            val game = games.getJSONObject(g)
+            val board = Board(game.getString("fen"))
+            val moves = game.getJSONArray("moves")
+            val steps = game.getJSONArray("steps")
+            for (i in 0 until moves.length()) {
+                board.push(Move.fromUci(moves.getString(i)))
+                val want = steps.getJSONObject(i)
+                val mine = listOf(
+                    board.fen(), board.isRepetition(), board.isRepetition(2),
+                    board.canClaimThreefoldRepetition(), board.isFiftyMoves(), board.canClaimFiftyMoves(),
+                    board.isFivefoldRepetition(), board.isSeventyfiveMoves(), board.isGameOver(),
+                    board.isGameOver(claimDraw = true), board.result(claimDraw = true),
+                )
+                val theirs = listOf(
+                    want.getString("fen"), want.getBoolean("repetition"), want.getBoolean("repetition2"),
+                    want.getBoolean("threefold"), want.getBoolean("fifty"), want.getBoolean("claim_fifty"),
+                    want.getBoolean("fivefold"), want.getBoolean("seventyfive"), want.getBoolean("game_over"),
+                    want.getBoolean("game_over_claim"), want.getString("result_claim"),
+                )
+                if (mine != theirs) failures.add("${game.getString("fen")} ply ${i + 1}: $mine, python $theirs")
+            }
+        }
+        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /** The null move: pushed, written with no suffix whatever it leaves, and popped. */
+    @Test
+    fun theNullMoveIsPushedAndWrittenAsPythonChessDoes() {
+        val cases = fixtures().getJSONArray("nulls")
+        val failures = ArrayList<String>()
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val board = Board(case.getString("fen"))
+            val san = board.san(Move.NULL)
+            board.push(Move.NULL)
+            val mine = listOf(san, board.fen(), board.moveStack.map { it.uci() })
+            board.pop()
+            val stack = case.getJSONArray("stack")
+            val theirs = listOf(case.getString("san"), case.getString("after"), List(stack.length()) { stack.getString(it) })
+            if (mine != theirs || board.fen() != case.getString("popped")) {
+                failures.add("${case.getString("fen")}: $mine then ${board.fen()}, python $theirs then ${case.getString("popped")}")
+            }
+        }
+        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /**
+     * Moves the generator never yields -- the king taking its own rook, a drop, a king that
+     * promotes -- judged as python-chess judges them, and the legal ones written and pushed.
+     */
+    @Test
+    fun movesAreLegalAsPythonChessJudgesThem() {
+        val cases = fixtures().getJSONArray("legality")
+        val failures = ArrayList<String>()
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val board = Board(case.getString("fen"))
+            val move = Move.fromUciOrNull(case.getString("uci"))!!
+            val legal = board.isLegal(move)
+            val mine = mutableListOf<Any?>(board.isPseudoLegal(move), legal, null, null, null)
+            if (legal) {
+                val after = board.copy(withStack = false)
+                mine[2] = board.san(move)
+                after.push(move)
+                mine[3] = after.fen()
+                mine[4] = after.moveStack.last().uci()
+            }
+            val theirs = listOf(
+                case.getBoolean("pseudo_legal"), case.getBoolean("legal"),
+                case.str("san"), case.str("after"), case.str("stacked"),
+            )
+            if (mine != theirs) failures.add("${case.getString("fen")} ${case.getString("uci")}: $mine, python $theirs")
+        }
+        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /** FENs with odd fields read as python-chess reads them, and the ones it refuses refused. */
+    @Test
+    fun fensParseAsPythonChessParsesThem() {
+        val cases = fixtures().getJSONArray("fens")
+        val failures = ArrayList<String>()
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val given = case.getString("given")
+            val board = try {
+                Board(given)
+            } catch (exc: IllegalArgumentException) {
+                if (case.isNull("error")) failures.add("'$given' refused ($exc), python reads it")
+                else if (exc.message != case.getString("error")) failures.add("'$given': '${exc.message}', python '${case.getString("error")}'")
+                continue
+            }
+            if (!case.isNull("error")) {
+                failures.add("'$given' read as ${board.fen()}, python refuses it: ${case.getString("error")}")
+                continue
+            }
+            val mine = listOf(
+                board.fen(), board.fen(enPassant = "fen"), board.castlingRights.toString(16),
+                board.promoted.toString(16), board.isValid(), board.ply(),
+            )
+            val theirs = listOf(
+                case.getString("fen"), case.getString("fen_ep"), case.getString("castling_rights"),
+                case.getString("promoted"), case.getBoolean("valid"), case.getInt("ply"),
+            )
+            if (mine != theirs) failures.add("'$given': $mine, python $theirs")
+        }
+        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /** A string field, null when JSON has null there (`optString` would say "null"). */
+    private fun JSONObject.str(name: String): String? = if (isNull(name)) null else getString(name)
 
     private fun perft(board: Board, depth: Int): Long {
         if (depth == 0) return 1
