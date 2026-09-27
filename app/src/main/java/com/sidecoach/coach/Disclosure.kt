@@ -303,14 +303,14 @@ fun squaresIn(text: String): Set<String> {
 /**
  * Withheld items that `text` mentions. An empty list means the draft is clean.
  *
- * Below MOVE the coach may not name any move at all, and may mention only squares that occur
- * in visible facts other than the FEN, such as the target's. The model will volunteer moves
- * on its own even when told not to, so this is not limited to the withheld facts. From MOVE
- * up only the withheld line is checked. Below FOCUS the word for the player's own piece is
- * checked as well -- their pieces, and what a line wins, are not it.
+ * Below MOVE only the answer is withheld (see below); from MOVE up only the withheld line.
+ * [record] is the game's moves as numbered in the record ("17. Rh1"). Below FOCUS the word for
+ * the player's own piece is checked as well -- their pieces, and what a line wins, are not it.
  *
  * `said` is what the user asked this turn: a square, piece word or move they named is theirs
- * already, so confirming it back is not a leak and never faulted.
+ * already, so confirming it back is not a leak and never faulted. [shown] is what the sheet
+ * shows beyond the facts' own words -- what the threats do -- whose pieces on their squares are
+ * facts about the board, like the facts'.
  *
  * Below MOVE only the answer is withheld (Tai, 2026-09-25: "leaking is not a criminal offense
  * ... it's useful to point out in precise manner the plan (yours or opponent's) or the positional

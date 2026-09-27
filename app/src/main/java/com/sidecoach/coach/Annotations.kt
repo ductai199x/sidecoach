@@ -114,7 +114,8 @@ fun annotationsFor(
         (trigger == Trigger.POST_MOVE || trigger == Trigger.POST_MISTAKE) && !playedSan.isNullOrEmpty()
     if (aboutPlayed) {
         // Two arrows and no more: what was played, and what was better.
-        add(arrow(board, playedSan!!, SEVERITY_COLOR[severity ?: "none"] ?: "good"))
+        // `severity or "none"`: an empty severity is none too (the parity audit cc-07).
+        add(arrow(board, playedSan!!, SEVERITY_COLOR[severity?.ifEmpty { null } ?: "none"] ?: "good"))
         @Suppress("UNCHECKED_CAST")
         val candidates = visible["candidates"] as? List<String> ?: emptyList()
         val better = candidates.firstOrNull()

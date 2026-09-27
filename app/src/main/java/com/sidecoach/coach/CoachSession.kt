@@ -1498,11 +1498,7 @@ class Coach(
      * inside `analyse_named`; here the provider belongs to the caller, so the call is here.
      */
     private fun planProbeJson(text: String, board: Board): String? {
-        val side = if (board.turn == WHITE) "White" else "Black"
-        val player = if (userColour == WHITE) "White" else "Black"
-        val legal = board.legalMoves().map { board.san(it) }.sorted().joinToString(" ")
-        val content = "Position (FEN): ${board.fen()}\n$side to move. The player is $player.\n" +
-            "Legal moves: $legal\n\nThe player says: \"${text.trim()}\"\n\nJSON only."
+        val content = planRequest(text, board, userColour)
         return try {
             // Parsing their words into moves is no lesson: the routine effort, not the coach's
             // (at medium it was a second model call's worth of waiting).
@@ -1778,7 +1774,10 @@ class Coach(
         // And the board before the last move played: an answer about it says what it took
         // ("15...Qxe7 took your knight on e7"), which the board after it no longer shows.
         val records = synchronized(lock) { conversation.activeRecords() }
-        if (records.isNotEmpty()) frames = frames + Board(records.last().move.fenBefore)
+        if (records.isNotEmpty()) {
+            // `with suppress(ValueError)`: a record's FEN the board cannot read adds no frame.
+            runCatching { Board(records.last().move.fenBefore) }.getOrNull()?.let { frames = frames + it }
+        }
         val messages: List<ChatMessage>
         synchronized(lock) {
             conversation.level = renderLevel
@@ -2003,7 +2002,8 @@ class Coach(
                 val best = r.assessment?.best
                 if (!best.isNullOrEmpty()) {
                     val move = Move.fromUciOrNull(best[0])
-                    if (move != null) out.add(Board(r.move.fenBefore).san(move))
+                    // `with suppress(ValueError)`, as the desktop reads it.
+                    if (move != null) runCatching { Board(r.move.fenBefore).san(move) }.getOrNull()?.let { out.add(it) }
                 }
             }
         }
@@ -2287,7 +2287,7 @@ class Coach(
         }
         // An explicit ask. The player's words are already the last message of the
         // conversation; the directive says only how to answer them.
-        val said = userText ?: "hint"
+        val said = userText?.ifEmpty { null } ?: "hint" // `user_text or "hint"`
         var checks = ""
         val claimsChecked = verdicts.filter { !it.startsWith("Engine on ") }
         val engineWords = verdicts.filter { it.startsWith("Engine on ") }
@@ -2507,14 +2507,18 @@ class Coach(
             var best = ""
             if (own.best.isNotEmpty()) {
                 val move = Move.fromUciOrNull(own.best[0])
-                best = if (move != null) Board(lastOwn.move.fenBefore).san(move) else ""
+                best = try {
+                    if (move != null) Board(lastOwn.move.fenBefore).san(move) else ""
+                } catch (_: Exception) {
+                    "" // `except ValueError`
+                }
             }
             if (best == san) best = ""
             // The request's facts are those of the position the move was played from when the
             // coach has them (ask() chose that position); the idea is theirs. The theme or the
             // plan, never a static feature: "the idea was the isolated d-pawn ..." became the
             // reason a bishop retreat was an inaccuracy.
-            val idea = facts.theme ?: facts.plan ?: ""
+            val idea = facts.theme?.ifEmpty { null } ?: facts.plan ?: "" // `facts.theme or facts.plan or ""`
             if (own.severity == Severity.NONE && best.isNotEmpty() && loss >= 0.005) {
                 // Sound but not the best: said as the word after it said it ("Fine, but a3 was a
                 // little tighter"), never "it cost nothing" (the runtime audit).

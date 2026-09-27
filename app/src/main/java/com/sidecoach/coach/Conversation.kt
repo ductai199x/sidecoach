@@ -737,9 +737,9 @@ class Conversation {
     }
 
     /**
-     * The engine lines section: its title's tail (whose move, whose scores) and its lines.
-     * Withheld below the candidate level on the player's turn -- what may be said is in the
-     * facts -- and the standing is a section of its own.
+     * The engine lines section: its title's tail (whose move, whose scores) and its lines, in
+     * full at every level -- below the move level on the player's turn the title says the first
+     * move is the answer they are finding -- and the standing is a section of its own.
      */
     private fun linesBlock(
         record: PlyRecord,

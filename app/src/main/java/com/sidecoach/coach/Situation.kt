@@ -260,7 +260,7 @@ object Situation {
     fun sentence(raw: String): String {
         var text = raw.trim()
         if (text.isEmpty()) return ""
-        if (!PAWN_MOVE.containsMatchIn(text)) text = text[0].uppercaseChar() + text.substring(1)
+        if (!PAWN_MOVE.containsMatchIn(text)) text = text.replaceFirstChar { it.uppercase() } // `text[0].upper()`: the full mapping
         return if (text.last() in ".!?") text else "$text."
     }
 
