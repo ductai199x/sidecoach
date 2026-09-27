@@ -634,23 +634,6 @@ def test_a_king_or_queen_is_named_on_the_other_square_colour(
     assert reading.kind == "piece" and reading.symbol == piece.symbol(), reading
 
 
-def test_the_recoloured_kings_and_queens_never_choose_a_side() -> None:
-    """A white queen on a dark square at the mate, its side vote split (its brightness white,
-    the fill under the queen's mask black): the embedding chose, and the black queen
-    recoloured onto a light square lay nearer it than its own white queen -- the mate was
-    never committed (stress seed 372). The recoloured cells name a kind once the side is
-    voted; a split vote is decided on the start position's own 64 cells."""
-    sans = (
-        "e3", "Nf6", "Be2", "g5", "f4", "Bh6", "fxg5", "Bxg5", "Nf3", "h5", "Bd3", "Ne4",
-        "Nh4", "Nc5", "Qxh5", "Bxe3", "Qxh8#",
-    )  # fmt: skip
-    reading, piece = _read_final(
-        "california", "grey", 44, Side.BLACK, sans, "h8",
-        highlight=chess.Move.from_uci("h5h8"), check=True, result="1-0", badges=True,
-    )  # fmt: skip
-    assert reading.kind == "piece" and reading.symbol == piece.symbol(), reading
-
-
 def _read_after(
     style: str,
     theme: str,

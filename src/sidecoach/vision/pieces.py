@@ -362,20 +362,16 @@ class Exemplar:
 CANONICAL_PX = 40
 # At 40 px the square under a piece weighs more in its embedding than at full detail, and the
 # start position shows each side's king and queen on one square colour only: a black queen
-# on a light square came nearer the black bishop, or the black knight, learned on one than
-# the black queen learned on a dark square, and a black king on a dark square nearer the
-# black queen (stress seeds 469 and 688: the mate never committed; 766: a mid-game board
-# never read cold). Two aids name a piece's kind once its side is voted, both from what the
-# start position shows: each kind is as near as the nearest of its cells of either side, the
-# shape being the kind (`_kind_scores`: the mated king under the check glow and the result
-# label came nearer a rook of its own side than its own king, 584), and the kings and queens
-# are learned again on the other square colour, their start crops' squares recoloured
-# (`_on_other_square`), after the start position's 64 cells (START_CELLS). Neither is evidence
-# of a side: the side vote, and a piece whose side is not voted, see the 64 cells alone -- a
-# white queen on a dark square came nearer the black queen recoloured onto a light one than
-# its own, where the vote was split (stress seed 372).
-OTHER_SQUARE = (chess.KING, chess.QUEEN)
-START_CELLS = 64
+# on a light square came nearer the black bishop learned on one than the black queen learned
+# on a dark square, and a black king on a dark square nearer the black queen (stress seeds
+# 469: the game stalled; 766: a mid-game board never read cold). So once a piece's side is
+# voted, each kind is as near as the nearest of its cells of either side (`_kind_scores`):
+# the shape is the kind, and the other side shows the king and queen on the other square
+# colour. The mated king under the check glow and the result label came nearer a rook of its
+# own side than its own king (584). The side itself is voted as before. Learning the kings
+# and queens again on the other square colour, their crops' squares recoloured, was tried:
+# it named a black queen on g2 (688), and a set not learned then read as a position with two
+# kings, so the person was never told to show a start position (tests/test_cold_start.py).
 SETTLED_TOLERANCE = 0.08  # of a cell; a dragged piece follows the cursor, far off centre
 SETTLED_FLOOR_PX = 3.0  # source pixels: the lock itself is only good to about a pixel
 # Stillness (SIDECOACH_STILLNESS=1, off by default): a cell whose silhouette is not the
@@ -1407,20 +1403,18 @@ class ThemeModel:
         crop: np.ndarray | None = None,
     ) -> CellReading:
         """The cell named by the nearest of the start position's cells in embedding space
-        (see `embedding`). The side is voted on the start position's own cells
-        (`_vote_side`); once it is, the kind aids join (see OTHER_SQUARE). Where the piece
+        (see `embedding`). The side is voted (`_vote_side`); once it is, the kind may be
+        named by either side's cells (`_kind_scores`, see CANONICAL_PX). Where the piece
         sits is LANDING's: the phase correlation against the piece's own start crop by
         default."""
         assert self.exemplar_vectors is not None
         sims = self.exemplar_vectors.astype(np.float32) @ vector
-        side = self._vote_side(sil, sims[:START_CELLS])
+        side = self._vote_side(sil, sims)
         scored = self._kind_scores(sims) if side is not None else sims
         allowed = [
             i
             for i, label in enumerate(self.exemplar_labels)
-            if label == "empty"
-            or (side is None and i < START_CELLS)
-            or (side is not None and label.isupper() == (side == Side.WHITE))
+            if label == "empty" or side is None or label.isupper() == (side == Side.WHITE)
         ]
         order = sorted(allowed, key=lambda i: -float(scored[i]))
         best = order[0]
@@ -1518,19 +1512,15 @@ class ThemeModel:
         two were right. A tie, or no sure voter, leaves the embedding to choose."""
         votes: list[Side] = []
         best_white = max(
-            (
-                float(sim)
-                for sim, lab in zip(sims, self.exemplar_labels[: len(sims)], strict=True)
-                if lab.isupper()
-            ),
+            (float(sims[i]) for i, lab in enumerate(self.exemplar_labels) if lab.isupper()),
             default=-1.0,
         )
         best_black = max(
             # "empty".islower() is True: the empty squares are no side (the parity
             # audit, 2026-09-26: they voted as black).
             (
-                float(sim)
-                for sim, lab in zip(sims, self.exemplar_labels[: len(sims)], strict=True)
+                float(sims[i])
+                for i, lab in enumerate(self.exemplar_labels)
                 if lab != "empty" and lab.islower()
             ),
             default=-1.0,
@@ -1552,7 +1542,7 @@ class ThemeModel:
 
     def _kind_scores(self, sims: np.ndarray) -> np.ndarray:
         """Each cell's similarity raised to the best of its kind's, either side's (see
-        OTHER_SQUARE): what a piece is, is its shape."""
+        CANONICAL_PX): what a piece is, is its shape."""
         scored = sims.copy()
         kinds: dict[str, list[int]] = {}
         for i, label in enumerate(self.exemplar_labels):
@@ -1846,25 +1836,6 @@ class ThemeModel:
             )
             if not _start_reads_as_start(vectors, labels):
                 return None  # a piece hidden or spoiled: the next start frame gets a chance
-            # The kings and queens again, on the other square colour (OTHER_SQUARE).
-            light, dark = model.light_bg.astype(np.float32), model.dark_bg.astype(np.float32)
-            others = [
-                (r, c, piece.symbol())
-                for r in range(8)
-                for c in range(8)
-                if (piece := start.piece_at(square_at(r, c, bottom))) is not None
-                and piece.piece_type in OTHER_SQUARE
-            ]
-            moved = [
-                canonical(
-                    _on_other_square(
-                        crops[r][c], *((light, dark) if is_light(r, c) else (dark, light)), palette
-                    )
-                )
-                for r, c, _ in others
-            ]
-            vectors = np.concatenate([vectors, net.embed(moved)])
-            labels = labels + tuple(symbol for _, _, symbol in others)
             model.exemplar_vectors = vectors.astype(np.float16)
             model.exemplar_labels = labels
         return model
@@ -2047,24 +2018,6 @@ def canonical(crop: np.ndarray) -> np.ndarray:
     size = crop.shape[0]
     small = cv2.resize(crop, (CANONICAL_PX, CANONICAL_PX), interpolation=cv2.INTER_AREA)
     return cv2.resize(small, (size, size), interpolation=cv2.INTER_LINEAR)
-
-
-def _on_other_square(
-    crop: np.ndarray, own: np.ndarray, other: np.ndarray, palette: tuple[np.ndarray, ...]
-) -> np.ndarray:
-    """A piece's crop with its square recoloured from `own` to `other`: each pixel moves
-    toward the other colour by the share of the way it lies from the set's nearest ink to the
-    square (`palette`), so the square moves all the way, the piece not at all, and a smoothed
-    edge -- ink blended onto the square -- comes out blended onto the other square."""
-    pixels = crop.astype(np.float32)
-    to_square = np.linalg.norm(pixels - own, axis=2)
-    if palette:
-        inks = np.stack(palette).astype(np.float32)
-        to_ink = np.min(np.linalg.norm(pixels[:, :, None, :] - inks, axis=3), axis=2)
-    else:
-        to_ink = np.full(to_square.shape, np.inf, dtype=np.float32)
-    share = np.where(np.isinf(to_ink), 1.0, to_ink / (to_ink + to_square + 1e-6))
-    return np.clip(pixels + share[..., None] * (other - own), 0, 255).astype(np.uint8)
 
 
 def _start_shaped(occupied: np.ndarray) -> bool:
