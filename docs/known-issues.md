@@ -5,15 +5,28 @@ What we know is wrong and have chosen to ship with, desktop and phone alike (the
 
 ## Vision
 
-- **A piece that lands after the board was moved, on the last move's highlighted square, may
-  not count as landed** when the landing reference was learned at one lock offset and the board
-  is read at another, a pixel apart in a different direction (seen at 48 px cells after a
-  diagonal move of 1.4 cells: 2...Nc6 was read as a knight but never settled, so the move was
-  not committed). Found by the parity audit's move sweep, 2026-09-26.
-- **Random games that are not followed to the end** in about 1.6% of the stress sweep
-  (`tests/test_stress.py --seeds 1000`; seeds 327 372 391 436 454 492 497 543 604 610 728 817
-  822 830 972 996): mostly dark shaded piece sets on the dark board (riohacha, pirouetti) and
-  44 px cells where a set's piece does not land where its exemplar did. Left by decision
-  (2026-09-19); see the stress test's docstring.
+- **Random games that are not followed to the end** in about 1.3% of the stress sweep
+  (`tests/test_stress.py --seeds 1000`; seeds 327 436 454 497 543 604 610 688 728 817 822 830
+  996): mostly dark shaded piece sets on the dark board (riohacha, pirouetti) and 44 px cells
+  where a set's piece does not land where its exemplar did. Left by decision (2026-09-19); see
+  the stress test's docstring. In 688 (the wooden set on the wood board, 96 px) a black queen on
+  a light square reads as a knight: the start position shows each side's queen on one square
+  colour only, and at the embedder's 40 px the black knight learned on a light square is
+  nearer; a premove is then read as two pawn moves and the mate is never committed. Teaching
+  the model recoloured kings and queens fixed it, but made a set never learned read as a
+  position (2026-09-27).
+- **A small board of a thin-outlined set may never start a game** (the geometry sweep's seed
+  40: the thin set on the dark board at 32 px): the white pawn on a dark square covers 15.9 to
+  16.1% of its cell, on the 16% floor for a piece, and the detector locks sharp-edged boards a
+  pixel up and left (the comb settles on the first pixel of a two-pixel boundary), so the
+  start position does not read as one and no game begins. Found 2026-09-27.
+- **A piece whose outline is as heavy as its fill can read as the other side's after a large
+  shrink** (the geometry sweep's seed 122: the caliente set learned at 40 px, read at 29): the
+  white bishop's dark outline was taken for its fill, brightness voted black and the embedding
+  nearly tied (0.961 against 0.957). The misread held back a three-ply story until six plies
+  were missing, more than the missed-move search bridges, and the position was adopted anew.
+  Found 2026-09-27.
+- **A lock up to 3 px off after a nudge near the frame's edge** in 4 of 1000 near-edge sweep
+  cases, inside the re-fit's 2 px dead band. Reading holds at that offset. Found 2026-09-27.
 - **A board smaller than 24 px a cell (a 192 px board) is not seen at all**: the detector's
   floor. The game waits until the board is larger again.

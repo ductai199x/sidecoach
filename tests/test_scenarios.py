@@ -184,10 +184,10 @@ def test_catch_up_after_a_gap_of_a_few_plies(plies: int) -> None:
         (50, 2.0, 0.0),
         (50, 0.0, -0.8),
         (48, 3.0, 3.0),
-        # At 48 px the same diagonal re-locks too, but its Nc6 does not land on the highlighted
-        # square: a landing reference learned at one lock offset, read at another
-        # (docs/known-issues.md).
         (64, -1.4, -1.4),
+        # Its Nc6 did not land on the highlighted square until the landing compared the
+        # reference and the piece at the detail both have (cfaa416).
+        (48, -1.4, -1.4),
     ],
 )
 def test_a_board_moved_any_fraction_of_a_cell_is_found_again(
