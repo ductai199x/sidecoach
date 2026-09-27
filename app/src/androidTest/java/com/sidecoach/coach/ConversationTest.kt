@@ -101,6 +101,63 @@ class ConversationTest {
         assertTrue(failures.joinToString("\n\n"), failures.isEmpty())
     }
 
+    /** `new_game` then the move from [fenBefore], by the player or not; the move's record. */
+    private fun oneMove(fenBefore: String, san: String, ply: Int, byUser: Boolean, userSide: Pieces.Side): Pair<Conversation, PlyRecord> {
+        val convo = Conversation()
+        convo.newGame(GameStarted(gameId = "g", userSide = userSide, startFen = Board().fen()))
+        val board = Board(fenBefore)
+        val move = board.parseSan(san)!!
+        board.push(move)
+        val record = convo.move(
+            MovePlayed(gameId = "g", ply = ply, san = san, uci = move.uci(), fenBefore = fenBefore, fenAfter = board.fen(), byUser = byUser)
+        )
+        return convo to record
+    }
+
+    /**
+     * After 10...O-O (a mistake) the engine's line was 10...Nxe4 11. Qxd4 Nf6 12. O-O: it ends on
+     * the move played, and the verdict lost the line entirely. The line is dropped only when its
+     * first move is the one played (`test_conversation.py`, TG-13).
+     */
+    @Test
+    fun thePreferredLineIsDroppedOnlyWhenItsFirstMoveWasPlayed() {
+        val (convo, record) = oneMove("r1bqk2r/2p1bppp/p2p1n2/1p1P4/3pP3/1B6/PPP1NPPP/R1BQK2R b KQkq - 1 10", "O-O", 20, false, Pieces.Side.WHITE)
+        val uci = record.move.uci
+        convo.assess(MoveAssessment(gameId = "g", ply = 20, uci = uci, expectedLoss = 0.13, severity = Severity.MISTAKE, best = listOf("f6e4", "d1d4", "e4f6", "e1g1"), label = Label.MISTAKE))
+        assertTrue("the engine preferred 10... Nxe4 11. Qxd4 Nf6 12. O-O" in convo.renderPly(record))
+        convo.assess(MoveAssessment(gameId = "g", ply = 20, uci = uci, expectedLoss = 0.01, severity = Severity.NONE, best = listOf(uci, "a2a4"), label = Label.GOOD))
+        assertTrue("the engine preferred" !in convo.renderPly(record))
+    }
+
+    /**
+     * After the player's capture, with the opponent to move: the facts heading closes its bracket
+     * and says whose plan they are; the weaker lines say whose; the material notes the recapture
+     * the engine expects (`test_conversation.py`, TG-13).
+     */
+    @Test
+    fun thePositionSectionsOnTheOpponentsTurn() {
+        val (convo, record) = oneMove("4k3/2n5/4N3/3P4/8/8/8/4K3 b - - 0 40", "Nxe6", 79, true, Pieces.Side.BLACK)
+        convo.assess(MoveAssessment(gameId = "g", ply = 79, uci = record.move.uci, expectedLoss = 0.0, severity = Severity.NONE, best = listOf(record.move.uci), label = Label.BEST))
+        val board = Board(record.move.fenAfter)
+        val analysis = Analysis(
+            gameId = "g", fen = board.fen(), ply = 79,
+            lines = listOf(
+                Line(moves = listOf("d5e6", "e8e7"), depth = 20, expectedScore = 0.5),
+                Line(moves = listOf("e1e2", "e6d4"), depth = 20, expectedScore = 0.1),
+                Line(moves = listOf("e1d1", "e6d4"), depth = 20, expectedScore = 0.1),
+                Line(moves = listOf("e1f1", "e6d4"), depth = 20, expectedScore = 0.1),
+            ),
+            decisive = true, onlyMove = true,
+        )
+        convo.analysed(analysis, factsFromAnalysis(board, analysis, user = com.sidecoach.chess.BLACK))
+        val text = convo.renderPly(record, DisclosureLevel.IDEA)
+        assertTrue(text, "Material: the player is up a knight for a pawn before the expected recapture dxe6, then the player is down a pawn." in text)
+        assertTrue(text, "## Facts (the opponent to move; the opponent's plan and ideas)\n" in text)
+        assertTrue(text, "decisive: yes\nonly move: yes\n" in text)
+        assertTrue(text, "  weaker for the opponent:\n" in text)
+        assertTrue(text, "## Standing\nIt is about equal" in text)
+    }
+
     private fun apply(convo: Conversation, step: JSONObject, where: String) {
         when (val op = step.getString("op")) {
             "new_game" -> convo.newGame(
@@ -155,20 +212,30 @@ class ConversationTest {
                 )
             )
 
-            "analysed" -> convo.analysed(
-                Analysis(
-                    gameId = GAME_ID,
-                    fen = step.getString("fen"),
-                    ply = step.getInt("ply"),
-                    lines = lines(step.getJSONArray("lines")),
-                    decisive = step.getBoolean("decisive"),
-                    onlyMove = step.getBoolean("only_move"),
-                    threats = strings(step.getJSONArray("threats")),
-                    tags = tags(step.getJSONArray("tags")),
-                    opening = if (step.isNull("opening")) null else step.getString("opening"),
-                ),
-                factsFrom(step.getJSONObject("facts")),
-            )
+            "analysed" -> {
+                val facts = factsFrom(step.getJSONObject("facts"))
+                convo.analysed(
+                    Analysis(
+                        gameId = GAME_ID,
+                        fen = step.getString("fen"),
+                        ply = step.getInt("ply"),
+                        lines = lines(step.getJSONArray("lines")),
+                        decisive = step.getBoolean("decisive"),
+                        onlyMove = step.getBoolean("only_move"),
+                        threats = strings(step.getJSONArray("threats")),
+                        tags = tags(step.getJSONArray("tags")),
+                        opening = if (step.isNull("opening")) null else step.getString("opening"),
+                    ),
+                    facts,
+                )
+                // The facts as the lesson after the move reads them: an idea about a piece gone
+                // from its square left out, a threat the move stopped too said (TG-09).
+                val faced = step.getJSONObject("faced")
+                val board = Board(step.getString("fen"))
+                fun boardOf(key: String) = if (faced.isNull(key)) null else Board(faced.getString(key))
+                check("$where faced", convo.facedText(facts, board, boardOf("after"), boardOf("played")), faced.getString("text"))
+                check("$where faced bare", convo.facedText(facts, board), faced.getString("text_bare"))
+            }
 
             "level" -> convo.level = DisclosureLevel.of(step.getInt("level"))
 

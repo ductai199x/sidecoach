@@ -156,6 +156,22 @@ def play(
 
     facts = facts_from_analysis(after, analysis, last_move=played_san, user=user_colour)
     script.convo.analysed(analysis, facts)
+    # The position's facts as the lesson after the engine's move would read them, past: the
+    # board once the move (and the reply) is played leaves out an idea about a piece gone
+    # from its square, and the board right after it says a threat the move stopped too
+    # (`faced_text`; the parity audit TG-09).
+    played_board = then_board = None
+    if analysis.lines and analysis.lines[0].moves:
+        first = chess.Move.from_uci(analysis.lines[0].moves[0])
+        if first in after.legal_moves:
+            played_board = after.copy(stack=False)
+            played_board.push(first)
+            then_board = played_board
+            if len(analysis.lines[0].moves) > 1:
+                reply = chess.Move.from_uci(analysis.lines[0].moves[1])
+                if reply in played_board.legal_moves:
+                    then_board = played_board.copy(stack=False)
+                    then_board.push(reply)
     script.record(
         {
             "op": "analysed",
@@ -168,6 +184,12 @@ def play(
             "tags": [tag_json(t) for t in analysis.tags],
             "opening": analysis.opening,
             "facts": facts_json(facts),
+            "faced": {
+                "after": None if then_board is None else then_board.fen(),
+                "played": None if played_board is None else played_board.fen(),
+                "text": script.convo.faced_text(facts, after, then_board, played_board),
+                "text_bare": script.convo.faced_text(facts, after),
+            },
         }
     )
     return after
