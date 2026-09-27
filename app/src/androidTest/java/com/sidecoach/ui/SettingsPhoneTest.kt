@@ -2,6 +2,7 @@ package com.sidecoach.ui
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.coach.CoachRunner
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -49,6 +50,140 @@ class SettingsPhoneTest {
         }
         assertFalse("engine.stockfish_path" in got.getValue("engine").map { "engine.$it" })
         assertTrue("voice.captions_keep", "captions_keep" in got.getValue("voice"))
+        // No development field either (config.py's `dev`): the page is never the desktop's shell.
+        for (gone in listOf("api_key_env", "thinking_control", "extra_body")) assertFalse("llm.$gone", gone in got.getValue("llm"))
+    }
+
+    /**
+     * What the page says is true of the phone (Tai: plain language, true for the platform): no
+     * push-to-talk key held from any window, no model on "this computer", the engine's phone
+     * defaults -- and the marks the page reads (`test_the_schema_carries_the_marks_the_page_reads`).
+     */
+    @Test
+    fun thePageDescribesThePhone() {
+        val described = SettingsApi(SettingsStore(app)).describe()
+        val defs = described.getJSONObject("schema").getJSONObject("\$defs")
+        val listen = defs.getJSONObject("VoiceSettings").getJSONObject("properties").getJSONObject("listen")
+        assertEquals(listOf("off", "ptt", "vad"), listen.getJSONArray("choices").let { a -> (0 until a.length()).map { a.getString(it) } })
+        assertEquals("now", listen.getString("applies"))
+        assertEquals("Listening" to "Hearing you", listen.getString("label") to listen.getString("section"))
+        assertTrue(listen.getString("description").startsWith("How the coach hears you"))
+        val engine = defs.getJSONObject("EngineSettings").getJSONObject("properties")
+        assertEquals(2 to 64, engine.getJSONObject("threads").getInt("default") to engine.getJSONObject("hash_mb").getInt("default"))
+        val llm = defs.getJSONObject("LLMSettings").getJSONObject("properties")
+        val words = listOf(listen, engine.getJSONObject("hash_mb"), llm.getJSONObject("provider"), llm.getJSONObject("base_url")).joinToString(" ")
+        for (desktop in listOf("from any window", "push-to-talk key", "this computer", "256 is plenty")) {
+            assertFalse("\"$desktop\" is the desktop's", desktop in words)
+        }
+        assertEquals(45, described.getJSONObject("settings").getJSONObject("coach").getInt("stuck_seconds"))
+        assertTrue("OPENAI_API_KEY" in described.getJSONObject("secrets").keys().asSequence().toList())
+    }
+
+    /**
+     * A save says what applies now and what at the next Start; one that does not fit is refused
+     * by field and nothing is saved; a key is stored apart and taken away again
+     * (`test_a_save_writes_the_file_and_says_what_applies_when`, the secrets' round trip).
+     */
+    @Test
+    fun aSaveSaysWhatAppliesWhenAndRefusesWhatDoesNotFit() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        try {
+            val values = store.values()
+            values.getJSONObject("coach").put("stuck_seconds", 60)
+            values.getJSONObject("voice").put("voice", "am_adam")
+            values.getJSONObject("capture").put("fps", 6)
+            val res = api.update(JSONObject().put("settings", values))
+            assertTrue(res.toString(), res.getBoolean("ok"))
+            assertEquals("[\"coach.stuck_seconds\",\"voice.voice\"]", res.getJSONArray("now").toString())
+            assertEquals("[\"capture.fps\"]", res.getJSONArray("next").toString())
+            assertEquals(0, res.getJSONArray("restart").length())
+            assertEquals(60, store.section("coach").getInt("stuck_seconds"))
+            val before = store.values().toString()
+            values.getJSONObject("engine").put("depth", 999)
+            val refused = api.update(JSONObject().put("settings", values))
+            assertFalse(refused.getBoolean("ok"))
+            assertEquals("[\"engine\",\"depth\"]", refused.getJSONArray("errors").getJSONObject(0).getJSONArray("loc").toString())
+            assertEquals("nothing was saved", before, store.values().toString())
+            values.getJSONObject("engine").put("depth", 18)
+            val keyed = api.update(JSONObject().put("settings", values).put("secrets", JSONObject().put("OPENAI_API_KEY", "sk-test")))
+            assertTrue(keyed.getJSONObject("secrets").getBoolean("OPENAI_API_KEY") && store.secretSet("OPENAI_API_KEY"))
+            assertFalse("the key is not in the settings", "sk-test" in store.values().toString())
+            api.update(JSONObject().put("settings", values).put("secrets", JSONObject().put("OPENAI_API_KEY", JSONObject.NULL)))
+            assertFalse(store.secretSet("OPENAI_API_KEY"))
+        } finally {
+            store.setSecret("OPENAI_API_KEY", null)
+            api.update(JSONObject().put("settings", saved))
+        }
+    }
+
+    /**
+     * With a coach and an engine built, a save changes them in place: the persona and the rating
+     * band in the system message, the nudge time, the thresholds, the engine's depth and lines
+     * (`test_a_save_reaches_the_running_coach_and_engine`).
+     */
+    @Test
+    fun aSaveReachesTheRunningCoachAndEngine() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val (_, engine, runner) = PanelWarm.forSession(app)
+        val coach = runner.coach
+        val analyser = engine.analyser
+        org.junit.Assume.assumeTrue("no engine here to reach", coach != null && analyser != null)
+        val saved = store.values()
+        try {
+            val values = store.values()
+            values.getJSONObject("coach").put("persona", "playful").put("stuck_seconds", 30).put("blunder", 0.4)
+            values.getJSONObject("engine").put("depth", 12).put("multipv", 3)
+            values.getJSONObject("profile").put("rating_low", 1500).put("rating_high", 1700)
+            val res = api.update(JSONObject().put("settings", values))
+            assertTrue(res.toString(), res.getBoolean("ok") && res.getJSONArray("next").length() == 0)
+            val now = res.getJSONArray("now").let { a -> (0 until a.length()).map { a.getString(it) }.toSet() }
+            assertEquals(
+                setOf("coach.persona", "coach.stuck_seconds", "coach.blunder", "engine.depth", "engine.multipv", "profile.rating_low", "profile.rating_high"),
+                now,
+            )
+            assertTrue(coach!!.system, "1500 to 1700" in coach.system)
+            assertEquals(30.0, coach.policy.settings.stuckSeconds, 0.0)
+            assertEquals(0.4, analyser!!.annotator.thresholds.blunder, 0.0)
+            assertEquals(12 to 3, analyser.annotator.depth to analyser.annotator.multipv)
+            assertEquals(3, analyser.annotator.engine.multipv)
+        } finally {
+            api.update(JSONObject().put("settings", saved))
+        }
+    }
+
+    /**
+     * The verifier is the provider `coach.verify` names with the model `coach.verify_model`
+     * names -- nothing of the coach's own model, address or effort (`cli._verifier`); "same" is
+     * the coach's own model, and empty is none.
+     */
+    @Test
+    fun theVerifierIsTheModelItsSettingsName() {
+        val store = SettingsStore(app)
+        val saved = store.values()
+        try {
+            val values = store.values()
+            values.getJSONObject("coach").put("verify", " DashScope ").put("verify_model", "qwen3.8-flash")
+            values.getJSONObject("llm").put("provider", "local").put("model", "coach-model").put("base_url", "http://192.168.1.20:1234/v1")
+            store.save(values)
+            store.setSecret("DASHSCOPE_API_KEY", "sk-test")
+            val runner = CoachRunner(store, enabled = false)
+            val own = com.sidecoach.llm.OfflineProvider()
+            val verifier = runner.verifier(store, own) as com.sidecoach.llm.OpenAICompatProvider
+            assertEquals("dashscope", verifier.name)
+            assertEquals("qwen3.8-flash", verifier.model)
+            assertEquals("https://dashscope-us.aliyuncs.com/compatible-mode/v1", verifier.baseUrl)
+            assertEquals(60.0, verifier.timeoutS, 0.0)
+            store.save(values.also { it.getJSONObject("coach").put("verify", "same") })
+            assertTrue(runner.verifier(store, own) === own)
+            store.save(values.also { it.getJSONObject("coach").put("verify", "") })
+            assertEquals(null, runner.verifier(store, own))
+        } finally {
+            store.setSecret("DASHSCOPE_API_KEY", null)
+            store.save(saved)
+        }
     }
 
     @Test
