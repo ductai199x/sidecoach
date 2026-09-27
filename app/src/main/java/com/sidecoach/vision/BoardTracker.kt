@@ -208,13 +208,8 @@ class BoardTracker(
             if (cooldown > 0 && (lastCellPx == null || nearCooldown > 0)) return null
         }
 
-        val boards = detect(gray, full = cooldown <= 0)
-        misses = 0
-        framesSinceRefine = 0
-        board = boards.firstOrNull()
-        val found = board
-        colours = if (found != null) squareColours(gray, found.region, found.cellPx) else null
-        adopted(gray)
+        val found = detect(gray, full = cooldown <= 0).firstOrNull()
+        lock(gray, found, if (found != null) squareColours(gray, found.region, found.cellPx) else null)
         if (found != null) {
             cooldown = 0
             nearCooldown = 0
@@ -229,12 +224,17 @@ class BoardTracker(
         return board
     }
 
-    /** A lock was just taken: what it reads is its measure, and the probe starts fresh. */
-    private fun adopted(gray: Plane) {
-        val lock = board
-        val lockColours = colours
-        readable = if (lock != null && lockColours != null) {
-            readableCells(gray, lock.region, lock.cellPx, lockColours)
+    /**
+     * A lock taken (or none): what it reads is its measure, and the probe starts fresh
+     * (`tracker._lock`).
+     */
+    private fun lock(gray: Plane, found: BoardCandidate?, lockColours: Colours?) {
+        misses = 0
+        framesSinceRefine = 0
+        board = found
+        colours = lockColours
+        readable = if (found != null && lockColours != null) {
+            readableCells(gray, found.region, found.cellPx, lockColours)
         } else {
             0
         }
@@ -276,13 +276,9 @@ class BoardTracker(
             val (fit, contrast) = fitScore(gray, found.region, found.cellPx, own)
             val cells = readableCells(gray, found.region, found.cellPx, own)
             if (passes(fit, contrast) && cells > readable - probeLostCells) {
-                misses = 0
-                framesSinceRefine = 0
-                board = found.copy(fit = fit, contrast = contrast)
-                colours = own
-                lastCellPx = board?.cellPx
+                lock(gray, found.copy(fit = fit, contrast = contrast), own)
+                lastCellPx = found.cellPx
                 detections++
-                adopted(gray)
                 return board
             }
         }

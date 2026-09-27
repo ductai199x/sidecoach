@@ -432,7 +432,7 @@ class GameWatcher(
             return mutableListOf()
         }
         val current = forcedBottom ?: pipeline.bottom ?: Pieces.Side.WHITE
-        val target = if (current == Pieces.Side.WHITE) Pieces.Side.BLACK else Pieces.Side.WHITE
+        val target = current.other
         val name = target.name.lowercase()
         forcedBottom = target
         pipeline.forcedBottom = target

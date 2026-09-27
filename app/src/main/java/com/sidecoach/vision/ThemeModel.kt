@@ -14,19 +14,15 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 
-/** One piece kind as it stands on this theme, fused over the cells that held it. */
+/**
+ * A piece kind as the start position showed it: its tone mask (see [Sil.tone]), fused over the
+ * piece's cells, for the fill vote ([ThemeModel.fillSide]), and the median brightness of its
+ * fill, for the brightness vote.
+ */
 class Exemplar(
     val symbol: String,
-    /** The full silhouette, fused over the piece's cells. */
-    val mask: BooleanArray,
-    /** Its tone mask (see [Sil.tone]), fused the same way. */
     val tone: BooleanArray,
     val brightness: Double,
-    val centroid: Pair<Double, Double>,
-    /** The reference a reading's mask is moved onto, so a badge on either side moves nothing. */
-    val alignCentroid: Pair<Double, Double>,
-    /** Where the piece's ink sits, which is what decides whether it has landed. */
-    val landingCentroid: Pair<Double, Double>,
 )
 
 /**
@@ -71,14 +67,10 @@ class ThemeModel(
     val whiteAtBottom: Boolean,
     /**
      * Each piece kind's start-position crop in grey, the reference the phase landing measures a
-     * cell's shift against (an instance off the labelled edge cells). A kind with none lands by
-     * the centroid, as the desktop's does; a set learned from a start position has them all.
+     * cell's shift against (an instance off the labelled edge cells).
      */
     val landingCrops: Map<String, LandingCrop> = emptyMap(),
-    /**
-     * The cell size the landing crops were taken at (0 when not known: a theme cached before
-     * it was kept), for [phaseShift] to meet a resize (`ThemeModel.landing_px`).
-     */
+    /** The cell size the landing crops were taken at, for [phaseShift] to meet a resize. */
     val landingPx: Double = 0.0,
 ) {
 
@@ -108,8 +100,6 @@ class ThemeModel(
     /** How many of those went through the net: the ones with a piece's worth of ink. */
     var lastEmbedded: Int = 64
         private set
-
-    val symbols: Set<String> get() = exemplars.map { it.symbol }.toSet()
 
     /**
      * The hue of a cell's background shift: "none", "move", "red", or "foreign". A
@@ -219,7 +209,7 @@ class ThemeModel(
     fun classifyFrame(
         frame: Mat,
         geometry: BoardGeometry,
-        embedder: CellEmbedder?,
+        embedder: CellEmbedder,
     ): MutableList<Pieces.CellReading> {
         val crops = ArrayList<Mat>(64)
         val bytes = ArrayList<ByteArray>(64)
@@ -257,8 +247,8 @@ class ThemeModel(
             // silhouette's to read, and embedding it anyway was most of a full read's cost --
             // a second on the phone for a board that was mostly empty squares.
             val inked = fresh.filter { sils[it].fraction >= Pieces.PIECE_MIN_FRACTION }
-            lastEmbedded = if (embedder != null) inked.size else 0
-            if (embedder != null && inked.isNotEmpty()) {
+            lastEmbedded = inked.size
+            if (inked.isNotEmpty()) {
                 // Each at one resolution, whatever the board's size (`Pieces.canonical`).
                 val seen = inked.map { Pieces.canonical(crops[it]) }
                 val embedded = try {
@@ -375,8 +365,8 @@ class ThemeModel(
     /**
      * The cell named by the nearest of the start position's cells in embedding space. The
      * side is voted ([voteSide]); once it is, the kind may be named by either side's cells
-     * ([kindScores], see [Pieces.CANONICAL_PX]). Where the piece sits is [Pieces.LANDING]'s:
-     * the phase correlation against the piece's own start crop by default.
+     * ([kindScores]). Where the piece sits is the phase correlation against the piece's own
+     * start crop.
      */
     private fun fromEmbedding(
         sil: Sil,
@@ -397,7 +387,7 @@ class ThemeModel(
         val scored = if (side != null) kindScores(sims) else sims
         val allowed = exemplarLabels.indices.filter { i ->
             val label = exemplarLabels[i]
-            label == "empty" || side == null || label[0].isUpperCase() == (side == Pieces.Side.WHITE)
+            label == "empty" || side == null || label[0].isUpperCase() == side.color
         }
         val order = allowed.sortedByDescending { scored[it] }
         val best = order.first()
@@ -425,29 +415,10 @@ class ThemeModel(
                 settled = true, hover = sil.hover, tint = tint,
             )
         }
-        val colour = if (label[0].isUpperCase()) Pieces.Side.WHITE else Pieces.Side.BLACK
-        val exemplar = exemplars.firstOrNull { it.symbol == label }
-        var offset = 0.0
-        if (exemplar != null) {
-            val landing = SilhouetteReader.alignCentroid(sil.mask)
-            offset = hypot(
-                landing.first - exemplar.landingCentroid.first,
-                landing.second - exemplar.landingCentroid.second,
-            )
-        }
-        // The desktop's `still` is always true unless SIDECOACH_STILLNESS is set (off by
-        // default, and never ported): a piece's settling is its offset and the hover alone.
+        val colour = Pieces.Side.of(label[0].isUpperCase())
         val reference = landingCrops[label]
-        val settled = if (Pieces.LANDING == "phase" && crop != null && reference != null) {
-            offset = phaseShift(reference, crop, landingPx, cellPx ?: 0.0)
-            var tolerance = Pieces.SETTLED_TOLERANCE
-            if (cellPx != null && cellPx != 0.0) {
-                tolerance = max(Pieces.SETTLED_TOLERANCE, Pieces.SETTLED_FLOOR_PX / cellPx)
-            }
-            offset <= tolerance && !sil.hover
-        } else {
-            offset <= Pieces.settleTolerance(cellPx) && !sil.hover
-        }
+        val offset = if (crop != null && reference != null) phaseShift(reference, crop, landingPx, cellPx ?: 0.0) else 0.0
+        val settled = offset <= Pieces.settleTolerance(cellPx) && !sil.hover
         if (margin < CellEmbedder.MIN_MARGIN && runnerIndex != null && exemplarLabels[runnerIndex] == "empty") {
             // As near an empty square as a piece: something on the square that is neither,
             // a hint, a label, a mark's edge. No evidence, and no drag either.
@@ -468,10 +439,9 @@ class ThemeModel(
      * When the two were taken at cell sizes ([referencePx], [cropPx]) more than
      * [Pieces.LANDING_SAME_SIZE] apart, they are also compared brought down to the coarser of
      * the two sizes, and the surer of the two correlations (the higher peak) gives the shift
-     * (see [Pieces.LANDING_SAME_SIZE]). Internal for the landing bench
-     * ([com.sidecoach.vision.LandingCostTest]).
+     * (see [Pieces.LANDING_SAME_SIZE]).
      */
-    internal fun phaseShift(reference: LandingCrop, crop: Mat, referencePx: Double = 0.0, cropPx: Double = 0.0): Double {
+    private fun phaseShift(reference: LandingCrop, crop: Mat, referencePx: Double, cropPx: Double): Double {
         val ref = Mat(reference.rows, reference.cols, CvType.CV_8UC1)
         ref.put(0, 0, reference.pixels)
         val grey = Mat()
@@ -551,8 +521,16 @@ class ThemeModel(
     }
 
     /**
-     * Each cell's similarity raised to the best of its kind's, either side's (see
-     * [Pieces.CANONICAL_PX]): what a piece is, is its shape (`_kind_scores`).
+     * Each cell's similarity raised to the best of its kind's, either side's: what a piece is,
+     * is its shape, once its side is voted (`_kind_scores`). At [Pieces.CANONICAL_PX] the
+     * square under a piece weighs more in its embedding, and the start position shows each
+     * side's king and queen on one square colour only: a black queen on a light square came
+     * nearer the black bishop learned on one than the black queen learned on a dark square,
+     * and a mated king under the check glow nearer a rook of its own side than its own king
+     * (the desktop's stress seeds 469, 584, 766). The other side shows the king and queen on
+     * the other square colour. Learning them again on the other colour, their crops' squares
+     * recoloured, named a black queen on g2 (688), and a set never learned read as a position
+     * with two kings (the desktop's tests/test_cold_start.py).
      */
     private fun kindScores(sims: FloatArray): FloatArray {
         val scored = sims.copyOf()
@@ -602,7 +580,7 @@ class ThemeModel(
         val inside = ArrayList<Pieces.Side>(2)
         for (side in listOf(Pieces.Side.WHITE, Pieces.Side.BLACK)) {
             val values = exemplars
-                .filter { it.symbol[0].isUpperCase() == (side == Pieces.Side.WHITE) }
+                .filter { it.symbol[0].isUpperCase() == side.color }
                 .map { it.brightness }
             if (values.isEmpty()) continue
             if (values.min() - Pieces.SIDE_MARGIN <= sil.brightness &&
@@ -656,8 +634,22 @@ class ThemeModel(
         tint: String? = null,
         drawn: Boolean = false,
     ) = Pieces.CellReading(
-        kind, symbol, colour, confidence, sil.fraction, sil.luminance, highlighted,
-        sil.background, sil.brightness, settled, hover, offset, guess, covered, tint, drawn,
+        kind = kind,
+        symbol = symbol,
+        colour = colour,
+        confidence = confidence,
+        fgFraction = sil.fraction,
+        luminance = sil.luminance,
+        highlighted = highlighted,
+        background = sil.background,
+        brightness = sil.brightness,
+        settled = settled,
+        hover = hover,
+        offset = offset,
+        guess = guess,
+        covered = covered,
+        tint = tint,
+        drawn = drawn,
     )
 
     /**
@@ -764,18 +756,15 @@ class ThemeModel(
         }
 
         /**
-         * The recogniser for this game, or null when the start frame is not clean enough.
+         * The recogniser for this game, or null when the start frame is not clean enough: a
+         * cursor's outline over a piece, a piece hidden (the embeddings say so,
+         * [startReadsAsStart]), or square colours that cannot be told apart. The net is
+         * required (a phone without its model file learns nothing: see
+         * [CellEmbedder.load]). The kings and queens have one cell each, and what a start
+         * frame shows is every piece's reference for the game.
          *
-         * Two passes: the first learns the set's colours from every piece, the second
-         * reads every piece with those colours, as every later frame will be read. A
-         * cursor's outline on a piece refuses the frame -- it would be in that piece's
-         * exemplar for the whole game -- and so does a frame the embeddings do not read
-         * back as a start position.
-         *
-         * The embedding matcher needs no silhouette exemplars, so the desktop's stricter
-         * checks on them (`_plausible_exemplar`, `_pair_agrees`) are the silhouette
-         * matcher's and are not ported with it; the exemplars here carry the brightness
-         * and the tone masks the side vote uses.
+         * Two passes: the first learns the set's colours from every piece, the second reads
+         * every piece with those colours, as every later frame will be read.
          */
         fun fromStartPosition(
             frame: Mat,
@@ -889,20 +878,12 @@ class ThemeModel(
         }
 
         /**
-         * One exemplar from the silhouettes of the cells holding this piece kind: the
-         * pixels at least half of them share, the median brightness and centroid.
+         * One exemplar from the silhouettes of the cells holding this piece kind: the tone
+         * pixels at least half of them share (the union of a pair), the median brightness.
          */
         private fun fuse(symbol: String, sils: List<Sil>): Exemplar {
-            val size = Squares.CELL * Squares.CELL
-            val mask = BooleanArray(size) { i -> sils.count { it.mask[i] } * 2 >= sils.size }
-            val tone = BooleanArray(size) { i -> sils.count { it.tone[i] } * 2 >= sils.size }
-            val brightness = medianOfDoubles(sils.map { it.brightness })
-            val centroid = medianOfDoubles(sils.map { it.centroid.first }) to
-                medianOfDoubles(sils.map { it.centroid.second })
-            return Exemplar(
-                symbol, mask, tone, brightness, centroid,
-                SilhouetteReader.alignCentroid(tone), SilhouetteReader.alignCentroid(mask),
-            )
+            val tone = BooleanArray(Squares.CELL * Squares.CELL) { i -> sils.count { it.tone[i] } * 2 >= sils.size }
+            return Exemplar(symbol, tone, medianOfDoubles(sils.map { it.brightness }))
         }
 
         /**

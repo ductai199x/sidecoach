@@ -13,18 +13,18 @@ package com.sidecoach.vision
  * 2. Foreground is every pixel far from that background, with enclosed pockets filled (a
  *    white piece on a light square differs from the square mostly by its outline) and a
  *    small opening applied so labels and anti-aliasing do not count.
- * 3. The embedding matcher names the cell: the 64 cells of the start position embedded by
- *    a frozen pretrained net, a cell named by its nearest one. No threshold on the
- *    foreground at all, so a shaded set and thin detail read like any other.
+ * 3. A frozen pretrained net names the cell: the 64 cells of the start position embedded
+ *    once, a cell named by its nearest one. No threshold on the foreground at all, so a
+ *    shaded set and thin detail read like any other. Whether the piece has landed is the
+ *    phase correlation of the cell against that piece's start-position crop.
  * 4. What sits on top of the board is told apart by geometry, never by colour: a tint
  *    shifts the ring and the deeper corners the same way; a hover outline or an edge
  *    shifts the ring while the corners stay clean; a cover is an overlay confirmed by the
  *    neighbours; a drawing is saturated colour off every line between the square's colour
  *    and the set's.
  *
- * The desktop's other matchers (the silhouette overlap, and the cookie cutter behind
- * `MATCHER`) are not ported: the embedding has been the default since 2026-09-19 and the
- * others exist there as the record of what the thresholds could do.
+ * The net is the only matcher, on the desktop as here since desktop e0ea564; without it no
+ * set is learned.
  */
 object Pieces {
 
@@ -97,14 +97,10 @@ object Pieces {
      */
     const val PIECE_MIN_FRACTION = 0.16
 
-    const val MIN_IOU = 0.35
-    const val MIN_MARGIN = 0.03
-    const val BRIGHTNESS_WEIGHT = 1.5
-
     /**
-     * A piece's side is read from its brightness first: when it lies within one side's
-     * exemplars' range of brightness, widened by this much, and not the other's, the shape
-     * is matched among that side's pieces alone.
+     * The brightness votes for a piece's side when it lies within one side's exemplars'
+     * range of brightness, widened by this much, and not the other's ([ThemeModel]'s side
+     * vote).
      */
     const val SIDE_MARGIN = 0.05
 
@@ -125,20 +121,6 @@ object Pieces {
      * identity errors 161 -> 13, where 24 px lost the detail that tells some sets' pieces apart
      * (a pirouetti queen read as a bishop). Landing is not brought down to it: a piece in
      * flight read as landed (see [LANDING_SAME_SIZE] for how it meets a resize).
-     *
-     * At 40 px the square under a piece weighs more in its embedding than at full detail, and
-     * the start position shows each side's king and queen on one square colour only: a black
-     * queen on a light square came nearer the black bishop learned on one than the black
-     * queen learned on a dark square, and a black king on a dark square nearer the black
-     * queen (the desktop's stress seeds 469: the game stalled; 766: a mid-game board never
-     * read cold). So once a piece's side is voted, each kind is as near as the nearest of its
-     * cells of either side (`ThemeModel.kindScores`): the shape is the kind, and the other
-     * side shows the king and queen on the other square colour. The mated king under the
-     * check glow and the result label came nearer a rook of its own side than its own king
-     * (584). The side itself is voted as before. Learning the kings and queens again on the
-     * other square colour, their crops' squares recoloured, was tried: it named a black queen
-     * on g2 (688), and a set not learned then read as a position with two kings, so the person
-     * was never told to show a start position (the desktop's tests/test_cold_start.py).
      */
     const val CANONICAL_PX = 40
 
@@ -146,27 +128,18 @@ object Pieces {
     const val SETTLED_FLOOR_PX = 3.0    // source pixels: the lock is only good to about one
 
     /**
-     * The embedding matcher lets the brightness choose a piece's side only when its own
-     * nearest white and nearest black piece lie within this of each other.
+     * The embedding votes for a piece's side only when its nearest white and nearest black
+     * piece lie at least this far apart ([ThemeModel]'s side vote).
      */
     const val COLOUR_TIE = 0.05
 
     /**
-     * Where a piece sits, under the embedding matcher (`pieces.LANDING`): "phase", the phase
-     * correlation of the cell against the named piece's start-position crop, which measures the
-     * shift itself (no silhouette: at 0.03, 0.06, 0.1 and 0.2 of a cell off it read 0.031,
-     * 0.062, 0.098 and 0.199 over eight sets, three sizes, both square colours, highlighted or
-     * not, and 0.033 at rest with a pixel of lock jitter; 0.9% of pieces at rest and 0.1% of
-     * pieces a tenth off wrongly called at the 0.08 tolerance; unmoved by a badge, the check
-     * glow, a hint ring, an arrow, a tint or a label); "centroid", the silhouette's centroid
-     * against the exemplar's (the overlap's rule). Both need the hover outline absent. The
-     * desktop reads it from `SIDECOACH_LANDING`; the phone has no environment to read, so it is
-     * a property a bench may set ([com.sidecoach.vision.LandingCostTest]).
-     */
-    @Volatile
-    var LANDING: String = "phase"
-
-    /**
+     * Where a piece sits: the phase correlation of the cell against the named piece's
+     * start-position crop, which measures the shift itself (at 0.03, 0.06, 0.1 and 0.2 of a
+     * cell off it read 0.031, 0.062, 0.098 and 0.199 over eight sets, three sizes, both square
+     * colours, highlighted or not, and 0.033 at rest with a pixel of lock jitter; unmoved by a
+     * badge, the check glow, a hint ring, an arrow, a tint or a label).
+     *
      * After a resize the cell and its reference are each a cell of another size blown up to
      * the working size, and the correlation's peak was lost in the detail one has and the
      * other has not: a rook at rest, learned at 40 px and read at 34, measured 0.15 of a cell
@@ -212,23 +185,14 @@ object Pieces {
     const val COVER_BODY_SHIFT = 20.0
     const val COVER_BODY_FILL = 0.8
 
-    const val EXEMPLAR_MAX_FRACTION = 0.9
-    const val EXEMPLAR_MIN_TONE = 0.08
-    const val EXEMPLAR_MAX_SIDEWAYS = 0.12  // of a cell
-    const val EXEMPLAR_MAX_VERTICAL = 0.28  // of a cell
-    const val PAIR_MIN_IOU = 0.8
-    const val PAIR_MAX_CENTROID = 0.06  // of a cell
-
     /**
-     * The landing tolerance in inner-patch units: a fraction of a cell, but never less
-     * than a few source pixels, so a small cell does not turn lock jitter into a piece in
-     * flight.
+     * The landing tolerance as a share of the cell: [SETTLED_TOLERANCE], but never less than a
+     * few source pixels, so a small cell does not turn lock jitter into a piece in flight
+     * (`pieces.settle_tolerance`).
      */
     fun settleTolerance(cellPx: Double?): Double {
-        if (cellPx == null) return SETTLED_TOLERANCE
-        val innerPx = cellPx * (1.0 - 2.0 * INNER)
-        if (innerPx <= 0) return SETTLED_TOLERANCE
-        return maxOf(SETTLED_TOLERANCE, SETTLED_FLOOR_PX / innerPx)
+        if (cellPx == null || cellPx == 0.0) return SETTLED_TOLERANCE
+        return maxOf(SETTLED_TOLERANCE, SETTLED_FLOOR_PX / cellPx)
     }
 
     /**
@@ -340,5 +304,18 @@ object Pieces {
             reading.fgFraction < PIECE_MIN_FRACTION
 
     /** Which side a piece belongs to, as `sidecoach.events.Side`. */
-    enum class Side { WHITE, BLACK }
+    enum class Side {
+        WHITE,
+        BLACK;
+
+        /** The side as the chess module's colour (`WHITE` is true): `Side.color`. */
+        val color: Boolean get() = this == WHITE
+
+        val other: Side get() = if (this == WHITE) BLACK else WHITE
+
+        companion object {
+            /** The side of a chess colour: `Side.of`. */
+            fun of(color: Boolean): Side = if (color) WHITE else BLACK
+        }
+    }
 }

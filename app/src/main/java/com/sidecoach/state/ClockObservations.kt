@@ -33,7 +33,7 @@ fun clockObservation(reading: ClockReading?, bottom: Pieces.Side): ClockObservat
     if (top == null && bottomMs == null) return null
     val whiteMs: Int?
     val blackMs: Int?
-    if (bottom == Pieces.Side.WHITE) {
+    if (bottom.color) {
         whiteMs = bottomMs
         blackMs = top
     } else {
@@ -42,7 +42,7 @@ fun clockObservation(reading: ClockReading?, bottom: Pieces.Side): ClockObservat
     }
     val running = when (reading.running) {
         Which.BOTTOM -> bottom
-        Which.TOP -> if (bottom == Pieces.Side.WHITE) Pieces.Side.BLACK else Pieces.Side.WHITE
+        Which.TOP -> bottom.other
         null -> null
     }
     return ClockObservation(whiteMs = whiteMs, blackMs = blackMs, running = running)

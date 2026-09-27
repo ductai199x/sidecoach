@@ -1,8 +1,5 @@
 package com.sidecoach.vision
 
-import com.sidecoach.chess.Board
-import com.sidecoach.chess.BLACK
-import com.sidecoach.chess.WHITE
 import org.opencv.core.Mat
 import kotlin.math.ceil
 import kotlin.math.hypot
@@ -14,9 +11,10 @@ import kotlin.math.min
  * `sidecoach/vision/result_badges.py`, ported.
  *
  * Chess.com marks the end of a game on the board itself, before and under its dialog: a
- * green disc with a white crown on the winner's king, a red disc on the loser's, a grey disc
- * on both for a draw. The disc is about a third of a square across and sits just inside the
- * square's top-right corner as drawn on screen. Read at the two kings' squares, the pair says
+ * green disc with a white crown on the winner's king, a red disc on the loser's (the fallen
+ * king, a flag or a clock, in the loser's colour). The disc is about a third of a square
+ * across and sits just inside the square's top-right corner as drawn on screen. Read at the
+ * two kings' squares, the pair says
  * who won without reading a word of the dialog; what the pipeline already knows -- a mate on
  * the board, a clock at zero -- says why.
  *
@@ -25,7 +23,7 @@ import kotlin.math.min
  * disc near the corner -- a rim of one colour with a ring of other colours around it, and not
  * the colour of the square it sits on -- and only then asks which colour.
  */
-enum class Badge { WIN, LOSS, DRAW }
+enum class Badge { WIN, LOSS }
 
 /**
  * One frame's pixels, read out of the Mat once. The desktop indexes the numpy array
@@ -80,13 +78,12 @@ object ResultBadges {
     /** A disc closer than this to the colour of the square it sits on is the square. */
     const val DISTINCT = 25
 
-    /** 1 win, 2 loss, 3 draw, 0 none, for one BGR colour. */
+    /** 1 win, 2 loss, 0 none, for one BGR colour. */
     fun classOf(b: Int, g: Int, r: Int): Int {
         if (g >= 120 && g - r >= 25 && g - b >= 60) return 1
         if (r >= 150 && r - g >= 70 && r - b >= 70) return 2
         // The draw badge is unseen so far. A grey disc was tried for it and read the rounded
-        // end of a white label, so a draw ends the game through the dialog's cover or the End
-        // game menu until one is on record.
+        // end of a white label ([resultOf]).
         return 0
     }
 
@@ -96,7 +93,6 @@ object ResultBadges {
     fun classify(colour: DoubleArray): Badge? = when (classOf(colour)) {
         1 -> Badge.WIN
         2 -> Badge.LOSS
-        3 -> Badge.DRAW
         else -> null
     }
 
@@ -326,29 +322,22 @@ object ResultBadges {
         square: Int,
         bottom: Pieces.Side,
     ): Badge? {
-        val (row, col) = Squares.rowCol(square, bottom == Pieces.Side.WHITE)
+        val (row, col) = Squares.rowCol(square, bottom.color)
         val cornerX = geometry.region.x + (col + 1) * geometry.cellPx
         val cornerY = geometry.region.y + row * geometry.cellPx
         return badgeAt(frame, cornerX, cornerY, geometry.cellPx)
     }
 
     /**
-     * The result the site has stamped on the two kings, as a PGN result string, or null. Only
-     * the pair counts: one badge alone, or two that disagree, is nothing.
+     * The result a pair of badges on the two kings says, as a PGN result string, or null
+     * (`result_badges.result_of`). Only the pair counts: a win on one king with a loss on the
+     * other. One badge alone, or two that disagree, is nothing -- the rim of a glow, an arrow's
+     * head, a mark the site draws for some other reason. A draw's badge has never been seen: a
+     * draw ends through the dialog's cover or the End game menu, which carries the reason.
      */
-    fun readResult(
-        frame: FramePixels,
-        geometry: BoardGeometry,
-        board: Board,
-        bottom: Pieces.Side,
-    ): String? {
-        val whiteKing = board.king(WHITE) ?: return null
-        val blackKing = board.king(BLACK) ?: return null
-        val white = badgeOn(frame, geometry, whiteKing, bottom) ?: return null
-        val black = badgeOn(frame, geometry, blackKing, bottom)
+    fun resultOf(white: Badge?, black: Badge?): String? {
         if (white == Badge.WIN && black == Badge.LOSS) return "1-0"
         if (white == Badge.LOSS && black == Badge.WIN) return "0-1"
-        if (white == Badge.DRAW && black == Badge.DRAW) return "1/2-1/2"
         return null
     }
 }

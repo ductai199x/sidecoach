@@ -1,6 +1,5 @@
 package com.sidecoach.vision
 
-import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.Point
@@ -8,7 +7,6 @@ import org.opencv.core.Rect
 import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
-import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -16,7 +14,7 @@ import kotlin.math.sqrt
 
 /**
  * One cell's silhouette, ported from `sidecoach/vision/pieces.py`: the mask, its tone, the
- * foreground fraction, the square's colour and spread, the centroid, the hover outline,
+ * foreground fraction, the square's colour and spread, the hover outline,
  * the corner pixels a tint is told by, and the share of the cell a drawing covers.
  *
  * The fields are the Python's, name for name. Masks are flat [BooleanArray]s of
@@ -37,7 +35,6 @@ class Sil(
     val luminance: Double,
     val brightness: Double,
     val background: DoubleArray,
-    val centroid: Pair<Double, Double>,
     val hover: Boolean,
     /** The inner patch the mask was taken from: BGR floats, row after row. */
     val inner: FloatArray,
@@ -60,8 +57,8 @@ object SilhouetteReader {
 
     private val CELL = Squares.CELL
 
-    /** Pixels that take part in silhouette comparison: everything but the badge corner. */
-    val BADGE_BLIND: BooleanArray = badgeBlind(CELL)
+    /** Everything but the badge corner: where the fill's colour is read. */
+    private val BADGE_BLIND: BooleanArray = badgeBlind(CELL)
 
     /** Pixels the overlay measure looks at: everything outside the badge's corner disc. */
     private val OVERLAY_BLIND: BooleanArray = overlayBlind(CELL)
@@ -86,7 +83,7 @@ object SilhouetteReader {
     }
 
     /**
-     * Silhouette mask, foreground fraction, colour statistics, centroid, hover, background.
+     * Silhouette mask, foreground fraction, colour statistics, hover, background.
      * [colours] are the set's fills and outlines, for the tones; [palette] every colour the
      * set draws with, for telling a drawing from a piece's detail.
      */
@@ -108,7 +105,7 @@ object SilhouetteReader {
         if (side < 4) {
             return Sil(
                 BooleanArray(size * size), BooleanArray(size * size), 0.0, 0.0, 0.0,
-                background, 0.5 to 0.5, false, FloatArray(size * size * 3),
+                background, false, FloatArray(size * size * 3),
                 FloatArray(0), 0.0, null, null, emptyList(), spread,
             )
         }
@@ -161,7 +158,6 @@ object SilhouetteReader {
 
         var luminance = 0.0
         var brightness = 0.0
-        var centroid = 0.5 to 0.5
         var tone = built.mask
         var coreColour: DoubleArray? = null
         var edgeColour: DoubleArray? = null
@@ -173,7 +169,6 @@ object SilhouetteReader {
             coreColour = stats.colour
             tone = toneMask(built.mask, size, inner, stats.colour, background)
             brightness = luminance / 255.0
-            centroid = centroidOf(built.mask, size)
             val outline = BooleanArray(built.mask.size) { built.mask[it] && !tone[it] }
             var outlinePixels = 0
             for (on in outline) if (on) outlinePixels++
@@ -183,7 +178,7 @@ object SilhouetteReader {
         // the ring the background is read from stays clean and serves as the reference.
         val hover = hoverOutline(patchPixels, n, patch.cols(), background)
         return Sil(
-            built.mask, tone, built.fraction, luminance, brightness, background, centroid,
+            built.mask, tone, built.fraction, luminance, brightness, background,
             hover, inner, cornerPixels(patchPixels, n, patch.cols()), overlay,
             coreColour, edgeColour, tones, spread,
         )
@@ -688,40 +683,6 @@ object SilhouetteReader {
         sum += e1 * e1
         sum += e2 * e2
         return sqrt(sum)
-    }
-
-    /** Centre of mass of a mask in units of its own size; the middle when it is empty. */
-    fun centroidOf(mask: BooleanArray, size: Int): Pair<Double, Double> {
-        var sx = 0.0
-        var sy = 0.0
-        var n = 0
-        for (i in mask.indices) {
-            if (!mask[i]) continue
-            sx += (i % size).toDouble()
-            sy += (i / size).toDouble()
-            n++
-        }
-        if (n == 0) return 0.5 to 0.5
-        return (sx / n / size) to (sy / n / size)
-    }
-
-    /** Where a piece sits for alignment: the centroid of the mask outside the badge corner. */
-    fun alignCentroid(mask: BooleanArray, size: Int = CELL): Pair<Double, Double> {
-        val blind = if (size == CELL) BADGE_BLIND else badgeBlind(size)
-        return centroidOf(BooleanArray(mask.size) { mask[it] && blind[it] }, size)
-    }
-
-    /** Intersection over union of two masks, outside the badge corner. */
-    fun iou(a: BooleanArray, b: BooleanArray, keep: BooleanArray = BADGE_BLIND): Double {
-        var both = 0
-        var either = 0
-        for (i in a.indices) {
-            val x = a[i] && keep[i]
-            val y = b[i] && keep[i]
-            if (x && y) both++
-            if (x || y) either++
-        }
-        return if (either > 0) both.toDouble() / either else 0.0
     }
 
     // ---- small helpers -------------------------------------------------------------

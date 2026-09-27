@@ -66,17 +66,13 @@ object Covers {
     }
 
     /**
-     * Cells in a block of at least [Pieces.TINT_MIN_CELLS] that share one translucent
-     * overlay: a dialog fades in over a few frames, and while it is half transparent the
-     * pieces under it are unreadable but the squares still differ, so the opaque test does
-     * not fire. A move highlight tints one to three cells and a right-click mark a few,
-     * and stay below the block size.
+     * The groups of marked [cells], neighbours joined when [joined] says so (two cell indices),
+     * that are shaped like a dialog: at least [Pieces.TINT_MIN_CELLS], two cells or more each
+     * way, filling [fill] of their bounding box (`pieces._blocks`). A file of right-click marks
+     * or a queued premove's squares make a line, and a highlight or two a small group; neither
+     * is a dialog.
      */
-    fun translucentCover(
-        backgrounds: Array<DoubleArray>,
-        expected: Array<DoubleArray>,
-        shifted: BooleanArray,
-    ): BooleanArray {
+    private fun blocks(cells: BooleanArray, joined: (Int, Int) -> Boolean, fill: Double): List<List<Int>> {
         val parent = IntArray(64) { it }
         fun find(start: Int): Int {
             var i = start
@@ -88,33 +84,41 @@ object Covers {
         }
         for (r in 0 until 8) {
             for (c in 0 until 8) {
-                if (!shifted[r * 8 + c]) continue
+                if (!cells[r * 8 + c]) continue
                 for ((rr, cc) in listOf(r to c + 1, r + 1 to c)) {
-                    if (rr >= 8 || cc >= 8 || !shifted[rr * 8 + cc]) continue
-                    if (sameTint(
-                            backgrounds[r * 8 + c], backgrounds[rr * 8 + cc],
-                            expected[r * 8 + c], expected[rr * 8 + cc],
-                        )
-                    ) {
+                    if (rr < 8 && cc < 8 && cells[rr * 8 + cc] && joined(r * 8 + c, rr * 8 + cc)) {
                         parent[find(r * 8 + c)] = find(rr * 8 + cc)
                     }
                 }
             }
         }
-        val members = HashMap<Int, MutableList<Int>>()
-        for (i in 0 until 64) if (shifted[i]) members.getOrPut(find(i)) { ArrayList() }.add(i)
-        val covered = BooleanArray(64)
-        for (cells in members.values) {
-            if (cells.size < Pieces.TINT_MIN_CELLS) continue
-            // A dialog is a filled rectangle at least two cells wide and high. A file of
-            // right-click marks or the squares of a queued premove make a line.
-            val rows = cells.map { it / 8 }
-            val cols = cells.map { it % 8 }
+        val groups = LinkedHashMap<Int, MutableList<Int>>()
+        for (i in 0 until 64) if (cells[i]) groups.getOrPut(find(i)) { ArrayList() }.add(i)
+        return groups.values.filter { members ->
+            val rows = members.map { it / 8 }
+            val cols = members.map { it % 8 }
             val height = rows.max() - rows.min() + 1
             val width = cols.max() - cols.min() + 1
-            if (height < 2 || width < 2 || cells.size < Pieces.TINT_BLOCK_FILL * height * width) continue
-            for (i in cells) covered[i] = true
+            members.size >= Pieces.TINT_MIN_CELLS && height >= 2 && width >= 2 &&
+                members.size >= fill * height * width
         }
+    }
+
+    /**
+     * Cells in a dialog-shaped block ([blocks]) that share one translucent overlay: a dialog
+     * fades in over a few frames, and while it is half transparent the pieces under it are
+     * unreadable but the squares still differ, so the opaque test does not fire. A move
+     * highlight tints one to three cells and a right-click mark a few, and stay below the
+     * block size.
+     */
+    fun translucentCover(
+        backgrounds: Array<DoubleArray>,
+        expected: Array<DoubleArray>,
+        shifted: BooleanArray,
+    ): BooleanArray {
+        val covered = BooleanArray(64)
+        val tinted = { a: Int, b: Int -> sameTint(backgrounds[a], backgrounds[b], expected[a], expected[b]) }
+        for (block in blocks(shifted, tinted, Pieces.TINT_BLOCK_FILL)) for (i in block) covered[i] = true
         // A highlighted square, or one with the dialog's text over its ring, does not fit
         // the tint, yet it lies under the same overlay when its neighbours do.
         repeat(2) {
@@ -134,39 +138,15 @@ object Covers {
 
     /**
      * The covered cells plus the body of each dialog: cells off their square colour that
-     * connect to a covered block and, with it, fill a rectangle. A highlight or two beside
-     * a tooltip does not fill a rectangle with it; a fading dialog's buttons and text do.
+     * connect (4-neighbours) to a covered block and, with it, make a dialog-shaped block
+     * ([blocks]). A highlight or two beside a tooltip does not fill a rectangle with it; a
+     * fading dialog's buttons and text do.
      */
     fun coverBody(covered: BooleanArray, shifts: DoubleArray): BooleanArray {
         val candidate = BooleanArray(64) { covered[it] || shifts[it] > Pieces.COVER_BODY_SHIFT }
-        val parent = IntArray(64) { it }
-        fun find(start: Int): Int {
-            var i = start
-            while (parent[i] != i) {
-                parent[i] = parent[parent[i]]
-                i = parent[i]
-            }
-            return i
-        }
-        for (r in 0 until 8) {
-            for (c in 0 until 8) {
-                if (!candidate[r * 8 + c]) continue
-                for ((rr, cc) in listOf(r to c + 1, r + 1 to c)) {
-                    if (rr < 8 && cc < 8 && candidate[rr * 8 + cc]) parent[find(r * 8 + c)] = find(rr * 8 + cc)
-                }
-            }
-        }
-        val members = HashMap<Int, MutableList<Int>>()
-        for (i in 0 until 64) if (candidate[i]) members.getOrPut(find(i)) { ArrayList() }.add(i)
         val out = covered.copyOf()
-        for (cells in members.values) {
-            if (cells.size < Pieces.TINT_MIN_CELLS || cells.none { covered[it] }) continue
-            val rows = cells.map { it / 8 }
-            val cols = cells.map { it % 8 }
-            val height = rows.max() - rows.min() + 1
-            val width = cols.max() - cols.min() + 1
-            if (height < 2 || width < 2 || cells.size < Pieces.COVER_BODY_FILL * height * width) continue
-            for (i in cells) out[i] = true
+        for (block in blocks(candidate, { _, _ -> true }, Pieces.COVER_BODY_FILL)) {
+            if (block.any { covered[it] }) for (i in block) out[i] = true
         }
         return out
     }

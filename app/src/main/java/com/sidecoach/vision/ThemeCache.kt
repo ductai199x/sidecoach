@@ -11,7 +11,7 @@ import kotlin.math.sqrt
  * `sidecoach/vision/theme_cache.py`, ported.
  *
  * The recogniser is normally rebuilt from the start position each game: it learns the twelve
- * piece silhouettes and the two square colours from the known move-0 layout. That makes
+ * pieces and the two square colours from the known move-0 layout. That makes
  * reading a puzzle or a mid-game position from scratch impossible -- there is no start
  * position to learn from. This cache persists a learned model keyed by a fingerprint of the
  * board's two square colours, which can be sampled from *any* board without a model. So a
@@ -28,12 +28,13 @@ object ThemeCache {
      * 2: the landing crops travel with the theme (the desktop's 10); 3: the palette is the
      * desktop's k-means and the start cells' embeddings are held at half precision, as the
      * desktop holds them (the parity audit, 2026-09-26); 4: the embeddings are of the crop at
-     * one resolution (`Pieces.canonical`, the desktop's 11). A file of any other version is
-     * ignored and the theme relearned, as the desktop ignores one (`theme_cache._read`): a
-     * version 1 set, with no landing crops, once read on and landed its pieces by the
-     * centroid. The desktop's numbering is its own file's.
+     * one resolution (`Pieces.canonical`, the desktop's 11); 5: the exemplars keep only what
+     * the embedding reads, their tone and brightness, and the landing crops' cell size is
+     * always there (the desktop's 12). A file of any other version is ignored and the theme
+     * relearned, as the desktop ignores one (`theme_cache._read`). The desktop's numbering is
+     * its own file's.
      */
-    const val CACHE_VERSION = 4
+    const val CACHE_VERSION = 5
 
     /** Square colours within this many levels share a fingerprint (tolerates lighting). */
     private const val QUANTUM = 8
@@ -203,11 +204,10 @@ class ThemeStore(private val directory: File) {
     fun get(lightBg: DoubleArray, darkBg: DoubleArray): ThemeModel? = candidates(lightBg, darkBg).firstOrNull()?.second
 
     /**
-     * A name for a learned set among those on the same board colours: from its start cells'
-     * embeddings, or a fresh one when it has none.
+     * A name for a learned set among those on the same board colours, from its start cells'
+     * embeddings: every learned set has them (`theme_cache._set_key`).
      */
     private fun setKey(model: ThemeModel): String {
-        if (model.exemplarVectors.isEmpty()) return java.util.UUID.randomUUID().toString().replace("-", "").take(8)
         // The half-precision buffer the desktop hashes, little-endian.
         val digest = MessageDigest.getInstance("SHA-1")
         val bytes = java.nio.ByteBuffer.allocate(2 * model.exemplarVectors[0].size).order(java.nio.ByteOrder.LITTLE_ENDIAN)
@@ -255,12 +255,8 @@ class ThemeStore(private val directory: File) {
         out.writeInt(model.exemplars.size)
         for (exemplar in model.exemplars) {
             out.writeUTF(exemplar.symbol)
-            writeBits(out, exemplar.mask)
             writeBits(out, exemplar.tone)
             out.writeDouble(exemplar.brightness)
-            out.writeDouble(exemplar.centroid.first); out.writeDouble(exemplar.centroid.second)
-            out.writeDouble(exemplar.alignCentroid.first); out.writeDouble(exemplar.alignCentroid.second)
-            out.writeDouble(exemplar.landingCentroid.first); out.writeDouble(exemplar.landingCentroid.second)
         }
         out.writeInt(model.pieceColours.size)
         for ((fill, edge) in model.pieceColours) {
@@ -288,8 +284,6 @@ class ThemeStore(private val directory: File) {
             out.writeInt(crop.cols)
             out.write(crop.pixels)
         }
-        // Last, so a theme cached before it was kept still reads, at 0: it compares at full
-        // detail, as the desktop's unpickled `landing_px` does (desktop cfaa416).
         out.writeDouble(model.landingPx)
     }
 
@@ -301,13 +295,8 @@ class ThemeStore(private val directory: File) {
         val exemplars = ArrayList<Exemplar>()
         repeat(input.readInt()) {
             val symbol = input.readUTF()
-            val mask = readBits(input)
             val tone = readBits(input)
-            val brightness = input.readDouble()
-            val centroid = input.readDouble() to input.readDouble()
-            val align = input.readDouble() to input.readDouble()
-            val landing = input.readDouble() to input.readDouble()
-            exemplars.add(Exemplar(symbol, mask, tone, brightness, centroid, align, landing))
+            exemplars.add(Exemplar(symbol, tone, input.readDouble()))
         }
         val pieceColours = ArrayList<Pair<DoubleArray, DoubleArray?>>()
         repeat(input.readInt()) {
@@ -336,11 +325,7 @@ class ThemeStore(private val directory: File) {
             input.readFully(pixels)
             landingCrops[symbol] = LandingCrop(rows, cols, pixels)
         }
-        val landingPx = try {
-            input.readDouble()
-        } catch (e: java.io.EOFException) {
-            0.0 // cached before the size was kept
-        }
+        val landingPx = input.readDouble()
         val model = ThemeModel(
             exemplars = exemplars,
             lightBg = lightBg,

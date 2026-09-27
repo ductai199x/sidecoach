@@ -59,7 +59,7 @@ object Review {
     private fun outcome(result: String, userSide: Pieces.Side): String {
         if (result == "1/2-1/2") return "drew"
         if (result != "1-0" && result != "0-1") return "played"
-        val won = (result == "1-0") == (userSide == Pieces.Side.WHITE)
+        val won = (result == "1-0") == userSide.color
         return if (won) "won" else "lost"
     }
 

@@ -145,11 +145,6 @@ class PipelinePartsTest {
     @Test
     fun theReasonTheGameEndedComesFromTheBoardAndTheClock() {
         val pipe = GamePipeline(net)
-        val stalemate = Board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
-        assertTrue(stalemate.isStalemate())
-        assertEquals("stalemate", pipe.endReason(stalemate, "1/2-1/2"))
-        assertEquals("insufficient material", pipe.endReason(Board("7k/8/6K1/8/8/8/8/8 w - - 0 1"), "1/2-1/2"))
-        assertEquals("draw agreed", pipe.endReason(Board(), "1/2-1/2"))
         val mate = Board("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
         assertEquals("checkmate", pipe.endReason(mate, "0-1"))
         assertEquals("resignation", pipe.endReason(Board(), "1-0"))

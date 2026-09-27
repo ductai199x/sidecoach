@@ -1,7 +1,7 @@
 """Record where the desktop's recogniser says each piece sits: the phase landing, cell for cell.
 
 Desktop de58ca7 decides whether a piece has landed by the phase correlation of the cell's grey
-crop against that piece kind's start crop (`pieces.LANDING`, "phase", `_phase_shift`). The phone
+crop against that piece kind's start crop (`pieces._phase_shift`). The phone
 does the same with its own OpenCV, a different build of it; this holds its numbers to the
 Python's. A model is learned from a start frame, as the pipeline learns one, and frames are
 read one after another, as a game is: pieces at rest on the phone-sized boards, and pieces
@@ -34,7 +34,6 @@ import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
 from sidecoach.events import Region, Side  # noqa: E402
-from sidecoach.vision import pieces  # noqa: E402
 from sidecoach.vision.board_detect import detect_boards  # noqa: E402
 from sidecoach.vision.pieces import ThemeModel  # noqa: E402
 from sidecoach.vision.squares import BoardGeometry, row_col  # noqa: E402
@@ -215,7 +214,6 @@ def resized_cases() -> list[dict]:
 
 
 def main() -> None:
-    assert pieces.LANDING == "phase", "the desktop's own landing rule"
     for old in (ASSETS / "boards").glob("resized-*.png"):
         old.unlink()
     cases = []

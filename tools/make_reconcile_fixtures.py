@@ -423,6 +423,10 @@ class _Log:
         self.ops: list[dict] | None = None
         self.name = ""
         self.ids: dict[int, int] = {}
+        # Every reconciler recorded, held for the test: an `id` is an address, and one freed
+        # (a pipeline's reset drops its reconciler) is handed to the next, which was then
+        # recorded as the old one built again.
+        self.held: list[object] = []
         self.games: dict[str, int] = {}
         self.states: dict[int, dict] = {}
 
@@ -430,6 +434,7 @@ class _Log:
         self.name = name
         self.ops = []
         self.ids = {}
+        self.held = []
         self.games = {}
         self.states = {}
 
@@ -475,6 +480,7 @@ class _Log:
         key = id(rec)
         if key not in self.ids:
             self.ids[key] = len(self.ids)
+            self.held.append(rec)
         entry = {"r": self.ids[key], "op": op, **fields}
         # The state as it changed since the last op on this reconciler.
         now = self.state(rec)

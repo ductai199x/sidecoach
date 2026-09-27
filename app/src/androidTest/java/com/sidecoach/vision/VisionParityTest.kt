@@ -108,12 +108,15 @@ class VisionParityTest {
             val board = Board(case.getString("fen"))
             val bottom = if (case.getString("bottom") == "white") Pieces.Side.WHITE else Pieces.Side.BLACK
             val kings = case.getJSONObject("kings")
+            val read = ArrayList<Badge?>(2)
             for ((colour, key) in listOf(true to "white", false to "black")) {
-                val got = ResultBadges.badgeOn(frame, geometry, board.king(colour)!!, bottom)?.name?.lowercase()
+                val badge = ResultBadges.badgeOn(frame, geometry, board.king(colour)!!, bottom)
+                read.add(badge)
+                val got = badge?.name?.lowercase()
                 val want = kings.optString(key).takeUnless { kings.isNull(key) }
                 if (got != want) failures.add("$name $key king: phone $got, desktop $want")
             }
-            val result = ResultBadges.readResult(frame, geometry, board, bottom)
+            val result = ResultBadges.resultOf(read[0], read[1])
             val want = case.optString("result").takeUnless { case.isNull("result") }
             if (result != want) failures.add("$name result: phone $result, desktop $want")
         }

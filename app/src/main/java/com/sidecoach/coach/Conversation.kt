@@ -2,7 +2,6 @@ package com.sidecoach.coach
 
 import com.sidecoach.analysis.sanLine
 import com.sidecoach.chess.BISHOP
-import com.sidecoach.chess.BLACK
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.KING
 import com.sidecoach.chess.KNIGHT
@@ -182,7 +181,7 @@ class Conversation {
     private var drained: Int = 0
 
     private val userColour: Boolean
-        get() = if (userSide == Pieces.Side.WHITE) WHITE else BLACK
+        get() = userSide.color
 
     // ---- the game's events, in the order they happen -----------------------------------
 

@@ -13,7 +13,7 @@ odd. This records, compactly, one table per part:
   `ChangeGate`; and `board_gate` for boards whose half cell is a half pixel, or off the frame.
 - badges: the live games' crops (tests/fixtures/badges) and a few rendered boards (both
   orientations, two sizes, the kings on the edges, a bulky piece walling off its corner, no
-  result), with `badge_at`/`find_disc` and `read_result` for each.
+  result), with `badge_at`/`find_disc`, and the pair `result_of` makes of the kings' badges.
 - boards: small frames with a board on a busy page -- in place, nudged, slid, resized,
   covered by the game-over dialog, flush with the frame's corner at a half-pixel pitch, two
   boards, a larger checkerboard, an inverted and a low-contrast theme, nothing -- with what
@@ -64,10 +64,11 @@ from sidecoach.vision.board_detect import (  # noqa: E402
     to_gray,
 )
 from sidecoach.vision.result_badges import (  # noqa: E402
+    Badge,
     badge_at,
     badge_on,
     find_disc,
-    read_result,
+    result_of,
     square_colour,
 )
 from sidecoach.vision.squares import BoardGeometry  # noqa: E402
@@ -241,7 +242,10 @@ def badge_cases() -> dict:
                 "margin": margin,
                 "bottom": bottom.value,
                 "kings": kings,
-                "result": read_result(frame, geometry, board, bottom),
+                # The pair of the two kings' badges (`result_badges.result_of`, desktop e0ea564).
+                "result": result_of(*(
+                    None if kings[key] is None else Badge(kings[key]) for key in ("white", "black")
+                )),
             }
         )
     return {"crops": crops, "boards": boards}

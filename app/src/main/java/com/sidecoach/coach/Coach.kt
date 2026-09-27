@@ -6,7 +6,6 @@ import com.sidecoach.chess.KING
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.PAWN
 import com.sidecoach.chess.STARTING_FEN
-import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.squareName
 import com.sidecoach.chess.squaresOf
 import com.sidecoach.events.Analysis
@@ -1497,7 +1496,7 @@ fun interface DraftCheck {
 /** The side the coach speaks to, from the facts: whose "your" a draft means. `coach._player`. */
 internal fun player(facts: PositionFacts): Boolean? {
     val side = facts.userSide ?: return null
-    return if (side == "white") WHITE else !WHITE
+    return Pieces.Side.valueOf(side.uppercase()).color
 }
 
 /**

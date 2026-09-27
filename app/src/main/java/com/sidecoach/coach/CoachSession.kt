@@ -508,7 +508,7 @@ class Coach(
 
     fun close() = speaker.close()
 
-    val userColour: Boolean get() = if (userSide == Pieces.Side.WHITE) WHITE else !WHITE
+    val userColour: Boolean get() = userSide.color
 
     val userToMove: Boolean get() = board.turn == userColour
 

@@ -186,7 +186,7 @@ object Coordinates {
     ): Map<Int, BooleanArray> {
         val labels = LinkedHashMap<Int, BooleanArray>()
         for (row in 0 until 8) {
-            val rank = if (bottom == Pieces.Side.WHITE) 8 - row else row + 1
+            val rank = if (bottom.color) 8 - row else row + 1
             val cell = geometry.crop(frame, row, 0)
             val glyph = cornerGlyph(cell)
             cell.release()

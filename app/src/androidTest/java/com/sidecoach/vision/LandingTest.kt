@@ -39,7 +39,6 @@ class LandingTest {
         var worstAt = ""
         var shifts = 0
         var landing = 0
-        assertTrue(Pieces.LANDING == "phase")
         CellEmbedder.load(instrumentation.targetContext).use { embedder ->
             for (k in 0 until cases.length()) {
                 val case = cases.getJSONObject(k)

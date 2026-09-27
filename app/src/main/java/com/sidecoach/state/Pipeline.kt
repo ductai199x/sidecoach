@@ -2,13 +2,11 @@ package com.sidecoach.state
 
 import com.sidecoach.chess.BLACK
 import com.sidecoach.chess.Board
-import com.sidecoach.chess.Move
 import com.sidecoach.chess.Piece
 import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.squareDistance
 import com.sidecoach.events.BoardUnread
 import com.sidecoach.events.Event
-import com.sidecoach.events.GameEnded
 import com.sidecoach.events.GameStarted
 import com.sidecoach.events.PositionChanged
 import com.sidecoach.events.Resync
@@ -32,23 +30,10 @@ import com.sidecoach.vision.ClockReader
 import com.sidecoach.vision.Squares
 import com.sidecoach.vision.ThemeModel
 import com.sidecoach.vision.ThemeStore
-import com.sidecoach.vision.Which
 import org.opencv.core.Mat
 
 /** What a read shows: the placement and the squares the site highlights. */
 private typealias View = Pair<String, Set<Int>>
-
-/** The squares the site marks as its last move (or a selection), not a red mark. */
-private fun highlighted(readings: Readings, bottom: Side): Set<Int> {
-    val squares = HashSet<Int>()
-    for (row in 0 until 8) for (col in 0 until 8) {
-        val reading = readings[row * 8 + col]
-        if (reading.highlighted && reading.tint != "red") {
-            squares.add(Squares.squareAt(row, col, bottom == Side.WHITE))
-        }
-    }
-    return squares
-}
 
 /**
  * Frame to events: tracker, start-position bootstrap, recogniser, reconciler.
@@ -134,9 +119,6 @@ class GamePipeline(
      * whose coordinate labels cannot be read or read wrong); the labels otherwise.
      */
     var forcedBottom: Side? = null
-    var model: ThemeModel? = null
-    var reconciler: Reconciler? = null
-    var bottom: Side? = null
     var board: BoardCandidate? = null
     var bootstraps = 0
 
@@ -144,46 +126,79 @@ class GamePipeline(
     var clock: ClockReader? = null
 
     /**
-     * The last clock observation emitted, so an unchanged reading is not repeated, and when
-     * it was read. `internal` for the desktop's tests, which set `_last_clock` as a clock
-     * reader would have left it.
+     * One game's reading: everything [reset] forgets, each field back at its default. What it
+     * keeps -- the settings, the tracker and its lock, the side the person told, the clock
+     * reader, the cache and the count of recognisers built -- is the pipeline's own
+     * (`pipeline._RESET_KEEPS`, desktop e0ea564, where `reset` had listed twenty fields).
      */
-    internal var lastClock: Triple<Int?, Int?, Side?>? = null
-    internal var lastClockTs: Double? = null
+    private class Game {
+        var model: ThemeModel? = null
+        var reconciler: Reconciler? = null
+        var bottom: Side? = null
 
-    private var startSeen = 0
-    private var startOnScreen = false
-    private var readingsValue: Readings? = null
+        /**
+         * The last clock observation emitted, so an unchanged reading is not repeated, and
+         * when it was read.
+         */
+        var lastClock: Triple<Int?, Int?, Side?>? = null
+        var lastClockTs: Double? = null
 
-    /**
-     * The geometry the readings were taken with, and whether a changed frame went unread
-     * because the lock was in doubt: either means the next verified frame is read again.
-     */
-    private var readingsKey: Pair<Region, Double>? = null
-    private var unreadChange = false
-    private var coldTried: Double? = null
-    private var coldCandidate: Triple<View, Int, Double>? = null
+        var startSeen = 0
+        var startOnScreen = false
+        var readingsValue: Readings? = null
 
-    /**
-     * The last cold read and what it was read from (the lock and the side told), so pixels
-     * that have not changed are not read again; since when no cold read has succeeded on this
-     * lock, and whether the person has been told.
-     */
-    private var coldLast: Pair<Triple<Region, Double, Side?>, ColdRead?>? = null
-    private var coldSince: Double? = null
-    private var coldNoticed = false
+        /**
+         * The geometry the readings were taken with, and whether a changed frame went unread
+         * because the lock was in doubt: either means the next verified frame is read again.
+         */
+        var readingsKey: Pair<Region, Double>? = null
+        var unreadChange = false
+        var coldTried: Double? = null
+        var coldCandidate: Triple<View, Int, Double>? = null
 
-    /** The lock the start check last ran on with no model: unchanged pixels on it look the same. */
-    private var startChecked: Pair<Region, Double>? = null
+        /**
+         * The last cold read and what it was read from (the lock and the side told), so pixels
+         * that have not changed are not read again; since when no cold read has succeeded on
+         * this lock, and whether the person has been told.
+         */
+        var coldLast: Pair<Triple<Region, Double, Side?>, ColdRead?>? = null
+        var coldSince: Double? = null
+        var coldNoticed = false
 
-    /** The other side the labels last said was at the bottom of an unexplained board, and when. */
-    // The side the labels say, when, and the position then read that way round.
-    private var flipSeen: Triple<Side, Double, View?>? = null
-    private var screenState: ScreenState = ScreenState.UNKNOWN
-    private var dialogSince: Double? = null
-    private var covered = false
-    private var badges: Pair<String, Int>? = null
-    private var badgeFrame: Triple<String, Int, Int>? = null
+        /** The lock the start check last ran on with no model: unchanged pixels on it look the same. */
+        var startChecked: Pair<Region, Double>? = null
+
+        /**
+         * The side the labels last said was at the bottom of an unexplained board, when, and
+         * the position then read that way round.
+         */
+        var flipSeen: Triple<Side, Double, View?>? = null
+        var screenState: ScreenState = ScreenState.UNKNOWN
+        var dialogSince: Double? = null
+        var covered = false
+        var badges: Pair<String, Int>? = null
+        var badgeFrame: Triple<String, Int, Int>? = null
+    }
+
+    private var game = Game()
+
+    var model: ThemeModel?
+        get() = game.model
+        set(value) { game.model = value }
+    var reconciler: Reconciler?
+        get() = game.reconciler
+        set(value) { game.reconciler = value }
+    var bottom: Side?
+        get() = game.bottom
+        set(value) { game.bottom = value }
+
+    /** `internal` for the desktop's tests, which set `_last_clock` as a clock reader would have left it. */
+    internal var lastClock: Triple<Int?, Int?, Side?>?
+        get() = game.lastClock
+        set(value) { game.lastClock = value }
+    internal var lastClockTs: Double?
+        get() = game.lastClockTs
+        set(value) { game.lastClockTs = value }
 
     /** The current frame's pixels when the caller already read them out of the Mat. */
     private var framePixels: FramePixels? = null
@@ -200,7 +215,7 @@ class GamePipeline(
         private set
 
     /** What the recogniser read from the last changed frame. */
-    val readings: Readings? get() = readingsValue
+    val readings: Readings? get() = game.readingsValue
 
     /**
      * Events for one frame, stamped with its time and id.
@@ -230,22 +245,22 @@ class GamePipeline(
             // No board, or a lock the frame did not validate: readings taken from an
             // unverified geometry would be noise for the reconciler. Whatever changed in this
             // frame is still unread.
-            unreadChange = unreadChange || changed
+            game.unreadChange = game.unreadChange || changed
             reconciler?.boardUnseen()
             // A board that comes back is waited for, and explained, afresh.
-            coldLast = null
-            coldSince = null
-            coldNoticed = false
-            startChecked = null
+            game.coldLast = null
+            game.coldSince = null
+            game.coldNoticed = false
+            game.startChecked = null
             return stamp(emitScreenState(boardPresent = false), ts, frameId)
         }
         val geometry = BoardGeometry(candidate.region, candidate.cellPx)
         val key = candidate.region to Math.round(candidate.cellPx * 100.0) / 100.0
-        val newPixels = changed || unreadChange
+        val newPixels = changed || game.unreadChange
         // These pixels are not the ones last read cold, whether or not this tick reads.
-        if (newPixels) coldLast = null
-        var fresh = changed || unreadChange || readingsValue == null || key != readingsKey
-        unreadChange = false
+        if (newPixels) game.coldLast = null
+        var fresh = changed || game.unreadChange || game.readingsValue == null || key != game.readingsKey
+        game.unreadChange = false
         val events = mutableListOf<Event>()
         // This tick carries new pixels: the moment to sample the clock.
         if (changed) events.addAll(readClock(frame, ts))
@@ -259,22 +274,22 @@ class GamePipeline(
                 // cannot read that way, a new theme or the colours swapped, needs a fresh
                 // recogniser.
                 began = android.os.SystemClock.elapsedRealtime()
-                readingsValue = current.classifyFrame(frame, geometry, embedder)
+                game.readingsValue = current.classifyFrame(frame, geometry, embedder)
                 classifyMs = android.os.SystemClock.elapsedRealtime() - began
-                readingsKey = key
-                startOnScreen = ThemeModel.startShapedReadings(readingsValue!!) &&
-                    !readsAsStart(readingsValue!!)
-            } else if (newPixels || key != startChecked) {
+                game.readingsKey = key
+                game.startOnScreen = ThemeModel.startShapedReadings(game.readingsValue!!) &&
+                    !readsAsStart(game.readingsValue!!)
+            } else if (newPixels || key != game.startChecked) {
                 // With no model, unchanged pixels on the same lock look the same: not checked
                 // again on every tick a board sits there unread (a quarter of a second a
                 // frame on the phone).
                 began = android.os.SystemClock.elapsedRealtime()
-                startOnScreen = ThemeModel.looksLikeStartPosition(frame, geometry)
+                game.startOnScreen = ThemeModel.looksLikeStartPosition(frame, geometry)
                 classifyMs = android.os.SystemClock.elapsedRealtime() - began
-                startChecked = key
+                game.startChecked = key
             }
         }
-        startSeen = if (startOnScreen) startSeen + 1 else 0
+        game.startSeen = if (game.startOnScreen) game.startSeen + 1 else 0
         if (shouldBootstrap()) {
             // Decided on every verified tick, changed or not, so that a start position stored
             // on one tick and left unchanged for the next few still counts.
@@ -282,31 +297,31 @@ class GamePipeline(
             events.addAll(bootstrap(frame, geometry))
             rebuilt = bootstraps != before
             if (rebuilt && model != null) {
-                readingsValue = model!!.classifyFrame(frame, geometry, embedder)
-                readingsKey = key
+                game.readingsValue = model!!.classifyFrame(frame, geometry, embedder)
+                game.readingsKey = key
                 // The new recogniser reads this frame as its own start position.
-                startOnScreen = false
+                game.startOnScreen = false
             }
         }
-        if (model == null && fresh && !startOnScreen) {
+        if (model == null && fresh && !game.startOnScreen) {
             began = android.os.SystemClock.elapsedRealtime()
             events.addAll(autoColdStart(frame, geometry, ts))
             coldMs = android.os.SystemClock.elapsedRealtime() - began
         }
         val current = model
         val rec = reconciler
-        val currentReadings = readingsValue
+        val currentReadings = game.readingsValue
         if (current == null || rec == null || currentReadings == null) {
             events.addAll(emitScreenState(boardPresent = true))
             return stamp(events, ts, frameId)
         }
         val wasStarted = rec.started
-        if (fresh) badgeFrame = badgedKings(frame, geometry)
+        if (fresh) game.badgeFrame = badgedKings(frame, geometry)
         events.addAll(resyncReoriented(rec.update(currentReadings, ts), frame, geometry, ts))
         if (events.none { it is Resync || it is GameStarted }) events.addAll(flipIfTurned(frame, geometry, ts))
         events.addAll(turnFromClock(ts))
         if (fresh) events.addAll(endOnBadges())
-        events.addAll(dialogOverTheBoard(readingsValue!!, ts))
+        events.addAll(dialogOverTheBoard(game.readingsValue!!, ts))
         if (wasStarted && !rebuilt && fresh &&
             events.any { it is GameStarted } &&
             ThemeModel.looksLikeStartPosition(frame, geometry)
@@ -332,29 +347,29 @@ class GamePipeline(
     private fun dialogOverTheBoard(readings: Readings, ts: Double): MutableList<Event> {
         val rec = reconciler
         if (rec == null || !rec.started || rec.finished) {
-            dialogSince = null
-            covered = false
+            game.dialogSince = null
+            game.covered = false
             return mutableListOf()
         }
         val coveredCells = readings.count { it.covered }
         if (coveredCells < DIALOG_CELLS) {
-            dialogSince = null
-            covered = false
+            game.dialogSince = null
+            game.covered = false
             return mutableListOf()
         }
-        if (dialogSince == null) {
-            dialogSince = ts
+        if (game.dialogSince == null) {
+            game.dialogSince = ts
             return mutableListOf()
         }
-        if (ts - dialogSince!! < DIALOG_SECONDS) return mutableListOf()
+        if (ts - game.dialogSince!! < DIALOG_SECONDS) return mutableListOf()
         if (rec.pendingTerminal() != null) {
             val events = rec.commitPendingTerminal()
             if (events.isNotEmpty()) {
-                dialogSince = null
+                game.dialogSince = null
                 return events
             }
         }
-        covered = true
+        game.covered = true
         return mutableListOf()
     }
 
@@ -372,14 +387,14 @@ class GamePipeline(
      */
     private fun badgedKings(frame: Mat, geometry: BoardGeometry): Triple<String, Int, Int>? {
         val rec = reconciler
-        val readings = readingsValue
+        val readings = game.readingsValue
         val bottomSide = bottom
         if (rec == null || !rec.started || rec.finished || bottomSide == null) return null
         if (readings == null) return null
         val wide = rec.pendingStory || rec.blocked || rec.unexplained
 
         fun readingAt(square: Int): CellReading {
-            val (r, c) = Squares.rowCol(square, bottomSide == Side.WHITE)
+            val (r, c) = Squares.rowCol(square, bottomSide.color)
             return readings[r * 8 + c]
         }
 
@@ -411,13 +426,8 @@ class GamePipeline(
         val pairs = ArrayList<Triple<String, Int, Int>>()
         for ((wk, wb) in whites) {
             for ((bk, bb) in blacks) {
-                val result = when {
-                    wb == Badge.WIN && bb == Badge.LOSS -> "1-0"
-                    wb == Badge.LOSS && bb == Badge.WIN -> "0-1"
-                    wb == Badge.DRAW && bb == Badge.DRAW -> "1/2-1/2"
-                    else -> null
-                }
-                if (result != null && wk != bk) pairs.add(Triple(result, wk, bk))
+                val result = ResultBadges.resultOf(wb, bb)
+                if (wk != bk && result != null) pairs.add(Triple(result, wk, bk))
             }
         }
         if (pairs.size != 1) return null
@@ -425,7 +435,7 @@ class GamePipeline(
         for ((square, symbol, colour) in listOf(
             Triple(wk, "K", Side.WHITE), Triple(bk, "k", Side.BLACK),
         )) {
-            val (r, c) = Squares.rowCol(square, bottomSide == Side.WHITE)
+            val (r, c) = Squares.rowCol(square, bottomSide.color)
             val reading = readings[r * 8 + c]
             if (reading.kind == Kind.EMPTY || reading.covered) continue
             if (reading.kind == Kind.PIECE && reading.symbol == symbol && reading.settled) continue
@@ -449,18 +459,19 @@ class GamePipeline(
      * The game ends on the site's result badges when the board could not end it: the pair must
      * agree with itself for [BADGE_FRAMES] frames. A mating story still pending that the badges
      * confirm is committed first, so the record has the move; a frame the record has not caught
-     * up with is given a few frames to be told.
+     * up with is given a few frames to be told. The reason is what the pipeline knows: a mate
+     * on the board, a clock at zero; otherwise a resignation.
      */
     private fun endOnBadges(): MutableList<Event> {
         val rec = reconciler
-        val frame = badgeFrame
+        val frame = game.badgeFrame
         if (rec == null || !rec.started || rec.finished || frame == null) {
-            badges = null
+            game.badges = null
             return mutableListOf()
         }
         val result = frame.first
-        val seen = if (badges != null && badges!!.first == result) badges!!.second + 1 else 1
-        badges = result to seen
+        val seen = if (game.badges != null && game.badges!!.first == result) game.badges!!.second + 1 else 1
+        game.badges = result to seen
         if (seen < BADGE_FRAMES) return mutableListOf()
         val pending = rec.pendingTerminal()
         if (pending != null && pending.second.result() == result) {
@@ -478,13 +489,6 @@ class GamePipeline(
 
     /** Why the game ended, from what the pipeline knows. `internal` for the desktop's tests. */
     internal fun endReason(board: Board, result: String): String {
-        if (result == "1/2-1/2") {
-            if (board.isStalemate()) return "stalemate"
-            if (board.isInsufficientMaterial()) return "insufficient material"
-            if (board.canClaimThreefoldRepetition()) return "repetition"
-            if (board.canClaimFiftyMoves()) return "fifty-move rule"
-            return "draw agreed"
-        }
         if (board.isCheckmate()) return "checkmate"
         val seen = lastClock
         if (seen != null) {
@@ -530,7 +534,7 @@ class GamePipeline(
         val running = seen.third ?: return mutableListOf()
         val read = lastClockTs ?: return mutableListOf()
         if (ts - read > CLOCK_TURN_FRESH_S) return mutableListOf()
-        return rec.turnFromClock(running == Side.WHITE)
+        return rec.turnFromClock(running.color)
     }
 
     /** End the game on the user's word, stamped like every other event. */
@@ -539,30 +543,12 @@ class GamePipeline(
         return stamp(rec.end(result, reason), ts, frameId)
     }
 
-    /** Forget the game and the recogniser; the next start position bootstraps again. */
+    /**
+     * Forget the game and the recogniser; the next start position bootstraps again. Every
+     * field of the game returns to its default ([Game]); what the pipeline keeps, it keeps.
+     */
     fun reset() {
-        model = null
-        reconciler = null
-        bottom = null
-        readingsValue = null
-        readingsKey = null
-        unreadChange = false
-        startSeen = 0
-        startOnScreen = false
-        screenState = ScreenState.UNKNOWN
-        lastClock = null
-        lastClockTs = null
-        coldTried = null
-        coldCandidate = null
-        coldLast = null
-        coldSince = null
-        coldNoticed = false
-        startChecked = null
-        flipSeen = null
-        dialogSince = null
-        covered = false
-        badges = null
-        badgeFrame = null
+        game = Game()
         clock?.reset()
     }
 
@@ -617,18 +603,18 @@ class GamePipeline(
         val rec = reconciler
         val current = model
         if (rec == null || current == null || forcedBottom != null || rec.unexplainedFor < 1) {
-            flipSeen = null
+            game.flipSeen = null
             return mutableListOf()
         }
-        val seen = flipSeen
+        val seen = game.flipSeen
         if (seen != null && ts - seen.second < FLIP_CHECK_EVERY_S) return mutableListOf()
         val labelled = Coordinates.readBottomSide(frame, geometry, current.rankLabels)
         if (labelled == null || labelled == bottom) {
-            flipSeen = null
+            game.flipSeen = null
             return mutableListOf()
         }
         if (seen == null || seen.first != labelled) {
-            flipSeen = Triple(labelled, ts, null)
+            game.flipSeen = Triple(labelled, ts, null)
             return mutableListOf()
         }
         // The position must read the same twice too: a piece still sliding in reads as two
@@ -638,10 +624,10 @@ class GamePipeline(
         val read = reread(labelled) ?: coldRead(frame, geometry, labelled)
         val placed = read?.let { view(it) }
         if (placed == null || placed != seen.third) {
-            flipSeen = Triple(labelled, ts, placed)
+            game.flipSeen = Triple(labelled, ts, placed)
             return mutableListOf()
         }
-        flipSeen = null
+        game.flipSeen = null
         return reorientRead(read!!, ts)
     }
 
@@ -653,9 +639,9 @@ class GamePipeline(
      */
     private fun reread(side: Side): ColdRead? {
         val current = model ?: return null
-        val readings = readingsValue ?: return null
+        val readings = game.readingsValue ?: return null
         val lock = board ?: return null
-        if (readingsKey != (lock.region to Math.round(lock.cellPx * 100.0) / 100.0)) return null
+        if (game.readingsKey != (lock.region to Math.round(lock.cellPx * 100.0) / 100.0)) return null
         val placement = placementFromReadings(readings, side) ?: return null
         if (adoptPlacement(placement) == null) return null
         return ColdRead(current, side, readings, placement)
@@ -683,15 +669,7 @@ class GamePipeline(
     private fun endInProgress(reason: String): MutableList<Event> {
         val previous = reconciler
         if (previous == null || !previous.inProgress || previous.finished) return mutableListOf()
-        return mutableListOf(
-            GameEnded(
-                gameId = previous.gameId,
-                result = "*",
-                reason = reason,
-                pgn = previous.pgn(),
-                finalFen = previous.board.fen(),
-            ),
-        )
+        return mutableListOf(previous.endedEvent("*", reason))
     }
 
     /**
@@ -705,14 +683,14 @@ class GamePipeline(
         val rec = reconciler
         if (rec == null || !rec.started) return ScreenState.UNKNOWN  // no game recognised yet
         if (rec.finished) return ScreenState.GAME_OVER
-        if (covered) return ScreenState.COVERED
+        if (game.covered) return ScreenState.COVERED
         return ScreenState.LIVE_GAME
     }
 
     private fun emitScreenState(boardPresent: Boolean): MutableList<Event> {
         val state = deriveScreenState(boardPresent)
-        if (state == screenState) return mutableListOf()
-        screenState = state
+        if (state == game.screenState) return mutableListOf()
+        game.screenState = state
         return mutableListOf(ScreenStateChanged(state))
     }
 
@@ -739,7 +717,7 @@ class GamePipeline(
             for (c in 0 until 8) {
                 val reading = readings[r * 8 + c]
                 if (reading.kind == Kind.UNKNOWN) { unknown += 1; continue }
-                val piece = start.pieceAt(Squares.squareAt(r, c, bottomSide == Side.WHITE))
+                val piece = start.pieceAt(Squares.squareAt(r, c, bottomSide.color))
                 val bad = if (piece == null) {
                     reading.kind == Kind.PIECE && reading.symbol != null
                 } else {
@@ -752,7 +730,7 @@ class GamePipeline(
         return unknown < 32 && contradictions <= 1
     }
 
-    private fun shouldBootstrap(): Boolean = startOnScreen && startSeen >= startFramesNeeded
+    private fun shouldBootstrap(): Boolean = game.startOnScreen && game.startSeen >= startFramesNeeded
 
     /**
      * A recogniser learned from the start position on screen, and the orientation with it: a
@@ -762,15 +740,15 @@ class GamePipeline(
     internal fun rebuildModel(frame: Mat, geometry: BoardGeometry): Boolean {
         val whiteAtBottom = ThemeModel.orientationFromStart(ThemeModel.occupancy(frame, geometry))
         val built = ThemeModel.fromStartPosition(frame, geometry, whiteAtBottom, embedder)
-        startSeen = 0
+        game.startSeen = 0
         if (built == null) return false  // something covered a piece; the next start frame tries
-        val side = if (whiteAtBottom) Side.WHITE else Side.BLACK
+        val side = Side.of(whiteAtBottom)
         bottom = side
         model = built
         built.rankLabels = Coordinates.learnRankLabels(frame, geometry, side)
         cache?.let { it.save(built, learnedSet(it, built, frame, geometry, side)) }
-        coldSince = null
-        coldNoticed = false
+        game.coldSince = null
+        game.coldNoticed = false
         lastClock = null
         clock?.reset()
         reconciler?.let {
@@ -846,25 +824,6 @@ class GamePipeline(
     }
 
     /**
-     * The pieces a read names, a held or a ringed one included (its kind, or its best guess)
-     * and an unreadable cell taken as empty: what the board shows, for telling a set that
-     * reads it from one that does not, not a placement to adopt.
-     */
-    private fun loosePlacement(readings: Readings, bottom: Side): Board {
-        val board = Board(null)
-        for (row in 0 until 8) {
-            for (col in 0 until 8) {
-                val reading = readings[row * 8 + col]
-                val symbol = reading.symbol ?: reading.guess
-                if (reading.kind == Kind.PIECE && symbol != null) {
-                    board.setPieceAt(Squares.squareAt(row, col, bottom == Side.WHITE), Piece.fromSymbol(symbol))
-                }
-            }
-        }
-        return board
-    }
-
-    /**
      * A board that has stayed unread for [COLD_NOTICE_S] is explained, once while it stays:
      * the person saw nothing happen and could not know why (Tai's puzzle on the Pixel,
      * 2026-09-23). Nothing is said when a learned set does read the board and only a passing
@@ -872,18 +831,18 @@ class GamePipeline(
      * again.
      */
     private fun coldNotice(frame: Mat, geometry: BoardGeometry, ts: Double): MutableList<Event> {
-        val since = coldSince
+        val since = game.coldSince
         if (since == null) {
-            coldSince = ts
+            game.coldSince = ts
             return mutableListOf()
         }
-        if (coldNoticed || ts - since < COLD_NOTICE_S) return mutableListOf()
+        if (game.coldNoticed || ts - since < COLD_NOTICE_S) return mutableListOf()
         val reason = unreadReason(frame, geometry)
         if (reason == null) {
-            coldSince = ts
+            game.coldSince = ts
             return mutableListOf()
         }
-        coldNoticed = true
+        game.coldNoticed = true
         return mutableListOf(BoardUnread(reason))
     }
 
@@ -903,7 +862,7 @@ class GamePipeline(
             val readings = cached.classifyFrame(frame, geometry, embedder)
             val told = forcedBottom ?: Coordinates.readBottomSide(frame, geometry, cached.rankLabels)
             for (side in if (told != null) listOf(told) else listOf(Side.WHITE, Side.BLACK)) {
-                if (adoptPlacement(loosePlacement(readings, side)) != null) {
+                if (adoptPlacement(loosePlacement(bySquare(readings, side))) != null) {
                     return if (told != null) null else "orientation"
                 }
             }
@@ -927,7 +886,8 @@ class GamePipeline(
      * not be explained (Tai's desktop, 2026-09-24: 1...Qxh7 2.Qb1 invented, dump
      * 20260924-165745).
      */
-    private fun view(read: ColdRead): View = read.placement.boardFen() to highlighted(read.readings, read.bottom)
+    private fun view(read: ColdRead): View =
+        read.placement.boardFen() to highlightedSquares(bySquare(read.readings, read.bottom))
 
     /**
      * A game joined from the middle, without being asked. With the theme in the cache the
@@ -943,31 +903,31 @@ class GamePipeline(
      */
     private fun autoColdStart(frame: Mat, geometry: BoardGeometry, ts: Double): MutableList<Event> {
         if (cache == null) return mutableListOf()
-        val tried = coldTried
+        val tried = game.coldTried
         if (tried != null && ts - tried < COLD_START_EVERY_S) return mutableListOf()
-        coldTried = ts
+        game.coldTried = ts
         val lock = checkNotNull(board)
         val seen = Triple(lock.region, Math.round(lock.cellPx * 100.0) / 100.0, forcedBottom)
-        val last = coldLast
+        val last = game.coldLast
         val read = if (last == null || last.first != seen) {
-            coldRead(frame, geometry, forcedBottom).also { coldLast = seen to it }
+            coldRead(frame, geometry, forcedBottom).also { game.coldLast = seen to it }
         } else {
             last.second
         }
         // Nothing read cleanly this time; the candidate stands until it expires.
         if (read == null) return coldNotice(frame, geometry, ts)
-        coldSince = null
+        game.coldSince = null
         val view = view(read)
-        val candidate = coldCandidate
-        coldCandidate = if (candidate != null && candidate.first == view &&
+        val candidate = game.coldCandidate
+        game.coldCandidate = if (candidate != null && candidate.first == view &&
             ts - candidate.third <= COLD_START_EXPIRE_S
         ) {
             Triple(view, candidate.second + 1, ts)
         } else {
             Triple(view, 1, ts)
         }
-        if (coldCandidate!!.second < COLD_START_HOLD) return mutableListOf()
-        coldCandidate = null
+        if (game.coldCandidate!!.second < COLD_START_HOLD) return mutableListOf()
+        game.coldCandidate = null
         return adoptCold(read, ts)
     }
 
@@ -989,16 +949,16 @@ class GamePipeline(
         val reconciler = Reconciler(bottom = read.bottom, userSide = read.bottom)
         // The site's last-move highlight, for what a cold read cannot know: a pawn that has
         // just advanced two squares, and whose move it is ([lastMoveSeen]).
-        val highlighted = highlighted(read.readings, read.bottom)
+        val highlighted = highlightedSquares(bySquare(read.readings, read.bottom))
         val events = reconciler.startFrom(read.placement, ts, highlighted)
         if (events.isEmpty()) return mutableListOf()  // not a legal position; adopt nothing
         // Only now, with a legal position begun, is the pipeline switched onto this theme.
         model = read.model
         bottom = read.bottom
-        coldSince = null
-        coldNoticed = false
-        readingsValue = read.readings
-        readingsKey = board?.let { it.region to Math.round(it.cellPx * 100.0) / 100.0 }
+        game.coldSince = null
+        game.coldNoticed = false
+        game.readingsValue = read.readings
+        game.readingsKey = board?.let { it.region to Math.round(it.cellPx * 100.0) / 100.0 }
         this.reconciler = reconciler
         return events
     }
@@ -1029,7 +989,7 @@ class GamePipeline(
                 if (reading.kind == Kind.PIECE) {
                     val symbol = reading.symbol ?: return null  // no known kind: not a clean read
                     board.setPieceAt(
-                        Squares.squareAt(row, col, bottom == Side.WHITE), Piece.fromSymbol(symbol),
+                        Squares.squareAt(row, col, bottom.color), Piece.fromSymbol(symbol),
                     )
                 }
             }
@@ -1047,18 +1007,7 @@ class GamePipeline(
             // position was up. The same game goes on, seen from the other side.
             return previous.reorient(side)
         }
-        val events = mutableListOf<Event>()
-        if (previous != null && previous.inProgress && !previous.finished) {
-            events.add(
-                GameEnded(
-                    gameId = previous.gameId,
-                    result = "*",
-                    reason = "new game started",
-                    pgn = previous.pgn(),
-                    finalFen = previous.board.fen(),
-                ),
-            )
-        }
+        val events = endInProgress("new game started")
         reconciler = Reconciler(bottom = side, userSide = side)
         return events
     }

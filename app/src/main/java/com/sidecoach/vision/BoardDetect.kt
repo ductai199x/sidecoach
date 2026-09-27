@@ -120,16 +120,10 @@ object BoardDetect {
         val found = ArrayList<BoardCandidate>()
         var size = minCell.toDouble()
         while (size <= limit) {
-            val factor = min(1.0, workCell / size)
-            val small: Plane
-            val cell: Int
-            if (factor < 1.0) {
-                small = gray.resized(factor).padded(workCell / 2)
-                cell = workCell
-            } else {
-                small = gray
-                cell = pyRound(size)
-            }
+            // Every caller searches from well above the work cell, so the frame always shrinks.
+            val factor = workCell / size
+            val small = gray.resized(factor).padded(workCell / 2)
+            val cell = workCell
             val response = checkerResponse(small, cell, minContrast)
             if (response != null) {
                 val fullCell = cell / factor

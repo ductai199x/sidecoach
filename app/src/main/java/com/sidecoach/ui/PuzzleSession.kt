@@ -3,7 +3,6 @@ package com.sidecoach.ui
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.QUEEN
-import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.parseSquare
 import com.sidecoach.chess.squareName
 import com.sidecoach.events.GameStarted
@@ -66,7 +65,7 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
         require(board.isLegal(first)) { "illegal uci: '${puzzle.moves[0]}' in ${puzzle.fen}" }
         board.push(first)
         solver = board.turn
-        side = if (solver == WHITE) Pieces.Side.WHITE else Pieces.Side.BLACK
+        side = Pieces.Side.of(solver)
         startFen = board.fen()
     }
 

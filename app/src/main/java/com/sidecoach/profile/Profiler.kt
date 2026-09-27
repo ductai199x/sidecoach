@@ -244,7 +244,7 @@ class Profiler(
         ply.phase = phaseOf(before)
         game.plies[key] = ply
         game.lastFen = event.fenAfter
-        val user = game.userSide == Pieces.Side.WHITE
+        val user = game.userSide.color
         ply.moveId = store.addMove(
             game.gameId,
             game.segment,
@@ -277,7 +277,7 @@ class Profiler(
         } else {
             terminalExpectedScore(board) ?: return null
         }
-        val user = game.userSide == Pieces.Side.WHITE
+        val user = game.userSide.color
         return if (board.turn == user) score else 1.0 - score
     }
 
@@ -654,7 +654,7 @@ class Profiler(
                 val key = if (r.result != "1-0" && r.result != "0-1" && r.result != "1/2-1/2") {
                     "unfinished"
                 } else {
-                    val won = (r.result == "1-0") == (r.userSide == Pieces.Side.WHITE)
+                    val won = (r.result == "1-0") == r.userSide.color
                     if (r.result == "1/2-1/2") "drew" else if (won) "won" else "lost"
                 }
                 outcomes[key] = (outcomes[key] ?: 0) + 1

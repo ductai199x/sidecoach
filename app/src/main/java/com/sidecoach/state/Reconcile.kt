@@ -29,7 +29,6 @@ import com.sidecoach.events.PositionChanged
 import com.sidecoach.events.Resync
 import com.sidecoach.events.Takeback
 import com.sidecoach.events.Unexplained
-import com.sidecoach.vision.Pieces
 import com.sidecoach.vision.Pieces.CellReading
 import com.sidecoach.vision.Pieces.Kind
 import com.sidecoach.vision.Pieces.Side
@@ -86,10 +85,32 @@ private data class StaleKey(
     val highlighted: Boolean,
 )
 
-/** `reconcile.highlighted_squares`: the squares the site marks as its last move (or a
- * selection): tinted, not red. */
-fun highlightedSquares(obs: Observation): Set<Int> =
-    obs.filter { (_, r) -> r.highlighted && r.tint != "red" }.keys
+/**
+ * `reconcile.highlighted_squares`: the squares the site marks as its last move (or a
+ * selection); a red tint is never a highlight ([com.sidecoach.vision.ThemeModel.classify]).
+ */
+fun highlightedSquares(obs: Observation): Set<Int> = obs.filter { (_, r) -> r.highlighted }.keys
+
+/** `reconcile.by_square`: a frame's readings keyed by the squares they show, [bottom] at the bottom. */
+fun bySquare(readings: Readings, bottom: Side): Observation {
+    val out = Observation()
+    for (r in 0 until 8) for (c in 0 until 8) out[squareAt(r, c, bottom.color)] = readings[r * 8 + c]
+    return out
+}
+
+/**
+ * `reconcile.loose_placement`: the pieces a read names, a held or a ringed one included (its
+ * kind, or its best guess), an unreadable cell taken as empty: what the board shows, not a
+ * position.
+ */
+fun loosePlacement(obs: Observation): Board {
+    val board = Board(null)
+    for ((sq, reading) in obs) {
+        val symbol = reading.symbol ?: reading.guess
+        if (reading.kind == Kind.PIECE && symbol != null) board.setPieceAt(sq, Piece.fromSymbol(symbol))
+    }
+    return board
+}
 
 /**
  * `reconcile._came_from`: whether the piece on [to] could have come from the empty [start] in
@@ -412,7 +433,7 @@ class Reconciler(
         for (r in 0 until 8) {
             for (c in 0 until 8) {
                 var reading = readings[r * 8 + c]
-                val sq = squareAt(r, c, bottom == Side.WHITE)
+                val sq = squareAt(r, c, bottom.color)
                 if (reading.drawn) drawn.add(sq)
                 if (reading.kind == Kind.UNKNOWN && reading.drawn && !reading.covered &&
                     kings.any { squareDistance(sq, it) <= 1 }
@@ -454,9 +475,10 @@ class Reconciler(
         return out
     }
 
-    fun disagreements(obs: Observation): MutableSet<Int> {
+    /** The squares whose reading disagrees with [against] (the latest position). */
+    fun disagreements(obs: Observation, against: Board = board): MutableSet<Int> {
         val out = HashSet<Int>()
-        for ((sq, reading) in obs) if (!cellAgrees(reading, board.pieceAt(sq))) out.add(sq)
+        for ((sq, reading) in obs) if (!cellAgrees(reading, against.pieceAt(sq))) out.add(sq)
         return out
     }
 
@@ -484,6 +506,13 @@ class Reconciler(
             GameStarted(gameId = gameId, userSide = userSide, startFen = board.fen()),
             PositionChanged(gameId = gameId, fen = board.fen(), ply = 0),
         )
+    }
+
+    /** The game under way ended, unless it had, and a new one begun from the start (`_restart`). */
+    private fun restart(): MutableList<Event> {
+        val events = if (finishedFlag) mutableListOf<Event>() else mutableListOf<Event>(endedEvent("*", "new game started"))
+        events.addAll(start())
+        return events
     }
 
     /**
@@ -619,7 +648,7 @@ class Reconciler(
         if (reading.symbol != null) return false
         for (colour in booleanArrayOf(WHITE, BLACK)) {
             if (reading.colour != null &&
-                reading.colour != (if (colour == WHITE) Side.WHITE else Side.BLACK)
+                reading.colour != Side.of(colour)
             ) {
                 continue
             }
@@ -642,7 +671,7 @@ class Reconciler(
         val reading = obs.getValue(square)
         if (reading.kind != Kind.PIECE || reading.symbol != null) return false
         return reading.colour == null ||
-            reading.colour == (if (piece.colour == WHITE) Side.WHITE else Side.BLACK)
+            reading.colour == Side.of(piece.colour)
     }
 
     /**
@@ -750,7 +779,7 @@ class Reconciler(
         blockedFlag = hoverSeen || (0 until 64).any { i ->
             val reading = readings[i]
             reading.kind == Kind.PIECE && !reading.settled &&
-                !decoratedKing(squareAt(i / 8, i % 8, bottom == Side.WHITE), reading)
+                !decoratedKing(squareAt(i / 8, i % 8, bottom.color), reading)
         }
         val seen = observe(readings)
         // A queue leaves its piece's real square red and empty; a checked king's red glow stands
@@ -812,9 +841,7 @@ class Reconciler(
             // badge has spoiled without contradicting the position cannot be ignored as
             // stale, yet they can be neither read exactly nor trusted as settled; in this
             // retry they are wildcards alongside the ignored cells.
-            val soft = obs.filter { (_, r) ->
-                r.kind == Kind.PIECE && (r.symbol == null || !r.settled)
-            }.keys.toSet()
+            val soft = obs.filter { (_, r) -> isJunk(r) }.keys.toSet()
             val subsets = staleSubsets(staleCells, obs)
             // Soft wildcards only go with junk cells: ignoring a clean reading as well would
             // let the search invent a story through the cells nobody can read.
@@ -863,8 +890,7 @@ class Reconciler(
 
         // New game: the start position is back on the board.
         if (inProgress && obs.size >= 48 && matches(Board(), obs, obs.keys)) {
-            if (!finishedFlag) events.add(ended("*", "new game started"))
-            events.addAll(start())
+            events.addAll(restart())
             return events
         }
 
@@ -1145,7 +1171,7 @@ class Reconciler(
         }
         // Held as a view: the pieces and the squares the site highlights, which a move
         // starting changes first (`GamePipeline.view`).
-        val placement = placement(obs).boardFen() + "|" +
+        val placement = loosePlacement(obs).boardFen() + "|" +
             highlightedSquares(obs).sorted().joinToString(",") { squareName(it) }
         val candidate = resyncCandidate
         resyncCandidate = if (candidate != null && candidate.first == placement) {
@@ -1158,7 +1184,7 @@ class Reconciler(
             (diff.size >= resyncJumpCells && frames >= resyncMinFrames && tsValue - since >= resyncHoldS)
         if (!held) return mutableListOf()
 
-        val adopted = adoptPlacement(placement(obs), bottomColour(), highlightedSquares(obs))
+        val adopted = adoptPlacement(loosePlacement(obs), bottom.color, highlightedSquares(obs))
         if (adopted == null) {
             resyncCandidate = null
             return mutableListOf()
@@ -1189,16 +1215,25 @@ class Reconciler(
         resyncCandidate = null
         var reason = "position adopted after ${diff.size} unexplained cells"
         if (turnUnknownFlag) reason += "; side to move pending"
-        events.add(Resync(gameId = gameId, fen = adoptedBoard.fen(), reason = reason))
-        events.add(PositionChanged(gameId = gameId, fen = adoptedBoard.fen(), ply = 0))
-        if (!turnUnknownFlag && adoptedBoard.isGameOver()) {
-            finishedFlag = true
-            events.add(ended(adoptedBoard.result(), "game over on board"))
-        }
+        events.addAll(resynced(reason))
         return events
     }
 
-    private fun bottomColour(): Boolean = if (bottom == Side.WHITE) WHITE else BLACK
+    /**
+     * A new position for the game: Resync and PositionChanged, and the end when the position
+     * is over and the side to move known (`_resynced`).
+     */
+    private fun resynced(reason: String): MutableList<Event> {
+        val events = mutableListOf<Event>(
+            Resync(gameId = gameId, fen = board.fen(), reason = reason),
+            PositionChanged(gameId = gameId, fen = board.fen(), ply = 0),
+        )
+        if (!turnUnknownFlag && board.isGameOver()) {
+            finishedFlag = true
+            events.add(endedEvent(board.result(), "game over on board"))
+        }
+        return events
+    }
 
     /**
      * The side to move settled by the clock that is running. A resync or a cold start leaves
@@ -1217,19 +1252,7 @@ class Reconciler(
         check(board.moveStack.isEmpty())
         board.turn = colour
         baseFenValue = board.fen()
-        val name = if (colour == WHITE) "white" else "black"
-        val events = mutableListOf<Event>(
-            Resync(
-                gameId = gameId, fen = board.fen(),
-                reason = "side to move settled by the clock: $name",
-            ),
-            PositionChanged(gameId = gameId, fen = board.fen(), ply = 0),
-        )
-        if (board.isGameOver()) {
-            finishedFlag = true
-            events.add(ended(board.result(), "game over on board"))
-        }
-        return events
+        return resynced("side to move settled by the clock: ${Side.of(colour).name.lowercase()}")
     }
 
     /**
@@ -1242,7 +1265,7 @@ class Reconciler(
         ts: Double? = null,
         highlighted: Set<Int> = emptySet(),
     ): MutableList<Event> {
-        val adopted = adoptPlacement(placement, bottomColour(), highlighted) ?: return mutableListOf()
+        val adopted = adoptPlacement(placement, bottom.color, highlighted) ?: return mutableListOf()
         if (ts != null) tsValue = ts
         val (adoptedBoard, unknownTurn) = adopted
         turnUnknownFlag = unknownTurn
@@ -1259,17 +1282,6 @@ class Reconciler(
                 gameId = gameId, userSide = userSide, startFen = adoptedBoard.fen(), kind = kind,
             ),
         )
-    }
-
-    private fun placement(obs: Observation): Board {
-        val board = Board(null)
-        for ((sq, reading) in obs) {
-            val symbol = reading.symbol ?: reading.guess
-            if (reading.kind == Kind.PIECE && symbol != null) {
-                board.setPieceAt(sq, Piece.fromSymbol(symbol))
-            }
-        }
-        return board
     }
 
     /**
@@ -1363,7 +1375,7 @@ class Reconciler(
         val viewed = viewing
         if (viewed != null) {
             val earlier = boardAt(viewed)
-            val diffEarlier = obs.filter { (sq, r) -> !cellAgrees(r, earlier.pieceAt(sq)) }.keys.toSet()
+            val diffEarlier = disagreements(obs, earlier)
             var branches = singleExplanations(earlier, obs, diffEarlier)
             if (branches.size != 1) {
                 // The user played on from the viewed position and the opponent replied before
@@ -1418,8 +1430,6 @@ class Reconciler(
         }
         return null
     }
-
-    val userColour: Boolean get() = if (userSide == Side.WHITE) WHITE else BLACK
 
     /**
      * Whether [moves], the pending story or a story built on it, catch a piece in flight: the
@@ -1485,7 +1495,7 @@ class Reconciler(
         val storyPair = pendingStory() ?: return null
         val current = pending ?: return null
         val (moves, base) = storyPair
-        val diffBase = obs.filter { (sq, r) -> !cellAgrees(r, base.pieceAt(sq)) }.keys.toSet()
+        val diffBase = disagreements(obs, base)
         if (diffBase.isEmpty()) {
             // The frame shows the position the story leads to: one more frame of evidence.
             if (!highlightOk(obs, moves)) return null
@@ -1540,7 +1550,7 @@ class Reconciler(
         } else if (pending != null && pending!!.first.kind in STORY_KEYS) {
             return null  // a pending story that is no longer legal explains nothing
         }
-        val userColour = userColour
+        val userColour = userSide.color
         val botDiff = HashSet<Int>()
         for ((sq, reading) in obs) {
             if (cellAgrees(reading, base.pieceAt(sq))) continue
@@ -1583,7 +1593,7 @@ class Reconciler(
      */
     private fun explainPremoveQueue(obs: Observation, diff: Set<Int>): MutableList<Event>? {
         if (viewing != null || turnUnknownFlag || hoverSeen) return null
-        val userColour = userColour
+        val userColour = userSide.color
         val shown = ArrayList<Int>()
         val gone = ArrayList<Int>()
         for (sq in diff) {
@@ -1793,9 +1803,7 @@ class Reconciler(
     }
 
     private fun commitNewGame(moves: List<Move>): () -> MutableList<Event> = {
-        val events = mutableListOf<Event>()
-        if (!finishedFlag) events.add(ended("*", "new game started"))
-        events.addAll(start())
+        val events = restart()
         for (move in moves) events.addAll(commit(move))
         events
     }
@@ -1866,7 +1874,7 @@ class Reconciler(
         }
         val fenBefore = board.fen()
         val san = board.san(move)
-        val byUser = (board.turn == WHITE) == (userSide == Side.WHITE)
+        val byUser = board.turn == userSide.color
         // Time since the previous commit, as seen on screen: a chain committed at once gives
         // it all to its first move and leaves the others open.
         var thinkMs: Int? = null
@@ -1892,7 +1900,7 @@ class Reconciler(
         if (board.isGameOver()) {
             finishedFlag = true
             resultValue = board.result()
-            events.add(ended(resultValue!!, "game over on board"))
+            events.add(endedEvent(resultValue!!, "game over on board"))
         }
         return events
     }
@@ -1907,10 +1915,11 @@ class Reconciler(
         finishedFlag = true
         pending = null
         resultValue = result
-        return mutableListOf(ended(result, reason))
+        return mutableListOf(endedEvent(result, reason))
     }
 
-    private fun ended(result: String, reason: String): GameEnded = GameEnded(
+    /** The GameEnded of this game as it stands (`ended_event`): also the pipeline's, for a game it drops. */
+    fun endedEvent(result: String, reason: String): GameEnded = GameEnded(
         gameId = gameId,
         result = result,
         reason = reason,
