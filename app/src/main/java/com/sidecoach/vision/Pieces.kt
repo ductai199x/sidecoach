@@ -123,8 +123,8 @@ object Pieces {
      * audit's sweep, 2026-09-26); at one resolution every size looks alike. 40 px, from the
      * desktop's scale benchmark (44 sets, learned at one of 32-128 px and read at another):
      * identity errors 161 -> 13, where 24 px lost the detail that tells some sets' pieces apart
-     * (a pirouetti queen read as a bishop). Landing keeps the full detail: brought down too, a
-     * piece in flight read as landed.
+     * (a pirouetti queen read as a bishop). Landing is not brought down to it: a piece in
+     * flight read as landed (see [LANDING_SAME_SIZE] for how it meets a resize).
      */
     const val CANONICAL_PX = 40
 
@@ -172,6 +172,26 @@ object Pieces {
      */
     @Volatile
     var LANDING: String = "phase"
+
+    /**
+     * After a resize the cell and its reference are each a cell of another size blown up to
+     * the working size, and the correlation's peak was lost in the detail one has and the
+     * other has not: a rook at rest, learned at 40 px and read at 34, measured 0.15 of a cell
+     * off and never landed; a pawn three quarters of the way to its square, read at 36,
+     * measured 0.08 from the square it passed and was committed there (the desktop's geometry
+     * sweep, 2026-09-27). So a board read at a size more than this share of a cell from the
+     * one its set was learned at is also compared brought down to the coarser of the two
+     * sizes, and the surer correlation (the higher peak) gives the shift
+     * (`ThemeModel.phaseShift`). Brought down alone it failed at the learned size itself: a
+     * cell brought down to the size it was drawn at is at the edge of what its pixels hold,
+     * and a rook on a labelled corner square measured half a cell off -- every cold read of a
+     * flat set at 44 px was refused (the stress sweep). The desktop's scale benchmark (44
+     * sets, 20 pairs of learned and read sizes, same-size pairs among them, coordinates drawn,
+     * the lock a pixel either way): resting pieces read as not landed 486 -> 102 of 79096,
+     * pieces in flight read as landed 38 -> 26 of 15840; at the learned size nothing changes.
+     * `pieces.LANDING_SAME_SIZE`: a lock's pitch is good to a fraction of a pixel.
+     */
+    const val LANDING_SAME_SIZE = 0.02
 
     /** The fill read under the exemplar's mask (`_fill_side`). */
     const val FILL_SIDE_ERODE = 2

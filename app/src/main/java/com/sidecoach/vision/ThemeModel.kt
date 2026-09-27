@@ -75,6 +75,11 @@ class ThemeModel(
      * the centroid, as the desktop's does; a set learned from a start position has them all.
      */
     val landingCrops: Map<String, LandingCrop> = emptyMap(),
+    /**
+     * The cell size the landing crops were taken at (0 when not known: a theme cached before
+     * it was kept), for [phaseShift] to meet a resize (`ThemeModel.landing_px`).
+     */
+    val landingPx: Double = 0.0,
 ) {
 
     /** The last frame's cells: the crop, its silhouette, the cover flag, the cell size, the reading. */
@@ -436,7 +441,7 @@ class ThemeModel(
         // default, and never ported): a piece's settling is its offset and the hover alone.
         val reference = landingCrops[label]
         val settled = if (Pieces.LANDING == "phase" && crop != null && reference != null) {
-            offset = phaseShift(reference, crop)
+            offset = phaseShift(reference, crop, landingPx, cellPx ?: 0.0)
             var tolerance = Pieces.SETTLED_TOLERANCE
             if (cellPx != null && cellPx != 0.0) {
                 tolerance = max(Pieces.SETTLED_TOLERANCE, Pieces.SETTLED_FLOOR_PX / cellPx)
@@ -462,9 +467,13 @@ class ThemeModel(
     /**
      * `pieces._phase_shift`: how far the piece in [crop] (BGR) sits from where it sits in
      * [reference] (grey), as a share of the cell, by phase correlation under a Hanning window.
-     * Internal for the landing bench ([com.sidecoach.vision.LandingCostTest]).
+     * When the two were taken at cell sizes ([referencePx], [cropPx]) more than
+     * [Pieces.LANDING_SAME_SIZE] apart, they are also compared brought down to the coarser of
+     * the two sizes, and the surer of the two correlations (the higher peak) gives the shift
+     * (see [Pieces.LANDING_SAME_SIZE]). Internal for the landing bench
+     * ([com.sidecoach.vision.LandingCostTest]).
      */
-    internal fun phaseShift(reference: LandingCrop, crop: Mat): Double {
+    internal fun phaseShift(reference: LandingCrop, crop: Mat, referencePx: Double = 0.0, cropPx: Double = 0.0): Double {
         val ref = Mat(reference.rows, reference.cols, CvType.CV_8UC1)
         ref.put(0, 0, reference.pixels)
         val grey = Mat()
@@ -472,15 +481,43 @@ class ThemeModel(
         if (grey.rows() != ref.rows() || grey.cols() != ref.cols()) {
             Imgproc.resize(grey, grey, Size(ref.cols().toDouble(), ref.rows().toDouble()))
         }
-        val window = Mat()
-        Imgproc.createHanningWindow(window, Size(ref.cols().toDouble(), ref.rows().toDouble()), CvType.CV_32F)
-        val a = Mat()
-        ref.convertTo(a, CvType.CV_32F)
-        val b = Mat()
-        grey.convertTo(b, CvType.CV_32F)
-        val shift = Imgproc.phaseCorrelate(a, b, window)
-        for (m in listOf(ref, grey, window, a, b)) m.release()
-        return hypot(shift.x, shift.y) / reference.rows
+        val tries = ArrayList<Pair<Mat, Mat>>(2)
+        tries.add(ref to grey)
+        if (referencePx > 0 && cropPx > 0) {
+            val coarser = min(referencePx, cropPx)
+            val finer = max(referencePx, cropPx)
+            val size = pyRound(coarser)
+            if (finer > coarser * (1.0 + Pieces.LANDING_SAME_SIZE) && 8 <= size && size < reference.rows) {
+                val small = Size(size.toDouble(), size.toDouble())
+                val smallRef = Mat()
+                Imgproc.resize(ref, smallRef, small, 0.0, 0.0, Imgproc.INTER_AREA)
+                val smallGrey = Mat()
+                Imgproc.resize(grey, smallGrey, small, 0.0, 0.0, Imgproc.INTER_AREA)
+                tries.add(smallRef to smallGrey)
+            }
+        }
+        var shift = 0.0
+        var surest = Double.NEGATIVE_INFINITY
+        for ((one, cell) in tries) {
+            val window = Mat()
+            Imgproc.createHanningWindow(window, Size(one.cols().toDouble(), one.rows().toDouble()), CvType.CV_32F)
+            val a = Mat()
+            one.convertTo(a, CvType.CV_32F)
+            val b = Mat()
+            cell.convertTo(b, CvType.CV_32F)
+            val response = DoubleArray(1)
+            val found = Imgproc.phaseCorrelate(a, b, window, response)
+            for (m in listOf(window, a, b)) m.release()
+            if (response[0] > surest) {
+                shift = hypot(found.x, found.y) / one.rows()
+                surest = response[0]
+            }
+        }
+        for ((one, cell) in tries) {
+            one.release()
+            cell.release()
+        }
+        return shift
     }
 
     /**
@@ -840,6 +877,7 @@ class ThemeModel(
                     exemplarLabels = exemplarLabels,
                     whiteAtBottom = whiteAtBottom,
                     landingCrops = landingCrops,
+                    landingPx = geometry.cellPx,
                 )
             } finally {
                 crops.forEach { it.release() }

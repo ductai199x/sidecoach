@@ -288,6 +288,9 @@ class ThemeStore(private val directory: File) {
             out.writeInt(crop.cols)
             out.write(crop.pixels)
         }
+        // Last, so a theme cached before it was kept still reads, at 0: it compares at full
+        // detail, as the desktop's unpickled `landing_px` does (desktop cfaa416).
+        out.writeDouble(model.landingPx)
     }
 
     private fun read(input: DataInputStream): ThemeModel? {
@@ -333,6 +336,11 @@ class ThemeStore(private val directory: File) {
             input.readFully(pixels)
             landingCrops[symbol] = LandingCrop(rows, cols, pixels)
         }
+        val landingPx = try {
+            input.readDouble()
+        } catch (e: java.io.EOFException) {
+            0.0 // cached before the size was kept
+        }
         val model = ThemeModel(
             exemplars = exemplars,
             lightBg = lightBg,
@@ -343,6 +351,7 @@ class ThemeStore(private val directory: File) {
             exemplarLabels = labels,
             whiteAtBottom = whiteAtBottom,
             landingCrops = landingCrops,
+            landingPx = landingPx,
         )
         model.rankLabels = rankLabels
         return model
