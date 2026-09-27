@@ -1,0 +1,1274 @@
+{
+ "wdl": {
+  "options": [
+   "option name Debug Log File type string default <empty>",
+   "option name NumaPolicy type string default auto",
+   "option name Threads type spin default 1 min 1 max 1024",
+   "option name Hash type spin default 16 min 1 max 33554432",
+   "option name Clear Hash type button",
+   "option name Ponder type check default false",
+   "option name MultiPV type spin default 1 min 1 max 256",
+   "option name Skill Level type spin default 20 min 0 max 20",
+   "option name Move Overhead type spin default 10 min 0 max 5000",
+   "option name nodestime type spin default 0 min 0 max 10000",
+   "option name UCI_Chess960 type check default false",
+   "option name UCI_LimitStrength type check default false",
+   "option name UCI_Elo type spin default 1320 min 1320 max 3190",
+   "option name UCI_ShowWDL type check default false",
+   "option name SyzygyPath type string default <empty>",
+   "option name SyzygyProbeDepth type spin default 1 min 1 max 100",
+   "option name Syzygy50MoveRule type check default true",
+   "option name SyzygyProbeLimit type spin default 7 min 0 max 7",
+   "option name EvalFile type string default nn-1a298aa575a0.nnue"
+  ],
+  "sent": [
+   "uci",
+   "setoption name Threads value 2",
+   "setoption name Hash value 64",
+   "setoption name UCI_ShowWDL value true",
+   "setoption name MultiPV value 3",
+   "ucinewgame",
+   "isready",
+   "position startpos",
+   "go depth 10 movetime 5000",
+   "position startpos moves e2e4 e7e5 g1f3 b8c6 f1c4",
+   "go depth 10 movetime 5000",
+   "position startpos moves g1f3 g8f6 f3g1 f6g8",
+   "go depth 10 movetime 5000",
+   "setoption name MultiPV value 1",
+   "position startpos moves e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 e1g1",
+   "go depth 12 movetime 5000",
+   "setoption name MultiPV value 3",
+   "position fen r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+   "go depth 10 movetime 5000",
+   "position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves d2d4",
+   "go depth 10 movetime 5000",
+   "setoption name MultiPV value 2",
+   "position fen rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+   "go depth 10 movetime 5000",
+   "setoption name MultiPV value 1",
+   "position fen rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2",
+   "go depth 10 movetime 5000",
+   "position fen 7k/8/8/8/8/8/6q1/7K w - - 0 1",
+   "go depth 10 movetime 5000",
+   "setoption name MultiPV value 3",
+   "position fen r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 b - - 0 40 moves c6d4 f3d4",
+   "go depth 14 movetime 5000",
+   "quit"
+  ],
+  "replies": {
+   "3|position startpos": [
+    "info depth 10 seldepth 12 multipv 1 score cp -143 wdl 157 400 443 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a3 a7a5 a1a2",
+    "info depth 10 seldepth 12 multipv 2 score cp -163 wdl 137 400 463 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a4 a7a5 a1a2",
+    "info depth 10 seldepth 12 multipv 3 score cp -183 wdl 117 400 483 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv b1a3 a7a5 a1b1",
+    "bestmove a2a3"
+   ],
+   "3|position startpos moves e2e4 e7e5 g1f3 b8c6 f1c4": [
+    "info depth 10 seldepth 12 multipv 1 score cp 24 wdl 324 400 276 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a5 a2a3 a5a4",
+    "info depth 10 seldepth 12 multipv 2 score cp 4 wdl 304 400 296 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a6 a2a3 a6a5",
+    "info depth 10 seldepth 12 multipv 3 score cp -16 wdl 284 400 316 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a8b8 a2a3 a7a5",
+    "bestmove a7a5"
+   ],
+   "3|position startpos moves g1f3 g8f6 f3g1 f6g8": [
+    "info depth 10 seldepth 12 multipv 1 score cp 5 wdl 305 400 295 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a3 a7a5 a1a2",
+    "info depth 10 seldepth 12 multipv 2 score cp -15 wdl 285 400 315 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a4 a7a5 a1a2",
+    "info depth 10 seldepth 12 multipv 3 score cp -35 wdl 265 400 335 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv b1a3 a7a5 a1b1",
+    "bestmove a2a3"
+   ],
+   "1|position startpos moves e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 e1g1": [
+    "info depth 12 seldepth 14 multipv 1 score cp 98 wdl 398 400 202 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a5 a2a3 a5a4",
+    "bestmove a7a5"
+   ],
+   "3|position fen r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4": [
+    "info depth 10 seldepth 12 multipv 1 score mate 1 wdl 1000 0 0 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv h5f7",
+    "info depth 10 seldepth 12 multipv 2 score cp -35 wdl 265 400 335 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a3 a7a5 a1a2",
+    "info depth 10 seldepth 12 multipv 3 score cp -55 wdl 245 400 355 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a4 a7a5 a1a2",
+    "bestmove h5f7"
+   ],
+   "3|position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves d2d4": [
+    "info depth 10 seldepth 12 multipv 1 score cp 71 wdl 371 400 229 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a5 a2a3 a5a4",
+    "info depth 10 seldepth 12 multipv 2 score cp 51 wdl 351 400 249 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a6 a2a3 a6a5",
+    "info depth 10 seldepth 12 multipv 3 score cp 31 wdl 331 400 269 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv b7b5 a2a3 a7a5",
+    "bestmove a7a5"
+   ],
+   "2|position fen rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1": [
+    "info depth 10 seldepth 12 multipv 1 score cp -67 wdl 233 400 367 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a5 a2a3 a5a4",
+    "info depth 10 seldepth 12 multipv 2 score cp -87 wdl 213 400 387 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a6 a2a3 a6a5",
+    "bestmove a7a5"
+   ],
+   "1|position fen rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2": [
+    "info depth 10 seldepth 12 multipv 1 score cp 150 wdl 450 400 150 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a3 a7a5 a1a2",
+    "bestmove a2a3"
+   ],
+   "1|position fen 7k/8/8/8/8/8/6q1/7K w - - 0 1": [
+    "info depth 10 seldepth 12 multipv 1 score cp -14 wdl 286 400 314 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv h1g2 h8g7 g2f1",
+    "bestmove h1g2"
+   ],
+   "3|position fen r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 b - - 0 40 moves c6d4 f3d4": [
+    "info depth 14 seldepth 16 multipv 1 score cp -27 wdl 273 400 327 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a5 a1b1 a5a4",
+    "info depth 14 seldepth 16 multipv 2 score cp -47 wdl 253 400 347 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a6 a1b1 a6a5",
+    "info depth 14 seldepth 16 multipv 3 score cp -67 wdl 233 400 367 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a8b8 a1b1 a7a5",
+    "bestmove a7a5"
+   ]
+  },
+  "scenarios": [
+   {
+    "name": "the start",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "a2a3",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.37132483661091226,
+      "score_cp": -143,
+      "mate": null,
+      "wdl": [
+       157,
+       400,
+       443
+      ]
+     },
+     {
+      "moves": [
+       "a2a4",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.354302733312082,
+      "score_cp": -163,
+      "mate": null,
+      "wdl": [
+       137,
+       400,
+       463
+      ]
+     },
+     {
+      "moves": [
+       "b1a3",
+       "a7a5",
+       "a1b1"
+      ],
+      "depth": 10,
+      "expected_score": 0.3376418641828339,
+      "score_cp": -183,
+      "mate": null,
+      "wdl": [
+       117,
+       400,
+       483
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a game's moves",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [
+     "e2e4",
+     "e7e5",
+     "g1f3",
+     "b8c6",
+     "f1c4"
+    ],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "a7a5",
+       "a2a3",
+       "a5a4"
+      ],
+      "depth": 10,
+      "expected_score": 0.522078114090291,
+      "score_cp": 24,
+      "mate": null,
+      "wdl": [
+       324,
+       400,
+       276
+      ]
+     },
+     {
+      "moves": [
+       "a7a6",
+       "a2a3",
+       "a6a5"
+      ],
+      "depth": 10,
+      "expected_score": 0.5036820134406647,
+      "score_cp": 4,
+      "mate": null,
+      "wdl": [
+       304,
+       400,
+       296
+      ]
+     },
+     {
+      "moves": [
+       "a8b8",
+       "a2a3",
+       "a7a5"
+      ],
+      "depth": 10,
+      "expected_score": 0.4852759384118717,
+      "score_cp": -16,
+      "mate": null,
+      "wdl": [
+       284,
+       400,
+       316
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a repetition in the moves",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [
+     "g1f3",
+     "g8f6",
+     "f3g1",
+     "f6g8"
+    ],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "a2a3",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.5046024700028845,
+      "score_cp": 5,
+      "mate": null,
+      "wdl": [
+       305,
+       400,
+       295
+      ]
+     },
+     {
+      "moves": [
+       "a2a4",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.48619570897068454,
+      "score_cp": -15,
+      "mate": null,
+      "wdl": [
+       285,
+       400,
+       315
+      ]
+     },
+     {
+      "moves": [
+       "b1a3",
+       "a7a5",
+       "a1b1"
+      ],
+      "depth": 10,
+      "expected_score": 0.467826316589383,
+      "score_cp": -35,
+      "mate": null,
+      "wdl": [
+       265,
+       400,
+       335
+      ]
+     }
+    ]
+   },
+   {
+    "name": "castling sent as king-takes-rook",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [
+     "e2e4",
+     "e7e5",
+     "g1f3",
+     "b8c6",
+     "f1c4",
+     "f8c5",
+     "e1h1"
+    ],
+    "stack": true,
+    "multipv": 1,
+    "depth": 12,
+    "lines": [
+     {
+      "moves": [
+       "a7a5",
+       "a2a3",
+       "a5a4"
+      ],
+      "depth": 12,
+      "expected_score": 0.589244688568345,
+      "score_cp": 98,
+      "mate": null,
+      "wdl": [
+       398,
+       400,
+       202
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a FEN with a mate in one",
+    "fen": "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+    "moves": [],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "h5f7"
+      ],
+      "depth": 10,
+      "expected_score": 1.0,
+      "score_cp": null,
+      "mate": 1,
+      "wdl": [
+       1000,
+       0,
+       0
+      ]
+     },
+     {
+      "moves": [
+       "a2a3",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.467826316589383,
+      "score_cp": -35,
+      "mate": null,
+      "wdl": [
+       265,
+       400,
+       335
+      ]
+     },
+     {
+      "moves": [
+       "a2a4",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.44954372531791664,
+      "score_cp": -55,
+      "mate": null,
+      "wdl": [
+       245,
+       400,
+       355
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a FEN root with an en passant square no pawn can take, and a move",
+    "fen": "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2",
+    "moves": [
+     "d2d4"
+    ],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "a7a5",
+       "a2a3",
+       "a5a4"
+      ],
+      "depth": 10,
+      "expected_score": 0.5649872147270768,
+      "score_cp": 71,
+      "mate": null,
+      "wdl": [
+       371,
+       400,
+       229
+      ]
+     },
+     {
+      "moves": [
+       "a7a6",
+       "a2a3",
+       "a6a5"
+      ],
+      "depth": 10,
+      "expected_score": 0.5468090461073719,
+      "score_cp": 51,
+      "mate": null,
+      "wdl": [
+       351,
+       400,
+       249
+      ]
+     },
+     {
+      "moves": [
+       "b7b5",
+       "a2a3",
+       "a7a5"
+      ],
+      "depth": 10,
+      "expected_score": 0.5285051773118131,
+      "score_cp": 31,
+      "mate": null,
+      "wdl": [
+       331,
+       400,
+       269
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a double step with no history",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [
+     "e2e4"
+    ],
+    "stack": false,
+    "multipv": 2,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "a7a5",
+       "a2a3",
+       "a5a4"
+      ],
+      "depth": 10,
+      "expected_score": 0.4386360651319824,
+      "score_cp": -67,
+      "mate": null,
+      "wdl": [
+       233,
+       400,
+       367
+      ]
+     },
+     {
+      "moves": [
+       "a7a6",
+       "a2a3",
+       "a6a5"
+      ],
+      "depth": 10,
+      "expected_score": 0.4205926555346196,
+      "score_cp": -87,
+      "mate": null,
+      "wdl": [
+       213,
+       400,
+       387
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a null move in the history",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [
+     "e2e4",
+     "0000"
+    ],
+    "stack": true,
+    "multipv": 1,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "a2a3",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.6346718261450347,
+      "score_cp": 150,
+      "mate": null,
+      "wdl": [
+       450,
+       400,
+       150
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a claimable threefold repetition",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [
+     "g1f3",
+     "g8f6",
+     "f3g1",
+     "f6g8",
+     "g1f3",
+     "g8f6",
+     "f3g1",
+     "f6g8"
+    ],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": []
+   },
+   {
+    "name": "checkmate",
+    "fen": "r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4",
+    "moves": [],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": []
+   },
+   {
+    "name": "one legal move",
+    "fen": "7k/8/8/8/8/8/6q1/7K w - - 0 1",
+    "moves": [],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "h1g2",
+       "h8g7",
+       "g2f1"
+      ],
+      "depth": 10,
+      "expected_score": 0.48711557303526726,
+      "score_cp": -14,
+      "mate": null,
+      "wdl": [
+       286,
+       400,
+       314
+      ]
+     }
+    ]
+   },
+   {
+    "name": "black to move, deep in a game",
+    "fen": "r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 b - - 0 40",
+    "moves": [
+     "c6d4",
+     "f3d4"
+    ],
+    "stack": true,
+    "multipv": 3,
+    "depth": 14,
+    "lines": [
+     {
+      "moves": [
+       "a7a5",
+       "a1b1",
+       "a5a4"
+      ],
+      "depth": 14,
+      "expected_score": 0.47516641034760715,
+      "score_cp": -27,
+      "mate": null,
+      "wdl": [
+       273,
+       400,
+       327
+      ]
+     },
+     {
+      "moves": [
+       "a7a6",
+       "a1b1",
+       "a6a5"
+      ],
+      "depth": 14,
+      "expected_score": 0.4568432147802496,
+      "score_cp": -47,
+      "mate": null,
+      "wdl": [
+       253,
+       400,
+       347
+      ]
+     },
+     {
+      "moves": [
+       "a8b8",
+       "a1b1",
+       "a7a5"
+      ],
+      "depth": 14,
+      "expected_score": 0.4386360651319824,
+      "score_cp": -67,
+      "mate": null,
+      "wdl": [
+       233,
+       400,
+       367
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "nowdl": {
+  "options": [
+   "option name Debug Log File type string default <empty>",
+   "option name NumaPolicy type string default auto",
+   "option name Threads type spin default 1 min 1 max 1024",
+   "option name Hash type spin default 16 min 1 max 33554432",
+   "option name Clear Hash type button",
+   "option name Ponder type check default false",
+   "option name MultiPV type spin default 1 min 1 max 256",
+   "option name Skill Level type spin default 20 min 0 max 20",
+   "option name Move Overhead type spin default 10 min 0 max 5000",
+   "option name nodestime type spin default 0 min 0 max 10000",
+   "option name UCI_Chess960 type check default false",
+   "option name UCI_LimitStrength type check default false",
+   "option name UCI_Elo type spin default 1320 min 1320 max 3190",
+   "option name SyzygyPath type string default <empty>",
+   "option name SyzygyProbeDepth type spin default 1 min 1 max 100",
+   "option name Syzygy50MoveRule type check default true",
+   "option name SyzygyProbeLimit type spin default 7 min 0 max 7",
+   "option name EvalFile type string default nn-1a298aa575a0.nnue"
+  ],
+  "sent": [
+   "uci",
+   "setoption name Threads value 2",
+   "setoption name Hash value 64",
+   "setoption name MultiPV value 3",
+   "ucinewgame",
+   "isready",
+   "position startpos",
+   "go depth 10 movetime 5000",
+   "position startpos moves e2e4 e7e5 g1f3 b8c6 f1c4",
+   "go depth 10 movetime 5000",
+   "position startpos moves g1f3 g8f6 f3g1 f6g8",
+   "go depth 10 movetime 5000",
+   "setoption name MultiPV value 1",
+   "position startpos moves e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 e1g1",
+   "go depth 12 movetime 5000",
+   "setoption name MultiPV value 3",
+   "position fen r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+   "go depth 10 movetime 5000",
+   "position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves d2d4",
+   "go depth 10 movetime 5000",
+   "setoption name MultiPV value 2",
+   "position fen rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+   "go depth 10 movetime 5000",
+   "setoption name MultiPV value 1",
+   "position fen rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2",
+   "go depth 10 movetime 5000",
+   "position fen 7k/8/8/8/8/8/6q1/7K w - - 0 1",
+   "go depth 10 movetime 5000",
+   "setoption name MultiPV value 3",
+   "position fen r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 b - - 0 40 moves c6d4 f3d4",
+   "go depth 14 movetime 5000",
+   "quit"
+  ],
+  "replies": {
+   "3|position startpos": [
+    "info depth 10 seldepth 12 multipv 1 score cp -143 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a3 a7a5 a1a2",
+    "info depth 10 seldepth 12 multipv 2 score cp -163 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a4 a7a5 a1a2",
+    "info depth 10 seldepth 12 multipv 3 score cp -183 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv b1a3 a7a5 a1b1",
+    "bestmove a2a3"
+   ],
+   "3|position startpos moves e2e4 e7e5 g1f3 b8c6 f1c4": [
+    "info depth 10 seldepth 12 multipv 1 score cp 24 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a5 a2a3 a5a4",
+    "info depth 10 seldepth 12 multipv 2 score cp 4 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a6 a2a3 a6a5",
+    "info depth 10 seldepth 12 multipv 3 score cp -16 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a8b8 a2a3 a7a5",
+    "bestmove a7a5"
+   ],
+   "3|position startpos moves g1f3 g8f6 f3g1 f6g8": [
+    "info depth 10 seldepth 12 multipv 1 score cp 5 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a3 a7a5 a1a2",
+    "info depth 10 seldepth 12 multipv 2 score cp -15 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a4 a7a5 a1a2",
+    "info depth 10 seldepth 12 multipv 3 score cp -35 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv b1a3 a7a5 a1b1",
+    "bestmove a2a3"
+   ],
+   "1|position startpos moves e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 e1g1": [
+    "info depth 12 seldepth 14 multipv 1 score cp 98 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a5 a2a3 a5a4",
+    "bestmove a7a5"
+   ],
+   "3|position fen r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4": [
+    "info depth 10 seldepth 12 multipv 1 score mate 1 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv h5f7",
+    "info depth 10 seldepth 12 multipv 2 score cp -35 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a3 a7a5 a1a2",
+    "info depth 10 seldepth 12 multipv 3 score cp -55 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a4 a7a5 a1a2",
+    "bestmove h5f7"
+   ],
+   "3|position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves d2d4": [
+    "info depth 10 seldepth 12 multipv 1 score cp 71 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a5 a2a3 a5a4",
+    "info depth 10 seldepth 12 multipv 2 score cp 51 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a6 a2a3 a6a5",
+    "info depth 10 seldepth 12 multipv 3 score cp 31 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv b7b5 a2a3 a7a5",
+    "bestmove a7a5"
+   ],
+   "2|position fen rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1": [
+    "info depth 10 seldepth 12 multipv 1 score cp -67 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a5 a2a3 a5a4",
+    "info depth 10 seldepth 12 multipv 2 score cp -87 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a6 a2a3 a6a5",
+    "bestmove a7a5"
+   ],
+   "1|position fen rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2": [
+    "info depth 10 seldepth 12 multipv 1 score cp 150 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a3 a7a5 a1a2",
+    "bestmove a2a3"
+   ],
+   "1|position fen 7k/8/8/8/8/8/6q1/7K w - - 0 1": [
+    "info depth 10 seldepth 12 multipv 1 score cp -14 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv h1g2 h8g7 g2f1",
+    "bestmove h1g2"
+   ],
+   "3|position fen r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 b - - 0 40 moves c6d4 f3d4": [
+    "info depth 14 seldepth 16 multipv 1 score cp -27 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a5 a1b1 a5a4",
+    "info depth 14 seldepth 16 multipv 2 score cp -47 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a7a6 a1b1 a6a5",
+    "info depth 14 seldepth 16 multipv 3 score cp -67 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a8b8 a1b1 a7a5",
+    "bestmove a7a5"
+   ]
+  },
+  "scenarios": [
+   {
+    "name": "the start",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "a2a3",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.37132483661091226,
+      "score_cp": -143,
+      "mate": null,
+      "wdl": [
+       0,
+       175,
+       825
+      ]
+     },
+     {
+      "moves": [
+       "a2a4",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.354302733312082,
+      "score_cp": -163,
+      "mate": null,
+      "wdl": [
+       0,
+       96,
+       904
+      ]
+     },
+     {
+      "moves": [
+       "b1a3",
+       "a7a5",
+       "a1b1"
+      ],
+      "depth": 10,
+      "expected_score": 0.3376418641828339,
+      "score_cp": -183,
+      "mate": null,
+      "wdl": [
+       0,
+       51,
+       949
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a game's moves",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [
+     "e2e4",
+     "e7e5",
+     "g1f3",
+     "b8c6",
+     "f1c4"
+    ],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "a7a5",
+       "a2a3",
+       "a5a4"
+      ],
+      "depth": 10,
+      "expected_score": 0.522078114090291,
+      "score_cp": 24,
+      "mate": null,
+      "wdl": [
+       72,
+       913,
+       15
+      ]
+     },
+     {
+      "moves": [
+       "a7a6",
+       "a2a3",
+       "a6a5"
+      ],
+      "depth": 10,
+      "expected_score": 0.5036820134406647,
+      "score_cp": 4,
+      "mate": null,
+      "wdl": [
+       37,
+       934,
+       29
+      ]
+     },
+     {
+      "moves": [
+       "a8b8",
+       "a2a3",
+       "a7a5"
+      ],
+      "depth": 10,
+      "expected_score": 0.4852759384118717,
+      "score_cp": -16,
+      "mate": null,
+      "wdl": [
+       19,
+       926,
+       55
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a repetition in the moves",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [
+     "g1f3",
+     "g8f6",
+     "f3g1",
+     "f6g8"
+    ],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "a2a3",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.5046024700028845,
+      "score_cp": 5,
+      "mate": null,
+      "wdl": [
+       39,
+       933,
+       28
+      ]
+     },
+     {
+      "moves": [
+       "a2a4",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.48619570897068454,
+      "score_cp": -15,
+      "mate": null,
+      "wdl": [
+       20,
+       926,
+       54
+      ]
+     },
+     {
+      "moves": [
+       "b1a3",
+       "a7a5",
+       "a1b1"
+      ],
+      "depth": 10,
+      "expected_score": 0.467826316589383,
+      "score_cp": -35,
+      "mate": null,
+      "wdl": [
+       10,
+       888,
+       102
+      ]
+     }
+    ]
+   },
+   {
+    "name": "castling sent as king-takes-rook",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [
+     "e2e4",
+     "e7e5",
+     "g1f3",
+     "b8c6",
+     "f1c4",
+     "f8c5",
+     "e1h1"
+    ],
+    "stack": true,
+    "multipv": 1,
+    "depth": 12,
+    "lines": [
+     {
+      "moves": [
+       "a7a5",
+       "a2a3",
+       "a5a4"
+      ],
+      "depth": 12,
+      "expected_score": 0.589244688568345,
+      "score_cp": 98,
+      "mate": null,
+      "wdl": [
+       499,
+       500,
+       1
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a FEN with a mate in one",
+    "fen": "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+    "moves": [],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "h5f7"
+      ],
+      "depth": 10,
+      "expected_score": 1.0,
+      "score_cp": null,
+      "mate": 1,
+      "wdl": [
+       1000,
+       0,
+       0
+      ]
+     },
+     {
+      "moves": [
+       "a2a3",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.467826316589383,
+      "score_cp": -35,
+      "mate": null,
+      "wdl": [
+       10,
+       888,
+       102
+      ]
+     },
+     {
+      "moves": [
+       "a2a4",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.44954372531791664,
+      "score_cp": -55,
+      "mate": null,
+      "wdl": [
+       5,
+       811,
+       184
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a FEN root with an en passant square no pawn can take, and a move",
+    "fen": "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2",
+    "moves": [
+     "d2d4"
+    ],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "a7a5",
+       "a2a3",
+       "a5a4"
+      ],
+      "depth": 10,
+      "expected_score": 0.5649872147270768,
+      "score_cp": 71,
+      "mate": null,
+      "wdl": [
+       282,
+       715,
+       3
+      ]
+     },
+     {
+      "moves": [
+       "a7a6",
+       "a2a3",
+       "a6a5"
+      ],
+      "depth": 10,
+      "expected_score": 0.5468090461073719,
+      "score_cp": 51,
+      "mate": null,
+      "wdl": [
+       164,
+       830,
+       6
+      ]
+     },
+     {
+      "moves": [
+       "b7b5",
+       "a2a3",
+       "a7a5"
+      ],
+      "depth": 10,
+      "expected_score": 0.5285051773118131,
+      "score_cp": 31,
+      "mate": null,
+      "wdl": [
+       90,
+       899,
+       11
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a double step with no history",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [
+     "e2e4"
+    ],
+    "stack": false,
+    "multipv": 2,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "a7a5",
+       "a2a3",
+       "a5a4"
+      ],
+      "depth": 10,
+      "expected_score": 0.4386360651319824,
+      "score_cp": -67,
+      "mate": null,
+      "wdl": [
+       3,
+       742,
+       255
+      ]
+     },
+     {
+      "moves": [
+       "a7a6",
+       "a2a3",
+       "a6a5"
+      ],
+      "depth": 10,
+      "expected_score": 0.4205926555346196,
+      "score_cp": -87,
+      "mate": null,
+      "wdl": [
+       2,
+       593,
+       405
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a null move in the history",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [
+     "e2e4",
+     "0000"
+    ],
+    "stack": true,
+    "multipv": 1,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "a2a3",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.6346718261450347,
+      "score_cp": 150,
+      "mate": null,
+      "wdl": [
+       857,
+       143,
+       0
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a claimable threefold repetition",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [
+     "g1f3",
+     "g8f6",
+     "f3g1",
+     "f6g8",
+     "g1f3",
+     "g8f6",
+     "f3g1",
+     "f6g8"
+    ],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": []
+   },
+   {
+    "name": "checkmate",
+    "fen": "r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4",
+    "moves": [],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": []
+   },
+   {
+    "name": "one legal move",
+    "fen": "7k/8/8/8/8/8/6q1/7K w - - 0 1",
+    "moves": [],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "lines": [
+     {
+      "moves": [
+       "h1g2",
+       "h8g7",
+       "g2f1"
+      ],
+      "depth": 10,
+      "expected_score": 0.48711557303526726,
+      "score_cp": -14,
+      "mate": null,
+      "wdl": [
+       20,
+       928,
+       52
+      ]
+     }
+    ]
+   },
+   {
+    "name": "black to move, deep in a game",
+    "fen": "r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 b - - 0 40",
+    "moves": [
+     "c6d4",
+     "f3d4"
+    ],
+    "stack": true,
+    "multipv": 3,
+    "depth": 14,
+    "lines": [
+     {
+      "moves": [
+       "a7a5",
+       "a1b1",
+       "a5a4"
+      ],
+      "depth": 14,
+      "expected_score": 0.47516641034760715,
+      "score_cp": -27,
+      "mate": null,
+      "wdl": [
+       1,
+       986,
+       13
+      ]
+     },
+     {
+      "moves": [
+       "a7a6",
+       "a1b1",
+       "a6a5"
+      ],
+      "depth": 14,
+      "expected_score": 0.4568432147802496,
+      "score_cp": -47,
+      "mate": null,
+      "wdl": [
+       0,
+       960,
+       40
+      ]
+     },
+     {
+      "moves": [
+       "a8b8",
+       "a1b1",
+       "a7a5"
+      ],
+      "depth": 14,
+      "expected_score": 0.4386360651319824,
+      "score_cp": -67,
+      "mate": null,
+      "wdl": [
+       0,
+       881,
+       119
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}
