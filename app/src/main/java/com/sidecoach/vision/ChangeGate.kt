@@ -128,7 +128,7 @@ class ChangeGate(
         /** The board plus half a cell of margin, clamped to the frame; null without a board. */
         fun boardGate(board: BoardCandidate?, width: Int, height: Int): Region? {
             if (board == null) return null
-            val pad = Math.round(board.cellPx / 2).toInt()
+            val pad = pyRound(board.cellPx / 2)  // `int(round(...))`: halves to even
             val r = board.region
             val gate = clampRegion(
                 Region(r.x - pad, r.y - pad, r.w + 2 * pad, r.h + 2 * pad), width, height,

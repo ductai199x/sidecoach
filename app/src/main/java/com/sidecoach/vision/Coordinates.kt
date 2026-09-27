@@ -6,7 +6,6 @@ import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
@@ -49,8 +48,8 @@ object Coordinates {
      */
     private fun squareColour(cell: ByteArray, height: Int, width: Int): DoubleArray {
         val n = min(height, width)
-        val outer = max(1, (n * 0.05).roundToInt())
-        val inner = outer + max(1, (n * 0.07).roundToInt())
+        val outer = max(1, pyRound(n * 0.05))
+        val inner = outer + max(1, pyRound(n * 0.07))
         val channels = Array(3) { ArrayList<Double>() }
         for (y in 0 until height) {
             for (x in max(0, width - inner) until max(0, width - outer)) {
