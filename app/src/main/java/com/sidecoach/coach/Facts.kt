@@ -1084,6 +1084,16 @@ fun factsFromAnalysis(
         situationText += " $question"
     }
     situationText = situationText?.let { if (it.isNotEmpty()) Situation.spoken(Situation.withinBudget(it)) else it }
+    // The principle as the hint says it, when it says it: the coach leaves it out while it
+    // cools down.
+    var principleSaid = if (!principle.isNullOrEmpty() && !key.isNullOrEmpty()) {
+        Situation.spoken(Situation.sentence(principle))
+    } else {
+        null
+    }
+    if (!principleSaid.isNullOrEmpty() && (situationText.isNullOrEmpty() || principleSaid !in situationText)) {
+        principleSaid = null
+    }
     // A quiet move's own reason, said at the move rung: the key fact it answers.
     if (why == null && !moveReason.isNullOrEmpty() && best != null) {
         why = "${board.san(best)}: ${moveReason.replaceFirstChar { it.lowercase() }}"
@@ -1137,6 +1147,7 @@ fun factsFromAnalysis(
         trap = trap,
         choices = choices,
         situation = situationText,
+        principle = principleSaid,
     )
 }
 

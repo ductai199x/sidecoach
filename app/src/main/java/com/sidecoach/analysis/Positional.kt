@@ -1113,6 +1113,9 @@ fun bestMoveIdea(
     val pieceType = board.pieceTypeAt(move.from)
     // A new queen needs no idea read into it ("prophylaxis" was said of c8=Q).
     if (pieceType == 0 || move.promotion != 0) return null
+    // Out of check is the way out, not a plan: "in the endgame the king is a fighting piece"
+    // was said of a king driven off by a check (the lesson audit, 2026-09-27).
+    if (board.isCheck()) return null
     val after = board.copy(withStack = false)
     after.push(move)
     val to = name(move.to)
@@ -1122,8 +1125,14 @@ fun bestMoveIdea(
     }
 
     // A rescue needs the square the piece goes to to be safe as well: a knight that runs from
-    // one pawn onto a square another pawn takes is not brought to safety.
-    if (pieceIsAttacked(board, move.from, us) &&
+    // one pawn onto a square another pawn takes is not brought to safety. And the piece must be
+    // what their threat goes after ([threat], the engine's best move for them were it theirs): a
+    // piece that could be taken but is not what they would take was "a piece in danger comes
+    // first" of a rook check that led to mate (the lesson audit, 2026-09-27).
+    if (threat != null &&
+        threat.to == move.from &&
+        pieceType != PAWN && // a pawn that steps on from an attack is a push
+        pieceIsAttacked(board, move.from, us) &&
         !board.isCapture(move) &&
         !pieceIsAttacked(after, move.to, us)
     ) {
@@ -1149,7 +1158,15 @@ fun bestMoveIdea(
         )
     }
 
+    // The king fights for something: a bare king against a piece is only running from mate ("the
+    // king is a fighting piece" of a lone king before a queen and a knight, the lesson audit,
+    // 2026-09-27).
+    val men = board.pieceMap().values
+    val bare = men.count { it.colour == us } == 1 &&
+        men.any { it.colour != us && it.pieceType != KING && it.pieceType != PAWN }
     if (phase == "endgame" && pieceType == KING &&
+        !bare &&
+        !board.isCapture(move) &&
         centerDistance(move.to) < centerDistance(move.from)
     ) {
         return PositionalFact(
@@ -1226,7 +1243,13 @@ fun bestMoveIdea(
         )
     }
 
-    val stormSide = pawnStormSide(board, move, us)
+    // A storm and space are middlegame ideas: in an ending with pieces a pawn goes forward to
+    // queen or to make a passer ("pawns thrown at their king" of h4 with a queen against a
+    // bishop, the lesson audit, 2026-09-27). A pawn ending keeps them: the coach's facts read
+    // them there as the passer's race (`facts._PAWN_ENDING_PLAN`).
+    val pawnEnding = board.pieceMap().values.all { it.pieceType == KING || it.pieceType == PAWN }
+    val middle = phase != "endgame" || pawnEnding
+    val stormSide = if (middle) pawnStormSide(board, move, us) else null
     if (stormSide != null) {
         return PositionalFact(
             "pawnStorm",
@@ -1237,7 +1260,7 @@ fun bestMoveIdea(
 
     // Space is a pawn that goes forward and stays: not a capture, and past its third rank (a3
     // and h3 make room for the King or keep a piece out; they take no space).
-    if (phase != "opening" && pieceType == PAWN && quiet && relativeRank(move.to, us) >= 4) {
+    if (phase != "opening" && middle && pieceType == PAWN && quiet && relativeRank(move.to, us) >= 4) {
         val file = squareFile(move.to)
         if (file <= 1 || file >= 6) {
             val side = if (file <= 1) "queenside" else "kingside"
@@ -1245,7 +1268,16 @@ fun bestMoveIdea(
         }
     }
 
-    if (board.isCapture(move) && materialDiff(board, us) >= 3) {
+    // A trade is a capture that is taken back for as much: one that wins something is the win,
+    // not a simplification ("trades bring the win closer" was said of taking a loose bishop,
+    // the lesson audit, 2026-09-27). And a trade of pieces: ahead, the pawns are what you keep.
+    val taken = board.pieceTypeAt(move.to)
+    if (board.isCapture(move) &&
+        taken != 0 && taken != PAWN &&
+        materialDiff(board, us) >= 3 &&
+        Exchange.exchange(board, move) == 0 &&
+        Exchange.canRetake(board, move)
+    ) {
         return PositionalFact(
             "simplify", "you are up material, so this trade simplifies toward the win", listOf(to),
         )

@@ -97,6 +97,32 @@ class PositionalTest {
         assertTrue(failures.take(8).joinToString("\n"), failures.isEmpty())
     }
 
+    /**
+     * `test_a_rescue_is_of_the_piece_their_threat_goes_after` (desktop 3d9568d): a piece that
+     * could be taken is in danger only when taking it is their threat (the engine's best move for
+     * them, were it theirs): "a piece in danger comes first" was said of a rook check that led to
+     * mate, and of moves whose threat was elsewhere (the lesson audit, 2026-09-27). A pawn that
+     * steps on from an attack is a push, not a rescue. With the threat, the rescues of
+     * `test_best_move_idea_rescues_a_piece_in_danger` and
+     * `test_a_rescue_needs_a_piece_that_can_be_won_and_a_safe_square` still hold.
+     */
+    @Test
+    fun aRescueIsOfThePieceTheirThreatGoesAfter() {
+        fun kind(board: Board, uci: String, threat: String?, phase: String = "middlegame"): String? =
+            bestMoveIdea(board, Move.fromUci(uci), board.turn, phase = phase, threat = threat?.let { Move.fromUci(it) })?.kind
+        val bishop = Board("rnbqkbnr/1ppp1ppp/p7/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 3")
+        assertTrue(kind(bishop, "b5a4", "a6b5", phase = "opening") == "rescue")
+        assertTrue(kind(bishop, "b5a4", null, phase = "opening") != "rescue")
+        assertTrue("their threat is not the bishop", kind(bishop, "b5a4", "d8h4", phase = "opening") != "rescue")
+        // The e4 pawn attacked by the d5 pawn steps on to e5: no rescue.
+        val pawn = Board("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1")
+        assertTrue(kind(pawn, "e4e5", "d5e4") != "rescue")
+        // A knight a pawn attacks: Nb6, onto a square a pawn takes, is no rescue; Ne3 is.
+        val knight = Board("4k3/p7/8/3p4/2N5/8/8/4K3 w - - 0 1")
+        assertTrue(kind(knight, "c4b6", "d5c4") != "rescue")
+        assertTrue(kind(knight, "c4e3", "d5c4") == "rescue")
+    }
+
     private fun compare(
         case: JSONObject,
         key: String,

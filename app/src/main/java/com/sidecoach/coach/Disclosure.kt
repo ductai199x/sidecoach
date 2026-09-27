@@ -128,6 +128,13 @@ data class PositionFacts(
     val trap: String? = null,
     val choices: List<String> = emptyList(),
     val situation: String? = null,
+    /**
+     * The principle's sentence as [situation] says it ("A move that attacks something they must
+     * then defend keeps you a step ahead: ..."), so the coach can leave it out while it cools
+     * down ([RULE_COOLDOWN]): it came 218 times in the master games' hints, 59 of them again in
+     * the same game. Not on the model's sheet: [situation] carries it.
+     */
+    val principle: String? = null,
 ) {
     /** The fields by the names the Python bundle uses, in declaration order. */
     fun asMap(): LinkedHashMap<String, Any?> {
@@ -163,6 +170,7 @@ data class PositionFacts(
         out["trap"] = trap
         out["choices"] = choices
         out["situation"] = situation
+        out["principle"] = principle
         return out
     }
 }

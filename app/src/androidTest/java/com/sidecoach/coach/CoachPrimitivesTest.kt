@@ -427,6 +427,7 @@ class CoachPrimitivesTest {
         trap = nullable(o, "trap"),
         choices = strings(o.getJSONArray("choices")),
         situation = nullable(o, "situation"),
+        principle = nullable(o, "principle"),
     )
 
     /** Every field of the idea, squares by name and moves in UCI, as the generator wrote it. */

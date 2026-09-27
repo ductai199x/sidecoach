@@ -70,14 +70,29 @@ BUILT = [
     "8/8/5k2/4N3/3P4/8/8/4K3 w - - 0 1",
     "4k3/8/2n5/1B6/3N4/8/8/4K3 w - - 0 1",
     "4k3/p7/8/3p4/2N5/8/8/4K3 w - - 0 1",
+    # Desktop 3d9568d's gates: a bare king before a queen and a knight (no king's march), a
+    # king that captures, a king in check, h4 with a queen against a bishop (no storm in an
+    # ending with pieces), an even trade of rooks while ahead and a loose bishop taken.
+    "8/8/8/3k4/8/8/1QN5/4K3 b - - 0 1",
+    "8/8/8/3k4/3p4/4K3/8/8 w - - 0 1",
+    "4k3/8/8/8/8/8/4r3/4K3 w - - 0 1",
+    "4b1k1/5pp1/8/8/8/8/5PPP/4Q1K1 w - - 0 1",
+    "3rk3/8/8/8/8/8/8/Q2RK3 w - - 0 1",
+    "4k3/8/8/3b4/8/8/8/Q2RK3 w - - 0 1",
 ]
 
 # The desktop's prophylaxis tests, with the threat each is asked about: a guard that still
-# loses the knight to the pawn, and a guard pinned to its own king.
-BUILT_THREATS = {
-    "4k3/8/8/8/1p6/2N5/8/2B1K3 w - - 0 1": "b4c3",
-    "4k3/8/8/3b4/5n2/P6B/6P1/7K w - - 0 1": "f4h3",
-}
+# loses the knight to the pawn, and a guard pinned to its own king. Then desktop 3d9568d's
+# rescue tests (a rescue is of the piece their threat takes, never a pawn): the bishop on b5
+# with their threat on it and elsewhere, the pawn on e4 that steps on, the knight on c4.
+BUILT_THREATS = [
+    ("4k3/8/8/8/1p6/2N5/8/2B1K3 w - - 0 1", "b4c3"),
+    ("4k3/8/8/3b4/5n2/P6B/6P1/7K w - - 0 1", "f4h3"),
+    ("rnbqkbnr/1ppp1ppp/p7/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 3", "a6b5"),
+    ("rnbqkbnr/1ppp1ppp/p7/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 3", "d8h4"),
+    ("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1", "d5e4"),
+    ("4k3/p7/8/3p4/2N5/8/8/4K3 w - - 0 1", "d5c4"),
+]
 
 
 def feature_json(fact) -> dict:
@@ -180,7 +195,7 @@ def main() -> None:
         board = chess.Board(fen)
         for phase in ("opening", "middlegame", "endgame"):
             cases.append(case_for(board, phase))
-    for fen, threat in BUILT_THREATS.items():
+    for fen, threat in BUILT_THREATS:
         board = chess.Board(fen)
         for phase in ("opening", "middlegame", "endgame"):
             cases.append(case_for(board, phase, threat))

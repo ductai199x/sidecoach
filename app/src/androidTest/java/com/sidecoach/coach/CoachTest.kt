@@ -882,6 +882,7 @@ class CoachTest {
             best = listOf("h5f7"),
             label = Label.GOOD,
         )
+        coach.messages += RULE_SPACING // past the decisive question's rule of thumb (desktop 3d9568d)
         val (_, fine) = coach.instruction(
             Trigger.POST_MOVE, position, DisclosureLevel.LINE, null, emptyList(), good, played,
         )
@@ -899,6 +900,105 @@ class CoachTest {
         assertTrue(again, "it is mate" !in again)
         assertTrue(again, KEEP_LEADS.none { "${it.replaceFirstChar { c -> c.uppercase() }}:" in again })
         assertTrue(instruction, "Do not open with the move they played" in instruction)
+    }
+
+    /**
+     * `test_a_rule_of_thumb_cools_down_across_games_and_puzzles` (desktop 3d9568d). Tai,
+     * 2026-09-27, after a run of puzzles: "it keeps on nagging me about some lessons like 'A rule
+     * to take with you' ... there has to be a cooldown of some number of messages before it can
+     * appear again". A rule is not said again for [RULE_COOLDOWN] of the coach's messages,
+     * whatever game or puzzle they fall in, and no two rules come within [RULE_SPACING] messages;
+     * the model is told to leave it out while it cools.
+     */
+    @Test
+    fun aRuleOfThumbCoolsDownAcrossGamesAndPuzzles() {
+        val (coach, _) = coach(emptyList())
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 6.5)
+        val position = coach.positions.getValue(6)
+        val board = Board(SCHOLAR)
+        val move = board.parseSan("a3")!!
+        val played = MovePlayed(
+            gameId = "g",
+            ply = 7,
+            san = "a3",
+            uci = move.uci(),
+            fenBefore = SCHOLAR,
+            fenAfter = SCHOLAR,
+            byUser = true,
+        )
+        val mistake = MoveAssessment(
+            gameId = "g",
+            ply = 7,
+            uci = move.uci(),
+            expectedLoss = 0.5,
+            severity = Severity.MISTAKE,
+            best = listOf("h5f7"),
+            label = Label.MISTAKE,
+        )
+
+        fun lesson(): Pair<String, String> {
+            coach.conversation.entries.clear() // a new puzzle: nothing said in this game yet
+            return coach.instruction(
+                Trigger.POST_MISTAKE, position, DisclosureLevel.LINE, null, emptyList(), mistake, played,
+            )
+        }
+
+        fun hasRule(text: String) = KEEP_LEADS.any { "${it.replaceFirstChar { c -> c.uppercase() }}:" in text }
+
+        // The decisive question's first hint said its principle: no rule for a few messages.
+        var (instruction, soon) = lesson()
+        assertTrue(soon, !hasRule(soon) && RULE_HELD in instruction)
+        coach.messages += RULE_SPACING
+        val (firstInstruction, first) = lesson()
+        assertTrue(first, hasRule(first) && RULE_HELD !in firstInstruction)
+        repeat(RULE_COOLDOWN - 1) {
+            coach.messages += 1
+            val (held, again) = lesson()
+            instruction = held
+            assertTrue(again, !hasRule(again))
+            assertTrue(instruction, RULE_HELD in instruction)
+        }
+        coach.messages += 1
+        val (_, back) = lesson()
+        assertTrue("back after the cooldown: $back", hasRule(back))
+        // Any two rules keep their distance, and a sound move's principle is a rule too.
+        assertFalse(coach.ruleOk("a different rule"))
+        assertTrue("takeFile" in coach.verdictTaught())
+        coach.messages += RULE_SPACING
+        assertTrue(coach.ruleOk("a different rule"))
+        coach.taughtByVerdict("takeFile")
+        assertTrue("takeFile" in coach.verdictTaught() && !coach.ruleOk(null))
+        coach.messages += RULE_SPACING
+        assertTrue("takeFile" in coach.verdictTaught() && "castle" !in coach.verdictTaught())
+        coach.messages += RULE_COOLDOWN
+        assertTrue(coach.ruleOk("takeFile")) // cooled; the last few lessons' memory is its own
+    }
+
+    /**
+     * `test_a_hints_principle_cools_down_too` (desktop 3d9568d): the first hint's principle ("A
+     * move that attacks something they must then defend keeps you a step ahead: ...") came 218
+     * times in the master games' hints, 59 of them again in the same game: it is a rule of thumb
+     * like the lesson's, left out while it cools.
+     */
+    @Test
+    fun aHintsPrincipleCoolsDownToo() {
+        val (coach, _) = coach(emptyList())
+        val rule = "A move that attacks something they must then defend keeps you a step ahead."
+        val hint = "You can take the initiative. $rule Their pawn on d3 can be hit."
+        val facts = PositionFacts(
+            fen = SCHOLAR, sideToMove = "white", phase = "middlegame", situation = hint, principle = rule,
+        )
+        var (said, note) = coach.coolHint(facts, hint)
+        assertTrue(said == hint && note.isEmpty())
+        coach.messages += RULE_COOLDOWN - 1
+        val cooled = coach.coolHint(facts, hint)
+        said = cooled.first
+        note = cooled.second
+        assertEquals("You can take the initiative. Their pawn on d3 can be hit.", said)
+        assertTrue(note, rule in note && "heard it lately" in note)
+        coach.messages += 1
+        assertEquals(hint to "", coach.coolHint(facts, hint))
     }
 
     @Test

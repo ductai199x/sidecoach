@@ -403,6 +403,7 @@ class ConversationTest {
         trap = nullable(o, "trap"),
         choices = strings(o.getJSONArray("choices")),
         situation = nullable(o, "situation"),
+        principle = nullable(o, "principle"),
     )
 
     /**

@@ -3,10 +3,17 @@ package com.sidecoach.coach
 import com.sidecoach.analysis.Exchange
 import com.sidecoach.analysis.bestMoveIdea
 import com.sidecoach.analysis.worstPieceSquare
+import com.sidecoach.chess.BISHOP
 import com.sidecoach.chess.Board
+import com.sidecoach.chess.KING
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.PAWN
+import com.sidecoach.chess.QUEEN
+import com.sidecoach.chess.ROOK
 import com.sidecoach.chess.parseSquare
+import com.sidecoach.chess.square
+import com.sidecoach.chess.squareFile
+import com.sidecoach.chess.squareRank
 import com.sidecoach.events.MotifTag
 import kotlin.random.Random
 
@@ -17,9 +24,11 @@ import kotlin.random.Random
  * A best, great, excellent, good or book move that cost nothing gets a word of praise in
  * chess.com's vocabulary, then -- when the board shows one -- what the move teaches: the mate,
  * the tactic it makes (the tagger's tag, described only when every square it names still holds
- * the piece it claims), or the strategic idea behind it ([bestMoveIdea], from the board's
- * geometry), put as the principle to keep. Nothing else: no advice, no guess at what it
- * allows, no numbers, no question.
+ * the piece it claims), the mate it threatens, or the strategic idea behind it ([bestMoveIdea],
+ * from the board's geometry), put as the principle to keep -- and the principle only when it is
+ * the move's reason: never of a move that checks, mates along the line, makes a tactic, or
+ * threatens something ([lesson]; Tai, 2026-09-27: "If it says something it should be
+ * relevant"). Nothing else: no advice, no guess at what it allows, no numbers, no question.
  *
  * Never the move itself, nor what it plainly does -- the capture, the check, the castling: the
  * player has just played it and sees it on the board. Tai, 2026-09-23: "the coach shouldn't be
@@ -124,7 +133,47 @@ val PRINCIPLES: Map<String, List<String>> = mapOf(
         "when you are ahead, trades bring the win closer",
         "ahead in material, every trade helps you",
     ),
+    // Prophylaxis against a threat to take or to check: not their plan stopped before it
+    // starts but their threat met ("prophylaxis" was said of Nc3 guarding e4 against Nxe4).
+    "defend" to listOf("their threat comes first", "first their threat, then your plan"),
 )
+
+/** A move that threatens mate: the point is the mate, whatever else the move does. */
+val MATE_THREAT = listOf("that threatens mate", "and now mate is threatened")
+
+/**
+ * The tags that say what a move is for when it is not a principle: the check, the mate along the
+ * line, the tactic it makes or starts. A move that carries one is a move with a concrete point,
+ * and a principle said of it was not the reason ("rooks belong on open files" of a rook check
+ * that led to mate, "passed pawns must be pushed" of the push that mated: Tai, 2026-09-27). The
+ * weaker geometric tags -- an interference, an x-ray, an exposed king -- come with castling and
+ * rook lifts alike and do not count.
+ */
+val CONCRETE = setOf(
+    "doubleCheck",
+    "mate",
+    "sacrifice",
+    "deflection",
+    "attraction",
+    "clearance",
+    "capturingDefender",
+    "discoveredAttack",
+    "fork",
+    "skewer",
+    "pin",
+    "absolutePin",
+    "attackingF2F7",
+    "trappedPiece",
+    "hangingPiece",
+    "promotion",
+    "underPromotion",
+)
+
+/** The kinds that are about a threat met: a move that saves a piece is their point. */
+private val DEFENSIVE = listOf("rescue", "prophylaxis", "castle")
+
+/** The pawn moves whose principle is about pieces or a king to attack. */
+private val PAWN_MOVES = listOf("break", "centre", "space", "pawnStorm")
 
 /**
  * The terms of art in the wordings above: said to a player below 1400, the simulated 800-rated
@@ -149,10 +198,85 @@ private fun pinWins(after: Board, tag: MotifTag): Boolean {
 }
 
 /**
+ * Their threat (read after a pass) takes something or gives check: a threat to meet, not a plan
+ * to forestall. `verdicts._direct`.
+ */
+private fun direct(board: Board, threat: Move): Boolean {
+    val passed = nullMoved(board)
+    return passed.isCapture(threat) || passed.givesCheck(threat)
+}
+
+/**
+ * After a move that gives no check, the mover would mate in one were it their move again.
+ * `verdicts.threatens_mate`.
+ */
+fun threatensMate(after: Board): Boolean {
+    if (after.isCheck() || after.isGameOver()) return false
+    val passed = nullMoved(after)
+    for (reply in passed.legalMoves()) {
+        passed.push(reply)
+        val mate = passed.isCheckmate()
+        passed.pop()
+        if (mate) return true
+    }
+    return false
+}
+
+/**
+ * The move makes a threat to win a piece of theirs, a minor or more, that could not be won
+ * before it: the threat is its point. `verdicts._threatens_piece`.
+ */
+private fun threatensPiece(board: Board, after: Board, us: Boolean): Boolean {
+    for ((square, piece) in after.pieceMap()) {
+        if (piece.colour == us || Exchange.VALUE[piece.pieceType] < 3) continue
+        if (Exchange.canBeWon(after, square) && !Exchange.canBeWon(board, square)) return true
+    }
+    return false
+}
+
+/**
+ * The piece that moved to [to], a bishop, rook or queen, stands on a line with two of their
+ * pieces one behind the other, a minor or more each: a pin (the one behind worth more, or the
+ * king) or a skewer (the one in front worth more). Tagged or not, the line is the move's point:
+ * the annotator keeps a pin only when the line cashes it in. A pawn in front is a file's usual
+ * traffic, not a pin. `verdicts._lines_up`.
+ */
+private fun linesUp(after: Board, to: Int, us: Boolean): Boolean {
+    val piece = after.pieceAt(to)
+    if (piece == null || piece.pieceType !in listOf(BISHOP, ROOK, QUEEN)) return false
+    val steps = ArrayList<Pair<Int, Int>>()
+    if (piece.pieceType != BISHOP) steps += listOf(0 to 1, 0 to -1, 1 to 0, -1 to 0)
+    if (piece.pieceType != ROOK) steps += listOf(1 to 1, 1 to -1, -1 to 1, -1 to -1)
+    for ((df, dr) in steps) {
+        val seen = ArrayList<com.sidecoach.chess.Piece>(2)
+        var f = squareFile(to)
+        var r = squareRank(to)
+        while (seen.size < 2) {
+            f += df
+            r += dr
+            if (f !in 0..7 || r !in 0..7) break
+            val other = after.pieceAt(square(f, r)) ?: continue
+            if (other.colour == us) break
+            seen.add(other)
+        }
+        if (seen.size < 2) continue
+        val front = Exchange.VALUE[seen[0].pieceType]
+        val back = Exchange.VALUE[seen[1].pieceType]
+        if (front >= 3 && back >= 3 && front != back) return true
+    }
+    return false
+}
+
+/**
  * What a sound move teaches, as its kind and the ways to say it: the mate, the tactic a tag
- * names when the squares bear it out, or the idea behind the move as its principle (two
- * wordings). Null when the board shows none, or when its kind is in [taught] (said in one of
- * the last few words).
+ * names when the squares bear it out, the mate it threatens, or the idea behind the move as its
+ * principle (two wordings). Null when the board shows none, or when its kind is in [taught]
+ * (said in one of the last few words).
+ *
+ * A principle only when it is the move's reason: never of a move that checks, mates along the
+ * line, makes or starts a tactic ([CONCRETE]), lines up on two of their pieces, or threatens
+ * mate or one of their pieces -- that is its point, and said or not, the principle beside it was
+ * noise (Tai, 2026-09-27: "If it says something it should be relevant").
  */
 fun lesson(
     board: Board,
@@ -172,26 +296,51 @@ fun lesson(
             if (said != null) return tag.name to listOf(said)
         }
     }
+    // A capture that wins something -- a recapture most often -- is about the material: "that
+    // lets your bishop out" was said of bxc3 taking back a knight, "that threatens mate" of Qxd4
+    // taking a queen.
+    val won = Exchange.exchange(board, move)
+    if (threatensMate(after) && won < 3) {
+        return if ("mateThreat" in taught) null else "mateThreat" to MATE_THREAT
+    }
     val us = board.turn
+    if (after.isCheck() ||
+        tags.any { it.name in CONCRETE || it.name.startsWith("mateIn") } ||
+        linesUp(after, move.to, us) ||
+        threatensPiece(board, after, us) ||
+        won > 0
+    ) {
+        return null
+    }
+    val threat = threatOf(board, threats)
     val idea = bestMoveIdea(
         board,
         move,
         us,
         phase = phase,
         worst = worstPieceSquare(board, us),
-        threat = threatOf(board, threats),
+        threat = threat,
     )
-    if (idea == null || idea.kind !in PRINCIPLES || idea.kind in taught) return null
-    if (idea.kind == "centre" || idea.kind == "space" || idea.kind == "centralise") {
+    if (idea == null || idea.kind !in PRINCIPLES) return null
+    if (idea.kind !in DEFENSIVE && tags.any { it.name == "defensiveMove" }) {
+        return null // it saves a piece: that is its point, not the rook's file
+    }
+    var kind = idea.kind
+    if (kind == "prophylaxis" && threat != null && direct(board, threat)) kind = "defend"
+    if (kind in taught) return null
+    if (kind in PAWN_MOVES && board.pieceMap().values.all { it.pieceType == KING || it.pieceType == PAWN }) {
+        return null // a pawn ending: no pieces for the lines to open, no king to storm
+    }
+    if (kind == "centre" || kind == "space" || kind == "centralise") {
         // A principle with nothing on the board behind it is no lesson ("the fight is for the
         // centre" after every pawn move, Tai, 2026-09-24): only what the move opens.
         val opened = Situation.shutIn(board, move) ?: return null
         val home = opened.first
-        val kind = board.pieceTypeAt(home)
-        val name = COACH_PIECE_NAMES[if (kind == 0) PAWN else kind]
-        return idea.kind to listOf("that lets your $name out")
+        val piece = board.pieceTypeAt(home)
+        val name = COACH_PIECE_NAMES[if (piece == 0) PAWN else piece]
+        return kind to listOf("that lets your $name out")
     }
-    return idea.kind to PRINCIPLES.getValue(idea.kind)
+    return kind to PRINCIPLES.getValue(kind)
 }
 
 /**

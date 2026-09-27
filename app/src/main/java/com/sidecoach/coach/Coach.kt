@@ -356,13 +356,33 @@ private fun recapture(board: Board?, best: String, played: String?): String? {
     return "take with the $mine on ${squareName(good.from)}, not $theirs on ${squareName(done.from)}"
 }
 
+const val RECAPTURE_RULE = "when two pieces can take, ask which you want to keep where it is"
+
+/**
+ * The rule to keep that [lessonTemplate] would add after the move: the recapture's, the
+ * pattern's ([PATTERN_LESSONS], a mating attack's for a mate), or the plan's mechanism; null when
+ * there is none. The coach holds it back while it is cooling down ([Coach.ruleOk]).
+ * `coach.rule_of`.
+ */
+fun ruleOf(facts: PositionFacts, best: String, board: Board? = null, played: String? = null): String? {
+    if (recapture(board, best, played) != null) return RECAPTURE_RULE
+    val theme = facts.theme ?: ""
+    var keep = PATTERN_LESSONS[theme]
+    if (keep == null && MATES.any { it in theme }) keep = PATTERN_LESSONS.getValue("a mating attack")
+    if (keep == null && !facts.plan.isNullOrEmpty() && !facts.mechanism.isNullOrEmpty()) {
+        keep = facts.mechanism.split(": ", limit = 2).last()
+    }
+    return keep?.ifEmpty { null } // `keep or None`
+}
+
 /**
  * After a move that cost something: the better move, what it does, what the move made allowed,
  * and the pattern to keep. `opener` is the rotated "That one cost you: {best} was better";
  * `board` and `played` (UCI) are the position the player faced and the move made, `allowed`
  * what it let the opponent do ([IdeaWords.allowed]), when known, and `keepLead` how the rule to
- * keep is introduced ([KEEP_LEADS], rotated by the coach). `strong` (a player of 1800 and up)
- * leaves the rule out: the concrete point is the lesson.
+ * keep is introduced ([KEEP_LEADS], rotated by the coach), null to leave the rule out (it was
+ * said lately: [Coach.ruleOk]). `strong` (a player of 1800 and up) leaves the rule out too: the
+ * concrete point is the lesson.
  */
 fun lessonTemplate(
     facts: PositionFacts,
@@ -371,18 +391,18 @@ fun lessonTemplate(
     board: Board? = null,
     played: String? = null,
     allowed: String? = null,
-    keepLead: String = KEEP_LEADS[0],
+    keepLead: String? = KEEP_LEADS[0],
     strong: Boolean = false,
 ): String {
     var text = opener
     val why = facts.why ?: ""
+    val rule = if (strong || keepLead == null) null else ruleOf(facts, best, board = board, played = played)
     val otherPiece = recapture(board, best, played)
     if (otherPiece != null) {
         text += " -- $otherPiece"
         if (!allowed.isNullOrEmpty()) text = templateSentence(text) + " " + allowed
-        if (strong) return templateSentence(text)
-        return templateSentence(text) + " " +
-            templateSentence("$keepLead: when two pieces can take, ask which you want to keep where it is")
+        if (rule == null) return templateSentence(text)
+        return templateSentence(text) + " " + templateSentence("$keepLead: $rule")
     }
     if (why.startsWith(best)) {
         var rest = why.substring(best.length).trimStart(' ', ',', ':', ';')
@@ -407,15 +427,13 @@ fun lessonTemplate(
     }
     text = templateSentence(text)
     if (!allowed.isNullOrEmpty()) text += " " + templateSentence(allowed)
-    val theme = facts.theme ?: ""
-    var keep = PATTERN_LESSONS[theme]
-    if (keep == null && MATES.any { it in theme }) keep = PATTERN_LESSONS.getValue("a mating attack")
-    if (keep == null && !facts.plan.isNullOrEmpty() && !facts.mechanism.isNullOrEmpty()) {
-        keep = facts.mechanism.split(": ", limit = 2).last()
-    }
-    if (!keep.isNullOrEmpty() && !strong && !said(keep, text)) text += " " + templateSentence("$keepLead: $keep")
+    if (rule != null && !said(rule, text)) text += " " + templateSentence("$keepLead: $rule")
     return text
 }
+
+/** [text] with [sentence] taken out, the spaces closed up. `coach._without`. */
+internal fun without(text: String, sentence: String): String =
+    com.sidecoach.voice.Py.split(text.replace(sentence, " ")).joinToString(" ")
 
 /**
  * `coach._stale`: whether a lesson's reason, read off the position the player faced, names a
@@ -437,6 +455,20 @@ internal fun stale(reason: String, played: String?): Boolean {
  * came with it -- 27% of them within three moves in twenty Nova bot games (2026-09-25).
  */
 const val RECENT_PLIES = 6
+
+/**
+ * A rule of thumb -- "a rule to take with you: ...", "rooks belong on open files" -- is not said
+ * again for this many of the coach's messages, across games and puzzles alike, and no two rules
+ * come within [RULE_SPACING] messages of each other (Tai, 2026-09-27, after a run of puzzles: "it
+ * keeps on nagging me ... there has to be a cooldown of some number of messages before it can
+ * appear again"). A puzzle is a new game, so a memory per game started over at every one.
+ */
+const val RULE_COOLDOWN = 30
+const val RULE_SPACING = 4
+
+/** The model's word while a rule is cooling down: the concrete point, no rule of thumb. */
+const val RULE_HELD =
+    "No rule of thumb this time -- the player heard one lately: only what this position shows."
 
 /** `fresh`'s own split: `re.split(r"(?<=[.?!])\\s+", ...)`. */
 private val LESSON_SENTENCES = Regex("(?<=[.?!])\\s+")
