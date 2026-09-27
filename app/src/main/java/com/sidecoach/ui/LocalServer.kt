@@ -228,10 +228,13 @@ class LocalServer(
         val name = if (found != null) asked else "index.html"
         val bytes = found ?: read(name)
             ?: return Reply(404, "text/plain; charset=utf-8", "no page".toByteArray())
-        if (name.endsWith(".html") && htmlStyle.isNotEmpty()) {
-            // The system bars' heights, on <html> before the first paint (see `htmlStyle`).
+        if (name.endsWith(".html")) {
+            // The page is the phone's (the drawer offers Debug > Dump here as well as in the
+            // desktop's shell), and the system bars' heights are on <html> before the first
+            // paint (see `htmlStyle`).
+            val style = if (htmlStyle.isNotEmpty()) " style=\"$htmlStyle\"" else ""
             val page = String(bytes, Charsets.UTF_8)
-                .replaceFirst("<html lang=\"en\">", "<html lang=\"en\" style=\"$htmlStyle\">")
+                .replaceFirst("<html lang=\"en\">", "<html lang=\"en\" data-app=\"phone\"$style>")
             return Reply(200, typeOf(name), page.toByteArray(Charsets.UTF_8))
         }
         return Reply(200, typeOf(name), bytes)
