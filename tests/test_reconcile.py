@@ -1075,3 +1075,40 @@ def test_the_clock_settles_the_side_to_move_before_a_takeback_can_mislead() -> N
     assert isinstance(events[1], PositionChanged) and events[1].fen.split(" ")[1] == "b"
     assert rec.board.turn == chess.BLACK and not rec.turn_unknown
     assert rec.turn_from_clock(chess.WHITE) == [], "settled once; a later clock is not asked"
+
+
+def test_no_move_is_told_through_wildcards_alone() -> None:
+    """A board slid on after its lock was taken, the lock 0.28 of a cell off it, below the
+    third of a cell validation sees: every piece reads unsettled, and the cells above two
+    pieces read the tops of them, a rook on a2 and on d3. Both turn stale, and the retry
+    that ignores stale cells took every unsettled piece as a wildcard: ignoring a2, the
+    king's move to d3 explained d3, both its squares wildcards, and was committed -- a move
+    nobody played (the geometry sweep, 2026-09-27, seed 97). A story must rest on a
+    disagreement read cleanly."""
+    fen = "rnbk1b1r/ppp1p2n/4p3/5p1p/8/P4P2/1PPKP1PP/RNBQ1B1R w - - 1 9"
+    board = chess.Board(fen)
+    rec = Reconciler(bottom=Side.WHITE, user_side=Side.WHITE, settle_frames=2)
+    rec.board = chess.Board(fen)
+    rec._base_fen = fen
+    rec._started = True
+    shifted = {chess.A2: "R", chess.D3: "R"}
+    readings = []
+    for r in range(8):
+        row = []
+        for c in range(8):
+            sq = chess.square(c, 7 - r)
+            piece = board.piece_at(sq)
+            symbol = piece.symbol() if piece else shifted.get(sq)
+            if symbol is None:
+                row.append(CellReading("empty", None, None, 1.0, 0.0, 0.0))
+                continue
+            colour = Side.WHITE if symbol.isupper() else Side.BLACK
+            row.append(
+                CellReading("piece", symbol, colour, 0.2, 0.4, 100.0, settled=False, offset=0.3)
+            )
+        readings.append(row)
+    events = []
+    for i in range(3 * rec.stale_after):
+        events += rec.update(readings, 0.1 * i)
+    assert _played(events) == [], _played(events)
+    assert rec.board.fen() == fen
