@@ -31,8 +31,12 @@ foreach ($apk in @($app, $test)) {
 }
 
 Write-Host "installing..."
-& $adb -s $Serial install -r -t $app | Out-Null
-& $adb -s $Serial install -r -t $test | Out-Null
+# -d: this checkout's build, even over a newer version another branch installed on a shared
+# emulator (a version bump elsewhere made the install fail, and the tests ran on that build).
+& $adb -s $Serial install -r -t -d $app | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "the app did not install" }
+& $adb -s $Serial install -r -t -d $test | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "the tests did not install" }
 
 # The network, if it is not already there. `adb push` writes as the shell, and the app
 # cannot read what the shell owns inside its own directories, so it goes by way of
