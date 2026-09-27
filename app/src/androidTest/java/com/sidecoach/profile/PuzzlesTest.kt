@@ -159,6 +159,20 @@ class PuzzlesTest {
         store.close()
     }
 
+    /**
+     * `test_a_row_too_short_for_a_rating_or_moves_is_skipped` (desktop 1e2e10f): a short row's
+     * missing fields read as None (csv.DictReader), and int(None) and None.split() crashed the
+     * desktop's import; both skip it now, as the phone did.
+     */
+    @Test
+    fun aRowTooShortForARatingOrMovesIsSkipped() {
+        val file = File(dir("short"), "short.csv")
+        file.writeText(listOf(HEADER, ROWS[0], "short1,8/8/8/8/8/8/8/K6k w - - 0 1", "short2").joinToString("\n") + "\n")
+        val store = PuzzleStore(null)
+        assertEquals(1, store.importCsv(file))
+        store.close()
+    }
+
     private fun strings(a: JSONArray): List<String> = (0 until a.length()).map { a.getString(it) }
 
     private companion object {

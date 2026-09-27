@@ -375,8 +375,8 @@ class PuzzleStore(val path: File?) {
                         if (values.isEmpty()) break
                         val row = HashMap<String, String?>()
                         for ((i, name) in header.withIndex()) row[name] = values.getOrNull(i)
-                        // A row too short to hold a rating (None) is skipped: the desktop's
-                        // int(None) raises TypeError there, which its import does not catch.
+                        // A row too short to hold a rating (None) is skipped, as the desktop's
+                        // import skips it on int(None)'s TypeError (desktop 1e2e10f).
                         val rating = row["Rating"]?.let { Puzzles.pyInt(it) } ?: continue
                         if (rating < Puzzles.RATING_MIN || rating > Puzzles.RATING_MAX) continue
                         val moves = com.sidecoach.voice.Py.split(row["Moves"] ?: "")
