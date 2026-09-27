@@ -196,13 +196,27 @@ class LocalServer(
             val reply = try {
                 api.handle(request.method, request.path, request.query, request.body, request.raw)
             } catch (exc: Exception) {
+                // What Starlette answers an exception a route did not catch.
                 Log.w(TAG, "${request.path} failed: $exc")
-                return Reply(500, "application/json; charset=utf-8", """{"ok":false}""".toByteArray())
+                return Reply(500, "text/plain; charset=utf-8", "Internal Server Error".toByteArray())
             }
-            return reply ?: Reply(404, "application/json; charset=utf-8", """{"ok":false}""".toByteArray())
+            return reply ?: unserved(request.method)
         }
+        // The static files take a GET (or a HEAD) and nothing else, as `StaticFiles` does.
+        if (request.method != "GET" && request.method != "HEAD") return unserved(request.method)
         return file(request.path)
     }
+
+    /**
+     * A route the desktop's server does not serve: its static files answer, as the mount at
+     * "/" does there -- 404 to a GET, 405 to any other method.
+     */
+    private fun unserved(method: String): Reply =
+        if (method == "GET" || method == "HEAD") {
+            Reply(404, "application/json; charset=utf-8", """{"detail":"Not Found"}""".toByteArray())
+        } else {
+            Reply(405, "application/json; charset=utf-8", """{"detail":"Method Not Allowed"}""".toByteArray())
+        }
 
     /**
      * A file of the shipped page. The frontend is one page with client-side routing, so a
@@ -214,10 +228,13 @@ class LocalServer(
         val name = if (found != null) asked else "index.html"
         val bytes = found ?: read(name)
             ?: return Reply(404, "text/plain; charset=utf-8", "no page".toByteArray())
-        if (name.endsWith(".html") && htmlStyle.isNotEmpty()) {
-            // The system bars' heights, on <html> before the first paint (see `htmlStyle`).
+        if (name.endsWith(".html")) {
+            // The page is the phone's (the drawer offers Debug > Dump here as well as in the
+            // desktop's shell), and the system bars' heights are on <html> before the first
+            // paint (see `htmlStyle`).
+            val style = if (htmlStyle.isNotEmpty()) " style=\"$htmlStyle\"" else ""
             val page = String(bytes, Charsets.UTF_8)
-                .replaceFirst("<html lang=\"en\">", "<html lang=\"en\" style=\"$htmlStyle\">")
+                .replaceFirst("<html lang=\"en\">", "<html lang=\"en\" data-app=\"phone\"$style>")
             return Reply(200, typeOf(name), page.toByteArray(Charsets.UTF_8))
         }
         return Reply(200, typeOf(name), bytes)

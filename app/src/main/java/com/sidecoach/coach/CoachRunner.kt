@@ -5,6 +5,8 @@ import com.sidecoach.events.CoachMessage
 import com.sidecoach.events.Event
 import com.sidecoach.llm.KeyStore
 import com.sidecoach.llm.LLMProvider
+import com.sidecoach.llm.LLMSettings
+import com.sidecoach.voice.Py
 import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.llm.OpenAICompatProvider
 import com.sidecoach.llm.makeProvider
@@ -134,7 +136,7 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
                 coach.onEvent(event, ts)
             } catch (exc: Exception) {
                 Log.w(TAG, "coach error on ${event::class.java.simpleName}: $exc")
-                PanelEngine.emit("sys", "warn", "coach error: $exc")
+                PanelEngine.emit("sys", "warn", "coach error: ${PanelEngine.pyRepr(exc)}")
             }
         }
     }
@@ -350,14 +352,18 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
         verifyClaims(found, board, facts = facts).map { claimLine(it) }
     }
 
-    /** The verifier the settings ask for: none, the coach's own model, or another. */
-    private fun verifier(settings: SettingsStore, provider: LLMProvider): LLMProvider? {
-        val kind = settings.verify().trim().lowercase()
+    /**
+     * The verifier the settings ask for: none, the coach's own model, or another provider --
+     * that preset with the model `coach.verify_model` names, and nothing of the coach's own
+     * model settings (its model, its address, its effort). `cli._verifier`.
+     */
+    internal fun verifier(settings: SettingsStore, provider: LLMProvider): LLMProvider? {
+        val kind = Py.strip(settings.verify()).lowercase()
         if (kind.isEmpty()) return null
         if (kind == "same") return provider
         return try {
             makeProvider(
-                settings.llm().copy(provider = kind),
+                LLMSettings(provider = kind, model = settings.verifyModel()),
                 timeoutS = 60.0,
                 keys = KeyStore { name -> settings.secret(name) },
             )

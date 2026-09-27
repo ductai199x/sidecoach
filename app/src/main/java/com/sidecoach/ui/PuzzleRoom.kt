@@ -7,9 +7,10 @@ import com.sidecoach.coach.CoachRunner
 import com.sidecoach.events.CoachMessage
 import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.Trigger
-import com.sidecoach.llm.OpenAICompatProvider
 import com.sidecoach.llm.Usage
+import com.sidecoach.llm.modelOf
 import com.sidecoach.llm.pricesFor
+import com.sidecoach.llm.usageOf
 import com.sidecoach.profile.Puzzle
 import com.sidecoach.profile.PuzzleStore
 import com.sidecoach.profile.Puzzles
@@ -32,8 +33,7 @@ import org.json.JSONObject
  * session goes on following the screen. The room drives a [PuzzleSession] -- the board, the
  * line, the outcome -- and the page polls it the way the panel polls the engine. The outcome
  * goes to the profile store beside the puzzle's motif (`Puzzles.recordAttempt`). The coach
- * speaks through the voice the panel was given, when the page has it on; the phone has no
- * voice yet, so the room has none.
+ * speaks through the voice the panel was given (`PanelVoice`), when the page has it on.
  *
  * Its engine is a second Stockfish, as on the desktop. It searches only while a puzzle is
  * worked, and the app reads no screen while its own page is in front, so the game's engine is
@@ -114,7 +114,7 @@ class PuzzleRoom(
         state["closed"] = closed
         val usage = usage()
         if (usage != null) {
-            val model = (coaching.coach?.speaker?.provider as? OpenAICompatProvider)?.model
+            val model = modelOf(coaching.coach?.speaker?.provider)
             state["llm"] = usage.summary(pricesFor(settings.llm(), model))
         }
         return JSONObject().apply {
@@ -224,7 +224,7 @@ class PuzzleRoom(
                 System.currentTimeMillis() / 1000.0,
             )
         } catch (exc: Exception) { // the record must not break the puzzle
-            emit("sys", "error", "profile error: $exc")
+            emit("sys", "error", "profile error: ${PanelEngine.pyRepr(exc)}")
             return
         }
         emit(
@@ -259,7 +259,7 @@ class PuzzleRoom(
             try {
                 speak(message.text)
             } catch (exc: Exception) {
-                emit("voice", "warn", "voice failed: $exc")
+                emit("voice", "warn", "voice failed: ${exc.message ?: ""}")
             }
         }
     }
@@ -271,7 +271,7 @@ class PuzzleRoom(
     }
 
     /** The room's model calls, for the parent panel's strip. */
-    fun usage(): Usage? = (coaching.coach?.speaker?.provider as? OpenAICompatProvider)?.usage
+    fun usage(): Usage? = usageOf(coaching.coach?.speaker?.provider)
 
     private fun finish() {
         closed = true
@@ -376,10 +376,11 @@ class PuzzleRooms(
 
         /**
          * The app's rooms (`server._rooms_for`): the puzzle store in the app's files, the
-         * profile store beside it for the outcomes, the motifs the session's recommendations
-         * name, and every line mirrored into the panel's log. One per process, so a puzzle
-         * worked on outlives the window being rebuilt (a turn of the phone); made on the first
-         * call, which is the local server's thread, never the main one.
+         * profile store beside it for the outcomes, the panel's voice for the coach's answers,
+         * the motifs the session's recommendations name, and every line mirrored into the
+         * panel's log. One per process, so a puzzle worked on outlives the window being rebuilt
+         * (a turn of the phone); made on the first call, which is the local server's thread,
+         * never the main one.
          */
         fun shared(context: Context): PuzzleRooms = shared ?: synchronized(this) {
             shared ?: run {
@@ -391,6 +392,15 @@ class PuzzleRooms(
                     storePath = File(files, "profile.sqlite"),
                     puzzles = runCatching { Puzzles.openStore(files) }.getOrNull(),
                     dataDir = files,
+                    // The panel's voice (`tts.say`, `tts.stop`), whichever the warm-up built;
+                    // the words captioned as the panel's are.
+                    speak = { text ->
+                        PanelVoice.tts?.let { voice ->
+                            Captions.show(text)
+                            voice.say(text)
+                        }
+                    },
+                    stopSpeaking = { PanelVoice.tts?.stop() },
                     mirror = { chan, level, text, data -> PanelEngine.emit(chan, level, text, data) },
                 ).also {
                     it.motifs = PanelEngine.puzzleMotifs

@@ -50,6 +50,44 @@ const val EMPTY_THINK_PREFILL = "<think>\n\n</think>\n\n"
  */
 const val REASONING_HEADROOM = 4000
 
+/**
+ * What httpx's `raise_for_status` says of a reply that is not a success, as the desktop's
+ * healthcheck reports it: the kind of error, the status with its reason, the address. The
+ * reason is the server's own when the transport has it, else the standard one.
+ */
+fun statusError(status: Int, reason: String?, url: String): String {
+    val kind = when (status / 100) {
+        1 -> "Informational response"
+        3 -> "Redirect response"
+        4 -> "Client error"
+        5 -> "Server error"
+        else -> "Invalid status code"
+    }
+    val phrase = reason ?: REASON_PHRASES[status] ?: ""
+    return "$kind '$status $phrase' for url '$url'\n" +
+        "For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/$status"
+}
+
+/** The standard reason phrases (httpx's `codes`), for a reply that came without its own. */
+private val REASON_PHRASES: Map<Int, String> = mapOf(
+    100 to "Continue", 101 to "Switching Protocols", 102 to "Processing", 103 to "Early Hints",
+    300 to "Multiple Choices", 301 to "Moved Permanently", 302 to "Found", 303 to "See Other",
+    304 to "Not Modified", 305 to "Use Proxy", 307 to "Temporary Redirect", 308 to "Permanent Redirect", 400 to "Bad Request",
+    401 to "Unauthorized", 402 to "Payment Required", 403 to "Forbidden", 404 to "Not Found",
+    405 to "Method Not Allowed", 406 to "Not Acceptable", 407 to "Proxy Authentication Required",
+    408 to "Request Timeout", 409 to "Conflict", 410 to "Gone", 411 to "Length Required",
+    412 to "Precondition Failed", 413 to "Request Entity Too Large", 414 to "Request-URI Too Long",
+    415 to "Unsupported Media Type", 416 to "Requested Range Not Satisfiable",
+    417 to "Expectation Failed", 418 to "I'm a teapot", 421 to "Misdirected Request",
+    422 to "Unprocessable Entity", 423 to "Locked", 424 to "Failed Dependency", 425 to "Too Early",
+    426 to "Upgrade Required", 428 to "Precondition Required", 429 to "Too Many Requests",
+    431 to "Request Header Fields Too Large", 451 to "Unavailable For Legal Reasons",
+    500 to "Internal Server Error", 501 to "Not Implemented", 502 to "Bad Gateway",
+    503 to "Service Unavailable", 504 to "Gateway Timeout", 505 to "HTTP Version Not Supported",
+    506 to "Variant Also Negotiates", 507 to "Insufficient Storage", 508 to "Loop Detected",
+    510 to "Not Extended", 511 to "Network Authentication Required",
+)
+
 /** The wire message list: system, the conversation, and the no-think prefill if used. */
 fun buildMessages(
     system: String,
@@ -115,9 +153,10 @@ class OpenAICompatProvider(
 
     override fun healthcheck(): Pair<Boolean, String> {
         val ids: List<String> = try {
-            val reply = transport.get("$baseUrl/models", headers, timeoutMs)
+            val url = "$baseUrl/models"
+            val reply = transport.get(url, headers, timeoutMs)
             if (reply.status !in 200..299) {
-                return false to "$baseUrl unreachable: ${reply.status}: ${reply.text.take(200)}"
+                return false to "$baseUrl unreachable: ${statusError(reply.status, reply.reason, url)}"
             }
             val data = JSONObject(reply.text).optJSONArray("data") ?: JSONArray()
             (0 until data.length()).map { data.optJSONObject(it)?.opt("id").toString() }

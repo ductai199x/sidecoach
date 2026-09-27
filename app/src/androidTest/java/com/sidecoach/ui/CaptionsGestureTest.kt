@@ -116,8 +116,50 @@ class CaptionsGestureTest {
         touch(MotionEvent.ACTION_UP, to.first, to.second, down)
     }
 
+    /** A shell command's output, as the shell user runs it. */
+    private fun shell(command: String): String =
+        android.os.ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command))
+            .bufferedReader().use { it.readText().trim() }
+
     @Test
     fun theBoxAnswersTapsDoubleTapsAndADragToTheCross() {
+        // Nothing of the system's over the screen: a crash dialog ("Bluetooth keeps stopping",
+        // which the emulators show after a restart under load) sits above every overlay and is
+        // touch-modal, and the lock screen hides overlays altogether, so the touches injected
+        // for the box went elsewhere and the double-tap "showed no more lines" (2026-09-26, on
+        // main too; the screenshots showed the dialog, then after a reboot the lock screen). The
+        // screen is woken and unlocked, the dialog closed and new ones kept off for the test;
+        // the setting goes back after.
+        val power = app.getSystemService(android.os.PowerManager::class.java)
+        val keyguard = app.getSystemService(android.app.KeyguardManager::class.java)
+        val awake = SystemClock.uptimeMillis() + 20_000
+        while (!(power.isInteractive && !keyguard.isKeyguardLocked) && SystemClock.uptimeMillis() < awake) {
+            shell("input keyevent KEYCODE_WAKEUP")
+            shell("wm dismiss-keyguard")
+            Thread.sleep(1000)
+        }
+        assertTrue(
+            "the screen is not awake and unlocked (interactive ${power.isInteractive}, " +
+                "locked ${keyguard.isKeyguardLocked})",
+            power.isInteractive && !keyguard.isKeyguardLocked,
+        )
+        val hidden = shell("settings get global hide_error_dialogs")
+        shell("settings put global hide_error_dialogs 1")
+        shell("am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS")
+        try {
+            answersTapsDoubleTapsAndADrag()
+        } finally {
+            // The move list this test put on the page is no game's.
+            PanelEngine.set("moves" to emptyList<String>(), "labels" to emptyMap<String, String>())
+            if (hidden == "null" || hidden.isEmpty()) {
+                shell("settings delete global hide_error_dialogs")
+            } else {
+                shell("settings put global hide_error_dialogs $hidden")
+            }
+        }
+    }
+
+    private fun answersTapsDoubleTapsAndADrag() {
         automation.executeShellCommand("appops set ${app.packageName} SYSTEM_ALERT_WINDOW allow").close()
         automation.executeShellCommand("input keyevent KEYCODE_HOME").close()
         Thread.sleep(1500)
@@ -130,6 +172,24 @@ class CaptionsGestureTest {
                 "pieces is doing the least?",
         )
         assertTrue("no caption box", waitFor { box() != null })
+        // Drawn and faded in: a box laid out but not yet drawn has no picture on the screen for
+        // the system to send touches to, and a starved emulator took seconds to draw it (the
+        // screenshot showed the home screen alone while the taps went to it).
+        assertTrue("the box was never drawn", waitFor(15_000) {
+            var drawn = false
+            instrumentation.runOnMainSync { drawn = Captions.drawn() }
+            drawn
+        })
+        // ...and on the screen: woken from sleep, a starved emulator's display showed black for
+        // seconds after it said it was on, and the taps sent meanwhile came so late that the
+        // first became a long press (the screenshot showed the cross and no box).
+        assertTrue("the screen never showed the box", waitFor(20_000) {
+            val at = box() ?: return@waitFor false
+            val image = automation.takeScreenshot() ?: return@waitFor false
+            val pixel = image.getPixel(at.centerX().coerceIn(0, image.width - 1), at.centerY().coerceIn(0, image.height - 1))
+            image.recycle()
+            pixel and 0xFFFFFF != 0
+        })
         Thread.sleep(400)
         assertTrue("the box is not where it asked to be", waitFor { settled() })
         val first = box()!!
@@ -140,7 +200,15 @@ class CaptionsGestureTest {
         tap(cx, cy)
         Thread.sleep(80)
         tap(cx, cy)
-        assertTrue("a double-tap showed no more lines", waitFor { (box()?.height() ?: 0) > first.height() })
+        val grew = waitFor { (box()?.height() ?: 0) > first.height() }
+        if (!grew) shot("1b_no_more_lines")
+        assertTrue(
+            "a double-tap showed no more lines (interactive " +
+                "${app.getSystemService(android.os.PowerManager::class.java).isInteractive}, locked " +
+                "${app.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked}, " +
+                "focus ${shell("dumpsys window | grep mCurrentFocus")})",
+            grew,
+        )
         assertTrue("the taller box is not where it asked to be", waitFor { settled() })
         Thread.sleep(300)
         val tall = box()!!
@@ -170,20 +238,24 @@ class CaptionsGestureTest {
         var buttons: Map<String, Rect> = emptyMap()
         instrumentation.runOnMainSync { buttons = Captions.buttonsAt() }
         assertEquals(listOf("mute", "hint", "move", "line"), buttons.keys.toList())
+        // A session running, so the pills' asks are queued for its loop (`engine._commands`).
+        val wasRunning = PanelEngine.running
+        PanelEngine.commands.clear()
+        PanelEngine.set("running" to true)
         val asked = mutableListOf<String>()
-        val session = PanelEngine.onAsk
-        PanelEngine.onAsk = { text, _ -> synchronized(asked) { asked.add(text) } }
         try {
             for (name in listOf("hint", "move", "line")) {
                 val at = buttons.getValue(name)
                 tap(at.centerX(), at.centerY())
                 Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
             }
-            assertTrue("the pills asked ${synchronized(asked) { asked.toList() }}", waitFor {
-                synchronized(asked) { asked.toList() } == listOf("hint", "what should I play", "show me the line")
+            assertTrue("the pills asked $asked", waitFor {
+                while (true) asked.add(PanelEngine.commands.poll()?.second?.toString() ?: break)
+                asked == listOf("hint", "what should I play", "show me the line")
             })
         } finally {
-            PanelEngine.onAsk = session
+            PanelEngine.set("running" to wasRunning)
+            PanelEngine.commands.clear()
         }
         val wasMuted = PanelVoice.muted
         val speaker = buttons.getValue("mute")
@@ -199,6 +271,14 @@ class CaptionsGestureTest {
         val withButtons = box()!!
         tap(withButtons.left + withButtons.width() * 3 / 4, withButtons.bottom - 40)
         assertTrue("a second tap kept the buttons", waitFor { (box()?.height() ?: 0) == first.height() })
+
+        // A touch held and let go where it is: the box stays, and so do the captions. In its
+        // first place the box is within the cross's reach, and a hold alone turned them off.
+        Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
+        val still = box()!!
+        holdAndDrag(still.centerX() to still.centerY(), still.centerX() to still.centerY())
+        Thread.sleep(300)
+        assertTrue("a hold let go in place turned captions off", Captions.enabled && box() != null)
 
         // Touch, hold and drag: the box goes where it is let go, and stays there.
         Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)

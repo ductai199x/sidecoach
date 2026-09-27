@@ -46,10 +46,13 @@ object PanelVoice {
     @Volatile var tts: KokoroTts? = null
         private set
 
-    /** A voice a test speaks through instead of [tts], as the desktop's tests set `engine._tts`. */
+    /**
+     * A voice a test speaks through instead of [tts], as the desktop's tests set `engine._tts`
+     * to a fake: what the policy did is then seen without a model to speak it.
+     */
     @Volatile internal var speaker: TtsProvider? = null
 
-    /** What the panel speaks through: `self._tts`. */
+    /** What the panel speaks through: `self._tts`, the stand-in or the voice the warm-up built. */
     internal fun voiceOut(): TtsProvider? = speaker ?: tts
 
     @Volatile var muted = false

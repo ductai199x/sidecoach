@@ -143,8 +143,49 @@ def main() -> None:
             del props[key]
     for name in ("data_dir", "tools_dir", "gpu"):
         del schema["properties"][name]
+    # Development fields are never shown in the app (Tai: no dev, dead or unwired option on
+    # the page; `dev` in config.py's marks). The desktop's page hides them only in its shell,
+    # and the phone's page is not the shell, so they go from the phone's schema. Their values
+    # stay in the defaults, which is what the code reads (an empty `llm.extra_body`, the
+    # presets' own key names and reasoning switches).
+    for model in schema["$defs"].values():
+        props = model.get("properties", {})
+        for key in [k for k, v in props.items() if v.get("dev")]:
+            del props[key]
     # The phone reads the frame rate when a session starts.
     schema["$defs"][refs["capture"]]["properties"]["fps"]["applies"] = "next"
+    # What the desktop's words say of a computer, said of the phone (plain, and true there):
+    # the engine's phone-sized defaults, a model on the person's own computer rather than
+    # "this" one, and the talk button where the desktop has a key held from any window.
+    engine = schema["$defs"][refs["engine"]]["properties"]
+    engine["threads"]["default"] = 2
+    engine["threads"]["description"] = (
+        "Processor threads Stockfish may use. More is faster to a point, and warms the phone; "
+        "leave some for the game."
+    )
+    engine["hash_mb"]["default"] = 64
+    engine["hash_mb"]["description"] = (
+        "Memory Stockfish keeps for positions it has already seen, in MB. More helps a deep "
+        "search; 64 is plenty on a phone."
+    )
+    llm = schema["$defs"][refs["llm"]]["properties"]
+    llm["provider"]["description"] = (
+        "Who the coach thinks with. OpenAI is what the coach was evaluated on; a model on your "
+        "own computer costs nothing per game; with no model the coach still speaks, from the "
+        "board and its templates."
+    )
+    llm["provider"]["choice_labels"]["local"] = "A model on your own computer (LM Studio, Ollama, vLLM)"
+    llm["base_url"]["description"] = (
+        "Where the model is served. For a model on your computer, that computer's address on "
+        "your network and LM Studio's port, such as http://192.168.1.20:1234/v1. Empty means "
+        "http://localhost:1234/v1, which on a phone is the phone itself."
+    )
+    listen = schema["$defs"][refs["voice"]]["properties"]["listen"]
+    listen["description"] = (
+        "How the coach hears you. To talk while you hold, press and hold the round button "
+        "beside the question box."
+    )
+    listen["choice_labels"]["ptt"] = "While I hold the talk button"
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
     (OUT / "defaults.json").write_text(json.dumps(defaults), encoding="utf-8")

@@ -1,5 +1,6 @@
 package com.sidecoach.ui
 
+import com.sidecoach.voice.Py
 import com.sidecoach.voice.Voices
 import org.json.JSONArray
 import org.json.JSONObject
@@ -9,9 +10,11 @@ import org.json.JSONObject
  *
  * GET gives the settings, the JSON schema the page renders from (every field's description,
  * its choices, and whether a change applies now, at the next Start or after a restart),
- * where they live, which keys are set, and the personas. PUT saves them, stores the keys in
- * the store of their own, and answers with what took effect now, what waits for the next
- * Start and what needs a restart.
+ * where they live, which keys are set, and the personas. PUT validates what the page sends
+ * against the schema ([SettingsCheck], as pydantic's `Settings.model_validate` does on the
+ * desktop), saves it, stores the keys in the store of their own, and answers with what took
+ * effect now, what waits for the next Start and what needs a restart -- or, when something
+ * does not fit, with the errors by field and nothing saved.
  *
  * The voices are the phone's own (`Voices.english`, the list the panel's drawer shows). The
  * schema is the phone's (`tools/sync_settings.py`): a field the phone does not honour is not
@@ -44,11 +47,16 @@ class SettingsApi(private val store: SettingsStore) {
     }
 
     fun update(body: JSONObject): JSONObject {
-        val wanted = body.optJSONObject("settings") ?: return JSONObject().apply {
+        val given = body.optJSONObject("settings") ?: return JSONObject().apply {
             put("ok", false)
             put("errors", JSONArray().put(JSONObject().put("msg", "no settings in the request")))
         }
         val before = store.values()
+        val checked = SettingsCheck.validate(JSONObject(store.schema), store.defaults(), given)
+        if (checked.errors.length() > 0) {
+            return JSONObject().put("ok", false).put("errors", checked.errors)
+        }
+        val wanted = checked.values
         // The phone owns these; the page shows them and cannot move them.
         wanted.put("data_dir", before.optString("data_dir"))
         wanted.put("tools_dir", before.optString("tools_dir"))
@@ -68,7 +76,7 @@ class SettingsApi(private val store: SettingsStore) {
                 if (name !in names) continue
                 val value = if (secrets.isNull(name)) null else secrets.optString(name)
                 store.setSecret(name, value)
-                stored.put(name, !value.isNullOrEmpty())
+                stored.put(name, true)
             }
         }
 
@@ -136,5 +144,230 @@ class SettingsApi(private val store: SettingsStore) {
             }
         }
         return out.sorted()
+    }
+}
+
+/**
+ * What pydantic's `Settings.model_validate` makes of a save, against the phone's schema: each
+ * field of the page coerced as pydantic's lax mode coerces it (a number in a string, a boolean
+ * written as "yes") and held to its bounds, or an error in pydantic's own shape and words --
+ * `{"type", "loc", "msg", "input", "ctx"}`, which the page shows by field. The fields are
+ * checked in the settings' order, so the errors come in pydantic's. A field the phone's page
+ * does not show is kept as it is; one the settings do not have is dropped, as pydantic
+ * ignores it. Like pydantic, the choices a field lists are not enforced: they are the page's.
+ */
+object SettingsCheck {
+
+    class Result(val values: JSONObject, val errors: JSONArray)
+
+    /** What one field came to: its value, or the error that refused it. */
+    private class Checked(val value: Any?, val error: JSONObject? = null)
+
+    fun validate(schema: JSONObject, defaults: JSONObject, given: JSONObject): Result {
+        val defs = schema.optJSONObject("\$defs") ?: JSONObject()
+        val properties = schema.optJSONObject("properties") ?: JSONObject()
+        val values = JSONObject()
+        val errors = JSONArray()
+        for (name in defaults.keys()) {
+            val base = defaults.opt(name)
+            if (!given.has(name)) {
+                values.put(name, copy(base))
+                continue
+            }
+            val value = given.opt(name)
+            val prop = properties.optJSONObject(name)
+            val ref = prop?.optString("\$ref").orEmpty()
+            if (ref.isNotEmpty() && base is JSONObject) {
+                val model = ref.substringAfterLast('/')
+                if (value !is JSONObject) {
+                    errors.put(
+                        error(
+                            "model_type",
+                            listOf(name),
+                            "Input should be a valid dictionary or instance of $model",
+                            value,
+                            JSONObject().put("class_name", model),
+                        ),
+                    )
+                    continue
+                }
+                val fields = defs.optJSONObject(model)?.optJSONObject("properties") ?: JSONObject()
+                val section = JSONObject()
+                for (field in base.keys()) {
+                    if (!value.has(field)) {
+                        section.put(field, copy(base.opt(field)))
+                        continue
+                    }
+                    val fprop = fields.optJSONObject(field)
+                    if (fprop == null) {
+                        // Not on the phone's page: kept as it came.
+                        section.put(field, value.opt(field))
+                        continue
+                    }
+                    val checked = check(fprop, value.opt(field), listOf(name, field))
+                    if (checked.error != null) errors.put(checked.error) else section.put(field, checked.value)
+                }
+                values.put(name, section)
+            } else if (prop != null) {
+                val checked = check(prop, value, listOf(name))
+                if (checked.error != null) errors.put(checked.error) else values.put(name, checked.value)
+            } else {
+                values.put(name, value)
+            }
+        }
+        return Result(values, errors)
+    }
+
+    private fun copy(value: Any?): Any? = when (value) {
+        is JSONObject -> JSONObject(value.toString())
+        is JSONArray -> JSONArray(value.toString())
+        else -> value
+    }
+
+    private fun error(type: String, loc: List<String>, msg: String, input: Any?, ctx: JSONObject? = null): JSONObject =
+        JSONObject().apply {
+            put("type", type)
+            put("loc", JSONArray(loc))
+            put("msg", msg)
+            put("input", input ?: JSONObject.NULL)
+            if (ctx != null) put("ctx", ctx)
+        }
+
+    /** One field: its type (with `null` when the schema allows it), then its bounds. */
+    private fun check(prop: JSONObject, value: Any?, loc: List<String>): Checked {
+        val anyOf = prop.optJSONArray("anyOf")
+        var inner = prop
+        if (anyOf != null) {
+            val options = (0 until anyOf.length()).mapNotNull { anyOf.optJSONObject(it) }
+            val nullable = options.any { it.optString("type") == "null" }
+            if (nullable && (value == null || value == JSONObject.NULL)) return Checked(JSONObject.NULL)
+            inner = options.firstOrNull { it.optString("type") != "null" } ?: return Checked(value)
+        }
+        val coerced = when (inner.optString("type")) {
+            "integer" -> integer(value, loc)
+            "number" -> number(value, loc)
+            "boolean" -> boolean(value, loc)
+            "string" -> if (value is String) Checked(value) else Checked(null, error("string_type", loc, "Input should be a valid string", value))
+            "object" -> if (value is JSONObject) Checked(value) else Checked(null, error("dict_type", loc, "Input should be a valid dictionary", value))
+            else -> Checked(value)
+        }
+        if (coerced.error != null) return coerced
+        val number = coerced.value as? Number ?: return coerced
+        return bounds(inner, number, value, loc) ?: coerced
+    }
+
+    /** pydantic-core's order: at most, below, at least, above. */
+    private fun bounds(prop: JSONObject, number: Number, input: Any?, loc: List<String>): Checked? {
+        val x = number.toDouble()
+        fun failed(key: String, type: String, words: String): Checked? {
+            val bound = prop.opt(key) as? Number ?: return null
+            val ok = when (key) {
+                "maximum" -> x <= bound.toDouble()
+                "exclusiveMaximum" -> x < bound.toDouble()
+                "minimum" -> x >= bound.toDouble()
+                else -> x > bound.toDouble()
+            }
+            if (ok) return null
+            val name = when (key) {
+                "maximum" -> "le"
+                "exclusiveMaximum" -> "lt"
+                "minimum" -> "ge"
+                else -> "gt"
+            }
+            return Checked(null, error(type, loc, "Input should be $words ${shown(bound)}", input, JSONObject().put(name, bound)))
+        }
+        return failed("maximum", "less_than_equal", "less than or equal to")
+            ?: failed("exclusiveMaximum", "less_than", "less than")
+            ?: failed("minimum", "greater_than_equal", "greater than or equal to")
+            ?: failed("exclusiveMinimum", "greater_than", "greater than")
+    }
+
+    /** A bound as pydantic-core writes it in a message: 60.0 as "60", 0.5 as "0.5". */
+    private fun shown(bound: Number): String {
+        val x = bound.toDouble()
+        return if (x == Math.floor(x) && !x.isInfinite() && Math.abs(x) < 1e15) x.toLong().toString() else x.toString()
+    }
+
+    /** A whole number in a string: digits, underscores between them, a sign; ".0" allowed. */
+    private val INT_TEXT = Regex("[+-]?\\d+(_\\d+)*(\\.0+)?")
+
+    /** Python's float syntax: digits with underscores, a point, an exponent; inf and nan. */
+    private val FLOAT_TEXT = Regex(
+        "[+-]?((\\d+(_\\d+)*(\\.(\\d+(_\\d+)*)?)?|\\.\\d+(_\\d+)*)([eE][+-]?\\d+(_\\d+)*)?|inf|infinity|nan)",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private fun integer(value: Any?, loc: List<String>): Checked = when (value) {
+        is Boolean -> Checked(if (value) 1 else 0)
+        is Int, is Long -> Checked(value)
+        is Number -> {
+            val x = value.toDouble()
+            when {
+                x.isNaN() || x.isInfinite() -> Checked(null, error("finite_number", loc, "Input should be a finite number", value))
+                x != Math.floor(x) -> Checked(
+                    null,
+                    error("int_from_float", loc, "Input should be a valid integer, got a number with a fractional part", value),
+                )
+                else -> Checked(x.toLong())
+            }
+        }
+        is String -> {
+            val text = Py.strip(value)
+            if (INT_TEXT.matches(text) && text.all { it.code < 128 }) {
+                Checked(text.substringBefore('.').replace("_", "").toLong())
+            } else {
+                Checked(null, error("int_parsing", loc, "Input should be a valid integer, unable to parse string as an integer", value))
+            }
+        }
+        else -> Checked(null, error("int_type", loc, "Input should be a valid integer", value))
+    }
+
+    private fun number(value: Any?, loc: List<String>): Checked = when (value) {
+        is Boolean -> Checked(if (value) 1.0 else 0.0)
+        is Number -> Checked(value.toDouble())
+        is String -> {
+            val text = Py.strip(value)
+            if (FLOAT_TEXT.matches(text) && text.all { it.code < 128 }) {
+                val plain = text.replace("_", "").lowercase()
+                val sign = if (plain.startsWith("-")) -1.0 else 1.0
+                val body = plain.trimStart('+', '-')
+                Checked(
+                    when (body) {
+                        "inf", "infinity" -> sign * Double.POSITIVE_INFINITY
+                        "nan" -> Double.NaN
+                        else -> plain.toDouble()
+                    },
+                )
+            } else {
+                Checked(null, error("float_parsing", loc, "Input should be a valid number, unable to parse string as a number", value))
+            }
+        }
+        else -> Checked(null, error("float_type", loc, "Input should be a valid number", value))
+    }
+
+    private val TRUE_TEXT = setOf("1", "on", "t", "true", "y", "yes")
+    private val FALSE_TEXT = setOf("0", "off", "f", "false", "n", "no")
+
+    private fun boolean(value: Any?, loc: List<String>): Checked {
+        val parsing = error("bool_parsing", loc, "Input should be a valid boolean, unable to interpret input", value)
+        return when (value) {
+            is Boolean -> Checked(value)
+            is Int, is Long -> when ((value as Number).toLong()) {
+                0L -> Checked(false)
+                1L -> Checked(true)
+                else -> Checked(null, parsing)
+            }
+            is Number -> when (value.toDouble()) {
+                0.0 -> Checked(false)
+                1.0 -> Checked(true)
+                else -> Checked(null, error("bool_type", loc, "Input should be a valid boolean", value))
+            }
+            is String -> when (value.lowercase()) {
+                in TRUE_TEXT -> Checked(true)
+                in FALSE_TEXT -> Checked(false)
+                else -> Checked(null, parsing)
+            }
+            else -> Checked(null, error("bool_type", loc, "Input should be a valid boolean", value))
+        }
     }
 }

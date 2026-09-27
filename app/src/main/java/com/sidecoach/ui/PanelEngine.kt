@@ -11,6 +11,7 @@ import com.sidecoach.profile.Profiler
 import java.io.File
 import com.sidecoach.Maintenance
 import com.sidecoach.chess.Board
+import com.sidecoach.coach.CoachRunner
 import com.sidecoach.coach.Spoken
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
@@ -30,12 +31,25 @@ import com.sidecoach.events.ScreenStateChanged
 import com.sidecoach.events.Takeback
 import com.sidecoach.events.Unexplained
 import com.sidecoach.analysis.sanLine
+import com.sidecoach.state.GamePipeline
+import com.sidecoach.state.Readings
+import com.sidecoach.vision.Pieces
+import com.sidecoach.voice.Py
 import com.sidecoach.voice.VoiceLog
 import org.json.JSONArray
 import org.json.JSONObject
+import org.opencv.core.Mat
+import org.opencv.core.MatOfByte
+import org.opencv.core.MatOfInt
+import org.opencv.core.Size
+import org.opencv.imgcodecs.Imgcodecs
+import org.opencv.imgproc.Imgproc
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.util.concurrent.LinkedBlockingQueue
 
 /**
  * What the panel's page polls: the state of the session and the log since its cursor.
@@ -48,7 +62,8 @@ import java.util.Locale
  * reported as absent rather than faked, and the page's own code shows it as off.
  *
  * One engine for the app, since the capture is a foreground service and the page is a
- * window onto it.
+ * window onto it. The session's loop itself is [com.sidecoach.vision.GameWatcher], on the
+ * vision's thread; what it learns is written down here.
  */
 /** What the person is told when a board stays unread ([BoardUnread]), by why: `panel.BOARD_UNREAD`. */
 private val BOARD_UNREAD = mapOf(
@@ -62,6 +77,30 @@ private val BOARD_UNREAD = mapOf(
 
 object PanelEngine {
 
+    /**
+     * How a game ends when the board cannot say so (a resignation, a flag, an agreed draw):
+     * outcome -> (result from the user's side, reason). "forget" is not an outcome but a
+     * reset. `panel.OUTCOMES`.
+     */
+    val OUTCOMES = listOf("resigned", "won", "draw", "forget")
+
+    /**
+     * Unreadable cells (unknown or covered) beyond which a frame's reading is called
+     * degraded, and how many frames in a row it must stay that way before it is worth a line.
+     */
+    const val DEGRADED_CELLS = 6
+    const val DEGRADED_FRAMES = 5
+
+    /** How often the status strip is brought up to date: `panel.HEALTH_EVERY_S`. */
+    const val HEALTH_EVERY_S = 1.0
+
+    /**
+     * A tick of the loop that takes longer than this is logged with where the time went: the
+     * capture, the recorder, the vision, or the rest (engine, profile, coach). A live game
+     * froze for 323 s once (2026-09-19) with nothing in the log to say which.
+     */
+    const val STALL_WARN_S = 2.0
+
     /** One line of the panel's log, as `ui/log.py` records it. */
     class Record(
         val seq: Int,
@@ -69,7 +108,7 @@ object PanelEngine {
         val chan: String,
         val level: String,
         val text: String,
-        val data: JSONObject?,
+        val data: JSONObject,
     ) {
         fun json(): JSONObject = JSONObject().apply {
             put("seq", seq)
@@ -77,7 +116,7 @@ object PanelEngine {
             put("chan", chan)
             put("level", level)
             put("text", text)
-            put("data", data ?: JSONObject.NULL)
+            put("data", data)
         }
     }
 
@@ -104,17 +143,26 @@ object PanelEngine {
     /** The game's last ply as the moves came, so a takeback knows which plies it withdrew. */
     private var lastPly = 0
 
+    /** Consecutive frames read as degraded (`panel._bad_run`). */
+    private var badRun = 0
+
     /** What Start and Stop reach: the activity owns the projection consent. */
     var onStart: (() -> Unit)? = null
     var onStop: (() -> Unit)? = null
 
-    /** What an ask reaches: the session's loop, when one is running; whether it was spoken. */
-    var onAsk: ((String, Boolean) -> Unit)? = null
+    /**
+     * The control actions for the session's loop (`panel._commands`): ask, flip, analyse,
+     * end. Queued here and drained by the loop where `panel._drain_commands` drains them, so
+     * nothing touches the pipeline or the coach from two threads at once. With no session
+     * running a flip, a re-read or an end waits for the next Start, as on the desktop.
+     */
+    val commands = LinkedBlockingQueue<Pair<String, Any?>>()
 
-    /** Flip, End game and Re-read, when the session can take them. */
-    var onFlip: (() -> Unit)? = null
-    var onEnd: ((String) -> Unit)? = null
-    var onAnalyze: (() -> Unit)? = null
+    /**
+     * The last frames the pipeline saw, in memory only (`panel.frames`): what a Dump writes
+     * out. Nothing of a session reaches the disk otherwise.
+     */
+    val frames = FrameRing()
 
     init {
         reset()
@@ -139,27 +187,27 @@ object PanelEngine {
             state["locked"] = false
             state["following"] = false
             state["ply"] = 0
-            state["kind"] = "game"
             state["status"] = "idle"
             // The voice: filled in by `PanelVoice.build` when the warm-up makes it.
             state["voice"] = ""
             state["voices"] = emptyList<String>()
             state["muted"] = false
-            state["listen"] = "off"
-            state["ptt"] = false
-            state["ptt_key"] = ""
-            state["heard"] = null
-            state["dictation"] = mapOf("text" to "", "live" to false, "sends_at" to null)
+            state["recording_dir"] = null
+            state["record_wanted"] = false
+            // What the engine is asked for (`self.coach`, `self.analysis`): both, on the phone.
+            state["coach_on"] = true
+            state["analysis_on"] = true
             state["voice_detail"] = "the voice is not built yet"
             state["stt_detail"] = "parakeet-tdt_ctc-110m, cpu (not loaded yet)"
             // Whether the page's listening button has anything behind it. True while the
             // models are still being built, so it does not appear partway through a run; the
             // warm-up replaces it with the recogniser's own answer.
             state["stt_ready"] = true
-            state["recording_dir"] = null
-            state["record_wanted"] = false
-            state["coach_on"] = false
-            state["analysis_on"] = false
+            state["listen"] = "off"
+            state["ptt"] = false
+            state["ptt_key"] = ""
+            state["heard"] = null
+            state["dictation"] = mapOf("text" to "", "live" to false, "sends_at" to null)
             state["clock"] = null
             state["health"] = emptyMap<String, Any?>()
             state["session_dir"] = null
@@ -189,6 +237,61 @@ object PanelEngine {
     /** Every record the engine holds, for `POST /api/dump`. */
     fun all(): List<Record> = synchronized(lock) { records.toList() }
 
+    /** Whether a session is running (`panel.running`). */
+    val running: Boolean get() = synchronized(lock) { state["running"] == true }
+
+    /**
+     * Queue a control action for the loop (ask, flip, analyse, end). `panel.command`. With no
+     * session running there is no loop to take an ask: it is answered on the spot rather than
+     * kept for a Start minutes later, about another game.
+     */
+    fun command(name: String, payload: Any? = null) {
+        if (!running && (name == "ask" || name == "ask_spoken")) {
+            heard(payload.toString(), spoken = name == "ask_spoken")
+            emit(
+                "coach",
+                "info",
+                "user_ask · not watching — Press Start first: I can only answer about a " +
+                    "game I am watching.",
+                JSONObject().apply {
+                    put("full", "Press Start first: I can only answer about a game I am watching.")
+                    put("trigger", "user_ask")
+                    put("ply", JSONObject.NULL)
+                    put("voice", "text")
+                },
+            )
+            return
+        }
+        commands.put(name to payload)
+    }
+
+    /** An ask, typed or [spoken]: `command("ask" | "ask_spoken")`. */
+    fun ask(text: String, spoken: Boolean = false) = command(if (spoken) "ask_spoken" else "ask", text)
+
+    /**
+     * End the game on the user's word: they resigned or flagged, the opponent did, a draw was
+     * agreed -- or forget the game altogether and wait for the next start. `panel.end_game`.
+     */
+    fun endGame(outcome: String) {
+        if (outcome !in OUTCOMES) {
+            throw IllegalArgumentException(
+                "outcome must be one of " + OUTCOMES.joinToString(", ", "(", ")") { "'$it'" },
+            )
+        }
+        command("end", outcome)
+    }
+
+    /** The PGN result and the reason for an outcome, from the user's side. `outcome_result`. */
+    fun outcomeResult(outcome: String, userSide: String?): Pair<String, String> {
+        val userWhite = userSide != "black"
+        return when (outcome) {
+            "resigned" -> (if (userWhite) "0-1" else "1-0") to "user resigned or lost on time"
+            "won" -> (if (userWhite) "1-0" else "0-1") to "opponent resigned or lost on time"
+            "draw" -> "1/2-1/2" to "draw agreed"
+            else -> "*" to "abandoned by the user"
+        }
+    }
+
     // ---- what the session tells it -----------------------------------------------------
 
     /** Seconds since the session began, rounded as Python's `round(x, 3)` rounds. */
@@ -200,8 +303,9 @@ object PanelEngine {
     fun emit(chan: String, level: String, text: String, data: JSONObject? = null) {
         synchronized(lock) {
             cursor += 1
+            // A record with nothing underneath carries an empty object, as `LogRecord.data`.
             records.addLast(
-                Record(cursor, sinceStart(), chan, level, text, data)
+                Record(cursor, sinceStart(), chan, level, text, data ?: JSONObject())
             )
             while (records.size > KEPT) records.removeFirst()
         }
@@ -214,14 +318,11 @@ object PanelEngine {
     fun userSide(): String? = synchronized(lock) { state["user_side"] as? String }
 
     /**
-     * The game is forgotten: `_end`'s "forget" branch, which drops what the page held about
-     * it and waits for the next start position.
+     * The game is forgotten: `_end`'s "forget" branch, which drops the positions it held for
+     * the verdict lines and waits for the next start position.
      */
     fun forgotten() {
-        synchronized(lock) {
-            fenBefore.clear()
-            labels.clear()
-        }
+        synchronized(lock) { fenBefore.clear() }
         set("game_id" to null, "user_side" to null, "following" to false)
     }
 
@@ -244,86 +345,104 @@ object PanelEngine {
             set("running" to true, "status" to "starting", "session_dir" to null)
             emit("sys", "info", "engine started (nothing saved)")
         } else {
-            set("running" to false, "status" to "stopped")
+            set("running" to false, "status" to "stopped", "recording_dir" to null)
             emit("sys", "info", "engine stopped")
         }
     }
 
-    /** What the vision made of this frame: the lock, the pace, the position. */
-    fun watched(
-        boardFound: Boolean,
-        verified: Boolean,
-        fit: Double,
-        fen: String?,
-        ply: Int,
-        userSide: String?,
-        bottom: String?,
-        screen: ScreenState,
-        following: Boolean,
-        engineOn: Boolean,
-        coachOn: Boolean,
-        fps: Double,
-        pipelineMs: Pair<Long, Long>,
-        coachPending: Int,
-        rssMb: Long?,
+    /**
+     * The status strip: `panel._health`, what `watch` prints every few seconds, kept current
+     * instead -- brought up to date once a second ([HEALTH_EVERY_S]) from the loop's ticks.
+     * [ticks] ran in the last [elapsed] seconds, each [pipelineMs] long; [ts] is the last
+     * frame's time on the loop's clock. The phone keeps no recording.
+     */
+    fun health(
+        pipe: GamePipeline,
+        coaching: CoachRunner?,
+        ticks: Int,
+        pipelineMs: List<Double>,
+        elapsed: Double,
+        ts: Double,
     ) {
+        val timings = pipelineMs.sorted().ifEmpty { listOf(0.0) }
+        val p50 = timings[timings.size / 2]
+        val p95 = timings[minOf(timings.size - 1, (timings.size * 0.95).toInt())]
+        val board = pipe.board
         val lock = when {
-            !boardFound -> "no board"
-            verified -> "locked, fit " + format2(fit)
+            board == null -> "no board"
+            pipe.tracker.verified -> "locked, fit " + format2(board.fit)
             else -> "lock in doubt"
         }
+        val pending = coaching?.coach?.speaker?.pending ?: 0
         set(
-            "fen" to fen,
-            "ply" to ply,
-            "user_side" to userSide,
-            "bottom" to bottom,
-            "locked" to (boardFound && verified),
-            "following" to following,
-            "analysis_on" to engineOn,
-            "coach_on" to coachOn,
             "health" to mapOf(
                 // The session's model calls: tokens, and dollars when the prices are known.
-                "llm" to PanelWarm.usage(),
+                "llm" to PanelWarm.usage(coaching),
                 "latency" to PanelVoice.latency(),
-                "rss_mb" to (rssMb ?: residentMb()),
+                "rss_mb" to residentMb(),
                 "tts_device" to if (PanelVoice.tts?.loaded == true) "cpu" else null,
                 "stt_device" to PanelListen.sttDevice(),
                 "mic_dropped" to PanelListen.micDropped(),
-                "fps" to round1(fps),
+                "fps" to if (elapsed != 0.0) round1(ticks / elapsed) else 0.0,
                 "lock" to lock,
-                "stage" to if (following) "following" else "waiting for a start",
-                "pipeline_ms" to listOf(pipelineMs.first, pipelineMs.second),
-                "lag_ms" to null,
+                "stage" to if (pipe.model != null) "following" else "waiting for a start",
+                "pipeline_ms" to listOf(roundInt(p50), roundInt(p95)),
+                // A live capture's lag: from the frame to now, on the loop's clock.
+                "lag_ms" to roundInt((SystemClock.elapsedRealtime() / 1000.0 - ts) * 1000.0),
                 "recording" to "off",
-                "coach_pending" to coachPending,
+                "coach_pending" to pending,
             ),
         )
     }
 
-    private var rssAt = 0L
-    private var rss: Long? = null
+    /** This process's resident memory in MB, as psutil gives the desktop's: /proc/self/statm. */
+    private fun residentMb(): Long? = runCatching {
+        val pages = File("/proc/self/statm").readText().trim().split(" ")[1].toLong()
+        Math.round(pages * 4096 / 1e6)
+    }.getOrNull()
 
     /**
-     * This process's resident memory in MB, as psutil gives the desktop's: /proc/self/statm's
-     * resident pages, read at most once a second.
+     * Warn once when many cells cannot be read for a while (an overlay, a dialog), and say
+     * once when the reading is clean again. A single frame's blip -- a piece being dragged
+     * across the board -- is not worth a line, hence the run of frames required.
+     *
+     * A picked-up rook or queen puts a legal-move dot on a dozen squares, each too small to be
+     * a piece and read as unknown; that is the site showing where it may go, not a degraded
+     * reading, so those cells are not counted. `panel._check_degraded`.
      */
-    private fun residentMb(): Long? {
-        val now = SystemClock.elapsedRealtime()
-        if (now - rssAt < 1000) return rss
-        rssAt = now
-        rss = runCatching {
-            val pages = java.io.File("/proc/self/statm").readText().trim().split(" ")[1].toLong()
-            Math.round(pages * 4096 / 1e6)
-        }.getOrNull()
-        return rss
+    fun checkDegraded(readings: Readings?, degraded: Boolean): Boolean {
+        if (readings == null) return degraded
+        val bad = readings.count { reading ->
+            reading.covered || (
+                reading.kind == Pieces.Kind.UNKNOWN &&
+                    (reading.hover || reading.fgFraction >= Pieces.PIECE_MIN_FRACTION)
+                )
+        }
+        badRun = if (bad >= DEGRADED_CELLS) badRun + 1 else 0
+        if (badRun >= DEGRADED_FRAMES && !degraded) {
+            emit(
+                "vision",
+                "warn",
+                "reading degraded: $bad cells unreadable (an overlay or a dialog?)",
+                JSONObject().put("unreadable", bad),
+            )
+            return true
+        }
+        if (badRun == 0 && degraded) {
+            emit("vision", "info", "reading clean again")
+            return false
+        }
+        return degraded
     }
 
     /** The game's own events, as `panel._dispatch_game` writes them down. */
     fun onGameEvent(event: Event) {
         when (event) {
             is GameStarted -> {
-                fenBefore.clear()
-                labels.clear()
+                synchronized(lock) {
+                    fenBefore.clear()
+                    labels.clear()
+                }
                 lastPly = 0
                 val what = when (event.kind) {
                     "game" -> "new game"
@@ -341,18 +460,7 @@ object PanelEngine {
                         put("kind", event.kind)
                     },
                 )
-                set(
-                    "game_id" to event.gameId,
-                    "user_side" to side,
-                    "bottom" to side,
-                    "kind" to event.kind,
-                    "moves" to emptyList<String>(),
-                    "fens" to emptyList<String>(),
-                    "ucis" to emptyList<String>(),
-                    "labels" to emptyMap<String, String>(),
-                    "last_move" to null,
-                    "review" to null,
-                )
+                set("game_id" to event.gameId, "user_side" to side, "kind" to event.kind)
             }
 
             is MovePlayed -> {
@@ -360,8 +468,8 @@ object PanelEngine {
                 val number = before.fullmoveNumber
                 val dots = if (before.turn == WHITE) "." else "..."
                 val who = if (event.byUser) "you" else "opponent"
-                val think = event.thinkMs?.let { ", " + round1(it / 1000.0) + "s" } ?: ""
-                fenBefore[event.ply] = event.fenBefore
+                val think = event.thinkMs?.let { ", " + format1(it / 1000.0) + "s" } ?: ""
+                synchronized(lock) { fenBefore[event.ply] = event.fenBefore }
                 lastPly = event.ply
                 PanelVoice.noteMove(event.ply)
                 // The move list itself comes from the game's moves each tick
@@ -388,14 +496,14 @@ object PanelEngine {
                     "takeback ${event.plies} ply",
                     JSONObject().put("fen", event.fen),
                 )
-                // The withdrawn moves' badges leave the move list: a replacement played at the
-                // same ply showed the withdrawn move's.
+                // The engine lets go of the withdrawn moves at once, and their badges leave the
+                // move list: a replacement played at the same ply showed the withdrawn move's.
                 lastPly = maxOf(0, lastPly - event.plies)
                 synchronized(lock) {
                     for (gone in labels.keys.filter { it > lastPly }) labels.remove(gone)
                     for (gone in fenBefore.keys.filter { it > lastPly }) fenBefore.remove(gone)
                 }
-                set("labels" to labels.entries.associate { e -> e.key.toString() to e.value })
+                set("labels" to labelState())
             }
 
             is Resync -> {
@@ -479,93 +587,129 @@ object PanelEngine {
         }
     }
 
-    /** The engine's word on a move, as `panel._dispatch_engine` writes it down. */
-    fun onEngineEvent(event: Event) {
-        when (event) {
-            is MoveAssessment -> {
-                val fen = fenBefore.remove(event.ply)
-                val board = fen?.let { Board(it) }
-                val move = Move.fromUciOrNull(event.uci)
-                val san = if (board != null && move != null) board.san(move) else event.uci
-                val parts = ArrayList<String>()
-                parts.add("ply ${event.ply} $san: loss " + format2(event.expectedLoss))
-                if (event.severity.name.lowercase() != "none") {
-                    parts.add(event.severity.name.lowercase())
-                    val better = if (board != null) sanLine(board, event.best, limit = 4) else ""
-                    if (better.isNotEmpty()) parts.add("better $better")
-                }
-                val tags = event.tags.map { it.name }.distinct()
-                event.label?.let {
-                    labels[event.ply] = it.name.lowercase()
-                    set("labels" to labels.entries.associate { e -> e.key.toString() to e.value })
-                }
-                // "quietMove" is the tagger's "nothing special"; it stays in the data only.
-                val shown = tags.filter { it != "quietMove" }
-                if (shown.isNotEmpty()) parts.add(shown.joinToString(" "))
-                emit(
-                    "engine",
-                    if (event.severity.name.lowercase() == "none") "info" else "warn",
-                    parts.joinToString(", "),
-                    JSONObject().apply {
-                        put("ply", event.ply)
-                        put("uci", event.uci)
-                        put("loss", event.expectedLoss)
-                        put("severity", event.severity.name.lowercase())
-                        put("label", event.label?.name?.lowercase() ?: JSONObject.NULL)
-                        put("tags", JSONArray(tags))
-                    },
-                )
-            }
+    /** The move list's badges as the page reads them: ply (as text) -> label. */
+    private fun labelState(): Map<String, String> =
+        synchronized(lock) { labels.entries.associate { e -> e.key.toString() to e.value } }
 
-            is Analysis -> {
-                val top = event.lines.firstOrNull() ?: return
-                emit(
-                    "engine",
-                    "debug",
-                    "ply ${event.ply}: " + format2(top.expectedScore) +
-                        (if (event.decisive) ", decisive" else "") +
-                        (if (event.onlyMove) ", only move" else ""),
-                    JSONObject().apply {
+    /**
+     * The engine's word, as `panel._dispatch_engine` writes it down: each move's assessment,
+     * and the position signals that drive the coach -- the decisive moment, the only move, the
+     * opening when it changes. [opening] is the last one named; the one named now comes back.
+     */
+    fun onEngineEvents(events: List<Event>, opening: String?): String? {
+        var named = opening
+        for (event in events) {
+            when (event) {
+                is MoveAssessment -> {
+                    val fen = synchronized(lock) { fenBefore.remove(event.ply) }
+                    val board = fen?.let { Board(it) }
+                    val san = if (board != null) board.san(Move.fromUci(event.uci)) else event.uci
+                    val severity = event.severity.name.lowercase()
+                    val parts = ArrayList<String>()
+                    parts.add("ply ${event.ply} $san: loss " + format2(event.expectedLoss))
+                    if (severity != "none") {
+                        parts.add(severity)
+                        val better = if (board != null) sanLine(board, event.best, limit = 4) else ""
+                        if (better.isNotEmpty()) parts.add("better $better")
+                    }
+                    val tags = event.tags.map { it.name }.distinct()
+                    event.label?.let {
+                        synchronized(lock) { labels[event.ply] = it.name.lowercase() }
+                        set("labels" to labelState())
+                    }
+                    // "quietMove" is the tagger's "nothing special"; it stays in the data only.
+                    val shown = tags.filter { it != "quietMove" }
+                    if (shown.isNotEmpty()) {
+                        parts.add(shown.take(3).joinToString(", ") + if (shown.size > 3) " …" else "")
+                    }
+                    emit(
+                        "engine",
+                        "info",
+                        parts.joinToString(" · "),
+                        JSONObject().apply {
+                            put("ply", event.ply)
+                            put("loss", round3(event.expectedLoss))
+                            put("severity", severity)
+                            put("label", event.label?.name?.lowercase() ?: JSONObject.NULL)
+                            put("best", JSONArray(if (fen != null) sansOf(fen, event.best) else event.best))
+                            put("tags", JSONArray(tags))
+                            put("depth", event.depth)
+                        },
+                    )
+                }
+
+                is Analysis -> {
+                    val top = event.lines.firstOrNull()
+                    val name = event.opening
+                    if (!name.isNullOrEmpty() && name != named) {
+                        named = name
+                        emit("engine", "info", "opening: $name", JSONObject().put("ply", event.ply))
+                    }
+                    val score = if (top != null) format2(top.expectedScore) else "?"
+                    val depth = top?.depth ?: 0
+                    val threats = sansOf(event.fen, event.threats, byOpponent = true)
+                    val pv = if (top != null) sansOf(event.fen, top.moves) else emptyList()
+                    val data = JSONObject().apply {
                         put("ply", event.ply)
-                        put("expected", top.expectedScore)
                         put("decisive", event.decisive)
                         put("only_move", event.onlyMove)
-                    },
-                )
-            }
+                        put("threats", JSONArray(threats))
+                        put("pv", JSONArray(pv))
+                        put("score", top?.expectedScore ?: JSONObject.NULL)
+                        put("depth", depth)
+                    }
+                    // Only the moments that drive the coach are worth a line at info; almost
+                    // every position carries some threat, so plain threats stay at debug.
+                    val signals = ArrayList<String>()
+                    if (event.decisive) signals.add("decisive moment")
+                    if (event.onlyMove) signals.add("only move")
+                    val tail = "  (score $score, d$depth)"
+                    val threatText = if (threats.isNotEmpty()) "; threats " + threats.take(3).joinToString(", ") else ""
+                    if (signals.isNotEmpty()) {
+                        emit("engine", "info", "ply ${event.ply}: " + signals.joinToString(", ") + threatText + tail, data)
+                    } else {
+                        emit("engine", "debug", "analysed ply ${event.ply}" + threatText + tail, data)
+                    }
+                }
 
-            else -> Unit
+                else -> Unit
+            }
         }
+        return named
+    }
+
+    /**
+     * UCI moves from [fen] as SAN, stopping at the first that does not parse. `panel._sans_of`.
+     *
+     * A threat is what the side NOT to move would play if it could, so it is read after a
+     * null move; naming it on the wrong side's turn makes python-chess call a quiet pawn push
+     * a capture ("dxd4"). The moves are read one after another, as the desktop reads them.
+     */
+    fun sansOf(fen: String, ucis: List<String>, byOpponent: Boolean = false): List<String> {
+        val board = try {
+            Board(fen)
+        } catch (_: Exception) {
+            return ucis.toList()
+        }
+        if (byOpponent) board.push(Move.NULL)
+        val out = ArrayList<String>()
+        for (uci in ucis) {
+            val move = Move.fromUciOrNull(uci) ?: break
+            // python-chess's `san` asserts a piece on the square the move leaves.
+            if (!move.isNull && board.pieceTypeAt(move.from) == 0) break
+            try {
+                out.add(board.san(move))
+                board.push(move)
+            } catch (_: Exception) {
+                break
+            }
+        }
+        return out
     }
 
     /** What the player typed or said, and what the coach answered. */
     fun heard(text: String, spoken: Boolean = false) {
         emit("user", "info", "you: $text", JSONObject().put("spoken", spoken))
-    }
-
-    /**
-     * An ask, typed or [spoken], for the session's loop (`panel.command("ask" | "ask_spoken")`).
-     * With no session running there is no loop to take it: it is answered on the spot rather
-     * than kept for a Start minutes later, about another game.
-     */
-    fun ask(text: String, spoken: Boolean = false) {
-        val session = onAsk
-        if (session != null) {
-            session(text, spoken)
-            return
-        }
-        heard(text, spoken)
-        emit(
-            "coach",
-            "info",
-            "user_ask · not watching — Press Start first: I can only answer about a game I am watching.",
-            JSONObject().apply {
-                put("full", "Press Start first: I can only answer about a game I am watching.")
-                put("trigger", "user_ask")
-                put("ply", JSONObject.NULL)
-                put("voice", "text")
-            },
-        )
     }
 
     /** A message's marks as the page reads them: `Annotation.model_dump` each. */
@@ -614,6 +758,24 @@ object PanelEngine {
     /** The ply the board is on, as the voice reads it (`self._state.get("ply")`). */
     fun plyNow(): Int = synchronized(lock) { (state["ply"] as? Number)?.toInt() ?: 0 }
 
+    // ---- the dump ----------------------------------------------------------------------------
+
+    /**
+     * Write the frames held in memory and the log to `<dumps>/<stamp>/`: the only way a
+     * session reaches the disk. Returns the folder. `panel.dump`; the phone's folder is in the
+     * app's own files on shared storage, where `adb pull` reaches it.
+     */
+    fun dump(dumps: File): String {
+        val folder = File(dumps, SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()))
+        folder.mkdirs()
+        val n = frames.write(folder)
+        File(folder, "debug.jsonl").bufferedWriter(Charsets.UTF_8).use { out ->
+            for (record in all()) out.write(record.json().toString() + "\n")
+        }
+        emit("sys", "info", "dumped $n frames and the log to ${folder.path}")
+        return folder.path
+    }
+
     // ---- the profile ---------------------------------------------------------------------
 
     /** The running session's player model (`panel._profiler`); null between sessions. */
@@ -647,7 +809,7 @@ object PanelEngine {
                 out += profiler.tick(now)
             }
         } catch (exc: Exception) {  // a profile bug must not end the session
-            emit("sys", "error", "profile error: $exc")
+            emit("sys", "error", "profile error: ${pyRepr(exc)}")
         }
         val snapshot = out.firstOrNull { it is ProfileSnapshot } as ProfileSnapshot?
         for (event in out) {
@@ -698,7 +860,7 @@ object PanelEngine {
         try {
             profiler.onEvent(event, System.currentTimeMillis() / 1000.0)
         } catch (exc: Exception) {
-            emit("sys", "error", "profile error: $exc")
+            emit("sys", "error", "profile error: ${pyRepr(exc)}")
         }
     }
 
@@ -733,7 +895,8 @@ object PanelEngine {
                 }
                 set("review" to fresh, "profile" to profileState(profiler.snapshot()))
             }
-            emit("user", "info", "you corrected the cause of the mistake at ply $ply: $cause")
+            // Python writes a cleared cause as None.
+            emit("user", "info", "you corrected the cause of the mistake at ply $ply: ${cause ?: "None"}")
         }
         return ok
     }
@@ -815,18 +978,60 @@ object PanelEngine {
 
     /**
      * The first [limit] characters of a line, with an ellipsis when it was cut: `log.elide`,
-     * whitespace run together first.
+     * whitespace run together first -- Python's whitespace, counted in code points as Python
+     * counts a string.
      */
     fun elide(text: String, limit: Int = 80): String {
-        val flat = text.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
-        return if (flat.length <= limit) flat else flat.take(limit - 1).trimEnd() + "…"
+        val flat = Py.split(text).joinToString(" ")
+        if (flat.codePointCount(0, flat.length) <= limit) return flat
+        val cut = flat.substring(0, flat.offsetByCodePoints(0, limit - 1))
+        return cut.trimEnd { Py.isSpace(it) } + "…"
     }
 
-    private fun format2(value: Double): String =
+    /**
+     * An exception as Python's `{exc!r}` writes one in the log: its class and its message,
+     * `RuntimeError('boom')`. The class is the phone's own.
+     */
+    fun pyRepr(exc: Throwable): String {
+        val message = exc.message ?: return "${exc::class.java.simpleName}()"
+        return "${exc::class.java.simpleName}(${pyStr(message)})"
+    }
+
+    /** A string as Python's `repr` writes it. */
+    fun pyStr(text: String): String {
+        val quote = if ('\'' in text && '"' !in text) '"' else '\''
+        val out = StringBuilder().append(quote)
+        for (ch in text) {
+            when {
+                ch == '\\' -> out.append("\\\\")
+                ch == quote -> out.append('\\').append(ch)
+                ch == '\n' -> out.append("\\n")
+                ch == '\r' -> out.append("\\r")
+                ch == '\t' -> out.append("\\t")
+                ch.code < 0x20 || ch.code == 0x7f -> out.append("\\x%02x".format(ch.code))
+                else -> out.append(ch)
+            }
+        }
+        return out.append(quote).toString()
+    }
+
+    /** `f"{x:.2f}"`: the exact binary value, rounded half to even. */
+    fun format2(value: Double): String =
         BigDecimal(value).setScale(2, RoundingMode.HALF_EVEN).toPlainString()
+
+    /** `f"{x:.1f}"`. */
+    fun format1(value: Double): String =
+        BigDecimal(value).setScale(1, RoundingMode.HALF_EVEN).toPlainString()
 
     private fun round1(value: Double): Double =
         BigDecimal(value).setScale(1, RoundingMode.HALF_EVEN).toDouble()
+
+    private fun round3(value: Double): Double =
+        BigDecimal(value).setScale(3, RoundingMode.HALF_EVEN).toDouble()
+
+    /** `round(x)`: an int, half to even. */
+    private fun roundInt(value: Double): Long =
+        BigDecimal(value).setScale(0, RoundingMode.HALF_EVEN).toLong()
 
     /** A map of plain Kotlin values as the page's JSON. */
     private fun jsonOf(map: Map<String, Any?>): JSONObject {
@@ -844,8 +1049,48 @@ object PanelEngine {
         is Pair<*, *> -> JSONArray().apply { put(wrap(value.first)); put(wrap(value.second)) }
         else -> value
     }
+}
 
-    @Suppress("unused")
-    private fun formatted(value: Double, places: Int): String =
-        String.format(Locale.ROOT, "%.${places}f", value)
+/**
+ * The last frames the pipeline saw, in memory only, as JPEGs at half scale: `panel.FrameRing`.
+ * [maxlen] frames (a minute at a changing board) stay a few megabytes on a phone's smaller
+ * frames. Encoding costs a few milliseconds per changed frame and nothing on a still one.
+ */
+class FrameRing(private val maxlen: Int = 150, private val quality: Int = 85) {
+    private val frames = ArrayDeque<Pair<Double, ByteArray>>()
+    private val lock = Any()
+
+    fun push(ts: Double, frame: Mat) {
+        val bytes = try {
+            val small = Mat()
+            val buf = MatOfByte()
+            try {
+                Imgproc.resize(frame, small, Size((frame.cols() / 2).toDouble(), (frame.rows() / 2).toDouble()))
+                if (!Imgcodecs.imencode(".jpg", small, buf, MatOfInt(Imgcodecs.IMWRITE_JPEG_QUALITY, quality))) return
+                buf.toArray()
+            } finally {
+                small.release()
+                buf.release()
+            }
+        } catch (_: Throwable) {  // a frame the ring cannot keep is not an error
+            return
+        }
+        synchronized(lock) {
+            frames.addLast(ts to bytes)
+            while (frames.size > maxlen) frames.removeFirst()
+        }
+    }
+
+    val size: Int get() = synchronized(lock) { frames.size }
+
+    /** The frames as files under [folder], named by their timestamp; returns the count. */
+    fun write(folder: File): Int {
+        val kept = synchronized(lock) { frames.toList() }
+        for ((ts, data) in kept) {
+            // `f"{ts:014.3f}.jpg"`: zero-padded to fourteen characters.
+            val stamp = BigDecimal(ts).setScale(3, RoundingMode.HALF_EVEN).toPlainString().padStart(14, '0')
+            File(folder, "$stamp.jpg").writeBytes(data)
+        }
+        return kept.size
+    }
 }

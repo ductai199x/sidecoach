@@ -11,7 +11,9 @@ import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.llm.OpenAICompatProvider
 import com.sidecoach.llm.combine
+import com.sidecoach.llm.modelOf
 import com.sidecoach.llm.pricesFor
+import com.sidecoach.llm.usageOf
 import com.sidecoach.vision.BoardDetect
 import com.sidecoach.vision.BoardTracker
 import com.sidecoach.vision.CellEmbedder
@@ -80,6 +82,31 @@ object PanelWarm {
     @Volatile var coaching: CoachRunner? = null
         private set
     private var engineStale = false
+
+    /**
+     * What builds the engine's stage, finds the engine's network and holds the opening tables:
+     * `cli._Assessing`, `config.find_stockfish` and the data folder's `openings`, which the
+     * desktop's tests monkeypatch or point at a folder of their own; a test here sets these.
+     */
+    @Volatile internal var makeEngine: (Context, SettingsStore) -> Assessing = { context, store ->
+        Assessing.fromSettings(context, store)
+    }
+    @Volatile internal var findEngine: (Context) -> File? = { EngineAssets.found(it) }
+    @Volatile internal var openings: (Context) -> File = { File(it.filesDir, "openings") }
+
+    /**
+     * The stages a test starts from, as the desktop's tests start from a fresh `PanelEngine`;
+     * the ones it replaced, to put back.
+     */
+    internal fun keepStages(engine: Assessing?, coach: CoachRunner?): Pair<Assessing?, CoachRunner?> =
+        warmLock.withLock {
+            val before = assessing to coaching
+            assessing = engine
+            coaching = coach
+            engineStale = false
+            PanelVoice.coach = coach?.coach
+            before
+        }
 
     /** Whether a warm-up has been started in this process; the app opens it once. */
     @Volatile private var started = false
@@ -157,13 +184,13 @@ object PanelWarm {
                 // The session builds what is missing. A Throwable, not only an Exception:
                 // on Android an Error on this thread (a native library not loaded) would
                 // take the whole app down with it.
-                PanelEngine.emit("sys", "warn", "warm-up: $exc")
+                PanelEngine.emit("sys", "warn", "warm-up: ${PanelEngine.pyRepr(exc)}")
                 synchronized(lock) {
                     for (one in stages.values) {
                         val state = one.optString("state")
                         if (state == "pending" || state == "loading") {
                             one.put("state", "off")
-                            one.put("detail", "$exc")
+                            one.put("detail", PanelEngine.pyRepr(exc))
                         }
                     }
                 }
@@ -231,7 +258,7 @@ object PanelWarm {
         // Built before there was an engine, and there is one now (Setup fetched the
         // network after the warm-up): built again, and not only at the next launch.
         val kept = assessing
-        if (kept != null && !kept.on && EngineAssets.found(appContext) != null) engineStale = true
+        if (kept != null && !kept.on && findEngine(appContext) != null) engineStale = true
         if (engineStale) {
             // The coach too: it was built knowing whether there was an engine at all.
             runCatching { assessing?.close() }
@@ -244,10 +271,10 @@ object PanelWarm {
         // kept annotator takes the book now rather than at the next launch.
         val annotator = assessing?.analyser?.annotator
         if (annotator != null && annotator.book == null) {
-            annotator.book = OpeningBook.load(File(appContext.filesDir, "openings"))
+            annotator.book = OpeningBook.load(openings(appContext))
         }
         val store = SettingsStore(appContext)
-        val engine = assessing ?: Assessing.fromSettings(appContext, store).also {
+        val engine = assessing ?: makeEngine(appContext, store).also {
             assessing = it
             PanelEngine.emit("sys", if (it.on) "info" else "warn", "engine: ${it.detail}")
         }
@@ -378,7 +405,7 @@ object PanelWarm {
                 temperature = 0.0,
             )
         } catch (exc: Exception) {
-            PanelEngine.emit("sys", "warn", "coach: the local model did not answer a warm-up: ${exc.message}")
+            PanelEngine.emit("sys", "warn", "coach: the local model did not answer a warm-up: ${exc.message ?: ""}")
             return
         }
         PanelEngine.emit("sys", "info", "coach: local model answered in ${f1((System.nanoTime() - began) / 1e9)}s")
@@ -398,7 +425,7 @@ object PanelWarm {
             try {
                 apply()
             } catch (exc: Exception) {
-                PanelEngine.emit("sys", "warn", "${hit.joinToString(", ")}: not applied ($exc)")
+                PanelEngine.emit("sys", "warn", "${hit.joinToString(", ")}: not applied (${exc.message ?: ""})")
                 return
             }
             applied.addAll(hit)
@@ -478,28 +505,16 @@ object PanelWarm {
 
     /**
      * The session's model calls for the status strip: the game coach's ledger and the puzzle
-     * rooms', combined; null when the coach has no model that keeps one. `_health`'s `llm`.
+     * rooms', combined -- the offline coach's too, which has one with nothing on it; null when
+     * there is no coach. `_health`'s `llm`, asked once a second with the rest of the strip.
      */
-    fun usage(): Map<String, Any?>? {
-        // Health is refreshed every tick, the desktop's once a second: so is this.
-        val now = System.nanoTime()
-        if (now - usageAt < 1_000_000_000L) return usageLast
-        usageAt = now
-        usageLast = computeUsage()
-        return usageLast
-    }
-
-    @Volatile private var usageAt = 0L
-    @Volatile private var usageLast: Map<String, Any?>? = null
-
-    private fun computeUsage(): Map<String, Any?>? {
-        val provider = coaching?.coach?.speaker?.provider as? OpenAICompatProvider ?: return null
-        val store = SettingsStore(appContext)
+    fun usage(runner: CoachRunner?): Map<String, Any?>? {
+        val provider = runner?.coach?.speaker?.provider
+        val usage = usageOf(provider) ?: return null
+        val prices = pricesFor(SettingsStore(appContext).llm(), modelOf(provider))
         val ledgers = ArrayList<Map<String, Any?>>()
-        ledgers.add(provider.usage.summary(pricesFor(store.llm(), provider.model)))
-        for (room in PuzzleRooms.sharedOrNull()?.usages().orEmpty()) {
-            ledgers.add(room.summary(pricesFor(store.llm(), provider.model)))
-        }
+        ledgers.add(usage.summary(prices))
+        runCatching { for (room in PuzzleRooms.sharedOrNull()?.usages().orEmpty()) ledgers.add(room.summary(prices)) }
         return combine(ledgers)
     }
 

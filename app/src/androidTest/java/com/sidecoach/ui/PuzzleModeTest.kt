@@ -230,7 +230,7 @@ class PuzzleModeTest {
             coach = false,
         )
         rooms.motifs = PanelEngine.puzzleMotifs
-        return PanelApi("test", SetupApi(app), SettingsApi(settings), dir) { rooms } to rooms
+        return PanelApi("test", SetupApi(app), SettingsApi(settings), dir, rooms = { rooms }) to rooms
     }
 
     private fun call(api: PanelApi, method: String, path: String, body: String = ""): JSONObject {

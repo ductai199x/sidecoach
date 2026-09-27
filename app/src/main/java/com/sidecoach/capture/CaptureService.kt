@@ -421,30 +421,16 @@ class CaptureService : Service() {
                 android.graphics.Rect(it.x * SCALE, it.y * SCALE, (it.x + it.w) * SCALE, (it.y + it.h) * SCALE)
             }
             state.value = state.value.copy(reading = outcome)
-            PanelEngine.watched(
-                boardFound = outcome.boardFound,
-                verified = outcome.verified,
-                fit = outcome.fit,
-                fen = outcome.fen,
-                ply = outcome.ply,
-                userSide = outcome.userSide,
-                bottom = outcome.userSide,
-                screen = outcome.state,
-                following = outcome.following,
-                engineOn = outcome.engineOn,
-                coachOn = outcome.coachOn,
-                fps = state.value.latest?.fps ?: 0.0,
-                pipelineMs = outcome.detectMs to outcome.readMs,
-                coachPending = outcome.coachPending,
-                rssMb = null,
-            )
+            // The page's state and its status strip are the loop's own (`GameWatcher`, as
+            // `panel._refresh_state` and `_health`): the position from the game, the side from
+            // its start, the frame rate in the loop's ticks.
             val now = SystemClock.elapsedRealtime()
             if (now - lastOutcomeAt > 5000) {
                 lastOutcomeAt = now
                 Log.i(
                     TAG,
                     "frame read: board=${outcome.boardFound} at=${outcome.region?.x},${outcome.region?.y} " +
-                        "cell=${"%.0f".format(outcome.cellPx)} fit=${"%.2f".format(outcome.fit)} " +
+                        "cell=${fixed(outcome.cellPx, 0)} fit=${fixed(outcome.fit, 2)} " +
                         "ply=${outcome.ply} ${outcome.state}",
                 )
             }
@@ -547,6 +533,10 @@ class CaptureService : Service() {
 
     companion object {
         private const val TAG = "sidecoach.capture"
+
+        /** `f"{x:.{places}f}"`: half to even, never the device's locale (a comma in Germany). */
+        private fun fixed(value: Double, places: Int): String =
+            java.math.BigDecimal(value).setScale(places, java.math.RoundingMode.HALF_EVEN).toPlainString()
 
         /**
          * The last session's vision thread while it closes; a new session joins it first.

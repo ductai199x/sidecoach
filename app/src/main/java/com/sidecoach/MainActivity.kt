@@ -109,10 +109,14 @@ class MainActivity : ComponentActivity() {
             assets,
             api = PanelApi(
                 versionName(),
-                SetupApi(this),
+                // One setup for the app, as the desktop's server has one: a turn of the phone
+                // rebuilds this activity, and a download under way must keep its status.
+                SetupApi.shared(this),
                 SettingsApi(store),
                 files = filesDir,
                 rooms = { PuzzleRooms.shared(applicationContext) },
+                // The app's own folder on shared storage, where `adb pull` reaches a dump.
+                dumps = File(getExternalFilesDir(null) ?: filesDir, "dumps"),
             ),
         ).also { server = it }.start(preferred = ports.getInt(PORT_KEY, 0))
         // The same port next time, so the page's origin -- and its saved sizes and switches
