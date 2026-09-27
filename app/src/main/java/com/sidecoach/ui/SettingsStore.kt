@@ -77,8 +77,17 @@ class SettingsStore(private val context: Context) {
     /** One section of the settings, or an empty object. */
     fun section(name: String): JSONObject = values().optJSONObject(name) ?: JSONObject()
 
+    /**
+     * The settings written through before this returns, as the desktop writes its file
+     * (`config.save_settings`). Written later (`apply`), a save the process did not outlive by
+     * the tenth of a second Android waits before writing was lost: a test's put-back of the
+     * settings it changed, its process ended by the instrumentation four milliseconds after,
+     * left its changes as the phone's settings, and the next run read them (2026-09-27). Every
+     * caller is off the main thread: the settings page's server, and the caption box's own
+     * thread when it turns captions off.
+     */
     fun save(values: JSONObject) {
-        prefs.edit().putString("json", values.toString()).apply()
+        prefs.edit().putString("json", values.toString()).commit()
     }
 
     fun secretNames(): List<String> {
@@ -95,7 +104,7 @@ class SettingsStore(private val context: Context) {
     fun setSecret(name: String, value: String?) {
         val editor = keys.edit()
         if (value.isNullOrEmpty()) editor.remove(name) else editor.putString(name, value)
-        editor.apply()
+        editor.commit() // written through, as the settings are (see [save])
     }
 
     /** The `[llm]` section as the factory wants it. */
