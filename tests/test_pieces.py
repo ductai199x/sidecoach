@@ -1,13 +1,17 @@
+from typing import Any
+
 import chess
 import cv2
 import numpy as np
 import pytest
 
 from sidecoach.events import Region, Side
+from sidecoach.vision.board_detect import detect_boards
 from sidecoach.vision.pieces import (
     CELL,
     HIGHLIGHT_TOLERANCE,
     HOVER_TOLERANCE,
+    CellReading,
     ThemeModel,
     iou,
     looks_like_start_position,
@@ -563,3 +567,85 @@ def test_a_fractional_cell_never_wears_a_phantom_hover_outline() -> None:
         for r in range(8)
         for c in range(8)
     )
+
+
+def _read_final(
+    style: str,
+    theme: str,
+    cell: int,
+    bottom: Side,
+    sans: tuple[str, ...],
+    square: str,
+    coordinates: bool = True,
+    **decorations: Any,
+) -> tuple[CellReading, chess.Piece]:
+    """A set learned from its start frame, then the position after `sans` read at the same
+    place and size, each locked by the detector as the pipeline locks them (the stress
+    sweep's frames), and what stands on `square` there."""
+    size: dict[str, Any] = {
+        "width": 8 * cell + 600, "height": 8 * cell + 240, "x0": 300, "y0": 120, "cell": cell,
+        "theme": theme, "style": style, "bottom": bottom, "coordinates": coordinates,
+    }  # fmt: skip
+    board = chess.Board()
+    for san in sans:
+        board.push_san(san)
+    start = synthetic_board(**size)
+    frame = synthetic_board(board=board, **size, **decorations)
+    first, now = detect_boards(start)[0], detect_boards(frame)[0]
+    model = ThemeModel.from_start_position(
+        start, BoardGeometry(first.region, first.cell_px), bottom
+    )
+    assert model is not None
+    r, c = row_col(chess.parse_square(square), bottom)
+    piece = board.piece_at(chess.parse_square(square))
+    assert piece is not None
+    return model.classify_frame(frame, BoardGeometry(now.region, now.cell_px))[r][c], piece
+
+
+@pytest.mark.parametrize(
+    ("style", "theme", "cell", "bottom", "sans", "square"),
+    [
+        # A black king on a dark square, learned only on a light one: read as the queen, and
+        # the final position was never read cold (stress seed 766).
+        ("wooden", "wood", 64, Side.BLACK, ("d3", "e6", "Nd2", "Ke7"), "e7"),
+        # A black queen on a light square, learned only on a dark one: read as a bishop, and
+        # the game stalled (469).
+        (
+            "flat", "dark", 96, Side.WHITE,
+            ("h3", "g5", "a4", "b6", "d4", "Bg7", "Bxg5", "d5", "c4", "Bf6", "cxd5", "Qxd5",
+             "a5"),
+            "d5",
+        ),
+    ],
+)  # fmt: skip
+def test_a_king_or_queen_is_named_on_the_other_square_colour(
+    style: str,
+    theme: str,
+    cell: int,
+    bottom: Side,
+    sans: tuple[str, ...],
+    square: str,
+) -> None:
+    """The start position shows each side's king and queen on one square colour only, and at
+    the embedder's 40 px the square weighs in the embedding: once a piece's side is voted,
+    its kind may be named by either side's cells and by the kings and queens recoloured onto
+    the other square colour."""
+    reading, piece = _read_final(style, theme, cell, bottom, sans, square)
+    assert reading.kind == "piece" and reading.symbol == piece.symbol(), reading
+
+
+def test_the_recoloured_kings_and_queens_never_choose_a_side() -> None:
+    """A white queen on a dark square at the mate, its side vote split (its brightness white,
+    the fill under the queen's mask black): the embedding chose, and the black queen
+    recoloured onto a light square lay nearer it than its own white queen -- the mate was
+    never committed (stress seed 372). The recoloured cells name a kind once the side is
+    voted; a split vote is decided on the start position's own 64 cells."""
+    sans = (
+        "e3", "Nf6", "Be2", "g5", "f4", "Bh6", "fxg5", "Bxg5", "Nf3", "h5", "Bd3", "Ne4",
+        "Nh4", "Nc5", "Qxh5", "Bxe3", "Qxh8#",
+    )  # fmt: skip
+    reading, piece = _read_final(
+        "california", "grey", 44, Side.BLACK, sans, "h8",
+        highlight=chess.Move.from_uci("h5h8"), check=True, result="1-0", badges=True,
+    )  # fmt: skip
+    assert reading.kind == "piece" and reading.symbol == piece.symbol(), reading
