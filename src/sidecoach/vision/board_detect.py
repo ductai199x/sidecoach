@@ -676,7 +676,35 @@ def refine(
     tracker's periodic re-fit uses a wider window and exists for what validation cannot see,
     sub-cell drift and a small resize (a whole-cell slide fails validation outright and goes
     through re-detection). With `colours` the cells are read against a lock's palette.
+
+    A comb with a tooth on the frame's edge, where no boundary shows, is scored as if one
+    were there (`_comb_fit`): that is a board flush with the edge. A board a cell or less
+    from the edge has a comb a cell nearer the edge that scores the same -- its tooth on
+    the edge unseen, the board's far boundary left out -- and the re-fit of a lock nudged
+    a few pixels took it about as often as the right one, failed validation, and kept the
+    lock where the board had been (the geometry sweep's near-edge cases, 2026-09-27: a
+    board 81 px below the frame's top re-fitted to 0). The comb cannot tell the two
+    apart; the cells can. So when the fitted comb leans on a tooth on the frame's edge,
+    the fit without that credit is made as well, and the one that validates better is
+    kept (the flush one on a tie).
     """
+    fitted, hidden = _refine(gray, cand, search, offset_cells, colours, credit=True)
+    if not hidden:
+        return fitted
+    seen, _ = _refine(gray, cand, search, offset_cells, colours, credit=False)
+    return seen if seen.board.fit > fitted.board.fit else fitted
+
+
+def _refine(
+    gray: np.ndarray,
+    cand: BoardCandidate,
+    search: float,
+    offset_cells: float,
+    colours: Colours | None,
+    credit: bool,
+) -> tuple[Refinement, bool]:
+    """`refine`'s fit, and whether its comb has a tooth on the frame's edge. Without
+    `credit` the frame's edges are not taken as blind: no comb scores a tooth there."""
     height, width = gray.shape
     cell = cand.cell_px
     margin = cell * (offset_cells + 0.1)
@@ -686,10 +714,11 @@ def refine(
     y_hi = int(min(height, np.ceil(cand.region.y + 8 * cell + margin)))
     crop = gray[y_lo:y_hi, x_lo:x_hi]
     if crop.size == 0:
-        return Refinement(cand, 0.0, 0.0)
+        return Refinement(cand, 0.0, 0.0), False
     # Where the crop meets the frame's edge, the profiles cannot show a boundary.
     blind_x = (x_lo == 0, x_hi == width)
     blind_y = (y_lo == 0, y_hi == height)
+    comb_x, comb_y = (blind_x, blind_y) if credit else ((False, False), (False, False))
 
     # Only the strips around the cell boundaries take part in the boundary fit, and in
     # them only the pixels of the square's own colour. Pieces sit in the middle of their
@@ -715,6 +744,7 @@ def refine(
     fitted = cand
     reference = 0.0
     strength = 0.0
+    hidden = False
     for attempt in range(3):
         cell = fitted.cell_px
         weight = np.ones(crop.shape, dtype=np.float32)
@@ -727,7 +757,7 @@ def refine(
                 # Too few cells to place the mask; the candidate stays where it is and
                 # carries the fit and contrast measured there, which is a fit of zero.
                 fit, contrast = fit_score(gray, cand.region, cand.cell_px, colours)
-                return Refinement(replace(cand, fit=fit, contrast=contrast), 0.0, 0.0)
+                return Refinement(replace(cand, fit=fit, contrast=contrast), 0.0, 0.0), False
             own = np.zeros(crop.shape, dtype=np.uint8)
             for r in range(8):
                 for c in range(8):
@@ -780,14 +810,22 @@ def refine(
         profile_y = _gradient_profile(crop, axis=0, weight=weight)
         start_x = fitted.region.x - x_lo
         start_y = fitted.region.y - y_lo
-        ox, px, sx = _comb_fit(profile_x, start_x, cell, search, offset_cells, blind_x)
-        oy, py, sy = _comb_fit(profile_y, start_y, cell, search, offset_cells, blind_y)
+        ox, px, sx = _comb_fit(profile_x, start_x, cell, search, offset_cells, comb_x)
+        oy, py, sy = _comb_fit(profile_y, start_y, cell, search, offset_cells, comb_y)
         # The strength the candidate itself has on this pass's profiles, for the caller
         # to weigh the re-fit against: the geometry it was handed, not the last pass's.
         reference = _comb_strength(
             profile_x, cand.region.x - x_lo, cand.cell_px, blind_x
         ) + _comb_strength(profile_y, cand.region.y - y_lo, cand.cell_px, blind_y)
         strength = sx + sy
+        if not credit:  # scored as the reference is, so the two still compare
+            strength = _comb_strength(profile_x, ox, px, blind_x) + _comb_strength(
+                profile_y, oy, py, blind_y
+            )
+        hidden = bool(
+            (~_seen(ox + px * _TEETH, len(profile_x), blind_x)).any()
+            or (~_seen(oy + py * _TEETH, len(profile_y), blind_y)).any()
+        )
         pitch = (px + py) / 2.0
         region = Region(
             int(round(x_lo + ox)),
@@ -821,7 +859,7 @@ def refine(
         occupied=occupied,
         readable=readable,
     )
-    return Refinement(board, strength, reference)
+    return Refinement(board, strength, reference), credit and hidden
 
 
 def to_gray(frame_bgr: np.ndarray) -> np.ndarray:

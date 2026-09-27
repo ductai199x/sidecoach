@@ -85,6 +85,7 @@ def test_sub_cell_nudge_is_recovered_by_the_refit() -> None:
         (97, (1920 - 776, 318), (1920 - 776, 291)),  # against the right, nudged up
         (64, (500, 1200 - 512), (509, 1200 - 512)),  # against the bottom, nudged right
         (80, (4, 16), (0, 0)),  # moved into the top-left corner: re-fitted a cell off it
+        (80, (734, 76), (726, 81)),  # a cell below the top: re-fitted a cell up, onto the edge
     ],
 )
 def test_a_board_flush_with_an_edge_is_followed_when_nudged(
@@ -95,7 +96,9 @@ def test_a_board_flush_with_an_edge_is_followed_when_nudged(
     outscored the right one, failed validation, and the lock stayed where the board had been
     (the geometry sweep, 2026-09-27). Against the left or top edge the comb could not start
     on the frame's edge, half a pixel before the first pixel, where the board's boundary
-    lies, and a comb a cell over, every tooth on a boundary, outscored it."""
+    lies, and a comb a cell over, every tooth on a boundary, outscored it. A cell or less
+    from the edge, the comb a cell nearer it, its tooth on the edge unseen, scored as much
+    as the right one; now the cells decide between them."""
     tracker = BoardTracker()
     tracker.update(synthetic_board(width=1920, height=1200, x0=before[0], y0=before[1], cell=cell))
     moved = synthetic_board(width=1920, height=1200, x0=after[0], y0=after[1], cell=cell)
