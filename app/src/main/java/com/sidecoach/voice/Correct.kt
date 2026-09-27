@@ -40,43 +40,68 @@ object Correct {
 
     private val I = setOf(RegexOption.IGNORE_CASE)
 
+    // Python's `\b` and `\s`, written out (the parity audit, 2026-09-26). Every `\b` of these
+    // patterns sits beside a letter or a digit, so it is "no word character on the other side",
+    // a word character being Python's -- a letter, a number of any kind, the underscore: ICU's
+    // leaves out "½" and "²" and counts a combining mark. Python's whitespace adds the vertical
+    // tab, the separators 1C-1F and NEL to ICU's.
+    private const val B0 = """(?<![\p{L}\p{N}_])"""
+    private const val B1 = """(?![\p{L}\p{N}_])"""
+    private const val S = """[\s\u000B\u001C-\u001F\u0085]"""
+
     /** Known confusions, applied before matching. Each is safe in any chess sentence. */
     private val CONFUSIONS: List<Pair<Regex, String>> = listOf(
-        Regex("""\b(night|nite|nights)\b""", I) to "knight",
-        Regex("""\b(nine|9)\b(?=\s+(?:on|to|from|takes|[a-h]\b))""", I) to "knight",
-        Regex("""\bwith the (?:nine|9)\b""", I) to "with the knight",
-        Regex("""\b(rock|rocks)\b(?=\s+(?:on|to|[a-h]\b|takes))""", I) to "rook",
-        Regex("""\b(?:rooka|roka) ?([1-8])\b""", I) to "rook a$1", // "Roka 1" is rook + a1
-        Regex("""\b(?:rook|rock) ?([a-h]) ?([1-8])\b""", I) to "rook $1$2",
-        Regex("""\bthe (?:upon|appawn|a-pawn|apon)\b""", I) to "the a pawn",
-        Regex("""\bczech\b""", I) to "check",
-        Regex("""\bcheque\b""", I) to "check",
-        Regex("""\bking'?s? ?side\b""", I) to "kingside",
-        Regex("""\bqueen'?s? ?side\b""", I) to "queenside",
-        Regex("""\bcastle (?:short|shorts)\b""", I) to "castle kingside",
-        Regex("""\bcastle long\b""", I) to "castle queenside",
-        Regex("""\b([a-h])[- ]?(?:takes|tix|tex|tics|tx|x)\b""", I) to "$1 takes",
-        Regex("""\b([a-h])x([a-h])\s*($ANY_NUMBER)\b""", I) to "$1 takes $2 $3",
-        Regex("""\bcaptures\b""", I) to "takes",
+        Regex("""$B0(night|nite|nights)$B1""", I) to "knight",
+        Regex("""$B0(nine|9)$B1(?=$S+(?:on|to|from|takes|[a-h]$B1))""", I) to "knight",
+        Regex("""${B0}with the (?:nine|9)$B1""", I) to "with the knight",
+        Regex("""$B0(rock|rocks)$B1(?=$S+(?:on|to|[a-h]$B1|takes))""", I) to "rook",
+        Regex("""$B0(?:rooka|roka) ?([1-8])$B1""", I) to "rook a$1", // "Roka 1" is rook + a1
+        Regex("""$B0(?:rook|rock) ?([a-h]) ?([1-8])$B1""", I) to "rook $1$2",
+        Regex("""${B0}the (?:upon|appawn|a-pawn|apon)$B1""", I) to "the a pawn",
+        Regex("""${B0}czech$B1""", I) to "check",
+        Regex("""${B0}cheque$B1""", I) to "check",
+        Regex("""${B0}king'?s? ?side$B1""", I) to "kingside",
+        Regex("""${B0}queen'?s? ?side$B1""", I) to "queenside",
+        Regex("""${B0}castle (?:short|shorts)$B1""", I) to "castle kingside",
+        Regex("""${B0}castle long$B1""", I) to "castle queenside",
+        Regex("""$B0([a-h])[- ]?(?:takes|tix|tex|tics|tx|x)$B1""", I) to "$1 takes",
+        Regex("""$B0([a-h])x([a-h])$S*($ANY_NUMBER)$B1""", I) to "$1 takes $2 $3",
+        Regex("""${B0}captures$B1""", I) to "takes",
     )
 
-    private val NUMBER_AFTER_FILE = Regex("""\b([a-h]) ?(${NUMBER_LIKE.keys.joinToString("|")})\b""")
-    private val LETTER_BEFORE_NUMBER = Regex("""\b(${LETTER_LIKE.keys.joinToString("|")}) (${WORDS.values.joinToString("|")})\b""")
-    private val SQUARE = Regex("""\b([a-h]) ?([1-8])\b""")
-    private val NOT_WORD = Regex("""[^\w\s'-]""")
-    private val SPACES = Regex("""\s+""")
+    private val NUMBER_AFTER_FILE = Regex("""$B0([a-h]) ?(${NUMBER_LIKE.keys.joinToString("|")})$B1""")
+    private val LETTER_BEFORE_NUMBER = Regex("""$B0(${LETTER_LIKE.keys.joinToString("|")}) (${WORDS.values.joinToString("|")})$B1""")
+    private val SQUARE = Regex("""$B0([a-h]) ?([1-8])$B1""")
+
+    /**
+     * `re.sub(r"[^\w\s'-]", " ", t)` with Python's `\w` and `\s` (ICU's differ: "½" is a word
+     * character to Python and not to ICU, a combining mark the other way round), a character at
+     * a time as Python's regex takes them, a pair of surrogates as one.
+     */
+    private fun punctuationOut(t: String): String {
+        val out = StringBuilder(t.length)
+        var i = 0
+        while (i < t.length) {
+            val cp = t.codePointAt(i)
+            i += Character.charCount(cp)
+            val kept = Py.isWord(cp) || cp == '\''.code || cp == '-'.code || (cp <= 0xffff && Py.isSpace(cp.toChar()))
+            if (kept) out.appendCodePoint(cp) else out.append(' ')
+        }
+        return out.toString()
+    }
 
     /** Lowercase, punctuation stripped, confusions fixed, squares as 'e four'. */
     fun normalise(text: String): String {
         var t = text.lowercase()
-        t = NOT_WORD.replace(t, " ")
+        t = punctuationOut(t)
         t = t.replace("-", " ")
         for ((pattern, repl) in CONFUSIONS) t = pattern.replace(t, repl)
         // A file letter followed by something that sounds like a number is a square.
         t = NUMBER_AFTER_FILE.replace(t) { m -> "${m.groupValues[1]} ${NUMBER_LIKE.getValue(m.groupValues[2])}" }
         t = LETTER_BEFORE_NUMBER.replace(t) { m -> "${LETTER_LIKE.getValue(m.groupValues[1])} ${m.groupValues[2]}" }
         t = SQUARE.replace(t) { m -> "${m.groupValues[1]} ${WORDS.getValue(m.groupValues[2])}" }
-        return Py.strip(SPACES.replace(t, " "))
+        // `re.sub(r"\s+", " ", t).strip()`, on Python's whitespace.
+        return Py.split(t).joinToString(" ")
     }
 
     private val PIECE_NAMES = listOf("pawn", "knight", "bishop", "rook", "queen", "king")

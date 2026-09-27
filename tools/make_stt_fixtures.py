@@ -10,7 +10,9 @@ from the desktop's own code:
   Parakeet int8's text and token ids, Silero's probability for every frame, and the endpointer's
   events on those probabilities;
 - `correct` and `normalise` on a corpus of transcripts -- the recogniser's typical slips as well
-  as clean ones -- against a few boards, and difflib's ratio on pairs of move forms.
+  as clean ones -- against a few boards, every case of tests/test_voice_correct.py on its own
+  board, and the characters where Python's `\\w` and `\\s` are not ICU's; every spoken form of
+  every legal move on those boards; and difflib's ratio on pairs of move forms.
 
     uv run --no-sync python D:/sidecoach-android/tools/make_stt_fixtures.py   (desktop repo)
 """
@@ -29,7 +31,7 @@ import onnxruntime as rt
 from sidecoach.voice.correct import correct, normalise, spoken_forms
 from sidecoach.voice.vad import HOP, Endpointer, SileroGate
 
-OUT = Path("D:/sidecoach-android/app/src/androidTest/assets/voice/stt.json")
+OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "voice" / "stt.json"
 KOKORO = Path("D:/chess-coaching-companion/data/models/kokoro")
 
 SAID = [
@@ -94,6 +96,59 @@ BOARDS = [
     "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2",
 ]
 
+# tests/test_voice_correct.py's, every one, on the board the test reads it on (normalise's
+# only normalised): after 1.e4 f5 2.exf5 g6, the promotion, the Scandinavian, the start.
+AFTER_G6 = "rnbqkbnr/ppppp2p/6p1/5P2/8/8/PPPP1PPP/RNBQKBNR w KQkq - 0 3"
+PROMOTION = "8/4P1k1/8/8/8/8/5K2/8 w - - 0 1"
+SCANDINAVIAN = BOARDS[5]
+CASTLED = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1"
+NORMALISED = [
+    "Night F3",
+    "Can I take on D4 with the 9?",
+    "The upon is passed, should I push it?",
+    "Rooka 1 to D1.",
+    "Roka 1 to d1",
+    "Why was E-Tix D5 a mistake?",
+    "Why was eTakes D5 a mistake?",
+    "Why was Exd Five a mistake",
+    "Queen H Five Czech",
+    "Castle King's side.",
+    "should I push the pawn to e for",
+    "bishop see six",
+]
+CORRECTED = [
+    ("Night F3", chess.STARTING_FEN),
+    ("should I play knight to f three here", chess.STARTING_FEN),
+    ("why was E-Tix D5 a mistake", AFTER_G6),
+    ("is f takes g six good", AFTER_G6),
+    ("what about bishop d three or knight f three", AFTER_G6),
+    ("hint", chess.STARTING_FEN),
+    ("what should I play here", chess.STARTING_FEN),
+    ("the a pawn is passed, should I push it", chess.STARTING_FEN),
+    *[(heard, PROMOTION) for heard in ("E8 Queen", "e eight, queen", "e eight equals queen",
+                                        "e eight promotes to queen", "pawn to e eight", "e eight",
+                                        "e eight knight", "e eight promotes to rook")],
+    ("Night to F3", PROMOTION),
+    ("pawn to e four", SCANDINAVIAN),
+    ("is the pawn on d five weak", SCANDINAVIAN),
+    ("knight takes the pawn on e five", SCANDINAVIAN),
+    ("is my knight on f three safe", chess.STARTING_FEN),
+    ("knight takes f three", chess.STARTING_FEN),
+    ("e takes d five", SCANDINAVIAN),
+    ("e takes d five", AFTER_G6),
+    ("Night F3 Czech", None),
+]
+# Where Python's \w and \s are not ICU's: "½" and "²" are word characters to Python, a combining
+# mark is not; a character past the BMP is one; the separators Python counts as space. On the
+# start and on no board.
+UNICODE = [
+    "it ended ½-½, a draw",
+    "e4² or e⁴",
+    "café knight f three",
+    "knight \U0001F600 f three",
+    "knight f three\x1ctakes\x0be\x85four",
+]
+
 
 def speech(text: str) -> np.ndarray:
     """Kokoro's voice for the text, at 16 kHz (linear resampling: any clip will do, the phone
@@ -156,7 +211,18 @@ def main() -> None:
     for raw in TRANSCRIPTS:
         fixed = correct(raw, None)
         corrections.append({"fen": None, "raw": raw, "text": fixed.text, "moves": fixed.moves})
-    normalised = [{"raw": raw, "norm": normalise(raw)} for raw in TRANSCRIPTS]
+    pairs = CORRECTED + [(raw, fen) for raw in UNICODE for fen in (chess.STARTING_FEN, None)]
+    for raw, fen in pairs:
+        fixed = correct(raw, None if fen is None else chess.Board(fen))
+        corrections.append({"fen": fen, "raw": raw, "text": fixed.text, "moves": fixed.moves})
+    normalised = [{"raw": raw, "norm": normalise(raw)} for raw in TRANSCRIPTS + NORMALISED + UNICODE]
+
+    # Every spoken form of every legal move, and the move it is, board by board. As a map: the
+    # order within a move's forms is a Python set's, which the string hash seed decides.
+    all_forms = [
+        {"fen": fen, "forms": spoken_forms(chess.Board(fen))}
+        for fen in (*BOARDS, AFTER_G6, PROMOTION, CASTLED)
+    ]
 
     forms = list(spoken_forms(chess.Board(BOARDS[1])).keys())
     ratios = []
@@ -169,6 +235,7 @@ def main() -> None:
         "clips": clips,
         "corrections": corrections,
         "normalised": normalised,
+        "forms": all_forms,
         "ratios": ratios,
     }), encoding="utf-8")
     print(f"{len(clips)} clips, {len(corrections)} corrections, {len(ratios)} ratios -> {OUT} ({OUT.stat().st_size / 1e6:.1f} MB)")

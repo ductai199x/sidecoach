@@ -218,6 +218,15 @@ object Py {
         else -> c in ' '..' '
     }
 
+    /**
+     * Python's `\w` for one character (`str.isalnum()` or the underscore): a letter, or a number
+     * of any kind -- "½" and "²" too, which ICU's `\w` and `\b` leave out.
+     */
+    fun isWord(cp: Int): Boolean = cp == '_'.code || Character.isLetter(cp) || when (Character.getType(cp).toByte()) {
+        Character.DECIMAL_DIGIT_NUMBER, Character.LETTER_NUMBER, Character.OTHER_NUMBER -> true
+        else -> false
+    }
+
     /** `str.strip()`. */
     fun strip(s: String): String = s.trim { isSpace(it) }
 

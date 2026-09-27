@@ -20,9 +20,16 @@ object Notation {
     // an optional capture, the destination square, an optional promotion, and an optional check
     // or mate mark. Castling and game results are handled separately. Word-bounded so it matches
     // a token, not a fragment of a longer word.
-    private val MOVE = Regex("""\b([KQRBN])?([a-h])?([1-8])?(x)?([a-h])([1-8])(=[QRBN])?([+#])?(?![A-Za-z0-9])""")
-    private val CASTLE = Regex("""\b(O-O-O|O-O)([+#])?(?![A-Za-z0-9])""")
-    private val RESULT = Regex("""\b(1-0|0-1|1/2-1/2|½-½)\b""")
+    //
+    // Python's `\b`, written out: every token here begins and ends with what Python counts a word
+    // character -- a letter, a number of any kind, the underscore -- so the bound is "no word
+    // character beside it". ICU's `\b` does not count "½" one, and never matched "½-½" after a
+    // space (the parity audit, 2026-09-26).
+    private const val NOT_AFTER_WORD = """(?<![\p{L}\p{N}_])"""
+    private const val NOT_BEFORE_WORD = """(?![\p{L}\p{N}_])"""
+    private val MOVE = Regex(NOT_AFTER_WORD + """([KQRBN])?([a-h])?([1-8])?(x)?([a-h])([1-8])(=[QRBN])?([+#])?(?![A-Za-z0-9])""")
+    private val CASTLE = Regex(NOT_AFTER_WORD + """(O-O-O|O-O)([+#])?(?![A-Za-z0-9])""")
+    private val RESULT = Regex(NOT_AFTER_WORD + """(1-0|0-1|1/2-1/2|½-½)""" + NOT_BEFORE_WORD)
 
     private fun square(file: String, rank: String): String = "$file ${RANK.getValue(rank)}"
 

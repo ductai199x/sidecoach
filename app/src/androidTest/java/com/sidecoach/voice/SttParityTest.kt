@@ -17,7 +17,8 @@ import java.nio.ByteOrder
 import kotlin.math.abs
 
 /**
- * The listening against the desktop's own (`tools/make_stt_fixtures.py`): the chess correction and
+ * The listening against the desktop's own (`tools/make_stt_fixtures.py`): the chess correction (every
+ * string of `tests/test_voice_correct.py` among them), every spoken form of the legal moves, and
  * difflib's ratio, exactly; Silero's probabilities within a tolerance and the endpointer's events
  * exactly; Parakeet int8's transcript and tokens for speech clips.
  */
@@ -61,6 +62,13 @@ class SttParityTest {
         for (i in 0 until normalised.length()) {
             val case = normalised.getJSONObject(i)
             check("normalise \"${case.getString("raw")}\"", Correct.normalise(case.getString("raw")), case.getString("norm"))
+        }
+        // Every spoken form of every legal move, and the move it names.
+        val forms = fixtures.getJSONArray("forms")
+        for (i in 0 until forms.length()) {
+            val case = forms.getJSONObject(i)
+            val theirs = case.getJSONObject("forms").let { o -> o.keys().asSequence().associateWith { o.getString(it) } }
+            check("spoken forms on ${case.getString("fen")}", Correct.spokenForms(Board(case.getString("fen"))).toMap(), theirs)
         }
         val ratios = fixtures.getJSONArray("ratios")
         for (i in 0 until ratios.length()) {
