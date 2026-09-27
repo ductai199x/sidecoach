@@ -109,7 +109,9 @@ class MainActivity : ComponentActivity() {
             assets,
             api = PanelApi(
                 versionName(),
-                SetupApi(this),
+                // One setup for the app, as the desktop's server has one: a turn of the phone
+                // rebuilds this activity, and a download under way must keep its status.
+                SetupApi.shared(this),
                 SettingsApi(store),
                 files = filesDir,
                 rooms = { PuzzleRooms.shared(applicationContext) },
