@@ -3,7 +3,6 @@ package com.sidecoach.voice
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
-import android.util.Log
 import java.io.File
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
@@ -50,7 +49,7 @@ class SileroGate(private val model: File) : VoiceGate {
                 true
             } catch (exc: Exception) { // no VAD means push-to-talk only
                 failed = "${exc::class.java.simpleName}: ${exc.message}"
-                Log.w("sidecoach.voice", "Silero VAD unavailable: $exc")
+                VoiceLog.warn("Silero VAD unavailable: ${VoiceLog.said(exc)}")
                 false
             }
         }

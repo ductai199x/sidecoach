@@ -9,7 +9,6 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.SystemClock
-import android.util.Log
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.BlockingQueue
 import java.util.concurrent.LinkedBlockingQueue
@@ -160,7 +159,7 @@ class Microphone(private val context: Context) : FrameSource {
             while (filled < HOP && reading) {
                 val n = source.read(frame, filled, HOP - filled, AudioRecord.READ_BLOCKING)
                 if (n < 0) {
-                    Log.w("sidecoach.voice", "the microphone failed ($n); it stays closed until reopened")
+                    VoiceLog.warn("the microphone failed ($n); it stays closed until reopened")
                     detail = "the input failed ($n)"
                     reading = false
                 }
@@ -413,7 +412,7 @@ class Listener(
             try {
                 onUtterance(audio, seconds)
             } catch (exc: Exception) { // a bad utterance must not stop listening
-                Log.w("sidecoach.voice", "utterance handler failed: $exc")
+                VoiceLog.warn("utterance handler failed: ${VoiceLog.said(exc)}")
             }
         }
     }
@@ -465,7 +464,7 @@ class ParakeetStt(private val context: Context, private val dir: java.io.File) :
                 // The files come from Setup only, as the desktop's offline hub has it; the phone's
                 // Setup is in the drawer, where the desktop's is under Help.
                 failed = "not downloaded yet (Setup, in the menu)"
-                Log.w("sidecoach.voice", "Parakeet unavailable, speech recognition is off: $failed")
+                VoiceLog.warn("Parakeet unavailable, speech recognition is off: $failed")
                 return false
             }
             return try {
@@ -475,7 +474,7 @@ class ParakeetStt(private val context: Context, private val dir: java.io.File) :
                 true
             } catch (exc: Throwable) { // degrade to off, never crash the session
                 failed = "${exc::class.java.simpleName}: ${exc.message}"
-                Log.w("sidecoach.voice", "Parakeet unavailable, speech recognition is off: $exc")
+                VoiceLog.warn("Parakeet unavailable, speech recognition is off: ${VoiceLog.said(exc)}")
                 false
             }
         }
@@ -503,7 +502,7 @@ class ParakeetStt(private val context: Context, private val dir: java.io.File) :
             // sessions are safe to share, and the decoding keeps its state on the stack.
             model.recognize(audio)
         } catch (exc: Exception) { // a bad clip must not kill the recogniser
-            Log.w("sidecoach.voice", "Parakeet failed on a clip: $exc")
+            VoiceLog.warn("Parakeet failed on a clip: ${VoiceLog.said(exc)}")
             return ""
         } finally {
             shared.unlock()

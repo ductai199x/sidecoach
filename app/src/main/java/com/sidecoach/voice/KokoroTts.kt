@@ -145,7 +145,7 @@ class KokoroTts(
                 loadSeconds = (SystemClock.elapsedRealtime() - began) / 1000.0
                 true
             } catch (exc: Throwable) { // any load failure degrades to silence
-                Log.w(TAG, "Kokoro voice unavailable, going silent: $exc")
+                VoiceLog.warn("Kokoro voice unavailable, going silent: ${VoiceLog.said(exc)}")
                 failed = true
                 false
             }
@@ -320,7 +320,7 @@ class KokoroTts(
                 }
             }
         } catch (exc: Exception) { // a bad line must not kill the voice
-            Log.w(TAG, "Kokoro synthesis failed for \"${line.spoken}\": $exc")
+            VoiceLog.warn("Kokoro synthesis failed for ${Py.repr(line.spoken)}: ${VoiceLog.said(exc)}")
             return
         } finally {
             shared.unlock()
@@ -384,7 +384,7 @@ class KokoroTts(
             } catch (_: InterruptedException) {
                 return
             } catch (exc: Exception) { // audio errors are not fatal
-                Log.w(TAG, "Kokoro playback failed: $exc")
+                VoiceLog.warn("Kokoro playback failed: ${VoiceLog.said(exc)}")
             } finally {
                 chunk.done?.countDown()
             }

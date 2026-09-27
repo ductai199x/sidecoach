@@ -238,4 +238,41 @@ object Py {
         if (piece.isNotEmpty()) out.add(piece.toString())
         return out
     }
+
+    /**
+     * A string as Python's `repr` writes it (`%r`, `{x!r}`): single quotes unless the text holds
+     * one and no double; backslash, the quote, tab, newline and return escaped; any other
+     * character `str.isprintable` refuses as `\xNN`, `\uNNNN` or `\UNNNNNNNN`.
+     */
+    fun repr(text: String): String {
+        val quote = if ('\'' in text && '"' !in text) '"' else '\''
+        val out = StringBuilder().append(quote)
+        var i = 0
+        while (i < text.length) {
+            val cp = text.codePointAt(i)
+            i += Character.charCount(cp)
+            when {
+                cp == '\\'.code -> out.append("\\\\")
+                cp == quote.code -> out.append('\\').append(quote)
+                cp == '\t'.code -> out.append("\\t")
+                cp == '\n'.code -> out.append("\\n")
+                cp == '\r'.code -> out.append("\\r")
+                cp < 0x20 || cp == 0x7f -> out.append(String.format(java.util.Locale.ROOT, "\\x%02x", cp))
+                cp < 0x7f || printable(cp) -> out.appendCodePoint(cp)
+                cp <= 0xff -> out.append(String.format(java.util.Locale.ROOT, "\\x%02x", cp))
+                cp <= 0xffff -> out.append(String.format(java.util.Locale.ROOT, "\\u%04x", cp))
+                else -> out.append(String.format(java.util.Locale.ROOT, "\\U%08x", cp))
+            }
+        }
+        return out.append(quote).toString()
+    }
+
+    /** `str.isprintable` for one character: not "Other" (Cc, Cf, Cs, Co, Cn) nor a separator but space. */
+    private fun printable(cp: Int): Boolean = when (Character.getType(cp).toByte()) {
+        Character.CONTROL, Character.FORMAT, Character.SURROGATE, Character.PRIVATE_USE,
+        Character.UNASSIGNED, Character.LINE_SEPARATOR, Character.PARAGRAPH_SEPARATOR,
+        -> false
+        Character.SPACE_SEPARATOR -> cp == ' '.code
+        else -> true
+    }
 }
