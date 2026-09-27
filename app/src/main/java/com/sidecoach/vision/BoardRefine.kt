@@ -108,10 +108,34 @@ object BoardRefine {
         if (colours.light > colours.dark) BoardDetect.SIGNS
         else FloatArray(64) { -BoardDetect.SIGNS[it] }
 
+    /** An outer cell is read when at least this share of it, either way, is on the frame. */
+    const val OUTER_MIN_SHOWN = 0.5
+
+    /**
+     * An outer cell's box cut to the frame, or null when less than [OUTER_MIN_SHOWN] of it is
+     * on the frame either way (`board_detect._outer_box`).
+     */
+    fun outerBox(width: Int, height: Int, box: IntArray): IntArray? {
+        val (x0, y0, x1, y1) = box
+        val cx0 = max(0, x0)
+        val cy0 = max(0, y0)
+        val cx1 = min(width, x1)
+        val cy1 = min(height, y1)
+        if (cx1 - cx0 < OUTER_MIN_SHOWN * (x1 - x0) || cy1 - cy0 < OUTER_MIN_SHOWN * (y1 - y0)) return null
+        return intArrayOf(cx0, cy0, cx1, cy1)
+    }
+
     /**
      * Whether the checker pattern carries on outside the candidate on any of its sides: a
      * candidate shifted by whole cells, or a window of a larger checkerboard, reads a
      * perfect board inside its 64 cells and only the cells just outside tell.
+     *
+     * An outer cell that runs off the frame is read on the part the frame shows when that is
+     * half the cell or more: a candidate two thirds of a cell above a board that ended two
+     * pixels above the frame's bottom had its row of outer cells above it off the frame and
+     * the row below it a third off, so neither side was read, the board's last row went
+     * unseen below it, and the lock validated with every cell reading across two squares
+     * (the desktop's geometry sweep, 2026-09-27, seed 260).
      */
     fun outerContinuesBoard(gray: Plane, region: Region, cell: Double, colours: Colours): Boolean {
         val band = ringBand(cell)
@@ -124,7 +148,8 @@ object BoardRefine {
         )
         for (cells in sides) {
             val signs = cells.map { (r, c) ->
-                val value = ringMedian(gray, cellBounds(region, cell, r, c), band)
+                val box = outerBox(gray.width, gray.height, cellBounds(region, cell, r, c))
+                val value = if (box == null) null else ringMedian(gray, box, band)
                 if (value == null ||
                     (abs(value - colours.light) > colours.tolerance &&
                         abs(value - colours.dark) > colours.tolerance)
