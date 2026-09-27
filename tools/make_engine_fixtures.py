@@ -8,7 +8,11 @@ null move. The phone speaks UCI itself, so the port is held to the desktop's tra
 
 The engine here is scripted, not Stockfish: this file run with `--fake` is a UCI engine that
 announces Stockfish 19's options and answers each search from the position it was sent (its
-legal moves, a mate in one when there is one, a score made from the command's text). The
+legal moves, a mate in one when there is one, a score made from the command's text), with
+the lines a real search also prints around them: an `info string`, a shallower bound first, a
+line printed again one depth shallower after the rest, and the `info depth N currmove ...` that
+Stockfish sends once a search has run three seconds -- python-chess merges every one of them
+into its lines, the depth it reports with them. The
 desktop's own `Engine` is run against it over a set of boards -- the start, a game's moves, a
 repetition, castling sent as king-takes-rook, a FEN root with moves, an en passant square that
 is no capture, a null move in the history, finished and claimable positions -- once with an
@@ -122,7 +126,13 @@ def answer(command: str, board: chess.Board, multipv: int, show_wdl: bool, depth
         board.pop()
     ordered = mates + [m for m in legal if m not in mates]
     base = sum(map(ord, command)) % 301 - 150
-    out = []
+    out = ["info string NNUE evaluation using nn-1a298aa575a0.nnue"]
+    if ordered:
+        # A shallower pass, its score a bound: merged, then overwritten.
+        out.append(
+            f"info depth {depth - 1} seldepth {depth} multipv 1 score cp {base + 7} lowerbound "
+            f"nodes 500 nps 100000 time 5 pv {ordered[-1].uci()}"
+        )
     for i, move in enumerate(ordered[:multipv]):
         pv = [move]
         after = board.copy(stack=False)
@@ -143,6 +153,17 @@ def answer(command: str, board: chess.Board, multipv: int, show_wdl: bool, depth
             f"{wdl if show_wdl else ''} nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 "
             f"pv {' '.join(m.uci() for m in pv)}"
         )
+    shown = min(multipv, len(ordered))
+    if shown >= 2 and ordered[shown - 1] not in mates:
+        # The last line again, one depth shallower, one move long and scored lower: the last
+        # word wins, whatever its depth.
+        out.append(
+            f"info depth {depth - 1} seldepth {depth} multipv {shown} score cp {base - 20 * shown - 5}"
+            f" nodes 1500 nps 100000 time 15 pv {ordered[shown - 1].uci()}"
+        )
+    if ordered:
+        # Three seconds in, the next depth's first root move: no line index, no moves.
+        out.append(f"info depth {depth + 1} currmove {ordered[0].uci()} currmovenumber 1")
     out.append(f"bestmove {ordered[0].uci()}" if ordered else "bestmove (none)")
     return out
 

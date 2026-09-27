@@ -1206,6 +1206,21 @@ class Board {
         return if (found != null) found to null else null to SanFailure.ILLEGAL
     }
 
+    /**
+     * `parse_uci`: the legal move the text names, castling read as python-chess stores it (the
+     * king taking its own rook becomes e1g1), or the null move for "0000". Text that is no move,
+     * or no legal one here, raises [IllegalArgumentException] (python-chess's `InvalidMoveError`
+     * and `IllegalMoveError`).
+     */
+    fun parseUci(uci: String): Move {
+        val given = Move.fromUci(uci)
+        if (uci == "0000") return given
+        val move = toChess960(given)
+        val normal = fromChess960(move.from, move.to, move.promotion)
+        if (!isLegal(normal)) throw IllegalArgumentException("illegal uci: '$uci' in ${fen()}")
+        return normal
+    }
+
     /** `find_move`: the legal move between two squares, promoting to a queen by default. */
     fun findMove(from: Int, to: Int, promotion: Int = 0): Move? {
         var wanted = promotion

@@ -348,15 +348,25 @@ open class Engine(
         throw AssertionError("unreachable")
     }
 
-    /** One `info` line's numbers, kept per MultiPV index at the last depth reached. */
-    private class Info(
-        val depth: Int,
-        val multipv: Int,
-        val scoreCp: Int?,
-        val mate: Int?,
-        val wdl: Triple<Int, Int, Int>?,
-        val pv: List<String>,
-    )
+    /**
+     * The numbers of one `info` line, or of one MultiPV index once its lines are merged as
+     * python-chess merges them (`AnalysisResult.post`): each line's fields update the index's,
+     * the last word on each field wins, and a field a line does not carry stays. A line that
+     * names no index is the first's -- so `info depth 21 currmove e2e4 currmovenumber 1`, which
+     * Stockfish sends once a search has run three seconds, moves the best line's depth on while
+     * its moves stay the last depth's, as the desktop reports it. Null is a field not given.
+     */
+    private class Info {
+        var depth: Int? = null
+        var multipv: Int? = null
+
+        /** A score was given: [scoreCp] or [mate], the other null (python-chess's one `score`). */
+        var score = false
+        var scoreCp: Int? = null
+        var mate: Int? = null
+        var wdl: Triple<Int, Int, Int>? = null
+        var pv: List<String>? = null
+    }
 
     private fun search(board: Board, depth: Int?, timeS: Double?, multipv: Int): List<Info> {
         // What python-chess's analysis sends before the search: pondering off and analysis
@@ -378,57 +388,93 @@ open class Engine(
         // does not count against it.
         send(go.toString())
         if (timeS != null) arm((timeS * 1000).toLong())
-        val best = HashMap<Int, Info>()
+        // python-chess's `AnalysisResult.multipv`: one merged record per index, the first there
+        // from the start; its moves read against the position sent (`self.engine.board`).
+        val root = board.copy(withStack = false)
+        val infos = arrayListOf(Info())
         try {
             readUntil("bestmove") { line ->
-                if (line.startsWith("info ") && " pv " in " $line ") {
-                    parseInfo(line)?.let { info ->
-                        val kept = best[info.multipv]
-                        // The last word on each line wins, which at a fixed depth is the
-                        // deepest: python-chess keeps the same.
-                        if (kept == null || info.depth >= kept.depth) best[info.multipv] = info
-                    }
-                }
+                val words = words(line)
+                if (words.firstOrNull() == "info") post(infos, parseInfo(words, root))
             }
         } finally {
             if (timeS != null) disarm()
         }
-        return best.entries.sortedBy { it.key }.map { it.value }
+        return infos
     }
 
-    private fun parseInfo(line: String): Info? {
-        val words = line.split(" ")
-        var depth = 0
-        var multipv = 1
-        var scoreCp: Int? = null
-        var mate: Int? = null
-        var wdl: Triple<Int, Int, Int>? = null
-        var pv: List<String> = emptyList()
+    /**
+     * `AnalysisResult.post`: the line's fields into its index's record, the records grown to
+     * the index. Python's negative index for a MultiPV of 0 or less counts from the end.
+     */
+    private fun post(infos: MutableList<Info>, info: Info) {
+        val wanted = info.multipv ?: 1
+        while (infos.size < wanted) infos.add(Info())
+        val at = if (wanted >= 1) wanted - 1 else infos.size + wanted - 1
+        if (at !in infos.indices) return
+        val into = infos[at]
+        info.depth?.let { into.depth = it }
+        info.multipv?.let { into.multipv = it }
+        if (info.score) {
+            into.score = true
+            into.scoreCp = info.scoreCp
+            into.mate = info.mate
+        }
+        info.wdl?.let { into.wdl = it }
+        info.pv?.let { into.pv = it }
+    }
+
+    /**
+     * python-chess's `_parse_uci_info`, for the fields the desktop reads (depth, the MultiPV
+     * index, the score, win-draw-loss, the moves), every other token taken as it takes it.
+     * A field that does not parse is not given, and the words it took stay taken; a line of
+     * moves stops at the first word that is no move, and one with an illegal move in it is no
+     * line at all (`_create_variation_line`, `push_uci`), the words after `pv` read again.
+     */
+    private fun parseInfo(words: List<String>, root: Board): Info {
+        val info = Info()
         var i = 1
+        fun next(): String = if (i < words.size) words[i++] else ""
         while (i < words.size) {
-            when (words[i]) {
-                "depth" -> { depth = words.getOrNull(i + 1)?.toIntOrNull() ?: 0; i += 2 }
-                "multipv" -> { multipv = words.getOrNull(i + 1)?.toIntOrNull() ?: 1; i += 2 }
+            when (next()) {
+                "string" -> i = words.size
+                "depth" -> next().toIntOrNull()?.let { info.depth = it }
+                "multipv" -> next().toIntOrNull()?.let { info.multipv = it }
+                "seldepth", "nodes", "currmovenumber", "hashfull", "nps", "tbhits", "cpuload",
+                "time", "ebf", "currmove" -> next()
                 "score" -> {
-                    when (words.getOrNull(i + 1)) {
-                        "cp" -> { scoreCp = words.getOrNull(i + 2)?.toIntOrNull(); i += 3 }
-                        "mate" -> { mate = words.getOrNull(i + 2)?.toIntOrNull(); i += 3 }
-                        else -> i += 2
+                    val kind = next()
+                    val value = next()
+                    if (i < words.size && (words[i] == "lowerbound" || words[i] == "upperbound")) i++
+                    val number = value.toIntOrNull()
+                    if (number != null && (kind == "cp" || kind == "mate")) {
+                        info.score = true
+                        info.scoreCp = if (kind == "cp") number else null
+                        info.mate = if (kind == "mate") number else null
                     }
                 }
-                "wdl" -> {
-                    val w = words.getOrNull(i + 1)?.toIntOrNull()
-                    val d = words.getOrNull(i + 2)?.toIntOrNull()
-                    val l = words.getOrNull(i + 3)?.toIntOrNull()
-                    if (w != null && d != null && l != null) wdl = Triple(w, d, l)
-                    i += 4
+                "currline" -> if (next().toIntOrNull() != null) {
+                    variation(root, words, i)?.let { i = it.second }
                 }
-                "pv" -> { pv = words.drop(i + 1); i = words.size }
-                else -> i += 1
+                "refutation" -> {
+                    val refuted = root.copy(withStack = false)
+                    val pushed = runCatching { refuted.push(refuted.parseUci(next())) }.isSuccess
+                    if (pushed) variation(refuted, words, i)?.let { i = it.second }
+                }
+                "pv" -> variation(root, words, i)?.let { (moves, after) ->
+                    info.pv = moves
+                    i = after
+                }
+                "wdl" -> {
+                    val wins = next().toIntOrNull()
+                    val draws = next().toIntOrNull()
+                    val losses = next().toIntOrNull()
+                    if (wins != null && draws != null && losses != null) info.wdl = Triple(wins, draws, losses)
+                }
+                else -> Unit
             }
         }
-        if (pv.isEmpty()) return null
-        return Info(depth, multipv, scoreCp, mate, wdl, pv)
+        return info
     }
 
     /**
@@ -437,11 +483,11 @@ open class Engine(
      * them ([WDL_MODEL]) at the board's ply.
      */
     private fun line(info: Info, board: Board, pvPlies: Int): Line {
-        if (info.scoreCp == null && info.mate == null) return Line(moves = emptyList(), depth = 0, expectedScore = 0.5)
+        if (!info.score) return Line(moves = emptyList(), depth = 0, expectedScore = 0.5)
         val wdl = info.wdl ?: modelWdl(info.scoreCp, info.mate, board.ply())
         return Line(
-            moves = info.pv.take(pvPlies),
-            depth = info.depth,
+            moves = (info.pv ?: emptyList()).take(pvPlies),
+            depth = info.depth ?: 0,
             expectedScore = expectedScore(scoreModel, info.scoreCp, info.mate, wdl),
             scoreCp = info.scoreCp,
             mate = info.mate,
@@ -568,6 +614,47 @@ open class Engine(
             val b = (((-5.33122190 * m + 39.57831533) * m + -90.84473771) * m) + 123.40620748
             val x = minOf(4000.0, maxOf(cp * normalizeToPawnValue / 100.0, -4000.0))
             return (0.5 + 1000 / (1 + Math.exp((a - x) / b))).toInt()
+        }
+
+        /** python-chess's `UCI_REGEX`, matched at a word's start as `re.match` matches it. */
+        private val UCI_REGEX = Regex("[a-h][1-8][a-h][1-8][pnbrqk]?|[PNBRQK]@[a-h][1-8]|0000\\z")
+
+        /** `str.split()`: the words of an engine's line, runs of whitespace between them. */
+        private fun words(line: String): List<String> {
+            val out = ArrayList<String>()
+            var start = -1
+            for (i in line.indices) {
+                if (line[i].isWhitespace()) {
+                    if (start >= 0) out.add(line.substring(start, i))
+                    start = -1
+                } else if (start < 0) {
+                    start = i
+                }
+            }
+            if (start >= 0) out.add(line.substring(start))
+            return out
+        }
+
+        /**
+         * `_create_variation_line`: the moves from word [start] on, played out from [board],
+         * up to the first word that is no move, and the index of that word; null when a move
+         * cannot be played there (python-chess's `push_uci` raising).
+         */
+        private fun variation(board: Board, words: List<String>, start: Int): Pair<List<String>, Int>? {
+            val walk = board.copy(withStack = false)
+            val moves = ArrayList<String>()
+            var at = start
+            while (at < words.size && UCI_REGEX.matchesAt(words[at], 0)) {
+                val move = try {
+                    walk.parseUci(words[at])
+                } catch (exc: IllegalArgumentException) {
+                    return null
+                }
+                walk.push(move)
+                moves.add(move.uci())
+                at += 1
+            }
+            return moves to at
         }
 
         private val OPTION_KEYWORDS = Regex("\\s*\\b(name|type|default|min|max|var)\\b\\s*")
