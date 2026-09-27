@@ -14,6 +14,15 @@ several frames is stored once and named several times.
 
     cd D:/chess-coaching-companion
     uv run --no-sync python D:/sidecoach-android/tools/make_pipeline_fixtures.py
+
+The frames land beside this file's checkout (`app/src/androidTest/assets/pipeline`), so a
+worktree's copy writes into that worktree.
+
+A scenario may also do what the desktop's pipeline tests do to a pipeline between frames
+(`_call`: a reset, the panel's Flip re-reading the board, the End game menu, a side forced, a
+clock as a reader would have left it, a reconciler's tunable), and may say whether a frame
+counts as changed (`_changed`) where the desktop's test passes it by hand; the phone does the
+same at the same point (the parity audit's st-T04..st-T08).
 """
 
 from __future__ import annotations
@@ -41,6 +50,7 @@ from sidecoach.events import (  # noqa: E402
     PositionChanged,
     Resync,
     ScreenStateChanged,
+    Side,
     Takeback,
     Unexplained,
 )
@@ -50,7 +60,7 @@ from sidecoach.vision.squares import BoardGeometry  # noqa: E402
 from sidecoach.vision.theme_cache import ThemeCache  # noqa: E402
 from tests import synth  # noqa: E402
 
-OUT = Path("D:/sidecoach-android/app/src/androidTest/assets/pipeline")
+OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "pipeline"
 
 # Every frame written, by its pixels: a board shown again -- in the same scenario or another --
 # is the file already written, named again, so the committed frames stay few.
@@ -507,6 +517,210 @@ def slides(
     return states
 
 
+# ---- The desktop's pipeline tests, as scenarios (the parity audit's st-T04..st-T08) -------
+
+
+def _shown(board: chess.Board, repeat: int, **extra) -> dict:
+    """`board` held for `repeat` frames; `extra` overrides the drawing (and may carry the
+    state's own keys, `_where`, `_changed`, ...)."""
+    kwargs = board_kwargs(board=board.copy(), theme="green", style="cburnett")
+    kwargs.update(extra)
+    return dict(kwargs, _repeat=repeat)
+
+
+def _moves(board: chess.Board, sans: tuple[str, ...], repeat: int = 2, **extra) -> list[dict]:
+    """Each move played on `board`, its frames with the last-move highlight."""
+    states = []
+    for san in sans:
+        move = board.push_san(san)
+        states.append(_shown(board, repeat, highlight=move, **extra))
+    return states
+
+
+def new_theme_new_game() -> list[dict]:
+    """`test_pipeline_bootstraps_and_rebootstraps_on_new_theme`: a game on one theme, then the
+    next game's start position on another with Black at the bottom -- the old game ended, the
+    recogniser learned again and the orientation with it -- and that game followed."""
+    board = chess.Board()
+    states = [_shown(board, 2), *_moves(board, ("e4", "e5"))]
+    board = chess.Board()
+    brown = dict(theme="brown", bottom=Side.BLACK)
+    states.append(_shown(board, 3, **brown))
+    states += _moves(board, ("d4", "Nf6"), **brown)
+    return states
+
+
+def flipped_before_the_first_move() -> list[dict]:
+    """`test_board_flipped_before_the_first_move_keeps_the_game`: the pre-game board watched as
+    White, then paired as Black: the board flips before a move, and the same game goes on,
+    announced again from Black's side."""
+    board = chess.Board()
+    states = [_shown(board, 2), _shown(board, 4, bottom=Side.BLACK)]
+    states += _moves(board, ("e4", "e5"), bottom=Side.BLACK)
+    return states
+
+
+def reset_then_one_changed_tick() -> list[dict]:
+    """`test_reset_forgets_the_game_and_bootstraps_again`, then
+    `test_bootstrap_counts_ticks_so_a_fast_first_move_does_not_starve_it`: the game forgotten,
+    and the next start position stored on one changed tick and left unchanged for two more
+    still bootstraps, in time for a first move a moment later."""
+    board = chess.Board()
+    states = [_shown(board, 2), *_moves(board, ("e4", "e5")), {"_call": {"reset": True}}]
+    board = chess.Board()
+    states.append(dict(_shown(board, 3), _changed=[True, False, False]))
+    states += _moves(board, ("d4",))
+    return states
+
+
+def the_lock_moves() -> list[dict]:
+    """`test_readings_are_retaken_after_the_lock_moves` and `test_window_moved_mid_game`: a move
+    and a window move in one changed tick, then only unchanged ticks; the readings are taken
+    again on the new lock, the move is told, and the game goes on there."""
+    board = chess.Board()
+    states = [_shown(board, 2), *_moves(board, ("e4",))]
+    # The desktop's test moves the board 30 px at 64 px cells; as far at 50 px, and down, as
+    # the frame is no wider than the board.
+    moved = dict(y0=Y0 + 23, _where=(X0, Y0 + 23, CELL))
+    move = board.push_san("e5")
+    states.append(dict(_shown(board, 13, highlight=move, **moved), _changed=[True] + [False] * 12))
+    states += _moves(board, ("Nf3",), **moved)
+    return states
+
+
+def _blank() -> np.ndarray:
+    return np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+
+
+def covered_then_gone() -> list[dict]:
+    """`test_a_dialog_that_stays_over_a_live_board_covers_the_game_but_ends_nothing`,
+    `test_screen_state_falls_back_to_unknown_when_the_board_is_lost` and
+    `test_board_minimised_then_restored`: a dialog that flashes past counts for nothing; one
+    that stays marks the screen covered, the game open; lifted, live again. Then the board
+    gone (unknown) while a move is played, and back: the move is told. Then the End game menu
+    says how it ended, once."""
+    board = chess.Board()
+    states = [_shown(board, 2), *_moves(board, ("e4", "e5"))]
+    states += [_shown(board, 5, dialog=1.0), _shown(board, 1), _shown(board, 30, dialog=1.0)]
+    states.append(_shown(board, 1))
+    states.append({"_image": _blank(), "_repeat": 8})
+    move = board.push_san("Nf3")
+    states.append(_shown(board, 10, highlight=move))
+    states.append({"_call": {"end_game": ["1-0", "opponent resigned or lost on time"]}})
+    states.append({"_call": {"end_game": ["0-1", "changed my mind"]}})
+    states.append(_shown(board, 1, highlight=move))
+    return states
+
+
+def _partly_covered(board: chess.Board, repeat: int, **extra) -> dict:
+    """The board with another window over its right three files and beyond."""
+    image = synth.synthetic_board(**board_kwargs(board=board.copy(), theme="green", style="cburnett", **extra))
+    image[Y0 - 40 : Y0 + 8 * CELL + 40, X0 + 5 * CELL :] = (240, 240, 240)
+    return {"_image": image, "_repeat": repeat}
+
+
+def partly_covered() -> list[dict]:
+    """`test_board_partly_covered_by_another_window`: a window over the right third of the
+    board; a move on the left commits, one that lands under the window waits for it to go."""
+    board = chess.Board()
+    states = [_shown(board, 2), *_moves(board, ("e4", "e5"))]
+    move = board.push_san("d4")
+    states.append(_partly_covered(board, 4, highlight=move))
+    move = board.push_san("Nf6")
+    states.append(_partly_covered(board, 4, highlight=move))
+    states.append(_shown(board, 4, highlight=move))
+    return states
+
+
+def scrolled_off_and_back() -> list[dict]:
+    """`test_board_scrolled_partly_off_screen_and_back`: the page scrolled, the top rows off the
+    screen: nothing invented; scrolled back, the game goes on."""
+    board = chess.Board()
+    states = [_shown(board, 2), *_moves(board, ("e4", "e5"))]
+    states.append(dict(_shown(board, 8, y0=Y0 - 330), _where=(X0, Y0 - 330, CELL)))
+    states.append(_shown(board, 6))
+    states += _moves(board, ("Nf3",))
+    return states
+
+
+def a_draw_badge_then_a_flag() -> list[dict]:
+    """`test_a_draw_badge_is_not_read_until_one_is_on_record` and `test_a_flag_is_a_loss_on_time`:
+    the rendered draw badges end nothing; the clock read at zero for White, then the badges of
+    Black's win: lost on time."""
+    board = chess.Board()
+    states = [_shown(board, 2), *_moves(board, ("e4", "e5", "Nf3", "Nc6"))]
+    last = board.peek()
+    # Every frame read, as the desktop's test reads them (`process` changed by default): the
+    # badges are counted on the frames that are read.
+    states.append(_shown(board, 4, highlight=last, result="1/2-1/2", _changed=True))
+    states.append({"_call": {"last_clock": [0, 240000, None], "last_clock_ts": None}})
+    states.append(_shown(board, 2, highlight=last, result="0-1", _changed=True))
+    return states
+
+
+def joined_and_the_clock() -> list[dict]:
+    """`test_a_game_joined_from_the_middle_is_adopted_without_being_asked`,
+    `test_a_stale_clock_does_not_settle_the_side_to_move` and
+    `test_the_side_to_move_of_an_adopted_position_comes_from_the_running_clock`: a learned
+    set's board joined in the middle, read three times half a second apart and adopted with
+    the side to move open; a clock read long ago says nothing; the running clock read a moment
+    ago settles it, once."""
+    board = chess.Board(MIDGAME)
+    return [
+        dict(board_kwargs(board=chess.Board(), theme="green", style="cburnett"), _repeat=3, _session=True),
+        dict(_shown(board, 3), _session=True, _ts=0.0, _dt=0.6, _changed=True),
+        {"_call": {"last_clock": [300000, 290000, "black"], "last_clock_ts": 1.2 - 10.0}},
+        dict(_shown(board, 1), _ts=1.3, _changed=True),
+        {"_call": {"last_clock": [300000, 290000, "black"], "last_clock_ts": 1.3}},
+        dict(_shown(board, 2), _ts=1.4, _dt=0.1, _changed=True),
+    ]
+
+
+# Ten plies on from the start: only a position resync can follow.
+LATER = "r1bqk2r/1pppbppp/p1n2n2/4p3/B3P3/5N2/PPPP1PPP/RNBQ1RK1 w kq - 4 6"
+
+
+def a_jump_on_a_slow_stream() -> list[dict]:
+    """`test_a_new_position_on_a_slow_stream_is_taken_after_a_moment_not_ten_frames`: frames a
+    third of a second apart, the pixels new only on the first; the next position is adopted
+    once it has stood still three frames and 0.4 s -- a Resync, the side to move pending."""
+    return [
+        _shown(chess.Board(), 3),
+        dict(_shown(chess.Board(LATER), 5), _ts=10.0, _dt=0.33, _changed=[True] + [False] * 4),
+    ]
+
+
+# A position that is legal read either way up, shown after a game with Black at the bottom.
+TURNED = "r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R b KQkq - 0 1"
+
+
+def a_resync_the_other_way_up() -> list[dict]:
+    """`_resync_reoriented`: a side chosen with Flip keeps the labels from turning the game round
+    as they are read (`_flip_if_turned`), so the next position, shown the other way up, is
+    adopted by a resync, on its head -- and the labels then say which side is at the bottom:
+    the board is read again that way and begun as a new game, in place of the resync."""
+    board = chess.Board()
+    states = [_shown(board, 3), *_moves(board, ("e4", "e5"))]
+    states.append({"_call": {"forced_bottom": "white"}})
+    states.append(_shown(chess.Board(TURNED), 8, bottom=Side.BLACK))
+    return states
+
+
+def flip_a_joined_position() -> list[dict]:
+    """`test_flip_re_reads_a_joined_position_the_other_way_up`: no labels to read, Flip says
+    White is at the bottom and the board is joined upside down; Flip again says Black, and the
+    screen is read the other way and begun again, the bogus game ended."""
+    black = dict(bottom=Side.BLACK, coordinates=False)
+    board = chess.Board(MIDGAME)
+    return [
+        dict(board_kwargs(board=chess.Board(), theme="green", style="cburnett", bottom=Side.BLACK), _repeat=3, _session=True),
+        dict(_shown(board, 1, **black), _session=True, _ts=0.0, _changed=True),
+        {"_call": {"forced_bottom": "white"}},
+        dict(_shown(board, 4, **black), _ts=0.6, _dt=0.6, _changed=True),
+        {"_call": {"reorient": "black"}, "_ts": 20.0},
+    ]
+
+
 SCENARIOS = {
     "mate-green": lambda: scholars_mate("green", "cburnett"),
     "resign-green": lambda: a_resignation("green", "cburnett"),
@@ -539,7 +753,122 @@ SCENARIOS = {
         2.0,
         0.04,
     ),
+    "new-theme-new-game": new_theme_new_game,
+    "flipped-before-a-move": flipped_before_the_first_move,
+    "reset-one-tick": reset_then_one_changed_tick,
+    "lock-moves": the_lock_moves,
+    "covered-then-gone": covered_then_gone,
+    "partly-covered": partly_covered,
+    "scrolled": scrolled_off_and_back,
+    "draw-badge-flag": a_draw_badge_then_a_flag,
+    "joined-clock": joined_and_the_clock,
+    "slow-jump": a_jump_on_a_slow_stream,
+    "resync-turned": a_resync_the_other_way_up,
+    "flip-joined": flip_a_joined_position,
 }
+
+# Scenarios the phone replays once, not again as a still screen read from its last pixels
+# (`PipelineTest.aStillScreenReadAgain...`): each pins a behaviour of the pipeline's, which
+# the shortcut the other scenarios hold it to adds nothing to, and a replay costs a minute.
+READ_ONCE = {
+    "new-theme-new-game",
+    "flipped-before-a-move",
+    "reset-one-tick",
+    "lock-moves",
+    "covered-then-gone",
+    "partly-covered",
+    "scrolled",
+    "draw-badge-flag",
+    "joined-clock",
+    "slow-jump",
+    "resync-turned",
+    "flip-joined",
+}
+
+# What each of those scenarios must show on the desktop, as its test asserts: a fixture that
+# does not is no fixture of the behaviour.
+EXPECT = {
+    "new-theme-new-game": lambda lines, data: (
+        _sans(lines) == ["e4", "e5", "d4", "Nf6"]
+        and any(line.startswith("GameEnded * new game started") for line in lines)
+        and data["bootstraps"] == 2
+    ),
+    "flipped-before-a-move": lambda lines, data: (
+        _sans(lines) == ["e4", "e5"]
+        and not any(line.startswith("GameEnded") for line in lines)
+        and any(line.startswith("GameStarted game black") for line in lines)
+        and data["bootstraps"] == 2
+    ),
+    "reset-one-tick": lambda lines, data: _sans(lines) == ["e4", "e5", "d4"] and data["bootstraps"] == 2,
+    "lock-moves": lambda lines, data: _sans(lines) == ["e4", "e5", "Nf3"],
+    "covered-then-gone": lambda lines, data: (
+        _sans(lines) == ["e4", "e5", "Nf3"]
+        and [line for line in lines if line.startswith("ScreenState")]
+        == [
+            "ScreenState live_game",
+            "ScreenState covered",
+            "ScreenState live_game",
+            "ScreenState unknown",
+            "ScreenState live_game",
+            "ScreenState game_over",
+        ]
+        and [line.split(" |")[0] for line in lines if line.startswith("GameEnded")]
+        == ["GameEnded 1-0 opponent resigned or lost on time"]
+    ),
+    "partly-covered": lambda lines, data: (
+        _sans(lines) == ["e4", "e5", "d4", "Nf6"] and not any(line.startswith("Resync") for line in lines)
+    ),
+    "scrolled": lambda lines, data: _sans(lines) == ["e4", "e5", "Nf3"],
+    "draw-badge-flag": lambda lines, data: (
+        [line.split(" |")[0] for line in lines if line.startswith("GameEnded")]
+        == ["GameEnded 0-1 lost on time"]
+    ),
+    "joined-clock": lambda lines, data: (
+        sum(line.startswith("GameStarted position") for line in lines) == 1
+        and [line.split(" |")[0] for line in lines if line.startswith("Resync")]
+        == ["Resync side to move settled by the clock: black"]
+    ),
+    "slow-jump": lambda lines, data: any(
+        line.startswith("Resync position adopted") for line in lines
+    ),
+    "resync-turned": lambda lines, data: (
+        not any(line.startswith("Resync") for line in lines)
+        and any(line.startswith("GameEnded * board reoriented") for line in lines)
+        and any(line.startswith("GameStarted position black") for line in lines)
+    ),
+    "flip-joined": lambda lines, data: (
+        [line.split(" |")[0] for line in lines if line.startswith("GameEnded")]
+        == ["GameEnded * board reoriented"]
+        and sum(line.startswith("GameStarted position") for line in lines) == 2
+    ),
+}
+
+
+def _sans(lines: list[str]) -> list[str]:
+    return [line.split()[2] for line in lines if line.startswith("MovePlayed")]
+
+
+def _call(pipeline: GamePipeline, call: dict, image, ts: float) -> list:
+    """What a desktop test does to a pipeline between frames, done here the same way."""
+    if "reset" in call:
+        pipeline.reset()
+        return []
+    if "reorient" in call:
+        assert pipeline.board is not None, "no board locked to re-read"
+        geometry = BoardGeometry(pipeline.board.region, pipeline.board.cell_px)
+        return pipeline.reorient(image, geometry, Side(call["reorient"]), ts)
+    if "end_game" in call:
+        result, reason = call["end_game"]
+        return pipeline.end_game(result, reason, ts)
+    if "forced_bottom" in call:
+        pipeline.forced_bottom = Side(call["forced_bottom"])
+        return []
+    if "last_clock" in call:
+        white, black, running = call["last_clock"]
+        pipeline._last_clock = (white, black, None if running is None else Side(running))
+        pipeline._last_clock_ts = call["last_clock_ts"]
+        return []
+    raise SystemExit(f"a call the fixtures do not know: {call}")
 
 
 def run(name: str, states: list[dict]) -> dict:
@@ -552,13 +881,26 @@ def run(name: str, states: list[dict]) -> dict:
     gate = ChangeGate()
     frames: list[dict] = []
     frame_id = 0
+    last_image = None
     for index, state in enumerate(states):
+        call = state.pop("_call", None)
+        if call is not None:
+            # What a desktop test does to the pipeline between frames, at the last frame's
+            # pixels (a Flip's re-read) and time, or the time the state gives.
+            ts = state.pop("_ts", (frame_id - 1) / FPS if frames else 0.0)
+            done = _call(pipeline, call, last_image, ts)
+            frames.append({"call": call, "ts": ts, "events": [event_json(e) for e in done]})
+            continue
         repeat = state.pop("_repeat", 1)
         session = state.pop("_session", False)
         asked = state.pop("_asked", False)
-        # A frame drawn by the scenario itself, at the time it gives (`slides`).
+        # A frame drawn by the scenario itself, at the time it gives (`slides`), or from a
+        # time a step apart (`_dt`); and whether it counts as changed, when the desktop's test
+        # says so by hand (`_changed`: one flag, or one per frame).
         given = state.pop("_image", None)
         at = state.pop("_ts", None)
+        step = state.pop("_dt", 0.0)
+        forced = state.pop("_changed", None)
         where = state.pop("_where", (X0, Y0, CELL))
         if session:
             pipeline = GamePipeline(cache=cache)
@@ -578,18 +920,28 @@ def run(name: str, states: list[dict]) -> dict:
             stored = cv2.imread(str(path), cv2.IMREAD_COLOR)
             name_of = f"{name}/{index:03d}.png"
             WRITTEN[digest] = (name_of, stored)
+        last_image = stored
         for i in range(repeat):
-            ts = at if at is not None else frame_id / FPS
-            # The frame's own size, as the phone's test takes it: a scenario may draw its own.
-            gate.region = board_gate(pipeline.board, stored.shape[1], stored.shape[0])
-            changed = gate.changed(stored, ts)
+            ts = at + i * step if at is not None else frame_id / FPS
+            if forced is not None:
+                # Passed by hand, as the desktop's test passes it: the gate is not asked.
+                changed = forced if isinstance(forced, bool) else forced[i]
+            else:
+                # The frame's own size, as the phone's test takes it: a scenario may draw its own.
+                gate.region = board_gate(pipeline.board, stored.shape[1], stored.shape[0])
+                changed = gate.changed(stored, ts)
             events = pipeline.process(stored, ts, changed=changed, frame_id=frame_id)
+            for event in events:
+                assert event.ts == ts and event.source_frame_id == frame_id, event
             frame = {
                 "file": name_of,
+                "id": frame_id,
                 "ts": ts,
                 "changed": changed,
                 "events": [event_json(event) for event in events],
             }
+            if forced is not None:
+                frame["forced"] = True
             if session and i == 0:
                 frame["session"] = True
             if asked and i == repeat - 1:
@@ -610,6 +962,8 @@ def run(name: str, states: list[dict]) -> dict:
         "final_fen": rec.board.fen() if rec is not None else "",
         "bootstraps": pipeline.bootstraps,
     }
+    if name in READ_ONCE:
+        data["read_once"] = True
     if themes is not None:
         data["cache"] = True
         data["themes"] = len(list(themes.glob("theme-*.pkl")))
@@ -624,6 +978,11 @@ def main() -> None:
     runs = []
     for name, build in SCENARIOS.items():
         data = run(name, build())
+        lines = [line for f in data["frames"] for line in f["events"]]
+        if name in EXPECT and not EXPECT[name](lines, data):
+            for line in lines:
+                print(f"    {line}")
+            raise SystemExit(f"{name}: the desktop does not show what its test asserts")
         moves = sum(
             1 for f in data["frames"] for line in f["events"] if line.startswith("MovePlayed")
         )

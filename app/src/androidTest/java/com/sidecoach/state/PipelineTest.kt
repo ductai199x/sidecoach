@@ -45,6 +45,10 @@ import org.opencv.imgproc.Imgproc
  *
  * A frame may carry the player's "Re-read the screen" (`asked`): the cold read they asked for,
  * taken from the tracker's lock as the panel takes it, and held to the desktop's the same way.
+ * Between frames a scenario may do what the desktop's pipeline tests do to a pipeline (`call`:
+ * a reset, Flip, the End game menu, a side forced, a clock as a reader left it), and a frame may
+ * count as changed by hand (`forced`) where the desktop's test passes it; every event must
+ * carry its tick's time and frame id.
  */
 @RunWith(AndroidJUnit4::class)
 class PipelineTest {
@@ -71,6 +75,9 @@ class PipelineTest {
             for (r in 0 until runs.length()) {
                 val run = runs.getJSONObject(r)
                 val name = run.getString("name")
+                // A scenario that pins a behaviour of the pipeline's is replayed once; the still
+                // screen's shortcut is held to the others (`READ_ONCE` in the generator).
+                if (sameFrameShortcut && run.optBoolean("read_once")) continue
                 // A scenario in sessions shares one theme cache between them, as the app's does:
                 // each session a fresh pipeline on it, as a Stop and Start is.
                 val themes = if (run.optBoolean("cache")) {
@@ -87,10 +94,24 @@ class PipelineTest {
                 var moves = 0
                 var lastFile: String? = null
                 var lastPixels: FramePixels? = null
+                var lastMat: Mat? = null
                 var shortcuts = 0
                 val began = System.currentTimeMillis()
                 for (f in 0 until frames.length()) {
                     val frame = frames.getJSONObject(f)
+                    if (frame.has("call")) {
+                        // What the desktop's test did to its pipeline between frames.
+                        val done = call(pipeline, frame.getJSONObject("call"), lastMat, frame.getDouble("ts"))
+                            .map { line(it) }
+                        val wanted = frame.getJSONArray("events").let { a -> List(a.length()) { a.getString(it) } }
+                        if (done != wanted && failures.size < 8) {
+                            failures.add(
+                                "$name frame $f (${frame.getJSONObject("call")}):\n  kotlin: " +
+                                    "${done.joinToString(" | ")}\n  python: ${wanted.joinToString(" | ")}",
+                            )
+                        }
+                        continue
+                    }
                     if (frame.optBoolean("session")) {
                         pipeline = GamePipeline(net, store)
                         gate = ChangeGate()
@@ -102,21 +123,29 @@ class PipelineTest {
                     val same = sameFrameShortcut && file == lastFile
                     if (same) shortcuts++
                     val pixels = lastPixels.takeIf { same } ?: FramePixels.of(mat)
-                    gate.region = ChangeGate.boardGate(pipeline.board, pixels.width, pixels.height)
-                    val changed = if (same) {
-                        gate.changedAgain(pixels, frame.getDouble("ts"))
+                    val ts = frame.getDouble("ts")
+                    val changed = if (frame.optBoolean("forced")) {
+                        // Passed by hand, as the desktop's test passes it: the gate is not asked.
+                        frame.getBoolean("changed")
                     } else {
-                        gate.changed(pixels, frame.getDouble("ts"))
+                        gate.region = ChangeGate.boardGate(pipeline.board, pixels.width, pixels.height)
+                        if (same) gate.changedAgain(pixels, ts) else gate.changed(pixels, ts)
                     }
                     lastFile = file
                     lastPixels = pixels
+                    lastMat = mat
                     if (changed != frame.getBoolean("changed") && failures.size < 8) {
                         failures.add(
                             "$name frame $f ($file): the gate says changed=$changed, " +
                                 "python says ${frame.getBoolean("changed")}",
                         )
                     }
-                    val events = pipeline.process(mat, frame.getDouble("ts"), changed, f, pixels, sameFrame = same)
+                    val id = frame.optInt("id", f)
+                    val events = pipeline.process(mat, ts, changed, id, pixels, sameFrame = same)
+                    // Every event carries the tick's time and frame (`_stamp`).
+                    if (events.any { it.ts != ts || it.sourceFrameId != id } && failures.size < 8) {
+                        failures.add("$name frame $f ($file): an event not stamped with the tick")
+                    }
                     val mine = events.map { line(it) }
                     val theirs = frame.getJSONArray("events").let { a ->
                         List(a.length()) { a.getString(it) }
@@ -184,6 +213,35 @@ class PipelineTest {
             }
         }
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /**
+     * What a desktop test does to a pipeline between frames (`_call` in the generator): a reset,
+     * the panel's Flip re-reading the last frame from the lock, the End game menu, a side
+     * forced, a clock as a reader would have left it.
+     */
+    private fun call(pipeline: GamePipeline, call: JSONObject, last: Mat?, ts: Double): List<Event> {
+        fun side(name: String) = if (name == "white") Pieces.Side.WHITE else Pieces.Side.BLACK
+        return when {
+            call.has("reset") -> { pipeline.reset(); emptyList() }
+            call.has("reorient") -> {
+                val lock = checkNotNull(pipeline.board) { "no board locked to re-read" }
+                pipeline.reorient(checkNotNull(last), BoardGeometry(lock.region, lock.cellPx), side(call.getString("reorient")), ts)
+            }
+            call.has("end_game") -> {
+                val given = call.getJSONArray("end_game")
+                pipeline.endGame(given.getString(0), given.getString(1), ts)
+            }
+            call.has("forced_bottom") -> { pipeline.forcedBottom = side(call.getString("forced_bottom")); emptyList() }
+            call.has("last_clock") -> {
+                val given = call.getJSONArray("last_clock")
+                fun ms(i: Int): Int? = if (given.isNull(i)) null else given.getInt(i)
+                pipeline.lastClock = Triple(ms(0), ms(1), if (given.isNull(2)) null else side(given.getString(2)))
+                pipeline.lastClockTs = if (call.isNull("last_clock_ts")) null else call.getDouble("last_clock_ts")
+                emptyList()
+            }
+            else -> throw IllegalArgumentException("a call this test does not know: $call")
+        }
     }
 
     private fun load(file: String): Mat {
