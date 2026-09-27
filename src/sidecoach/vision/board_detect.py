@@ -226,6 +226,14 @@ def coarse_search(
     Each scale contributes at most `per_scale` peaks of its gated score map, no two within
     half a board of each other, so a plateau of perfect scores around one board cannot fill
     the quota and hide a second board whose pieces lower its score.
+
+    The shrunken frame is padded on the right and at the bottom by half a work cell, its
+    last pixels repeated: at a scale a few percent larger than the board's cells, the
+    window that sits on a board flush with the frame's right or bottom edge runs a pixel
+    or two past the shrunken frame, and without the pad the best window left was one a
+    whole cell off, which the refinement cannot reach (a 136 px board against the right
+    edge of a 1920 px frame was not found at all: the geometry sweep, 2026-09-27). The
+    board's left and top edges need no pad: there the window starts where the board does.
     """
     height, width = gray.shape
     limit = max_cell if max_cell is not None else min(height, width) // 8
@@ -235,6 +243,8 @@ def coarse_search(
         factor = min(1.0, work_cell / size)
         if factor < 1.0:
             small = cv2.resize(gray, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
+            pad = work_cell // 2
+            small = cv2.copyMakeBorder(small, 0, pad, 0, pad, cv2.BORDER_REPLICATE)
             cell = work_cell
         else:
             small = gray
@@ -271,16 +281,43 @@ def _gradient_profile(gray: np.ndarray, axis: int, weight: np.ndarray | None = N
 _TEETH = np.arange(9, dtype=np.float64)
 
 
-def _comb_strength(profile: np.ndarray, offset: float, pitch: float) -> float:
-    """Summed profile at the nine teeth of a comb; teeth past the profile's end read zero."""
+def _seen(positions: np.ndarray, n: int, blind: tuple[bool, bool]) -> np.ndarray:
+    """The teeth a profile of length `n` can show: all of them, but for one on the frame's
+    own edge when the profile starts or ends there (`blind`). The gradient is taken with
+    the border reflected, so it reads nothing on the frame's first and last pixel: a board
+    flush with the frame's edge has a boundary there that no profile shows."""
+    seen = np.ones(positions.shape, dtype=bool)
+    if blind[0]:
+        seen &= positions >= 1.0
+    if blind[1]:
+        seen &= positions <= n - 2.0
+    return seen
+
+
+def _comb_strength(
+    profile: np.ndarray, offset: float, pitch: float, blind: tuple[bool, bool] = (False, False)
+) -> float:
+    """Summed profile at the nine teeth of a comb; teeth past the profile's end read zero,
+    and a tooth on the frame's edge, or past it, reads as the mean of the ones the frame
+    shows (as `_comb_fit` scores it)."""
+    n = len(profile)
     positions = offset + pitch * _TEETH
-    inside = (positions >= 0) & (positions <= len(profile) - 1)
-    xs = np.arange(len(profile), dtype=np.float64)
-    return float(np.interp(positions[inside], xs, profile).sum())
+    hidden = ~_seen(positions, n, blind)
+    counted = (positions >= 0) & (positions <= n - 1) & ~hidden
+    if not counted.any():
+        return 0.0
+    xs = np.arange(n, dtype=np.float64)
+    total = float(np.interp(positions[counted], xs, profile).sum())
+    return total * (int(counted.sum()) + int(hidden.sum())) / int(counted.sum())
 
 
 def _comb_fit(
-    profile: np.ndarray, start: float, pitch: float, search: float, offset_cells: float = 0.6
+    profile: np.ndarray,
+    start: float,
+    pitch: float,
+    search: float,
+    offset_cells: float = 0.6,
+    blind: tuple[bool, bool] = (False, False),
 ) -> tuple[float, float, float]:
     """Best (offset, pitch, strength) of a nine-tooth comb over a gradient profile.
 
@@ -291,41 +328,72 @@ def _comb_fit(
     off wants its offset a few pixels off to hold the middle of the board, and a window
     of one pixel kept the comb there, three pixels early and a quarter of a percent
     long at 144-pixel cells.
+
+    `blind` says the profile starts, or ends, at the frame's own edge, where no boundary
+    shows (`_seen`). A tooth there is scored as the mean of the others: a board flush with
+    the frame's edge has only eight boundaries to show, and a comb a cell over, its ninth
+    tooth on whatever lay beyond the board's far edge, outscored it by that much -- the
+    lock of a board pushed against the screen's edge was never corrected again (the
+    geometry sweep, 2026-09-27). At the far end the last tooth may sit on the frame's edge
+    itself, half a pixel past the last pixel, where a flush board's boundary lies, and no
+    further. The coarse grid, a pixel and a percent apart, may hold no comb of a flush
+    board's pitch that stops there (the last tooth a pixel past it, or the teeth a pixel
+    off the boundaries, and a comb a cell over won): so the coarse pass also keeps the
+    best comb whose last tooth runs past the edge by the offset step and the drift of a
+    pitch step, and each of the two is fitted finely within the frame. Past the edge, a
+    comb a cell over, its last tooth hidden beyond the frame, can tie the flush board's
+    in the coarse pass; the fine pass inside the frame tells them apart.
     """
     n = len(profile)
     xs = np.arange(n, dtype=np.float64)
-
-    def best_over(pitches: np.ndarray, offsets: np.ndarray) -> tuple[float, float, float]:
-        best = (start, pitch, -np.inf)
-        if offsets.size == 0 or pitches.size == 0:
-            return best
-        for p in pitches:
-            positions = offsets[:, None] + p * _TEETH[None, :]
-            valid = positions[:, -1] <= n - 1
-            if not valid.any():
-                continue
-            strength = np.interp(positions, xs, profile).sum(axis=1)
-            strength[~valid] = -np.inf
-            i = int(np.argmax(strength))
-            if strength[i] > best[2]:
-                best = (float(offsets[i]), float(p), float(strength[i]))
-        return best
-
     reach = pitch * offset_cells
     step = max(0.25, pitch * 0.01)
+    last = n - 0.5 if blind[1] else n - 1.0
+    ends = (last, last + 1.0 + 4.0 * step) if blind[1] else (last,)
+
+    def best_over(
+        pitches: np.ndarray, offsets: np.ndarray, limits: tuple[float, ...]
+    ) -> list[tuple[float, float, float]]:
+        """The best comb whose last tooth lies at or before each of `limits`."""
+        bests = [(start, pitch, -np.inf) for _ in limits]
+        if offsets.size == 0 or pitches.size == 0:
+            return bests
+        for p in pitches:
+            positions = offsets[:, None] + p * _TEETH[None, :]
+            if not (positions[:, -1] <= limits[-1]).any():
+                continue
+            seen = _seen(positions, n, blind)
+            values = np.interp(positions, xs, profile, right=0.0)
+            count = np.maximum(seen.sum(axis=1), 1)
+            strength = (values * seen).sum(axis=1) * len(_TEETH) / count
+            for k, limit in enumerate(limits):
+                scored = np.where(positions[:, -1] <= limit, strength, -np.inf)
+                i = int(np.argmax(scored))
+                if scored[i] > bests[k][2]:
+                    bests[k] = (float(offsets[i]), float(p), float(scored[i]))
+        return bests
+
     coarse = best_over(
         np.arange(pitch * (1 - search), pitch * (1 + search), step),
         np.arange(max(0.0, start - reach), min(n - 1.0, start + reach), 1.0),
+        ends,
     )
-    if coarse[2] == -np.inf:
-        return start, pitch, 0.0
-    o, p, _ = coarse
     span = max(1.0, 4.0 * step)
-    fine = best_over(
-        np.arange(p * 0.99, p * 1.01, max(0.05, p * 0.002)),
-        np.arange(max(0.0, o - span), min(n - 1.0, o + span) + 0.01, 0.25),
-    )
-    return fine if fine[2] >= coarse[2] else coarse
+    found: list[tuple[float, float, float]] = []
+    for k, (o, p, s) in enumerate(coarse):
+        if s == -np.inf or (k and (o, p) == coarse[0][:2]):
+            continue
+        found += best_over(
+            np.arange(p * 0.99, p * 1.01, max(0.05, p * 0.002)),
+            np.arange(max(0.0, o - span), min(n - 1.0, o + span) + 0.01, 0.25),
+            (last,),
+        )
+        if k == 0:
+            found.append((o, p, s))  # within the frame as it stands; a tie goes to the fine
+    best = max(found, key=lambda fit: fit[2], default=None)
+    if best is None or best[2] == -np.inf:
+        return start, pitch, 0.0
+    return best
 
 
 def cell_bounds(region: Region, cell: float, r: int, c: int) -> tuple[int, int, int, int]:
@@ -587,6 +655,9 @@ def refine(
     crop = gray[y_lo:y_hi, x_lo:x_hi]
     if crop.size == 0:
         return Refinement(cand, 0.0, 0.0)
+    # Where the crop meets the frame's edge, the profiles cannot show a boundary.
+    blind_x = (x_lo == 0, x_hi == width)
+    blind_y = (y_lo == 0, y_hi == height)
 
     # Only the strips around the cell boundaries take part in the boundary fit, and in
     # them only the pixels of the square's own colour. Pieces sit in the middle of their
@@ -677,13 +748,13 @@ def refine(
         profile_y = _gradient_profile(crop, axis=0, weight=weight)
         start_x = fitted.region.x - x_lo
         start_y = fitted.region.y - y_lo
-        ox, px, sx = _comb_fit(profile_x, start_x, cell, search, offset_cells)
-        oy, py, sy = _comb_fit(profile_y, start_y, cell, search, offset_cells)
+        ox, px, sx = _comb_fit(profile_x, start_x, cell, search, offset_cells, blind_x)
+        oy, py, sy = _comb_fit(profile_y, start_y, cell, search, offset_cells, blind_y)
         # The strength the candidate itself has on this pass's profiles, for the caller
         # to weigh the re-fit against: the geometry it was handed, not the last pass's.
-        reference = _comb_strength(profile_x, cand.region.x - x_lo, cand.cell_px) + _comb_strength(
-            profile_y, cand.region.y - y_lo, cand.cell_px
-        )
+        reference = _comb_strength(
+            profile_x, cand.region.x - x_lo, cand.cell_px, blind_x
+        ) + _comb_strength(profile_y, cand.region.y - y_lo, cand.cell_px, blind_y)
         strength = sx + sy
         pitch = (px + py) / 2.0
         region = Region(

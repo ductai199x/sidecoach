@@ -69,6 +69,34 @@ def test_sub_cell_nudge_is_recovered_by_the_refit() -> None:
     assert tracker.detections == 1
 
 
+@pytest.mark.parametrize(
+    ("cell", "before", "after"),
+    [
+        (136, (0, 0), (0, 5)),  # against the top-left corner, nudged down
+        (88, (985, 0), (993, 0)),  # against the top, nudged right
+        (64, (0, 300), (0, 309)),  # against the left, nudged down
+        (97, (1920 - 776, 318), (1920 - 776, 291)),  # against the right, nudged up
+        (64, (500, 1200 - 512), (509, 1200 - 512)),  # against the bottom, nudged right
+    ],
+)
+def test_a_board_flush_with_an_edge_is_followed_when_nudged(
+    cell: int, before: tuple[int, int], after: tuple[int, int]
+) -> None:
+    """The frame's edge shows no boundary (the gradient is taken with the border reflected),
+    so the re-fit's comb a cell over, its ninth tooth on whatever lay beyond the board,
+    outscored the right one, failed validation, and the lock stayed where the board had been
+    (the geometry sweep, 2026-09-27)."""
+    tracker = BoardTracker()
+    tracker.update(synthetic_board(width=1920, height=1200, x0=before[0], y0=before[1], cell=cell))
+    moved = synthetic_board(width=1920, height=1200, x0=after[0], y0=after[1], cell=cell)
+    board = None
+    for _ in range(tracker.refine_every + 2):
+        board = tracker.update(moved)
+    assert board is not None and tracker.verified
+    assert abs(board.region.x - after[0]) <= 2 and abs(board.region.y - after[1]) <= 2, board
+    assert abs(board.cell_px - cell) <= 0.5
+
+
 def test_refit_wins_on_boundary_strength_not_on_the_fit_score() -> None:
     """The fit is quantised to 1/64 and blind to sub-cell shifts, so the drifted geometry
     can score 1.0 while the corrected one loses a cell to a badge; the re-fit must still be
