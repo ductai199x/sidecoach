@@ -491,10 +491,11 @@ RECENT_PLIES = 6
 # every one.
 RULE_COOLDOWN = 30
 RULE_SPACING = 4
-# The model's word while a rule is cooling down: the concrete point, no rule of thumb.
-RULE_HELD = (
-    "No rule of thumb this time -- the player heard one lately: only what this position shows."
-)
+# The model's word while a rule is cooling down: the concrete point, no rule of thumb. Every
+# held wording carries RULE_HELD_MARK, which the rubric reads (tools/eval/rubric.py:
+# "transfer" is not asked of a reply told to leave the rule out).
+RULE_HELD_MARK = "No rule of thumb this time"
+RULE_HELD = f"{RULE_HELD_MARK} -- the player heard one lately: only what this position shows."
 
 
 def fresh(text: str, recent: str, opener: str | None = None) -> str:
@@ -574,6 +575,25 @@ NOT_THE_MOVE = (
     "Say what it means instead: the idea behind it and the pattern to keep -- and, when there "
     "was a better move, that move and why."
 )
+# While a rule cools down: the same, without the pattern to keep. Told to hold the rule back
+# at the end of a directive that still asked for "the pattern to keep", the local model gave
+# one anyway in 2 of 17 lessons (the free check, 2026-09-27).
+NOT_THE_MOVE_HELD = NOT_THE_MOVE.replace(
+    "the idea behind it and the pattern to keep", "the idea behind it"
+)
+
+
+def _hold_rule(directive: str) -> str:
+    """`directive` with its ask for a rule to keep taken out, and RULE_HELD said."""
+    for asked, held in (
+        (NOT_THE_MOVE, NOT_THE_MOVE_HELD),
+        ("as a pattern to remember, in", "in"),
+        (" as a lesson to keep", ""),
+    ):
+        directive = directive.replace(asked, held)
+    return f"{directive} {RULE_HELD}"
+
+
 # A hint, and an answer that is not about a figure: the code faults one (`_problems`), so the
 # directive says so -- the stuck hint was faulted for "ahead by about 1.2 pawns" and never told.
 NO_FIGURES = "Quote no figure -- no percentage, no score, no move number -- and name moves bare."
@@ -3063,7 +3083,7 @@ class Coach:
         if self._rule_ok(principle):
             self._rule_said(principle)
             return text, ""
-        note = f' Leave out the rule of thumb "{principle}": the player heard it lately.'
+        note = f' {RULE_HELD_MARK}: leave out "{principle}" -- the player heard it lately.'
         return _without(text, principle), note
 
     def _fresh_lesson(
@@ -3473,7 +3493,7 @@ class Coach:
         unlisted: frozenset[str] | None = None
         if before is not None:
             shown = _GAME_SO_FAR.sub("", str(messages[0]["content"]))
-            for constant in (NO_NUMBERS, NOT_THE_MOVE, TIE_LISTED, NO_EARLIER):
+            for constant in (NO_NUMBERS, NOT_THE_MOVE, NOT_THE_MOVE_HELD, TIE_LISTED, NO_EARLIER):
                 shown = shown.replace(constant, " ")
             facts = position.facts
             sanctioned = {m.rstrip("+#") for m in _SAN.findall(shown)}
@@ -3848,7 +3868,6 @@ class Coach:
                     "most, then ask one question that makes them find on the board something "
                     "your reply has not said. "
                     f"{TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_NUMBERS}"
-                    + (f" {RULE_HELD}" if held else "")
                 )
                 if allowed:
                     instruction += f" What {played.san} allowed, from the engine's line: {allowed}."
@@ -3870,8 +3889,9 @@ class Coach:
                         "to remember, in three sentences at most, then -- instead of a check "
                         "question -- ask, in one short question of your own, what they "
                         f"expected their move to do. {NOT_THE_MOVE} {NO_NUMBERS}"
-                        + (f" {RULE_HELD}" if held else "")
                     )
+                if held:
+                    instruction = _hold_rule(instruction)
             elif _exciting(assessment.label):
                 # Rare and worth it: the board's own sentence stands in, the model says
                 # what makes it the move, with some delight.
@@ -3927,8 +3947,9 @@ class Coach:
                     "question, no lecture, no advice, no guess at what it allows or risks, and "
                     "not the same words as your last such sentence. "
                     f"{NOT_THE_MOVE} {NO_NUMBERS}"
-                    + ("" if self._rule_ok(None) else f" {RULE_HELD}")
                 )
+                if not self._rule_ok(None):
+                    instruction = _hold_rule(instruction)
             elif assessment.severity in (Severity.MISTAKE, Severity.BLUNDER) or label == "miss":
                 # A mistake in blitz: the policy keeps it to the word after the move (no
                 # lesson), but the word says what the move was -- never "fine".
@@ -3962,8 +3983,9 @@ class Coach:
                     "better move, what it does, and the idea behind it as a lesson to keep. No "
                     "lecture, no question. "
                     f"{TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_NUMBERS}"
-                    + (f" {RULE_HELD}" if held else "")
                 )
+                if held:
+                    instruction = _hold_rule(instruction)
             return instruction, fallback
         # An explicit ask. The player's words are already the last message of the
         # conversation; the directive says only how to answer them.
@@ -4290,7 +4312,7 @@ class Coach:
                     f"they face now -- and say why, concretely: {reason}what {san} missed or "
                     "allowed, naming the pieces, squares or moves, from the sheet of the "
                     "position they faced (its pattern, and its tactic when it names one)"
-                    + (" -- but no rule of thumb: they heard one lately." if held else "")
+                    + (f" -- {RULE_HELD_MARK.lower()}: they heard one lately." if held else "")
                     + ("" if held else " -- and the pattern to keep.")
                     + (
                         f" What {san} allowed, from the engine's line: {allowed}."

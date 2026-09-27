@@ -205,7 +205,9 @@ def gaps(item: dict, criteria: list) -> list[str]:
         out.append("check earlier moments: applied, never stated")
     if item.get("unlisted") is not None and "number" not in directive:
         out.append("check move numbers: applied, never stated")
-    if trigger in ("post_move", "post_mistake") and coach_module.NOT_THE_MOVE not in directive:
+    if trigger in ("post_move", "post_mistake") and not (
+        coach_module.NOT_THE_MOVE in directive or coach_module.NOT_THE_MOVE_HELD in directive
+    ):
         out.append("check the move just played: applied, never stated")
     if item.get("must_name") and not any(
         p in directive

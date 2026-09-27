@@ -584,11 +584,15 @@ def test_a_rule_of_thumb_cools_down_across_games_and_puzzles() -> None:
     coach._messages += RULE_SPACING
     instruction, first = lesson()
     assert has_rule(first) and RULE_HELD not in instruction
+    assert "pattern to remember" in instruction
     for _ in range(RULE_COOLDOWN - 1):
         coach._messages += 1
         instruction, again = lesson()
         assert not has_rule(again), again
+        # Held, the directive asks for no rule at all, not for one and then for none: the
+        # local model gave one anyway in 2 of 17 lessons (the free check, 2026-09-27).
         assert RULE_HELD in instruction
+        assert "pattern to remember" not in instruction and "pattern to keep" not in instruction
     coach._messages += 1
     _, back = lesson()
     assert has_rule(back), "back after the cooldown"

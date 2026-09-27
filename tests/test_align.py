@@ -149,3 +149,22 @@ def test_a_demand_the_directive_does_not_make_is_a_gap():
     # And a fact with no rule is a gap until align.py has one.
     novel = [{"key": "brand_new", "value": "x", "how": "sense"}]
     assert "fact brand_new: no rule in align.py" in align.gaps(_item(asked, novel), criteria)
+
+
+def test_a_rule_held_back_is_not_asked_for_and_not_judged():
+    """While a rule of thumb cools down (2026-09-27) the directive asks for none, and the
+    rubric's "transfer" is not asked of the reply: the inputs still match the judge."""
+    from sidecoach.coach.coach import NO_NUMBERS, NOT_THE_MOVE, _hold_rule
+
+    criteria = rubric.load_rubric()
+    asked = (
+        "The player just played a3, which was an inaccuracy: playable, not the strongest -- Rc1 "
+        "was better. One or two sentences: how it rated, then the better move, what it does, "
+        f"and the idea behind it as a lesson to keep. No question. {NOT_THE_MOVE} {NO_NUMBERS}"
+    )
+    held = _hold_rule(asked)
+    assert "lesson to keep" not in held and "pattern to keep" not in held
+    label = [{"key": "label", "value": "inaccuracy", "how": "sense"}]
+    assert align.gaps(_item(held, label), criteria) == []
+    transfer = next(c for c in criteria if c.key == "transfer")
+    assert transfer.applies("lesson", "", asked) and not transfer.applies("lesson", "", held)

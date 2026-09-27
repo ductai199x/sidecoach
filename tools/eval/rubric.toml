@@ -13,6 +13,8 @@
 #                 "ends_with_question" -- only when the reply ends with a question
 #                 "has_links" -- only when the coach's request lists earlier moments of the
 #                 same pattern ("# Earlier in this game")
+#                 "rule_asked" -- only when the request does not tell the model to leave its
+#                 rule of thumb out (it is cooling down)
 #   code        optional: the criterion is decided in code by this rule (rubric.CODE_RULES),
 #               never by the judge; the question then only says what the rule checks
 #
@@ -36,6 +38,9 @@ applies_to = [
     "lesson", "verdict_weaker", "stuck_hint", "decisive_question", "ask_hint", "ask_plan",
     "ask_last_move",
 ]
+# Not of a reply told to leave the rule out: a rule of thumb cools down for 30 of the coach's
+# messages, and no two come within 4 (Tai, 2026-09-27: "there has to be a cooldown").
+only_if = "rule_asked"
 
 # The closing question, one fact at a time (Tai, 2026-09-18: one atomic fact a question).
 [[criterion]]

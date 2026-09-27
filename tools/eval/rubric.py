@@ -71,7 +71,11 @@ REPORTS = EVAL / "rubric"
 VOTES = 3  # at most; the asking stops once two agree
 # When a criterion is asked at all (decided in code): the reply ends with a question; the
 # coach's request listed earlier moments of the same pattern to tie to.
-ONLY_IF = ("ends_with_question", "has_links", "effect_given")
+ONLY_IF = ("ends_with_question", "has_links", "effect_given", "rule_asked")
+# The words every coach request carries when it tells the model to leave its rule of thumb
+# out, the rule cooling down (sidecoach.coach.coach.RULE_HELD_MARK, repeated here so the
+# rubric reads no coach module).
+RULE_HELD_MARK = "no rule of thumb this time"
 _ELICIT = re.compile(
     r"\bwhat (?:were|was) you (?:expecting|hoping|trying)|\bwhat did you expect", re.IGNORECASE
 )
@@ -196,6 +200,9 @@ class Criterion:
             return bool(earlier_moments(request))
         if self.only_if == "effect_given":
             return effect_given(cls, request)
+        if self.only_if == "rule_asked":
+            # Told to leave the rule out while it cools down (2026-09-27): no rule is no fault.
+            return RULE_HELD_MARK not in request.lower()
         return True
 
     def decide(self, reply: str, request: str) -> bool:
