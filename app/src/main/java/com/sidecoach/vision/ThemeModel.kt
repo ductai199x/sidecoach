@@ -254,7 +254,13 @@ class ThemeModel(
             val inked = fresh.filter { sils[it].fraction >= Pieces.PIECE_MIN_FRACTION }
             lastEmbedded = if (embedder != null) inked.size else 0
             if (embedder != null && inked.isNotEmpty()) {
-                val embedded = embedder.embed(inked.map { crops[it] })
+                // Each at one resolution, whatever the board's size (`Pieces.canonical`).
+                val seen = inked.map { Pieces.canonical(crops[it]) }
+                val embedded = try {
+                    embedder.embed(seen)
+                } finally {
+                    seen.forEach { it.release() }
+                }
                 for ((k, i) in inked.withIndex()) vectors[i] = embedded[k]
             }
             val readings = ArrayList<Pieces.CellReading>(64)
@@ -766,7 +772,14 @@ class ThemeModel(
                         landingCrops[symbol] = LandingCrop.of(crops[r * 8 + c])
                     }
                 }
-                val vectors = embedder.embed(crops)
+                // Embedded at one resolution, as every later read is (`Pieces.canonical`); the
+                // landing crops above keep the full detail.
+                val seen = crops.map { Pieces.canonical(it) }
+                val vectors = try {
+                    embedder.embed(seen)
+                } finally {
+                    seen.forEach { it.release() }
+                }
                 if (!startReadsAsStart(vectors, labels)) {
                     Log.i(TAG, "a piece is hidden or spoiled; the next start frame gets a chance")
                     return null

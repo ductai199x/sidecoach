@@ -27,12 +27,13 @@ object ThemeCache {
     /**
      * 2: the landing crops travel with the theme (the desktop's 10); 3: the palette is the
      * desktop's k-means and the start cells' embeddings are held at half precision, as the
-     * desktop holds them (the parity audit, 2026-09-26). A file of any other version is
+     * desktop holds them (the parity audit, 2026-09-26); 4: the embeddings are of the crop at
+     * one resolution (`Pieces.canonical`, the desktop's 11). A file of any other version is
      * ignored and the theme relearned, as the desktop ignores one (`theme_cache._read`): a
      * version 1 set, with no landing crops, once read on and landed its pieces by the
      * centroid. The desktop's numbering is its own file's.
      */
-    const val CACHE_VERSION = 3
+    const val CACHE_VERSION = 4
 
     /** Square colours within this many levels share a fingerprint (tolerates lighting). */
     private const val QUANTUM = 8

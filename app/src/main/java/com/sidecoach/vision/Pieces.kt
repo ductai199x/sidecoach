@@ -115,6 +115,19 @@ object Pieces {
     const val TONE_MIN_SHARE = 0.2
     const val TONE_MIN_AREA = 0.08
 
+    /**
+     * The embedder sees every cell at this resolution, whatever the board's size: the crop
+     * brought down to CANONICAL_PX a side and back ([canonical]). A board drawn larger carries
+     * more detail, and the embeddings of a board resized away from the one its set was learned
+     * at drifted (bishops read as knights after a board was enlarged half again: the parity
+     * audit's sweep, 2026-09-26); at one resolution every size looks alike. 40 px, from the
+     * desktop's scale benchmark (44 sets, learned at one of 32-128 px and read at another):
+     * identity errors 161 -> 13, where 24 px lost the detail that tells some sets' pieces apart
+     * (a pirouetti queen read as a bishop). Landing keeps the full detail: brought down too, a
+     * piece in flight read as landed.
+     */
+    const val CANONICAL_PX = 40
+
     const val SETTLED_TOLERANCE = 0.08  // of a cell; a dragged piece follows the cursor
     const val SETTLED_FLOOR_PX = 3.0    // source pixels: the lock is only good to about one
 
@@ -182,6 +195,27 @@ object Pieces {
         val innerPx = cellPx * (1.0 - 2.0 * INNER)
         if (innerPx <= 0) return SETTLED_TOLERANCE
         return maxOf(SETTLED_TOLERANCE, SETTLED_FLOOR_PX / innerPx)
+    }
+
+    /**
+     * A cell's crop as the embedder sees it: brought down to [CANONICAL_PX] a side
+     * (`INTER_AREA`) and back (`INTER_LINEAR`), so a board of any size shows the embedder the
+     * same detail. Only the embedding goes through it; silhouettes, outlines, tints and landing
+     * keep the full-detail crop. `pieces.canonical`. The caller releases what it returns.
+     */
+    fun canonical(crop: org.opencv.core.Mat): org.opencv.core.Mat {
+        val size = crop.rows().toDouble()
+        val small = org.opencv.core.Mat()
+        org.opencv.imgproc.Imgproc.resize(
+            crop, small, org.opencv.core.Size(CANONICAL_PX.toDouble(), CANONICAL_PX.toDouble()),
+            0.0, 0.0, org.opencv.imgproc.Imgproc.INTER_AREA,
+        )
+        val back = org.opencv.core.Mat()
+        org.opencv.imgproc.Imgproc.resize(
+            small, back, org.opencv.core.Size(size, size), 0.0, 0.0, org.opencv.imgproc.Imgproc.INTER_LINEAR,
+        )
+        small.release()
+        return back
     }
 
     /** What a cell holds, as `pieces.Kind`. */

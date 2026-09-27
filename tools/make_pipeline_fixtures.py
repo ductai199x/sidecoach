@@ -767,6 +767,37 @@ MOVED = {
 }
 
 
+RESIZED_FIRST = ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5")
+RESIZED_AFTER = ("c3", "Nf6", "d4", "exd4", "cxd4", "Bb4+", "Bd2", "Bxd2+")
+
+
+def resized_half_again(style: str, small: int, large: int) -> list[dict]:
+    """Desktop 8a4b4d7: a board enlarged half again after its set was learned read some
+    pieces as others -- the embeddings of a crop drawn larger drift -- until the embedder saw
+    every cell at one resolution (`pieces.canonical`). The fantasy set, learned at 32 px cells
+    and read at 48 (`Session`'s board), read the game after the resize to 3. c3 and no further
+    at desktop 17c45a6, and to its end at 8a4b4d7."""
+    board = chess.Board()
+    cell = small
+
+    def shown(repeat: int, highlight=None) -> dict:  # noqa: ANN001
+        image = synth.synthetic_board(
+            board=board, x0=SESSION_X0, y0=SESSION_Y0, cell=cell, highlight=highlight,
+            style=style, **SESSION_FRAME,
+        )  # fmt: skip
+        return {"_image": image, "_repeat": repeat, "_where": (SESSION_X0, SESSION_Y0, cell), "_changed": True}
+
+    states = [shown(2)]
+    for san in RESIZED_FIRST:
+        states.append(shown(2, board.push_san(san)))
+    cell = large
+    states.append(shown(8))
+    for san in RESIZED_AFTER:
+        states.append(shown(2, board.push_san(san)))
+    states.append(shown(3))
+    return states
+
+
 SCENARIOS = {
     "mate-green": lambda: scholars_mate("green", "cburnett"),
     "resign-green": lambda: a_resignation("green", "cburnett"),
@@ -812,6 +843,7 @@ SCENARIOS = {
     "resync-turned": a_resync_the_other_way_up,
     "flip-joined": flip_a_joined_position,
     **{name: (lambda args=args: moved_any_fraction(*args)) for name, args in MOVED.items()},
+    "resized-fantasy-32-48": lambda: resized_half_again("fantasy", 32, 48),
 }
 
 # Scenarios the phone replays once, not again as a still screen read from its last pixels
@@ -831,6 +863,7 @@ READ_ONCE = {
     "resync-turned",
     "flip-joined",
     *MOVED,
+    "resized-fantasy-32-48",
 }
 
 # What each of those scenarios must show on the desktop, as its test asserts: a fixture that
@@ -896,6 +929,7 @@ EXPECT = {
         )
         for name, args in MOVED.items()
     },
+    "resized-fantasy-32-48": lambda lines, data: _sans(lines) == [*RESIZED_FIRST, *RESIZED_AFTER],
 }
 
 
