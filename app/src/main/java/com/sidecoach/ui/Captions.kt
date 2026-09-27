@@ -300,6 +300,12 @@ object Captions {
     /** Where the box's window really is on the screen, for the tests. */
     internal fun windowAt(): Rect? = box?.onScreen()
 
+    /**
+     * Whether the box has been drawn and has faded fully in, for the tests: until then the
+     * system has no picture of it to send touches to, and a tap lands on what is under it.
+     */
+    internal fun drawn(): Boolean = box?.let { it.frames > 0 && it.alpha >= 1f } ?: false
+
     /** Where each of the box's buttons is on the screen, by name, for the tests. */
     internal fun buttonsAt(): Map<String, Rect> = box?.buttonBounds() ?: emptyMap()
 
@@ -401,6 +407,15 @@ object Captions {
         /** A finger on the box: it neither fades nor moves on its own meanwhile. */
         var busy = false
             private set
+
+        /** The frames drawn so far (`drawn`, for the tests). */
+        var frames = 0
+            private set
+
+        override fun dispatchDraw(canvas: android.graphics.Canvas) {
+            super.dispatchDraw(canvas)
+            frames++
+        }
 
         private var moving = false
         private var downX = 0f

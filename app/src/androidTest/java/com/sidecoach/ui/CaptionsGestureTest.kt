@@ -116,8 +116,37 @@ class CaptionsGestureTest {
         touch(MotionEvent.ACTION_UP, to.first, to.second, down)
     }
 
+    /** A shell command's output, as the shell user runs it. */
+    private fun shell(command: String): String =
+        android.os.ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command))
+            .bufferedReader().use { it.readText().trim() }
+
     @Test
     fun theBoxAnswersTapsDoubleTapsAndADragToTheCross() {
+        // Nothing of the system's over the screen: a crash dialog ("Bluetooth keeps stopping",
+        // which the emulators show after a restart under load) sits above every overlay and is
+        // touch-modal, and the lock screen hides overlays altogether, so the touches injected
+        // for the box went elsewhere and the double-tap "showed no more lines" (2026-09-26, on
+        // main too; the screenshots showed the dialog, then after a reboot the lock screen). The
+        // screen is woken and unlocked, the dialog closed and new ones kept off for the test;
+        // the setting goes back after.
+        shell("input keyevent KEYCODE_WAKEUP")
+        shell("wm dismiss-keyguard")
+        val hidden = shell("settings get global hide_error_dialogs")
+        shell("settings put global hide_error_dialogs 1")
+        shell("am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS")
+        try {
+            answersTapsDoubleTapsAndADrag()
+        } finally {
+            if (hidden == "null" || hidden.isEmpty()) {
+                shell("settings delete global hide_error_dialogs")
+            } else {
+                shell("settings put global hide_error_dialogs $hidden")
+            }
+        }
+    }
+
+    private fun answersTapsDoubleTapsAndADrag() {
         automation.executeShellCommand("appops set ${app.packageName} SYSTEM_ALERT_WINDOW allow").close()
         automation.executeShellCommand("input keyevent KEYCODE_HOME").close()
         Thread.sleep(1500)
@@ -130,6 +159,14 @@ class CaptionsGestureTest {
                 "pieces is doing the least?",
         )
         assertTrue("no caption box", waitFor { box() != null })
+        // Drawn and faded in: a box laid out but not yet drawn has no picture on the screen for
+        // the system to send touches to, and a starved emulator took seconds to draw it (the
+        // screenshot showed the home screen alone while the taps went to it).
+        assertTrue("the box was never drawn", waitFor(15_000) {
+            var drawn = false
+            instrumentation.runOnMainSync { drawn = Captions.drawn() }
+            drawn
+        })
         Thread.sleep(400)
         assertTrue("the box is not where it asked to be", waitFor { settled() })
         val first = box()!!
