@@ -63,8 +63,19 @@ object Captions {
     private const val EXPANDED_LINES = 6
     private const val MAX_LINES = 10
     /** How long the box stays after the voice stops, as Live Caption's does. */
-    private const val HIDE_AFTER_MS = 5000L
-    private const val CONTROLS_MS = 4000L
+    internal const val HIDE_AFTER_MS = 5000L
+
+    /** How long the buttons a tap shows stay, after the tap or the last button pressed. */
+    internal const val CONTROLS_MS = 4000L
+
+    /**
+     * [HIDE_AFTER_MS] and [CONTROLS_MS] as the box keeps them. Only a test changes them: one
+     * about the box under a finger, not about its fade, whose slow emulator took longer than
+     * the five seconds between showing the words and touching them, and touched the home
+     * screen the faded box had left (CaptionsGestureTest, 2026-09-27).
+     */
+    @Volatile internal var hideAfterMs = HIDE_AFTER_MS
+    @Volatile internal var controlsMs = CONTROLS_MS
     private const val TICK_MS = 80L
     private const val KEEP_CHARS = 1200
 
@@ -263,7 +274,7 @@ object Captions {
     private fun hideSoon(speaking: Long = 0) {
         main.removeCallbacks(hideLater)
         if (keep && !previewing) return
-        main.postDelayed(hideLater, speaking + HIDE_AFTER_MS)
+        main.postDelayed(hideLater, speaking + hideAfterMs)
     }
 
     /** A touch on the box ends: the fade waits its full time again, once the words are out. */
@@ -480,7 +491,7 @@ object Captions {
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> main.removeCallbacks(hideButtons)
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        main.postDelayed(hideButtons, CONTROLS_MS)
+                        main.postDelayed(hideButtons, controlsMs)
                         rest()
                     }
                 }
@@ -751,7 +762,7 @@ object Captions {
             if (show) showMoves() else strip.visibility = GONE
             reflow()
             main.removeCallbacks(hideButtons)
-            if (show) main.postDelayed(hideButtons, CONTROLS_MS)
+            if (show) main.postDelayed(hideButtons, controlsMs)
             rest()
         }
 
@@ -780,7 +791,7 @@ object Captions {
         /** A button pressed: the buttons stay their full time again, and the box its own. */
         private fun keepButtons() {
             main.removeCallbacks(hideButtons)
-            main.postDelayed(hideButtons, CONTROLS_MS)
+            main.postDelayed(hideButtons, controlsMs)
             rest()
         }
 

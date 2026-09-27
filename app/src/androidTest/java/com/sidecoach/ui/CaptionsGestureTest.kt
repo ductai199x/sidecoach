@@ -21,8 +21,9 @@ import java.io.File
 /**
  * The caption box under a finger: its touches injected as the screen would send them, the
  * overlay window real. A double-tap shows more lines and a second one fewer; a tap shows the
- * buttons -- mute and the panel's quick pills, each doing what it does there; touch, hold and
- * drag moves the box, and dropping it on the cross turns captions off.
+ * buttons -- mute and the panel's quick pills, each doing what it does there -- and left alone
+ * they go after their four seconds; touch, hold and drag moves the box, and dropping it on the
+ * cross turns captions off.
  * Each state is screenshotted into the app's files (`captions/`) for a person to look at.
  */
 @RunWith(AndroidJUnit4::class)
@@ -40,10 +41,34 @@ class CaptionsGestureTest {
         event.recycle()
     }
 
-    private fun tap(x: Int, y: Int) {
-        val down = SystemClock.uptimeMillis()
-        touch(MotionEvent.ACTION_DOWN, x, y, down)
-        touch(MotionEvent.ACTION_UP, x, y, down)
+    /**
+     * [count] taps as a finger makes them: each down and up [TAP_MS] apart and the taps
+     * [GAP_MS] apart, stamped with those times as the touchscreen stamps its events, and sent
+     * without waiting for the app to handle each, as the touchscreen sends them. Sent one by
+     * one, each waiting on the app, a double-tap on a starved emulator went out as two taps
+     * 650 ms apart -- the first down handled 255 ms after it was sent -- and Android rightly
+     * took them for two single taps: the buttons on, then off (2026-09-27, the box's own log).
+     * A finger's double-tap reaches the app 80 ms apart however busy the app is.
+     */
+    private fun taps(x: Int, y: Int, count: Int) {
+        val start = SystemClock.uptimeMillis()
+        for (i in 0 until count) {
+            val down = start + i * (TAP_MS + GAP_MS)
+            send(MotionEvent.ACTION_DOWN, x, y, down, down)
+            send(MotionEvent.ACTION_UP, x, y, down, down + TAP_MS)
+        }
+    }
+
+    private fun tap(x: Int, y: Int) = taps(x, y, 1)
+
+    private fun doubleTap(x: Int, y: Int) = taps(x, y, 2)
+
+    /** One touch event at [at], queued for the screen without waiting for the app. */
+    private fun send(action: Int, x: Int, y: Int, down: Long, at: Long) {
+        val event = MotionEvent.obtain(down, at, action, x.toFloat(), y.toFloat(), 0)
+        event.source = InputDevice.SOURCE_TOUCHSCREEN
+        automation.injectInputEvent(event, false)
+        event.recycle()
     }
 
     private fun shot(name: String) {
@@ -74,7 +99,13 @@ class CaptionsGestureTest {
         return asked != null && asked == shown
     }
 
-    private fun waitFor(ms: Long = 3000, what: () -> Boolean): Boolean {
+    /**
+     * Whether [what] comes true within [ms]: a state the box is to reach, never a bound on
+     * how soon. Ten seconds, since the box answers on its own thread, and an emulator starved
+     * by its host answered a tap three to four seconds late (2026-09-27, its four cores kept
+     * busy by sixteen loops); a box that is quick returns at once.
+     */
+    private fun waitFor(ms: Long = 10_000, what: () -> Boolean): Boolean {
         val until = SystemClock.uptimeMillis() + ms
         while (SystemClock.uptimeMillis() < until) {
             if (what()) return true
@@ -146,9 +177,20 @@ class CaptionsGestureTest {
         val hidden = shell("settings get global hide_error_dialogs")
         shell("settings put global hide_error_dialogs 1")
         shell("am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS")
+        // The box fades five seconds after the words are out, and its buttons go four seconds
+        // after a tap: this test is about the box under a finger, and a starved emulator took
+        // longer than that between showing the words and the double-tap (5.7 and 10 s with its
+        // four cores kept busy, 2026-09-27: the box had faded, the taps went to the home screen,
+        // and the double-tap "showed no more lines"). So the box and its buttons stay while the
+        // gestures run; the fade is CaptionsKeepTest's, and the buttons' own timeout is checked
+        // below at its real length.
+        Captions.hideAfterMs = LONG_MS
+        Captions.controlsMs = LONG_MS
         try {
             answersTapsDoubleTapsAndADrag()
         } finally {
+            Captions.hideAfterMs = Captions.HIDE_AFTER_MS
+            Captions.controlsMs = Captions.CONTROLS_MS
             // The move list this test put on the page is no game's.
             PanelEngine.set("moves" to emptyList<String>(), "labels" to emptyMap<String, String>())
             if (hidden == "null" || hidden.isEmpty()) {
@@ -171,6 +213,7 @@ class CaptionsGestureTest {
                 "their queen. Now, what is your opponent's most dangerous idea, and which of your " +
                 "pieces is doing the least?",
         )
+        val shownAt = SystemClock.uptimeMillis()
         assertTrue("no caption box", waitFor { box() != null })
         // Drawn and faded in: a box laid out but not yet drawn has no picture on the screen for
         // the system to send touches to, and a starved emulator took seconds to draw it (the
@@ -197,16 +240,20 @@ class CaptionsGestureTest {
 
         // Double-tap: more lines, growing upward from the foot of the screen.
         val (cx, cy) = first.centerX() to first.centerY()
-        tap(cx, cy)
-        Thread.sleep(80)
-        tap(cx, cy)
-        val grew = waitFor { (box()?.height() ?: 0) > first.height() }
+        Log.i(TAG, "double-tap ${SystemClock.uptimeMillis() - shownAt} ms after the line was shown; box ${box()}")
+        assertNotNull("the box went before the double-tap, ${SystemClock.uptimeMillis() - shownAt} ms after the line", box())
+        doubleTap(cx, cy)
+        // Taller with more lines, and no buttons: two single taps would make it taller too,
+        // for a moment, with the buttons a tap shows.
+        val grew = waitFor { (box()?.height() ?: 0) > first.height() } &&
+            run { Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 200L); true } &&
+            (box()?.height() ?: 0) > first.height() && !buttonsShown()
         if (!grew) shot("1b_no_more_lines")
         assertTrue(
-            "a double-tap showed no more lines (interactive " +
+            "a double-tap showed no more lines (box ${box()}, buttons ${buttonsShown()}, interactive " +
                 "${app.getSystemService(android.os.PowerManager::class.java).isInteractive}, locked " +
                 "${app.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked}, " +
-                "focus ${shell("dumpsys window | grep mCurrentFocus")})",
+                "focus ${focus()})",
             grew,
         )
         assertTrue("the taller box is not where it asked to be", waitFor { settled() })
@@ -214,10 +261,15 @@ class CaptionsGestureTest {
         val tall = box()!!
         assertTrue("it grew downward: $first -> $tall", tall.bottom <= first.bottom + 2)
         shot("2_expanded")
-        tap(tall.centerX(), tall.centerY())
-        Thread.sleep(80)
-        tap(tall.centerX(), tall.centerY())
-        assertTrue("a second double-tap kept the lines", waitFor { (box()?.height() ?: 0) == first.height() })
+        doubleTap(tall.centerX(), tall.centerY())
+        val fewer = waitFor { (box()?.height() ?: 0) == first.height() } &&
+            run { Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 200L); true } &&
+            (box()?.height() ?: 0) == first.height() && !buttonsShown()
+        if (!fewer) shot("2b_kept_lines")
+        assertTrue(
+            "a second double-tap kept the lines (box ${box()}, buttons ${buttonsShown()}, first $first, tall $tall)",
+            fewer,
+        )
 
         // A tap: the buttons, and the game's moves under the words.
         PanelEngine.set(
@@ -226,6 +278,7 @@ class CaptionsGestureTest {
         )
         Thread.sleep(400)
         tap(cx, cy)
+        val buttonsFrom = SystemClock.uptimeMillis()
         assertTrue("a tap showed no buttons", waitFor { (box()?.height() ?: 0) > first.height() })
         assertTrue("the box with its buttons is not where it asked to be", waitFor { settled() })
         Thread.sleep(300)
@@ -246,6 +299,9 @@ class CaptionsGestureTest {
         try {
             for (name in listOf("hint", "move", "line")) {
                 val at = buttons.getValue(name)
+                var shown: Map<String, Rect> = emptyMap()
+                instrumentation.runOnMainSync { shown = Captions.buttonsAt() }
+                Log.i(TAG, "pill $name ${SystemClock.uptimeMillis() - buttonsFrom} ms after the buttons were asked for; row ${shown[name]}")
                 tap(at.centerX(), at.centerY())
                 Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
             }
@@ -270,7 +326,32 @@ class CaptionsGestureTest {
         Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
         val withButtons = box()!!
         tap(withButtons.left + withButtons.width() * 3 / 4, withButtons.bottom - 40)
-        assertTrue("a second tap kept the buttons", waitFor { (box()?.height() ?: 0) == first.height() })
+        val hid = SystemClock.uptimeMillis()
+        val gone = waitFor { (box()?.height() ?: 0) == first.height() }
+        if (!gone) shot("3c_kept_buttons")
+        assertTrue(
+            "a second tap kept the buttons (${SystemClock.uptimeMillis() - hid} ms; box ${box()}, " +
+                "buttons ${buttonsShown()}, first $first)",
+            gone,
+        )
+
+        // Left alone, the buttons go by themselves after their real four seconds: not before
+        // (the tap is handled after it is sent, so they last at least that long from here),
+        // and not long after, however slow the emulator.
+        Captions.controlsMs = Captions.CONTROLS_MS
+        Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
+        val tapped = SystemClock.uptimeMillis()
+        tap(cx, cy)
+        assertTrue("a tap showed no buttons again", waitFor { (box()?.height() ?: 0) > first.height() })
+        val early = Captions.CONTROLS_MS - 500 - (SystemClock.uptimeMillis() - tapped)
+        if (early > 0) Thread.sleep(early)
+        assertTrue(
+            "the buttons went within ${SystemClock.uptimeMillis() - tapped} ms of the tap",
+            (box()?.height() ?: 0) > first.height(),
+        )
+        assertTrue("the buttons did not go by themselves", waitFor(15_000) { (box()?.height() ?: 0) == first.height() })
+        Log.i(TAG, "the buttons went by themselves ${SystemClock.uptimeMillis() - tapped} ms after the tap")
+        Captions.controlsMs = LONG_MS
 
         // A touch held and let go where it is: the box stays, and so do the captions. In its
         // first place the box is within the cross's reach, and a hold alone turned them off.
@@ -336,6 +417,9 @@ class CaptionsGestureTest {
         Captions.panelInFront(true)
         assertTrue("the box stayed over the panel", waitFor { box() == null })
         Captions.style(Captions.Style())
+        // The real fade again, so the sample line leaves the screen as it does in use.
+        Captions.hideAfterMs = Captions.HIDE_AFTER_MS
+        Captions.controlsMs = Captions.CONTROLS_MS
         Captions.preview()
         assertTrue("no preview over the settings page", waitFor { box() != null })
         Thread.sleep(400)
@@ -344,7 +428,27 @@ class CaptionsGestureTest {
         assertNotNull(Captions)
     }
 
+    /** Whether the box's row of buttons is up (laid out with a width). */
+    private fun buttonsShown(): Boolean {
+        var at: Map<String, Rect> = emptyMap()
+        instrumentation.runOnMainSync { at = Captions.buttonsAt() }
+        return at.values.any { it.width() > 0 }
+    }
+
+    /** The window focused now, from `dumpsys window` (no shell here to pipe it through grep). */
+    private fun focus(): String =
+        shell("dumpsys window").lines().firstOrNull { "mCurrentFocus" in it }?.trim() ?: "unknown"
+
     companion object {
         private const val TAG = "sidecoach.captions"
+
+        /** A finger's tap: down to up. */
+        private const val TAP_MS = 50L
+
+        /** Between a double-tap's two taps, up to down. */
+        private const val GAP_MS = 80L
+
+        /** The box's fade and its buttons' timeout while the gestures run: longer than any run. */
+        private const val LONG_MS = 600_000L
     }
 }
