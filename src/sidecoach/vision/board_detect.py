@@ -519,6 +519,23 @@ def expected_signs(colours: Colours) -> np.ndarray:
     return _SIGNS if light > dark else -_SIGNS
 
 
+# An outer cell is read when at least this share of it, either way, is on the frame.
+OUTER_MIN_SHOWN = 0.5
+
+
+def _outer_box(
+    shape: tuple[int, int], box: tuple[int, int, int, int]
+) -> tuple[int, int, int, int] | None:
+    """An outer cell's box cut to the frame, or None when less than OUTER_MIN_SHOWN of it
+    is on the frame either way."""
+    height, width = shape
+    x0, y0, x1, y1 = box
+    cx0, cy0, cx1, cy1 = max(0, x0), max(0, y0), min(width, x1), min(height, y1)
+    if cx1 - cx0 < OUTER_MIN_SHOWN * (x1 - x0) or cy1 - cy0 < OUTER_MIN_SHOWN * (y1 - y0):
+        return None
+    return cx0, cy0, cx1, cy1
+
+
 def outer_continues_board(gray: np.ndarray, region: Region, cell: float, colours: Colours) -> bool:
     """Whether the checker pattern carries on outside the candidate on any of its sides.
 
@@ -526,6 +543,12 @@ def outer_continues_board(gray: np.ndarray, region: Region, cell: float, colours
     perfect board inside its 64 cells; only the cells just outside tell. A side continues
     the board when most of its eight outer cells read as square colours and alternate.
     Cells outside the frame are not counted, so a board flush with the screen edge passes.
+    An outer cell that runs off the frame is read on the part the frame shows when that is
+    half the cell or more: a candidate two thirds of a cell above a board that ended two
+    pixels above the frame's bottom had its row of outer cells above it off the frame and
+    the row below it a third off, so neither side was read, the board's last row went
+    unseen below it, and the lock validated with every cell reading across two squares
+    (the geometry sweep, 2026-09-27, seed 260).
     """
     light, dark, tolerance = colours
     band = _ring_band(cell)
@@ -539,7 +562,8 @@ def outer_continues_board(gray: np.ndarray, region: Region, cell: float, colours
     for cells in sides:
         signs: list[float | None] = []
         for r, c in cells:
-            value = _ring_median(gray, cell_bounds(region, cell, r, c), band)
+            box = _outer_box(gray.shape, cell_bounds(region, cell, r, c))
+            value = None if box is None else _ring_median(gray, box, band)
             if value is None or (abs(value - light) > tolerance and abs(value - dark) > tolerance):
                 signs.append(None)
             else:

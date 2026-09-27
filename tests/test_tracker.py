@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import pytest
 
-from sidecoach.events import Region
+from sidecoach.events import Region, Side
 from sidecoach.vision.board_detect import fit_score, to_gray
 from sidecoach.vision.tracker import BoardTracker
 from tests.synth import (
@@ -351,3 +351,29 @@ def test_periodic_refit_is_stable_on_a_busy_frame() -> None:
         )
         assert abs(board.cell_px - first.cell_px) <= 0.1
     assert tracker.detections == 1
+
+
+def test_a_board_resized_to_near_the_frame_s_bottom_is_locked_where_it_is() -> None:
+    """A board resized from 105 to 136 px cells, two pixels above the frame's bottom: the
+    near search (84-132 px) found it at 126 and fitted it to 136 two thirds of a cell high,
+    and that validated, since the rows of outer cells that would have shown it ran off the
+    frame. Every cell then read across two squares (the geometry sweep, 2026-09-27, seed
+    260)."""
+    board = chess.Board()
+    for san in (
+        "f3", "Nc6", "g4", "e5", "b4", "b6", "Bh3", "Na5",
+        "Kf2", "Bxb4", "c4", "Nxc4", "Bf1", "Nb2", "a3", "d5",
+    ):  # fmt: skip
+        board.push_san(san)
+    kw: dict[str, Any] = {
+        "width": 1920, "height": 1200, "theme": "wood", "style": "pixel",
+        "bottom": Side.BLACK, "board": board,
+    }  # fmt: skip
+    tracker = BoardTracker()
+    tracker.update(synthetic_board(x0=833, y0=360, cell=105, **kw))
+    resized = synthetic_board(x0=583, y0=110, cell=136, **kw)
+    locked = None
+    for _ in range(tracker.max_misses + 3):
+        locked = tracker.update(resized)
+    assert locked is not None and tracker.verified
+    assert abs(locked.region.x - 583) <= 2 and abs(locked.region.y - 110) <= 2, locked
