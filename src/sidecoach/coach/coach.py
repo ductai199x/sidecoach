@@ -45,6 +45,7 @@ from sidecoach.coach.disclosure import (
     visible_facts,
 )
 from sidecoach.coach.effects import effects_text, line_notes, line_spoken
+from sidecoach.coach.engine_tools import TOOL_ROUNDS, TOOL_WORDS, EngineTools
 from sidecoach.coach.facts import PIECE_NAMES, describe_move, facts_from_analysis, standing_words
 from sidecoach.coach.named import EngineLike as NamedEngine
 from sidecoach.coach.named import analyse_named, disclosed_frames
@@ -79,7 +80,7 @@ from sidecoach.events import (
     Takeback,
     Trigger,
 )
-from sidecoach.llm.base import ChatMessage, LLMProvider
+from sidecoach.llm.base import ChatMessage, Completion, LLMProvider
 from sidecoach.profile.causes import HABIT
 from sidecoach.profile.insights import motif_words
 
@@ -1155,6 +1156,9 @@ class _Request:
     # reply may not name -- all but those the list of earlier moments and the sheets give.
     # None when the directive has no place for a link.
     unlisted: frozenset[str] | None = None
+    # The engine at the model's call while it answers (a question of the player's), when the
+    # coach has an engine and the model takes tools.
+    tools: EngineTools | None = None
 
 
 def _player(facts: PositionFacts) -> chess.Color | None:
@@ -1183,10 +1187,11 @@ def _after_best(request: _Request) -> list[chess.Board]:
         board = board.copy(stack=False)
         board.push(move)
         frames.append(board)
-    # And along what the directive disclosed: the line the player asked about, examined.
+    # And along what the directive disclosed: the line the player asked about, examined; and
+    # the boards the model's own calls to the engine went through.
     if request.disclosed:
         frames += disclosed_frames(request.board, request.disclosed.splitlines())
-    return frames + request.frames
+    return frames + request.frames + (request.tools.frames if request.tools is not None else [])
 
 
 def _rated(label: str) -> str:
@@ -1536,21 +1541,9 @@ class Speaker:
                     request.stream_to, lambda t: self._problems(t, request), limit=limit
                 )
             try:
-                if reader is not None and stream is not None:
-                    completion = stream(
-                        request.system,
-                        messages,
-                        max_tokens=VS_MAX_TOKENS,
-                        temperature=VS_TEMPERATURE,
-                        on_delta=reader.feed,
-                    )
-                else:
-                    completion = provider.chat(
-                        request.system,
-                        messages,
-                        max_tokens=VS_MAX_TOKENS,
-                        temperature=VS_TEMPERATURE,
-                    )
+                completion = self._complete(
+                    provider, request, messages, reader.feed if reader is not None else None
+                )
                 raw = completion.text
                 stats = dict(completion.stats)
             except Exception as exc:  # noqa: BLE001
@@ -1642,6 +1635,76 @@ class Speaker:
             leaks=leaks,
             notes=notes,
         )
+
+    @staticmethod
+    def _complete(
+        provider: LLMProvider,
+        request: _Request,
+        messages: list[ChatMessage],
+        on_delta: Callable[[str], bool] | None,
+    ) -> Completion:
+        """The model's reply, streamed to `on_delta` when given. With engine tools on the
+        request and a model that takes them, the engine calls it makes are answered and it is
+        asked again, TOOL_ROUNDS times at most, the last time to answer with what it has; the
+        calls go in the stats, for the log."""
+        tools = request.tools if getattr(provider, "tools_ok", False) else None
+        turns: list[dict[str, Any]] = []
+        round_ = 0
+        while True:
+            extra: dict[str, Any] = {}
+            if tools is not None:
+                extra = {"tools": tools.specs, "turns": turns}
+                if round_ == TOOL_ROUNDS:
+                    extra["tool_choice"] = "none"
+            if on_delta is not None:
+                completion = provider.chat_stream(  # type: ignore[attr-defined]
+                    request.system,
+                    messages,
+                    max_tokens=VS_MAX_TOKENS,
+                    temperature=VS_TEMPERATURE,
+                    on_delta=on_delta,
+                    **extra,
+                )
+            else:
+                completion = provider.chat(
+                    request.system,
+                    messages,
+                    max_tokens=VS_MAX_TOKENS,
+                    temperature=VS_TEMPERATURE,
+                    **extra,
+                )
+            if tools is None or not completion.tool_calls or round_ == TOOL_ROUNDS:
+                break
+            turns = [
+                *turns,
+                {
+                    "role": "assistant",
+                    "content": completion.text or None,
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": json.dumps(call.arguments),
+                            },
+                        }
+                        for call in completion.tool_calls
+                    ],
+                },
+                *(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": tools.run(call.name, call.arguments),
+                    }
+                    for call in completion.tool_calls
+                ),
+            ]
+            round_ += 1
+        if tools is not None and tools.log:
+            completion.stats["tools"] = list(tools.log)
+        return completion
 
     @staticmethod
     def _trimmed(text: str, request: _Request) -> str:
@@ -2438,7 +2501,7 @@ class Coach:
             found = self._named_analysis(asked or text, position, level)
             if not offline:
                 return found  # the model answers, from these
-            # A probe the planner made of their words that is no legal move is the model's
+            # A move named in their words that is no legal move is the model's
             # to know, not the player's to hear: "after pass, Kd1 is not a legal move" was
             # read out as the answer to "How does Qc7+ prevent Re8?" (the students).
             said = [f for f in found if "is not a legal move" not in f]
@@ -2462,7 +2525,12 @@ class Coach:
                 )
             return found
 
-        if self.claims is None or not may_carry_claims(text):
+        # With the engine at the model's call its claims are the model's to check, with the whole
+        # conversation in view: checked beforehand against the board as it stands, "Rxf1+ check
+        # the white king" -- the move just played -- came back "false, Rxf1+ is not a move you
+        # can play next" (Tai's puzzle, 2026-09-28).
+        tools = self.engine is not None and not offline
+        if self.claims is None or tools or not may_carry_claims(text):
             verdicts = examined() if may_carry_claims(text) else []
             if not shown_examination:  # offline, the engine's word on it was the answer
                 self._speak(
@@ -3150,9 +3218,10 @@ class Coach:
         return None
 
     def _named_analysis(self, text: str, position: _Position, level: DisclosureLevel) -> list[str]:
-        """The engine's word on what the player asked about: the model decides what to
-        examine, the engine examines it; one line per probe, none when nothing was named.
-        A piece or square named needs no engine; a line does."""
+        """The engine's word on the moves, pieces and squares the player's words name; one
+        line per probe, none when nothing was named. A piece or square named needs no
+        engine; a line does. What else the words mean is the model's to ask the engine
+        about (`engine_tools`)."""
         try:
             return analyse_named(
                 text,
@@ -3160,11 +3229,6 @@ class Coach:
                 self.engine,
                 user_colour=self.user_colour,
                 level=level,
-                # Without an engine only pieces and squares can be examined, and the
-                # words name those well enough: no planner call.
-                # Parsing their words into moves is no lesson: the routine effort, not
-                # the coach's (at medium it was a second model call's worth of waiting).
-                planner=self.speaker.routine_provider if self.engine is not None else None,
                 # Pieces and squares as the board stands now, whatever position the question
                 # is about.
                 pieces_board=self.board,
@@ -3402,7 +3466,11 @@ class Coach:
         # what the move allowed is the lesson, and "nothing about the position" forbade it.
         facing = past and now is not None and now.board.turn == self.user_colour
         line = self._level_line(level, position, render_level if facing else None, past=past)
-        directive = f"{line}{instruction}"
+        # A question is answered as asked: its words head the Task. Found only under "Said
+        # here", far above, "whose bishop? ... he will just move away to the right, no?" got the
+        # line again (Tai's puzzle, 2026-09-28).
+        asked = f'Their words, which you answer: "{user_text}"\n\n' if user_text else ""
+        directive = f"{line}{asked}{instruction}"
         faced = ""
         frames: list[chess.Board] = []
         moved = played if trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE) else None
@@ -3476,9 +3544,20 @@ class Coach:
         # ("15...Qxe7 took your knight on e7"), which the board after it no longer shows.
         with self._lock:
             records = self.conversation.active_records()
+        last_before: chess.Board | None = None
         if records:
             with contextlib.suppress(ValueError):
-                frames.append(chess.Board(records[-1].move.fen_before))
+                last_before = chess.Board(records[-1].move.fen_before)
+                frames.append(last_before)
+        # A question of the player's: the model may ask the engine what the messages do not
+        # show, from the board now or from before the last move (`engine_tools`).
+        tools = (
+            EngineTools(self.board, last_before, self.engine, self.user_colour)
+            if trigger is Trigger.USER_ASK and self.engine is not None and not self._offline
+            else None
+        )
+        if tools is not None:
+            directive += f"\n\n{TOOL_WORDS}"
         with self._lock:
             self.conversation.level = render_level
             harness = self.conversation.render()
@@ -3532,6 +3611,7 @@ class Coach:
             now_answer=now_answer,
             record=self._numbered_moves(),
             unlisted=unlisted,
+            tools=tools,
         )
         self.speaker.submit(request)
 
@@ -4139,6 +4219,13 @@ class Coach:
                 "one short sentence on the idea behind it." + by_move + " Do not answer with a "
                 "question."
             )
+            if any(" ".join(facts.line[:3]) in s for s in self._said_since_move()):
+                # Given once already, the line asked for again is what comes after it: "ok and
+                # after that?" got the same line back (Tai's puzzle, 2026-09-28).
+                directive += (
+                    " You have given them this line already, in your turns above: they want what "
+                    "comes after its end -- the next moves and the idea behind them."
+                )
         elif level >= DisclosureLevel.MOVE and _ASK_MOVE.search(said) and facts.candidates:
             directive = (
                 f"They asked what to play: tell them plainly it is {facts.candidates[0]}, then why "

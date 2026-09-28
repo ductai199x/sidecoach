@@ -1,20 +1,22 @@
-"""The engine on what the player asks about, so the coach analyses it rather than guesses.
+"""The engine on what the player names, so the coach analyses it rather than guesses.
 
 "What about Nf3?" once got "not among the engine's best moves; it prefers Bb5" -- true,
-and all the object had. The player may name one move, a whole line, several alternatives,
-a move of the opponent's ("what if he takes on f7?"), or an idea in words ("can I trade
-queens?"). So the examination is agentic: the model decides what to examine (a list of
-probes: sequences of moves from the position, labelled in the player's terms), the engine
-examines each (the expected score after it from the player's side, how far behind the
-engine's best, the engine's reply, what the first move does), and the results go into the
-object before the coach answers. Every number is the engine's; every effect is computed on
-the board. Below LINE the engine's own preferred move is not named: the line the player
-asked about is theirs to hear about in full, the best line is not.
+and all the object had. The moves named in the words are examined as one line (the expected
+score after it from the player's side, how far behind the engine's best, the engine's reply,
+what the first move does), and the pieces and squares named each on their own, and the
+results go into the object before the coach answers. Every number is the engine's; every
+effect is computed on the board. Below LINE the engine's own preferred move is not named:
+the line the player asked about is theirs to hear about in full, the best line is not.
+
+What the words mean beyond what they name -- an idea ("can I trade queens?"), a move of the
+opponent's, "whose bishop?" -- is the coach model's to work out, and to ask the engine about
+itself (`engine_tools`): a model call that read the words into probes beforehand read "whose
+bishop? mine (black's)?" as "is my bishop safe?" and had the engine look at b7 (Tai's
+puzzle, 2026-09-28).
 """
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -28,26 +30,7 @@ from sidecoach.coach.effects import effects_text
 from sidecoach.coach.facts import PIECE_NAMES, standing_words
 from sidecoach.coach.inventory import name_of, pin_target
 from sidecoach.events import DisclosureLevel, Line
-from sidecoach.llm.base import ChatMessage, LLMProvider
 
-PLAN_SYSTEM = (
-    "A chess player, in the middle of a game, asks their coach about a move, a line, or an "
-    "idea. You turn their words into what the engine should examine: a list of probes, each a "
-    "sequence of moves in standard notation from the position given, played in order, "
-    "starting with the side to move. If they ask what the opponent might do, the probe "
-    "starts with the word 'pass' (the player waits) and then the opponent's move; if they "
-    "say their own move first and then the opponent's ('after I castle, he plays d5'), the "
-    "probe is their move and then the opponent's, in that order. An idea in "
-    "words ('trade queens', 'take on f7', 'castle') becomes the moves that do it. Several "
-    "alternatives are several probes, at most four. Label each probe in the player's own "
-    "terms ('your Nf3', 'the line Bb5 a6 Ba4', 'if they take on e5'). A question about a "
-    "piece or a square rather than a move ('is my knight safe?', 'what does the bishop on "
-    "d3 do?', 'what about e5?') is a probe with a square instead of moves. If their words "
-    "name nothing to examine, return an empty list. Answer in JSON only: "
-    '{"probes": [{"label": str, "moves": [str]} | {"label": str, "square": str}]}'
-)
-
-_JSON = re.compile(r"\{.*\}", re.DOTALL)
 # A move as a player types it, with or without a move number; "pass" is the player waiting.
 _TOKEN = re.compile(
     r"(?<![A-Za-z0-9])(?:\d{1,3}\.(?:\.\.)?\s*)?((?:[a-h][1-8][a-h][1-8][qrbn]?|[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h]x?[a-h][1-8]|[a-h][1-8]|O-O-O|O-O|0-0-0|0-0)(?:=[QRBN])?[+#]?)(?![A-Za-z0-9])"
@@ -104,14 +87,15 @@ def parse_probe(label: str, moves: list[str], board: chess.Board) -> Probe:
 
 
 def probes_by_words(text: str, board: chess.Board) -> list[Probe]:
-    """Without a planner: the moves named in the words, as one line, as far as legal; or
-    the pieces and squares named, one probe each."""
+    """The moves named in the words, as one line, as far as legal, and the pieces and squares
+    named, one probe each: "I'll play Bc4 and aim at f7" is both. A square named with its
+    piece ("the knight on f3") or asked about ("what about e5?") is never read as a pawn's
+    move."""
     pieces = pieces_by_words(text, board)
-    if pieces:
-        return pieces
+    rest = _SQUARE_ASKED.sub(" ", _PIECE_ON.sub(" ", text))
     moves: list[str] = []
     replay = board.copy(stack=False)
-    for match in _TOKEN.finditer(text):
+    for match in _TOKEN.finditer(rest):
         token = match.group(1).replace("0-0-0", "O-O-O").replace("0-0", "O-O")
         try:
             move = _parse(replay, token)
@@ -121,11 +105,12 @@ def probes_by_words(text: str, board: chess.Board) -> list[Probe]:
             break
         moves.append(replay.san(move))
         replay.push(move)
-    return (
+    line = (
         [parse_probe(san_line(board, [m.uci() for m in _replay(board, moves)]), moves, board)]
         if moves
         else []
     )
+    return [*line, *pieces][:4]
 
 
 def pieces_by_words(text: str, board: chess.Board) -> list[Probe]:
@@ -301,48 +286,6 @@ def _replay(board: chess.Board, sans: list[str]) -> list[chess.Move]:
         out.append(move)
         replay.push(move)
     return out
-
-
-def plan_probes(
-    text: str, board: chess.Board, provider: LLMProvider, *, user_colour: chess.Color
-) -> list[Probe]:
-    """The model's reading of what the player wants examined, as probes on the board.
-    Falls back to the moves named in the words when the model gives nothing usable."""
-    side = "White" if board.turn == chess.WHITE else "Black"
-    player = "White" if user_colour == chess.WHITE else "Black"
-    content = (
-        f"Position (FEN): {board.fen()}\n{side} to move. The player is {player}.\n"
-        f"Legal moves: {' '.join(sorted(board.san(m) for m in board.legal_moves))}\n\n"
-        f'The player says: "{text.strip()}"\n\nJSON only.'
-    )
-    messages: list[ChatMessage] = [{"role": "user", "content": content}]
-    try:
-        completion = provider.chat(PLAN_SYSTEM, messages, max_tokens=400, temperature=0.0)
-        found = _JSON.search(completion.text or "")
-        data = json.loads(found.group(0)) if found else {}
-    except Exception:  # noqa: BLE001
-        data = {}
-    probes: list[Probe] = []
-    for item in (data.get("probes") if isinstance(data, dict) else None) or []:
-        if not isinstance(item, dict):
-            continue
-        square = str(item.get("square") or "").strip().lower()
-        if square and re.fullmatch(r"[a-h][1-8]", square):
-            probes.append(
-                Probe(
-                    label=str(item.get("label") or square),
-                    moves=[],
-                    square=chess.parse_square(square),
-                )
-            )
-        else:
-            moves = [str(m) for m in item.get("moves", []) if str(m).strip()]
-            if not moves:
-                continue
-            probes.append(parse_probe(str(item.get("label") or " ".join(moves)), moves, board))
-        if len(probes) >= 4:
-            break
-    return probes or probes_by_words(text, board)
 
 
 def examine(
@@ -576,23 +519,18 @@ def analyse_named(
     *,
     user_colour: chess.Color,
     level: DisclosureLevel,
-    planner: LLMProvider | None = None,
     depth: int = 14,
     static: bool = False,
     pieces_board: chess.Board | None = None,
     known: Sequence[Line] = (),
 ) -> list[str]:
     """The engine's word on what the player asked about: one line per probe, or none when
-    their words name nothing to examine. The planner (a model) decides the probes; without
-    one, the moves named in the words are examined as one line, or the pieces and squares
-    named each on their own. A piece or square needs no engine; a move without one is
-    dropped, unless `static`, when it gets the position it leads to and what it does,
-    without a score (a FEN is for a reader of the object, not for a coach to say)."""
-    probes = (
-        plan_probes(text, board, planner, user_colour=user_colour)
-        if planner is not None
-        else probes_by_words(text, board)
-    )
+    their words name nothing to examine. The moves named in the words are examined as one
+    line, or the pieces and squares named each on their own. A piece or square needs no
+    engine; a move without one is dropped, unless `static`, when it gets the position it
+    leads to and what it does, without a score (a FEN is for a reader of the object, not for
+    a coach to say)."""
+    probes = probes_by_words(text, board)
     if (board.turn != user_colour and engine is not None) or (engine is None and not static):
         # Only the position the player faces is theirs to ask lines about; the board's
         # pieces are theirs to ask about at any time.

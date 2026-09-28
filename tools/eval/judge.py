@@ -420,6 +420,9 @@ REQUEST_REBUILT = frozenset(
         "routine",
         "template_only",
         "frames",
+        # The engine at the model's call: its boards travel in `frames`; the engine is not
+        # asked again.
+        "tools",
     }
 )
 
@@ -428,7 +431,11 @@ def request_fields(request: _Request) -> dict[str, Any]:
     """What an item keeps of the coach's request, for its checks to be rebuilt as the coach
     ran them (corpus.build_game writes it; request_for reads it back)."""
     out: dict[str, Any] = {
-        "frames": [b.fen() for b in request.frames],
+        # With the boards the model's own calls to the engine went through (`_after_best`).
+        "frames": [
+            b.fen()
+            for b in [*request.frames, *(request.tools.frames if request.tools is not None else [])]
+        ],
         "played_san": request.played_san,
         "assessment": (
             request.assessment.model_dump(mode="json") if request.assessment is not None else None

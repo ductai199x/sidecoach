@@ -36,6 +36,7 @@ class Metered:
         self.inner, self.ledger, self.label = inner, ledger, label
         self.name, self.model = inner.name, inner.model
         self.offline = bool(getattr(inner, "offline", False))
+        self.tools_ok = bool(getattr(inner, "tools_ok", False))
 
     @property
     def reasoning_effort(self) -> str | None:

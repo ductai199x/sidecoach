@@ -1455,12 +1455,9 @@ def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> No
     """ "What about Bc4?" once got only "not among the engine's best moves". With an engine
     the object carries the engine's word on that move: the score after it, how far behind
     the best, the reply, what it does -- and the directive says it is theirs to hear."""
-    # The coach's own model plans what to examine (first call), then answers (second).
+    # The move named in the words is examined; the model answers from it.
     coach, provider = scripted_coach(
-        [
-            '{"probes": [{"label": "your Bc4", "moves": ["Bc4"]}]}',
-            "[p=1.0] Bc4 is fine: a little behind the best. What does it aim at?",
-        ]
+        ["[p=1.0] Bc4 is fine: a little behind the best. What does it aim at?"]
     )
     coach.engine = _ItalianEngine()
     _italian(coach)
@@ -1479,7 +1476,7 @@ def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> No
     directive = directive_of(sent(provider))
     assert "theirs to hear in full" in directive
     assert (
-        "Engine on your Bc4, which the player asked about: after 3. Bc4 the expected score "
+        "Engine on 3. Bc4, which the player asked about: after 3. Bc4 the expected score "
         "is 0.52" in directive
     )
     assert "0.03 behind the engine's best;" in directive
@@ -1494,15 +1491,12 @@ def test_a_move_proposed_in_a_statement_is_examined_and_nothing_is_said_twice() 
     back word for word, three times (the students' round 5): a move proposed is examined as
     a question about it is, and the model answers from the examination; and a template
     already said since the last move is not said again."""
-    # The planner reads their words into a probe (first call); the model answers (second).
-    coach, provider = scripted_coach(
-        ['{"probes": [{"label": "your Bc4", "moves": ["Bc4"]}]}', "[p=1.0] Fine."]
-    )
+    coach, provider = scripted_coach(["[p=1.0] Fine."])
     coach.engine = _ItalianEngine()
     _italian(coach)
     coach.ask("I'll play Bc4 and aim at f7.", 6.0)
     assert [m.text for m in drain(coach)] == ["Fine."]
-    assert "Engine on your Bc4, which the player asked about" in directive_of(sent(provider))
+    assert "Engine on 3. Bc4, which the player asked about" in directive_of(sent(provider))
     # Offline, a statement naming no move gets the template once, and not again.
     coach = offline_coach()
     _italian(coach)

@@ -29,7 +29,7 @@ from typing import Any, Literal
 
 import httpx
 
-from sidecoach.llm.base import ChatMessage, Completion
+from sidecoach.llm.base import ChatMessage, Completion, ToolCall
 from sidecoach.llm.usage import Usage
 
 ThinkingControl = Literal["prefill", "param", "effort", "none"]
@@ -46,16 +46,54 @@ def build_messages(
     *,
     thinking: bool,
     control: ThinkingControl,
-) -> list[dict[str, str]]:
-    """The wire message list: system, the conversation, and the no-think prefill if used."""
-    wire: list[dict[str, str]] = [{"role": "system", "content": system}]
+    turns: Sequence[dict[str, Any]] = (),
+) -> list[dict[str, Any]]:
+    """The wire message list: system, the conversation, the tool calls and their results
+    (`turns`), and the no-think prefill if used."""
+    wire: list[dict[str, Any]] = [{"role": "system", "content": system}]
     wire.extend({"role": m["role"], "content": m["content"]} for m in messages)
+    wire.extend(turns)
     if not thinking and control == "prefill":
         wire.append({"role": "assistant", "content": EMPTY_THINK_PREFILL})
     return wire
 
 
+def _unthought(text: str) -> tuple[str, str]:
+    """(the thinking, the reply) of a reply that carries the model's thinking before a closing
+    </think>, as a server that did not parse it hands it back; ("", text) otherwise."""
+    head, mark, tail = text.rpartition("</think>")
+    if not mark:
+        return "", text
+    return head.replace("<think>", "").strip(), tail.strip()
+
+
+def _tool_calls(raw: Sequence[dict[str, Any]]) -> list[ToolCall]:
+    """The model's calls as the wire gives them; arguments that are no JSON object come
+    through under "_raw", for the tool to say so."""
+    out: list[ToolCall] = []
+    for i, call in enumerate(raw):
+        function = call.get("function") or {}
+        text = function.get("arguments") or "{}"
+        try:
+            arguments = json.loads(text) if isinstance(text, str) else dict(text)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            arguments = {"_raw": str(text)}
+        if not isinstance(arguments, dict):
+            arguments = {"_raw": str(text)}
+        out.append(
+            ToolCall(
+                id=str(call.get("id") or f"call_{i}"),
+                name=str(function.get("name") or ""),
+                arguments=arguments,
+            )
+        )
+    return out
+
+
 class OpenAICompatProvider:
+    # Function calling is part of the chat-completions API every such server speaks.
+    tools_ok = True
+
     def __init__(
         self,
         name: str,
@@ -127,14 +165,21 @@ class OpenAICompatProvider:
         max_tokens: int,
         temperature: float,
         thinking: bool,
+        tools: Sequence[dict[str, Any]] = (),
+        turns: Sequence[dict[str, Any]] = (),
+        tool_choice: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.model,
             "messages": build_messages(
-                system, messages, thinking=thinking, control=self.thinking_control
+                system, messages, thinking=thinking, control=self.thinking_control, turns=turns
             ),
             **self.extra_body,
         }
+        if tools:
+            body["tools"] = list(tools)
+            if tool_choice:
+                body["tool_choice"] = tool_choice
         if self.thinking_control == "effort":
             body["max_completion_tokens"] = max_tokens + (
                 REASONING_HEADROOM if self.reasoning_effort else 0
@@ -156,9 +201,19 @@ class OpenAICompatProvider:
         max_tokens: int = 1500,
         temperature: float = 0.7,
         thinking: bool = False,
+        tools: Sequence[dict[str, Any]] = (),
+        turns: Sequence[dict[str, Any]] = (),
+        tool_choice: str | None = None,
     ) -> Completion:
         body = self.request_body(
-            system, messages, max_tokens=max_tokens, temperature=temperature, thinking=thinking
+            system,
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            thinking=thinking,
+            tools=tools,
+            turns=turns,
+            tool_choice=tool_choice,
         )
         started = time.perf_counter()
         response = self._client.post(f"{self.base_url}/chat/completions", json=body)
@@ -181,12 +236,19 @@ class OpenAICompatProvider:
             "reasoning_tokens": completion_details.get("reasoning_tokens"),
             "finish_reason": choice.get("finish_reason"),
         }
-        text = (message.get("content") or "").strip()
-        reasoning = (message.get("reasoning_content") or "").strip()
+        thought, text = _unthought((message.get("content") or "").strip())
+        reasoning = "\n".join(
+            x for x in ((message.get("reasoning_content") or "").strip(), thought) if x
+        )
         self.usage.record(
             stats, prompt_chars=self._chars(body), completion_chars=len(text) + len(reasoning)
         )
-        return Completion(text=text, reasoning=reasoning, stats=stats)
+        return Completion(
+            text=text,
+            reasoning=reasoning,
+            stats=stats,
+            tool_calls=_tool_calls(message.get("tool_calls") or []),
+        )
 
     def chat_stream(
         self,
@@ -197,19 +259,49 @@ class OpenAICompatProvider:
         temperature: float = 0.7,
         thinking: bool = False,
         on_delta: Callable[[str], bool],
+        tools: Sequence[dict[str, Any]] = (),
+        turns: Sequence[dict[str, Any]] = (),
+        tool_choice: str | None = None,
     ) -> Completion:
         """The reply streamed: every visible delta to `on_delta` as it arrives, the first
         one's latency and the stream's usage in the stats. A callback returning False
         closes the stream; the usage is then whatever the server had sent, usually
-        nothing, and finish_reason is "stopped"."""
+        nothing, and finish_reason is "stopped". Tool calls arrive in pieces, by index,
+        and are put together.
+
+        With tools, LM Studio does not continue the prefilled message: the model thinks again,
+        and its thinking comes back as the reply's first words, up to a closing </think> (Tai's
+        puzzle replayed, 2026-09-28). Nothing of it may reach the voice, so under "prefill" a
+        reply with tools is read whole, its thinking split off, and handed on at once."""
+        if tools and not thinking and self.thinking_control == "prefill":
+            completion = self.chat(
+                system,
+                messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools,
+                turns=turns,
+                tool_choice=tool_choice,
+            )
+            if completion.text:
+                on_delta(completion.text)
+            return completion
         body = self.request_body(
-            system, messages, max_tokens=max_tokens, temperature=temperature, thinking=thinking
+            system,
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            thinking=thinking,
+            tools=tools,
+            turns=turns,
+            tool_choice=tool_choice,
         )
         body = {**body, "stream": True, "stream_options": {"include_usage": True}}
         started = time.perf_counter()
         first: float | None = None
         parts: list[str] = []
         reasoning: list[str] = []
+        calls: dict[int, dict[str, Any]] = {}
         usage: dict[str, Any] = {}
         finish: str | None = None
         stopped = False
@@ -237,6 +329,15 @@ class OpenAICompatProvider:
                         reasoning.append(str(delta["reasoning_content"]))
                     if choice.get("finish_reason"):
                         finish = choice["finish_reason"]
+                    for piece in delta.get("tool_calls") or []:
+                        call = calls.setdefault(
+                            int(piece.get("index") or 0),
+                            {"id": "", "function": {"name": "", "arguments": ""}},
+                        )
+                        call["id"] = piece.get("id") or call["id"]
+                        function = piece.get("function") or {}
+                        call["function"]["name"] += function.get("name") or ""
+                        call["function"]["arguments"] += function.get("arguments") or ""
                     text = delta.get("content")
                     if not text:
                         continue
@@ -268,7 +369,12 @@ class OpenAICompatProvider:
         self.usage.record(
             stats, prompt_chars=self._chars(body), completion_chars=len(text) + len(thought)
         )
-        return Completion(text=text, reasoning=thought, stats=stats)
+        return Completion(
+            text=text,
+            reasoning=thought,
+            stats=stats,
+            tool_calls=_tool_calls([calls[i] for i in sorted(calls)]),
+        )
 
     def complete(self, system: str, user: str, **kwargs: Any) -> Completion:
         """Single-turn convenience over `chat`."""
