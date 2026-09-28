@@ -43,6 +43,11 @@ def main() -> None:
     # the desktop's `_make_analyser` builds it, so they are the phone's defaults to change.
     defaults["engine"]["threads"] = 2
     defaults["engine"]["hash_mb"] = 64
+    # And depth 14 where the desktop has 18: on Tai's Pixel (2026-09-28) Stockfish 19 does a
+    # tenth of the desktop's nodes a second on two threads, depth 18 came after ten seconds
+    # and more, never inside the five-second cap, and depth 14 in 2.6 s (3.7 warm). Three
+    # threads were no faster, the phone warmer. Tai: "2 threads and depth 14".
+    defaults["engine"]["depth"] = 14
     # The phone's own setting: the coach's words in a box over other apps, the way Live Caption
     # shows speech (Tai, 2026-09-23). The desktop has no such box, so the field is added here,
     # to the phone's schema alone, and the desktop's page never shows it.
@@ -162,6 +167,11 @@ def main() -> None:
     engine["threads"]["description"] = (
         "Processor threads Stockfish may use. More is faster to a point, and warms the phone; "
         "leave some for the game."
+    )
+    engine["depth"]["default"] = 14
+    engine["depth"]["description"] = (
+        "How deep Stockfish looks at every position. Deeper is more accurate and slower; 14 is "
+        "what a phone reaches in a few seconds, and stronger than any player."
     )
     engine["hash_mb"]["default"] = 64
     engine["hash_mb"]["description"] = (
