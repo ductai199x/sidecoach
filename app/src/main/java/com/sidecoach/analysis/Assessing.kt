@@ -282,6 +282,7 @@ class Assessing(
                         tagger = Motifs,
                         book = OpeningBook.load(File(context.filesDir, "openings")),
                     ),
+                    lookAhead = LOOK_AHEAD,
                 ).also { it.start() }
             } catch (exc: Exception) {
                 Log.w(TAG, "the engine did not start: $exc")

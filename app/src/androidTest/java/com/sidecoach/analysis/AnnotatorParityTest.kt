@@ -1,12 +1,15 @@
 package com.sidecoach.analysis
 
+import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
+import com.sidecoach.events.Event
 import com.sidecoach.events.Label
 import com.sidecoach.events.Line
 import com.sidecoach.events.MotifTag
+import com.sidecoach.events.MoveAssessment
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -350,6 +353,108 @@ class AnnotatorParityTest {
             Thread.sleep(10)
         }
         return events
+    }
+
+    /** `_line`: a line of [moves] at depth 6, even. */
+    private fun line(vararg moves: String) = Line(moves = moves.toList(), depth = 6, expectedScore = 0.5)
+
+    /** `_after`: the position after [sans] from the start. */
+    private fun after(vararg sans: String): String {
+        val board = Board()
+        for (san in sans) board.push(board.parseSan(san)!!)
+        return board.fen()
+    }
+
+    /** `_until`: whether [condition] holds within [timeoutS]. */
+    private fun until(timeoutS: Double = 5.0, condition: () -> Boolean): Boolean {
+        val deadline = SystemClock.elapsedRealtime() + (timeoutS * 1000).toLong()
+        while (!condition() && SystemClock.elapsedRealtime() < deadline) Thread.sleep(10)
+        return condition()
+    }
+
+    private fun calls(fake: FakeEngine): List<String> = synchronized(fake.calls) { fake.calls.toList() }
+
+    /**
+     * `test_while_no_move_waits_the_engine_looks_ahead_and_a_move_there_is_answered_at_once`
+     * (desktop 9c0774d). Tai, 2026-09-27: "why is it not possible to do some form of SMART
+     * caching of lines". With the position on the board measured and nothing queued, the
+     * positions after its best moves, and after the best reply to each, are measured and
+     * cached; the move played there is judged, and the position after it known, with no search
+     * of its own.
+     */
+    @Test
+    fun whileNoMoveWaitsTheEngineLooksAheadAndAMoveThereIsAnsweredAtOnce() {
+        val start = Board()
+        val fake = FakeEngine(
+            mapOf(
+                start.fen() to listOf(line("e2e4"), line("d2d4")),
+                after("e4") to listOf(line("e7e5")),
+                after("d4") to listOf(line("d7d5")),
+            ),
+        )
+        val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
+        val analyser = Analyser(annotator, lookAhead = 2)
+        analyser.start()
+        val got: List<Event>
+        val before: Int
+        try {
+            analyser.submitPosition("g", start, 0)
+            assertTrue("${analyser.looked}", until { analyser.looked == 4 })
+            val searched = calls(fake).toSet()
+            for (fen in listOf(after("e4"), after("e4", "e5"), after("d4"), after("d4", "d5"))) {
+                assertTrue("$fen was not looked at", fen in searched)
+            }
+            before = calls(fake).size
+            analyser.submitMove("g", start, Move.fromUci("e2e4"), 1)
+            got = drain(analyser)
+        } finally {
+            analyser.close()
+        }
+        assertEquals(listOf("Analysis", "MoveAssessment", "Analysis"), got.map { it::class.java.simpleName })
+        assertTrue("the position after e4 was searched again", after("e4") !in calls(fake).drop(before))
+        assertEquals(1, annotator.aheadHits)
+    }
+
+    /**
+     * `_StoppableEngine`: a fake engine whose searches ahead run until `interrupt` stops them
+     * (`_stopped.wait(5)`, then `Interrupted`).
+     */
+    private class StoppableEngine(answers: Map<String, List<Line>>) : FakeEngine(answers) {
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> {
+            if (interruptibleNow) {
+                val until = SystemClock.elapsedRealtime() + 5000
+                while (!stopped && SystemClock.elapsedRealtime() < until) Thread.sleep(1)
+                throw Interrupted()
+            }
+            return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest)
+        }
+    }
+
+    /**
+     * `test_a_move_played_stops_the_look_ahead_at_once` (desktop 9c0774d): a search ahead of the
+     * game is let go the moment a move of the game's own comes: the move never waits for a
+     * position it did not go to.
+     */
+    @Test
+    fun aMovePlayedStopsTheLookAheadAtOnce() {
+        val fake = StoppableEngine(mapOf(Board().fen() to listOf(line("e2e4"), line("d2d4"))))
+        val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
+        val analyser = Analyser(annotator, lookAhead = 2)
+        analyser.start()
+        val got: List<Event>
+        try {
+            analyser.submitPosition("g", Board(), 0)
+            assertTrue("never looked ahead", until { analyser.looking })
+            val t = SystemClock.elapsedRealtime()
+            analyser.submitMove("g", Board(), Move.fromUci("g1f3"), 1)
+            assertTrue(until(1.0) { !analyser.looking && analyser.pending == 0 })
+            assertTrue(SystemClock.elapsedRealtime() - t < 500)
+            got = drain(analyser)
+        } finally {
+            analyser.close()
+        }
+        assertTrue(got.any { it is MoveAssessment && it.uci == "g1f3" })
+        assertTrue("${analyser.looked} ${annotator.aheadHits}", analyser.looked == 0 && annotator.aheadHits == 0)
     }
 
     /**

@@ -41,6 +41,15 @@ interface Tagger {
 const val HURRY_S = 1.0
 const val BEHIND_S = 10.0
 
+/**
+ * While no move waits -- the player thinking, or the opponent -- the engine looks ahead: the
+ * positions after the LOOK_AHEAD best moves from the position on the board, each then after the
+ * best reply to it, measured whole and cached. A game that goes there has its verdict and its
+ * facts at once (Tai, 2026-09-27: "cache ... the possible legal moves from both sides"); a move
+ * of its own stops the look ahead within the millisecond.
+ */
+const val LOOK_AHEAD = 2
+
 /** One position, measured once: its lines and what they mean. */
 class Measured(
     val fen: String,
@@ -93,11 +102,43 @@ class GameAnnotator(
 
     private var previous: Previous? = null
 
+    /**
+     * Positions measured ahead of the game ([lookAhead]) and not yet reached, and how many the
+     * game has reached: what looking ahead saved.
+     */
+    private val ahead = HashSet<String>()
+    @Volatile var aheadHits = 0
+        private set
+
     /** Forget the cache; a new game shares no positions with the last one. */
     fun reset() {
         cache.clear()
         verdictCache.clear()
+        ahead.clear()
         previous = null
+    }
+
+    /**
+     * A position the game may reach, measured whole before it does, as the game's own positions
+     * are, and cached with them. Inside [Engine.interruptible] a search stopped throws
+     * [Interrupted], and nothing is cached.
+     */
+    fun lookAhead(board: Board): Measured {
+        val key = board.fen()
+        cache[key]?.let { return it }
+        val measured = measure(board)
+        ahead.add(key)
+        return measured
+    }
+
+    /** The position measured whole, counting a position measured ahead reached. */
+    private fun cached(key: String): Measured? {
+        val measured = cache[key]
+        if (measured != null && key in ahead) {
+            ahead.remove(key)
+            aheadHits += 1
+        }
+        return measured
     }
 
     /**
@@ -107,7 +148,7 @@ class GameAnnotator(
      */
     fun measureForVerdict(board: Board): Measured {
         val key = board.fen()
-        cache[key]?.let { return it }
+        cached(key)?.let { return it }
         verdictCache[key]?.let { return it }
         val lines = engine.analyse(board, depth = depth, multipv = 1)
         val thin = Measured(
@@ -129,7 +170,7 @@ class GameAnnotator(
      */
     fun measure(board: Board, hurry: Boolean = false): Measured {
         val key = board.fen()
-        cache[key]?.let { return it }
+        cached(key)?.let { return it }
         val lines = engine.analyse(
             board,
             depth = depth,
@@ -338,7 +379,15 @@ internal fun mateIn(before: Board, move: Move, afterLines: List<Line>): Int? {
  * here waits for a result. Assessments arrive a moment after the move, which is when a coach
  * would speak anyway.
  */
-class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) : AutoCloseable {
+class Analyser(
+    val annotator: GameAnnotator,
+    private val maxPending: Int = 64,
+    /**
+     * How many of the best moves from the position on the board are looked ahead at
+     * ([LOOK_AHEAD] in a live session; none unless asked).
+     */
+    private val lookAhead: Int = 0,
+) : AutoCloseable {
 
     var dropped = 0
         private set
@@ -384,6 +433,19 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
     /** The request the worker is on, so a takeback can let go of it. */
     @Volatile private var current: Request? = null
 
+    /**
+     * The positions to look ahead at, with how many moves ahead each is, and whether the worker
+     * is looking ahead now (a request then interrupts it). The worker alone changes the list;
+     * a new game or a takeback puts a new one in its place.
+     */
+    @Volatile private var ahead: MutableList<Pair<Board, Int>> = ArrayList()
+    @Volatile internal var looking = false
+        private set
+
+    /** Positions measured ahead. */
+    @Volatile var looked = 0
+        private set
+
     /** The sentinel that ends the worker. */
     private val stop = Request("", 0, Board(null), null)
 
@@ -402,6 +464,7 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
         thread = null
         if (worker != null) {
             requests.put(stop)
+            if (looking) annotator.engine.interrupt()
             worker.join(5000)
         }
         annotator.engine.close()
@@ -429,6 +492,7 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
             requests.poll() ?: break
             settle()
         }
+        ahead = ArrayList()
         annotator.reset()
     }
 
@@ -451,6 +515,7 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
             }
         }
         for (request in kept) requests.put(request)
+        ahead = ArrayList()  // ahead of moves no longer played
         val now = current
         if (now != null && now.gameId == gameId && now.ply > ply) {
             now.withdrawn = true
@@ -476,6 +541,8 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
         }
         synchronized(countLock) { outstanding += 1 }
         requests.put(request)
+        // After the put: a worker that starts looking ahead after this sees the request.
+        if (looking) annotator.engine.interrupt()
     }
 
     private fun settle() {
@@ -484,13 +551,16 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
 
     private fun run() {
         while (true) {
-            val request = requests.take()
+            val request = next()
             if (request === stop) return
             current = request
             try {
                 if (request.move == null) {
                     val event = annotator.analysisEvent(request.gameId, request.board, request.ply)
-                    if (!request.withdrawn) results.add(event)
+                    if (!request.withdrawn) {
+                        results.add(event)
+                        planAhead(request.board, event.lines)
+                    }
                 } else {
                     // The verdict first, from the best line alone; the position whole after --
                     // unless newer moves are waiting: then this ply is history, its verdict is
@@ -506,15 +576,10 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
                         skipped += 1
                         behindUntil = System.nanoTime() + TimeUnit.SECONDS.toNanos(BEHIND_S.toLong())
                     }
-                    results.add(
-                        annotator.analysisEvent(
-                            request.gameId,
-                            after,
-                            request.ply,
-                            thin = behind,
-                            hurry = System.nanoTime() < behindUntil,
-                        ),
-                    )
+                    val hurry = System.nanoTime() < behindUntil
+                    val event = annotator.analysisEvent(request.gameId, after, request.ply, thin = behind, hurry = hurry)
+                    results.add(event)
+                    if (!(behind || hurry)) planAhead(after, event.lines)
                 }
             } catch (exc: Exception) {
                 // A failed analysis must never end a session; the game goes on unassessed.
@@ -524,6 +589,69 @@ class Analyser(val annotator: GameAnnotator, private val maxPending: Int = 64) :
                 current = null
                 settle()
             }
+        }
+    }
+
+    /**
+     * The next request, and while none waits, the positions ahead measured one by one
+     * ([lookAhead]), a request interrupting the one being measured.
+     */
+    private fun next(): Request {
+        while (true) {
+            requests.poll()?.let { return it }
+            val ahead = ahead
+            if (ahead.isEmpty()) return requests.take()
+            val (board, moves) = ahead.removeAt(0)
+            lookAhead(board, moves, ahead)
+        }
+    }
+
+    /**
+     * The positions to look ahead at from [board], the position the game is at: after each of
+     * its [lookAhead] best moves first; after the best reply to each follows as each is
+     * measured ([lookAhead]).
+     */
+    private fun planAhead(board: Board, lines: List<Line>) {
+        val ahead = ArrayList<Pair<Board, Int>>()
+        for (line in lines.take(lookAhead)) {
+            val move = lineMoves(line).take(1)
+            if (move.isNotEmpty() && board.isLegal(move[0])) {
+                val after = board.copy(withStack = false)
+                after.push(move[0])
+                ahead.add(after to 1)
+            }
+        }
+        this.ahead = ahead
+    }
+
+    /**
+     * One position ahead measured, unless a request is waiting or comes meanwhile; one move
+     * ahead, the best reply to it goes next in [ahead], the plan it came from -- unless the game
+     * has planned anew meanwhile (a new game, a takeback).
+     */
+    private fun lookAhead(board: Board, moves: Int, ahead: MutableList<Pair<Board, Int>>) {
+        val engine = annotator.engine
+        looking = true
+        val measured = try {
+            // Inside the interruptible searches, so a request put before this is seen here and
+            // one put after it interrupts ([submit]).
+            engine.interruptible {
+                if (requests.isNotEmpty()) null else annotator.lookAhead(board)
+            } ?: return
+        } catch (exc: Interrupted) {
+            return  // the game moved: its own position comes first, and plans anew
+        } catch (exc: Exception) {
+            lastError = "${exc::class.java.simpleName}: ${exc.message}"
+            return
+        } finally {
+            looking = false
+        }
+        looked += 1
+        val reply = if (measured.lines.isNotEmpty()) lineMoves(measured.lines[0]).take(1) else emptyList()
+        if (moves == 1 && reply.isNotEmpty() && board.isLegal(reply[0]) && ahead === this.ahead) {
+            val after = board.copy(withStack = false)
+            after.push(reply[0])
+            ahead.add(0, after to 2)
         }
     }
 }

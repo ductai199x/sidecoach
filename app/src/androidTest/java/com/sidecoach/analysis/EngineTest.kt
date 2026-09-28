@@ -212,6 +212,76 @@ class EngineTest {
         }
     }
 
+    /**
+     * `test_the_engine_stops_a_search_it_is_interrupted_in` (desktop 9c0774d): a search inside
+     * `interruptible` ends within the second of `interrupt`, from another thread, with
+     * [Interrupted]; the engine answers as before afterwards.
+     */
+    @Test
+    fun theEngineStopsASearchItIsInterruptedIn() {
+        val engine = engine()
+        assumeTrue("the engine or its network is missing", engine != null)
+        engine!!.use { sf ->
+            sf.open()  // as the desktop's fixture holds it: running, its network loaded
+            val raised = java.util.Collections.synchronizedList(ArrayList<Throwable>())
+            val worker = kotlin.concurrent.thread {
+                try {
+                    sf.interruptible { sf.analyse(Board(), depth = 60, multipv = 1) }
+                } catch (exc: Throwable) {
+                    raised.add(exc)
+                }
+            }
+            Thread.sleep(300)
+            val t = android.os.SystemClock.elapsedRealtime()
+            sf.interrupt()
+            worker.join(5000)
+            val took = android.os.SystemClock.elapsedRealtime() - t
+            Log.i(TAG, "interrupted: the search ended $took ms after the interrupt")
+            assertTrue("the search ran on: $took ms", !worker.isAlive && took < 1000)
+            assertTrue("$raised", raised.isNotEmpty() && raised[0] is Interrupted)
+            // The engine answers as before afterwards.
+            assertTrue(sf.analyse(Board(), depth = 6, multipv = 1).isNotEmpty())
+        }
+    }
+
+    /**
+     * The phone's own: the voice holds the engine still ([Engine.pause]) while a move comes and
+     * interrupts the look ahead. The interrupt returns at once -- the capture thread never
+     * waits on a stopped process -- and the search ends the moment the engine runs on.
+     */
+    @Test
+    fun anInterruptWhilePausedEndsTheSearchOnceResumed() {
+        val engine = engine()
+        assumeTrue("the engine or its network is missing", engine != null)
+        engine!!.use { sf ->
+            sf.open()
+            val raised = java.util.Collections.synchronizedList(ArrayList<Throwable>())
+            val worker = kotlin.concurrent.thread {
+                try {
+                    sf.interruptible { sf.analyse(Board(), depth = 60, multipv = 1) }
+                } catch (exc: Throwable) {
+                    raised.add(exc)
+                }
+            }
+            Thread.sleep(300)
+            sf.pause()
+            val t = android.os.SystemClock.elapsedRealtime()
+            sf.interrupt()
+            val waited = android.os.SystemClock.elapsedRealtime() - t
+            assertTrue("the interrupt waited on the paused engine: $waited ms", waited < 100)
+            Thread.sleep(300)
+            assertTrue("the search ended while the engine was held", worker.isAlive)
+            val resumed = android.os.SystemClock.elapsedRealtime()
+            sf.resume()
+            worker.join(5000)
+            val took = android.os.SystemClock.elapsedRealtime() - resumed
+            Log.i(TAG, "interrupted while paused: the search ended $took ms after the resume")
+            assertTrue("the search ran on after the resume: $took ms", !worker.isAlive && took < 1000)
+            assertTrue("$raised", raised.isNotEmpty() && raised[0] is Interrupted)
+            assertTrue(sf.analyse(Board(), depth = 6, multipv = 1).isNotEmpty())
+        }
+    }
+
     @Test
     fun theBestLineIsCarriedOnForTheCoach() {
         val engine = engine()

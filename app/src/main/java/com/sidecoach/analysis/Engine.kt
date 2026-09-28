@@ -17,6 +17,9 @@ import kotlin.concurrent.withLock
 
 class EngineUnavailable(message: String) : RuntimeException(message)
 
+/** A search inside [Engine.interruptible] was stopped by [Engine.interrupt]. */
+class Interrupted : RuntimeException()
+
 /**
  * Stockfish over UCI: one persistent process, MultiPV lines, real win-draw-loss numbers.
  * A port of `sidecoach/analysis/engine.py`.
@@ -72,6 +75,23 @@ open class Engine(
      * analysis tells the engine a new game begins (`ucinewgame`) and waits for it to be ready.
      */
     private var firstGame = true
+
+    /**
+     * Inside [interruptible]: the search running, which [interrupt] stops, and whether it has.
+     * Readable by a scripted engine, as the desktop's tests read `_interruptible` and `_stopped`.
+     */
+    @Volatile protected var interruptibleNow = false
+        private set
+    @Volatile protected var stopped = false
+        private set
+
+    /**
+     * A search inside [interruptible] is between its `go` and its `bestmove`, so a `stop` from
+     * [interrupt] reaches that search and no other: python-chess's `_search` and its `stop`,
+     * which is sent only while the search runs. Guarded by [stopping].
+     */
+    private var searching = false
+    private val stopping = Any()
 
     /** What the engine calls itself, for the log. */
     var name: String = binary.name
@@ -330,6 +350,33 @@ open class Engine(
         return line.copy(moves = moves)
     }
 
+    /**
+     * Searches that another thread may stop ([interrupt]): each throws [Interrupted] once
+     * stopped, and so does every search after it here -- a look ahead the game has overtaken is
+     * let go at once, not searched to its end first.
+     */
+    fun <T> interruptible(body: () -> T): T {
+        stopped = false
+        interruptibleNow = true
+        try {
+            return body()
+        } finally {
+            interruptibleNow = false
+        }
+    }
+
+    /**
+     * Stop the search running inside [interruptible], and the ones after it there. Safe from
+     * any thread, and while the engine is [pause]d: the `stop` waits in the pipe and ends the
+     * search the moment the engine runs on.
+     */
+    fun interrupt() {
+        synchronized(stopping) {
+            stopped = true
+            if (searching) runCatching { send("stop") }  // it may have ended just now
+        }
+    }
+
     private fun analyseWithRestart(
         board: Board,
         depth: Int?,
@@ -368,7 +415,13 @@ open class Engine(
         var pv: List<String>? = null
     }
 
+    /**
+     * `analyse`'s search; inside [interruptible], run so that [interrupt] can stop it
+     * (`_stoppable`).
+     */
     private fun search(board: Board, depth: Int?, timeS: Double?, multipv: Int): List<Info> {
+        val stoppable = interruptibleNow
+        if (stoppable && stopped) throw Interrupted()
         // What python-chess's analysis sends before the search: pondering off and analysis
         // mode on where the engine has them, the number of lines, and -- on the process's
         // first search -- a new game, waited on until the engine is ready.
@@ -388,6 +441,12 @@ open class Engine(
         // does not count against it.
         send(go.toString())
         if (timeS != null) arm((timeS * 1000).toLong())
+        if (stoppable) {
+            synchronized(stopping) {
+                searching = true
+                if (stopped) runCatching { send("stop") }  // interrupted before the search was in reach
+            }
+        }
         // python-chess's `AnalysisResult.multipv`: one merged record per index, the first there
         // from the start; its moves read against the position sent (`self.engine.board`).
         val root = board.copy(withStack = false)
@@ -398,8 +457,10 @@ open class Engine(
                 if (words.firstOrNull() == "info") post(infos, parseInfo(words, root))
             }
         } finally {
+            if (stoppable) synchronized(stopping) { searching = false }
             if (timeS != null) disarm()
         }
+        if (stoppable && stopped) throw Interrupted()
         return infos
     }
 
@@ -522,9 +583,13 @@ open class Engine(
 
     private fun send(command: String) {
         val out = writer ?: throw IOException("the engine is not running")
-        out.write(command)
-        out.write("\n")
-        out.flush()
+        // Whole, under the writer's own lock: the `stop` of [interrupt] and of [watch] can come
+        // from two threads at once, and two halves of one line are no command.
+        synchronized(out) {
+            out.write(command)
+            out.write("\n")
+            out.flush()
+        }
     }
 
     private inline fun readUntil(token: String, body: (String) -> Unit) {
