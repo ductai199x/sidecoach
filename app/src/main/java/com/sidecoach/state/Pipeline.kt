@@ -627,7 +627,9 @@ class GamePipeline(
             return mutableListOf()
         }
         game.flipSeen = null
-        return reorientRead(read!!, ts)
+        val events = reorientRead(read!!, ts)
+        if (events.isNotEmpty()) learnLabels(frame, geometry, told = false)
+        return events
     }
 
     /**
@@ -666,24 +668,25 @@ class GamePipeline(
     ): MutableList<Event> {
         val read = reread(bottom) ?: coldRead(frame, geometry, bottom) ?: return mutableListOf()
         val events = reorientRead(read, ts, endPrevious)
-        if (told && events.isNotEmpty()) learnLabels(frame, geometry)
+        if (events.isNotEmpty()) learnLabels(frame, geometry, told)
         return events
     }
 
     /**
-     * The coordinate labels learned from a board whose side the person told, when they say
-     * no side there -- learned where a start position was seen through a lock off its board,
-     * or not learned at all -- and the set saved with them, so the next board of the set
-     * reads its own side. Only a side told for this board teaches: a Flip left standing from
-     * the last puzzle would teach the next one, shown from the other side, upside down, and
-     * every read after it. Labels that read a side are kept, the Flip's or the other: learned
-     * as they read their start back, they are right, and a Flip by mistake would have taught
-     * every board of the set upside down.
+     * The coordinate labels learned from a board just adopted, when they say no side there --
+     * learned where a start position was seen through a lock off its board, or not learned at
+     * all -- and the set saved with them, so the next board of the set reads its own side.
+     * Only a side known for this board teaches: told for it ([told], a Flip), or read from its
+     * 8 ([Coordinates.eights]). A Flip left standing from the last puzzle would teach the next
+     * one, shown from the other side, upside down, and every read after it. Labels that read a
+     * side are kept, the Flip's or the other: learned as they read their start back, they are
+     * right, and a Flip by mistake would have taught every board of the set upside down.
      */
-    private fun learnLabels(frame: Mat, geometry: BoardGeometry) {
+    private fun learnLabels(frame: Mat, geometry: BoardGeometry, told: Boolean) {
         val current = model ?: return
         val side = bottom ?: return
-        if (Coordinates.readBottomSide(frame, geometry, current.rankLabels) != null) return
+        if (Coordinates.readLabels(frame, geometry, current.rankLabels) != null) return
+        if (!told && Coordinates.eights(frame, geometry) != side) return
         val labels = Coordinates.learnRankLabels(frame, geometry, side)
         if (labels.isEmpty()) return
         current.rankLabels = labels
@@ -968,7 +971,9 @@ class GamePipeline(
         }
         if (game.coldCandidate!!.second < COLD_START_HOLD) return mutableListOf()
         game.coldCandidate = null
-        return adoptCold(read, ts)
+        val events = adoptCold(read, ts)
+        if (events.isNotEmpty()) learnLabels(frame, geometry, told = false)
+        return events
     }
 
     /**

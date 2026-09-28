@@ -2,6 +2,8 @@ package com.sidecoach.vision
 
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.core.MatOfPoint
+import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
 import kotlin.math.max
@@ -52,6 +54,13 @@ object Coordinates {
     private const val CORNER_FULL = 0.6
 
     /**
+     * A hole this share of a digit's box or more is a loop: an 8's are 2.4 to 14 % on
+     * chess.com's boards (80-86 px) and rendered ones (44-110 px), the pinholes in a fantasy
+     * piece's shading that reached the corner 0.7 % (2026-09-28).
+     */
+    private const val LOOP = 0.02
+
+    /**
      * The square's colour: the median of the bands along the cell's right and bottom edges,
      * a twentieth of the cell in from the edge and as deep again.
      */
@@ -84,13 +93,34 @@ object Coordinates {
     }
 
     /**
-     * The rank digit in a cell's top-left corner as a normalised binary glyph, or null.
-     *
-     * The digit is drawn to contrast the square, so pixels far from the square's own colour
-     * are the glyph. It is cropped to its bounding box and scaled to a fixed size so digits
-     * read at slightly different pixel sizes still match.
+     * The rank digit in a cell's top-left corner as a normalised binary glyph, or null:
+     * [digit] scaled to a fixed size, so digits read at slightly different pixel sizes still
+     * match.
      */
     fun cornerGlyph(cell: Mat): BooleanArray? {
+        val found = digit(cell) ?: return null
+        val cropped = Mat.zeros(found.height, found.width, CvType.CV_8UC1)
+        cropped.put(0, 0, ByteArray(found.ink.size) { if (found.ink[it].toInt() == 1) 255.toByte() else 0 })
+        val resized = Mat()
+        Imgproc.resize(
+            cropped, resized, Size(GLYPH.toDouble(), GLYPH.toDouble()), 0.0, 0.0, Imgproc.INTER_NEAREST,
+        )
+        val out = ByteArray(GLYPH * GLYPH)
+        resized.get(0, 0, out)
+        cropped.release(); resized.release()
+        return BooleanArray(GLYPH * GLYPH) { (out[it].toInt() and 0xFF) > 127 }
+    }
+
+    /** A digit's ink cropped to its box: 1 for ink, 0 for none, row by row. */
+    private class Digit(val ink: ByteArray, val height: Int, val width: Int)
+
+    /**
+     * The rank digit in a cell's top-left corner, its ink cropped to its box, or null.
+     *
+     * The digit is drawn to contrast the square, so pixels far from the square's own colour
+     * are the digit.
+     */
+    private fun digit(cell: Mat): Digit? {
         if (cell.channels() != 3 || cell.empty()) return null
         val height = cell.rows()
         val width = cell.cols()
@@ -164,25 +194,83 @@ object Coordinates {
                 if (x > right) right = x
             }
         }
+        mask.release()
         val cropH = bottom - top + 1
         val cropW = right - left + 1
-        val cropped = Mat.zeros(cropH, cropW, CvType.CV_8UC1)
-        val croppedBytes = ByteArray(cropH * cropW)
+        val cropped = ByteArray(cropH * cropW)
         for (y in 0 until cropH) {
             for (x in 0 until cropW) {
-                croppedBytes[y * cropW + x] =
-                    if (maskBytes[(top + y) * cornerW + (left + x)].toInt() == 1) 255.toByte() else 0
+                cropped[y * cropW + x] = maskBytes[(top + y) * cornerW + (left + x)]
             }
         }
-        cropped.put(0, 0, croppedBytes)
-        val resized = Mat()
-        Imgproc.resize(
-            cropped, resized, Size(GLYPH.toDouble(), GLYPH.toDouble()), 0.0, 0.0, Imgproc.INTER_NEAREST,
-        )
-        val out = ByteArray(GLYPH * GLYPH)
-        resized.get(0, 0, out)
-        mask.release(); cropped.release(); resized.release()
-        return BooleanArray(GLYPH * GLYPH) { (out[it].toInt() and 0xFF) > 127 }
+        return Digit(cropped, cropH, cropW)
+    }
+
+    /**
+     * The closed loops in a digit's ink, each as the height of its middle in the digit (0 at
+     * the top, 1 at the foot): an 8 has two, one above the other, a 1 none, in any typeface.
+     * A hole under [LOOP] of the digit's box is a pinhole in a piece's shading, not a loop.
+     */
+    private fun loops(digit: Digit): List<Double> {
+        val h = digit.height + 2
+        val w = digit.width + 2
+        val padded = ByteArray(h * w)
+        for (y in 0 until digit.height) {
+            for (x in 0 until digit.width) padded[(y + 1) * w + (x + 1)] = digit.ink[y * digit.width + x]
+        }
+        val ink = Mat(h, w, CvType.CV_8UC1)
+        ink.put(0, 0, padded)
+        val contours = ArrayList<MatOfPoint>()
+        val hierarchy = Mat()
+        Imgproc.findContours(ink, contours, hierarchy, Imgproc.RETR_CCOMP, Imgproc.CHAIN_APPROX_NONE)
+        val heights = ArrayList<Double>()
+        val box = digit.height * digit.width
+        for (i in contours.indices) {
+            if (hierarchy.get(0, i)[3] < 0) continue
+            val inside = Mat.zeros(h, w, CvType.CV_8UC1)
+            Imgproc.drawContours(inside, listOf(contours[i]), -1, Scalar(1.0), -1)
+            val filled = ByteArray(h * w)
+            inside.get(0, 0, filled)
+            inside.release()
+            var hole = 0
+            for (j in filled.indices) if (filled[j].toInt() == 1 && padded[j].toInt() == 0) hole += 1
+            if (hole >= LOOP * box) {
+                val ys = contours[i].toArray()
+                heights.add((ys.sumOf { it.y } / ys.size - 1) / digit.height)
+            }
+        }
+        for (contour in contours) contour.release()
+        ink.release(); hierarchy.release()
+        return heights
+    }
+
+    private fun eight(digit: Digit): Boolean {
+        val found = loops(digit)
+        return found.size == 2 && found.min() < 0.5 && 0.5 < found.max()
+    }
+
+    /**
+     * Which side sits at the bottom, read from where the 8 is, with nothing learned: the
+     * corner digit with two loops at the top of the left edge and one with none at its foot
+     * is White at the bottom, the other way round Black; anything else (coordinates off, a
+     * piece over a digit) is null. Learned labels read more boards (a digit half covered
+     * still matches); this reads a board whose labels are not learned, or were learned wrong
+     * -- Tai's Pixel, 2026-09-28, the night after a start seen through an off lock cached
+     * them as solid blocks: every puzzle asked for Flip, and the 8 was there to read all
+     * along. A cell is never shrunk to read it: scaled down to the working size, the loops of
+     * an 8 closed up.
+     */
+    fun eights(frame: Mat, geometry: BoardGeometry): Pieces.Side? {
+        val size = max(Squares.CELL, pyRound(geometry.cellPx))
+        val topCell = geometry.crop(frame, 0, 0, size)
+        val footCell = geometry.crop(frame, 7, 0, size)
+        val top = digit(topCell)
+        val foot = digit(footCell)
+        topCell.release(); footCell.release()
+        if (top == null || foot == null) return null
+        if (eight(top) && loops(foot).isEmpty()) return Pieces.Side.WHITE
+        if (eight(foot) && loops(top).isEmpty()) return Pieces.Side.BLACK
+        return null
     }
 
     /**
@@ -205,7 +293,7 @@ object Coordinates {
             cell.release()
             if (glyph != null) labels[rank] = glyph
         }
-        return if (readBottomSide(frame, geometry, labels) == bottom) labels else emptyMap()
+        return if (readLabels(frame, geometry, labels) == bottom) labels else emptyMap()
     }
 
     private fun iou(a: BooleanArray, b: BooleanArray): Double {
@@ -219,7 +307,17 @@ object Coordinates {
     }
 
     /**
-     * Which side sits at the bottom, read from the edge rank digits, or null if unreadable.
+     * Which side sits at the bottom, read from the edge rank digits -- the learned labels
+     * ([readLabels]), else where the 8 is ([eights]) -- or null if unreadable.
+     */
+    fun readBottomSide(
+        frame: Mat,
+        geometry: BoardGeometry,
+        labels: Map<Int, BooleanArray>,
+    ): Pieces.Side? = readLabels(frame, geometry, labels) ?: eights(frame, geometry)
+
+    /**
+     * Which side sits at the bottom, read with the learned labels, or null if unreadable.
      *
      * Each left-edge digit is matched against the learned exemplars; the sequence down the
      * column is 8..1 for White at the bottom and 1..8 for Black. A clear majority (at least
@@ -227,7 +325,7 @@ object Coordinates {
      * can ask the user instead of guessing. A cell whose digit cannot be read is left out
      * rather than ending the read: on a mid-game board the edge cells hold pieces.
      */
-    fun readBottomSide(
+    fun readLabels(
         frame: Mat,
         geometry: BoardGeometry,
         labels: Map<Int, BooleanArray>,

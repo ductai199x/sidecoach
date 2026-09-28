@@ -707,16 +707,14 @@ def a_resync_the_other_way_up() -> list[dict]:
     return states
 
 
-def a_flip_teaches_labels() -> list[dict]:
-    """`test_a_flip_teaches_labels_that_read_no_side_and_the_next_puzzle_turns_itself` (desktop
-    3d0a201): a start seen through a lock off its board cached the labels as solid blocks
-    (`solid_labels`), so every puzzle asked for Flip, and the side flipped to stood over the
-    next puzzle, shown from the other side, which was read on its head (Tai's Pixel,
-    2026-09-27). The puzzle from Black's side is explained as its orientation; the Flip reads
-    it at once, the labels learn from it and are cached with the set; the next puzzle, from
-    White's side, turns round by its labels, the Flip notwithstanding. The desktop's test reads
-    the cached labels back; here a fresh pipeline on the cache adopts the puzzle from Black's
-    side by them, unasked."""
+def labels_read_past_by_the_8() -> list[dict]:
+    """`test_labels_cached_wrong_are_read_past_by_the_8_and_learned_again` (desktop 495dee2): a
+    start seen through a lock off its board cached the labels as solid blocks
+    (`solid_labels`), so every puzzle asked for Flip (Tai's Pixel, 2026-09-27). The 8 reads the
+    side with nothing learned: the puzzle from Black's side is taken up by itself, unasked, and
+    its labels learned from it; the next puzzle, from White's side, turns round; a fresh
+    pipeline on the cache takes the puzzle from Black's side up again. The desktop's test reads
+    the cached labels back."""
     turned = dict(board=chess.Board(TURNED), theme="green", style="staunty", bottom=Side.BLACK)
     puzzle = dict(board=chess.Board(PUZZLE), theme="green", style="staunty", highlight=PUZZLE_LAST)
 
@@ -732,9 +730,6 @@ def a_flip_teaches_labels() -> list[dict]:
         dict(board_kwargs(board=chess.Board(), theme="green", style="staunty"), _repeat=3, _session=True),
         {"_call": {"solid_labels": True}},
         watch(turned, 8.0, 0.0, _session=True),
-        # The panel's Flip: the side told, and the board read that way now.
-        {"_call": {"forced_bottom": "black"}},
-        {"_call": {"reorient": "black", "told": True}, "_ts": 10.0},
         watch(puzzle, 3.0, 20.0),
         watch(turned, 3.0, 30.0, _session=True),
     ]
@@ -877,7 +872,7 @@ SCENARIOS = {
     "slow-jump": a_jump_on_a_slow_stream,
     "resync-turned": a_resync_the_other_way_up,
     "flip-joined": flip_a_joined_position,
-    "flip-teaches-labels": a_flip_teaches_labels,
+    "labels-read-past-by-8": labels_read_past_by_the_8,
     **{name: (lambda args=args: moved_any_fraction(*args)) for name, args in MOVED.items()},
     "resized-fantasy-32-48": lambda: resized_half_again("fantasy", 32, 48),
 }
@@ -898,7 +893,7 @@ READ_ONCE = {
     "slow-jump",
     "resync-turned",
     "flip-joined",
-    "flip-teaches-labels",
+    "labels-read-past-by-8",
     *MOVED,
     "resized-fantasy-32-48",
 }
@@ -959,11 +954,10 @@ EXPECT = {
         == ["GameEnded * board reoriented"]
         and sum(line.startswith("GameStarted position") for line in lines) == 2
     ),
-    "flip-teaches-labels": lambda lines, data: (
+    "labels-read-past-by-8": lambda lines, data: (
         [" ".join(line.split()[:3]) for line in lines if line.startswith(("BoardUnread", "GameStarted"))]
         == [
             "GameStarted game white",
-            "BoardUnread orientation",
             "GameStarted position black",
             "GameStarted position white",
             "GameStarted position black",
@@ -1010,7 +1004,7 @@ def _call(pipeline: GamePipeline, call: dict, image, ts: float) -> list:
         return pipeline.reorient(image, geometry, Side(call["reorient"]), ts, told=told)
     if "solid_labels" in call:
         # The set's rank labels cached as solid blocks, as a start seen through a lock off
-        # its board cached them (`test_a_flip_teaches_labels_...`).
+        # its board cached them (`_cached_wrong` in the desktop's tests).
         model = pipeline.model
         assert pipeline.cache is not None and model is not None, "no set learned to spoil"
         [(key, cached)] = pipeline.cache.candidates(model.light_bg, model.dark_bg)

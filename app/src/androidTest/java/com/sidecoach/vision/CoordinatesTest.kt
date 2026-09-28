@@ -1,12 +1,14 @@
 package com.sidecoach.vision
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.opencv.android.OpenCVLoader
+import org.opencv.android.Utils
 import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.Point
@@ -39,6 +41,41 @@ class CoordinatesTest {
         }
         assertEquals((1..8).toList(), Coordinates.learnRankLabels(board, GEOM, Pieces.Side.WHITE).keys.sorted())
         board.release()
+    }
+
+    /**
+     * `test_the_8_reads_the_side_with_nothing_learned` (desktop 495dee2), its real boards:
+     * where the 8 is, at the top of the left edge or at its foot, says which side is at the
+     * bottom with nothing learned -- read through labels cached as solid blocks, as Tai's
+     * were: the board of his puzzle on the Pixel (84 px, Black at the bottom) and a chess.com
+     * start (80 px, White). The desktop's rendered boards are read on the phone by the
+     * pipeline fixture `labels-read-past-by-8`.
+     */
+    @Test
+    fun the8ReadsTheSideWithNothingLearned() {
+        val solid = (1..8).associateWith { BooleanArray(Coordinates.GLYPH * Coordinates.GLYPH) { true } }
+        val puzzle = load("chesscom_puzzle_black_84.png")
+        val onPhone = BoardGeometry(Region(0, 0, 672, 672), 84.0)
+        assertEquals(Pieces.Side.BLACK, Coordinates.eights(puzzle, onPhone))
+        assertEquals(Pieces.Side.BLACK, Coordinates.readBottomSide(puzzle, onPhone, solid))
+        val start = load("chesscom_start.png")
+        val board = BoardGeometry(Region(24, 24, 641, 641), 80.1176513566025)
+        assertEquals(Pieces.Side.WHITE, Coordinates.readBottomSide(start, board, solid))
+        puzzle.release(); start.release()
+    }
+
+    private fun load(file: String): Mat {
+        val context = InstrumentationRegistry.getInstrumentation().context
+        val bitmap = context.assets.open("coordinates/$file").use {
+            android.graphics.BitmapFactory.decodeStream(it)
+        }
+        val rgba = Mat()
+        Utils.bitmapToMat(bitmap, rgba)
+        val bgr = Mat()
+        Imgproc.cvtColor(rgba, bgr, Imgproc.COLOR_RGBA2BGR)
+        rgba.release()
+        bitmap.recycle()
+        return bgr
     }
 
     /** An 8x8 board; when [bottom] is set, rank digits are drawn in the left-edge corners. */
