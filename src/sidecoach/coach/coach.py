@@ -3192,6 +3192,12 @@ class Coach:
                 out.append(entry.text)
         return out
 
+    def _following_up(self, said: str) -> bool:
+        """Whether the player's words follow up what the coach has said since the last move,
+        not an answer to its question: the verdict and the better move were told already,
+        and a follow-up gets only what it asks."""
+        return not self._answering_our_question(said) and bool(self._said_since_move())
+
     def _answering_our_question(self, said: str) -> bool:
         """Whether the player's words answer the question the coach just asked: its last
         turn ended with one, nothing has happened since, and their words ask nothing."""
@@ -3551,8 +3557,11 @@ class Coach:
         facts = position.facts
         own = self._asked_own_move(said) if trigger is Trigger.USER_ASK else None
         if own is not None:
-            # "Why was that bad?": the lesson on their last move, as after it.
-            if own.move.ply != position.ply + 1:
+            # "Why was that bad?": the lesson on their last move, as after it. Not on a
+            # follow-up, which the directive tells not to repeat the better move: requiring
+            # it refused every obedient reply, and the template said the verdict again (the
+            # prompt audit, 2026-09-28).
+            if own.move.ply != position.ply + 1 or self._following_up(said):
                 return ()
             trigger, assessment, played = Trigger.POST_MISTAKE, own.assessment, own.move
         if trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE):
@@ -4050,7 +4059,7 @@ class Coach:
         # costing 41% of the game; Nxc3 was better" twice running), and "I understand: I
         # should play Nxc3" got the lesson again and "Which White piece is still at home on
         # g1?" (the AI's sessions, 2026-09-26).
-        followup = not answering and bool(self._said_since_move())
+        followup = self._following_up(said)
         asks = bool(question_part(said))
         follow = (
             " You have already told them the verdict on it and the better move, in your turns "

@@ -1422,6 +1422,22 @@ def test_a_follow_up_gets_what_it_asks_and_a_nod_one_sentence() -> None:
     assert "Answer only what they ask now" in directive and "do not repeat either" in directive
 
 
+def test_a_follow_up_about_their_move_need_not_name_the_better_move_again() -> None:
+    """The follow-up's directive says not to repeat the better move, and the check that a
+    reply names it refused every reply that obeyed; after two, the template said the verdict
+    again (the prompt audit, 2026-09-28). The floor, the lesson again, goes with it."""
+    coach, provider = _coach(["...", "..."])
+    _bishop_check_instead_of_mate(coach)
+    with coach._lock:
+        coach.conversation.coach_said("That one cost you: Qxf7# was better -- it is mate.")
+    reply = "A check that leads nowhere only hands their king a free move."
+    provider.replies = [reply, reply]
+    coach.ask("Why does the bishop check not work?", 13.0)
+    out = _messages(coach)
+    assert "says at least this" not in _directive(_given(provider))
+    assert out and out[-1].text == reply
+
+
 def test_what_a_move_cost_is_said_when_they_ask_it() -> None:
     coach, provider = _coach(["...", "..."])
     _bishop_check_instead_of_mate(coach)
