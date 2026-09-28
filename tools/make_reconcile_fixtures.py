@@ -41,6 +41,7 @@ import itertools
 import json
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 import chess
@@ -360,6 +361,59 @@ RECORDED: dict[str, list[str] | None] = {
     "tests.test_slides": ["test_a_move_seen_sliding_across_squares_is_one_move"],
 }
 
+
+# Desktop tests since folded into others there (the test audit of 2026-09-28: another test
+# pins the same behaviour), whose games are still recorded here under the names they had --
+# their frames as they showed them, and their assertions -- so the fixture keeps every case.
+def _a_draw_badge_is_not_read_until_one_is_on_record() -> None:
+    from sidecoach.state.pipeline import BADGE_FRAMES
+    from tests.test_result_badges import Game
+
+    g = Game()
+    g.play("e4", "e5", "Nf3", "Nc6")
+    new = g.show(BADGE_FRAMES + 2, highlight=chess.Move.from_uci("b8c6"), result="1/2-1/2")
+    assert not any(isinstance(e, GameEnded) for e in new)
+
+
+def _a_flag_is_a_loss_on_time() -> None:
+    from sidecoach.state.pipeline import BADGE_FRAMES
+    from tests.test_result_badges import Game
+
+    g = Game()
+    g.play("e4", "e5")
+    g.pipe._last_clock = (0, 240000, None)  # white's clock at zero
+    new = g.show(BADGE_FRAMES, highlight=chess.Move.from_uci("e7e5"), result="0-1")
+    ended = [e for e in new if isinstance(e, GameEnded)]
+    assert [(e.result, e.reason) for e in ended] == [("0-1", "lost on time")]
+
+
+def _a_transition_emits_once_not_every_frame() -> None:
+    from sidecoach.events import ScreenState, ScreenStateChanged
+    from sidecoach.state.pipeline import GamePipeline
+
+    pipe = GamePipeline()
+    board = chess.Board()
+    ts = 0.0
+    events = []
+    for _ in range(6):
+        events += pipe.process(synth.synthetic_board(board=board), ts)
+        ts += 0.1
+    states = [e.state for e in events if isinstance(e, ScreenStateChanged)]
+    assert states.count(ScreenState.LIVE_GAME) == 1
+
+
+KEPT: dict[str, dict[str, Callable[[], None]]] = {
+    "tests.test_result_badges": {
+        "test_a_draw_badge_is_not_read_until_one_is_on_record": (
+            _a_draw_badge_is_not_read_until_one_is_on_record
+        ),
+        "test_a_flag_is_a_loss_on_time": _a_flag_is_a_loss_on_time,
+    },
+    "tests.test_screen_state": {
+        "test_a_transition_emits_once_not_every_frame": _a_transition_emits_once_not_every_frame,
+    },
+}
+
 # The reconciler's tunables: dataclass fields a test may build it with or set.
 TUNABLES = (
     "settle_frames",
@@ -642,9 +696,10 @@ def record_tests() -> dict:
         module = importlib.import_module(module_name)
         if hasattr(module, "Reconciler"):
             module.Reconciler = _Recording
-        names = wanted or [n for n in dir(module) if n.startswith("test_")]
+        kept = KEPT.get(module_name, {})
+        names = wanted or sorted({n for n in dir(module) if n.startswith("test_")} | set(kept))
         for test_name in names:
-            func = getattr(module, test_name)
+            func = kept.get(test_name) or getattr(module, test_name)
             for label, params in _cases(func):
                 name = f"{module_name.split('.')[-1]}::{test_name}" + (f"[{label}]" if label else "")
                 with tempfile.TemporaryDirectory() as tmp:
