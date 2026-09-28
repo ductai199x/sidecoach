@@ -474,7 +474,7 @@ object BoardRefine {
 
     /**
      * The (offset, pitch) of the best comb over a gradient profile: the offset within
-     * [offsetCells] cells of [start], the pitch within [search] of [pitch].
+     * [offsetCells] cells of [start], the pitch within [BoardDetect.PITCH_SEARCH] of [pitch].
      *
      * The teeth are the boundaries between the cells, which show whatever lies around the
      * board. Its outer edges are not teeth: against the frame's edge or past it, or on a
@@ -503,7 +503,6 @@ object BoardRefine {
         profile: DoubleArray,
         start: Double,
         pitch: Double,
-        search: Double,
         offsetCells: Double,
     ): Pair<Double, Double> {
         val step = max(0.25, pitch * 0.01)
@@ -537,7 +536,7 @@ object BoardRefine {
         val reach = pitch * offsetCells
         val (o, p) = bestOver(
             blurred(profile, ceil(3.5 * step).toInt()),
-            Numpy.arange(pitch * (1 - search), pitch * (1 + search), step),
+            Numpy.arange(pitch * (1 - BoardDetect.PITCH_SEARCH), pitch * (1 + BoardDetect.PITCH_SEARCH), step),
             Numpy.arange(start - reach, start + reach, 1.0),
         )
         val span = max(1.0, 4.0 * step)
@@ -578,7 +577,6 @@ object BoardRefine {
     fun refine(
         gray: Plane,
         candidate: BoardCandidate,
-        search: Double = 0.12,
         offsetCells: Double = 0.6,
         colours: Colours? = null,
     ): Refinement {
@@ -607,8 +605,8 @@ object BoardRefine {
             val weight = boundaryWeight(crop, xLo, yLo, fitted, medians, read, band)
             profileX = gradientProfile(crop, 1, weight)
             profileY = gradientProfile(crop, 0, weight)
-            val (ox, px) = combFit(profileX, (fitted.region.x - xLo).toDouble(), cell, search, offsetCells)
-            val (oy, py) = combFit(profileY, (fitted.region.y - yLo).toDouble(), cell, search, offsetCells)
+            val (ox, px) = combFit(profileX, (fitted.region.x - xLo).toDouble(), cell, offsetCells)
+            val (oy, py) = combFit(profileY, (fitted.region.y - yLo).toDouble(), cell, offsetCells)
             val pitch = (px + py) / 2.0
             originX = xLo + ox
             originY = yLo + oy

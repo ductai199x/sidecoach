@@ -145,90 +145,17 @@ class BoardTracker(
 
     fun update(gray: Plane): BoardCandidate? {
         val held = board
-        if (held != null) {
-            framesSinceRefine++
-            var candidate = held
-            var (fit, contrast) = fitScore(gray, candidate.region, candidate.cellPx, colours)
-            // A frame that fails is re-fitted at once, the first of a run of failures, with the
-            // lock's own colours: a board that moved a fraction of a cell is likelier than a
-            // new theme, and read where the lock is, its squares' colours come out mixed. Read
-            // afresh there first, the mixed colours validated, the lock kept them, and the
-            // periodic re-fit read the board itself in them as nothing: the lock stayed an
-            // eighth of a cell off for good (the desktop's near-edge sweep, 2026-09-27).
-            val failedFirst = !passes(fit, contrast) && misses == 0
-            if (framesSinceRefine >= refineEvery || failedFirst) {
-                framesSinceRefine = 0
-                val refitColours = colours
-                val atLock = candidate
-                val refit = once(gray, listOf("refine", atLock, refineOffsetCells, refitColours)) {
-                    BoardRefine.refine(gray, atLock, offsetCells = refineOffsetCells, colours = refitColours)
-                }
-                // A re-fit is adopted only when it validates on its own, and then only when
-                // this frame failed at the lock's geometry or the re-fit's comb is clearly
-                // stronger. The fit score cannot arbitrate: it is blind to shifts of up to
-                // a third of a cell. A re-fit that fails never costs the lock.
-                val refined = refit.board
-                if (passes(refined.fit, refined.contrast) &&
-                    (
-                        !passes(fit, contrast) ||
-                            (
-                                refit.strength > refitGain * refit.reference &&
-                                    edgeShift(atLock.region, refined.region) > refitDeadbandPx
-                                )
-                        )
-                ) {
-                    if (edgeShift(atLock.region, refined.region) > refitDeadbandPx) {
-                        // The board is moving: it is re-fitted the next frame too, until a
-                        // re-fit finds it where the lock is. Fitted once mid-slide and left,
-                        // the lock trailed the board by a quarter of a cell once it stopped,
-                        // under what validation sees, until the next re-fit ten frames on, and
-                        // no move was read (the desktop's geometry sweep, 2026-09-27, seed 83).
-                        framesSinceRefine = refineEvery
-                    }
-                    candidate = refined
-                    fit = refined.fit
-                    contrast = refined.contrast
-                }
-            }
-            val lockColours = colours
-            if (!passes(fit, contrast) && lockColours != null) {
-                // The theme may have changed between games with the board in place: a
-                // fresh palette that validates, outer ring included, re-locks the colours.
-                // A dialog over most of the board fails this too, since its palette is the
-                // dialog, so it cannot rewrite the lock.
-                // A new theme keeps the board where it was, its light squares the lighter
-                // ones: a palette whose light and dark swap places is the board read a
-                // cell off (moved 0.8 of a cell up, the lock re-read its colours inverted
-                // and stayed where the board was: the parity audit's sweep, 2026-09-26).
-                val (freshFit, freshContrast) = fitScore(gray, candidate.region, candidate.cellPx, null)
-                val fresh = squareColours(gray, candidate.region, candidate.cellPx)
-                if (passes(freshFit, freshContrast) &&
-                    fresh != null &&
-                    (fresh.light > fresh.dark) == (lockColours.light > lockColours.dark)
-                ) {
-                    colours = fresh
-                    fit = freshFit
-                    contrast = freshContrast
-                    readable = 0 // a new palette: what it reads is counted afresh
-                }
-            }
-            val now = colours
-            val cells = if (now != null && passes(fit, contrast)) {
-                readableCells(gray, candidate.region, candidate.cellPx, now)
-            } else {
-                0
-            }
-            if (passes(fit, contrast) && lostCells(cells)) {
-                val moved = probe(gray, candidate)
-                if (moved != null) return moved
-            }
-            if (passes(fit, contrast)) {
-                misses = 0
-                readable = maxOf(readable, cells)
-                board = candidate.copy(fit = fit, contrast = contrast)
-                lastCellPx = board?.cellPx
-                return board
-            }
+        if (held == null) {
+            // Without a board on screen, searching every frame would stall the capture. The
+            // search near the last cell size is cheap and runs every few frames, so a window
+            // that comes back, or was covered for a moment, re-locks within a few frames; the
+            // full multi-scale search backs off for longer.
+            val full = fullWait.ready()
+            val near = nearWait.ready() && lastCellPx != null
+            return if (full || near) search(gray, full) else null
+        }
+        val (candidate, fit, contrast) = check(gray)
+        if (!passes(fit, contrast)) {
             misses++
             if (misses < maxMisses) {
                 // Held, not verified: the geometry is the last good one and the fit is this
@@ -238,17 +165,89 @@ class BoardTracker(
             }
             board = null
             colours = null
-        } else {
-            // Without a board on screen, searching every frame would stall the capture. The
-            // search near the last cell size is cheap and runs every few frames, so a window
-            // that comes back, or was covered for a moment, re-locks within a few frames; the
-            // full multi-scale search backs off for longer.
-            val full = fullWait.ready()
-            val near = nearWait.ready() && lastCellPx != null
-            if (!full && !near) return null
-            return search(gray, full)
+            return search(gray, true)
         }
-        return search(gray, true)
+        val now = colours
+        val cells = if (now != null) readableCells(gray, candidate.region, candidate.cellPx, now) else 0
+        if (lostCells(cells)) {
+            val moved = probe(gray, candidate)
+            if (moved != null) return moved
+        }
+        misses = 0
+        readable = maxOf(readable, cells)
+        board = candidate.copy(fit = fit, contrast = contrast)
+        lastCellPx = board?.cellPx
+        return board
+    }
+
+    /**
+     * The lock on this frame: its geometry, fit and contrast. Re-fitted when due, and at once
+     * on the first frame it fails; still failing, its palette is read afresh (`tracker._check`).
+     */
+    private fun check(gray: Plane): Triple<BoardCandidate, Double, Double> {
+        framesSinceRefine++
+        var candidate = checkNotNull(board)
+        var (fit, contrast) = fitScore(gray, candidate.region, candidate.cellPx, colours)
+        // A frame that fails is re-fitted at once, the first of a run of failures, with the
+        // lock's own colours: a board that moved a fraction of a cell is likelier than a new
+        // theme, and read where the lock is, its squares' colours come out mixed. Read afresh
+        // there first, the mixed colours validated, the lock kept them, and the periodic re-fit
+        // read the board itself in them as nothing: the lock stayed an eighth of a cell off for
+        // good (the desktop's near-edge sweep, 2026-09-27).
+        val failedFirst = !passes(fit, contrast) && misses == 0
+        if (framesSinceRefine >= refineEvery || failedFirst) {
+            framesSinceRefine = 0
+            val refitColours = colours
+            val atLock = candidate
+            val refit = once(gray, listOf("refine", atLock, refineOffsetCells, refitColours)) {
+                BoardRefine.refine(gray, atLock, offsetCells = refineOffsetCells, colours = refitColours)
+            }
+            // A re-fit is adopted only when it validates on its own, and then only when this
+            // frame failed at the lock's geometry or the re-fit moved it and its boundary comb is
+            // clearly stronger than the comb there. The fit score cannot arbitrate: it is blind
+            // to shifts of up to a third of a cell, so a drifted geometry can still score 1.0
+            // while the corrected one loses a cell to a badge. A re-fit that fails never costs
+            // the lock; the region and the fit it measured itself stand.
+            val refined = refit.board
+            val moved = edgeShift(atLock.region, refined.region) > refitDeadbandPx
+            if (passes(refined.fit, refined.contrast) &&
+                (!passes(fit, contrast) || (moved && refit.strength > refitGain * refit.reference))
+            ) {
+                if (moved) {
+                    // The board is moving: it is re-fitted the next frame too, until a re-fit
+                    // finds it where the lock is. Fitted once mid-slide and left, the lock
+                    // trailed the board by a quarter of a cell once it stopped, under what
+                    // validation sees, until the next re-fit ten frames on, and no move was read
+                    // (the desktop's geometry sweep, 2026-09-27, seed 83).
+                    framesSinceRefine = refineEvery
+                }
+                candidate = refined
+                fit = refined.fit
+                contrast = refined.contrast
+            }
+        }
+        val lockColours = colours
+        if (!passes(fit, contrast) && lockColours != null) {
+            // The theme may have changed between games with the board in place: a fresh
+            // palette that validates, outer ring included, re-locks the colours. A dialog over
+            // most of the board fails this too, since its palette is the dialog, so it cannot
+            // rewrite the lock. A new theme keeps the board where it was, its light squares the
+            // lighter ones: a palette whose light and dark swap places is the board read a cell
+            // off (moved 0.8 of a cell up, the lock re-read its colours inverted and stayed
+            // where the board was: the parity audit's sweep, 2026-09-26).
+            val (freshFit, freshContrast) = fitScore(gray, candidate.region, candidate.cellPx, null)
+            val fresh = squareColours(gray, candidate.region, candidate.cellPx)
+            if (passes(freshFit, freshContrast) &&
+                fresh != null &&
+                (fresh.light > fresh.dark) == (lockColours.light > lockColours.dark)
+            ) {
+                colours = fresh
+                fit = freshFit
+                contrast = freshContrast
+                readable = 0 // a new palette: what it reads is counted afresh
+            }
+        }
+        return Triple(candidate, fit, contrast)
     }
 
     /** Detection with the lock gone; a board found is locked, and a miss backs off (`_search`). */
@@ -329,7 +328,7 @@ class BoardTracker(
         if (count) detections++
         val last = lastCellPx
         if (last != null) {
-            val minCell = maxOf(8, (last * 0.8).toInt())
+            val minCell = maxOf(BoardDetect.MIN_CELL_PX, (last * 0.8).toInt())
             val maxCell = (last * 1.25).toInt() + 1
             val near = once(gray, listOf("detect", minCell, maxCell)) {
                 BoardDetect.detect(gray, minFit = minFit, minContrast = minContrast, minCell = minCell, maxCell = maxCell)

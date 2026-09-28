@@ -37,8 +37,14 @@ object BoardDetect {
 
     const val MIN_READABLE_CELLS = 24
 
+    /** The smallest cell looked for: a 192 px board. Below it a set's pieces are a few pixels. */
+    const val MIN_CELL_PX = 24
+
     /** Boards whose width is within this fraction of the largest are one size to the ranking. */
     const val SAME_SIZE = 0.95
+
+    /** How far the fitted pitch may be from the candidate's: a coarse scale step, a small resize. */
+    const val PITCH_SEARCH = 0.12
 
     /** The checker pattern's sign for each cell, light (+1) at the top-left. */
     val SIGNS = FloatArray(64) { if (((it / 8) + (it % 8)) % 2 == 0) 1f else -1f }
@@ -66,35 +72,27 @@ object BoardDetect {
         topK: Int = 3,
         minFit: Double = 0.85,
         minContrast: Double = 6.0,
-        minCell: Int = 24,
+        minCell: Int = MIN_CELL_PX,
         maxCell: Int? = null,
     ): List<BoardCandidate> {
         val coarse = coarseSearch(gray, minCell = minCell, maxCell = maxCell, minContrast = 0.6 * minContrast)
         val refined = coarse.take(topK * 4).map { BoardRefine.refine(gray, it).board }
         val good = nms(refined.filter { it.fit >= minFit && it.contrast >= minContrast }) { it.fit }
-        // Size first, then fit, so a window that is part board and part background, which
-        // can pass on a palette read from itself, never outranks a clean board; the
-        // occupied count only decides between boards of one size and fit.
-        val ranked = good.sortedWith(
-            compareByDescending<BoardCandidate> { it.region.w }
+        // Size first; among boards of about the size of the largest ([SAME_SIZE]), the one that
+        // reads more of its cells as squares -- a window 4 px wider, part board and part
+        // background (24 cells readable against the board's 64), outranked a board moved two
+        // cells away and the game was never read again (the parity audit's sweep, 2026-09-26);
+        // then fit, and the occupied count between boards of one size and fit. One key, the
+        // sort stable as Python's is.
+        val widest = good.maxOfOrNull { it.region.w } ?: 0
+        fun peer(c: BoardCandidate): Boolean = c.region.w >= SAME_SIZE * widest
+        return good.sortedWith(
+            compareByDescending<BoardCandidate> { peer(it) }
+                .thenByDescending { if (peer(it)) it.readable else 0 }
+                .thenByDescending { it.region.w }
                 .thenByDescending { it.fit }
                 .thenByDescending { it.occupied },
-        ).toMutableList()
-        if (ranked.isNotEmpty()) {
-            // Among boards of about the size of the largest, the one that reads more of its
-            // cells as squares comes first: a window 4 px wider, part board and part
-            // background (24 cells readable against the board's 64), outranked a board moved
-            // two cells away and the game was never read again (the parity audit's sweep,
-            // 2026-09-26). The first of the most readable, as Python's `max` keeps it.
-            val widest = ranked[0].region.w
-            val peers = ranked.filter { it.region.w >= SAME_SIZE * widest }
-            val best = peers.maxWith(
-                compareBy<BoardCandidate> { it.readable }.thenBy { it.fit }.thenBy { it.occupied },
-            )
-            ranked.remove(best)
-            ranked.add(0, best)
-        }
-        return ranked.take(topK)
+        ).take(topK)
     }
 
     /**
@@ -108,7 +106,7 @@ object BoardDetect {
      */
     fun coarseSearch(
         gray: Plane,
-        minCell: Int = 24,
+        minCell: Int = MIN_CELL_PX,
         maxCell: Int? = null,
         workCell: Int = 8,
         scaleStep: Double = 1.06,
