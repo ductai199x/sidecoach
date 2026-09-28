@@ -530,12 +530,12 @@ class Analyser:
         # The positions to look ahead at, with how many moves ahead each is, and whether
         # the worker is looking ahead now (a request then interrupts it).
         self._ahead: list[tuple[chess.Board, int]] = []
-        # The positions after the player's own moves whose full measure gave way to the
-        # opponent's reply (`_yielding`), measured again once the reply's position has been;
-        # changed with the count of work owed, under `_count_lock`.
+        # The game's positions whose full measure gave way to a newer request (`_yielding`),
+        # measured again once the worker is free; changed with the count of work owed, under
+        # `_count_lock`.
         self._deferred: list[tuple[_Request, chess.Board]] = []
-        # Whether the worker is on a search a request interrupts: a look ahead, or a position
-        # the player is about to leave.
+        # Whether the worker is on a search a request interrupts: a look ahead, or a full
+        # measure of one of the game's positions.
         self._looking = False
         self.looked = 0  # positions measured ahead
 
@@ -792,7 +792,9 @@ class Analyser:
             self._looking = False
 
     def _resume(self, request: _Request, board: chess.Board) -> None:
-        """A position whose full measure gave way, measured again now the worker is free."""
+        """A position whose full measure gave way, measured again now the worker is free --
+        the request current meanwhile, so a takeback lets go of it as of any other."""
+        self._current = request
         try:
             if request.withdrawn:
                 return
@@ -803,6 +805,7 @@ class Analyser:
             self.failures += 1
             self.last_error = f"{type(exc).__name__}: {exc}"
         finally:
+            self._current = None
             self._settle()
 
     def _plan_ahead(self, board: chess.Board, lines: list[Line]) -> None:
