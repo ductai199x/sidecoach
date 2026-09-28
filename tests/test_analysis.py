@@ -780,12 +780,17 @@ def test_each_depth_is_delivered_as_the_search_finishes_it(engine: Engine) -> No
 
 
 class _StoppableEngine(FakeEngine):
-    """A fake engine whose searches ahead run until `interrupt` stops them."""
+    """A fake engine whose searches of the positions ahead (`ahead`) run until `interrupt`
+    stops them; the game's own are answered at once."""
+
+    def __init__(self, answers: dict[str, list[Line]], ahead: set[str]) -> None:
+        super().__init__(answers)
+        self.ahead = ahead
 
     def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
         from sidecoach.analysis.engine import Interrupted
 
-        if self._interruptible:
+        if self._interruptible and board.fen() in self.ahead:
             self._stopped.wait(5)
             raise Interrupted
         return super().analyse(board, **kwargs)
@@ -794,7 +799,9 @@ class _StoppableEngine(FakeEngine):
 def test_a_move_played_stops_the_look_ahead_at_once() -> None:
     """A search ahead of the game is let go the moment a move of the game's own comes: the
     move never waits for a position it did not go to."""
-    fake = _StoppableEngine({chess.Board().fen(): [_line("e2e4"), _line("d2d4")]})
+    fake = _StoppableEngine(
+        {chess.Board().fen(): [_line("e2e4"), _line("d2d4")]}, {_after("e4"), _after("d4")}
+    )
     annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
     with Analyser(annotator, look_ahead=2) as analyser:
         analyser.submit_position("g", chess.Board(), 0)

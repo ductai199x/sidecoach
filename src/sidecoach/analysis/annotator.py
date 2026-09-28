@@ -665,13 +665,9 @@ class Analyser:
             try:
                 if request.move is None:
                     early = self._early(request, request.board)
-                    event = self.annotator.analysis_event(
-                        request.game_id,
-                        request.board,
-                        request.ply,
-                        on_depth=self._deepening(request, request.board, early),
-                    )
-                    if not request.withdrawn:
+                    deepening = self._deepening(request, request.board, early)
+                    event = self._yielding(request, request.board, deepening)
+                    if event is not None and not request.withdrawn:
                         self._results.put(event)
                         self._plan_ahead(request.board, event.lines)
                 else:
@@ -697,21 +693,16 @@ class Analyser:
                         self.skipped += 1
                         self._behind_until = time.monotonic() + BEHIND_S
                     hurry = time.monotonic() < self._behind_until
-                    if request.by_user and not (behind or hurry):
-                        # The position after the player's own move is left the moment the
-                        # opponent replies, and the reply's position is the one they face.
-                        event = self._yielding(request, after)
+                    if behind or hurry:
+                        event = self.annotator.analysis_event(
+                            request.game_id, after, request.ply, thin=behind, hurry=hurry
+                        )
+                    else:
+                        event = self._yielding(
+                            request, after, self._deepening(request, after, early)
+                        )
                         if event is None:
                             continue
-                    else:
-                        event = self.annotator.analysis_event(
-                            request.game_id,
-                            after,
-                            request.ply,
-                            thin=behind,
-                            hurry=hurry,
-                            on_depth=None if behind else self._deepening(request, after, early),
-                        )
                     self._results.put(event)
                     if not (behind or hurry):
                         self._plan_ahead(after, event.lines)
@@ -770,18 +761,27 @@ class Analyser:
                 return self._requests.get()
             self._look_ahead(*ahead.pop(0), ahead)
 
-    def _yielding(self, request: _Request, board: chess.Board) -> Analysis | None:
-        """The position measured whole, giving way to any request: interrupted, it waits in
-        `_deferred` for the worker to be free again, still owed (`pending`), and None is
-        returned (Tai's puzzles, 2026-09-28: the site replies 0.6 s after the player's move,
-        and the position they then faced waited behind the full measure of the one they had
-        left)."""
+    def _yielding(
+        self,
+        request: _Request,
+        board: chess.Board,
+        on_depth: Callable[[list[Line]], None] | None = None,
+    ) -> Analysis | None:
+        """The game's position measured whole, giving way to any newer request: the game has
+        moved on, and its new position comes first. Interrupted, it waits in `_deferred` for
+        the worker to be free again, still owed (`pending`), and None is returned (Tai's
+        puzzles, 2026-09-28: the site replies 0.6 s after the player's move and a puzzle's
+        setup move comes 0.6 s after it appears, and the position the player then faced
+        waited behind the full measure of the one before it -- up to five seconds to its
+        first answer)."""
         self._looking = True
         try:
             with self.annotator.engine.interruptible():
                 if not self._requests.empty():
                     raise Interrupted
-                return self.annotator.analysis_event(request.game_id, board, request.ply)
+                return self.annotator.analysis_event(
+                    request.game_id, board, request.ply, on_depth=on_depth
+                )
         except Interrupted:
             with self._count_lock:
                 self._outstanding += 1
