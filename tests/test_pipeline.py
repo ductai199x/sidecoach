@@ -68,43 +68,6 @@ def test_pipeline_bootstraps_and_rebootstraps_on_new_theme() -> None:
     assert pipe.reconciler is not None and pipe.reconciler.board.fen() == board.fen()
 
 
-def test_new_game_same_orientation_new_theme_rebuilds_recogniser() -> None:
-    """The reconciler spots the start position itself; the pipeline still rebuilds the model."""
-    pipe = GamePipeline()
-    board = chess.Board()
-    ts = 0.0
-    for _ in range(2):
-        pipe.process(synthetic_board(board=board), ts)
-        ts += 0.1
-    for san in ("e4", "e5"):
-        move = board.push_san(san)
-        for _ in range(2):
-            pipe.process(synthetic_board(board=board, highlight=move), ts)
-            ts += 0.1
-    assert pipe.reconciler is not None and len(pipe.reconciler.board.move_stack) == 2
-
-    board = chess.Board()
-    events = []
-    for _ in range(3):
-        events += pipe.process(synthetic_board(board=board, light=BROWN_LIGHT, dark=BROWN_DARK), ts)
-        ts += 0.1
-    ended = [e for e in events if isinstance(e, GameEnded)]
-    assert ended and ended[0].pgn == "1. e4 e5"
-    assert any(isinstance(e, GameStarted) for e in events)
-    assert pipe.bootstraps == 2
-
-    events = []
-    for san in ("c4", "c5"):
-        move = board.push_san(san)
-        for _ in range(2):
-            events += pipe.process(
-                synthetic_board(board=board, light=BROWN_LIGHT, dark=BROWN_DARK, highlight=move),
-                ts,
-            )
-            ts += 0.1
-    assert _sans(events) == ["c4", "c5"]
-
-
 def _start_game(pipe: GamePipeline, ts: float, **theme) -> tuple[chess.Board, float]:
     board = chess.Board()
     for _ in range(2):
@@ -210,53 +173,51 @@ def _start_frames(pipe: GamePipeline, ts: float, frames: int = 2, **kw) -> tuple
     return events, ts
 
 
-def test_board_flipped_before_the_first_move_keeps_the_game() -> None:
-    """Watching the pre-game board as white, then paired as black: the board flips."""
+@pytest.mark.parametrize(
+    ("bottom", "theme", "sans"),
+    [
+        # Watching the pre-game board as white, then paired as black: the board flips.
+        (Side.BLACK, "green", ("e4", "e5")),
+        # The board's colours changed before the first move
+        # (test_theme_changed_before_the_first_move_keeps_the_game).
+        (Side.WHITE, "brown", ("d4",)),
+    ],
+)
+def test_board_flipped_or_rethemed_before_the_first_move_keeps_the_game(
+    bottom: Side, theme: str, sans: tuple[str, ...]
+) -> None:
+    """The start position seen anew before any move -- the other way up, or on other
+    colours: a new recogniser, the same game announced again with the user's side, and
+    its moves follow."""
+    look: dict[str, Any] = {"bottom": bottom}
+    if theme == "brown":
+        look |= {"light": BROWN_LIGHT, "dark": BROWN_DARK}
     pipe = GamePipeline()
     events, ts = _start_frames(pipe, 0.0)
     assert any(isinstance(e, GameStarted) for e in events)
     assert pipe.bootstraps == 1 and pipe.bottom == Side.WHITE
     assert pipe.reconciler is not None
     game_id = pipe.reconciler.game_id
-    events, ts = _start_frames(pipe, ts, frames=4, bottom=Side.BLACK)
-    assert pipe.bootstraps == 2 and pipe.bottom == Side.BLACK
+    events, ts = _start_frames(pipe, ts, frames=4, **look)
+    assert pipe.bootstraps == 2 and pipe.bottom == bottom
     assert not any(isinstance(e, GameEnded) for e in events)
     started = [e for e in events if isinstance(e, GameStarted)]
-    assert (
-        len(started) == 1 and started[0].game_id == game_id and started[0].user_side == Side.BLACK
-    )
+    assert len(started) == 1 and started[0].game_id == game_id and started[0].user_side == bottom
     board = chess.Board()
     events = []
-    for san in ("e4", "e5"):
+    for san in sans:
         move = board.push_san(san)
         for _ in range(2):
-            events += pipe.process(
-                synthetic_board(board=board, bottom=Side.BLACK, highlight=move), ts
-            )
+            events += pipe.process(synthetic_board(board=board, highlight=move, **look), ts)
             ts += 0.1
-    assert _sans(events) == ["e4", "e5"]
+    assert _sans(events) == list(sans)
     assert pipe.reconciler.game_id == game_id
 
 
-def test_theme_changed_before_the_first_move_keeps_the_game() -> None:
-    pipe = GamePipeline()
-    _, ts = _start_frames(pipe, 0.0)
-    assert pipe.reconciler is not None
-    game_id = pipe.reconciler.game_id
-    theme: dict[str, Any] = {"light": BROWN_LIGHT, "dark": BROWN_DARK}
-    events, ts = _start_frames(pipe, ts, frames=4, **theme)
-    assert pipe.bootstraps == 2 and not any(isinstance(e, GameEnded) for e in events)
-    board = chess.Board()
-    events = []
-    move = board.push_san("d4")
-    for _ in range(2):
-        events += pipe.process(synthetic_board(board=board, highlight=move, **theme), ts)
-        ts += 0.1
-    assert _sans(events) == ["d4"] and pipe.reconciler.game_id == game_id
-
-
 def test_second_game_bootstraps_from_one_changed_tick() -> None:
-    """A new theme's start position stored once, then unchanged ticks, then a fast first move."""
+    """A new theme's start position stored once, then unchanged ticks, then a fast first move.
+    The game before it ends with its record, and the recogniser is built again for the new
+    colours (test_new_game_same_orientation_new_theme_rebuilds_recogniser)."""
     pipe = GamePipeline()
     board = chess.Board()
     _, ts = _start_frames(pipe, 0.0)
@@ -265,6 +226,7 @@ def test_second_game_bootstraps_from_one_changed_tick() -> None:
         for _ in range(2):
             pipe.process(synthetic_board(board=board, highlight=move), ts)
             ts += 0.1
+    assert pipe.reconciler is not None and len(pipe.reconciler.board.move_stack) == 2
     theme: dict[str, Any] = {"light": BROWN_LIGHT, "dark": BROWN_DARK}
     fresh = synthetic_board(board=chess.Board(), **theme)
     events = pipe.process(fresh, ts, changed=True)
@@ -273,7 +235,8 @@ def test_second_game_bootstraps_from_one_changed_tick() -> None:
         events += pipe.process(fresh, ts, changed=False)
         ts += 0.1
     assert pipe.bootstraps == 2
-    assert any(isinstance(e, GameEnded) for e in events)
+    ended = [e for e in events if isinstance(e, GameEnded)]
+    assert ended and ended[0].pgn == "1. e4 e5"
     assert any(isinstance(e, GameStarted) for e in events)
     second = chess.Board()
     move = second.push_san("d4")

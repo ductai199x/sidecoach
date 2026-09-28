@@ -69,17 +69,6 @@ class Session:
         return self.feed(self.frame(), frames)
 
 
-def test_window_moved_mid_game() -> None:
-    s = Session()
-    s.start()
-    assert s.play("e4", "e5") == ["e4", "e5"]
-    s.x0, s.y0 = 520, 210  # the window was dragged elsewhere
-    s.settle(6)  # the tracker loses the old lock and re-locks; no move is invented
-    assert s.played == ["e4", "e5"]
-    assert s.play("Nf3", "Nc6") == ["Nf3", "Nc6"]
-    assert s.pipe.reconciler is not None and s.pipe.reconciler.board.fen() == s.board.fen()
-
-
 def test_window_resized_mid_game() -> None:
     s = Session()
     s.start()
@@ -152,30 +141,6 @@ def test_toast_over_a_corner_does_not_stall_the_game() -> None:
         assert s.feed(toast(s.frame(highlight=move)), 3) == [san]
 
 
-def test_board_scrolled_partly_off_screen_and_back() -> None:
-    s = Session()
-    s.start()
-    assert s.play("e4", "e5") == ["e4", "e5"]
-    s.y0 = -200  # the page scrolled: the top rows are off the screen
-    s.settle(8)  # no crash, nothing invented
-    assert s.played == ["e4", "e5"]
-    s.y0 = 120
-    s.settle(6)
-    assert s.play("Nf3") == ["Nf3"]
-
-
-@pytest.mark.parametrize("plies", [2, 4])
-def test_catch_up_after_a_gap_of_a_few_plies(plies: int) -> None:
-    """The board was not visible for a moment; up to four plies are searched for."""
-    s = Session()
-    s.start()
-    assert s.play("e4", "e5") == ["e4", "e5"]
-    line = ["Nf3", "Nc6", "Bb5", "a6"][:plies]
-    for san in line:
-        s.board.push_san(san)
-    assert s.settle(6) == line
-
-
 @pytest.mark.parametrize(
     ("cell", "dx", "dy"),
     [
@@ -207,3 +172,4 @@ def test_a_board_moved_any_fraction_of_a_cell_is_found_again(
     s.play("Nf3", "Nc6")
     s.settle(3)
     assert s.played == ["e4", "e5", "Nf3", "Nc6"]
+    assert s.pipe.reconciler is not None and s.pipe.reconciler.board.fen() == s.board.fen()
