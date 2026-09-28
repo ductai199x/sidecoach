@@ -1,5 +1,6 @@
 package com.sidecoach.state
 
+import android.os.SystemClock
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -7,6 +8,7 @@ import com.sidecoach.analysis.Analyser
 import com.sidecoach.analysis.Assessing
 import com.sidecoach.analysis.Engine
 import com.sidecoach.analysis.GameAnnotator
+import com.sidecoach.analysis.Interrupted
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.coach.Coach
@@ -73,10 +75,18 @@ class TakebackTest {
         }
     }
 
-    /** A moment per search, as a real engine takes. */
+    /**
+     * A moment per search, as a real engine takes, and stopped as a real one is
+     * ([Engine.interrupt]): none begins once stopped, and one under way ends within a moment.
+     */
     private class SlowEngine(private val ms: Long) : QuietEngine() {
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
-            Thread.sleep(ms)
+            if (interruptibleNow && stopped) throw Interrupted()
+            val end = SystemClock.elapsedRealtime() + ms
+            while (SystemClock.elapsedRealtime() < end) {
+                if (interruptibleNow && stopped) throw Interrupted()
+                Thread.sleep(5)
+            }
             return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
         }
     }

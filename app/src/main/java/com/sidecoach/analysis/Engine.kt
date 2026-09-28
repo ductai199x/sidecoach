@@ -359,15 +359,17 @@ open class Engine(
     /**
      * Searches that another thread may stop ([interrupt]): each throws [Interrupted] once
      * stopped, and so does every search after it here -- a look ahead the game has overtaken is
-     * let go at once, not searched to its end first.
+     * let go at once, not searched to its end first. Nested, the inner block keeps the outer's
+     * stop: one that came before it holds inside it too.
      */
     fun <T> interruptible(body: () -> T): T {
-        stopped = false
+        val outer = interruptibleNow
+        if (!outer) stopped = false
         interruptibleNow = true
         try {
             return body()
         } finally {
-            interruptibleNow = false
+            interruptibleNow = outer
         }
     }
 

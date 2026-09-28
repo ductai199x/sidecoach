@@ -636,6 +636,9 @@ class Analyser(
         if (now != null && now.gameId == gameId && now.ply > ply) {
             now.withdrawn = true
             withdrawn += 1
+            // Its search under way stops now, and none of its searches starts after it: all of a
+            // request's work runs interruptible ([run]).
+            annotator.engine.interrupt()
         }
     }
 
@@ -671,41 +674,11 @@ class Analyser(
             if (request === stop) return
             current = request
             try {
-                if (request.move == null) {
-                    val early = early(request, request.board)
-                    val deepening = deepening(request, request.board, early)
-                    val event = yielding(request, request.board, deepening)
-                    if (event != null && !request.withdrawn) {
-                        results.add(event)
-                        planAhead(request.board, event.lines)
-                    }
-                } else {
-                    // The verdict first, from the best line alone; the position whole after --
-                    // unless newer moves are waiting: then this ply is history, its verdict is
-                    // all the coach and the review need, and the whole analysis goes to the
-                    // position the player is actually looking at. The position after the
-                    // opponent's move is the one the player faces: measured early first.
-                    val after = request.board.copy()
-                    after.push(request.move)
-                    var early: Analysis? = null
-                    if (!request.byUser && requests.isEmpty()) early = this.early(request, after)
-                    val verdict = annotator.assessMove(request.gameId, request.board, request.move, request.ply)
-                    if (request.withdrawn) continue
-                    results.add(verdict)
-                    val behind = requests.isNotEmpty()
-                    if (behind) {
-                        skipped += 1
-                        behindUntil = System.nanoTime() + TimeUnit.SECONDS.toNanos(BEHIND_S.toLong())
-                    }
-                    val hurry = System.nanoTime() < behindUntil
-                    val event = if (behind || hurry) {
-                        annotator.analysisEvent(request.gameId, after, request.ply, thin = behind, hurry = hurry)
-                    } else {
-                        yielding(request, after, deepening(request, after, early)) ?: continue
-                    }
-                    results.add(event)
-                    if (!(behind || hurry)) planAhead(after, event.lines)
-                }
+                // A takeback stops any of the request's searches ([withdraw]), a newer request only
+                // its full measure ([yielding], [looking]).
+                annotator.engine.interruptible { serve(request) }
+            } catch (exc: Interrupted) {
+                // Withdrawn by a takeback: nothing about it is delivered.
             } catch (exc: Exception) {
                 // A failed analysis must never end a session; the game goes on unassessed.
                 failures += 1
@@ -714,6 +687,50 @@ class Analyser(
                 current = null
                 settle()
             }
+        }
+    }
+
+    /**
+     * One request: a position measured early and then whole; a move judged, and the position
+     * after it measured -- early first when the player faces it.
+     */
+    private fun serve(request: Request) {
+        if (request.move == null) {
+            val early = early(request, request.board)
+            if (request.withdrawn) return
+            val deepening = deepening(request, request.board, early)
+            val event = yielding(request, request.board, deepening)
+            if (event != null && !request.withdrawn) {
+                results.add(event)
+                planAhead(request.board, event.lines)
+            }
+        } else {
+            // The verdict first, from the best line alone; the position whole after -- unless
+            // newer moves are waiting: then this ply is history, its verdict is all the coach and
+            // the review need, and the whole analysis (candidates, threats, the decisive-moment
+            // call) goes to the position the player is actually looking at. The position after
+            // the opponent's move is the one the player faces: measured early first.
+            val after = request.board.copy()
+            after.push(request.move)
+            var early: Analysis? = null
+            if (!request.byUser && requests.isEmpty()) early = this.early(request, after)
+            if (request.withdrawn) return
+            val verdict = annotator.assessMove(request.gameId, request.board, request.move, request.ply)
+            if (request.withdrawn) return
+            results.add(verdict)
+            val behind = requests.isNotEmpty()
+            if (behind) {
+                skipped += 1
+                behindUntil = System.nanoTime() + TimeUnit.SECONDS.toNanos(BEHIND_S.toLong())
+            }
+            val hurry = System.nanoTime() < behindUntil
+            val event = if (behind || hurry) {
+                annotator.analysisEvent(request.gameId, after, request.ply, thin = behind, hurry = hurry)
+            } else {
+                yielding(request, after, deepening(request, after, early)) ?: return
+            }
+            results.add(event)
+            if (!(behind || hurry)) planAhead(after, event.lines)
         }
     }
 

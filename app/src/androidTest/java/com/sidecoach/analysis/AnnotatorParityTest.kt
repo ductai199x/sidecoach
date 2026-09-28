@@ -510,14 +510,16 @@ class AnnotatorParityTest {
     }
 
     /**
-     * `_YieldOnceEngine`: a fake engine whose first interruptible search runs until `interrupt`
-     * stops it; the ones after answer at once.
+     * `_YieldOnceEngine`: a fake engine whose first search of the candidates (several lines: a
+     * whole measure, not a verdict's one line) runs until `interrupt` stops it; the ones after
+     * answer at once.
      */
     private class YieldOnceEngine : FakeEngine() {
         @Volatile var held = false
 
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
-            if (interruptibleNow && !held) {
+            val several = (multipv ?: 1) > 1
+            if (interruptibleNow && several && !held) {
                 held = true
                 val until = SystemClock.elapsedRealtime() + 5000
                 while (!stopped && SystemClock.elapsedRealtime() < until) Thread.sleep(1)
