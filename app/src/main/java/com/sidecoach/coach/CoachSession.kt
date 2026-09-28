@@ -1558,6 +1558,14 @@ class Coach(
     }
 
     /**
+     * Whether the player's words follow up what the coach has said since the last move, not an
+     * answer to its question: the verdict and the better move were told already, and a
+     * follow-up gets only what it asks.
+     */
+    private fun followingUp(said: String): Boolean =
+        !answeringOurQuestion(said) && saidSinceMove().isNotEmpty()
+
+    /**
      * Whether the player's words answer the question the coach just asked: its last turn ended
      * with one, nothing has happened since, and their words ask nothing.
      */
@@ -1949,8 +1957,11 @@ class Coach(
         var played = played
         val own = if (trigger == Trigger.USER_ASK) askedOwnMove(said) else null
         if (own != null) {
-            // "Why was that bad?": the lesson on their last move, as after it.
-            if (own.move.ply != position.ply + 1) return emptyList()
+            // "Why was that bad?": the lesson on their last move, as after it. Not on a
+            // follow-up, which the directive tells not to repeat the better move: requiring it
+            // refused every obedient reply, and the template said the verdict again (the prompt
+            // audit, 2026-09-28).
+            if (own.move.ply != position.ply + 1 || followingUp(said)) return emptyList()
             trigger = Trigger.POST_MISTAKE
             assessment = own.assessment
             played = own.move
@@ -2469,7 +2480,7 @@ class Coach(
         // the game; Nxc3 was better" twice running), and "I understand: I should play Nxc3" got
         // the lesson again and "Which White piece is still at home on g1?" (the AI's sessions,
         // 2026-09-26).
-        val followup = !answering && saidSinceMove().isNotEmpty()
+        val followup = followingUp(said)
         val asks = questionPart(said).isNotEmpty()
         val follow = " You have already told them the verdict on it and the better move, in your turns " +
             "above: do not repeat either." +

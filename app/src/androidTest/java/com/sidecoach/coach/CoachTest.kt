@@ -440,13 +440,6 @@ class CoachTest {
         val now = currentMoveMessage(messages).substringBefore("# The position they faced")
         assertTrue(now, "(to the player, as it stands)" !in now.substringAfter("## Facts"))
         assertTrue(faced, "a question that sets them looking" !in faced)
-        // Asked why it was bad, the answer is taught from the same position, and names the move.
-        coach.ask("why was that bad?", 12.0)
-        messages(coach)
-        val asked = given(provider).last().content
-        assertTrue(asked, "# The position they faced, before Bxf7+" in asked)
-        val said = coach.spoken.last().message.text
-        assertTrue(said, said.isNotEmpty() && "Qxf7" in said)
     }
 
     /**
@@ -817,6 +810,9 @@ class CoachTest {
         }
         coach.ask("why was that bad?", 12.0)
         val out = messages(coach)
+        // Taught from the position the move was played from, as the lesson after it was.
+        val asked = given(provider).last().content
+        assertTrue(asked, "# The position they faced, before Bxf7+" in asked)
         val directive = directive(provider)
         assertTrue(directive, "They ask about the move they already played, Bxf7+" in directive)
         assertTrue(directive, "Qxf7# was better" in directive)
@@ -860,6 +856,32 @@ class CoachTest {
         messages(coach)
         directive = directive(provider)
         assertTrue(directive, "Answer only what they ask now" in directive && "do not repeat either" in directive)
+    }
+
+    /**
+     * The follow-up's directive says not to repeat the better move, and the check that a reply
+     * names it refused every reply that obeyed; after two, the template said the verdict again
+     * (the prompt audit, 2026-09-28; desktop test of the same name). The floor, the lesson again,
+     * goes with it.
+     */
+    @Test
+    fun aFollowUpAboutTheirMoveNeedNotNameTheBetterMoveAgain() {
+        val (coach, provider) = coach(listOf("...", "..."))
+        bishopCheckInsteadOfMate(coach)
+        synchronized(coach.lock) {
+            coach.conversation.coachSaid("That one cost you: Qxf7# was better -- it is mate.")
+        }
+        val reply = "A check that leads nowhere only hands their king a free move."
+        synchronized(provider.replies) {
+            provider.replies.clear()
+            provider.replies.addAll(listOf(reply, reply))
+        }
+        coach.ask("Why does the bishop check not work?", 13.0)
+        val out = messages(coach)
+        val directive = directive(provider)
+        assertTrue(directive, "says at least this" !in directive)
+        assertTrue(out.isNotEmpty())
+        assertEquals(reply, out.last().text)
     }
 
     /**
