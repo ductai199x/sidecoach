@@ -423,7 +423,7 @@ def test_a_good_move_gets_one_sentence_from_the_model_with_the_template_to_fall_
     _mate_in_one_played(coach)
     out = _messages(coach)
     assert len(out) == 1 and out[0].text in ("Mate on the board, clean finish.", "That ends it.")
-    assert out[0].trigger is Trigger.POST_MOVE
+    assert out[0].trigger is Trigger.POST_MOVE and len(provider.prompts) == 1
     directive = _directive(_given(provider, 0))
     assert "The player just played Qxf7#" in directive
     assert "best -- the engine's own choice" in directive
@@ -2293,7 +2293,7 @@ def test_a_question_only_about_a_fact_is_answered_by_the_template() -> None:
             ("who's up material?", "Material:"),
             ("how many pieces am I up?", "Material:"),
             ("am I winning?", "Right now you are winning"),
-            ("what opening is this?", "We left the opening book early."),
+            ("what opening is this?", ("We left the opening book early.", "The opening was the")),
         ),
         start=8,
     ):

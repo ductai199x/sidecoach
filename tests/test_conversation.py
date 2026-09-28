@@ -87,8 +87,13 @@ def test_the_facts_are_reworded_in_the_third_person_for_the_side_to_move() -> No
 def test_the_verdict_says_what_the_move_does_and_what_the_better_move_would_do() -> None:
     """The coach's commonest invention was the reason a move was good or bad. The verdict
     now carries the mechanism, computed on the board: what the move takes, attacks,
-    defends, leaves undefended; the same for the move the engine preferred. (What a move
-    does on the board is test_effects_legal.py's.)"""
+    defends, leaves undefended; the same for the move the engine preferred. (Bb5 attacking the
+    knight on c6 is test_effects_legal.py's.)"""
+    from sidecoach.coach.effects import describe_effects
+
+    # A queen stepping onto an open file with nothing to attack: the file is named.
+    board = chess.Board("4k3/8/8/8/8/8/8/Q3K3 w - - 0 1")
+    assert "takes the open d-file" in describe_effects(board, board.parse_san("Qd1"))
     # In the message: the played move's effects and the better move's.
     convo = Conversation()
     convo.new_game(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.Board().fen()))

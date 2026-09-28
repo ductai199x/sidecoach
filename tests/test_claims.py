@@ -144,7 +144,7 @@ def test_extract_asks_at_low_temperature_with_the_position() -> None:
     provider = FakeProvider("[]")
     # Reasoning off, as every caller asks (cli._claims_check, the judge).
     extract_claims("the pawn is hanging", chess.Board(ITALIAN), provider, thinking=False)
-    call = provider.calls[0]
+    (call,) = provider.calls  # one call: no retry
     assert call["thinking"] is False
     assert call["temperature"] <= 0.2
     assert "JSON" in call["system"] and '"hanging"' in call["system"]

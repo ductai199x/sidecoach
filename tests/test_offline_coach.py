@@ -9,7 +9,7 @@ from sidecoach.coach.coach import Coach, Trigger
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
 from sidecoach.coach.verdicts import MATE
 from sidecoach.config import LLMSettings
-from sidecoach.events import Analysis, Line, MovePlayed
+from sidecoach.events import Analysis, DisclosureLevel, Line, MovePlayed
 from sidecoach.llm.factory import make_provider
 from sidecoach.llm.offline import OfflineProvider
 from tests.test_coach import (
@@ -71,6 +71,10 @@ def test_the_first_hints_lead_is_drawn_when_the_hint_is_said() -> None:
     left = coach._bags._bags["lead:mate-one"]
     assert lead not in left and len(left) == len(_MATE_ONE_LEADS) - 1
     assert position.leads == {}
+    # The next hint is the focus rung's template, from the board as well.
+    coach.ask("another hint", 9.0)
+    out = _messages(coach)
+    assert len(out) == 1 and out[0].text and out[0].level is DisclosureLevel.FOCUS
 
 
 def test_no_decisive_question_on_an_obvious_recapture() -> None:
