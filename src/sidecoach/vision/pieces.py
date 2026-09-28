@@ -41,9 +41,9 @@ other. Every cell is brought to one resolution first (`canonical`), so a board r
 after its set was learned reads the same. The side is voted by three signals
 (`_vote_side`): the embedding, the fill's brightness against each side's pieces, and the
 fill's own colour under the kind's exemplar mask. Whether the piece has landed is the
-phase correlation of the cell against that piece's start-position crop (`_phase_shift`): a
-piece dragged or in flight is off its centre, and no move commits on a cell that has not
-settled.
+phase correlation of the cell against that piece's start-position crop on a square of the
+same colour (`_phase_shift`): a piece dragged or in flight is off its centre, and no move
+commits on a cell that has not settled.
 
 This is theme-specific by construction and needs no training.
 """
@@ -946,10 +946,10 @@ class ThemeModel:
     # the net (see `embedding`).
     exemplar_vectors: np.ndarray | None = None
     exemplar_labels: tuple[str, ...] = ()
-    # Each piece kind's start-position crop in grey, the reference the phase landing
-    # measures a cell's shift against (an instance off the labelled edge cells), and the
-    # cell size it was taken at.
-    landing_crops: dict[str, np.ndarray] = field(default_factory=dict)
+    # Each piece kind's start-position crop in grey on each square colour, keyed by
+    # (symbol, on a light square): the reference the phase landing measures a cell's shift
+    # against (an instance off the labelled edge cells), and the cell size it was taken at.
+    landing_crops: dict[tuple[str, bool], np.ndarray] = field(default_factory=dict)
     landing_px: float = 0.0
 
     def __getstate__(self) -> dict[str, object]:
@@ -1055,7 +1055,9 @@ class ThemeModel:
             # whatever tint it wears, and a hint dot is no evidence (the embedding read
             # the dotted squares of a drag in progress as empty with such confidence
             # that a resync adopted the rook where the cursor held it).
-            return self._from_embedding(sil, vector, highlighted, tint, cell_px, crop)
+            return self._from_embedding(
+                sil, vector, highlighted, tint, cell_px, crop, is_light(row, col)
+            )
         if sil.fraction <= EMPTY_MAX_FRACTION:
             return _reading(
                 sil,
@@ -1078,11 +1080,13 @@ class ThemeModel:
         tint: str | None,
         cell_px: float | None,
         crop: np.ndarray | None = None,
+        light: bool = True,
     ) -> CellReading:
         """The cell named by the nearest of the start position's cells in embedding space
         (see `embedding`). The side is voted (`_vote_side`); once it is, the kind may be
         named by either side's cells (`_kind_scores`, see CANONICAL_PX). Where the piece
-        sits is the phase correlation against the piece's own start crop."""
+        sits is the phase correlation against the piece's own start crop on a square of the
+        cell's colour (`light`)."""
         assert self.exemplar_vectors is not None
         sims = self.exemplar_vectors.astype(np.float32) @ vector
         side = self._vote_side(sil, sims)
@@ -1132,10 +1136,9 @@ class ThemeModel:
             )
         colour = Side.of(label.isupper())
         offset = 0.0
-        if crop is not None and label in self.landing_crops:
-            offset = _phase_shift(
-                self.landing_crops[label], crop, self.landing_px, float(cell_px or 0.0)
-            )
+        reference = self.landing_crops.get((label, light))
+        if crop is not None and reference is not None:
+            offset = _phase_shift(reference, crop, self.landing_px, float(cell_px or 0.0))
         settled = offset <= settle_tolerance(cell_px) and not sil.hover
         runner = self.exemplar_labels[
             next(i for i in order[1:] if self.exemplar_labels[i] != label)
@@ -1444,17 +1447,22 @@ class ThemeModel:
         gap = float(np.linalg.norm(model.light_bg - model.dark_bg))
         if gap <= COVER_TOLERANCE:
             return None  # the two square colours cannot be told apart
-        # The phase landing's references: one crop per piece kind, from a cell off the
-        # labelled left column and bottom row where it can be.
+        # The phase landing's references: a crop per piece kind and square colour, from a
+        # cell off the labelled left column and bottom row where it can be. Against a crop on
+        # the other colour a knight at rest read 0.138 of a cell off, against one on its own
+        # 0.010 (the stress sweep's seed 138: the flat set on green, 2026-09-27). A king and a
+        # queen start on one colour: that crop stands for both.
         for r in range(8):
             for c in range(8):
                 piece = start.piece_at(square_at(r, c, bottom))
                 if piece is None:
                     continue
-                symbol = piece.symbol()
-                if symbol in model.landing_crops and (c == 0 or r == 7):
+                key = (piece.symbol(), is_light(r, c))
+                if key in model.landing_crops and (c == 0 or r == 7):
                     continue
-                model.landing_crops[symbol] = cv2.cvtColor(crops[r][c], cv2.COLOR_BGR2GRAY)
+                model.landing_crops[key] = cv2.cvtColor(crops[r][c], cv2.COLOR_BGR2GRAY)
+        for (symbol, light), crop in list(model.landing_crops.items()):
+            model.landing_crops.setdefault((symbol, not light), crop)
         model.landing_px = float(geometry.cell_px)
         cells = [crops[r][c] for r in range(8) for c in range(8)]
         vectors = net.embed([canonical(cell) for cell in cells])

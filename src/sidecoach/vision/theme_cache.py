@@ -34,8 +34,9 @@ from sidecoach.vision.squares import CELL, BoardGeometry, is_light
 # colours are learned, for the drawing rule; 5, 6: the fill is the depth-weighted median.
 # 10: the start cells' embeddings and landing crops travel with the theme; 11: the
 # embeddings are of the crop at one resolution (pieces.canonical); 12: the exemplars keep
-# only what the embedding reads (their tone and brightness).
-CACHE_VERSION = 12
+# only what the embedding reads (their tone and brightness); 13: a landing crop per square
+# colour.
+CACHE_VERSION = 13
 _QUANTUM = 8  # square colours within this many levels share a fingerprint (tolerates lighting)
 MATCH_TOLERANCE = 20.0  # palettes closer than this (in BGR) are treated as the same theme
 
