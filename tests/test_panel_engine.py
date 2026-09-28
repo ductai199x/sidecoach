@@ -16,7 +16,8 @@ from sidecoach.config import Settings, VoiceSettings
 from sidecoach.ui.panel import PanelApi, PanelEngine
 from tests.synth import game_frames
 
-# No voice models: the panel is silent and deaf (see PanelEngine._voice_settings).
+# No voice models: the panel is silent and deaf (PanelEngine.voice_models, which
+# SIDECOACH_VOICE_MODELS=0 turns off under pytest: tests/conftest.py).
 _SILENT = VoiceSettings()
 
 
@@ -54,9 +55,9 @@ def test_engine_follows_a_game_and_reports_it(tmp_path: Path) -> None:
     moves = [
         ln
         for ln in lines
-        if ln["chan"] == "game" and "(you" in ln["text"] or "(opponent" in ln["text"]
+        if ln["chan"] == "game" and ("(you" in ln["text"] or "(opponent" in ln["text"])
     ]
-    assert moves, "no moves were surfaced to the terminal"
+    assert len(moves) == len(MATE), "not every move was surfaced to the terminal"
     assert all("ply" in ln["data"] and "uci" in ln["data"] for ln in moves), (
         "move records carry no data"
     )

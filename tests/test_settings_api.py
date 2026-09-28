@@ -81,10 +81,10 @@ def test_a_save_goes_back_to_the_file_the_settings_came_from(
     monkeypatch.delenv("SIDECOACH_CONFIG", raising=False)
     monkeypatch.delenv("SIDECOACH_DATA_DIR", raising=False)
     given = tmp_path / "given.toml"
-    given.write_text('[voice]\nprovider = "null"\nstt_provider = "null"\n', encoding="utf-8")
+    given.write_text("[coach]\nstuck_seconds = 50\n", encoding="utf-8")
     settings = load_settings(given)
     settings.data_dir = tmp_path
-    assert settings.source == given
+    assert settings.source == given and settings.coach.stuck_seconds == 50, "the file was read"
     engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
     client = TestClient(build_app(engine))
     assert client.get("/api/settings").json()["path"] == str(given)

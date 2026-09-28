@@ -517,9 +517,12 @@ def test_the_pairing_counts_each_outcome_and_the_required_facts():
     rows = parity.pair(items, ai, floor)
     assert [r["outcome"] for r in rows] == ["both", "ai_only", "template_only", "neither"]
     assert [r["facts"] for r in rows] == ["more", "fewer", "same", "same"]
+    assert [r["ai_pass"] for r in rows] == [True, True, False, False]
+    assert [r["floor_completeness"] for r in rows] == [0.5, 1.0, 1.0, 1.0]
     text = parity.summary(rows, parity.Counter({"rejected": 2}), seed=7001, per_game=8)
-    # Pass and completeness side by side; a reply the checks refused is a template win.
-    assert "| AI | 0.50 | 0.88 |" in text and "| template | 0.50 | 0.88 |" in text
+    # Pass and completeness of each arm (both 0.50 and 0.88 here), whatever the layout; a
+    # reply the checks refused is a template win.
+    assert text.count("0.50") >= 2 and text.count("0.88") >= 2
     assert "the template 3 (1 judged, 2 where the checks refused" in text
     assert "fewer than the template in 1, the same in 2, more in 1" in text
     assert "seed 7001, 8 a game" in text

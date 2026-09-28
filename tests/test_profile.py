@@ -446,11 +446,9 @@ def test_a_cause_behind_two_mistakes_is_named_second_with_the_habit_that_fixes_i
         )
 
     lines = review([missed(3, 0.2), missed(9, 0.1), missed(15, 0.3, causes.POSITIONAL)]).lines
-    assert lines[1] == (
-        "What you kept missing: what their moves threatened -- 2 of your 3 mistakes. The habit"
-        " that fixes it: before each move, look at what their last move attacks, and at the"
-        " captures and checks your move would leave them."
-    )
+    words, habit = causes.HABIT[causes.MISSED_THREAT]
+    assert lines[1].startswith(f"What you kept missing: {words}")
+    assert "2 of your 3 mistakes" in lines[1] and habit in lines[1]
     # One mistake of each kind is no pattern.
     lines = review([missed(3, 0.2), missed(15, 0.3, causes.POSITIONAL)]).lines
     assert not any(line.startswith("What you kept missing") for line in lines)

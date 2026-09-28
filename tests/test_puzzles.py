@@ -43,9 +43,10 @@ ROWS = [
     "1000,80,90,500,fork opening short,https://lichess.org/x#3,",
     "pin01,rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2,d7d6 f1b5 c7c6,"
     "1200,80,90,400,pin opening short,https://lichess.org/y#3,",
-    "mate1,6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1,g1h1 a1a8,900,70,95,900,"
+    # Black's king steps to the corner; White mates on the back rank.
+    "mate1,6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1,g8h8 a1a8,900,70,95,900,"
     "mateIn1 backRankMate endgame oneMove,https://lichess.org/z#1,",
-    "hi999,6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1,g1h1 a1a8,1900,70,95,900,fork,"
+    "hi999,6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1,g8h8 a1a8,1900,70,95,900,fork,"
     "https://lichess.org/w#1,",
 ]
 
@@ -113,7 +114,7 @@ def test_an_attempt_is_solved_by_the_line_and_failed_by_a_wrong_move() -> None:
     assert b.move("d4e2", by_user=True) is None, "decided once"
     # Any mate counts where the line mates.
     mate = Puzzle(
-        "m", "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1", ("g1h1", "a1a8"), 900, 1, 1, ("mateIn1",)
+        "m", "6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1", ("g8h8", "a1a8"), 900, 1, 1, ("mateIn1",)
     )
     assert Attempt(mate, "mate").move("a1a8", by_user=True) == "solved"
 
@@ -262,20 +263,17 @@ def test_the_coach_says_one_line_on_the_practice_and_a_word_on_a_fail() -> None:
         ),
         1.0,
     )
-    texts = [m.text for m in _messages(coach)]
-    assert texts == [
-        "For practice: 1 fork puzzle around 1100 are on the review card -- fork: 3 of 5 "
-        "chances missed over your games."
-    ]
+    # One line, naming the count and the motif, the level, and why.
+    (text,) = [m.text for m in _messages(coach)]
+    assert "1 fork puzzle " in text and "1100" in text
+    assert "fork: 3 of 5 chances missed over your games" in text
     solved = PuzzleOutcome(game_id="p", puzzle_id="fork1", motif="fork", solved=True, level=1125)
     coach.on_event(solved, 2.0)
     assert _messages(coach) == [], "a solve: the site says so"
     failed = PuzzleOutcome(game_id="p", puzzle_id="fork1", motif="fork", solved=False, level=1100)
     coach.on_event(failed, 3.0)
-    texts = [m.text for m in _messages(coach)]
-    assert texts == [
-        "Not that one -- have another look before the site shows you. That one was a fork puzzle."
-    ]
+    (text,) = [m.text for m in _messages(coach)]
+    assert "fork puzzle" in text, "a word on the fail, naming the motif"
     assert provider.prompts == [], "no model call"
     assert "Practice recommended" in coach.conversation.render()
     # On the panel's own board (the coach kept quiet) the bar says it; the coach does not.

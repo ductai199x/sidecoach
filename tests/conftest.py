@@ -19,7 +19,8 @@ import pytest
 # workers hold a CUDA session (half a GB each); everything else spreads over every worker
 # (`--dist loadgroup` in pyproject; the group is the mark below). The voice models, loaded
 # in every worker by the panel tests, once had the GPU at 18 GB and the machine lagging
-# (Tai: "the rest should run on all 24"); they no longer load (PanelEngine._voice_settings).
+# (Tai: "the rest should run on all 24"); they no longer load (PanelEngine.voice_models,
+# off under pytest: SIDECOACH_VOICE_MODELS=0 in pytest_configure).
 # Measured 2026-09-28 on 24 workers, once the net really was on the GPU (a broken ml_dtypes
 # had kept it on the CPU: voice/runtime._probe_cuda) and OpenCV kept to a thread a worker
 # (pytest_configure): 8 groups 119 s, 16 groups 93 s and 78 s with one OpenCV thread, 24

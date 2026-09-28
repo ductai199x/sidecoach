@@ -18,7 +18,8 @@ from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.server import make_engine
 from tests.synth import game_frames
 
-# No voice models: the panel is silent and deaf (see PanelEngine._voice_settings).
+# No voice models: the panel is silent and deaf (PanelEngine.voice_models, which
+# SIDECOACH_VOICE_MODELS=0 turns off under pytest: tests/conftest.py).
 _SILENT = VoiceSettings()
 
 LONG = "Your knight on f5 is loose; the queen check on g6 wins it. What defends it?"
