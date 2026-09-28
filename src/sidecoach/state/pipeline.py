@@ -34,7 +34,12 @@ from sidecoach.state.reconcile import (
 )
 from sidecoach.vision.board_detect import BoardCandidate
 from sidecoach.vision.clock import ClockReader, ClockReading
-from sidecoach.vision.coordinates import learn_rank_labels, read_bottom_side
+from sidecoach.vision.coordinates import (
+    eights,
+    learn_rank_labels,
+    read_bottom_side,
+    read_labels,
+)
 from sidecoach.vision.pieces import (
     CellReading,
     ThemeModel,
@@ -609,23 +614,26 @@ class GamePipeline:
             return []
         events = self._end_in_progress("board reoriented") if end_previous else []
         events += self._adopt_cold(*read, ts=ts)
-        if told and events:
-            self._learn_labels(frame, geometry)
+        if events:
+            self._learn_labels(frame, geometry, told=told)
         return events
 
-    def _learn_labels(self, frame: np.ndarray, geometry: BoardGeometry) -> None:
-        """The coordinate labels learned from a board whose side the person told, when they
-        say no side there -- learned where a start position was seen through a lock off
-        its board, or not learned at all -- and the set saved with them, so the next board
-        of the set reads its own side. Only a side told for this board teaches: a Flip left
-        standing from the last puzzle would teach the next one, shown from the other side,
-        upside down, and every read after it. Labels that read a side are kept, the Flip's
-        or the other: learned as they read their start back, they are right, and a Flip
-        by mistake would have taught every board of the set upside down."""
+    def _learn_labels(self, frame: np.ndarray, geometry: BoardGeometry, *, told: bool) -> None:
+        """The coordinate labels learned from a board just adopted, when they say no side
+        there -- learned where a start position was seen through a lock off its board, or
+        not learned at all -- and the set saved with them, so the next board of the set reads
+        its own side. Only a side known for this board teaches: told for it (`told`, a Flip),
+        or read from its 8 (`eights`). A Flip left standing from the last puzzle would teach
+        the next one, shown from the other side, upside down, and every read after it.
+        Labels that read a side are kept, the Flip's or the other: learned as they read their
+        start back, they are right, and a Flip by mistake would have taught every board of
+        the set upside down."""
         model, bottom = self.model, self.bottom
         if model is None or bottom is None:
             return
-        if read_bottom_side(frame, geometry, model.rank_labels) is not None:
+        if read_labels(frame, geometry, model.rank_labels) is not None:
+            return
+        if not told and eights(frame, geometry) != bottom:
             return
         labels = learn_rank_labels(frame, geometry, bottom)
         if not labels:
@@ -856,7 +864,10 @@ class GamePipeline:
         if candidate[1] < COLD_START_HOLD:
             return []
         self._cold_candidate = None
-        return self._adopt_cold(*read, ts=ts)
+        events = self._adopt_cold(*read, ts=ts)
+        if events:
+            self._learn_labels(frame, geometry, told=False)
+        return events
 
     def _cold_notice(self, frame: np.ndarray, geometry: BoardGeometry, ts: float) -> list[Event]:
         """A board that has stayed unread for COLD_NOTICE_S is explained, once while it

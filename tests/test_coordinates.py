@@ -8,13 +8,24 @@ as chess.com draws them, and the reader must recover the side from them.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import cv2
 import numpy as np
 
 from sidecoach.events import Region, Side
-from sidecoach.vision.coordinates import learn_rank_labels, read_bottom_side
+from sidecoach.vision.board_detect import detect_boards
+from sidecoach.vision.coordinates import (
+    GLYPH,
+    eights,
+    learn_rank_labels,
+    read_bottom_side,
+    read_labels,
+)
 from sidecoach.vision.squares import BoardGeometry
+from tests.synth import synthetic_board
 
+FIXTURES = Path(__file__).parent / "fixtures"
 CELL = 48
 GEOM = BoardGeometry(Region(0, 0, CELL * 8, CELL * 8), float(CELL))
 LIGHT = (210, 220, 190)
@@ -54,8 +65,8 @@ def test_orientation_is_read_from_the_rank_labels() -> None:
     labels = learn_rank_labels(white_board, GEOM, Side.WHITE)
     assert sorted(labels) == list(range(1, 9))
     # The same exemplars read either orientation from the edge digits alone.
-    assert read_bottom_side(white_board, GEOM, labels) == Side.WHITE
-    assert read_bottom_side(black_board, GEOM, labels) == Side.BLACK
+    assert read_labels(white_board, GEOM, labels) == Side.WHITE
+    assert read_labels(black_board, GEOM, labels) == Side.BLACK
 
 
 def test_a_start_seen_through_a_lock_off_its_board_learns_no_labels() -> None:
@@ -70,9 +81,30 @@ def test_a_start_seen_through_a_lock_off_its_board_learns_no_labels() -> None:
     assert sorted(learn_rank_labels(board, GEOM, Side.WHITE)) == list(range(1, 9))
 
 
-def test_no_labels_returns_none_so_the_caller_can_ask() -> None:
+def test_no_coordinates_read_no_side_so_the_caller_can_ask() -> None:
     labels = learn_rank_labels(make_board(Side.WHITE), GEOM, Side.WHITE)
-    # A board with coordinates turned off has nothing to read.
+    # A board with coordinates turned off has nothing to read, labels learned or not.
     assert read_bottom_side(make_board(None), GEOM, labels) is None
-    # And a theme learned without labels cannot read them.
-    assert read_bottom_side(make_board(Side.WHITE), GEOM, {}) is None
+    assert read_bottom_side(make_board(None), GEOM, {}) is None
+    # And no labels learned read nothing themselves.
+    assert read_labels(make_board(Side.WHITE), GEOM, {}) is None
+
+
+def test_the_8_reads_the_side_with_nothing_learned() -> None:
+    """Where the 8 is, at the top of the left edge or at its foot, says which side is at the
+    bottom with nothing learned -- read through labels cached as solid blocks, as Tai's
+    were: the board of his puzzle on the Pixel (84 px, Black at the bottom) and a chess.com
+    start (80 px, White), both real (2026-09-28)."""
+    solid = {rank: np.ones((GLYPH, GLYPH), dtype=bool) for rank in range(1, 9)}
+    rendered = BoardGeometry(Region(300, 120, 512, 512), 64.0)  # synthetic_board's defaults
+    for bottom in (Side.WHITE, Side.BLACK):
+        board = synthetic_board(bottom=bottom, coordinates=True)
+        assert eights(board, rendered) is bottom
+        assert read_bottom_side(board, rendered, solid) is bottom
+    assert eights(synthetic_board(coordinates=False), rendered) is None
+    puzzle = cv2.imread(str(FIXTURES / "chesscom_puzzle_black_84.png"))
+    on_phone = BoardGeometry(Region(0, 0, 672, 672), 84.0)
+    assert read_bottom_side(puzzle, on_phone, solid) is Side.BLACK
+    start = cv2.imread(str(FIXTURES / "chesscom_start.png"))
+    [board, *_] = detect_boards(start)
+    assert read_bottom_side(start, BoardGeometry(board.region, board.cell_px), solid) is Side.WHITE

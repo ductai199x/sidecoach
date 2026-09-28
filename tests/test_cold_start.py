@@ -501,25 +501,66 @@ def test_a_board_without_coordinates_is_explained_as_its_orientation(tmp_path: P
     assert not _squares_off(live.reconciler.board, chess.Board(PUZZLE))
 
 
-def test_a_flip_teaches_labels_that_read_no_side_and_the_next_puzzle_turns_itself(
-    tmp_path: Path,
-) -> None:
-    """Tai's Pixel, 2026-09-27: a start seen through a lock off its board cached the labels
-    as solid blocks, so every puzzle asked for Flip, and the side flipped to stood over the
-    next puzzle, shown from the other side, which was read on its head and no move of it
-    was ever found. Now the Flip reads the board on the screen at once, the labels learn
-    from it and are cached with the set, and the next puzzle turns round by its labels,
-    the Flip notwithstanding."""
-    from sidecoach.events import BoardUnread
-    from sidecoach.vision.coordinates import read_bottom_side
-
-    cache = ThemeCache(tmp_path)
+def _cached_wrong(cache: ThemeCache) -> tuple[np.ndarray, np.ndarray]:
+    """The staunty set learned, then its labels cached as solid blocks -- what a start seen
+    through a lock off its board left on Tai's Pixel (2026-09-27); its board colours."""
     _learn(cache, "staunty")
     model_palette = _palette(cache)
     [(key, model)] = cache.candidates(*model_palette)
     model.rank_labels = {rank: np.ones((24, 24), dtype=bool) for rank in range(1, 9)}
     cache.save(model, key=key)
-    black = chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R b KQkq - 0 1")
+    return model_palette
+
+
+BLACK_PUZZLE = "r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R b KQkq - 0 1"
+
+
+def test_labels_cached_wrong_are_read_past_by_the_8_and_learned_again(tmp_path: Path) -> None:
+    """Tai's Pixel, 2026-09-27: the labels cached as solid blocks read no side, every puzzle
+    asked for Flip, and the side flipped to stood over the next puzzle, shown from the other
+    side, which was read on its head and no move of it was ever found. The 8 reads the side
+    with nothing learned: the puzzle is taken up by itself, its labels are learned from it
+    and cached with the set, and the next puzzle, from White's side, turns round."""
+    from sidecoach.events import BoardUnread
+    from sidecoach.vision.coordinates import read_labels
+
+    cache = ThemeCache(tmp_path)
+    model_palette = _cached_wrong(cache)
+    black = chess.Board(BLACK_PUZZLE)
+    frame = synthetic_board(
+        board=black, theme="green", style="staunty", bottom=Side.BLACK, coordinates=True
+    )
+    live = GamePipeline(cache=cache)
+    events = _watch(live, frame, 8.0)
+    assert not [e for e in events if isinstance(e, BoardUnread)]
+    assert any(isinstance(e, GameStarted) for e in events)
+    assert live.bottom is Side.BLACK and live.reconciler is not None
+    assert not _squares_off(live.reconciler.board, black)
+    [(_, cached)] = cache.candidates(*model_palette)
+    assert read_labels(frame, GEOM, cached.rank_labels) is Side.BLACK, "not learned again"
+    events = _watch(live, _puzzle("staunty"), 3.0, start=20.0)
+    assert any(isinstance(e, GameStarted) for e in events)
+    assert live.bottom is Side.WHITE and live.reconciler is not None
+    assert not _squares_off(live.reconciler.board, chess.Board(PUZZLE))
+
+
+def test_a_flip_teaches_labels_that_read_no_side_where_the_8_cannot_be_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Where the 8 cannot be read either (a piece over it, a typeface whose loops close at
+    that size), the person says the side with Flip: the board is read that way at once, the
+    labels learn from it and are cached with the set, and the next puzzle turns round by its
+    labels, the Flip notwithstanding."""
+    import sidecoach.state.pipeline as pipeline_module
+    import sidecoach.vision.coordinates as coordinates_module
+    from sidecoach.events import BoardUnread
+    from sidecoach.vision.coordinates import read_labels
+
+    monkeypatch.setattr(coordinates_module, "eights", lambda frame, geometry: None)
+    monkeypatch.setattr(pipeline_module, "eights", lambda frame, geometry: None)
+    cache = ThemeCache(tmp_path)
+    model_palette = _cached_wrong(cache)
+    black = chess.Board(BLACK_PUZZLE)
     frame = synthetic_board(
         board=black, theme="green", style="staunty", bottom=Side.BLACK, coordinates=True
     )
@@ -534,8 +575,7 @@ def test_a_flip_teaches_labels_that_read_no_side_and_the_next_puzzle_turns_itsel
     assert live.reconciler is not None and live.bottom is Side.BLACK
     assert not _squares_off(live.reconciler.board, black)
     [(_, cached)] = cache.candidates(*model_palette)
-    assert read_bottom_side(frame, GEOM, cached.rank_labels) is Side.BLACK, "not cached"
-    # The next puzzle, from White's side: its labels turn it, the Flip standing or not.
+    assert read_labels(frame, GEOM, cached.rank_labels) is Side.BLACK, "not cached"
     events = _watch(live, _puzzle("staunty"), 3.0, start=20.0)
     assert any(isinstance(e, GameStarted) for e in events)
     assert live.bottom is Side.WHITE and live.reconciler is not None

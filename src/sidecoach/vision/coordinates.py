@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 
 from sidecoach.events import Side
-from sidecoach.vision.squares import BoardGeometry
+from sidecoach.vision.squares import CELL, BoardGeometry
 
 GLYPH = 24  # rank-digit exemplars are normalised to this square before matching
 _CORNER_H = 0.30  # the digit sits in the top-left of the cell: this fraction of its height
@@ -36,6 +36,10 @@ _MIN_INK = 4  # fewer foreground pixels than this is no label
 # or all of it (Tai's Pixel, 2026-09-27: a start seen through a lock that far out cached
 # all eight labels as solid blocks, and every edge digit then read as the same one).
 _CORNER_FULL = 0.6
+# A hole this share of a digit's box or more is a loop: an 8's are 2.4 to 14 % on chess.com's
+# boards (80-86 px) and rendered ones (44-110 px), the pinholes in a fantasy piece's shading
+# that reached the corner 0.7 % (2026-09-28).
+_LOOP = 0.02
 
 
 def _square_colour(cell: np.ndarray) -> np.ndarray:
@@ -54,11 +58,23 @@ def _square_colour(cell: np.ndarray) -> np.ndarray:
 
 
 def _corner_glyph(cell: np.ndarray) -> np.ndarray | None:
-    """The rank digit in a cell's top-left corner as a normalised binary glyph, or None.
+    """The rank digit in a cell's top-left corner as a normalised binary glyph, or None:
+    `_digit` scaled to a fixed size, so digits read at slightly different pixel sizes still
+    match."""
+    digit = _digit(cell)
+    if digit is None:
+        return None
+    resized = cv2.resize(
+        digit.astype(np.uint8) * 255, (GLYPH, GLYPH), interpolation=cv2.INTER_NEAREST
+    )
+    return resized > 127
+
+
+def _digit(cell: np.ndarray) -> np.ndarray | None:
+    """The rank digit in a cell's top-left corner, its ink cropped to its box, or None.
 
     The digit is drawn to contrast the square, so pixels far from the square's own colour are
-    the glyph. It is cropped to its bounding box and scaled to a fixed size so digits read at
-    slightly different pixel sizes still match.
+    the digit.
     """
     if cell.ndim != 3 or cell.size == 0:
         return None
@@ -94,9 +110,52 @@ def _corner_glyph(cell: np.ndarray) -> np.ndarray | None:
         if int(mask.sum()) < _MIN_INK:
             return None
     rows, cols = np.where(mask)
-    cropped = mask[rows.min() : rows.max() + 1, cols.min() : cols.max() + 1].astype(np.uint8)
-    resized = cv2.resize(cropped * 255, (GLYPH, GLYPH), interpolation=cv2.INTER_NEAREST)
-    return resized > 127
+    return mask[rows.min() : rows.max() + 1, cols.min() : cols.max() + 1]
+
+
+def _loops(digit: np.ndarray) -> list[float]:
+    """The closed loops in a digit's ink, each as the height of its middle in the digit (0 at
+    the top, 1 at the foot): an 8 has two, one above the other, a 1 none, in any typeface. A
+    hole under _LOOP of the digit's box is a pinhole in a piece's shading, not a loop."""
+    ink = np.pad(digit, 1).astype(np.uint8)
+    contours, hierarchy = cv2.findContours(ink, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    if hierarchy is None:
+        return []
+    heights: list[float] = []
+    for contour, (_, _, _, parent) in zip(contours, hierarchy[0], strict=True):
+        if parent < 0:
+            continue
+        inside = np.zeros_like(ink)
+        cv2.drawContours(inside, [contour], -1, 1, -1)
+        if int((inside & (1 - ink)).sum()) >= _LOOP * digit.size:
+            heights.append((float(contour[:, 0, 1].mean()) - 1) / digit.shape[0])
+    return heights
+
+
+def _eight(digit: np.ndarray) -> bool:
+    loops = _loops(digit)
+    return len(loops) == 2 and min(loops) < 0.5 < max(loops)
+
+
+def eights(frame: np.ndarray, geometry: BoardGeometry) -> Side | None:
+    """Which side sits at the bottom, read from where the 8 is, with nothing learned: the
+    corner digit with two loops at the top of the left edge and one with none at its foot is
+    White at the bottom, the other way round Black; anything else (coordinates off, a piece
+    over a digit) is None. Learned labels read more boards (a digit half covered still
+    matches); this reads a board whose labels are not learned, or were learned wrong -- Tai's
+    Pixel, 2026-09-28, the night after a start seen through an off lock cached them as solid
+    blocks: every puzzle asked for Flip, and the 8 was there to read all along. A cell is
+    never shrunk to read it: scaled down to the working size, the loops of an 8 closed up."""
+    size = max(CELL, round(geometry.cell_px))
+    top = _digit(geometry.crop(frame, 0, 0, size))
+    foot = _digit(geometry.crop(frame, 7, 0, size))
+    if top is None or foot is None:
+        return None
+    if _eight(top) and not _loops(foot):
+        return Side.WHITE
+    if _eight(foot) and not _loops(top):
+        return Side.BLACK
+    return None
 
 
 def learn_rank_labels(
@@ -115,7 +174,7 @@ def learn_rank_labels(
         glyph = _corner_glyph(geometry.crop(frame, row, 0))
         if glyph is not None:
             labels[rank] = glyph
-    return labels if read_bottom_side(frame, geometry, labels) == bottom else {}
+    return labels if read_labels(frame, geometry, labels) == bottom else {}
 
 
 def _iou(a: np.ndarray, b: np.ndarray) -> float:
@@ -126,7 +185,15 @@ def _iou(a: np.ndarray, b: np.ndarray) -> float:
 def read_bottom_side(
     frame: np.ndarray, geometry: BoardGeometry, labels: dict[int, np.ndarray]
 ) -> Side | None:
-    """Which side sits at the bottom, read from the edge rank digits, or None if unreadable.
+    """Which side sits at the bottom, read from the edge rank digits -- the learned labels
+    (`read_labels`), else where the 8 is (`eights`) -- or None if unreadable."""
+    return read_labels(frame, geometry, labels) or eights(frame, geometry)
+
+
+def read_labels(
+    frame: np.ndarray, geometry: BoardGeometry, labels: dict[int, np.ndarray]
+) -> Side | None:
+    """Which side sits at the bottom, read with the learned labels, or None if unreadable.
 
     Each left-edge digit is matched against the learned exemplars; the sequence down the column
     is 8..1 for White at the bottom and 1..8 for Black. A clear majority (at least six of the
