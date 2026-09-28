@@ -514,10 +514,8 @@ def _hover_outline(patch: np.ndarray, background: np.ndarray) -> bool:
         reach = max(2, int(round(n * HOVER_CORNER)))
         ends = []
         for lo, hi in ((band, band + reach), (n - band - reach, n - band)):
-            lines = [
-                np.median(colour[k, lo:hi].astype(np.float32), axis=0)
-                for k in range(min(n, 2 * band + 1))
-            ]
+            # Each row's median colour over the stretch, all rows in one call.
+            lines = np.median(colour[: min(n, 2 * band + 1), lo:hi].astype(np.float32), axis=1)
             ends.append(
                 max(float(np.linalg.norm(lines[k + 1] - lines[k])) for k in range(len(lines) - 1))
             )
