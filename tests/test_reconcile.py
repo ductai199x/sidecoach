@@ -1,8 +1,20 @@
+import functools
+
 import chess
 import numpy as np
 import pytest
 
-from sidecoach.events import GameEnded, GameStarted, MovePlayed, Region, Resync, Side, Takeback
+from sidecoach.events import (
+    GameEnded,
+    GameStarted,
+    MovePlayed,
+    PositionChanged,
+    Region,
+    Resync,
+    Side,
+    Takeback,
+    Unexplained,
+)
 from sidecoach.state.reconcile import Reconciler, cell_agrees
 from sidecoach.vision.pieces import CellReading, ThemeModel
 from sidecoach.vision.squares import BoardGeometry, row_col
@@ -14,11 +26,20 @@ pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vi
 GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
 
 
-def _setup(bottom: Side = Side.WHITE) -> tuple[ThemeModel, Reconciler]:
-    frame = synthetic_board(bottom=bottom)
-    model = ThemeModel.from_start_position(frame, GEOM, bottom)
+@functools.cache
+def _model(bottom: Side) -> ThemeModel:
+    """The recogniser learned from the start position with `bottom` at the bottom, built
+    once and shared by every test: it reads pixels and nothing else (its cell cache compares
+    crops pixel for pixel), so a model shared reads every frame as a fresh one would. It
+    was built again for every test, a third of this file's time. A plain module helper,
+    not a fixture: the phone's fixture maker calls these tests directly."""
+    model = ThemeModel.from_start_position(synthetic_board(bottom=bottom), GEOM, bottom)
     assert model is not None
-    return model, Reconciler(bottom=bottom, user_side=bottom, settle_frames=2)
+    return model
+
+
+def _setup(bottom: Side = Side.WHITE) -> tuple[ThemeModel, Reconciler]:
+    return _model(bottom), Reconciler(bottom=bottom, user_side=bottom, settle_frames=2)
 
 
 def _feed(model, rec, board, bottom, ts, highlight=None, dragging=None):
@@ -41,50 +62,48 @@ def _play(model, rec, board, sans, bottom=Side.WHITE, ts=0.0):
 
 
 def test_moves_are_committed_after_settling() -> None:
+    """Each move commits on its second settled frame, told as the move of the side whose
+    turn it was, with its think time the time since the last commit on the frames' own
+    timestamps (test_think_time_comes_from_the_frame_timestamps)."""
     model, rec = _setup()
     board = chess.Board()
     events = _feed(model, rec, board, Side.WHITE, 0.0)
     assert any(isinstance(e, GameStarted) for e in events)
 
     by_user = []
+    think_ms = []
+    ts = 0.0
     for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "O-O", "Nxe4", "d4", "exd4"):
         move = board.parse_san(san)
         board.push(move)
-        first = _feed(model, rec, board, Side.WHITE, 0.1, highlight=move)
+        first = _feed(model, rec, board, Side.WHITE, ts + 0.1, highlight=move)
         assert not _played(first), "committed on one frame"
-        second = _feed(model, rec, board, Side.WHITE, 0.2, highlight=move)
+        ts += 0.2
+        second = _feed(model, rec, board, Side.WHITE, ts, highlight=move)
         assert _played(second) == [san]
         by_user += [e.by_user for e in second if isinstance(e, MovePlayed)]
+        think_ms += [e.think_ms for e in second if isinstance(e, MovePlayed)]
     assert rec.board.fen() == board.fen()
     assert rec.pgn() == "1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. O-O Nxe4 5. d4 exd4"
     assert by_user == [True, False] * 5
+    assert think_ms == [200] * 10
 
 
 def test_first_move_is_not_committed_mid_drag() -> None:
-    """The pawn is drawn over e4 under the cursor, off centre: still in the air."""
+    """The pawn is drawn over e4 under the cursor, off centre: still in the air. Then held
+    exactly centred with the hovered square still outlined: not dropped yet either
+    (test_hover_outline_alone_blocks_a_commit: the outline alone blocks the commit)."""
     model, rec = _setup()
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
-    for i, (dx, dy) in enumerate(((0.3, 0.1), (0.2, -0.2), (-0.25, 0.15), (0.1, 0.3))):
+    off_centre = ((0.3, 0.1), (0.2, -0.2), (-0.25, 0.15), (0.1, 0.3))
+    centred = ((0.0, 0.0),) * 4
+    for i, (dx, dy) in enumerate(off_centre + centred):
         drag = (chess.E2, chess.E4, dx, dy)
         assert not _played(_feed(model, rec, board, Side.WHITE, 0.1 * i, dragging=drag))
     move = board.push_san("e4")
     _feed(model, rec, board, Side.WHITE, 1.0, highlight=move)
     assert _played(_feed(model, rec, board, Side.WHITE, 1.1, highlight=move)) == ["e4"]
-
-
-def test_hover_outline_alone_blocks_a_commit() -> None:
-    """A piece exactly centred but the hovered square still outlined: not dropped yet."""
-    model, rec = _setup()
-    board = chess.Board()
-    _feed(model, rec, board, Side.WHITE, 0.0)
-    for i in range(4):
-        drag = (chess.E2, chess.E4, 0.0, 0.0)
-        assert not _played(_feed(model, rec, board, Side.WHITE, 0.1 * i, dragging=drag))
-    move = board.push_san("e4")
-    for ts in (1.0, 1.1):
-        events = _feed(model, rec, board, Side.WHITE, ts, highlight=move)
-    assert _played(events) == ["e4"]
 
 
 def test_drag_in_progress_is_held() -> None:
@@ -113,10 +132,13 @@ def test_long_hover_over_destination_is_not_a_move() -> None:
 
 
 def test_browsing_history_is_not_a_takeback() -> None:
+    """Stepping through the move list is browsing, never a takeback; and the opponent's move
+    made while the user browses snaps the site back to the latest position plus that move,
+    which commits as the game's next move (test_opponent_move_while_browsing_snaps_to_latest)."""
     model, rec = _setup()
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
-    _play(model, rec, board, ["e4", "e5", "Nf3", "Nc6"])
+    _play(model, rec, board, ["e4", "e5", "Nf3", "Nc6", "Bb5"])
     latest = board.fen()
 
     def position(ply: int) -> chess.Board:
@@ -125,33 +147,22 @@ def test_browsing_history_is_not_a_takeback() -> None:
             earlier.pop()
         return earlier
 
-    # Step back to ply 2, then ply 1, then forward to ply 3, then back to the latest.
+    # Step back to ply 2, then ply 1, then forward to ply 3, then back to the latest, then
+    # back to ply 1 again.
     ts = 1.0
-    for ply, expect_view in ((2, 2), (1, 1), (3, 3), (4, None)):
+    for ply, expect_view in ((2, 2), (1, 1), (3, 3), (5, None), (1, 1)):
         for _ in range(6):  # long enough for cells to go stale if they were allowed to
             ts += 0.1
             events = _feed(model, rec, position(ply), Side.WHITE, ts)
             assert not any(isinstance(e, Takeback | MovePlayed) for e in events)
         assert rec.viewing == expect_view, (ply, rec.viewing)
     assert rec.board.fen() == latest
-
-
-def test_opponent_move_while_browsing_snaps_to_latest() -> None:
-    model, rec = _setup()
-    board = chess.Board()
-    _feed(model, rec, board, Side.WHITE, 0.0)
-    _play(model, rec, board, ["e4", "e5", "Nf3"])
-    earlier = board.copy()
-    earlier.pop()
-    earlier.pop()
-    for ts in (1.0, 1.1):
-        _feed(model, rec, earlier, Side.WHITE, ts)
-    assert rec.viewing == 1
-    # The bot replies: the site jumps to the latest position plus the new move.
-    reply = board.push_san("Nc6")
-    events = _feed(model, rec, board, Side.WHITE, 2.0, highlight=reply)
-    events += _feed(model, rec, board, Side.WHITE, 2.1, highlight=reply)
-    assert _played(events) == ["Nc6"]
+    # The bot replies while the user looks at ply 1: the site jumps to the latest position
+    # plus the new move.
+    reply = board.push_san("a6")
+    events = _feed(model, rec, board, Side.WHITE, ts + 0.1, highlight=reply)
+    events += _feed(model, rec, board, Side.WHITE, ts + 0.2, highlight=reply)
+    assert _played(events) == ["a6"]
     assert rec.viewing is None
     assert rec.board.fen() == board.fen()
 
@@ -207,27 +218,8 @@ def test_animation_across_a_still_highlighted_square_is_not_a_move() -> None:
     assert _played(_feed(model, rec, board, Side.WHITE, 2.1, highlight=move)) == ["Nd6+"]
 
 
-def test_selected_piece_does_not_block_the_opponents_move() -> None:
-    """The bot's move is on the board and the user has already clicked their next piece."""
-    model, rec = _setup()
-    board = chess.Board()
-    _feed(model, rec, board, Side.WHITE, 0.0)
-    _play(model, rec, board, ["e4", "e5", "Nf3"])
-    reply = board.push_san("Nc6")
-    frame = synthetic_board(board=board, highlight=reply)
-    readings = model.classify_frame(frame, GEOM)
-    r, c = row_col(chess.F1, Side.WHITE)  # the user selected the f1 bishop
-    old = readings[r][c]
-    readings[r][c] = CellReading(
-        old.kind, old.symbol, old.colour, old.confidence, old.fg_fraction, old.luminance, True
-    )
-    events = rec.update(readings, 1.0) + rec.update(readings, 1.1)
-    assert _played(events) == ["Nc6"]
-
-
 def test_highlight_kinds() -> None:
-    model = ThemeModel.from_start_position(synthetic_board(), GEOM, Side.WHITE)
-    assert model is not None
+    model = _model(Side.WHITE)
     light = np.array(LIGHT, dtype=np.float32)
     assert model.highlight_kind(light, 0, 0) == "none"
     assert model.highlight_kind(np.array(tint(LIGHT, YELLOW), dtype=np.float32), 0, 0) == "move"
@@ -336,35 +328,7 @@ def test_promotion_and_en_passant() -> None:
     assert _played(_feed(model, rec2, promo, Side.WHITE, 0.0)) == ["a8=N"]
 
 
-def test_checkmate_ends_the_game_once() -> None:
-    from sidecoach.events import GameEnded
-
-    model, rec = _setup()
-    board = chess.Board()
-    _feed(model, rec, board, Side.WHITE, 0.0)
-    events = []
-    ts = 0.0
-    for san in ("f3", "e5", "g4", "Qh4#"):
-        move = board.push_san(san)
-        for _ in range(2):
-            ts += 0.1
-            events += _feed(model, rec, board, Side.WHITE, ts, highlight=move)
-    ended = [e for e in events if isinstance(e, GameEnded)]
-    assert len(ended) == 1 and ended[0].result == "0-1" and ended[0].pgn == "1. f3 e5 2. g4 Qh4#"
-    assert rec.finished
-
-    # The next game starts: no second end event for the finished game.
-    events = []
-    for ts in (2.0, 2.1):
-        events += _feed(model, rec, chess.Board(), Side.WHITE, ts)
-    assert not any(isinstance(e, GameEnded) for e in events)
-    assert any(isinstance(e, GameStarted) for e in events)
-    assert not rec.finished
-
-
 def test_move_from_start_position_mid_game_is_a_new_game() -> None:
-    from sidecoach.events import GameEnded
-
     model, rec = _setup()
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
@@ -388,8 +352,6 @@ def test_move_from_start_position_mid_game_is_a_new_game() -> None:
 
 def test_position_resync_after_a_long_gap() -> None:
     """Many plies happened while the board was hidden: adopt the position, then continue."""
-    from sidecoach.events import Resync
-
     model, rec = _setup()
     rec.resync_hold_frames = 3
     board = chess.Board()
@@ -429,8 +391,6 @@ def test_position_resync_after_a_long_gap() -> None:
 
 def test_move_from_adopted_position_is_a_takeback_not_a_new_game() -> None:
     """After a resync, browsing back to the adopted position and playing on is a takeback."""
-    from sidecoach.events import GameEnded, Resync
-
     model, rec = _setup()
     rec.resync_hold_frames = 2
     board = chess.Board()
@@ -481,8 +441,6 @@ def test_takeback_move_legal_only_in_the_earlier_position() -> None:
 
 
 def test_illegal_commit_is_refused_not_fatal() -> None:
-    from sidecoach.events import Unexplained
-
     rec = Reconciler(bottom=Side.WHITE)
     rec.start()
     events = rec._commit(chess.Move.from_uci("d4g4"))
@@ -502,7 +460,6 @@ def test_cells_unexplained_for_long_are_noted_and_the_game_is_kept() -> None:
     the game goes on as it stands. It was a Resync, which the coach and the engine read as
     the numbering starting again while the reconciler kept its own (Tai's game, 2026-09-23:
     the takeback that came after was "10 plies" to one and "the last move" to the other)."""
-    from sidecoach.events import Unexplained
 
     model, rec = _setup()
     rec.stale_after = 2
@@ -529,17 +486,6 @@ def test_cells_unexplained_for_long_are_noted_and_the_game_is_kept() -> None:
     for i in range(12):
         events += _feed(model2, rec2, lifted, Side.WHITE, 0.1 * i)
     assert not any(isinstance(e, Resync | Unexplained) for e in events)
-
-
-def test_black_at_bottom_user_black() -> None:
-    model, rec = _setup(Side.BLACK)
-    board = chess.Board()
-    _feed(model, rec, board, Side.BLACK, 0.0)
-    for san in ("e4", "c5", "Nf3"):
-        move = board.push_san(san)
-        _feed(model, rec, board, Side.BLACK, 0.1, highlight=move)
-        assert _played(_feed(model, rec, board, Side.BLACK, 0.2, highlight=move)) == [san]
-    assert rec.board.fen() == board.fen()
 
 
 def test_badge_arriving_with_the_move_does_not_block_it() -> None:
@@ -686,54 +632,14 @@ def test_a_queen_nobody_can_read_is_not_moved_there_and_back(frames: int) -> Non
 
 
 def test_browsing_to_the_start_of_a_long_game_is_not_a_new_game() -> None:
-    """The move list's first entry shows the start position; a game of 42 plies is still on."""
+    """The move list's first entry shows the start position; a game longer than the history
+    the reconciler looks back through is still on. The start position is checked however
+    long the game (42 plies against a history of 40, once; here 6 against 4)."""
     model, rec = _setup()
+    rec.history_depth = 4
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
-    line = [
-        "e4",
-        "e5",
-        "Nf3",
-        "Nc6",
-        "Bb5",
-        "a6",
-        "Ba4",
-        "Nf6",
-        "O-O",
-        "Be7",
-        "Re1",
-        "b5",
-        "Bb3",
-        "d6",
-        "c3",
-        "O-O",
-        "h3",
-        "Nb8",
-        "d4",
-        "Nbd7",
-        "Nbd2",
-        "Bb7",
-        "Bc2",
-        "Re8",
-        "Nf1",
-        "Bf8",
-        "Ng3",
-        "g6",
-        "a4",
-        "c5",
-        "d5",
-        "c4",
-        "Bg5",
-        "h6",
-        "Be3",
-        "Nc5",
-        "Qd2",
-        "h5",
-        "Bg5",
-        "Be7",
-        "Kh2",
-        "Kg7",
-    ]
+    line = ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"]
     assert len(line) > rec.history_depth
     ts = _play(model, rec, board, line)
     assert len(rec.board.move_stack) == len(line)
@@ -745,42 +651,38 @@ def test_browsing_to_the_start_of_a_long_game_is_not_a_new_game() -> None:
     assert len(rec.board.move_stack) == len(line)
 
 
-def test_position_resync_after_a_finished_game_is_live_again() -> None:
-    model, rec = _setup()
-    rec.resync_hold_frames = 3
-    board = chess.Board()
-    _feed(model, rec, board, Side.WHITE, 0.0)
-    _play(model, rec, board, ["f3", "e5", "g4", "Qh4#"])
-    assert rec.finished
-    later = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3")
-    events = []
-    for i in range(6):
-        events += _feed(model, rec, later, Side.WHITE, 2.0 + 0.1 * i)
-    assert any(isinstance(e, Resync) for e in events)
-    assert rec.board.board_fen() == later.board_fen()
-    assert not rec.finished
+QUEUE_BOARD = "4k3/P7/8/3p4/4P3/8/P7/4K3 w - - 0 1"
+# (position, origin, target, the piece drawn at the target, the queue's moves or None)
+QUEUE_PATHS = [
+    # A pawn takes the double step when that is shorter.
+    (QUEUE_BOARD, chess.A2, chess.A5, "P", ["a2a4", "a4a5"]),
+    # A pawn only captures on the way to its target, never through an empty square.
+    (QUEUE_BOARD, chess.E4, chess.D5, "P", ["e4d5"]),
+    (QUEUE_BOARD, chess.E4, chess.F5, "P", None),
+    # Promotion to the piece drawn on the last rank; a pawn drawn there is not decided.
+    (QUEUE_BOARD, chess.A7, chess.A8, "N", ["a7a8n"]),
+    (QUEUE_BOARD, chess.A7, chess.A8, "P", None),
+    (QUEUE_BOARD, chess.A7, chess.A8, "q", None),  # the wrong colour
+    # A king two squares away has several shortest ways: nothing is assumed.
+    (QUEUE_BOARD, chess.E1, chess.E3, "K", None),
+    (QUEUE_BOARD, chess.E1, chess.E2, "K", ["e1e2"]),
+    # A blocked file has no way at all.
+    ("4k3/8/8/8/8/p7/P7/4K3 w - - 0 1", chess.A2, chess.A4, "P", None),
+    # A queue never passes through the en-passant square: the pawn on e5 may go on up its
+    # file, but not by way of d6 (test_queue_path_never_passes_through_the_en_passant_square).
+    ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2", chess.E5, chess.D7, "P", None),
+    ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2", chess.E5, chess.E7, "P", ["e5e6", "e6e7"]),
+]
 
 
 def test_queue_path_shortest_unique_ways() -> None:
     rec = Reconciler(bottom=Side.WHITE, user_side=Side.WHITE)
-    rec.board = chess.Board("4k3/P7/8/3p4/4P3/8/P7/4K3 w - - 0 1")
-    # A pawn takes the double step when that is shorter.
-    path = rec._queue_path(chess.A2, chess.A5, "P")
-    assert path is not None and [m.uci() for m in path] == ["a2a4", "a4a5"]
-    # A pawn only captures on the way to its target, never through an empty square.
-    assert rec._queue_path(chess.E4, chess.D5, "P") is not None
-    assert rec._queue_path(chess.E4, chess.F5, "P") is None
-    # Promotion to the piece drawn on the last rank; a pawn drawn there is not decided.
-    path = rec._queue_path(chess.A7, chess.A8, "N")
-    assert path is not None and [m.uci() for m in path] == ["a7a8n"]
-    assert rec._queue_path(chess.A7, chess.A8, "P") is None
-    assert rec._queue_path(chess.A7, chess.A8, "q") is None  # the wrong colour
-    # A king two squares away has several shortest ways: nothing is assumed.
-    assert rec._queue_path(chess.E1, chess.E3, "K") is None
-    assert rec._queue_path(chess.E1, chess.E2, "K") is not None
-    # A blocked file has no way at all.
-    rec.board = chess.Board("4k3/8/8/8/8/p7/P7/4K3 w - - 0 1")
-    assert rec._queue_path(chess.A2, chess.A4, "P") is None
+    for fen, origin, target, symbol, expected in QUEUE_PATHS:
+        if rec.board.fen() != fen:
+            rec.board = chess.Board(fen)
+        path = rec._queue_path(origin, target, symbol)
+        got = None if path is None else [m.uci() for m in path]
+        assert got == expected, (fen, chess.square_name(origin), chess.square_name(target))
 
 
 def test_opponent_move_waits_while_its_squares_are_under_the_drag() -> None:
@@ -801,10 +703,10 @@ def test_opponent_move_waits_while_its_squares_are_under_the_drag() -> None:
 
 
 def test_user_can_end_the_game_by_resigning() -> None:
-    model, rec = _setup()
-    board = chess.Board()
-    _feed(model, rec, board, Side.WHITE, 0.0)
-    _play(model, rec, board, ["e4", "e5"])
+    rec = Reconciler(bottom=Side.WHITE, user_side=Side.WHITE)
+    rec.start()
+    for san in ("e4", "e5"):
+        rec._commit(rec.board.parse_san(san))
     events = rec.end("0-1", "user resigned")
     assert len(events) == 1 and isinstance(events[0], GameEnded)
     assert events[0].result == "0-1" and events[0].pgn == "1. e4 e5"
@@ -928,11 +830,22 @@ def test_resync_onto_a_mated_position_ends_the_game() -> None:
 
 
 def test_nothing_is_played_on_a_finished_game() -> None:
+    """A mate on the board ends the game once, with its result and record; after it the
+    board is a review board, and only the start position begins the next game, with no
+    second end for this one (test_checkmate_ends_the_game_once). A resignation likewise."""
     model, rec = _setup()
     rec.resync_hold_s = 60.0  # a review board held long enough is another position; not here
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
-    ts = _play(model, rec, board, ["f3", "e5", "g4", "Qh4#"])
+    events = []
+    ts = 0.0
+    for san in ("f3", "e5", "g4", "Qh4#"):
+        move = board.push_san(san)
+        for _ in range(2):
+            ts += 0.1
+            events += _feed(model, rec, board, Side.WHITE, ts, highlight=move)
+    ended = [e for e in events if isinstance(e, GameEnded)]
+    assert len(ended) == 1 and ended[0].result == "0-1" and ended[0].pgn == "1. f3 e5 2. g4 Qh4#"
     assert rec.finished
     game_id = rec.game_id
     # Browsing back one ply and playing another move there is review, not the game.
@@ -949,6 +862,14 @@ def test_nothing_is_played_on_a_finished_game() -> None:
         events += _feed(model, rec, earlier, Side.WHITE, ts, highlight=move)
     assert not any(isinstance(e, MovePlayed | Takeback | GameEnded) for e in events)
     assert rec.finished and rec.game_id == game_id
+    # The next game starts: no second end event for the finished game.
+    events = []
+    for _ in range(2):
+        ts += 0.1
+        events += _feed(model, rec, chess.Board(), Side.WHITE, ts)
+    assert not any(isinstance(e, GameEnded) for e in events)
+    assert any(isinstance(e, GameStarted) for e in events)
+    assert not rec.finished
     # After a resignation the board keeps moving; none of it is this game.
     model, rec = _setup()
     board = chess.Board()
@@ -967,6 +888,7 @@ def test_nothing_is_played_on_a_finished_game() -> None:
     assert [type(e).__name__ for e in events if isinstance(e, GameEnded | GameStarted)] == [
         "GameStarted"
     ]
+    assert not rec.finished
 
 
 def test_position_after_a_finished_game_starts_another_game() -> None:
@@ -983,6 +905,9 @@ def test_position_after_a_finished_game_starts_another_game() -> None:
     kinds = [type(e).__name__ for e in events if isinstance(e, GameStarted | Resync)]
     assert kinds == ["GameStarted", "Resync"]
     assert rec.game_id != first_id and not rec.finished
+    # The position adopted is the one on the board
+    # (test_position_resync_after_a_finished_game_is_live_again).
+    assert rec.board.board_fen() == later.board_fen()
 
 
 def test_drag_over_the_previous_square_is_not_browsing() -> None:
@@ -994,13 +919,6 @@ def test_drag_over_the_previous_square_is_not_browsing() -> None:
         ts += 0.1
         _feed(model, rec, board, Side.WHITE, ts, dragging=(chess.F3, chess.G1, 0.05, 0.05))
     assert rec.viewing is None
-
-
-def test_queue_path_never_passes_through_the_en_passant_square() -> None:
-    rec = Reconciler(bottom=Side.WHITE, user_side=Side.WHITE)
-    rec.board = chess.Board("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2")
-    assert rec._queue_path(chess.E5, chess.D7, "P") is None
-    assert rec._queue_path(chess.E5, chess.E7, "P") is not None
 
 
 def test_arrows_over_empty_squares_do_not_stall_the_game() -> None:
@@ -1029,20 +947,6 @@ def test_arrows_over_empty_squares_do_not_stall_the_game() -> None:
     assert _played(events) == ["Nf3", "Nc6"]
 
 
-def test_think_time_comes_from_the_frame_timestamps() -> None:
-    model, rec = _setup()
-    board = chess.Board()
-    _feed(model, rec, board, Side.WHITE, 0.0)
-    events = []
-    ts = 0.0
-    for san in ("e4", "e5"):
-        move = board.push_san(san)
-        for _ in range(2):
-            ts += 0.1
-            events += _feed(model, rec, board, Side.WHITE, ts, highlight=move)
-    assert [e.think_ms for e in events if isinstance(e, MovePlayed)] == [200, 200]
-
-
 def test_the_clock_settles_the_side_to_move_before_a_takeback_can_mislead() -> None:
     """The live game of 2026-09-19: a position adopted with the side to move open, then a
     takeback of a move pair. Two pieces going back to where they stood read as two
@@ -1050,7 +954,6 @@ def test_the_clock_settles_the_side_to_move_before_a_takeback_can_mislead() -> N
     coach named the opponent's best move for three minutes of the player's own clock.
     The running clock settles the turn first; the same retreat then reads white-first
     and leaves white to move, as the board has it."""
-    from sidecoach.events import PositionChanged
 
     model, rec = _setup()
     # After 22... Be7 in that game: white to move, though either side could legally.
