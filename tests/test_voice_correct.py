@@ -118,6 +118,8 @@ SCANDINAVIAN = chess.Board("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQ
         # Fuzz still mends the words around the piece and the square.
         ("knight takes f three", START, "Nf3", ["Nf3"]),
         ("e takes d five", SCANDINAVIAN, "exd5", ["exd5"]),
+        # Not legal after 1.e4 f5 2.exf5 g6: left as the user said it.
+        ("e takes d five", AFTER_G6, "e takes d five", []),
     ],
 )
 def test_a_fuzzy_match_never_swaps_the_piece_or_the_square(
@@ -127,13 +129,6 @@ def test_a_fuzzy_match_never_swaps_the_piece_or_the_square(
     What matches no legal move stays as words, for the coach to read (Tai, 2026-09-23)."""
     result = correct(heard, board)
     assert (result.text, result.moves) == (text, moves)
-
-
-def test_an_illegal_move_is_left_as_words() -> None:
-    # e takes d5 is not legal after 1.e4 f5 2.exf5 g6, so it stays as the user said it.
-    result = correct("e takes d five", AFTER_G6)
-    assert result.moves == []
-    assert result.text == "e takes d five"
 
 
 def test_without_a_board_only_the_confusions_apply() -> None:

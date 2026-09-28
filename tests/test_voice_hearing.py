@@ -1,5 +1,6 @@
 """The coach's hearing: one runtime for both voice models, loaded once; the VAD endpointer;
-the ear providers; and the whole hear -> correct -> ask path over HTTP with a real clip.
+and the whole hear -> correct -> ask path over HTTP with a real clip. The ear providers
+the factory builds are test_voice_factory.py's.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import pytest
 from sidecoach.config import Settings, VoiceSettings
 from sidecoach.voice import runtime
 from sidecoach.voice.kokoro import KokoroTTS
-from sidecoach.voice.stt import NullSTT, ParakeetSTT, make_stt
+from sidecoach.voice.stt import ParakeetSTT
 from sidecoach.voice.vad import Endpointer
 
 AUDIO = Path(__file__).parent / "audio"
@@ -213,29 +214,6 @@ def test_an_utterance_that_comes_to_nothing_is_said() -> None:
     listener.release()
     assert dropped == ["dropped", "dropped"] and heard == []
     listener.set_mode("off")
-
-
-# ---- the ear providers -------------------------------------------------------------------------
-
-
-def test_an_ear_turned_off_is_deaf_with_a_reason() -> None:
-    ear = make_stt(None, off=True)
-    assert isinstance(ear, NullSTT)
-    assert "off" in ear.healthcheck()[1]
-    assert ear.transcribe(np.zeros(1600, dtype=np.float32)) == ""
-
-
-def test_parakeet_states_its_device_before_loading() -> None:
-    ear = make_stt("cuda")
-    assert isinstance(ear, ParakeetSTT)
-    ready, detail = ear.healthcheck()
-    if find_spec("onnx_asr") is None:
-        # Without the voice group (CI installs dev and panel only) the ear says so.
-        assert not ready and "onnx-asr" in detail
-        return
-    assert "parakeet" in detail
-    if ready:
-        assert "cuda" in detail and "not loaded yet" in detail
 
 
 # ---- hear -> correct -> ask over HTTP, with the real ear -------------------------------------

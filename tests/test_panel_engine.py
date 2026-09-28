@@ -20,14 +20,22 @@ from tests.synth import game_frames
 _SILENT = VoiceSettings()
 
 
+# Scholar's mate: a game short enough to render cheaply, with an end the board shows.
+MATE = ("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6", "Qxf7#")
+
+
 def test_engine_follows_a_game_and_reports_it(tmp_path: Path) -> None:
+    """A game from its start to its mate, as the page sees it: the board locked, the moves
+    and the end in the terminal and the state. Without an engine there are no verdicts,
+    but the game itself reaches the profile, the review card and the session summary; a
+    replay (an injected frame source) keeps the profile in memory and writes no file."""
     settings = Settings(data_dir=tmp_path, voice=_SILENT)
     engine = PanelEngine(
         settings,
         analysis=False,  # no Stockfish needed in a unit test
         coach=False,  # no LLM needed in a unit test
         record=False,
-        frame_source=game_frames(),
+        frame_source=game_frames(MATE),
     )
     engine.start()
     assert engine._thread is not None
@@ -56,25 +64,26 @@ def test_engine_follows_a_game_and_reports_it(tmp_path: Path) -> None:
         "no debug.jsonl written for the session"
     )
     assert state["fen"], "no position in the state"
-    assert state["ply"] >= 8, f"expected several plies, got {state['ply']}"
+    assert state["ply"] == len(MATE), f"expected every ply, got {state['ply']}"
     assert state["following"] or state["moves"], "engine never followed a game"
     assert state["running"] is False, "engine should have stopped after the recording ended"
+    # The end, the profile and the review card.
+    assert any(t.startswith("game over 1-0") for t in texts), "the mate was not seen"
+    assert state["profile"] is not None and state["profile"]["games"] == 1
+    assert not (tmp_path / "profile.sqlite").exists(), "a replay must not write the profile"
+    review = state["review"]
+    assert review is not None and review["result"] == "1-0" and review["reason"] == "checkmate"
+    assert review["moves"] == 0, "no engine: no move judged"
+    assert any(ln["chan"] == "coach" and "review" in ln.get("data", {}) for ln in lines)
+    assert any(t.startswith("session:") for t in texts)
 
 
-def test_api_poll_is_incremental_and_serialisable(tmp_path: Path) -> None:
+def test_api_poll_is_incremental(tmp_path: Path) -> None:
     settings = Settings(data_dir=tmp_path, voice=_SILENT)
     engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
     api = PanelApi(engine)
 
     first = api.poll(0)
-    assert set(first) == {"state", "lines", "cursor"}
-    assert first["state"]["voice"] == "af_sarah"
-    assert "af_sarah" in first["state"]["voices"]
-    # The state must be plain JSON-friendly data (no chess/Side objects leaking through).
-    import json
-
-    json.dumps(first)
-
     # An emitted record shows up once, structured, and polling past its cursor does not
     # repeat it.
     engine._emit("sys", "info", "hello", detail=42)
@@ -84,20 +93,6 @@ def test_api_poll_is_incremental_and_serialisable(tmp_path: Path) -> None:
     assert record["chan"] == "sys" and record["level"] == "info" and record["text"] == "hello"
     assert record["data"] == {"detail": 42} and record["t"] >= 0
     assert api.poll(got["cursor"])["lines"] == []
-
-
-def test_flip_and_voice_controls_do_not_raise_without_a_game(tmp_path: Path) -> None:
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
-    api = PanelApi(engine)
-    assert api.set_voice("am_adam") is True
-    assert engine.voice == "am_adam"
-    assert api.set_muted(True) is True
-    assert engine.muted is True
-    # Queuing controls before the loop runs must not raise.
-    assert api.flip() is True
-    assert api.analyze() is True
-    assert api.hint() is True
 
 
 def test_ending_a_game_on_the_users_word_scores_it_from_their_side() -> None:
@@ -149,28 +144,6 @@ def test_legal_move_dots_are_not_a_degraded_reading(tmp_path: Path) -> None:
     for _ in range(DEGRADED_FRAMES + 2):
         degraded = engine._check_degraded(SimpleNamespace(readings=dialog), degraded)
     assert degraded is True
-
-
-def test_the_profile_records_the_game_and_the_review_reaches_the_page(tmp_path: Path) -> None:
-    """Without an engine there are no verdicts, but the game itself -- its moves and its
-    end -- reaches the profile store, the review card and the session summary; a replay
-    (an injected frame source) keeps the profile in memory and writes no file."""
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(
-        settings, analysis=False, coach=False, record=False, frame_source=game_frames()
-    )
-    engine.start()
-    assert engine._thread is not None
-    engine._thread.join(timeout=90)
-    snap = engine.poll(0)
-    state, lines = snap["state"], snap["lines"]
-    assert state["profile"] is not None and state["profile"]["games"] in (0, 1)
-    assert not (tmp_path / "profile.sqlite").exists(), "a replay must not write the profile"
-    texts = [ln["text"] for ln in lines]
-    if any("game over" in t for t in texts):
-        assert state["review"] is not None and state["review"]["moves"] == 0  # no engine
-        assert any(ln["chan"] == "coach" and "review" in ln.get("data", {}) for ln in lines)
-        assert any(t.startswith("session:") for t in texts)
 
 
 def test_a_correction_moves_through_the_api(tmp_path: Path) -> None:

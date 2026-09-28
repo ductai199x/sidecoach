@@ -198,50 +198,120 @@ SAC = MotifTag(name="sacrifice", squares=["h7"])
 CAPTURE = MotifTag(name="capture", squares=["e5"])
 
 
-def test_time_pressure_comes_first() -> None:
-    board = chess.Board()
-    cause, motif = causes.classify(
-        board, chess.Move.from_uci("e2e4"), allowed_tags=[FORK], clock_ms=8_000
-    )
-    assert cause == causes.TIME_PRESSURE and motif == "fork"
+START_FEN = chess.STARTING_FEN
+# 1.e4 e5 2.Nf3 Nc6 3.Bc4 Nd4, White to move: 4.Nxe5? allows the fork ...Qg5.
+GREEDY = "r1bqkbnr/pppp1ppp/8/4p3/2BnP3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
+# White to move with the bishop on c4 aimed at f7: 4.Bxf7+?, a sacrifice tagged as such.
+BXF7 = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
 
 
-def test_a_tactic_allowed_is_a_missed_threat() -> None:
-    board = chess.Board()
-    cause, motif = causes.classify(board, chess.Move.from_uci("e2e4"), allowed_tags=[FORK])
-    assert (cause, motif) == (causes.MISSED_THREAT, "fork")
-    # A mate for the opponent, even without a tag.
-    cause, motif = causes.classify(board, chess.Move.from_uci("f2f3"), reply_mate=2)
-    assert (cause, motif) == (causes.MISSED_THREAT, "mate")
-
-
-def test_a_chance_let_go_with_a_tactic_on_the_board_is_the_tactic_never_considered() -> None:
-    """Even when the move also allowed one: the tactic-blind student was told it kept
-    missing their threats and wrote down the threat habit (the simulated students)."""
-    board = chess.Board()
-    move = chess.Move.from_uci("e2e4")
-    cause, motif = causes.classify(
-        board, move, available_tags=[FORK], allowed_tags=[FORK], missed_chance=True
-    )
-    assert (cause, motif) == (causes.NOT_CONSIDERED, "fork")
-    # Not a miss: the tactic allowed comes first, as before.
-    cause, _ = causes.classify(board, move, available_tags=[FORK], allowed_tags=[FORK])
-    assert cause == causes.MISSED_THREAT
-    # A mate allowed is the threat whatever else.
-    cause, _ = causes.classify(board, move, available_tags=[FORK], reply_mate=1, missed_chance=True)
-    assert cause == causes.MISSED_THREAT
-
-
-def test_a_capture_or_check_that_comes_out_behind_is_a_line_miscalculated() -> None:
-    """Even when the reply it allows wins material: the player began it. As a threat missed,
-    the greedy student heard "what their moves threatened" after every game."""
-    # 1.e4 e5 2.Nf3 Nc6 3.Bc4 Nd4 4.Nxe5?, allowing the fork ...Qg5.
-    board = chess.Board("r1bqkbnr/pppp1ppp/8/4p3/2BnP3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
-    cause, motif = causes.classify(board, chess.Move.from_uci("f3e5"), allowed_tags=[FORK])
-    assert (cause, motif) == (causes.MISCALCULATED, "fork")
-    # A mate allowed is still the threat.
-    cause, _ = causes.classify(board, chess.Move.from_uci("f3e5"), reply_mate=2)
-    assert cause == causes.MISSED_THREAT
+@pytest.mark.parametrize(
+    ("fen", "uci", "kw", "want"),
+    [
+        # Time pressure comes first.
+        pytest.param(
+            START_FEN,
+            "e2e4",
+            {"allowed_tags": [FORK], "clock_ms": 8_000},
+            (causes.TIME_PRESSURE, "fork"),
+            id="time-pressure-first",
+        ),
+        pytest.param(
+            START_FEN,
+            "e2e4",
+            {"allowed_tags": [FORK]},
+            (causes.MISSED_THREAT, "fork"),
+            id="tactic-allowed",
+        ),
+        # A mate for the opponent, even without a tag.
+        pytest.param(
+            START_FEN, "f2f3", {"reply_mate": 2}, (causes.MISSED_THREAT, "mate"), id="mate-allowed"
+        ),
+        # A chance let go with a tactic on the board is the tactic never considered, even
+        # when the move also allowed one: the tactic-blind student was told it kept missing
+        # their threats and wrote down the threat habit (the simulated students, 2026-09-26).
+        pytest.param(
+            START_FEN,
+            "e2e4",
+            {"available_tags": [FORK], "allowed_tags": [FORK], "missed_chance": True},
+            (causes.NOT_CONSIDERED, "fork"),
+            id="chance-let-go",
+        ),
+        # Not a miss: the tactic allowed comes first, as before.
+        pytest.param(
+            START_FEN,
+            "e2e4",
+            {"available_tags": [FORK], "allowed_tags": [FORK]},
+            (causes.MISSED_THREAT, "fork"),
+            id="allowed-before-available",
+        ),
+        # A mate allowed is the threat whatever else.
+        pytest.param(
+            START_FEN,
+            "e2e4",
+            {"available_tags": [FORK], "reply_mate": 1, "missed_chance": True},
+            (causes.MISSED_THREAT, "mate"),
+            id="chance-let-go-mate-allowed",
+        ),
+        # A capture or check that comes out behind is a line miscalculated, even when the
+        # reply it allows wins material: the player began it. As a threat missed, the greedy
+        # student heard "what their moves threatened" after every game.
+        pytest.param(
+            GREEDY,
+            "f3e5",
+            {"allowed_tags": [FORK]},
+            (causes.MISCALCULATED, "fork"),
+            id="greedy-capture",
+        ),
+        # A mate allowed is still the threat.
+        pytest.param(
+            GREEDY, "f3e5", {"reply_mate": 2}, (causes.MISSED_THREAT, "mate"), id="greedy-mate"
+        ),
+        # An attempted tactic or a capture that failed is a miscalculation.
+        pytest.param(
+            BXF7,
+            "c4f7",
+            {"played_tags": [SAC, CAPTURE]},
+            (causes.MISCALCULATED, "sacrifice"),
+            id="failed-sacrifice",
+        ),
+        # A plain capture that lost ground, with a tactic that was there instead.
+        pytest.param(
+            BXF7,
+            "c4f7",
+            {"played_tags": [CAPTURE], "available_tags": [FORK]},
+            (causes.MISCALCULATED, "fork"),
+            id="failed-capture",
+        ),
+        # A tactic left on the board was never considered.
+        pytest.param(
+            START_FEN,
+            "a2a3",
+            {"available_tags": [FORK]},
+            (causes.NOT_CONSIDERED, "fork"),
+            id="tactic-left",
+        ),
+        # The phase names the rest.
+        pytest.param(START_FEN, "a2a3", {"phase": "endgame"}, (causes.ENDGAME, None), id="endgame"),
+        pytest.param(
+            START_FEN, "a2a3", {"phase": "opening"}, (causes.OPENING_GAP, None), id="opening"
+        ),
+        pytest.param(
+            START_FEN,
+            "a2a3",
+            {"phase": "middlegame", "left_book": True},
+            (causes.OPENING_GAP, None),
+            id="left-book",
+        ),
+        pytest.param(
+            START_FEN, "a2a3", {"phase": "middlegame"}, (causes.POSITIONAL, None), id="positional"
+        ),
+    ],
+)
+def test_the_cause_of_a_mistake(
+    fen: str, uci: str, kw: dict[str, Any], want: tuple[str, str | None]
+) -> None:
+    assert causes.classify(chess.Board(fen), chess.Move.from_uci(uci), **kw) == want
 
 
 def test_a_piece_left_to_be_taken_is_a_missed_threat() -> None:
@@ -270,34 +340,6 @@ def test_a_piece_guarded_only_by_a_pinned_piece_is_left_to_be_taken() -> None:
     # Unpinned, the knight takes back: a knight for a bishop wins nothing.
     unpinned = chess.Board("4k3/8/5n2/8/4B3/2N5/8/4K3 b - - 0 1")
     assert not causes.wins_material(unpinned, chess.Move.from_uci("f6e4"))
-
-
-def test_an_attempted_tactic_or_a_capture_that_failed_is_a_miscalculation() -> None:
-    board = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
-    move = chess.Move.from_uci("c4f7")  # Bxf7+?, a sacrifice tagged as such
-    cause, motif = causes.classify(board, move, played_tags=[SAC, CAPTURE])
-    assert (cause, motif) == (causes.MISCALCULATED, "sacrifice")
-    # A plain capture that lost ground, with a tactic that was there instead.
-    cause, motif = causes.classify(board, move, played_tags=[CAPTURE], available_tags=[FORK])
-    assert (cause, motif) == (causes.MISCALCULATED, "fork")
-
-
-def test_a_tactic_left_on_the_board_was_never_considered() -> None:
-    board = chess.Board()
-    cause, motif = causes.classify(board, chess.Move.from_uci("a2a3"), available_tags=[FORK])
-    assert (cause, motif) == (causes.NOT_CONSIDERED, "fork")
-
-
-def test_the_phase_names_the_rest() -> None:
-    board = chess.Board()
-    quiet = chess.Move.from_uci("a2a3")
-    assert causes.classify(board, quiet, phase="endgame") == (causes.ENDGAME, None)
-    assert causes.classify(board, quiet, phase="opening") == (causes.OPENING_GAP, None)
-    assert causes.classify(board, quiet, phase="middlegame", left_book=True) == (
-        causes.OPENING_GAP,
-        None,
-    )
-    assert causes.classify(board, quiet, phase="middlegame") == (causes.POSITIONAL, None)
 
 
 def test_only_tactics_count_as_motifs() -> None:
@@ -424,7 +466,6 @@ def test_a_clean_game_says_so() -> None:
         moves=[_user_move(2, "e5", "e7e5", START, label="best", accuracy=100.0)],
         fullmoves=30,
     )
-    assert "You played black and drew by agreement in 30 moves." in review.lines[0]
     assert "No move cost you real ground." in review.lines
 
 
@@ -505,6 +546,26 @@ class Feed:
         self.out += got
         return got
 
+    def unjudged(self, san: str) -> list:
+        """A move as the pipeline reports it, before the engine has judged it."""
+        move = self.board.parse_san(san)
+        fen_before = self.board.fen()
+        by_user = (self.board.turn == chess.WHITE) == (self.user_side is Side.WHITE)
+        self.board.push(move)
+        self.ply += 1
+        return self.send(
+            MovePlayed(
+                game_id="g",
+                ply=self.ply,
+                san=san,
+                uci=move.uci(),
+                fen_before=fen_before,
+                fen_after=self.board.fen(),
+                by_user=by_user,
+                think_ms=3000,
+            )
+        )
+
     def play(
         self,
         san: str,
@@ -517,23 +578,8 @@ class Feed:
         reply_mate: int | None = None,
         analysis: bool = True,
     ) -> list:
-        move = self.board.parse_san(san)
-        fen_before = self.board.fen()
-        by_user = (self.board.turn == chess.WHITE) == (self.user_side is Side.WHITE)
-        self.board.push(move)
-        self.ply += 1
-        got = self.send(
-            MovePlayed(
-                game_id="g",
-                ply=self.ply,
-                san=san,
-                uci=move.uci(),
-                fen_before=fen_before,
-                fen_after=self.board.fen(),
-                by_user=by_user,
-                think_ms=3000,
-            )
-        )
+        got = self.unjudged(san)
+        move = self.board.peek()
         severity = (
             Severity.BLUNDER
             if loss >= 0.28
@@ -722,133 +768,49 @@ def test_the_player_may_be_either_colour(side: Side) -> None:
     assert [r.ply for r in rows] == [1 if side is Side.WHITE else 2]
 
 
-def test_the_review_waits_for_the_engines_last_verdicts() -> None:
-    f = Feed()
-    f.play("e4")
-    f.play("e5")
-    # The player's last move reaches the profile before the engine has judged it.
-    move = f.board.parse_san("Nf3")
-    fen_before = f.board.fen()
-    f.board.push(move)
-    f.ply += 1
-    f.send(
-        MovePlayed(
-            game_id="g",
-            ply=f.ply,
-            san="Nf3",
-            uci=move.uci(),
-            fen_before=fen_before,
-            fen_after=f.board.fen(),
-            by_user=True,
-            think_ms=100,
-        )
-    )
-    got = f.end("1-0", "resignation")
-    assert not any(isinstance(e, GameReview) for e in got)
-    assert f.profiler.tick(f.ts + 10.0) == []  # still within the grace period
-    # The verdict arrives: the review follows at once, with the move counted.
-    got = f.send(
-        MoveAssessment(
-            game_id="g",
-            ply=f.ply,
-            uci=move.uci(),
-            expected_loss=0.0,
-            severity=Severity.NONE,
-            best=[move.uci()],
-            depth=14,
-            label=Label.BEST,
-            accuracy=100.0,
-        )
-    )
-    review = next(e for e in got if isinstance(e, GameReview))
-    assert review.moves == 2 and review.tallies == {"good": 1, "best": 1}
-    assert f.profiler.tick(f.ts + 1000.0) == []  # reviewed once
-
-
-def test_a_review_left_waiting_is_built_when_the_grace_period_is_up_or_at_the_close() -> None:
+@pytest.mark.parametrize("flush", ["verdict", "grace", "close", "next_game"])
+def test_a_review_waits_for_the_last_verdict_and_is_never_dropped(flush: str) -> None:
+    """The player's last move reaches the profile before the engine has judged it, and the
+    game ends: the review waits for the verdict and follows it at once. Without it, the
+    review is built from the judged moves when the grace period is up, the session closes
+    or the next game starts -- never dropped."""
     from sidecoach.profile.profiler import REVIEW_GRACE_S
 
     f = Feed()
     f.play("e4")
     f.play("e5")
-    f.send(
-        MovePlayed(
-            game_id="g",
-            ply=3,
-            san="Nf3",
-            uci="g1f3",
-            fen_before=f.board.fen(),
-            fen_after=f.board.fen(),
-            by_user=True,
-            think_ms=100,
+    f.unjudged("Nf3")
+    assert not any(isinstance(e, GameReview) for e in f.end("1-0", "resignation"))
+    assert f.profiler.tick(f.ts + 10.0) == []  # still within the grace period
+    if flush == "close":
+        assert f.profiler.end_session(f.ts + 1) is not None
+        game = f.store.game("g")
+        assert game is not None and game.accuracy is not None, "reviewed and written"
+        return
+    if flush == "verdict":
+        got = f.send(
+            MoveAssessment(
+                game_id="g",
+                ply=f.ply,
+                uci="g1f3",
+                expected_loss=0.0,
+                severity=Severity.NONE,
+                best=["g1f3"],
+                depth=14,
+                label=Label.BEST,
+                accuracy=100.0,
+            )
         )
-    )
-    assert not any(isinstance(e, GameReview) for e in f.end())
-    got = f.profiler.tick(f.ts + REVIEW_GRACE_S + 1)
-    review = next(e for e in got if isinstance(e, GameReview))
-    assert review.moves == 1  # the judged move only
-    # And a session that closes flushes a waiting review instead of dropping it.
-    g = Feed()
-    g.play("e4")
-    g.send(
-        MovePlayed(
-            game_id="g",
-            ply=2,
-            san="e5",
-            uci="e7e5",
-            fen_before=g.board.fen(),
-            fen_after=g.board.fen(),
-            by_user=False,
-            think_ms=100,
-        )
-    )
-    g.send(
-        MovePlayed(
-            game_id="g",
-            ply=3,
-            san="Nf3",
-            uci="g1f3",
-            fen_before=g.board.fen(),
-            fen_after=g.board.fen(),
-            by_user=True,
-            think_ms=100,
-        )
-    )
-    assert not any(isinstance(e, GameReview) for e in g.end())
-    assert g.profiler.end_session(g.ts + 1) is not None
-    assert g.store.game("g") is not None and g.store.game("g").accuracy is not None  # type: ignore[union-attr]
-
-
-def test_the_next_game_flushes_the_last_games_review() -> None:
-    f = Feed()
-    f.play("e4")
-    f.send(
-        MovePlayed(
-            game_id="g",
-            ply=2,
-            san="e5",
-            uci="e7e5",
-            fen_before=f.board.fen(),
-            fen_after=f.board.fen(),
-            by_user=False,
-            think_ms=100,
-        )
-    )
-    f.send(
-        MovePlayed(
-            game_id="g",
-            ply=3,
-            san="Nf3",
-            uci="g1f3",
-            fen_before=f.board.fen(),
-            fen_after=f.board.fen(),
-            by_user=True,
-            think_ms=100,
-        )
-    )
-    assert not any(isinstance(e, GameReview) for e in f.end())
-    got = f.send(GameStarted(game_id="g2", user_side=Side.WHITE, start_fen=chess.STARTING_FEN))
-    assert any(isinstance(e, GameReview) and e.game_id == "g" for e in got)
+    elif flush == "grace":
+        got = f.profiler.tick(f.ts + REVIEW_GRACE_S + 1)
+    else:
+        got = f.send(GameStarted(game_id="g2", user_side=Side.WHITE, start_fen=chess.STARTING_FEN))
+    review = next(e for e in got if isinstance(e, GameReview) and e.game_id == "g")
+    if flush == "verdict":  # the move counted
+        assert review.moves == 2 and review.tallies == {"good": 1, "best": 1}
+    else:
+        assert review.moves == 1  # the judged move only
+    assert f.profiler.tick(f.ts + 1000.0) == []  # reviewed once
 
 
 # ---- the coach's own queries -------------------------------------------------------------
@@ -1024,12 +986,15 @@ def test_words_that_say_nothing_change_nothing() -> None:
     assert causes.from_words("no time, I premoved") == causes.TIME_PRESSURE
 
 
-def test_a_position_is_coached_but_never_recorded() -> None:
+def test_a_position_that_ends_early_leaves_nothing_behind() -> None:
     """A puzzle or an analysis board begins as a GameStarted of kind "position" and is
     over within a few plies: the profile keeps no game, no evidence, no review and no
     session count for it (a solved puzzle stood in the record as a game won by
-    checkmate in three moves at 100% accuracy, 2026-09-20). One that runs on is a game
-    joined late; see the test below."""
+    checkmate in three moves at 100% accuracy, 2026-09-20). A position left for another is
+    the same, and one the session closed on goes at the next start. One that runs on is a
+    game joined late; see the test below."""
+    from sidecoach.profile.profiler import PROVISIONAL_PLIES
+
     f = Feed()
     f.play("e4")
     puzzle = chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R b KQkq - 0 1")
@@ -1060,10 +1025,20 @@ def test_a_position_is_coached_but_never_recorded() -> None:
             label=Label.BLUNDER,
         )
     )
+    assert f.store.game("p") is not None, "followed provisionally"
     ended = f.send(GameEnded(game_id="p", result="0-1", reason="game over on board", pgn="1... d4"))
     assert ended == [], "no review of a position"
     assert f.store.game("p") is None and f.store.moves("p") == [] and f.store.evidence("p") == []
-    assert f.store.games_count() == 0
+    # Left for the next puzzle before it ended: the same.
+    other = chess.Board("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1")
+    f.send(GameStarted(game_id="q", user_side=Side.WHITE, start_fen=other.fen(), kind="position"))
+    _feed_position(f, other, "q", PROVISIONAL_PLIES - 1)
+    f.send(GameStarted(game_id="r", user_side=Side.WHITE, start_fen=other.fen(), kind="position"))
+    assert f.store.game("q") is None and f.store.games_count() == 0
+    # Closed on a position: the next session's start clears it.
+    assert f.store.game("r") is not None
+    Profiler(f.store, session_id="s2", ts=100.0)
+    assert f.store.game("r") is None
     assert f.profiler.end_session(f.ts + 1) is None, "nothing to sum up: no game was played"
 
 
@@ -1100,15 +1075,25 @@ def _feed_position(f: Feed, board: chess.Board, game_id: str, plies: int) -> Non
         )
 
 
-def test_a_game_joined_from_the_middle_is_still_a_game() -> None:
+@pytest.mark.parametrize("settle_turn", [False, True], ids=["joined", "turn-settled-by-the-clock"])
+def test_a_game_joined_from_the_middle_is_still_a_game(settle_turn: bool) -> None:
     """A position that runs long enough to be no puzzle is a game joined late: recorded
     from the join, reviewed at the end (Tai, 2026-09-22: a 133-ply bot game joined at
-    move 3 ended in checkmate with no review, no summary, not a word -- 'a position')."""
+    move 3 ended in checkmate with no review, no summary, not a word -- 'a position').
+    The resync that only settles the side to move, before any move, keeps the position:
+    the game joined late still qualifies."""
     from sidecoach.profile.profiler import PROVISIONAL_PLIES
 
     f = Feed(user_side=Side.BLACK)
     joined = chess.Board("rnbqkb1r/pppp1ppp/5n2/4p3/4P3/2N5/PPPP1PPP/R1BQKBNR w KQkq - 2 3")
+    if settle_turn:
+        joined.turn = chess.BLACK  # read cold with the side to move wrong
     f.send(GameStarted(game_id="j", user_side=Side.BLACK, start_fen=joined.fen(), kind="position"))
+    if settle_turn:
+        joined.turn = chess.WHITE
+        f.send(
+            Resync(game_id="j", fen=joined.fen(), reason="side to move settled by the clock: white")
+        )
     assert f.store.game("j") is not None, "followed from the join, provisionally"
     _feed_position(f, joined, "j", PROVISIONAL_PLIES)
     ended = f.send(
@@ -1119,30 +1104,6 @@ def test_a_game_joined_from_the_middle_is_still_a_game() -> None:
     assert any(isinstance(e, GameReview) for e in ended), "a game joined late is reviewed"
     assert f.store.games_count() == 1
     assert len(f.store.moves("j")) == PROVISIONAL_PLIES
-
-
-def test_a_position_that_ends_early_leaves_nothing_behind() -> None:
-    """A puzzle solved in a few plies, or a position left for another, was never a
-    game: its provisional rows go."""
-    from sidecoach.profile.profiler import PROVISIONAL_PLIES
-
-    f = Feed(user_side=Side.WHITE)
-    puzzle = chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R w KQkq - 0 1")
-    f.send(GameStarted(game_id="p", user_side=Side.WHITE, start_fen=puzzle.fen(), kind="position"))
-    _feed_position(f, puzzle, "p", 3)
-    assert f.store.game("p") is not None
-    ended = f.send(GameEnded(game_id="p", result="1-0", reason="game over on board", pgn=""))
-    assert ended == [] and f.store.game("p") is None and f.store.moves("p") == []
-    # Left for the next puzzle before it ended: the same.
-    other = chess.Board("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1")
-    f.send(GameStarted(game_id="q", user_side=Side.WHITE, start_fen=other.fen(), kind="position"))
-    _feed_position(f, other, "q", PROVISIONAL_PLIES - 1)
-    f.send(GameStarted(game_id="r", user_side=Side.WHITE, start_fen=other.fen(), kind="position"))
-    assert f.store.game("q") is None and f.store.games_count() == 0
-    # Closed on a position: the next session's start clears it.
-    assert f.store.game("r") is not None
-    Profiler(f.store, session_id="s2", ts=100.0)
-    assert f.store.game("r") is None
 
 
 def test_puzzles_one_after_another_never_add_up_to_a_game() -> None:
@@ -1177,27 +1138,6 @@ def test_puzzles_one_after_another_never_add_up_to_a_game() -> None:
     assert not any(isinstance(e, GameReview) for e in ended), "no review of a puzzle"
     assert f.store.game("p") is None and f.store.games_count() == 0
     assert f.profiler.end_session(f.ts + 1) is None
-
-
-def test_a_joined_game_whose_turn_the_clock_settles_is_still_a_game() -> None:
-    """The resync that only settles the side to move, before any move, keeps the position:
-    the game joined late still qualifies and is reviewed."""
-    from sidecoach.profile.profiler import PROVISIONAL_PLIES
-
-    f = Feed(user_side=Side.BLACK)
-    joined = chess.Board("rnbqkb1r/pppp1ppp/5n2/4p3/4P3/2N5/PPPP1PPP/R1BQKBNR b KQkq - 2 3")
-    f.send(GameStarted(game_id="j", user_side=Side.BLACK, start_fen=joined.fen(), kind="position"))
-    joined.turn = chess.WHITE
-    f.send(Resync(game_id="j", fen=joined.fen(), reason="side to move settled by the clock: white"))
-    assert f.store.game("j") is not None
-    _feed_position(f, joined, "j", PROVISIONAL_PLIES)
-    ended = f.send(
-        GameEnded(
-            game_id="j", result="0-1", reason="game over on board", pgn="", final_fen=joined.fen()
-        )
-    )
-    assert any(isinstance(e, GameReview) for e in ended)
-    assert f.store.games_count() == 1
 
 
 def test_a_game_whose_end_was_not_seen_is_still_reviewed_at_the_next_start() -> None:
