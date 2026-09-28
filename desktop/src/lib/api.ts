@@ -133,10 +133,10 @@ export const puzzle = (id: string) => {
     open: () => post<{ ok: boolean; error?: string; next?: string[]; state?: PuzzleState }>(`${p}/open`),
     poll: (since: number) =>
       get<{ ok: boolean; closed?: boolean; state?: PuzzleState; lines?: LogLine[]; cursor?: number }>(`${p}/poll?since=${since | 0}`),
-    targets: (square: string) => post<{ ok: boolean; targets: string[] }>(`${p}/targets`, { square }),
-    move: (uci: string) => post(`${p}/move`, { uci }),
-    retract: () => post(`${p}/retract`),
-    giveup: () => post(`${p}/giveup`),
+    // Played at once, answered with the state they leave.
+    move: (uci: string) => post<{ ok: boolean; state?: PuzzleState }>(`${p}/move`, { uci }),
+    retract: () => post<{ ok: boolean; state?: PuzzleState }>(`${p}/retract`),
+    giveup: () => post<{ ok: boolean; state?: PuzzleState }>(`${p}/giveup`),
     ask: (text: string) => post(`${p}/ask`, { text }),
     voice: (on: boolean) => post(`${p}/voice`, { on }),
     close: () => post(`${p}/close`),
@@ -211,13 +211,20 @@ export type PanelState = {
   [key: string]: unknown;
 };
 
+/** A position of a puzzle: its placement, the move that made it (none for the start), the
+ * king in check, and whether the solver played it. */
+export type PuzzlePosition = { fen: string; uci: string | null; check: string | null; by_user: boolean };
+
 export type PuzzleState = {
   id: string;
-  fen: string;
+  /** Counts every change: an answer with a lower one is older than one shown. */
+  version: number;
+  /** The start, then one per ply. */
+  positions: PuzzlePosition[];
   bottom: string;
   your_move: boolean;
-  last_move?: string | null;
-  check?: string | null;
+  /** Where each of the solver's pieces may go, while it is their move. */
+  legal: Record<string, string[]>;
   wrong?: string | null;
   status: string;
   message?: string;

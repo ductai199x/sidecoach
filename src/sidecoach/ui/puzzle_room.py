@@ -99,6 +99,9 @@ class PuzzleRoom:
     # ---- the page's side --------------------------------------------------------------------
 
     def poll(self, since: int = 0) -> dict[str, Any]:
+        return {"state": self.state(), "lines": self._log.since(since), "cursor": self._log.cursor}
+
+    def state(self) -> dict[str, Any]:
         self.touched = time.monotonic()
         with self._lock:
             state = self.session.state()
@@ -112,15 +115,32 @@ class PuzzleRoom:
 
             model = getattr(self._coaching.coach.speaker.provider, "model", None)  # type: ignore[union-attr]
             state["llm"] = usage.summary(prices_for(self.settings, model))
-        return {"state": state, "lines": self._log.since(since), "cursor": self._log.cursor}
+        return state
 
-    def targets(self, square: str) -> list[str]:
+    # A move, a take-back and a give-up are played on the page's request and answered with
+    # the state they leave: they waited for the loop's next tick, and the page for its next
+    # poll after that, half a second the board stood still after a move (Tai, 2026-09-27).
+    # What the engine and the coach are told goes through the loop as before.
+
+    def move(self, uci: str) -> dict[str, Any]:
         with self._lock:
-            return self.session.targets(square)
+            events = self.session.move(uci)
+            self._commands.append(("played", (uci, events)))
+        return self.state()
+
+    def retract(self) -> dict[str, Any]:
+        with self._lock:
+            self.session.retract()
+        return self.state()
+
+    def give_up(self) -> dict[str, Any]:
+        with self._lock:
+            events = self.session.give_up()
+            self._commands.append(("gave_up", events))
+        return self.state()
 
     def command(self, name: str, payload: Any = None) -> None:
-        """A command for the loop thread: move <uci> | retract | giveup | ask <text> |
-        voice <bool> | close."""
+        """A command for the loop thread: ask <text> | voice <bool> | close."""
         self.touched = time.monotonic()
         if name == "close":
             # Said at once, so a page reloading (its old tab's close, then its open)
@@ -151,23 +171,16 @@ class PuzzleRoom:
         with self._lock:
             commands, self._commands = self._commands, []
         for name, payload in commands:
-            if name == "move":
-                with self._lock:
-                    events = self.session.move(str(payload))
-                    state = self.session.state()
+            if name == "played":
+                uci, events = payload
                 self._dispatch(events, ts)
                 if not events:
-                    if state["wrong"]:
-                        self._emit("game", "info", f"{payload}: not the move")
+                    if self.session.wrong == uci:
+                        self._emit("game", "info", f"{uci}: not the move")
                 elif self.session.done and self.session.status == "solved":
                     self._record(solved=not self.session.failed)
-            elif name == "retract":
-                with self._lock:
-                    self.session.retract()
-            elif name == "giveup":
-                with self._lock:
-                    events = self.session.give_up()
-                self._dispatch(events, ts)
+            elif name == "gave_up":
+                self._dispatch(payload, ts)
                 self._record(solved=False)
             elif name == "ask":
                 text = str(payload)

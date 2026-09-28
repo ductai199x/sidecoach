@@ -41,15 +41,27 @@ def test_the_session_shows_the_solvers_position_and_walks_the_line() -> None:
     started = s.started()
     assert isinstance(started, GameStarted) and started.kind == "puzzle"
     assert started.game_id == "puzzle-000Pw" and started.user_side is Side.BLACK
-    assert s.targets("d4") == ["b3", "b5", "c2", "c6", "e2", "f3", "f5"]
-    assert s.targets("e5") and s.targets("g8") and s.targets("d2") == [], "not theirs"
+    legal = s.state()["legal"]
+    assert legal["d4"] == ["b3", "b5", "c2", "c6", "e2", "f3", "f5"]
+    assert "e5" in legal and "g8" in legal and "d2" not in legal, "the solver's pieces only"
     assert s.state()["your_move"] and s.state()["remaining"] == 2
+    before = s.state()
+    assert [p["uci"] for p in before["positions"]] == [None], "the start alone"
     events = s.move("d4e2")
     assert [e.san for e in events] == ["Ne2+", "Kf1"], "the move, then the line's reply"
     assert all(isinstance(e, MovePlayed) for e in events)
     assert events[0].by_user and not events[1].by_user
     assert events[0].game_id == "puzzle-000Pw" and events[0].ply == 1 and events[1].ply == 2
-    assert s.state()["your_move"] and s.state()["remaining"] == 1
+    after = s.state()
+    assert after["your_move"] and after["remaining"] == 1
+    assert after["version"] > before["version"], "a newer answer tells itself apart"
+    # One position a ply, for the page to step through: its move, the check, who played it.
+    plies = after["positions"][1:]
+    assert [(p["uci"], p["check"], p["by_user"]) for p in plies] == [
+        ("d4e2", "g1", True),
+        ("g1f1", None, False),
+    ]
+    assert plies[-1]["fen"] == s.board.fen()
     events = s.move("e2c3")
     assert [e.san for e in events] == ["Nxc3"] and s.status == "solved" and s.done
     assert s.state()["message"] == "Solved." and not s.failed
@@ -63,9 +75,10 @@ def test_a_wrong_move_is_shown_and_taken_back_and_counts_as_a_miss() -> None:
     assert st["wrong"] == "d4c2" and not st["your_move"] and st["misses"] == 1
     assert "Not that one" in st["message"]
     assert s.move("d4e2") == [], "nothing moves while the wrong move is shown"
-    assert s.targets("d4") == []
+    assert st["legal"] == {}
     s.retract()
     assert s.state()["wrong"] is None and s.state()["your_move"]
+    assert s.state()["version"] > st["version"], "the take-back is a newer state"
     assert s.board.fen() == s.start_fen, "the position as it was"
     assert s.move("d4e2") and s.move("e2c3") and s.status == "solved" and s.failed
     assert s.state()["message"] == "Solved, after a miss."
@@ -105,18 +118,18 @@ def _csv(tmp_path: Path) -> None:
     (tmp_path / "puzzles" / "sample.csv").write_text("\n".join(lines), encoding="utf-8")
 
 
-def _wait(client, puzzle_id: str, want, timeout: float = 5.0):  # noqa: ANN001
-    """Poll the room until `want(state)` holds; the loop thread runs a quarter second apart."""
+def _logged(client, puzzle_id: str, prefix: str) -> None:  # noqa: ANN001
+    """Wait for the room's log line that starts with `prefix`: the outcome is recorded by the
+    room's loop, a tick after the answer that ended the puzzle."""
     import time
 
-    deadline = time.monotonic() + timeout
-    res: dict = {}
-    while time.monotonic() < deadline:
-        res = client.get(f"/api/puzzle/{puzzle_id}/poll").json()
-        if res.get("ok") and want(res["state"]):
-            return res
+    lines: list[str] = []
+    for _ in range(100):
+        lines = [ln["text"] for ln in client.get(f"/api/puzzle/{puzzle_id}/poll").json()["lines"]]
+        if any(ln.startswith(prefix) for ln in lines):
+            return
         time.sleep(0.05)
-    raise AssertionError(f"the room never reached the state wanted: {res}")
+    raise AssertionError(f"no line {prefix!r} in {lines}")
 
 
 def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(tmp_path: Path) -> None:
@@ -141,30 +154,20 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(tmp_path
     state = opened["state"]
     assert state["id"] == FORK.id and state["motif"] == "fork" and state["bottom"] == "black"
     assert state["your_move"] and not state["closed"]
-    targets = client.post(f"/api/puzzle/{FORK.id}/targets", json={"square": "d4"}).json()
-    assert targets["targets"] == ["b3", "b5", "c2", "c6", "e2", "f3", "f5"]
-    # A wrong move shows, then is taken back.
-    assert client.post(f"/api/puzzle/{FORK.id}/move", json={"uci": "d4c2"}).json()["ok"]
-    _wait(client, FORK.id, lambda s: s["wrong"] == "d4c2")
-    client.post(f"/api/puzzle/{FORK.id}/retract")
-    _wait(client, FORK.id, lambda s: s["wrong"] is None and s["your_move"])
+    assert state["legal"]["d4"] == ["b3", "b5", "c2", "c6", "e2", "f3", "f5"]
+    # Each move is answered with the state it leaves, at once. A wrong move shows, then is
+    # taken back.
+    wrong = client.post(f"/api/puzzle/{FORK.id}/move", json={"uci": "d4c2"}).json()
+    assert wrong["ok"] and wrong["state"]["wrong"] == "d4c2"
+    back = client.post(f"/api/puzzle/{FORK.id}/retract").json()["state"]
+    assert back["wrong"] is None and back["your_move"]
+    assert back["version"] > wrong["state"]["version"]
     # The line: the reply comes with the right move.
-    client.post(f"/api/puzzle/{FORK.id}/move", json={"uci": "d4e2"})
-    res = _wait(client, FORK.id, lambda s: s["moves"] == ["Ne2+", "Kf1"])
-    assert res["state"]["your_move"]
-    client.post(f"/api/puzzle/{FORK.id}/move", json={"uci": "e2c3"})
-    res = _wait(client, FORK.id, lambda s: s["status"] == "solved")
-    assert res["state"]["message"] == "Solved, after a miss."
-    # The outcome's line follows the state by a moment; wait for it.
-    import time as _time
-
-    lines: list[str] = []
-    for _ in range(50):
-        lines = [ln["text"] for ln in client.get(f"/api/puzzle/{FORK.id}/poll").json()["lines"]]
-        if any(ln.startswith(f"puzzle {FORK.id} failed (fork)") for ln in lines):
-            break
-        _time.sleep(0.05)
-    assert any(ln.startswith(f"puzzle {FORK.id} failed (fork)") for ln in lines), lines
+    right = client.post(f"/api/puzzle/{FORK.id}/move", json={"uci": "d4e2"}).json()["state"]
+    assert right["moves"] == ["Ne2+", "Kf1"] and right["your_move"]
+    done = client.post(f"/api/puzzle/{FORK.id}/move", json={"uci": "e2c3"}).json()["state"]
+    assert done["status"] == "solved" and done["message"] == "Solved, after a miss."
+    _logged(client, FORK.id, f"puzzle {FORK.id} failed (fork)")
     store = Store(tmp_path / "profile.sqlite")
     assert [a[0] for a in store.attempts()] == [FORK.id] and not store.attempts()[0][2]
     assert store.setting("puzzle_level") == "1075"
@@ -184,9 +187,9 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(tmp_path
     store.close()
     # Giving up on the next one: a fail, the solution played out, recorded once.
     assert client.post(f"/api/puzzle/{MATE.id}/open").json()["ok"]
-    client.post(f"/api/puzzle/{MATE.id}/giveup")
-    res = _wait(client, MATE.id, lambda s: s["status"] == "given_up")
-    assert res["state"]["moves"] == ["Ra8#"]
+    gave = client.post(f"/api/puzzle/{MATE.id}/giveup").json()["state"]
+    assert gave["status"] == "given_up" and gave["moves"] == ["Ra8#"]
+    _logged(client, MATE.id, f"puzzle {MATE.id} failed")
     store = Store(tmp_path / "profile.sqlite")
     assert [a[0] for a in store.attempts()] == [MATE.id, FORK.id]
     assert store.setting("puzzle_level") == "1050"

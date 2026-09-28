@@ -3,16 +3,23 @@
   // it, the room's log below. The room lives on the sidecar (ui/puzzle_room.py); this
   // page polls it and sends what the player does.
   //
-  // The board: click a piece of yours and it lights yellow with its legal squares dotted
-  // (none if it cannot move, the king in check); click a square to move there, or drag
-  // the piece and drop it. A right-click marks a square red; a right-drag draws an arrow;
-  // a left-click anywhere clears them. Moves slide, captures fade, a pawn reaching the
-  // last rank offers a picker over the square. A wrong move lands, shows red, and comes
-  // back. The coach says nothing unasked: Hint, Best move, Line, or a typed question.
+  // The board: press a piece of yours and it lifts to the pointer, its square yellow and its
+  // legal squares dotted (none if it cannot move, the king in check); drop it on one, or
+  // let go and click one. A dropped piece lands where it is dropped; a clicked move slides;
+  // the line's reply slides in a moment later, as chess.com plays it. A right-click marks a
+  // square red; a right-drag draws an arrow; a left-click anywhere clears them. Captures
+  // fade, a pawn reaching the last rank offers a picker over the square. A wrong move lands,
+  // shows red, and comes back. The coach says nothing unasked: Hint, Best move, Line, or a
+  // typed question.
+  //
+  // The room answers a move with the state it leaves, and every state carries a version:
+  // an answer older than the one shown is dropped. (The page used to take every poll as it
+  // came, and one that had left before a move put the piece back on its square until the
+  // next brought it forward again, Tai, 2026-09-27.)
   import { onMount, tick } from "svelte";
   import { page } from "$app/state";
   import "$lib/styles/puzzle.css";
-  import { beacon, connect, puzzle as puzzleApi, type LogLine, type Mark, type PuzzleState } from "$lib/api";
+  import { beacon, connect, puzzle as puzzleApi, type LogLine, type Mark, type PuzzlePosition, type PuzzleState } from "$lib/api";
   import { FILES, cellOf, colourOf, motifWords, placement, spriteOf, squareAt } from "$lib/chess";
   import { layoutMode, mobileBoard } from "$lib/layout";
   import { prefs } from "$lib/panel.svelte";
@@ -38,7 +45,21 @@
   let coachMarks = $state<Mark[] | null>(null);
   let wrongShown = $state<string | null>(null);
   let occupied = $state<Record<string, string>>({});  // square -> letter, for the marks
+  let hover = $state<string | null>(null);  // the square under a dragged piece
   let retracting = false;
+
+  // ---- which position is shown -----------------------------------------------------------
+  // The positions the room played are shown one by one: the solver's own move at once (it is
+  // on the board already), the line's reply REPLY_MS later, and a solution given up a move
+  // every REPLY_MS.
+  const REPLY_MS = 400;
+  let shown = $state(0);
+  let optimistic = $state<string | null>(null);  // the solver's move, shown before the answer
+  let inFlight: number | null = null;  // the version the move was sent from
+  let stepping: ReturnType<typeof setTimeout> | null = null;
+  const position = $derived<PuzzlePosition | null>(room?.positions[shown] ?? null);
+  const settled = $derived(!!room && shown === room.positions.length - 1);
+  const canMove = $derived(!!room && room.your_move && settled && !wrongShown && !optimistic);
 
   let boardEl = $state<HTMLDivElement | null>(null);
   let piecesEl = $state<HTMLDivElement | null>(null);
@@ -48,20 +69,22 @@
   // The squares in display order for the orientation, with the classes the marks give them.
   const squares = $derived.by(() => {
     const out: { name: string; dark: boolean; odd: boolean; rankLabel: string | null; fileLabel: string | null; cls: string }[] = [];
-    const last = room?.last_move && !wrongShown ? [room.last_move.slice(0, 2), room.last_move.slice(2, 4)] : [];
+    const move = wrongShown ? null : (optimistic ?? position?.uci ?? null);
+    const last = move ? [move.slice(0, 2), move.slice(2, 4)] : [];
     for (let y = 0; y < 8; y++) {
       for (let x = 0; x < 8; x++) {
         const name = squareAt(x, y, bottom)!;
         const file = FILES.indexOf(name[0]), rank = +name[1] - 1;
         const cls: string[] = [];
-        if (room?.your_move && !wrongShown && occupied[name] && colourOf(occupied[name]) === bottom) cls.push("grab");
+        if (canMove && occupied[name] && colourOf(occupied[name]) === bottom) cls.push("grab");
         if (last.includes(name)) cls.push("hl");
         if (wrongShown && name === wrongShown.slice(0, 2)) cls.push("hl");
         if (wrongShown && name === wrongShown.slice(2, 4)) cls.push("wrong");
-        if (room?.check && name === room.check) cls.push("check");
+        if (!optimistic && position?.check === name) cls.push("check");
         if (selected === name) cls.push("sel");
         if (targets.includes(name)) { cls.push("target"); if (occupied[name]) cls.push("occupied"); }
         if (marked.includes(name)) cls.push("marked");
+        if (hover === name) cls.push("hover");
         out.push({ name, dark: (rank + file) % 2 === 0, odd: y % 2 === 1, rankLabel: x === 0 ? String(rank + 1) : null, fileLabel: y === 7 ? FILES[file] : null, cls: cls.join(" ") });
       }
     }
@@ -83,15 +106,23 @@
     const { x, y } = cellOf(square, bottom);
     node.style.transform = `translate(${x * 100}%, ${y * 100}%)`;
   }
-  function renderPieces(fen: string) {
+  // Put down without sliding: a dropped piece lands where the pointer let it go.
+  function placeNow(node: HTMLDivElement, square: string) {
+    node.style.transition = "none";
+    place(node, square);
+    node.getBoundingClientRect(); // settle before the transition returns
+    node.style.transition = "";
+  }
+  // The pieces as `fen` has them; `uci`, the move that made it, names the piece that moves.
+  function renderPieces(fen: string, uci: string | null = null) {
     if (!piecesEl) return;
     const want = placement(fen);
     const stay = new Map<string, HTMLDivElement>();
     const gone: [string, string, HTMLDivElement][] = [];
     for (const [sq, node] of pieces) {
       if (want.get(sq) === node.dataset.letter) {
-        // Placed again even so: a piece slid ahead of the server (a move sent, or a wrong
-        // one shown) stands where its picture is until the position puts it back.
+        // Placed again even so: a piece shown ahead of the room (a move sent, a wrong one
+        // shown) goes where the position has it.
         place(node, sq);
         stay.set(sq, node);
       } else gone.push([sq, node.dataset.letter!, node]);
@@ -99,9 +130,10 @@
     const next = new Map(stay);
     for (const [sq, letter] of want) {
       if (stay.has(sq)) continue;
-      // A piece of this kind that left a square slides here (a move, a castling rook);
-      // otherwise it appears.
-      const i = gone.findIndex(([, l]) => l === letter);
+      // The move's piece slides here from its square; any other piece of this kind that left
+      // a square (a castling rook) slides here too; otherwise it appears.
+      let i = uci && sq === uci.slice(2, 4) ? gone.findIndex(([from, l]) => from === uci.slice(0, 2) && l === letter) : -1;
+      if (i < 0) i = gone.findIndex(([, l]) => l === letter);
       if (i >= 0) {
         const [[, , node]] = gone.splice(i, 1);
         place(node, sq);
@@ -131,7 +163,6 @@
   // ---- what the player does ------------------------------------------------------------------
   let drag: { square: string; node: HTMLDivElement; moved: boolean; startX: number; startY: number } | null = null;
   let rightDrag: { from: string | null } | null = null;
-  let selecting: Promise<void> | null = null;
   let promo = $state<{ square: string; x: number; y: number; down: boolean; resolve: (p: string | null) => void } | null>(null);
 
   function squareUnder(clientX: number, clientY: number): string | null {
@@ -142,18 +173,13 @@
     return squareAt(x, y, bottom);
   }
 
-  function select(square: string): Promise<void> {
+  function select(square: string) {
     const node = pieces.get(square);
-    if (!room || !room.your_move || wrongShown || !node || colourOf(node.dataset.letter!) !== bottom) {
-      selected = null; targets = []; return Promise.resolve();
+    if (!room || !canMove || !node || colourOf(node.dataset.letter!) !== bottom) {
+      selected = null; targets = []; return;
     }
     selected = square;
-    targets = [];
-    selecting = api.targets(square).then((res) => {
-      if (selected !== square) return;
-      targets = (res && res.targets) || [];
-    }).finally(() => { selecting = null; });
-    return selecting;
+    targets = room.legal[square] ?? [];
   }
 
   function isPromotion(from: string, to: string): boolean {
@@ -169,20 +195,37 @@
     });
   }
 
-  async function tryMove(from: string, to: string): Promise<boolean> {
+  // The solver's move: on the board at once -- dropped where it was let go, or slid there
+  // from a click -- and sent; the answer brings the reply, or shows it wrong.
+  async function tryMove(from: string, to: string, dropped: boolean): Promise<boolean> {
     if (!targets.includes(to)) return false;
     selected = null; targets = [];
-    if (isPromotion(from, to)) {
-      const piece = await promotionPicker(to);
-      if (!piece) return false;
-      await api.move(from + to + piece);
-      return true;
-    }
-    // Slide the piece at once; the poll confirms (or shows the wrong move and takes it back).
     const node = pieces.get(from);
-    if (node) place(node, to);
-    await api.move(from + to);
+    let uci = from + to;
+    if (isPromotion(from, to)) {
+      if (node) placeNow(node, to);
+      const piece = await promotionPicker(to);
+      if (!piece) { if (node) placeNow(node, from); return false; }
+      uci += piece;
+    } else if (node) {
+      if (dropped) placeNow(node, to); else place(node, to);
+    }
+    optimistic = uci;
+    inFlight = room?.version ?? null;
+    const res = await api.move(uci);
+    inFlight = null;
+    if (res && res.state) render(res.state);
+    else { optimistic = null; if (room) renderPieces(room.positions[shown].fen); }
     return true;
+  }
+
+  // Under the pointer: a piece picked up is centred on it, as on chess.com.
+  function follow(node: HTMLDivElement, clientX: number, clientY: number) {
+    if (!boardEl) return;
+    const r = boardEl.getBoundingClientRect();
+    const cell = r.width / 8;
+    const px = clientX - r.left - cell / 2, py = clientY - r.top - cell / 2;
+    node.style.transform = `translate(${(px / cell) * 100}%, ${(py / cell) * 100}%)`;
   }
 
   function onPointerDown(e: PointerEvent) {
@@ -197,11 +240,15 @@
     if (marked.length || arrows.length) { marked = []; arrows = []; } // a left-click clears the user's marks
     const square = squareUnder(e.clientX, e.clientY);
     if (!square) return;
-    if (selected && targets.includes(square)) { tryMove(selected, square); return; }
+    if (selected && targets.includes(square)) { tryMove(selected, square, false); return; }
     const node = pieces.get(square);
-    if (node && room && room.your_move && !wrongShown && colourOf(node.dataset.letter!) === bottom) {
+    if (node && canMove && colourOf(node.dataset.letter!) === bottom) {
+      // Lifted at the press, centred under the pointer.
       drag = { square, node, moved: false, startX: e.clientX, startY: e.clientY };
       wrapEl.setPointerCapture(e.pointerId);
+      node.classList.add("dragging");
+      follow(node, e.clientX, e.clientY);
+      hover = square;
       select(square);
     } else if (selected) {
       selected = null; targets = [];
@@ -209,17 +256,29 @@
   }
 
   function onPointerMove(e: PointerEvent) {
-    if (!drag || !boardEl) return;
-    const dx = e.clientX - drag.startX, dy = e.clientY - drag.startY;
-    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
-    if (!drag.moved) { drag.moved = true; drag.node.classList.add("dragging"); document.body.classList.add("grabbing"); }
-    const r = boardEl.getBoundingClientRect();
-    const cell = r.width / 8;
-    const px = e.clientX - r.left - cell / 2, py = e.clientY - r.top - cell / 2;
-    drag.node.style.transform = `translate(${(px / cell) * 100}%, ${(py / cell) * 100}%)`;
+    if (!drag) return;
+    if (!drag.moved && Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) >= 4) {
+      drag.moved = true;
+      document.body.classList.add("grabbing");
+    }
+    follow(drag.node, e.clientX, e.clientY);
+    hover = squareUnder(e.clientX, e.clientY);
   }
 
-  async function onPointerUp(e: PointerEvent) {
+  // A piece put down, from a drag: on a legal square it is the move, landed where it was
+  // dropped; anywhere else it is back on its square at once, still picked.
+  function putDown(d: { square: string; node: HTMLDivElement }, to: string | null) {
+    hover = null;
+    document.body.classList.remove("grabbing");
+    if (to && to !== d.square && targets.includes(to)) {
+      tryMove(d.square, to, true);
+    } else {
+      placeNow(d.node, d.square);
+    }
+    d.node.classList.remove("dragging");
+  }
+
+  function onPointerUp(e: PointerEvent) {
     if (rightDrag) {
       const to = squareUnder(e.clientX, e.clientY);
       const from = rightDrag.from;
@@ -234,22 +293,12 @@
     }
     if (!drag) return;
     const d = drag; drag = null;
-    document.body.classList.remove("grabbing");
-    d.node.classList.remove("dragging");
-    if (!d.moved) { place(d.node, d.square); return; } // a click: stays selected
-    if (selecting) await selecting; // a quick drag: the legal squares may still be on their way
-    const to = squareUnder(e.clientX, e.clientY);
-    if (to && to !== d.square && targets.includes(to)) {
-      await tryMove(d.square, to);
-    } else {
-      place(d.node, d.square); // back where it was, still selected
-    }
+    putDown(d, d.moved ? squareUnder(e.clientX, e.clientY) : null); // a click: stays picked
   }
 
   function onPointerCancel() {
-    if (drag) { place(drag.node, drag.square); drag.node.classList.remove("dragging"); drag = null; }
+    if (drag) { putDown(drag, null); drag = null; }
     rightDrag = null;
-    document.body.classList.remove("grabbing");
   }
 
   // ---- the coach and the log ------------------------------------------------------------------
@@ -279,25 +328,60 @@
 
   // ---- the room ----------------------------------------------------------------------------------
   function render(s: PuzzleState) {
+    if (room && s.version < room.version) return; // an answer older than the one shown
+    if (inFlight !== null && s.version <= inFlight) return; // a poll from before the move
     const first = room === null;
     room = s;
     if (first) {
       bottom = s.bottom;
       document.title = `sidecoach · puzzle ${s.id}`;
+      shown = s.positions.length - 1;
+      renderPieces(s.positions[shown].fen);
     }
-    // A wrong move: shown where it landed, red, then taken back by the server.
+    // A wrong move: shown where it landed, red, then taken back by the room.
     if (s.wrong && !wrongShown) {
       wrongShown = s.wrong;
+      optimistic = null;
       const node = pieces.get(s.wrong.slice(0, 2));
       if (node) place(node, s.wrong.slice(2, 4));
       selected = null; targets = [];
-      if (!retracting) { retracting = true; setTimeout(() => { retracting = false; api.retract(); }, 800); }
+      if (!retracting) {
+        retracting = true;
+        setTimeout(async () => {
+          const res = await api.retract();
+          retracting = false;
+          if (res && res.state) render(res.state);
+        }, 800);
+      }
     } else if (!s.wrong && wrongShown) {
       wrongShown = null;
+      renderPieces(s.positions[shown].fen); // the piece goes back
     }
-    if (!wrongShown) renderPieces(s.fen);
+    advance();
     message = s.closed ? "closed" : s.message || "";
     messageClass = s.closed ? "" : s.status === "solved" ? "good" : s.wrong ? "bad" : "";
+  }
+
+  // On to the next position the room played: the solver's own move at once, it is there
+  // already; the line's moves a moment apart.
+  function advance() {
+    if (!room || stepping !== null || shown >= room.positions.length - 1) return;
+    const next = room.positions[shown + 1];
+    const mine = next.uci !== null && next.uci === optimistic;
+    const step = () => {
+      stepping = null;
+      shown += 1;
+      if (mine) optimistic = null;
+      renderPieces(next.fen, next.uci);
+      advance();
+    };
+    if (mine) step();
+    else stepping = setTimeout(step, REPLY_MS);
+  }
+
+  async function giveUp() {
+    const res = await api.giveup();
+    if (res && res.state) render(res.state);
   }
 
   async function poll() {
@@ -403,7 +487,7 @@
     <span class="strong">{title}</span>
     <span class="pz-msg {messageClass}">{message}</span>
   </div>
-  <button class="ghost pz-giveup" title="Play the solution out" disabled={room?.status !== "playing"} onclick={() => api.giveup()}>Give up</button>
+  <button class="ghost pz-giveup" title="Play the solution out" disabled={room?.status !== "playing"} onclick={giveUp}>Give up</button>
   <div class="group controls">
     {#if room?.voice_ready !== false}
     <div class="ctlgroup" role="group" aria-label="Voice">
@@ -416,7 +500,7 @@
     {/if}
     <div class="ctlgroup" role="group" aria-label="Puzzle">
       <span class="ctllabel">puzzle</span>
-      <button class="ghost" title="Play the solution out" disabled={room?.status !== "playing"} onclick={() => api.giveup()}>Give up</button>
+      <button class="ghost" title="Play the solution out" disabled={room?.status !== "playing"} onclick={giveUp}>Give up</button>
       {#if nextIds.length}<a class="ghost linkbtn" href="/puzzle/{encodeURIComponent(nextIds[0])}" title="The next recommended puzzle" onclick={next}>Next</a>{/if}
       {#if room?.url}<a class="ghost linkbtn" href={room.url} target="_blank" rel="noopener" title="This puzzle on Lichess">Lichess ↗</a>{/if}
       <button class="ghost" title="Close this puzzle" onclick={leave}>Close</button>

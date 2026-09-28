@@ -37,8 +37,13 @@ class PuzzleSession:
         self.index = 1  # the next move of the line, the solver's
         self.ply = 0  # plies played on the board since the start
         self.sans: list[str] = []
-        self.last_move: str | None = None
+        # The positions the page steps through: the start, then one per ply, each with the
+        # move that made it, the king in check, and whether the solver played it.
+        self.positions: list[dict[str, Any]] = [self._position(None, by_user=False)]
         self.wrong: str | None = None  # a wrong move shown, to be taken back
+        # Counts every change, so the page can tell an older answer from a newer one: a poll
+        # that left before a move and came back after it showed the move taken back.
+        self.version = 0
         self.misses = 0
         self.status = "playing"  # playing | solved | given_up
         self.message = "Your move."
@@ -55,44 +60,35 @@ class PuzzleSession:
         return self.misses > 0 or self.status == "given_up"
 
     def state(self) -> dict[str, Any]:
+        your_move = not self.done and self.board.turn == self.solver and self.wrong is None
         return {
             "id": self.puzzle.id,
             "url": self.puzzle.url,
             "rating": self.puzzle.rating,
             "themes": list(self.puzzle.themes),
             "motif": self.motif,
-            "fen": self.board.fen(),
+            "version": self.version,
+            "positions": list(self.positions),
             "bottom": self.side.value,
-            "turn": "white" if self.board.turn else "black",
-            "your_move": not self.done and self.board.turn == self.solver and self.wrong is None,
-            "check": (
-                chess.square_name(king)
-                if self.board.is_check() and (king := self.board.king(self.board.turn)) is not None
-                else None
-            ),
+            "your_move": your_move,
+            "legal": self.legal() if your_move else {},
             "status": self.status,
             "message": self.message,
             "moves": list(self.sans),
-            "last_move": self.last_move,
             "wrong": self.wrong,
             "misses": self.misses,
             "remaining": max(0, (len(self.puzzle.moves) - self.index + 1) // 2),
         }
 
-    def targets(self, square: str) -> list[str]:
-        """Where the piece on `square` may go, for the page's dots; empty unless it is the
-        solver's turn and their piece."""
-        if self.done or self.wrong is not None or self.board.turn != self.solver:
-            return []
-        try:
-            sq = chess.parse_square(square)
-        except ValueError:
-            return []
-        piece = self.board.piece_at(sq)
-        if piece is None or piece.color != self.solver:
-            return []
-        legal = self.board.legal_moves
-        return sorted({chess.square_name(m.to_square) for m in legal if m.from_square == sq})
+    def legal(self) -> dict[str, list[str]]:
+        """Where each of the solver's pieces may go, for the page's dots: sent with the
+        state, so a piece picked up shows its squares at once."""
+        out: dict[str, set[str]] = {}
+        for move in self.board.legal_moves:
+            out.setdefault(chess.square_name(move.from_square), set()).add(
+                chess.square_name(move.to_square)
+            )
+        return {square: sorted(targets) for square, targets in out.items()}
 
     # ---- the moves -----------------------------------------------------------------------
 
@@ -120,6 +116,7 @@ class PuzzleSession:
             else:
                 return []
         expected = self.puzzle.moves[self.index] if self.index < len(self.puzzle.moves) else None
+        self.version += 1
         if move.uci() != expected and not self._mates(move):
             self.wrong = move.uci()
             self.misses += 1
@@ -143,6 +140,7 @@ class PuzzleSession:
 
     def retract(self) -> None:
         """The wrong move shown is taken back; the position stands as it was."""
+        self.version += 1
         self.wrong = None
         if not self.done:
             self.message = "Your move."
@@ -151,6 +149,7 @@ class PuzzleSession:
         """The rest of the line, played out on the board."""
         if self.done:
             return []
+        self.version += 1
         self.wrong = None
         events: list[MovePlayed] = []
         while self.index < len(self.puzzle.moves):
@@ -162,6 +161,16 @@ class PuzzleSession:
         self.status = "given_up"
         self.message = "The solution, played out."
         return events
+
+    def _position(self, move: chess.Move | None, *, by_user: bool) -> dict[str, Any]:
+        king = self.board.king(self.board.turn)
+        checked = self.board.is_check() and king is not None
+        return {
+            "fen": self.board.fen(),
+            "uci": move.uci() if move is not None else None,
+            "check": chess.square_name(king) if checked and king is not None else None,
+            "by_user": by_user,
+        }
 
     def _mates(self, move: chess.Move) -> bool:
         """Lichess takes any mate where the line's move mates."""
@@ -185,7 +194,7 @@ class PuzzleSession:
         self.board.push(move)
         self.ply += 1
         self.sans.append(san)
-        self.last_move = move.uci()
+        self.positions.append(self._position(move, by_user=by_user))
         return MovePlayed(
             game_id=self.game_id,
             ply=self.ply,

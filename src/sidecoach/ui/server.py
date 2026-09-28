@@ -123,10 +123,6 @@ class _Move(BaseModel):
     uci: str
 
 
-class _Square(BaseModel):
-    square: str
-
-
 class _OnOff(BaseModel):
     on: bool
 
@@ -319,22 +315,21 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
             return {"ok": False, "closed": True}
         return {"ok": True, **room.poll(since)}
 
-    @app.post("/api/puzzle/{puzzle_id}/targets")
-    def puzzle_targets(puzzle_id: str, body: _Square) -> dict[str, Any]:
-        room = rooms.get(puzzle_id)
-        return {"ok": room is not None, "targets": room.targets(body.square) if room else []}
-
+    # A move, a take-back, a give-up: played at once, answered with the state they leave.
     @app.post("/api/puzzle/{puzzle_id}/move")
-    def puzzle_move(puzzle_id: str, body: _Move) -> dict[str, bool]:
-        return {"ok": _room_command(rooms, puzzle_id, "move", body.uci)}
+    def puzzle_move(puzzle_id: str, body: _Move) -> dict[str, Any]:
+        room = rooms.get(puzzle_id)
+        return {"ok": True, "state": room.move(body.uci)} if room else {"ok": False}
 
     @app.post("/api/puzzle/{puzzle_id}/retract")
-    def puzzle_retract(puzzle_id: str) -> dict[str, bool]:
-        return {"ok": _room_command(rooms, puzzle_id, "retract")}
+    def puzzle_retract(puzzle_id: str) -> dict[str, Any]:
+        room = rooms.get(puzzle_id)
+        return {"ok": True, "state": room.retract()} if room else {"ok": False}
 
     @app.post("/api/puzzle/{puzzle_id}/giveup")
-    def puzzle_giveup(puzzle_id: str) -> dict[str, bool]:
-        return {"ok": _room_command(rooms, puzzle_id, "giveup")}
+    def puzzle_giveup(puzzle_id: str) -> dict[str, Any]:
+        room = rooms.get(puzzle_id)
+        return {"ok": True, "state": room.give_up()} if room else {"ok": False}
 
     @app.post("/api/puzzle/{puzzle_id}/ask")
     def puzzle_ask(puzzle_id: str, body: _Ask) -> dict[str, bool]:
