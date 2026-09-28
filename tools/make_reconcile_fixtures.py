@@ -368,9 +368,9 @@ RECORDED: dict[str, list[str] | None] = {
 # their frames as they showed them, and their assertions -- so the fixture keeps every case.
 def _a_draw_badge_is_not_read_until_one_is_on_record() -> None:
     from sidecoach.state.pipeline import BADGE_FRAMES
-    from tests.test_result_badges import Game
+    from tests.games import Game
 
-    g = Game()
+    g = Game(pipeline=True)
     g.play("e4", "e5", "Nf3", "Nc6")
     new = g.show(BADGE_FRAMES + 2, highlight=chess.Move.from_uci("b8c6"), result="1/2-1/2")
     assert not any(isinstance(e, GameEnded) for e in new)
@@ -378,9 +378,9 @@ def _a_draw_badge_is_not_read_until_one_is_on_record() -> None:
 
 def _a_flag_is_a_loss_on_time() -> None:
     from sidecoach.state.pipeline import BADGE_FRAMES
-    from tests.test_result_badges import Game
+    from tests.games import Game
 
-    g = Game()
+    g = Game(pipeline=True)
     g.play("e4", "e5")
     g.pipe._last_clock = (0, 240000, None)  # white's clock at zero
     new = g.show(BADGE_FRAMES, highlight=chess.Move.from_uci("e7e5"), result="0-1")
@@ -715,8 +715,12 @@ def record_tests() -> dict:
     from reconcile_folded_cases import FOLDED
 
     from sidecoach.state import pipeline as pipeline_module
+    from tests import games
 
+    # The pipeline's reconcilers, and the ones the tests' shared helpers build
+    # (tests/games.py: `Game`, `reconciler_at`).
     pipeline_module.Reconciler = _Recording
+    games.Reconciler = _Recording
     for module_name, wanted in RECORDED.items():
         module = importlib.import_module(module_name)
         if hasattr(module, "Reconciler"):

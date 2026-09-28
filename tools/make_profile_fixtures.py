@@ -436,6 +436,7 @@ SCENARIOS = [
 
 
 def scenarios() -> list[dict]:
+    import tests.profiling as feeds
     import tests.test_profile as tp
 
     real = tp.Profiler
@@ -454,11 +455,14 @@ def scenarios() -> list[dict]:
             steps.append({"new_profiler": index, "store": stores[id(store)][0], "session": session_id, "ts": ts})
             return _Recorded(real(store, session_id=session_id, ts=ts, puzzles=puzzles), index, steps)
 
-        tp.Profiler = recording  # type: ignore[assignment]
+        # The tests' own profilers, and the ones their `Feed` (tests/profiling.py) makes.
+        for module in (tp, feeds):
+            module.Profiler = recording  # type: ignore[assignment]
         try:
             getattr(tp, name)(*args)
         finally:
-            tp.Profiler = real  # type: ignore[assignment]
+            for module in (tp, feeds):
+                module.Profiler = real  # type: ignore[assignment]
         out.append({
             "name": name + ("" if not args else f"[{args[0].value}]"),
             "steps": steps,
