@@ -14,7 +14,9 @@ tests/fixtures), where the digits are chess.com's.
 
 from __future__ import annotations
 
+import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import chess
@@ -23,7 +25,7 @@ import numpy as np
 import pytest
 
 from sidecoach.events import GameStarted, Region, Side
-from sidecoach.state.pipeline import GamePipeline
+from sidecoach.state.pipeline import COLD_NOTICE_S, GamePipeline
 from sidecoach.vision.squares import BoardGeometry
 from sidecoach.vision.theme_cache import ThemeCache
 from tests.synth import synthetic_board
@@ -35,13 +37,45 @@ GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
 # After 10 moves of a Ruy Lopez, with both sides castled: a quiet middlegame board.
 MIDGAME = "r1bq1rk1/2ppbppp/p1n2n2/1p2p3/4P3/1B3N2/PPPP1PPP/RNBQR1K1 w - - 4 8"
 
+# The theme files a learning left in a cache, by the learning and what the cache held
+# before it. Most tests begin by learning the same start position into an empty cache,
+# and learning is a third of what they cost: each learning is done once and its files
+# copied into the next cache that asks for it. The tests that are about learning itself
+# learn afresh. A plain module dict, not a fixture: the phone's fixture maker calls these
+# tests directly.
+_LEARNED: dict[tuple, dict[str, bytes]] = {}
+
+
+def _theme_files(cache: ThemeCache) -> dict[str, bytes]:
+    return {path.name: path.read_bytes() for path in sorted(cache.directory.glob("theme-*.pkl"))}
+
+
+def _learned_once(cache: ThemeCache, step: tuple, learn: Callable[[], None]) -> None:
+    """`learn` into `cache` the first time this learning meets these files; its files after."""
+    before = _theme_files(cache)
+    key = (step, tuple((name, hashlib.sha1(data).hexdigest()) for name, data in before.items()))
+    after = _LEARNED.get(key)
+    if after is None:
+        learn()
+        _LEARNED[key] = _theme_files(cache)
+        return
+    for name in before:
+        (cache.directory / name).unlink()
+    cache.directory.mkdir(parents=True, exist_ok=True)
+    for name, data in after.items():
+        (cache.directory / name).write_bytes(data)
+
 
 def _warm(cache: ThemeCache, theme: str, bottom: Side) -> None:
     """Learn the theme from a rendered start position, as a live session does, into `cache`."""
-    warm = GamePipeline(cache=cache)
-    for i in range(3):
-        warm.process(synthetic_board(theme=theme, bottom=bottom, coordinates=True), 0.1 * i)
-    assert warm.model is not None and warm.model.rank_labels, "no theme learned"
+
+    def learn() -> None:
+        warm = GamePipeline(cache=cache)
+        for i in range(3):
+            warm.process(synthetic_board(theme=theme, bottom=bottom, coordinates=True), 0.1 * i)
+        assert warm.model is not None and warm.model.rank_labels, "no theme learned"
+
+    _learned_once(cache, ("warm", theme, bottom), learn)
 
 
 def test_a_cached_theme_carries_no_frame(tmp_path: Path) -> None:
@@ -68,11 +102,11 @@ def _squares_off(board: chess.Board, truth: chess.Board) -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("theme", ["green", "brown"])
 @pytest.mark.parametrize("bottom", [Side.WHITE, Side.BLACK])
-def test_cold_start_reads_a_rendered_mid_game_board(
-    tmp_path: Path, theme: str, bottom: Side
-) -> None:
+def test_cold_start_reads_a_rendered_mid_game_board(tmp_path: Path, bottom: Side) -> None:
+    """Chess.com's green, either way up. Other themes are the stress sweep's: every seeded
+    game's final position is read cold from its own cached theme, set and size."""
+    theme = "green"
     cache = ThemeCache(tmp_path)
     _warm(cache, theme, bottom)
     truth = chess.Board(MIDGAME)
@@ -215,7 +249,9 @@ def test_the_side_to_move_of_an_adopted_position_comes_from_the_running_clock(
     """The adopted position could be either side's move; the clock that is running says
     whose, and the position is re-announced with the turn so the coach and the engine
     look at the right side (the game where a takeback read as two moves and left the
-    coach naming the opponent's best move on the player's own clock)."""
+    coach naming the opponent's best move on the player's own clock). A clock read long
+    before the position was adopted settles nothing
+    (test_a_stale_clock_does_not_settle_the_side_to_move)."""
     from sidecoach.events import PositionChanged, Resync
 
     cache = ThemeCache(tmp_path)
@@ -226,36 +262,27 @@ def test_the_side_to_move_of_an_adopted_position_comes_from_the_running_clock(
     joined = _join(live, frame)
     rec = live.reconciler
     assert rec is not None and rec.turn_unknown and rec.board.turn == chess.WHITE
-    # The clock reader saw black's clock running a moment ago.
+    # Black's clock seen running, but read long before the position was adopted.
     live._last_clock = (300_000, 290_000, Side.BLACK)
-    live._last_clock_ts = joined
-    events = _tick(live, frame, joined + 0.1)
+    live._last_clock_ts = joined - 10.0
+    assert not any(isinstance(e, Resync) for e in _tick(live, frame, joined + 0.1))
+    assert rec.turn_unknown
+    # The clock reader saw black's clock running a moment ago.
+    live._last_clock_ts = joined + 0.1
+    events = _tick(live, frame, joined + 0.2)
     resyncs = [e for e in events if isinstance(e, Resync)]
     assert resyncs and "clock: black" in resyncs[0].reason
     assert [e.fen for e in events if isinstance(e, PositionChanged)] == [rec.board.fen()]
     assert not rec.turn_unknown and rec.board.turn == chess.BLACK
     assert rec.base_fen.split(" ")[1] == "b"
-    assert not any(isinstance(e, Resync) for e in _tick(live, frame, joined + 0.2)), "said once"
-
-
-def test_a_stale_clock_does_not_settle_the_side_to_move(tmp_path: Path) -> None:
-    from sidecoach.events import Resync
-
-    cache = ThemeCache(tmp_path)
-    _warm(cache, "green", Side.WHITE)
-    frame = synthetic_board(board=chess.Board(MIDGAME), coordinates=True)
-    live = GamePipeline(cache=cache)
-    joined = _join(live, frame)
-    assert live.reconciler is not None
-    live._last_clock = (300_000, 290_000, Side.BLACK)
-    live._last_clock_ts = joined - 10.0  # read long before the position was adopted
-    assert not any(isinstance(e, Resync) for e in _tick(live, frame, joined + 0.1))
-    assert live.reconciler.turn_unknown
+    assert not any(isinstance(e, Resync) for e in _tick(live, frame, joined + 0.3)), "said once"
 
 
 def test_a_board_mid_move_is_never_adopted_and_a_start_position_bootstraps(
     tmp_path: Path,
 ) -> None:
+    """Four reads of a board mid-move, 0.6 s apart: a quiet one would have been adopted by
+    the third (COLD_START_HOLD reads)."""
     cache = ThemeCache(tmp_path)
     _warm(cache, "green", Side.WHITE)
     truth = chess.Board(MIDGAME)
@@ -263,7 +290,7 @@ def test_a_board_mid_move_is_never_adopted_and_a_start_position_bootstraps(
         board=truth, coordinates=True, dragging=(chess.C1, chess.F4, 0.1, 0.1)
     )
     live = GamePipeline(cache=cache)
-    for i in range(10):
+    for i in range(4):
         assert not any(isinstance(e, GameStarted) for e in _tick(live, dragged, 0.6 * i))
     assert live.model is None and live.reconciler is None
     # The start position is the bootstrap's, which learns the theme from it: no cold read.
@@ -283,8 +310,7 @@ def test_a_position_for_black_is_read_from_the_labels_and_coached_for_black(
     the side at the bottom -- not White by default (a puzzle for Black was coached for
     White, 2026-09-20)."""
     cache = ThemeCache(tmp_path)
-    _warm(cache, "green", Side.WHITE)
-    _warm(cache, "green", Side.BLACK)  # the digits for the other way up
+    _warm(cache, "green", Side.WHITE)  # its digits read the board either way up
     truth = chess.Board(MIDGAME.replace(" w ", " b "))
     frame = synthetic_board(board=truth, bottom=Side.BLACK, coordinates=True)
     live = GamePipeline(cache=cache)
@@ -327,8 +353,7 @@ def test_a_resync_onto_a_board_the_other_way_up_reads_the_labels(tmp_path: Path)
     from sidecoach.events import Resync
 
     cache = ThemeCache(tmp_path)
-    _warm(cache, "green", Side.WHITE)
-    _warm(cache, "green", Side.BLACK)
+    _warm(cache, "green", Side.WHITE)  # its digits read the board either way up
     first = chess.Board(MIDGAME)
     live = GamePipeline(cache=cache)
     _join(live, synthetic_board(board=first, coordinates=True))
@@ -352,14 +377,25 @@ PUZZLE = "6r1/pp3k2/4b2R/2p1b1p1/2p3P1/P5P1/1P2BP2/2K2N2 w - - 0 1"
 LAST = chess.Move.from_uci("d5c4")
 
 
-def _learn(cache: ThemeCache, style: str, bottom: Side = Side.WHITE) -> None:
-    """A start position in `style` on chess.com's green, shown to a live pipeline."""
-    warm = GamePipeline(cache=cache)
-    for i in range(3):
-        warm.process(
-            synthetic_board(theme="green", style=style, bottom=bottom, coordinates=True), 0.1 * i
-        )
-    assert warm.model is not None and warm.model.rank_labels, f"{style} not learned"
+def _learn(
+    cache: ThemeCache, style: str, bottom: Side = Side.WHITE, *, afresh: bool = False
+) -> None:
+    """A start position in `style` on chess.com's green, shown to a live pipeline; `afresh`
+    when the learning is what the test is about, not its setting."""
+
+    def learn() -> None:
+        warm = GamePipeline(cache=cache)
+        for i in range(3):
+            warm.process(
+                synthetic_board(theme="green", style=style, bottom=bottom, coordinates=True),
+                0.1 * i,
+            )
+        assert warm.model is not None and warm.model.rank_labels, f"{style} not learned"
+
+    if afresh:
+        learn()
+    else:
+        _learned_once(cache, ("learn", style, bottom), learn)
 
 
 def _puzzle(style: str, **kwargs) -> np.ndarray:
@@ -371,6 +407,10 @@ def _puzzle(style: str, **kwargs) -> np.ndarray:
         highlight=LAST,
         **kwargs,
     )
+
+
+# Long enough for a board left unread to have been explained (`BoardUnread`), or not.
+EXPLAINED_BY = COLD_NOTICE_S + 2.0
 
 
 def _watch(pipe: GamePipeline, frame: np.ndarray, seconds: float, start: float = 0.0) -> list:
@@ -393,7 +433,7 @@ def test_two_piece_sets_on_one_board_are_both_kept_and_each_read(tmp_path: Path)
 
     cache = ThemeCache(tmp_path)
     _learn(cache, "classic")
-    _learn(cache, "staunty")
+    _learn(cache, "staunty", afresh=True)
     assert len(list(tmp_path.glob("theme-*.pkl"))) == 2, "a second set stands beside the first"
     for style in ("classic", "staunty"):
         live = GamePipeline(cache=cache)
@@ -405,10 +445,11 @@ def test_two_piece_sets_on_one_board_are_both_kept_and_each_read(tmp_path: Path)
 
 
 def test_a_set_learned_again_replaces_itself(tmp_path: Path) -> None:
+    """The same set learned again, here from the other side's start position, replaces
+    the file it had rather than standing beside it."""
     cache = ThemeCache(tmp_path)
     _learn(cache, "staunty")
-    _learn(cache, "staunty")
-    _learn(cache, "staunty", Side.BLACK)
+    _learn(cache, "staunty", Side.BLACK, afresh=True)
     assert len(list(tmp_path.glob("theme-*.pkl"))) == 1, "the same set learned again is one file"
 
 
@@ -424,16 +465,17 @@ def test_a_set_not_learned_is_explained_once_then_learned_from_a_start_position(
     cache = ThemeCache(tmp_path)
     _learn(cache, "classic")
     live = GamePipeline(cache=cache)
-    events = _watch(live, _puzzle("staunty"), 10.0)
+    events = _watch(live, _puzzle("staunty"), EXPLAINED_BY)
     assert not any(isinstance(e, GameStarted) for e in events), "adopted with the wrong set"
     notices = [e for e in events if isinstance(e, BoardUnread)]
     assert [n.reason for n in notices] == ["unlearned"], notices
-    assert 6.0 <= notices[0].ts <= 7.0, f"told at {notices[0].ts:.1f} s"
+    assert COLD_NOTICE_S <= notices[0].ts <= COLD_NOTICE_S + 1.0, f"told at {notices[0].ts:.1f} s"
     # Away from the board and back: explained again.
-    events = _watch(live, synthetic_board(pieces=False, x0=-2000), 1.0, start=20.0)
-    events = _watch(live, _puzzle("staunty"), 8.0, start=30.0)
+    away = EXPLAINED_BY + 10.0
+    events = _watch(live, synthetic_board(pieces=False, x0=-2000), 1.0, start=away)
+    events = _watch(live, _puzzle("staunty"), EXPLAINED_BY, start=away + 10.0)
     assert [n.reason for n in events if isinstance(n, BoardUnread)] == ["unlearned"]
-    _learn(cache, "staunty")
+    _learn(cache, "staunty", afresh=True)
     assert len(list(tmp_path.glob("theme-*.pkl"))) == 2
     fresh = GamePipeline(cache=cache)
     events = _watch(fresh, _puzzle("staunty"), 3.0)
@@ -472,10 +514,10 @@ def test_a_selected_piece_is_not_explained(tmp_path: Path) -> None:
     cache = ThemeCache(tmp_path)
     _learn(cache, "staunty")
     live = GamePipeline(cache=cache)
-    events = _watch(live, _puzzle("staunty", selected=chess.E2), 10.0)
+    events = _watch(live, _puzzle("staunty", selected=chess.E2), EXPLAINED_BY)
     assert not any(isinstance(e, BoardUnread) for e in events), "a held piece explained"
     if not any(isinstance(e, GameStarted) for e in events):
-        events = _watch(live, _puzzle("staunty"), 3.0, start=10.0)
+        events = _watch(live, _puzzle("staunty"), 3.0, start=EXPLAINED_BY + 1.0)
         assert any(isinstance(e, GameStarted) for e in events)
     assert live.reconciler is not None
     assert not _squares_off(live.reconciler.board, chess.Board(PUZZLE))
@@ -492,10 +534,10 @@ def test_a_board_without_coordinates_is_explained_as_its_orientation(tmp_path: P
         board=chess.Board(PUZZLE), theme="green", style="staunty", highlight=LAST
     )
     live = GamePipeline(cache=cache)
-    events = _watch(live, frame, 8.0)
+    events = _watch(live, frame, EXPLAINED_BY)
     assert [e.reason for e in events if isinstance(e, BoardUnread)] == ["orientation"]
     live.forced_bottom = Side.WHITE
-    events = _watch(live, frame, 3.0, start=10.0)
+    events = _watch(live, frame, 3.0, start=EXPLAINED_BY + 2.0)
     assert any(isinstance(e, GameStarted) for e in events)
     assert live.reconciler is not None
     assert not _squares_off(live.reconciler.board, chess.Board(PUZZLE))
@@ -531,14 +573,14 @@ def test_labels_cached_wrong_are_read_past_by_the_8_and_learned_again(tmp_path: 
         board=black, theme="green", style="staunty", bottom=Side.BLACK, coordinates=True
     )
     live = GamePipeline(cache=cache)
-    events = _watch(live, frame, 8.0)
+    events = _watch(live, frame, EXPLAINED_BY)
     assert not [e for e in events if isinstance(e, BoardUnread)]
     assert any(isinstance(e, GameStarted) for e in events)
     assert live.bottom is Side.BLACK and live.reconciler is not None
     assert not _squares_off(live.reconciler.board, black)
     [(_, cached)] = cache.candidates(*model_palette)
     assert read_labels(frame, GEOM, cached.rank_labels) is Side.BLACK, "not learned again"
-    events = _watch(live, _puzzle("staunty"), 3.0, start=20.0)
+    events = _watch(live, _puzzle("staunty"), 3.0, start=EXPLAINED_BY + 12.0)
     assert any(isinstance(e, GameStarted) for e in events)
     assert live.bottom is Side.WHITE and live.reconciler is not None
     assert not _squares_off(live.reconciler.board, chess.Board(PUZZLE))
@@ -565,18 +607,18 @@ def test_a_flip_teaches_labels_that_read_no_side_where_the_8_cannot_be_read(
         board=black, theme="green", style="staunty", bottom=Side.BLACK, coordinates=True
     )
     live = GamePipeline(cache=cache)
-    events = _watch(live, frame, 8.0)
+    events = _watch(live, frame, EXPLAINED_BY)
     assert [e.reason for e in events if isinstance(e, BoardUnread)] == ["orientation"]
     assert live.reconciler is None or not live.reconciler.started
     # The panel's Flip: the side told, and the board read that way now.
     live.forced_bottom = Side.BLACK
-    events = live.reorient(frame, GEOM, Side.BLACK, 10.0, told=True)
+    events = live.reorient(frame, GEOM, Side.BLACK, EXPLAINED_BY + 2.0, told=True)
     assert any(isinstance(e, GameStarted) for e in events)
     assert live.reconciler is not None and live.bottom is Side.BLACK
     assert not _squares_off(live.reconciler.board, black)
     [(_, cached)] = cache.candidates(*model_palette)
     assert read_labels(frame, GEOM, cached.rank_labels) is Side.BLACK, "not cached"
-    events = _watch(live, _puzzle("staunty"), 3.0, start=20.0)
+    events = _watch(live, _puzzle("staunty"), 3.0, start=EXPLAINED_BY + 12.0)
     assert any(isinstance(e, GameStarted) for e in events)
     assert live.bottom is Side.WHITE and live.reconciler is not None
     assert not _squares_off(live.reconciler.board, chess.Board(PUZZLE))
@@ -618,8 +660,7 @@ def test_the_next_puzzle_from_the_other_side_is_turned_round_at_once(
     from sidecoach.events import Resync
 
     cache = ThemeCache(tmp_path)
-    _warm(cache, "green", Side.WHITE)
-    _warm(cache, "green", Side.BLACK)
+    _warm(cache, "green", Side.WHITE)  # its digits read the board either way up
     first = chess.Board(PUZZLE)
     live = GamePipeline(cache=cache)
     _join(live, synthetic_board(board=first, coordinates=True, highlight=LAST))
