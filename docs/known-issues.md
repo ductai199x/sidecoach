@@ -28,5 +28,13 @@ What we know is wrong and have chosen to ship with, desktop and phone alike (the
   (a move needs a cleanly read square to commit from, 59763b9). A move the fit does see is
   re-fitted on the frame it fails, and again every frame while the board keeps moving.
   Found 2026-09-27.
+- **After a large resize, a piece at rest can read as not landed** where its set draws its
+  outline at a fixed width (the phone's landing fixture king-48-132: the synthetic classic set
+  learned at 48 px and read at 132, the white king on e1 0.262 of a cell off). Learned small,
+  the outline is thick for the cell; read large, thin; brought to one size the two crosses
+  share no edge strong enough for the phase correlation's peak. The exact lock (076cae1)
+  showed it: the lock a pixel off had left a strip of the next square in the reference, and
+  that strip matched. Only moves from or to that square wait; sites' vector pieces scale their
+  outlines. Found 2026-09-27.
 - **A board smaller than 24 px a cell (a 192 px board) is not seen at all**: the detector's
   floor. The game waits until the board is larger again.
