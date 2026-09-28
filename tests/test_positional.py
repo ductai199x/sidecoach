@@ -8,6 +8,7 @@ un-fabricatable as the tactical ones.
 from __future__ import annotations
 
 import chess
+import pytest
 
 from sidecoach.analysis import positional as P
 
@@ -69,72 +70,146 @@ def test_up_a_piece_is_a_convert_plan_and_down_a_piece_a_complicate_plan() -> No
     assert kinds(P.material_plan(up, chess.BLACK)) == ["complicate"]
 
 
-def _idea_kind(board: chess.Board, san: str, us: chess.Color, **kw) -> str | None:
-    idea = P.best_move_idea(board, board.parse_san(san), us, **kw)
-    return idea.kind if idea is not None else None
-
-
-def test_best_move_idea_reads_the_strategic_point_of_the_move() -> None:
-    italian = "rnbqk2r/pppp1ppp/5n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
-    board = chess.Board(italian)
-    assert _idea_kind(board, "O-O", chess.WHITE, phase="opening") == "castle"
-    assert _idea_kind(board, "Nc3", chess.WHITE, phase="opening") == "develop"
+# The strategic point of a best move (`best_move_idea`), white's move in each. (case, FEN,
+# the move, the phase (None: the default), their threat (UCI, or None), the idea's kind (None:
+# no idea), and whether the idea is that kind (True) or anything but it (False)).
+ITALIAN = "rnbqk2r/pppp1ppp/5n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
+# The bishop on b5 is attacked by the a6 pawn.
+RUY_A6 = "rnbqkbnr/1ppp1ppp/p7/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 3"
+# Black threatens ...Nxe4: the e4 pawn hangs to the f6 knight.
+NXE4 = "r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 4"
+# Black has castled kingside (g8).
+CASTLED_BLACK = "r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/2NP1N2/PPP1QPPP/R1B1K2R w KQ - 0 7"
+# The d5 pawn attacks the knight on c4.
+KNIGHT_C4 = "4k3/p7/8/3p4/2N5/8/8/4K3 w - - 0 1"
+IDEAS: list[tuple[str, str, str, str | None, str | None, str | None, bool]] = [
+    ("castle", ITALIAN, "O-O", "opening", None, "castle", True),
+    ("develop", ITALIAN, "Nc3", "opening", None, "develop", True),
     # A knight to a pawn-guarded square in enemy ground is an outpost move.
-    board = chess.Board("4k3/8/8/8/4P3/2N5/8/4K3 w - - 0 1")
-    assert _idea_kind(board, "Nd5", chess.WHITE) == "outpostMove"
+    ("outpost", "4k3/8/8/8/4P3/2N5/8/4K3 w - - 0 1", "Nd5", None, None, "outpostMove", True),
     # A rook onto a file with no friendly pawn takes the file.
-    board = chess.Board("3rk3/8/8/8/8/8/4P3/R3K3 w - - 0 1")
-    assert _idea_kind(board, "Rd1", chess.WHITE) == "takeFile"
-    # Pushing a passed pawn.
-    board = chess.Board("4k3/8/8/P7/8/8/8/4K3 w - - 0 1")
-    assert _idea_kind(board, "a6", chess.WHITE) == "pushPasser"
+    ("take the file", "3rk3/8/8/8/8/8/4P3/R3K3 w - - 0 1", "Rd1", None, None, "takeFile", True),
+    ("push the passer", "4k3/8/8/P7/8/8/8/4K3 w - - 0 1", "a6", None, None, "pushPasser", True),
+    # A king step toward the centre in the endgame.
+    (
+        "activate the king",
+        "8/8/8/8/8/8/4K3/6k1 w - - 0 1",
+        "Kd3",
+        "endgame",
+        None,
+        "activateKing",
+        True,
+    ),
+    # A pawn push that hits an enemy pawn is a break.
+    ("break", "4k3/8/3p4/8/2P5/8/8/4K3 w - - 0 1", "c5", None, None, "break", True),
+    # A rook dropping behind a passed pawn is the classic rook-behind-passer idea.
+    (
+        "rook behind the passer",
+        "4k3/8/8/P7/8/8/8/1R2K3 w - - 0 1",
+        "Ra1",
+        None,
+        None,
+        "rookBehindPasser",
+        True,
+    ),
+    # g4 storms the wing black castled on; a4 is only queenside space.
+    ("storm", CASTLED_BLACK, "g4", None, None, "pawnStorm", True),
+    ("space", CASTLED_BLACK, "a4", None, None, "space", True),
+    # --- rescue. Moving the bishop away from ...axb5 is a rescue, not development.
+    ("rescue", RUY_A6, "Ba4", "opening", "a6b5", "rescue", True),
+    # A piece that could be taken is in danger only when taking it is their threat (the
+    # engine's best move for them, were it theirs): "a piece in danger comes first" was said
+    # of a rook check that led to mate, and of moves whose threat was elsewhere (the lesson
+    # audit, 2026-09-27).
+    ("rescue, no threat", RUY_A6, "Ba4", "opening", None, "rescue", False),
+    ("rescue, their threat elsewhere", RUY_A6, "Ba4", "opening", "d8h4", "rescue", False),
+    # A pawn that steps on from an attack is a push, not a rescue: e4, hit by d5, to e5.
+    ("a pawn steps on", "4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1", "e5", None, "d5e4", "rescue", False),
+    # A knight beside the enemy king, guarded by its pawn: the king cannot take it (the king
+    # used to count as a capturer worth nothing).
+    (
+        "guarded from the king",
+        "8/8/5k2/4N3/3P4/8/8/4K3 w - - 0 1",
+        "Nd3",
+        None,
+        None,
+        "rescue",
+        False,
+    ),
+    # A knight attacked only by the c6 knight, which the b5 bishop pins to its king.
+    (
+        "attacked by a pinned piece",
+        "4k3/8/2n5/1B6/3N4/8/8/4K3 w - - 0 1",
+        "Nf3",
+        None,
+        None,
+        "rescue",
+        False,
+    ),
+    # Running to b6, where the a7 pawn takes it, is no rescue; e3 is.
+    ("rescue to an unsafe square", KNIGHT_C4, "Nb6", None, "d5c4", "rescue", False),
+    ("rescue to a safe square", KNIGHT_C4, "Ne3", None, "d5c4", "rescue", True),
+    # --- prophylaxis. Nc3 defends e4, and that outranks the fact that it also develops.
+    ("prophylaxis", NXE4, "Nc3", "opening", "f6e4", "prophylaxis", True),
+    # A move that ignores the threat is not prophylaxis, and names no idea.
+    ("ignores the threat", NXE4, "a3", "opening", "f6e4", None, True),
+    # With no threat supplied, Nc3 is ordinary development.
+    ("no threat given", NXE4, "Nc3", "opening", None, "develop", True),
+    # ...bxc3 threatens the knight. Bd2 guards it, but the pawn still wins a knight for a
+    # pawn, so the threat is not stopped.
+    (
+        "a guard that loses the piece",
+        "4k3/8/8/8/1p6/2N5/8/2B1K3 w - - 0 1",
+        "Bd2",
+        None,
+        "b4c3",
+        "prophylaxis",
+        False,
+    ),
+    # A guard pinned to its own king takes nothing back: the g2 pawn guards the h3 bishop
+    # ...Nxh3 threatens, but the d5 bishop pins it, so a quiet a4 stops nothing.
+    (
+        "a pinned guard",
+        "4k3/8/8/3b4/5n2/P6B/6P1/7K w - - 0 1",
+        "a4",
+        None,
+        "f4h3",
+        "prophylaxis",
+        False,
+    ),
+]
 
 
-def test_best_move_idea_rescues_a_piece_in_danger() -> None:
-    # The bishop on b5 is attacked by the a6 pawn; moving it away is a rescue, not development.
-    board = chess.Board("rnbqkbnr/1ppp1ppp/p7/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 3")
-    axb5 = chess.Move.from_uci("a6b5")
-    idea = P.best_move_idea(
-        board, board.parse_san("Ba4"), chess.WHITE, phase="opening", threat=axb5
-    )
-    assert idea is not None and idea.kind == "rescue"
+@pytest.mark.parametrize(
+    ("case", "fen", "san", "phase", "threat", "kind", "is_it"), IDEAS, ids=[r[0] for r in IDEAS]
+)
+def test_the_best_move_s_idea(
+    case: str,
+    fen: str,
+    san: str,
+    phase: str | None,
+    threat: str | None,
+    kind: str | None,
+    is_it: bool,
+) -> None:
+    board = chess.Board(fen)
+    kw: dict[str, object] = {} if phase is None else {"phase": phase}
+    if threat is not None:
+        kw["threat"] = chess.Move.from_uci(threat)
+    idea = P.best_move_idea(board, board.parse_san(san), chess.WHITE, **kw)  # type: ignore[arg-type]
+    got = idea.kind if idea is not None else None
+    assert (got == kind) is is_it, f"{case}: {got}"
 
 
-def test_a_rescue_is_of_the_piece_their_threat_goes_after() -> None:
-    """A piece that could be taken is in danger only when taking it is their threat (the
-    engine's best move for them, were it theirs): "a piece in danger comes first" was said of
-    a rook check that led to mate, and of moves whose threat was elsewhere (the lesson audit,
-    2026-09-27). A pawn that steps on from an attack is a push, not a rescue."""
-    board = chess.Board("rnbqkbnr/1ppp1ppp/p7/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 3")
-    ba4 = board.parse_san("Ba4")
-    assert P.best_move_idea(board, ba4, chess.WHITE, phase="opening") is None or (
-        _idea_kind(board, "Ba4", chess.WHITE, phase="opening") != "rescue"
-    )
-    elsewhere = chess.Move.from_uci("d8h4")  # their threat is not the bishop
-    assert _idea_kind(board, "Ba4", chess.WHITE, phase="opening", threat=elsewhere) != "rescue"
-    # The e4 pawn attacked by the d5 pawn steps on to e5: no rescue.
-    pawn = chess.Board("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1")
-    dxe4 = chess.Move.from_uci("d5e4")
-    assert _idea_kind(pawn, "e5", chess.WHITE, threat=dxe4) != "rescue"
-
-
-def test_a_rescue_needs_a_piece_that_can_be_won_and_a_safe_square() -> None:
-    # A knight beside the enemy king, guarded by its pawn: the king cannot take it, so it is
-    # not in danger (the king used to count as a capturer worth nothing).
+def test_a_piece_is_in_danger_only_from_a_legal_capture() -> None:
+    # The king cannot take a knight its pawn guards.
     guarded = chess.Board("8/8/5k2/4N3/3P4/8/8/4K3 w - - 0 1")
     assert not P._piece_is_attacked(guarded, chess.E5, chess.WHITE)
-    assert _idea_kind(guarded, "Nd3", chess.WHITE) != "rescue"
-    # A knight attacked only by the c6 knight, which the b5 bishop pins to its king.
+    # A knight pinned to its king takes nothing.
     pinned = chess.Board("4k3/8/2n5/1B6/3N4/8/8/4K3 w - - 0 1")
     assert not P._piece_is_attacked(pinned, chess.D4, chess.WHITE)
-    assert _idea_kind(pinned, "Nf3", chess.WHITE) != "rescue"
-    # The d5 pawn attacks the knight, so it is in danger; running to b6, where the a7 pawn
-    # takes it, is no rescue, and e3 is.
-    board = chess.Board("4k3/p7/8/3p4/2N5/8/8/4K3 w - - 0 1")
-    assert P._piece_is_attacked(board, chess.C4, chess.WHITE)
-    dxc4 = chess.Move.from_uci("d5c4")
-    assert _idea_kind(board, "Nb6", chess.WHITE, threat=dxc4) != "rescue"
-    assert _idea_kind(board, "Ne3", chess.WHITE, threat=dxc4) == "rescue"
+    # The d5 pawn does take the knight on c4.
+    assert P._piece_is_attacked(chess.Board(KNIGHT_C4), chess.C4, chess.WHITE)
 
 
 def test_top_features_are_ranked_deduped_and_capped() -> None:
@@ -145,9 +220,12 @@ def test_top_features_are_ranked_deduped_and_capped() -> None:
     # Passed pawn outranks the open file, which outranks nothing here; no kind repeats.
     assert "passedPawn" in kinds(top)
     assert len(set(kinds(top))) == len(kinds(top))
+    # A wing pawn majority surfaces as one of the position's ideas the coach can teach.
+    majority = chess.Board("4k3/pp6/8/8/8/8/PPP5/4K3 w - - 0 1")
+    assert "pawnMajority" in kinds(P.top_features(majority, chess.WHITE, phase="endgame"))
 
 
-def test_pawn_weaknesses_name_isolated_doubled_and_backward_pawns() -> None:
+def test_pawn_weaknesses_name_an_isolated_pawn_the_enemy_s_first() -> None:
     # White c4 pawn, no white b- or d-pawn: isolated. (A lone d-pawn is the IQP, tested apart.)
     board = chess.Board("4k3/8/8/8/2P5/8/8/4K3 w - - 0 1")
     assert kinds(P.pawn_weaknesses(board, chess.WHITE)) == ["weakPawn"]
@@ -156,12 +234,9 @@ def test_pawn_weaknesses_name_isolated_doubled_and_backward_pawns() -> None:
     board = chess.Board("4k3/8/8/2p5/8/8/8/4K3 w - - 0 1")
     facts = P.pawn_weaknesses(board, chess.WHITE)
     assert facts[0].kind == "targetPawn" and "target" in facts[0].text
-    # Backward: white d3 behind c4 and e4, its advance to d4 held by the black c5 pawn.
-    board = chess.Board("4k3/8/8/2p5/2P1P3/3P4/8/4K3 w - - 0 1")
-    assert P.is_backward(board, chess.D3)
 
 
-def test_isolated_queen_pawn_is_named_for_both_sides() -> None:
+def test_the_iqp_is_named_for_both_sides_and_its_plan_by_phase() -> None:
     # White has an isolated d4 pawn (no c- or e-pawn): an IQP.
     board = chess.Board("r1bq1rk1/pp3ppp/2n1pn2/8/3P4/2N2N2/PP3PPP/R1BQ1RK1 w - - 0 10")
     assert P.is_isolated(board, chess.D4)
@@ -169,118 +244,6 @@ def test_isolated_queen_pawn_is_named_for_both_sides() -> None:
     assert kinds(P.isolated_d_pawn(board, chess.BLACK)) == ["iqpTarget"]
     # The generic weak-pawn detector leaves the d-pawn to the IQP feature.
     assert "weakPawn" not in kinds(P.pawn_weaknesses(board, chess.WHITE))
-
-
-def test_hanging_pawns_are_the_central_pair_on_half_open_files() -> None:
-    # White c4 and d4 abreast, no b- or e-pawn beside them: hanging pawns.
-    board = chess.Board("r1bq1rk1/pp3ppp/2n1pn2/8/2PP4/5N2/P4PPP/R1BQ1RK1 w - - 0 11")
-    assert kinds(P.hanging_pawns(board, chess.WHITE)) == ["hangingPawns"]
-    assert kinds(P.hanging_pawns(board, chess.BLACK)) == ["hangingPawnsTarget"]
-
-
-def test_bishop_pair_and_bad_bishop() -> None:
-    # White has both bishops, black has one: the pair.
-    board = chess.Board("2b1k3/8/8/8/8/8/8/2B1KB2 w - - 0 1")
-    assert kinds(P.bishop_pair(board, chess.WHITE)) == ["bishopPair"]
-    # A light-squared bishop on f1 walled in by four of its own pawns on light squares.
-    board = chess.Board("4k3/8/8/8/2P1P3/1P6/6P1/4KB2 w - - 0 1")
-    assert kinds(P.bad_bishop(board, chess.WHITE)) == ["badBishop"]
-
-
-def test_endgame_king_activity_and_pawn_break_and_rook_behind_passer() -> None:
-    # Endgame: a passive King on the rim is named, and a King step toward the centre is the idea.
-    board = chess.Board("6k1/8/8/8/8/8/8/6K1 w - - 0 1")
-    assert kinds(P.king_activity(board, chess.WHITE, phase="endgame")) == ["passiveKing"]
-    board = chess.Board("8/8/8/8/8/8/4K3/6k1 w - - 0 1")
-    assert _idea_kind(board, "Kd3", chess.WHITE, phase="endgame") == ("activateKing")
-    # A pawn push that hits an enemy pawn is a break.
-    board = chess.Board("4k3/8/3p4/8/2P5/8/8/4K3 w - - 0 1")
-    assert _idea_kind(board, "c5", chess.WHITE) == "break"
-    # A rook dropping behind a passed pawn is the classic rook-behind-passer idea.
-    board = chess.Board("4k3/8/8/P7/8/8/8/1R2K3 w - - 0 1")
-    assert _idea_kind(board, "Ra1", chess.WHITE) == "rookBehindPasser"
-
-
-def test_pawn_storm_is_a_pawn_push_at_the_castled_king() -> None:
-    # Black has castled kingside (g8); g4 storms that wing, a4 is only queenside space.
-    board = chess.Board("r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/2NP1N2/PPP1QPPP/R1B1K2R w KQ - 0 7")
-    assert _idea_kind(board, "g4", chess.WHITE) == "pawnStorm"
-    assert _idea_kind(board, "a4", chess.WHITE) == "space"
-
-
-def test_prophylaxis_is_a_quiet_move_that_stops_the_opponent_s_threat() -> None:
-    # Black threatens ...Nxe4: the e4 pawn hangs to the f6 knight. Nc3 defends it -- prophylaxis,
-    # and it outranks the fact that Nc3 also develops.
-    board = chess.Board("r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 4")
-    threat = chess.Move.from_uci("f6e4")
-    idea = P.best_move_idea(
-        board, board.parse_san("Nc3"), chess.WHITE, phase="opening", threat=threat
-    )
-    assert idea is not None and idea.kind == "prophylaxis"
-    # A move that ignores the threat is not prophylaxis.
-    assert (
-        P.best_move_idea(board, board.parse_san("a3"), chess.WHITE, phase="opening", threat=threat)
-        is None
-    )
-    # With no threat supplied, Nc3 is read as ordinary development, not prophylaxis.
-    assert _idea_kind(board, "Nc3", chess.WHITE, phase="opening") == ("develop")
-
-
-def test_a_guard_that_still_loses_the_piece_is_not_prophylaxis() -> None:
-    # ...bxc3 threatens the knight. Bd2 guards it, but the pawn still wins a knight for a
-    # pawn, so the threat is not stopped.
-    board = chess.Board("4k3/8/8/8/1p6/2N5/8/2B1K3 w - - 0 1")
-    threat = chess.Move.from_uci("b4c3")
-    assert _idea_kind(board, "Bd2", chess.WHITE, threat=threat) != "prophylaxis"
-    # A guard pinned to its own king takes nothing back: the g2 pawn guards the h3 bishop
-    # ...Nxh3 threatens, but the d5 bishop pins it, so a quiet a4 stops nothing.
-    board = chess.Board("4k3/8/8/3b4/5n2/P6B/6P1/7K w - - 0 1")
-    threat = chess.Move.from_uci("f4h3")
-    assert _idea_kind(board, "a4", chess.WHITE, threat=threat) != "prophylaxis"
-
-
-def test_central_infiltration_is_not_called_centralising() -> None:
-    # A knight dropping to c2 (rank 2) is infiltration, not a central strong square (c3-f6).
-    board = chess.Board("4k3/8/8/8/8/1n6/8/4K3 b - - 0 1")
-    assert not P._is_central_strong(board, chess.C2, chess.BLACK)
-    # But a knight to d4 is a central strong square.
-    assert P._is_central_strong(board, chess.D4, chess.BLACK)
-
-
-def test_a_wing_pawn_majority_is_named_as_the_side_to_play_on() -> None:
-    # White has a healthy 3-2 queenside majority (a,b,c vs a,b) and nothing on the kingside;
-    # Black has no majority anywhere. The plan is to advance it into a passed pawn.
-    board = chess.Board("4k3/pp6/8/8/8/8/PPP5/4K3 w - - 0 1")
-    facts = P.pawn_majority(board, chess.WHITE)
-    assert kinds(facts) == ["pawnMajority"]
-    assert "queenside" in facts[0].text
-    assert set(facts[0].squares) == {"a2", "b2", "c2"}
-    assert P.pawn_majority(board, chess.BLACK) == []
-    # It surfaces as one of the position's ideas the coach can teach.
-    assert "pawnMajority" in kinds(P.top_features(board, chess.WHITE, phase="endgame"))
-
-
-def test_a_kingside_two_to_one_majority_is_also_named() -> None:
-    board = chess.Board("4k3/7p/8/8/8/8/6PP/4K3 w - - 0 1")
-    facts = P.pawn_majority(board, chess.WHITE)
-    assert kinds(facts) == ["pawnMajority"] and "kingside" in facts[0].text
-    assert set(facts[0].squares) == {"g2", "h2"}
-
-
-def test_an_equal_wing_and_a_crippled_doubled_majority_are_not_named() -> None:
-    # Equal pawn counts on the queenside: no majority.
-    equal = chess.Board("4k3/pp6/8/8/8/8/PP6/4K3 w - - 0 1")
-    assert P.pawn_majority(equal, chess.WHITE) == []
-    # A 3-2 count that is a majority only because of doubled c-pawns cannot make a passer --
-    # more pawns, but not more advancing files than the enemy can blockade -- so it is not
-    # named (the book's caution about crippled majorities).
-    crippled = chess.Board("4k3/1pp5/8/8/8/2P5/1PP5/4K3 w - - 0 1")
-    assert P.pawn_majority(crippled, chess.WHITE) == []
-
-
-def test_the_iqp_plan_is_named_by_side_and_phase() -> None:
-    # White has an isolated d4 pawn: a classic IQP.
-    board = chess.Board("r1bq1rk1/pp3ppp/2n1pn2/8/3P4/2N2N2/PP3PPP/R1BQ1RK1 w - - 0 10")
     # Middlegame, owner: an asset -- the outposts it supports (c5, e5), keep pieces on to attack.
     owner = P.isolated_d_pawn(board, chess.WHITE, phase="middlegame")[0]
     assert "outpost" in owner.text and "keep pieces on" in owner.text
@@ -295,15 +258,66 @@ def test_the_iqp_plan_is_named_by_side_and_phase() -> None:
     assert defender.squares == ("d4", "d5")
 
 
-def test_the_hanging_pawns_plan_names_the_flanking_files_for_both_sides() -> None:
-    # White has c4 and d4 hanging pawns; the flanking b- and e-files are the owner's to use.
+def test_hanging_pawns_are_the_central_pair_and_the_plan_names_the_flanking_files() -> None:
+    # White c4 and d4 abreast, no b- or e-pawn beside them: hanging pawns; the flanking b- and
+    # e-files are the owner's to use.
     board = chess.Board("r1bq1rk1/pp3ppp/2n1pn2/8/2PP4/5N2/P4PPP/R1BQ1RK1 w - - 0 11")
-    owner = P.hanging_pawns(board, chess.WHITE)[0]
-    assert owner.kind == "hangingPawns"
-    assert "b- and e-files" in owner.text and "keep them mobile" in owner.text
-    defender = P.hanging_pawns(board, chess.BLACK)[0]
-    assert defender.kind == "hangingPawnsTarget"
-    assert "blockade" in defender.text and "advance" in defender.text
+    owners = P.hanging_pawns(board, chess.WHITE)
+    assert kinds(owners) == ["hangingPawns"]
+    assert "b- and e-files" in owners[0].text and "keep them mobile" in owners[0].text
+    defenders = P.hanging_pawns(board, chess.BLACK)
+    assert kinds(defenders) == ["hangingPawnsTarget"]
+    assert "blockade" in defenders[0].text and "advance" in defenders[0].text
+
+
+def test_a_passive_king_in_the_endgame_is_named() -> None:
+    board = chess.Board("6k1/8/8/8/8/8/8/6K1 w - - 0 1")
+    assert kinds(P.king_activity(board, chess.WHITE, phase="endgame")) == ["passiveKing"]
+
+
+def test_central_infiltration_is_not_called_centralising() -> None:
+    # A knight dropping to c2 (rank 2) is infiltration, not a central strong square (c3-f6).
+    board = chess.Board("4k3/8/8/8/8/1n6/8/4K3 b - - 0 1")
+    assert not P._is_central_strong(board, chess.C2, chess.BLACK)
+    # But a knight to d4 is a central strong square.
+    assert P._is_central_strong(board, chess.D4, chess.BLACK)
+
+
+# A wing pawn majority: the side to play on, advancing it into a passed pawn. (case, FEN,
+# whose majority, the wing named (None: no majority), its pawns.)
+MAJORITIES: list[tuple[str, str, chess.Color, str | None, set[str] | None]] = [
+    # White has a healthy 3-2 queenside majority (a,b,c vs a,b) and nothing on the kingside.
+    (
+        "queenside 3-2",
+        "4k3/pp6/8/8/8/8/PPP5/4K3 w - - 0 1",
+        chess.WHITE,
+        "queenside",
+        {"a2", "b2", "c2"},
+    ),
+    # Black has no majority anywhere.
+    ("black has none", "4k3/pp6/8/8/8/8/PPP5/4K3 w - - 0 1", chess.BLACK, None, None),
+    ("kingside 2-1", "4k3/7p/8/8/8/8/6PP/4K3 w - - 0 1", chess.WHITE, "kingside", {"g2", "h2"}),
+    # Equal pawn counts on the queenside: no majority.
+    ("equal", "4k3/pp6/8/8/8/8/PP6/4K3 w - - 0 1", chess.WHITE, None, None),
+    # A 3-2 count that is a majority only because of doubled c-pawns cannot make a passer --
+    # more pawns, but not more advancing files than the enemy can blockade -- so it is not
+    # named (the book's caution about crippled majorities).
+    ("crippled by doubled pawns", "4k3/1pp5/8/8/8/2P5/1PP5/4K3 w - - 0 1", chess.WHITE, None, None),
+]
+
+
+@pytest.mark.parametrize(
+    ("case", "fen", "side", "wing", "pawns"), MAJORITIES, ids=[r[0] for r in MAJORITIES]
+)
+def test_a_wing_pawn_majority_is_named_as_the_side_to_play_on(
+    case: str, fen: str, side: chess.Color, wing: str | None, pawns: set[str] | None
+) -> None:
+    facts = P.pawn_majority(chess.Board(fen), side)
+    if wing is None:
+        assert facts == [], case
+        return
+    assert kinds(facts) == ["pawnMajority"], case
+    assert wing in facts[0].text and set(facts[0].squares) == pawns, case
 
 
 def test_space_advantage_and_cramp_are_named_past_a_clear_margin() -> None:
@@ -321,17 +335,22 @@ def test_space_advantage_and_cramp_are_named_past_a_clear_margin() -> None:
 
 
 def test_the_bishop_pair_reads_the_openness_of_the_position() -> None:
-    # Open position (no central pawns): the pair is a live asset -- keep lines open.
+    # White has both bishops, black has one: the pair. Open position (no central pawns): the
+    # pair is a live asset -- keep lines open.
     open_pos = chess.Board("2b1k3/8/8/8/8/8/8/2B1KB2 w - - 0 1")
-    assert "position is open" in P.bishop_pair(open_pos, chess.WHITE)[0].text
+    pair = P.bishop_pair(open_pos, chess.WHITE)
+    assert kinds(pair) == ["bishopPair"] and "position is open" in pair[0].text
     # Closed centre (locked d/e pawns): the plan is to open lines to activate the pair.
     closed = chess.Board("2b1k3/3pp3/8/8/8/8/3PP3/2B1KB2 w - - 0 1")
     assert "closed" in P.bishop_pair(closed, chess.WHITE)[0].text
 
 
 def test_the_bad_bishop_names_its_three_cures() -> None:
+    # A light-squared bishop on f1 walled in by four of its own pawns on light squares.
     board = chess.Board("4k3/8/8/8/2P1P3/1P6/6P1/4KB2 w - - 0 1")
-    text = P.bad_bishop(board, chess.WHITE)[0].text
+    bad = P.bad_bishop(board, chess.WHITE)
+    assert kinds(bad) == ["badBishop"]
+    text = bad[0].text
     assert "trade it" in text and "off its colour" in text and "outside the pawn chain" in text
 
 
@@ -357,12 +376,15 @@ def test_a_backward_pawn_is_a_weakness_only_on_a_half_open_file() -> None:
     # the file is half-open and the pawn is a real target.
     board = chess.Board("4k3/8/8/2p5/2P1P3/3P4/8/4K3 w - - 0 1")
     assert P.is_backward(board, chess.D3)
-    assert any("backward d-pawn" in f.text for f in P.pawn_weaknesses(board, chess.BLACK))
+    assert any(
+        f.kind == "targetPawn" and f.squares == ("d3",) and "backward" in f.text
+        for f in P.pawn_weaknesses(board, chess.BLACK)
+    )
     # A black d-pawn on the file shields it: still backward, but no longer attackable down the
     # file, so it is not named a weakness.
     shielded = chess.Board("4k3/3p4/8/2p5/2P1P3/3P4/8/4K3 w - - 0 1")
     assert P.is_backward(shielded, chess.D3)
-    assert not any("backward d-pawn" in f.text for f in P.pawn_weaknesses(shielded, chess.BLACK))
+    assert not any(f.squares == ("d3",) for f in P.pawn_weaknesses(shielded, chess.BLACK))
 
 
 def test_doubled_pawns_name_the_half_open_file_they_hand_the_owner() -> None:
