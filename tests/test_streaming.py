@@ -1,22 +1,37 @@
 """The coach's reply streamed to the voice as it is written: the first verbalized
 candidate goes out sentence by sentence, each checked before it is said, the stream
-closed once that candidate is complete; a mundane reply takes the routine model; the
-verdict on a move comes from one line before the position is measured whole."""
+closed once that candidate is complete; a mundane reply takes the routine model. (The
+verdict on a move from one line before the position is measured whole is
+test_analysis.py's test_each_position_is_measured_once.)"""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
 import chess
-import pytest
 
 from sidecoach.coach.coach import Coach, Speaker, _FirstCandidate, _Request, _sample_reply
 from sidecoach.coach.disclosure import DisclosureLevel, PositionFacts
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
-from sidecoach.events import Trigger
+from sidecoach.events import Analysis, GameStarted, Line, Side, Trigger
 from sidecoach.llm.base import ChatMessage, Completion
 
 FEN = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
+
+
+def _mate_analysis() -> Analysis:
+    """FEN measured: Qxf7 mates."""
+    return Analysis(
+        game_id="g",
+        fen=FEN,
+        ply=0,
+        lines=[
+            Line(moves=["h5f7"], depth=12, expected_score=1.0, mate=1),
+            Line(moves=["c4f7"], depth=12, expected_score=0.55),
+        ],
+        decisive=False,
+        only_move=True,
+    )
 
 
 class StreamingProvider:
@@ -215,63 +230,28 @@ def test_a_stop_at_the_buffer_end_and_a_bare_move_number_are_not_sentences() -> 
 
 
 def test_the_coach_hands_its_sink_to_the_request() -> None:
-    provider = StreamingProvider("[p=1.0] Fine.")
+    """The coach asks its sink factory for each request it makes (`stream_sink`, with the
+    trigger and the ply) and hands the sink it gets to the request, which the Speaker then
+    streams to."""
+    provider = StreamingProvider("[p=1.0] Their king has one square left.")
     coach = Coach(provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
     seen: list[tuple[object, int | None]] = []
 
-    def factory(trigger: object, ply: int | None) -> Callable[[str], bool] | None:
+    def sink(sentence: str) -> bool:
+        return True
+
+    def factory(trigger: Trigger, ply: int | None) -> Callable[[str], bool] | None:
         seen.append((trigger, ply))
-        return lambda s: True
+        return sink
 
     coach.stream_sink = factory
+    coach.on_event(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=FEN), 0.0)
+    coach.on_event(_mate_analysis(), 1.0)
+    coach.tick(12.0)  # stuck: the idea, unprompted
+    assert seen == [(Trigger.STUCK, 0)]
+    queued = coach.speaker._requests.get_nowait()
+    assert isinstance(queued, _Request) and queued.stream_to is sink
+    coach.speaker._requests.put(queued)
+    coach.speaker.run_pending()
+    assert provider.streamed_calls == 1, "the reply was streamed to the sink"
     assert _sample_reply([(1.0, "x")]) == "x"
-    assert coach.stream_sink is factory
-
-
-@pytest.mark.parametrize("multipv_first", [1])
-def test_the_verdict_comes_from_one_line_before_the_position_is_measured_whole(
-    multipv_first: int,
-) -> None:
-    from sidecoach.analysis.annotator import GameAnnotator
-    from sidecoach.analysis.engine import Line
-    from sidecoach.analysis.score import Thresholds
-
-    class FakeEngine:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, int]] = []
-
-        def analyse(
-            self,
-            board: chess.Board,
-            *,
-            depth: int,
-            multipv: int = 1,
-            time_s: float | None = None,
-            carry_best: bool = False,
-            on_depth: object = None,
-        ) -> list[Line]:
-            self.calls.append((board.fen(), multipv))
-            del carry_best, on_depth  # the line is as long as the fake makes it, all at once
-            lines = [Line(moves=["e2e4"], depth=depth, expected_score=0.52)]
-            if multipv > 1:
-                lines.append(Line(moves=["d2d4"], depth=depth, expected_score=0.51))
-            return lines[:multipv]
-
-    engine = FakeEngine()
-    annotator = GameAnnotator(
-        engine=engine,  # type: ignore[arg-type]
-        depth=18,
-        multipv=6,
-        thresholds=Thresholds(),
-        with_threats=False,
-    )
-    before = chess.Board()
-    annotator.measure(before)
-    move = chess.Move.from_uci("e2e4")
-    assessment = annotator.assess_move("g", before, move, 1)
-    after = before.copy()
-    after.push(move)
-    assert engine.calls[-1] == (after.fen(), multipv_first), "the verdict from one line"
-    assert assessment.uci == "e2e4"
-    annotator.analysis_event("g", after, 1)
-    assert engine.calls[-1] == (after.fen(), 6), "then the position whole"

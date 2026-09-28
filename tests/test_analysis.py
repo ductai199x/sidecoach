@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import chess
@@ -25,11 +25,19 @@ from sidecoach.analysis.score import (
     terminal_expected_score,
 )
 from sidecoach.analysis.threats import threat_moves
-from sidecoach.config import find_stockfish, load_settings
+from sidecoach.config import CoachSettings, find_stockfish, load_settings
 from sidecoach.events import Analysis, Line, MotifTag, MoveAssessment, Severity
 
 STOCKFISH = find_stockfish(load_settings())
-needs_engine = pytest.mark.skipif(STOCKFISH is None, reason="no Stockfish binary")
+
+
+def needs_engine[F: Callable[..., None]](test: F) -> F:
+    """A test of the real engine. They share one worker (`--dist loadgroup`), so the
+    module's one Stockfish is started once, not once on every worker one lands on."""
+    test = pytest.mark.skipif(STOCKFISH is None, reason="no Stockfish binary")(test)
+    return pytest.mark.xdist_group("stockfish")(test)
+
+
 # Deep enough to be right about the positions below, shallow enough to keep the suite quick.
 DEPTH = 10
 
@@ -187,8 +195,8 @@ def test_severity_names_the_thresholds() -> None:
     assert severity(0.10, t) is Severity.MISTAKE
     assert severity(0.20, t) is Severity.BLUNDER
     assert severity(0.9, t) is Severity.BLUNDER
-    fitted = Thresholds()
-    assert (fitted.inaccuracy, fitted.mistake, fitted.blunder) == (0.04, 0.10, 0.28)
+    # The fitted lines are the settings' defaults: a re-fit changes both or neither.
+    assert Thresholds() == Thresholds.from_settings(CoachSettings())
 
 
 def test_eval_loss_is_measured_from_the_movers_side() -> None:
@@ -300,10 +308,10 @@ def test_mate_is_reported_as_a_distance_and_a_certain_score(engine: Engine) -> N
     assert lines[0].mate == 1 and lines[0].expected_score == 1.0
 
 
-@needs_engine
-def test_a_finished_position_has_no_lines(engine: Engine) -> None:
+def test_a_finished_position_has_no_lines() -> None:
+    """Answered before any process is asked: a finished game has nothing to play."""
     mated = chess.Board("r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4")
-    assert engine.analyse(mated, depth=DEPTH) == []
+    assert Engine(path=Path("never-started")).analyse(mated, depth=DEPTH) == []
 
 
 @needs_engine
@@ -320,9 +328,7 @@ def test_threats_are_what_the_opponent_would_play(engine: Engine) -> None:
     board = chess.Board(THREATENED)
     assert not board.is_check()
     assert threat_moves(engine, board, depth=DEPTH) == ["d8d1"], "...Rd1 is mate"
-    in_check = chess.Board("4k3/8/8/8/8/8/4q3/4K3 w - - 0 1")
-    assert in_check.is_check() and not in_check.is_game_over()
-    assert threat_moves(engine, in_check, depth=DEPTH) == [], "you cannot pass out of check"
+    # In check there is no threat to ask about: test_threats.py, without an engine.
 
 
 def test_san_line_reads_like_a_move_list() -> None:
@@ -356,9 +362,16 @@ def test_each_position_is_measured_once() -> None:
     fake = FakeEngine({})
     annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
     e2e4 = chess.Move.from_uci("e2e4")
-    annotator.assess("g", board, e2e4, 1)
+    assessment, _ = annotator.assess("g", board, e2e4, 1)
     after = board.copy(stack=False)
     after.push(e2e4)
+    assert assessment.uci == "e2e4"
+    # The verdict from one line of the position after the move, before it is measured whole.
+    assert list(zip(fake.calls, fake.multipvs, strict=True)) == [
+        (board.fen(), 1),
+        (after.fen(), 1),
+        (after.fen(), 6),
+    ]
     annotator.assess("g", after, chess.Move.from_uci("e7e5"), 2)
     whole = [fen for fen, multipv in zip(fake.calls, fake.multipvs, strict=True) if multipv != 1]
     assert len(whole) == 2, "after e4, after e5: each measured whole once"
@@ -445,7 +458,7 @@ def test_a_capture_guarded_only_by_a_pinned_piece_is_a_free_grab() -> None:
 def test_no_single_position_may_hold_up_a_game(engine: Engine) -> None:
     """A knight endgame that takes minutes to reach depth 14 with four lines is cut short."""
     slow = chess.Board("8/k7/2p3NP/8/1P1K2P1/2P5/3n4/8 b - - 2 50")
-    engine.max_seconds = 0.5
+    engine.max_seconds = 0.1
     started = time.monotonic()
     try:
         lines = engine.analyse(slow, depth=40, multipv=4)
@@ -459,16 +472,6 @@ def test_an_illegal_move_is_refused_rather_than_measured() -> None:
     annotator = GameAnnotator(engine=FakeEngine({}), depth=6, with_threats=False)
     with pytest.raises(ValueError, match="not legal"):
         annotator.assess("g", chess.Board(), chess.Move.from_uci("e2e5"), 1)
-
-
-def test_the_analyser_answers_off_the_caller_s_thread() -> None:
-    board = chess.Board()
-    fake = FakeEngine({})
-    with Analyser(GameAnnotator(engine=fake, depth=6, with_threats=False)) as analyser:
-        analyser.submit_move("g", board, chess.Move.from_uci("e2e4"), 1)
-        events = _drain(analyser)
-    assert [type(event).__name__ for event in events] == ["MoveAssessment", "Analysis"]
-    assert analyser.failures == 0
 
 
 def test_a_failing_analysis_does_not_end_the_session() -> None:
@@ -601,7 +604,10 @@ def test_a_takeback_lets_the_engine_go_of_the_withdrawn_moves() -> None:
     analyser.withdraw("g", 0)
     assert analyser.withdrawn == 4
     engine.go.set()
-    got = _drain(analyser, timeout=3)
+    # Nothing is delivered, so wait for the work to be settled, not for events: a result is
+    # put before its request is settled, so none can come after `pending` is 0.
+    assert _until(lambda: analyser.pending == 0, 3), analyser.pending
+    got = analyser.poll()
     analyser.close()
     assert [e for e in got if getattr(e, "ply", None) in (1, 3, 4)] == [], got
     assert analyser.pending == 0
@@ -687,7 +693,9 @@ def test_the_position_the_player_faces_is_told_early_and_then_whole() -> None:
         analyser.submit_move("g", board, chess.Move.from_uci("e7e5"), 2, by_user=False)
         reply = _drain(analyser)
     assert _kinds(started) == ["Analysis(early)", "Analysis"]
+    # Off the caller's thread, the verdict first: the player's own move.
     assert _kinds(own) == ["MoveAssessment", "Analysis"]
+    assert analyser.failures == 0
     assert _kinds(reply) == ["Analysis(early)", "MoveAssessment", "Analysis"]
     early, full = reply[0], reply[2]
     assert isinstance(early, Analysis) and isinstance(full, Analysis)
@@ -845,7 +853,7 @@ def test_the_engine_stops_a_search_it_is_interrupted_in(engine: Engine) -> None:
 
     worker = threading.Thread(target=search)
     worker.start()
-    time.sleep(0.3)
+    assert _until(lambda: engine._search is not None), "the search never started"
     t = time.monotonic()
     engine.interrupt()
     worker.join(5)

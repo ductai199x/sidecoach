@@ -66,7 +66,7 @@ def test_no_threat_and_no_engine_call_when_in_check() -> None:
     engine = _RecordingEngine(CANNED)
     # White is in check from the queen on e2's... use a simple check: black queen checks e1.
     in_check = chess.Board("4k3/8/8/8/8/8/4q3/4K3 w - - 0 1")
-    assert in_check.is_check()
+    assert in_check.is_check() and not in_check.is_game_over()
     assert threat_lines(engine, in_check, depth=8) == [], "you cannot pass out of check"
     assert engine.seen == [], "the engine is never asked"
 
