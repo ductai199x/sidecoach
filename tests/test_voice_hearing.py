@@ -52,6 +52,23 @@ def test_cuda_is_the_default_and_falls_back_to_cpu_with_a_reason() -> None:
             assert "fell back" in where.detail
 
 
+def test_an_onnx_that_will_not_import_trusts_the_provider_list(monkeypatch) -> None:  # noqa: ANN001
+    """The probe builds its graph with `onnx`; an `onnx` that fails to import for any reason
+    -- in the dev venv a broken ml_dtypes under it raised AttributeError -- leaves the
+    provider list to say, where it made the GPU go unused."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def broken(name: str, *args: object, **kwargs: object) -> object:
+        if name == "onnx":
+            raise AttributeError("module 'ml_dtypes' has no attribute 'bfloat16'")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", broken)
+    assert runtime._probe_cuda(object()) is True
+
+
 # ---- Kokoro loads its graph once, whatever the voice does ------------------------------------
 
 

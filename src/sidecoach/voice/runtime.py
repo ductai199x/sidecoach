@@ -78,8 +78,10 @@ def cuda_available() -> bool:
 def _probe_cuda(ort: Any) -> bool:
     try:
         from onnx import TensorProto, helper  # type: ignore[reportMissingImports]
-    except ImportError:
-        # No `onnx` package to build a probe graph: trust the provider list.
+    except Exception:  # noqa: BLE001
+        # No `onnx` package that imports to build a probe graph: trust the provider list. Not
+        # only a missing one: a broken dependency under it (ml_dtypes lost its files in the
+        # dev venv, 2026-09-21) raised AttributeError, and the GPU went unused for a week.
         return True
     node = helper.make_node("Identity", ["x"], ["y"])
     graph = helper.make_graph(
