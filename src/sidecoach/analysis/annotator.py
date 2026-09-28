@@ -618,9 +618,10 @@ class Analyser:
         for request in kept:
             self._requests.put(request)
         self._ahead = []  # ahead of moves no longer played
-        for request, _board in self._deferred:
-            if request.game_id == game_id and request.ply > ply:
-                request.withdrawn = True
+        with self._count_lock:  # the worker takes them off the list under it
+            for request, _board in self._deferred:
+                if request.game_id == game_id and request.ply > ply:
+                    request.withdrawn = True
         current = self._current
         if current is not None and current.game_id == game_id and current.ply > ply:
             current.withdrawn = True
