@@ -254,7 +254,10 @@ object ResultBadges {
     /**
      * A disc near a square's top-right corner: its rim colour and the shares of the rim and
      * the ring that carry it, or null when nothing disc-shaped is there. The candidate centres
-     * are scored coarsely first and then finely around the best.
+     * are scored coarsely first and then finely around the best. With [board], a centre whose
+     * disc would leave the board is none: the site keeps its discs on the board, and off it
+     * the page above a top-row king carried a red blob that read as a loss (the stress sweep's
+     * seed 699, 2026-09-27).
      */
     fun findDisc(
         frame: FramePixels,
@@ -262,6 +265,7 @@ object ResultBadges {
         cornerY: Double,
         cell: Double,
         background: DoubleArray? = null,
+        board: Region? = null,
     ): Triple<DoubleArray, Double, Double>? {
         if (cell < 16 || !present(frame, cornerX, cornerY, cell)) return null
         val step = max(1.0, SEARCH_STEP * cell)
@@ -270,7 +274,8 @@ object ResultBadges {
         val cxs = arange(cornerX + SEARCH_X.first * cell, cornerX + SEARCH_X.second * cell + 1e-6, 2 * step)
         val cys = arange(cornerY + SEARCH_Y.first * cell, cornerY + SEARCH_Y.second * cell + 1e-6, 2 * step)
         val coarse = ArrayList<DoubleArray>(cys.size * cxs.size)
-        for (cy in cys) for (cx in cxs) coarse.add(doubleArrayOf(cy, cx))
+        for (cy in cys) for (cx in cxs) if (onBoard(cy, cx, cell, board)) coarse.add(doubleArrayOf(cy, cx))
+        if (coarse.isEmpty()) return null
         var pick = -1
         var bestValue = Double.NEGATIVE_INFINITY
         var picked: Scored? = null
@@ -284,6 +289,7 @@ object ResultBadges {
         var bestFine = Double.NEGATIVE_INFINITY
         for (dy in doubleArrayOf(-step, 0.0, step)) {
             for (dx in doubleArrayOf(-step, 0.0, step)) {
+                if (!onBoard(coarse[pick][0] + dy, coarse[pick][1] + dx, cell, board)) continue
                 val scored = score(frame, coarse[pick][0] + dy, coarse[pick][1] + dx, rim, ring)
                 val value = scored.rimShare - scored.ringShare
                 if (value > bestFine) { bestFine = value; best = scored }
@@ -308,10 +314,27 @@ object ResultBadges {
         return DoubleArray(n) { start + it * step }
     }
 
-    /** The badge on the square whose top-right corner (on screen) is at the given point. */
-    fun badgeAt(frame: FramePixels, cornerX: Double, cornerY: Double, cell: Double): Badge? {
+    /** The (y, x) centre's disc lies on [board], to a pixel; any centre does without one. */
+    private fun onBoard(y: Double, x: Double, cell: Double, board: Region?): Boolean {
+        if (board == null) return true
+        val r = RADIUS * cell
+        return y - r >= board.y - 1 && y + r <= board.y + board.h + 1 &&
+            x - r >= board.x - 1 && x + r <= board.x + board.w + 1
+    }
+
+    /**
+     * The badge on the square whose top-right corner (on screen) is at the given point; with
+     * [board], a disc on the board only.
+     */
+    fun badgeAt(
+        frame: FramePixels,
+        cornerX: Double,
+        cornerY: Double,
+        cell: Double,
+        board: Region? = null,
+    ): Badge? {
         val background = squareColour(frame, cornerX, cornerY, cell)
-        val found = findDisc(frame, cornerX, cornerY, cell, background) ?: return null
+        val found = findDisc(frame, cornerX, cornerY, cell, background, board) ?: return null
         return classify(found.first)
     }
 
@@ -325,7 +348,7 @@ object ResultBadges {
         val (row, col) = Squares.rowCol(square, bottom.color)
         val cornerX = geometry.region.x + (col + 1) * geometry.cellPx
         val cornerY = geometry.region.y + row * geometry.cellPx
-        return badgeAt(frame, cornerX, cornerY, geometry.cellPx)
+        return badgeAt(frame, cornerX, cornerY, geometry.cellPx, geometry.region)
     }
 
     /**
