@@ -6,6 +6,7 @@ import com.sidecoach.chess.BLACK
 import com.sidecoach.chess.Bitboard
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.KING
+import com.sidecoach.chess.KNIGHT
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.Piece
 import com.sidecoach.chess.QUEEN
@@ -15,6 +16,7 @@ import com.sidecoach.chess.PAWN
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.between
+import com.sidecoach.chess.pawnAttacks
 import com.sidecoach.chess.scanReversed
 import com.sidecoach.chess.square
 import com.sidecoach.chess.squareDistance
@@ -65,12 +67,20 @@ typealias Readings = MutableList<CellReading>
 
 typealias Observation = LinkedHashMap<Int, CellReading>
 
-/** One way a premove ghost could have been queued. */
+/**
+ * One way a premove ghost could have been queued: by the piece [symbol] from [origin], landing
+ * on the red squares of [route] in turn (the target not among them); [passesOver] when a
+ * slider's step crossed a red square. The symbol is the piece standing on the origin: the
+ * ghost's own, or a pawn's when the ghost is the piece a queued pawn promotes to.
+ */
 private data class QueueWay(
     val origin: Int,
-    val visited: Set<Int>,
+    val route: List<Int>,
+    val symbol: String,
     val passesOver: Boolean = false,
-)
+) {
+    val visited: Set<Int> get() = route.toSet()
+}
 
 /** What a pending explanation is: the same tuple python keys `_pending` with. */
 private data class PendingKey(val kind: String, val extra: Any?, val moves: List<Move>)
@@ -217,6 +227,14 @@ internal fun adoptPlacement(
  * step for each of the opponent's replies, within a second or two.
  */
 const val QUEUE_MEMORY_S = 3.0
+
+/**
+ * How long a premove queue drawn on the board holds a position resync off (`redSince`). A player
+ * may queue a whole opening before the opponent's first move (a stream of Hikaru's: some twenty
+ * premoves, over ten seconds); a red mark left on the board past this is not a queue, and must
+ * not stall the game for good.
+ */
+const val QUEUE_RESYNC_S = 30.0
 
 /**
  * `reconcile.in_flight`: whether a story has a piece stop partway along a straight line and then
@@ -387,8 +405,27 @@ class Reconciler(
     private var tsValue = 0.0
     private var lastCommitTs: Double? = null
 
-    /** When a premove queue's red tint was last seen ([flight]). */
+    /**
+     * When a premove queue's red tint was last seen ([flight]), and since when it has been on
+     * every frame ([maybePositionResync]).
+     */
     private var redTs: Double? = null
+    private var redSince: Double? = null
+
+    /**
+     * In the current frame: the squares a premove ghost or its queue covers ([unqueue]), unread
+     * and wild for every story -- a real move may leave or reach one unseen. The queen that left
+     * b5 as the pawn's queue was drawn onto it was never told, and the game after it was lost
+     * (Tai's game, 2026-09-28).
+     */
+    private var hidden: Set<Int> = emptySet()
+
+    /**
+     * Each premove queue as last undone: its origin, the squares it lands on in turn, and its
+     * ghost's square. A picture shows a queue's squares and not their order; the frames it was
+     * built on and executed on show the order ([routeSeen]).
+     */
+    private var routes: List<List<Int>> = emptyList()
 
     val started: Boolean get() = startedFlag
     val finished: Boolean get() = finishedFlag
@@ -571,6 +608,8 @@ class Reconciler(
         base: Board? = null,
         wild: Set<Int> = emptySet(),
     ): List<List<Move>> {
+        @Suppress("NAME_SHADOWING")
+        val wild = wild + hidden
         // A move touches at most four squares, so more disagreements than that times the
         // depth cannot be a missed-move story.
         if (diff.size + wild.size < 3 || diff.size > 4 * maxPlies) return emptyList()
@@ -734,6 +773,12 @@ class Reconciler(
      * move lands on must be read at all, and no square on the board may carry a hover
      * outline. A square with an arrow over it is no witness either, while the arrow, which is
      * no drag, holds nothing else back. Highlights are not consulted.
+     * One tint is: a piece of the user's on a premove square is a queue's ghost, drawn where the
+     * queue ends, and never a move played -- a queued piece that arrives for real turns its
+     * square the last-move colour. Taken for a move (Qe4+ where the queen had only got to h4 of
+     * its queue h4-e4), it left the game a piece off once the queue cleared, two cells too few
+     * for a resync to put right (the premove sweep, seed 90). A king is exempt: a king in check
+     * glows red.
      */
     private fun highlightOk(
         obs: Observation,
@@ -742,13 +787,25 @@ class Reconciler(
         wild: Set<Int> = emptySet(),
     ): Boolean {
         if (hoverSeen || obs.values.any { it.hover }) return false
+        @Suppress("NAME_SHADOWING")
+        val wild = wild + hidden
         val touched = HashSet<Int>()
         val decorated = HashSet<Int>()
         val board = (base ?: this.board).copy(withStack = false)
+        val user = userSide.color
         for (move in moves) {
             if (!board.isLegal(move)) return false
             if (move.to !in wild && move.to !in obs) {
                 // The piece must be seen where it landed.
+                return false
+            }
+            val landed = obs[move.to]
+            if (board.turn == user &&
+                board.pieceTypeAt(move.from) != KING &&
+                landed != null &&
+                landed.kind == Kind.PIECE &&
+                landed.tint == "red"
+            ) {
                 return false
             }
             if (kingLands(board, move, move.to, obs)) decorated.add(move.to)
@@ -794,7 +851,12 @@ class Reconciler(
         val seen = observe(readings)
         // A queue leaves its piece's real square red and empty; a checked king's red glow stands
         // on a piece, and says nothing of a queue.
-        if (seen.values.any { it.tint == "red" && it.kind == Kind.EMPTY }) redTs = ts
+        if (seen.values.any { it.tint == "red" && it.kind == Kind.EMPTY }) {
+            redTs = ts
+            if (redSince == null) redSince = ts
+        } else {
+            redSince = null
+        }
         var obs = unqueue(seen)  // premove ghosts put back
         if (obs.size < minReadableCells) {
             holdPending(true)
@@ -929,8 +991,15 @@ class Reconciler(
      * one reading. Nothing is undone when the picture cannot be read for certain.
      */
     private fun unqueue(obs: Observation): Observation {
+        hidden = emptySet()
         val redEmpty = obs.filter { (_, r) -> r.tint == "red" && r.kind == Kind.EMPTY }.keys.toSet()
-        if (redEmpty.isEmpty()) return obs
+        if (redEmpty.isEmpty()) {
+            val red = redTs
+            if (red == null || tsValue - red > QUEUE_MEMORY_S) {
+                routes = emptyList()  // no queue for a while: what was seen of one is history
+            }
+            return obs
+        }
         val story = pendingStory()
         val anchor = story?.second ?: board
         val ghosts = ArrayList<Pair<Int, CellReading>>()
@@ -942,39 +1011,95 @@ class Reconciler(
             ghosts.add(sq to reading)
         }
         if (ghosts.isEmpty()) return obs
+        // A piece of the opponent's on a red square is a queue's victim, taken on the way and
+        // gone on from (g4xf3 queued after g7-g6-g5, then f3-f2: the premove sweep,
+        // 2026-09-28): a square a route lands on and must account for, under a real piece that
+        // stays. Never a king, which no queue takes and whose check glows red.
+        val victims = obs.filter { (_, r) ->
+            r.tint == "red" &&
+                r.kind == Kind.PIECE &&
+                r.colour != null && r.colour != userSide &&
+                (r.symbol ?: "k").uppercase() != "K"
+        }.keys.toSet()
+        val red = redEmpty + victims
         val options = ArrayList<List<QueueWay>>()
         for ((target, reading) in ghosts) {
-            val ways = queueOrigins(reading.symbol!!, target, redEmpty, obs, anchor)
+            val ways = queueOrigins(reading.symbol!!, target, red, obs, anchor)
             if (ways.isEmpty()) return obs
             options.add(ways)
         }
-        // Every red square is one queue's origin or one queue's landing, never two.
-        val ranked = HashMap<Pair<Int, Int>, MutableSet<List<Int>>>()
+        // Every red square is one queue's origin or one queue's landing, never two. A way that
+        // goes on from a queue as it was last seen ranks first ([routeSeen]), then one built
+        // square by square, then one whose origin is red.
+        val targets = ghosts.map { it.first }
+        // By rank, the readings of every ghost's way, grouped by their origins.
+        val ranked = HashMap<Triple<Int, Int, Int>, LinkedHashMap<List<Int>, MutableList<List<QueueWay>>>>()
         for (choice in cartesian(options)) {
             val origins = choice.map { it.origin }
             if (origins.toSet().size != origins.size) continue
             val covered = ArrayList<Int>()
             for (o in origins) if (o in redEmpty) covered.add(o)
             for (way in choice) covered.addAll(way.visited)
-            if (covered.size != covered.toSet().size || covered.toSet() != redEmpty) continue
-            val rank = choice.count { it.passesOver } to origins.count { it !in redEmpty }
-            ranked.getOrPut(rank) { HashSet() }.add(origins)
+            if (covered.size != covered.toSet().size || covered.toSet() != red) continue
+            val unseen = choice.indices.map { !routeSeen(choice[it], targets[it]) }
+            val rank = Triple(
+                unseen.count { it },
+                choice.count { it.passesOver },
+                origins.count { it !in redEmpty },
+            )
+            ranked.getOrPut(rank) { LinkedHashMap() }.getOrPut(origins) { ArrayList() }.add(choice)
         }
         if (ranked.isEmpty()) return obs
         val bestRank = ranked.keys.minWithOrNull(
-            compareBy({ it.first }, { it.second }),
+            compareBy({ it.first }, { it.second }, { it.third }),
         )!!
         val best = ranked.getValue(bestRank)
         if (best.size != 1) return obs
-        val chosen = best.first()
+        val (chosen, choices) = best.entries.first()
+        val ways = choices[0]
+        val routes = choices.map { c ->
+            c.indices.map { i -> listOf(c[i].origin) + c[i].route + targets[i] }
+        }.toSet()
+        if (routes.size == 1) {
+            // Remembered only when the picture leaves one order: a whole queue shown at once
+            // reads as well rook c2-c5 with queen b3-c3-c4-d5-d6-d8 as the true c2-c3-c4-c5
+            // with b3-d5-d6-d8, and the wrong one remembered misread every step after.
+            this.routes = routes.first()
+        }
         val out = Observation(obs)
         for (i in ghosts.indices) {
             val (target, reading) = ghosts[i]
-            out[chosen[i]] = reading.copy(highlighted = false, tint = null, settled = true)
+            val way = ways[i]
+            // The piece on the origin: a pawn under a promoted ghost.
+            out[way.origin] = reading.copy(
+                symbol = way.symbol, highlighted = false, tint = null, settled = true,
+            )
             out.remove(target)
         }
         for (sq in redEmpty) if (sq !in chosen) out.remove(sq)  // an intermediate square: unread
+        // What the ghosts and the queues cover is unknown, not contradicted: a real move may
+        // start or end there without a reading ([hidden]).
+        hidden = (targets + redEmpty).filter { it !in chosen }.toSet()
         return out
+    }
+
+    /**
+     * Whether a way to the ghost on [target] goes on from a queue as last seen: that route with
+     * its executed steps gone from the front, or new ones added at the end, or both. With no
+     * queue seen, every way does. A king queued g2-f3-f2-e3-f4 whose first step had executed
+     * read as well from f2 by f3 and e3 as from f3 by f2 and e3; the frames it was built on
+     * said which (the premove sweep, 2026-09-28).
+     */
+    private fun routeSeen(way: QueueWay, target: Int): Boolean {
+        if (routes.isEmpty()) return true
+        val route = listOf(way.origin) + way.route + target
+        for (seen in routes) {
+            for (i in seen.indices) {
+                val rest = seen.subList(i, seen.size)
+                if (route.take(rest.size) == rest || rest.take(route.size) == route) return true
+            }
+        }
+        return false
     }
 
     private fun <T> cartesian(options: List<List<T>>): List<List<T>> {
@@ -989,7 +1114,10 @@ class Reconciler(
 
     /**
      * Every way a ghost of `symbol` at `target` could have been queued: from a square
-     * `anchor` has such a piece on, or one move of it away.
+     * `anchor` has such a piece on, or one move of it away. A queen, rook, bishop or knight
+     * may also be a pawn queued to promotion: chess.com draws the piece it will promote to, a
+     * queen, from the moment the queue reaches the last rank (Tai's game, 2026-09-28: b6 to b1
+     * premoved, drawn as a queen on b1), and a queue may go on with that queen.
      */
     private fun queueOrigins(
         symbol: String,
@@ -999,95 +1127,113 @@ class Reconciler(
         anchor: Board,
     ): List<QueueWay> {
         val piece = Piece.fromSymbol(symbol)
+        val walkers = arrayListOf(piece)
+        if (piece.pieceType == QUEEN || piece.pieceType == ROOK ||
+            piece.pieceType == BISHOP || piece.pieceType == KNIGHT
+        ) {
+            walkers.add(Piece(PAWN, piece.colour))
+        }
         val out = ArrayList<QueueWay>()
         val scratch = anchor.copy(withStack = false)
         scratch.turn = piece.colour
-        for ((stand, here) in anchor.pieceMap()) {
-            if (here != piece) continue
-            val reading = obs[stand]
-            if (reading == null || reading.kind != Kind.EMPTY) continue  // still shown there
-            if (stand in red) {
-                out.addAll(queueWays(symbol, stand, target, red, obs))
-                continue
-            }
-            // The first queued step has executed: the piece is one move on, on a tinted,
-            // empty square the queue continues from.
-            val moves = ArrayList<Move>()
-            scratch.generatePseudoLegalMoves(BB_SQUARES[stand]) { moves.add(it) }
-            for (move in moves) {
-                val to = move.to
-                if (to == target) continue
-                val landed = obs[to]
-                if (landed == null || landed.kind != Kind.EMPTY || landed.tint == null) continue
-                out.addAll(queueWays(symbol, to, target, red, obs))
+        for (walker in walkers) {
+            for ((stand, here) in anchor.pieceMap()) {
+                if (here != walker) continue
+                val reading = obs[stand]
+                // Still shown there, or unreadable: not this piece.
+                if (reading == null || reading.kind != Kind.EMPTY) continue
+                if (stand in red) {
+                    out.addAll(queueWays(walker, stand, target, red, obs, piece))
+                    continue
+                }
+                // The first queued step has executed: the piece is one move on, on a tinted,
+                // empty square the queue continues from -- promoted, if that step promoted.
+                val moves = ArrayList<Move>()
+                scratch.generatePseudoLegalMoves(BB_SQUARES[stand]) { moves.add(it) }
+                for (move in moves) {
+                    val to = move.to
+                    if (to == target || (move.promotion != 0 && move.promotion != piece.pieceType)) continue
+                    val landed = obs[to]
+                    if (landed == null || landed.kind != Kind.EMPTY || landed.tint == null) continue
+                    val moved = if (move.promotion != 0) piece else walker
+                    out.addAll(queueWays(moved, to, target, red, obs, piece))
+                }
             }
         }
         return out
     }
 
     /**
-     * The ways a piece could be queued from `origin` to `target`: every step lands on a red
-     * square, past the pieces the picture shows; a slider either stops at the first red square
-     * on its ray, as a queue built square by square does, or passes one over.
+     * The ways the piece [walker] on [origin] could be queued to [target], where the picture
+     * draws [ghost]: every step lands on a red square, past the pieces the picture shows, within
+     * the queue length chess.com allows; a pawn reaching its last rank goes on as the ghost, the
+     * piece it promotes to, and must arrive as the ghost. A slider's step that passes a red
+     * square over (another piece's queue crossing its ray) marks its way `passesOver`, which
+     * ranks below one built square by square. Every route counts, not only the shortest: a king
+     * queued e1-d2-d1 lands on d2, and the direct e1-d1 left d2 unaccounted for, so nothing was
+     * undone (the premove sweep, 2026-09-28).
      */
     private fun queueWays(
-        symbol: String,
+        walker: Piece,
         origin: Int,
         target: Int,
         red: Set<Int>,
         obs: Observation,
+        ghost: Piece,
     ): List<QueueWay> {
-        val piece = Piece.fromSymbol(symbol)
+        // The board the queue was made on, as far as the picture tells it: the user's own
+        // pieces standing still (not the ghosts, on red), and the opponent's pieces under red,
+        // a queue's victims. The opponent's other pieces may have come since, into the way:
+        // chess.com draws a queue until its step comes and fails (h2-h4-h5 queued, then h7-h5
+        // played in front of it: the premove sweep, 2026-09-28).
         val scratch = Board(null)
         for ((sq, reading) in obs) {
-            if (reading.kind == Kind.PIECE && reading.symbol != null && reading.tint != "red") {
-                scratch.setPieceAt(sq, Piece.fromSymbol(reading.symbol))
-            }
+            if (reading.kind != Kind.PIECE || reading.symbol == null) continue
+            val piece = Piece.fromSymbol(reading.symbol)
+            if ((piece.colour == walker.colour) == (reading.tint != "red")) scratch.setPieceAt(sq, piece)
         }
-        scratch.turn = piece.colour
+        scratch.turn = walker.colour
         val landings = red + target
-        val slider = piece.pieceType == QUEEN || piece.pieceType == ROOK || piece.pieceType == BISHOP
+        val lastRank = if (walker.colour == WHITE) 7 else 0
         val ways = ArrayList<QueueWay>()
-        for (stopAtRed in if (slider) booleanArrayOf(true, false) else booleanArrayOf(false)) {
-            var frontier: Set<Int> = setOf(origin)
-            val parent = HashMap<Int, Int?>()
-            parent[origin] = null
-            var found: Set<Int>? = null
-            for (step in 0 until maxQueueSteps) {
-                val nextFrontier = HashSet<Int>()
-                // In square order: a set's order decided which of two equal routes was kept,
-                // and it differs between Python and the phone (the parity audit).
-                for (sq in frontier.sorted()) {
-                    scratch.setPieceAt(sq, piece)
-                    val moves = ArrayList<Move>()
-                    scratch.generatePseudoLegalMoves(BB_SQUARES[sq]) { moves.add(it) }
-                    for (move in moves) {
-                        val to = move.to
-                        if (to !in landings || to in parent) continue
-                        if (stopAtRed && anyRedBetween(sq, to, red)) continue
-                        parent[to] = sq
-                        if (to == target) {
-                            val visited = HashSet<Int>()
-                            var back = parent[to]
-                            while (back != null && back != origin) {
-                                visited.add(back)
-                                back = parent[back]
-                            }
-                            found = visited
-                            break
-                        }
-                        nextFrontier.add(to)
-                    }
-                    scratch.removePieceAt(sq)
-                    if (found != null) break
+
+        fun steps(sq: Int, piece: Piece): List<Int> {
+            scratch.setPieceAt(sq, piece)
+            val out = HashSet<Int>()
+            scratch.generatePseudoLegalMoves(BB_SQUARES[sq]) { out.add(it.to) }
+            scratch.removePieceAt(sq)
+            if (piece.pieceType == PAWN) {
+                if (pawnAttacks(piece.colour, sq) and BB_SQUARES[target] != BB_EMPTY) {
+                    // A queued capture is drawn over its victim, which the picture then does
+                    // not show; a pawn takes only onto a piece (d5xc6 queued after d4-d5 onto
+                    // a knight on c6, the premove sweep, 2026-09-28).
+                    out.add(target)
                 }
-                if (found != null || nextFrontier.isEmpty()) break
-                frontier = nextFrontier
+                val ahead = sq + (if (piece.colour == WHITE) 8 else -8)
+                if (ahead in 0 until 64 && ahead in red) {
+                    out.add(ahead)  // a push queued before a piece stepped in front of it
+                }
             }
-            val visited = found ?: continue
-            val way = QueueWay(origin, visited, passesOver = !stopAtRed && slider)
-            if (ways.none { it.visited == visited }) ways.add(way)
+            // In square order: a set's order decided which of two equal routes was kept, and
+            // it differs between Python and the phone (the parity audit).
+            return out.filter { it in landings }.sorted()
         }
+
+        fun walk(sq: Int, piece: Piece, route: List<Int>, over: Boolean) {
+            for (to in steps(sq, piece)) {
+                if (to == origin || to in route) continue
+                val crossed = over || anyRedBetween(sq, to, red)
+                val promotes = piece.pieceType == PAWN && squareRank(to) == lastRank
+                val now = if (promotes) ghost else piece
+                if (to == target) {
+                    if (now == ghost) ways.add(QueueWay(origin, route, walker.symbol(), crossed))
+                } else if (route.size + 2 <= maxQueueSteps) {
+                    walk(to, now, route + to, crossed)
+                }
+            }
+        }
+
+        walk(origin, walker, emptyList(), false)
         return ways
     }
 
@@ -1158,6 +1304,15 @@ class Reconciler(
             return mutableListOf()
         }
         if (obs.values.any { it.hover }) {
+            resyncCandidate = null
+            return mutableListOf()
+        }
+        val red = redSince
+        if (red != null && tsValue - red < QUEUE_RESYNC_S) {
+            // A premove queue drawn: the picture is the position with the queued pieces at the
+            // ends of their queues, not a position. Adopted, it was the queue's end taken for
+            // the game (Tai's game, 2026-09-28: b6-b1=Q premoved; the moves till then lost).
+            // Once the queue has resolved it is a position again.
             resyncCandidate = null
             return mutableListOf()
         }

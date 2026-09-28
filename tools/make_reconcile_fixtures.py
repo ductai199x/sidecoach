@@ -14,8 +14,9 @@ event it emitted on every frame. `ReconcileTest` on the phone feeds the same rea
 ported reconciler and must produce the same events in the same order.
 
 The second half (`reconcile_ops.json`) runs the desktop's own tests of the reconciler --
-`tests/test_reconcile.py`, `test_premoves.py`, and the pipeline tests whose games go through
-one (`RECORDED`) -- as they stand, with every reconciler they build swapped for one that writes
+`tests/test_reconcile.py`, `test_premoves.py`, the premove sweep's seeds
+(`test_premove_sweep.py`), and the pipeline tests whose games go through one (`RECORDED`) --
+as they stand, with every reconciler they build swapped for one that writes
 down what is done to it: built with which tunables, each frame of readings it is given and the
 events it answers, every call from outside (`start_from`, `turn_from_clock`, `end`,
 `board_unseen`, `commit_pending_terminal`, `reorient`, and the tests' own `_commit`,
@@ -320,6 +321,8 @@ def run(name: str, states: list[dict]) -> dict:
 RECORDED: dict[str, list[str] | None] = {
     "tests.test_reconcile": None,
     "tests.test_premoves": None,
+    # The premove sweep's own seeds (its SEEDS): chess.com's queues simulated.
+    "tests.test_premove_sweep": None,
     "tests.test_pipeline": None,
     "tests.test_scenarios": None,
     "tests.test_screen_state": None,
@@ -338,6 +341,7 @@ RECORDED: dict[str, list[str] | None] = {
         "test_a_flag_is_a_loss_on_time",
         "test_one_frame_of_badges_is_not_enough",
         "test_a_mate_on_the_board_ends_the_game_once_whatever_the_badges_say",
+        "test_the_badges_commit_a_premoved_mate_still_settling",
     ],
     "tests.test_cold_start": [
         "test_cold_start_reads_a_rendered_mid_game_board",
@@ -656,9 +660,13 @@ for _name in CALLS:
     _wrap(_name)
 
 
-def _cases(func) -> list[tuple[str, dict]]:
-    """The parameter sets pytest would run `func` with: every `parametrize` crossed."""
+def _cases(func, module=None) -> list[tuple[str, dict]]:
+    """The parameter sets pytest would run `func` with: every `parametrize` crossed, and a
+    test taking `seed` once for each of its module's `SEEDS`, as the desktop's conftest
+    parametrises it without `--seeds`."""
     grids: list[list[tuple[str, dict]]] = []
+    if "seed" in inspect.signature(func).parameters:
+        grids.append([(str(seed), {"seed": seed}) for seed in module.SEEDS])
     for mark in reversed(getattr(func, "pytestmark", [])):
         if mark.name != "parametrize":
             continue
@@ -730,7 +738,7 @@ def record_tests() -> dict:
         names = wanted or sorted({n for n in dir(module) if n.startswith("test_")} | set(kept))
         for test_name in names:
             func = kept.get(test_name) or getattr(module, test_name)
-            for label, params in _cases(func):
+            for label, params in _cases(func, module):
                 _record_case(f"{short}::{test_name}" + (f"[{label}]" if label else ""), func, params)
         for test_name, func, params in FOLDED.get(module_name, []):
             _record_case(f"{short}::{test_name}", func, params)
