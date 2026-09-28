@@ -969,7 +969,7 @@ class Coach(
         if (event.gameId != gameId || event.puzzles.isEmpty()) return
         val n = event.puzzles.size
         val text = "For practice: $n ${event.motifWords} puzzle${if (n != 1) "s" else ""} around " +
-            "${event.level} are on the review card -- ${event.reason}."
+            "${event.level} ${if (n != 1) "are" else "is"} on the review card -- ${event.reason}."
         synchronized(lock) { conversation.note("Practice recommended: $text") }
         queuePlain(Trigger.REVIEW, text, ts, recordNow = true)
     }
