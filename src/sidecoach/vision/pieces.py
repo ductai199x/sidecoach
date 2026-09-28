@@ -177,6 +177,21 @@ class CellReading:
     # without anything being dragged: no move commits through it, and nothing else waits.
     drawn: bool = False
 
+    @property
+    def exact(self) -> bool:
+        """The square's content named: empty, or a piece of a known kind."""
+        return self.kind == "empty" or (self.kind == "piece" and self.symbol is not None)
+
+    @property
+    def unsettled(self) -> bool:
+        """A piece not where a piece at rest sits: dragged, in flight, or under a mark."""
+        return self.kind == "piece" and not self.settled
+
+    @property
+    def junk(self) -> bool:
+        """What a badge or a ring leaves: an unsettled piece, or a piece of no known kind."""
+        return self.kind == "piece" and (not self.settled or self.symbol is None)
+
 
 def mark_on_empty(reading: CellReading) -> bool:
     """A little drawn on an empty square and nothing more: a legal-move dot, a label -- less
@@ -1375,10 +1390,7 @@ class ThemeModel:
         for r in range(8):
             for c in range(8):
                 reading = readings[r][c]
-                junk = reading.hover or (
-                    reading.kind == "piece" and (not reading.settled or reading.symbol is None)
-                )
-                if not junk or covered[r, c]:
+                if not (reading.hover or reading.junk) or covered[r, c]:
                     continue
                 beside = any(
                     covered[rr, cc]

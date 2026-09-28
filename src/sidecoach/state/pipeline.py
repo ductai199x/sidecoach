@@ -288,7 +288,7 @@ class GamePipeline:
             and not rebuilt
             and changed
             and any(isinstance(e, GameStarted) for e in events)
-            and looks_like_start_position(frame, geometry)
+            and start_shaped(self._readings)
         ):
             # The reconciler saw the start position come back with the same orientation.
             # The theme may still have changed between games, so rebuild the recogniser

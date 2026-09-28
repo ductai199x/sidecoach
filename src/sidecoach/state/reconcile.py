@@ -222,15 +222,6 @@ def cell_agrees(reading: CellReading, piece: chess.Piece | None) -> bool:
     return True
 
 
-def is_junk(reading: CellReading) -> bool:
-    """A reading a badge or a ring leaves: an unsettled piece, or a piece of no known kind."""
-    return reading.kind == "piece" and (not reading.settled or reading.symbol is None)
-
-
-def exact(reading: CellReading) -> bool:
-    return reading.kind == "empty" or (reading.kind == "piece" and reading.symbol is not None)
-
-
 def matches(board: chess.Board, obs: Observation, squares: set[chess.Square]) -> bool:
     return all(cell_agrees(obs[sq], board.piece_at(sq)) for sq in squares if sq in obs)
 
@@ -404,7 +395,7 @@ class Reconciler:
                             out[sq] = remembered[0]
                     continue
                 out[sq] = reading
-                if not (exact(reading) and reading.settled and not reading.hover):
+                if not (reading.exact and reading.settled and not reading.hover):
                     self._previous.pop(sq, None)
                     continue
                 key = (reading.kind, reading.symbol, reading.colour)
@@ -429,27 +420,47 @@ class Reconciler:
     # Lifecycle
 
     def start(self) -> list[Event]:
-        self.board = chess.Board()
-        self.game_id = uuid.uuid4().hex[:8]
-        self._pending = None
-        self._stale = {}
-        self._unexplained_frames = 0
-        self._started = True
-        self._finished = False
-        self._result = None
+        self._clear_story()
         self.viewing = None
-        self._base_fen = chess.STARTING_FEN
         self._turn_unknown = False
         self._resync_candidate = None
         self._last_seen = {}
         self._previous = {}
         self._pending_age = 0
+        started = self._begin(chess.Board(), "game")
+        return [started, PositionChanged(game_id=self.game_id, fen=self.board.fen(), ply=0)]
+
+    def _begin(self, board: chess.Board, kind: str) -> GameStarted:
+        """A game of `kind` begun on `board`, under a new id."""
+        self.game_id = uuid.uuid4().hex[:8]
+        self.kind = kind
+        self._started = True
+        self._set_position(board)
+        return self._game_started()
+
+    def _set_position(self, board: chess.Board) -> None:
+        """`board` adopted as the game's position, the base its moves are counted from; the
+        first move's think time counts from now."""
+        self.board = board
+        self._base_fen = board.fen()
+        self._finished = False
+        self._result = None
         self._last_commit_ts = self._ts
-        self.kind = "game"
-        return [
-            GameStarted(game_id=self.game_id, user_side=self.user_side, start_fen=self.board.fen()),
-            PositionChanged(game_id=self.game_id, fen=self.board.fen(), ply=0),
-        ]
+
+    def _game_started(self) -> GameStarted:
+        return GameStarted(
+            game_id=self.game_id,
+            user_side=self.user_side,
+            start_fen=self.board.fen(),
+            kind=self.kind,
+        )
+
+    def _clear_story(self) -> None:
+        """No story pending, no cell remembered as stale or unexplained: the position they
+        were read against is gone."""
+        self._pending = None
+        self._stale = {}
+        self._unexplained_frames = 0
 
     def _restart(self) -> list[Event]:
         """The game under way ended, unless it had, and a new one begun from the start."""
@@ -464,23 +475,12 @@ class Reconciler:
         """
         self.bottom = bottom
         self.user_side = bottom
-        self._pending = None
+        self._clear_story()
         self._pending_age = 0
-        self._stale = {}
         self._last_seen = {}
         self._previous = {}
         self.viewing = None
-        self._unexplained_frames = 0
-        if not self._started:
-            return []
-        return [
-            GameStarted(
-                game_id=self.game_id,
-                user_side=self.user_side,
-                start_fen=self.board.fen(),
-                kind=self.kind,
-            )
-        ]
+        return [self._game_started()] if self._started else []
 
     # Explanations
 
@@ -556,11 +556,11 @@ class Reconciler:
                         sq
                         for sq in touched
                         if sq not in wild
-                        and not (sq in obs and exact(obs[sq]))
+                        and not (sq in obs and obs[sq].exact)
                         and self._king_lands(board, move, sq, obs)
                     }
                     if not all(
-                        sq in wild or (sq in obs and exact(obs[sq])) or sq in lenient
+                        sq in wild or (sq in obs and obs[sq].exact) or sq in lenient
                         for sq in touched
                     ):
                         continue
@@ -723,7 +723,7 @@ class Reconciler:
             if sq in self._drawn:
                 return False
             reading = obs.get(sq)
-            if reading is not None and reading.kind == "piece" and not reading.settled:
+            if reading is not None and reading.unsettled:
                 return False
         return True
 
@@ -823,11 +823,11 @@ class Reconciler:
             # square of no known kind, or an unsettled piece) cannot be ignored as stale,
             # yet they can be neither read exactly nor trusted as settled; in this retry
             # they are wildcards alongside the ignored cells.
-            soft = frozenset(sq for sq, reading in obs.items() if is_junk(reading))
+            soft = frozenset(sq for sq, reading in obs.items() if reading.junk)
             subsets = self._stale_subsets(stale, obs)
             # Soft wildcards only go with junk cells: ignoring a clean reading as well
             # would let the search invent a story through the cells nobody can read.
-            attempts = [(sub, sub | soft) for sub in subsets if all(is_junk(obs[sq]) for sq in sub)]
+            attempts = [(sub, sub | soft) for sub in subsets if all(obs[sq].junk for sq in sub)]
             attempts += [(sub, frozenset(sub)) for sub in subsets]
             tried: set[tuple[frozenset[chess.Square], frozenset[chess.Square]]] = set()
             for ignored, wild in attempts:
@@ -845,9 +845,7 @@ class Reconciler:
                     # wildcards (the geometry sweep, 2026-09-27, seed 97).
                     continue
                 live_obs = {sq: r for sq, r in obs.items() if sq not in ignored}
-                self._denied = {
-                    sq: obs[sq] for sq in ignored if exact(obs[sq]) and not is_junk(obs[sq])
-                }
+                self._denied = {sq: obs[sq] for sq in ignored if obs[sq].exact and not obs[sq].junk}
                 try:
                     explained = self._explain(
                         live_obs, fresh, obs, allow_paths=True, cautious=True, wild=wild
@@ -1103,9 +1101,7 @@ class Reconciler:
             return []
         moves, _ = story
         events = self._commit_moves(moves)()
-        self._pending = None
-        self._stale = {}
-        self._unexplained_frames = 0
+        self._clear_story()
         return events
 
     def _ghosts(self, diff: set[chess.Square], obs: Observation) -> set[chess.Square]:
@@ -1188,25 +1184,11 @@ class Reconciler:
         if self._finished:
             # The finished game is over for good; a position that appears after it is
             # another game, seen from the middle -- or a puzzle, or an analysis board.
-            self.game_id = uuid.uuid4().hex[:8]
-            self.kind = "position"
-            events.append(
-                GameStarted(
-                    game_id=self.game_id,
-                    user_side=self.user_side,
-                    start_fen=board.fen(),
-                    kind=self.kind,
-                )
-            )
-        self.board = board
-        self._base_fen = board.fen()
-        self._finished = False
-        self._result = None
-        self._last_commit_ts = self._ts
-        self._pending = None
-        self._stale = {}
+            events.append(self._begin(board, "position"))
+        else:
+            self._set_position(board)
+        self._clear_story()
         self.viewing = None
-        self._unexplained_frames = 0
         self._resync_candidate = None
         reason = f"position adopted after {len(diff)} unexplained cells"
         if self._turn_unknown:
@@ -1309,22 +1291,7 @@ class Reconciler:
         if ts is not None:
             self._ts = ts
         board, self._turn_unknown = adopted
-        self.board = board
-        self._base_fen = board.fen()
-        self._started = True
-        self._finished = False
-        self._result = None
-        self._last_commit_ts = self._ts
-        self.game_id = uuid.uuid4().hex[:8]
-        self.kind = "position"
-        return [
-            GameStarted(
-                game_id=self.game_id,
-                user_side=self.user_side,
-                start_fen=board.fen(),
-                kind=self.kind,
-            )
-        ]
+        return [self._begin(board, "position")]
 
     def _explain_turn_unknown(
         self,
@@ -1407,9 +1374,7 @@ class Reconciler:
                 # moment; browsing is only ever entered from a quiet frame.
                 return None
             self.viewing = index
-            self._pending = None
-            self._stale = {}
-            self._unexplained_frames = 0
+            self._clear_story()
             return []
 
         if self._finished:
@@ -1511,7 +1476,7 @@ class Reconciler:
             reading = obs.get(sq)
             if reading is None or reading.hover:
                 return False
-            if reading.kind == "piece" and not reading.settled:
+            if reading.unsettled:
                 return False
         return True
 
@@ -1845,9 +1810,7 @@ class Reconciler:
         if self._pending[1] < needed:
             return []
         events = commit()
-        self._pending = None
-        self._stale = {}
-        self._unexplained_frames = 0
+        self._clear_story()
         self.viewing = None
         return events
 
@@ -1906,8 +1869,8 @@ class Reconciler:
         them; clean stale cells join only when the stale set is small enough to enumerate.
         """
 
-        junk = sorted(sq for sq in stale if is_junk(obs[sq]))
-        clean = sorted(sq for sq in stale if not is_junk(obs[sq]))
+        junk = sorted(sq for sq in stale if obs[sq].junk)
+        clean = sorted(sq for sq in stale if not obs[sq].junk)
         pool = junk if len(stale) > self.max_stale_subset_cells else junk + clean
         subsets: list[frozenset[chess.Square]] = [frozenset({sq}) for sq in pool]
         if self.resync_cells > 2:
