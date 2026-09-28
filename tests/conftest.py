@@ -30,7 +30,6 @@ EMBEDDER_WORKERS = int(os.environ.get("SIDECOACH_TEST_EMBEDDER_WORKERS", "16"))
 # -- a panel session started, which builds the stages -- is marked `embedder` instead, so
 # the rest of its module runs on every core.
 EMBEDDER_MODULES = {
-    "test_clock_pipeline",
     "test_embedding",
     "test_theme_cache",
 }
