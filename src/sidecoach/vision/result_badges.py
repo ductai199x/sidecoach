@@ -26,7 +26,7 @@ from enum import StrEnum
 import chess
 import numpy as np
 
-from sidecoach.events import Side
+from sidecoach.events import Region, Side
 from sidecoach.vision.squares import BoardGeometry, row_col
 
 
@@ -161,6 +161,7 @@ def find_disc(
     corner_y: float,
     cell: float,
     background: np.ndarray | None = None,
+    board: Region | None = None,
 ) -> tuple[np.ndarray, float, float] | None:
     """A disc near a square's top-right corner: its rim colour and the shares of the rim
     and the ring that carry it, or None when nothing disc-shaped is there.
@@ -168,7 +169,9 @@ def find_disc(
     The candidate centres of the search window are scored together, coarsely first and
     then finely around the best; the disc is the centre whose rim is most uniform and
     whose ring is least like it. `background` is the square's own colour, which the
-    disc must not be.
+    disc must not be. With `board`, a centre whose disc would leave the board is none: the
+    site keeps its discs on the board, and off it the page above a top-row king carried a
+    red blob that read as a loss (the stress sweep's seed 699, 2026-09-27).
     """
     if cell < 16 or not _present(frame, corner_x, corner_y, cell):
         return None
@@ -177,13 +180,15 @@ def find_disc(
     ring = _offsets(cell, *RING)
     cxs = np.arange(corner_x + SEARCH_X[0] * cell, corner_x + SEARCH_X[1] * cell + 1e-6, 2 * step)
     cys = np.arange(corner_y + SEARCH_Y[0] * cell, corner_y + SEARCH_Y[1] * cell + 1e-6, 2 * step)
-    coarse = np.array([(cy, cx) for cy in cys for cx in cxs])
+    coarse = _on_board(np.array([(cy, cx) for cy in cys for cx in cxs]), cell, board)
+    if not len(coarse):
+        return None
     colour, rim_share, ring_share = _score(frame, coarse, rim, ring)
     pick = int(np.argmax(rim_share - ring_share))
     if rim_share[pick] == 0.0:
         return None
     around = np.array([(dy, dx) for dy in (-step, 0.0, step) for dx in (-step, 0.0, step)])
-    fine = coarse[pick] + around
+    fine = _on_board(coarse[pick] + around, cell, board)
     colour, rim_share, ring_share = _score(frame, fine, rim, ring)
     best = int(np.argmax(rim_share - ring_share))
     if rim_share[best] < RIM_SHARE or ring_share[best] > RING_SHARE:
@@ -193,10 +198,24 @@ def find_disc(
     return colour[best], float(rim_share[best]), float(ring_share[best])
 
 
-def badge_at(frame: np.ndarray, corner_x: float, corner_y: float, cell: float) -> Badge | None:
-    """The badge on the square whose top-right corner (on screen) is at the given point."""
+def _on_board(centres: np.ndarray, cell: float, board: Region | None) -> np.ndarray:
+    """The (y, x) centres whose disc lies on `board`, to a pixel; all of them without one."""
+    if board is None:
+        return centres
+    r = RADIUS * cell
+    ys, xs = centres[:, 0], centres[:, 1]
+    keep = (ys - r >= board.y - 1) & (ys + r <= board.y + board.h + 1)
+    keep &= (xs - r >= board.x - 1) & (xs + r <= board.x + board.w + 1)
+    return centres[keep]
+
+
+def badge_at(
+    frame: np.ndarray, corner_x: float, corner_y: float, cell: float, board: Region | None = None
+) -> Badge | None:
+    """The badge on the square whose top-right corner (on screen) is at the given point; with
+    `board`, a disc on the board only."""
     background = square_colour(frame, corner_x, corner_y, cell)
-    found = find_disc(frame, corner_x, corner_y, cell, background)
+    found = find_disc(frame, corner_x, corner_y, cell, background, board)
     if found is None:
         return None
     return classify(found[0])
@@ -209,7 +228,7 @@ def badge_on(
     row, col = row_col(square, bottom)
     corner_x = geometry.region.x + (col + 1) * geometry.cell_px
     corner_y = geometry.region.y + row * geometry.cell_px
-    return badge_at(frame, corner_x, corner_y, geometry.cell_px)
+    return badge_at(frame, corner_x, corner_y, geometry.cell_px, geometry.region)
 
 
 def result_of(white: Badge | None, black: Badge | None) -> str | None:

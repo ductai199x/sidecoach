@@ -6,9 +6,10 @@ What we know is wrong and have chosen to ship with, desktop and phone alike (the
 ## Vision
 
 - **Random games that are not followed to the end** in about 1.2% of the stress sweep
-  (`tests/test_stress.py --seeds 1000`; seeds 436 454 497 543 604 610 688 695 699 728 817 996,
-  2026-09-27 after the exact lock of 076cae1, which made 327, 822 and 830 pass and 695 and 699
-  fail): mostly dark shaded piece sets on the dark board (riohacha, pirouetti) and 44 px cells
+  (`tests/test_stress.py --seeds 1000`; seeds 454 497 543 604 610 688 695 728 817 996,
+  2026-09-27 after the exact lock of 076cae1, which made 327, 822 and 830 pass and 695 fail,
+  and the result badge kept on the board, which made 436 and 699 pass): mostly dark shaded
+  piece sets on the dark board (riohacha, pirouetti) and 44 px cells
   where a set's piece does not land where its exemplar did. Left by decision (2026-09-19); see
   the stress test's docstring. In 688 (the wooden set on the wood board, 96 px) a black queen on
   a light square reads as a knight: the start position shows each side's queen on one square
@@ -16,14 +17,6 @@ What we know is wrong and have chosen to ship with, desktop and phone alike (the
   nearer; a premove is then read as two pawn moves and the mate is never committed. Teaching
   the model recoloured kings and queens fixed it, but made a set never learned read as a
   position (2026-09-27).
-- **A move-quality badge beside a king can be read as a result badge, and the game ended
-  mid-game** (the stress sweep's seed 699: the brown board, the classic set at 144 px). With
-  Nxd8 and a badge drawn on d8, beside the black king, the wider search around a king read
-  that badge as a win for black, and the white king on e1, with no badge on it, as a loss:
-  the pair the result rule wants, so the game ended 0-1 after 10...Kxd8 and nothing was
-  followed after. Chess.com draws quality badges in the game review, not in a live game, so
-  this needs the synthetic badges; the detector's read of an empty corner as a loss is the
-  part to fix. Found 2026-09-27.
 - **A queen read as the other side's in a cold read** (the stress sweep's seed 695: the wood
   board, the caliente set at 96 px): the game was followed to its end, and the final position
   read cold from the cache took the white queen on c7 for a black one. Found 2026-09-27.
