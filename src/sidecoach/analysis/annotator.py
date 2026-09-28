@@ -24,7 +24,7 @@ import chess
 
 from sidecoach.analysis import exchange, motifs
 from sidecoach.analysis.defences import defence_lines
-from sidecoach.analysis.engine import Engine
+from sidecoach.analysis.engine import Engine, Interrupted
 from sidecoach.analysis.score import (
     Thresholds,
     eval_loss,
@@ -43,6 +43,12 @@ from sidecoach.events import Analysis, Event, Line, MotifTag, MoveAssessment
 # BEHIND_S: capped at HURRY_S and without the threat search (each could take max_seconds).
 HURRY_S = 1.0
 BEHIND_S = 10.0
+# While no move waits -- the player thinking, or the opponent -- the engine looks ahead:
+# the positions after the LOOK_AHEAD best moves from the position on the board, each then
+# after the best reply to it, measured whole and cached. A game that goes there has its
+# verdict and its facts at once (Tai, 2026-09-27: "cache ... the possible legal moves from
+# both sides"); a move of its own stops the look ahead within the millisecond.
+LOOK_AHEAD = 2
 
 
 class Tagger(Protocol):
@@ -116,12 +122,36 @@ class GameAnnotator:
     _previous: tuple[str, int, float, chess.Square, bool] | None = field(
         default=None, init=False, repr=False
     )
+    # Positions measured ahead of the game (`look_ahead`) and not yet reached, and how many
+    # the game has reached: what looking ahead saved.
+    _ahead: set[str] = field(default_factory=set, init=False, repr=False)
+    ahead_hits: int = field(default=0, init=False)
 
     def reset(self) -> None:
         """Forget the cache; a new game shares no positions with the last one."""
         self._cache.clear()
         self._verdict_cache.clear()
+        self._ahead.clear()
         self._previous = None
+
+    def look_ahead(self, board: chess.Board) -> Measured:
+        """A position the game may reach, measured whole before it does, as the game's own
+        positions are, and cached with them. Inside `Engine.interruptible` a search stopped
+        raises `Interrupted`, and nothing is cached."""
+        key = board.fen()
+        if key in self._cache:
+            return self._cache[key]
+        measured = self.measure(board)
+        self._ahead.add(key)
+        return measured
+
+    def _cached(self, key: str) -> Measured | None:
+        """The position measured whole, counting a position measured ahead reached."""
+        measured = self._cache.get(key)
+        if measured is not None and key in self._ahead:
+            self._ahead.discard(key)
+            self.ahead_hits += 1
+        return measured
 
     def measure_for_verdict(self, board: chess.Board) -> Measured:
         """The position measured for a verdict: whole if it already is, else its best
@@ -130,7 +160,7 @@ class GameAnnotator:
         (2026-09-22: a queen ending played at two seconds a move ran the analyser forty
         plies behind, and every word on a move came after the board had moved on)."""
         key = board.fen()
-        whole = self._cache.get(key)
+        whole = self._cached(key)
         if whole is not None:
             return whole
         thin = self._verdict_cache.get(key)
@@ -153,7 +183,7 @@ class GameAnnotator:
         analyser is (or was just) behind a fast game, and the player is not waiting ten
         seconds for the candidates of a position they will have left."""
         key = board.fen()
-        cached = self._cache.get(key)
+        cached = self._cached(key)
         if cached is not None:
             return cached
         lines = self.engine.analyse(
@@ -393,9 +423,14 @@ class Analyser:
     when a coach would speak anyway.
     """
 
-    def __init__(self, annotator: GameAnnotator, *, max_pending: int = 64) -> None:
+    def __init__(
+        self, annotator: GameAnnotator, *, max_pending: int = 64, look_ahead: int = 0
+    ) -> None:
         self.annotator = annotator
         self.max_pending = max_pending
+        # How many of the best moves from the position on the board are looked ahead at
+        # (LOOK_AHEAD in a live session; none unless asked).
+        self.look_ahead = look_ahead
         self.dropped = 0
         self.failures = 0
         self.skipped = 0  # whole analyses not run for plies the game had already left
@@ -413,6 +448,11 @@ class Analyser:
         self._count_lock = threading.Lock()
         # The request the worker is on, so a takeback can let go of it.
         self._current: _Request | None = None
+        # The positions to look ahead at, with how many moves ahead each is, and whether
+        # the worker is looking ahead now (a request then interrupts it).
+        self._ahead: list[tuple[chess.Board, int]] = []
+        self._looking = False
+        self.looked = 0  # positions measured ahead
 
     def __enter__(self) -> Analyser:
         self.start()
@@ -436,6 +476,8 @@ class Analyser:
         thread, self._thread = self._thread, None
         if thread is not None:
             self._requests.put(None)
+            if self._looking:
+                self.annotator.engine.interrupt()
             thread.join(timeout)
         self.annotator.engine.close()
 
@@ -457,6 +499,7 @@ class Analyser:
             except queue.Empty:
                 break
             self._settle()
+        self._ahead = []
         self.annotator.reset()
 
     def withdraw(self, game_id: str, ply: int) -> None:
@@ -478,6 +521,7 @@ class Analyser:
                 kept.append(request)
         for request in kept:
             self._requests.put(request)
+        self._ahead = []  # ahead of moves no longer played
         current = self._current
         if current is not None and current.game_id == game_id and current.ply > ply:
             current.withdrawn = True
@@ -505,6 +549,9 @@ class Analyser:
         with self._count_lock:
             self._outstanding += 1
         self._requests.put(request)
+        # After the put: a worker that starts looking ahead after this sees the request.
+        if self._looking:
+            self.annotator.engine.interrupt()
 
     def _settle(self) -> None:
         with self._count_lock:
@@ -512,7 +559,7 @@ class Analyser:
 
     def _run(self) -> None:
         while True:
-            request = self._requests.get()
+            request = self._next()
             if request is None:
                 return
             self._current = request
@@ -523,6 +570,7 @@ class Analyser:
                     )
                     if not request.withdrawn:
                         self._results.put(event)
+                        self._plan_ahead(request.board, event.lines)
                 else:
                     # The verdict first, from the best line alone; the position whole after
                     # -- unless newer moves are waiting: then this ply is history, its
@@ -541,15 +589,13 @@ class Analyser:
                     if behind:
                         self.skipped += 1
                         self._behind_until = time.monotonic() + BEHIND_S
-                    self._results.put(
-                        self.annotator.analysis_event(
-                            request.game_id,
-                            after,
-                            request.ply,
-                            thin=behind,
-                            hurry=time.monotonic() < self._behind_until,
-                        )
+                    hurry = time.monotonic() < self._behind_until
+                    event = self.annotator.analysis_event(
+                        request.game_id, after, request.ply, thin=behind, hurry=hurry
                     )
+                    self._results.put(event)
+                    if not (behind or hurry):
+                        self._plan_ahead(after, event.lines)
             except Exception as exc:  # noqa: BLE001
                 # A failed analysis must never end a session; the game goes on unassessed.
                 self.failures += 1
@@ -557,6 +603,61 @@ class Analyser:
             finally:
                 self._current = None
                 self._settle()
+
+    def _next(self) -> _Request | None:
+        """The next request, and while none waits, the positions ahead measured one by one
+        (`_look_ahead`), a request interrupting the one being measured."""
+        while True:
+            try:
+                return self._requests.get_nowait()
+            except queue.Empty:
+                pass
+            ahead = self._ahead
+            if not ahead:
+                return self._requests.get()
+            self._look_ahead(*ahead.pop(0), ahead)
+
+    def _plan_ahead(self, board: chess.Board, lines: list[Line]) -> None:
+        """The positions to look ahead at from `board`, the position the game is at: after
+        each of its `look_ahead` best moves first; after the best reply to each follows as
+        each is measured (`_look_ahead`)."""
+        ahead: list[tuple[chess.Board, int]] = []
+        for line in lines[: self.look_ahead]:
+            move = _moves(line)[:1]
+            if move and move[0] in board.legal_moves:
+                after = board.copy(stack=False)
+                after.push(move[0])
+                ahead.append((after, 1))
+        self._ahead = ahead
+
+    def _look_ahead(
+        self, board: chess.Board, moves: int, ahead: list[tuple[chess.Board, int]]
+    ) -> None:
+        """One position ahead measured, unless a request is waiting or comes meanwhile; one
+        move ahead, the best reply to it goes next in `ahead`, the plan it came from --
+        unless the game has planned anew meanwhile (a new game, a takeback)."""
+        engine = self.annotator.engine
+        self._looking = True
+        try:
+            # Inside the interruptible searches, so a request put before this is seen here
+            # and one put after it interrupts (`_submit`).
+            with engine.interruptible():
+                if not self._requests.empty():
+                    return
+                measured = self.annotator.look_ahead(board)
+        except Interrupted:
+            return  # the game moved: its own position comes first, and plans anew
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            return
+        finally:
+            self._looking = False
+        self.looked += 1
+        reply = _moves(measured.lines[0])[:1] if measured.lines else []
+        if moves == 1 and reply and reply[0] in board.legal_moves and ahead is self._ahead:
+            after = board.copy(stack=False)
+            after.push(reply[0])
+            ahead.insert(0, (after, 2))
 
 
 def open_analyser(
@@ -595,6 +696,6 @@ def open_analyser(
         tagger=tagger,
         book=book,
     )
-    analyser = Analyser(annotator)
+    analyser = Analyser(annotator, look_ahead=LOOK_AHEAD)
     analyser.start()
     return analyser

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -45,6 +46,10 @@ class EngineUnavailable(RuntimeError):
     """The engine binary is missing, or died and could not be restarted."""
 
 
+class Interrupted(RuntimeError):
+    """A search inside `Engine.interruptible` was stopped by `Engine.interrupt`."""
+
+
 @dataclass
 class Engine:
     """A Stockfish process that outlives the positions it is asked about.
@@ -68,6 +73,10 @@ class Engine:
     _engine: chess.engine.SimpleEngine | None = field(default=None, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _wdl_from_engine: bool = field(default=False, init=False, repr=False)
+    # Inside `interruptible`: the search running, which `interrupt` stops, and whether it has.
+    _interruptible: bool = field(default=False, init=False, repr=False)
+    _stopped: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _search: chess.engine.SimpleAnalysisResult | None = field(default=None, init=False, repr=False)
 
     def __enter__(self) -> Engine:
         self.open()
@@ -192,6 +201,26 @@ class Engine:
                 end.push(move)
         return line.model_copy(update={"moves": moves})
 
+    @contextlib.contextmanager
+    def interruptible(self) -> Iterator[None]:
+        """Searches that another thread may stop (`interrupt`): each raises `Interrupted`
+        once stopped, and so does every search after it here -- a look ahead the game has
+        overtaken is let go at once, not searched to its end first."""
+        self._stopped.clear()
+        self._interruptible = True
+        try:
+            yield
+        finally:
+            self._interruptible = False
+
+    def interrupt(self) -> None:
+        """Stop the search running inside `interruptible`, and the ones after it there."""
+        self._stopped.set()
+        search = self._search
+        if search is not None:
+            with contextlib.suppress(Exception):  # it may have ended just now
+                search.stop()
+
     def _analyse_with_restart(
         self, board: chess.Board, limit: chess.engine.Limit, multipv: int
     ) -> list[chess.engine.InfoDict]:
@@ -199,12 +228,34 @@ class Engine:
             self.open()
             assert self._engine is not None
             try:
+                if self._interruptible:
+                    return self._stoppable(board, limit, multipv)
                 return list(self._engine.analyse(board, limit, multipv=multipv))
             except (chess.engine.EngineTerminatedError, BrokenPipeError) as exc:
                 self.close()
                 if attempt == 2:
                     raise EngineUnavailable(f"engine died twice on {board.fen()}: {exc}") from exc
         raise AssertionError("unreachable")
+
+    def _stoppable(
+        self, board: chess.Board, limit: chess.engine.Limit, multipv: int
+    ) -> list[chess.engine.InfoDict]:
+        """`analyse`'s search, run so that `interrupt` can stop it."""
+        if self._stopped.is_set():
+            raise Interrupted
+        assert self._engine is not None
+        with self._engine.analysis(board, limit, multipv=multipv) as search:
+            self._search = search
+            try:
+                if self._stopped.is_set():  # interrupted before the search was in reach
+                    search.stop()
+                search.wait()
+                infos = list(search.multipv)
+            finally:
+                self._search = None
+        if self._stopped.is_set():
+            raise Interrupted
+        return infos
 
 
 def _line(info: chess.engine.InfoDict, board: chess.Board, pv_plies: int, model: str) -> Line:

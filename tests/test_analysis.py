@@ -607,6 +607,107 @@ def test_a_takeback_lets_the_engine_go_of_the_withdrawn_moves() -> None:
     assert analyser.pending == 0
 
 
+def _line(*moves: str) -> Line:
+    return Line(moves=list(moves), depth=6, expected_score=0.5)
+
+
+def _after(*sans: str) -> str:
+    board = chess.Board()
+    for san in sans:
+        board.push_san(san)
+    return board.fen()
+
+
+def _until(condition, timeout: float = 5.0) -> bool:  # noqa: ANN001
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return condition()
+
+
+def test_while_no_move_waits_the_engine_looks_ahead_and_a_move_there_is_answered_at_once() -> None:
+    """Tai, 2026-09-27: "why is it not possible to do some form of SMART caching of lines".
+    With the position on the board measured and nothing queued, the positions after its
+    best moves, and after the best reply to each, are measured and cached; the move played
+    there is judged, and the position after it known, with no search of its own."""
+    start = chess.Board()
+    fake = FakeEngine(
+        {
+            start.fen(): [_line("e2e4"), _line("d2d4")],
+            _after("e4"): [_line("e7e5")],
+            _after("d4"): [_line("d7d5")],
+        }
+    )
+    annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+    with Analyser(annotator, look_ahead=2) as analyser:
+        analyser.submit_position("g", start, 0)
+        assert _until(lambda: analyser.looked == 4), analyser.looked
+        searched = set(fake.calls)
+        assert {_after("e4"), _after("e4", "e5"), _after("d4"), _after("d4", "d5")} <= searched
+        before = len(fake.calls)
+        analyser.submit_move("g", start, chess.Move.from_uci("e2e4"), 1)
+        got = _drain(analyser)
+    assert [type(e).__name__ for e in got] == ["Analysis", "MoveAssessment", "Analysis"]
+    assert _after("e4") not in fake.calls[before:], "the position after e4 was searched again"
+    assert annotator.ahead_hits == 1
+
+
+class _StoppableEngine(FakeEngine):
+    """A fake engine whose searches ahead run until `interrupt` stops them."""
+
+    def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
+        from sidecoach.analysis.engine import Interrupted
+
+        if self._interruptible:
+            self._stopped.wait(5)
+            raise Interrupted
+        return super().analyse(board, **kwargs)
+
+
+def test_a_move_played_stops_the_look_ahead_at_once() -> None:
+    """A search ahead of the game is let go the moment a move of the game's own comes: the
+    move never waits for a position it did not go to."""
+    fake = _StoppableEngine({chess.Board().fen(): [_line("e2e4"), _line("d2d4")]})
+    annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+    with Analyser(annotator, look_ahead=2) as analyser:
+        analyser.submit_position("g", chess.Board(), 0)
+        assert _until(lambda: analyser._looking), "never looked ahead"
+        t = time.monotonic()
+        analyser.submit_move("g", chess.Board(), chess.Move.from_uci("g1f3"), 1)
+        assert _until(lambda: not analyser._looking and analyser.pending == 0, 1.0)
+        assert time.monotonic() - t < 0.5
+        got = _drain(analyser)
+    assert any(isinstance(e, MoveAssessment) and e.uci == "g1f3" for e in got)
+    assert analyser.looked == 0 and annotator.ahead_hits == 0
+
+
+@needs_engine
+def test_the_engine_stops_a_search_it_is_interrupted_in(engine: Engine) -> None:
+    import threading
+
+    from sidecoach.analysis.engine import Interrupted
+
+    raised: list[BaseException] = []
+
+    def search() -> None:
+        try:
+            with engine.interruptible():
+                engine.analyse(chess.Board(), depth=60, multipv=1)
+        except BaseException as exc:  # noqa: BLE001
+            raised.append(exc)
+
+    worker = threading.Thread(target=search)
+    worker.start()
+    time.sleep(0.3)
+    t = time.monotonic()
+    engine.interrupt()
+    worker.join(5)
+    assert not worker.is_alive() and time.monotonic() - t < 1.0
+    assert raised and isinstance(raised[0], Interrupted)
+    # The engine answers as before afterwards.
+    assert engine.analyse(chess.Board(), depth=6, multipv=1)
+
+
 def test_what_the_engine_says_of_a_withdrawn_move_is_not_passed_on(tmp_path: Path) -> None:
     """A verdict on a move taken back came back at its ply and was read as the verdict on
     the move that replaced it; `_Assessing.drain` holds each result against the game as it
