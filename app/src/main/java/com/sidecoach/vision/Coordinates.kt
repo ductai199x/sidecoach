@@ -43,6 +43,15 @@ object Coordinates {
     private const val MIN_INK = 4
 
     /**
+     * A corner window more than this full of ink holds no digit: the square's colour was
+     * taken from its neighbour, so the cell is cut off its square -- a lock a tenth of a cell
+     * out is enough. A digit fills a quarter to a third of the window, a cut that far out nine
+     * tenths or all of it (Tai's Pixel, 2026-09-27: a start seen through a lock that far out
+     * cached all eight labels as solid blocks, and every edge digit then read as the same one).
+     */
+    private const val CORNER_FULL = 0.6
+
+    /**
      * The square's colour: the median of the bands along the cell's right and bottom edges,
      * a twentieth of the cell in from the edge and as deep again.
      */
@@ -110,7 +119,9 @@ object Coordinates {
                 }
             }
         }
-        if (ink < MIN_INK) { mask.release(); return null }
+        if (ink < MIN_INK || ink.toDouble() / (cornerH * cornerW) > CORNER_FULL) {
+            mask.release(); return null
+        }
         mask.put(0, 0, maskBytes)
 
         // The digit is one component of ink, inset from the cell's edge. A lock a pixel off
@@ -177,7 +188,9 @@ object Coordinates {
     /**
      * Capture the rank-digit exemplar in each left-edge cell, labelled by its known value.
      * With `bottom` known, the left-edge cell in row r shows rank 8-r when White is at the
-     * bottom, r+1 when Black is.
+     * bottom, r+1 when Black is. Labels that do not read `bottom` back from the frame they
+     * were learned from are none: kept, they would say nothing or the wrong side on every
+     * board after it.
      */
     fun learnRankLabels(
         frame: Mat,
@@ -192,7 +205,7 @@ object Coordinates {
             cell.release()
             if (glyph != null) labels[rank] = glyph
         }
-        return labels
+        return if (readBottomSide(frame, geometry, labels) == bottom) labels else emptyMap()
     }
 
     private fun iou(a: BooleanArray, b: BooleanArray): Double {

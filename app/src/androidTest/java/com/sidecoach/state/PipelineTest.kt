@@ -16,6 +16,7 @@ import com.sidecoach.events.Unexplained
 import com.sidecoach.vision.BoardGeometry
 import com.sidecoach.vision.CellEmbedder
 import com.sidecoach.vision.ChangeGate
+import com.sidecoach.vision.Coordinates
 import com.sidecoach.vision.FramePixels
 import com.sidecoach.vision.Pieces
 import com.sidecoach.vision.ThemeStore
@@ -232,8 +233,9 @@ class PipelineTest {
 
     /**
      * What a desktop test does to a pipeline between frames (`_call` in the generator): a reset,
-     * the panel's Flip re-reading the last frame from the lock, the End game menu, a side
-     * forced, a clock as a reader would have left it.
+     * the panel's Flip re-reading the last frame from the lock (told, or a resync's), the End
+     * game menu, a side forced, a clock as a reader would have left it, a set's labels cached
+     * as solid blocks.
      */
     private fun call(pipeline: GamePipeline, call: JSONObject, last: Mat?, ts: Double): List<Event> {
         fun side(name: String) = if (name == "white") Pieces.Side.WHITE else Pieces.Side.BLACK
@@ -241,7 +243,20 @@ class PipelineTest {
             call.has("reset") -> { pipeline.reset(); emptyList() }
             call.has("reorient") -> {
                 val lock = checkNotNull(pipeline.board) { "no board locked to re-read" }
-                pipeline.reorient(checkNotNull(last), BoardGeometry(lock.region, lock.cellPx), side(call.getString("reorient")), ts)
+                pipeline.reorient(
+                    checkNotNull(last), BoardGeometry(lock.region, lock.cellPx), side(call.getString("reorient")), ts,
+                    told = call.optBoolean("told"),
+                )
+            }
+            call.has("solid_labels") -> {
+                // The set's rank labels cached as solid blocks, as a start seen through a lock
+                // off its board cached them (desktop 3d0a201).
+                val store = checkNotNull(pipeline.cache) { "no cache to spoil" }
+                val model = checkNotNull(pipeline.model) { "no set learned to spoil" }
+                val (key, cached) = store.candidates(model.lightBg, model.darkBg).single()
+                cached.rankLabels = (1..8).associateWith { BooleanArray(Coordinates.GLYPH * Coordinates.GLYPH) { true } }
+                store.save(cached, key)
+                emptyList()
             }
             call.has("end_game") -> {
                 val given = call.getJSONArray("end_game")

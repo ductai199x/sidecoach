@@ -351,6 +351,7 @@ RECORDED: dict[str, list[str] | None] = {
         "test_two_piece_sets_on_one_board_are_both_kept_and_each_read",
         "test_a_selected_piece_is_not_explained",
         "test_a_board_without_coordinates_is_explained_as_its_orientation",
+        "test_a_flip_teaches_labels_that_read_no_side_and_the_next_puzzle_turns_itself",
         "test_the_next_puzzle_from_the_other_side_is_turned_round_at_once",
         "test_a_new_position_on_a_slow_stream_is_taken_after_a_moment_not_ten_frames",
     ],

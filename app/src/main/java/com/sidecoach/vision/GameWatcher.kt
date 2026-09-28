@@ -414,7 +414,8 @@ class GameWatcher(
      * joined from the middle -- a puzzle, an analysis board, a resync -- had its orientation
      * from the labels or from the game before, which can be wrong: flipping re-reads the
      * screen with the other side at the bottom and begins again from that. With no game
-     * running, flipping chooses the side the next cold read assumes at the bottom.
+     * running, the board on the screen is read that way; with none to read, flipping chooses
+     * the side the next cold read assumes when the labels say nothing.
      */
     private fun flip(
         pipeline: GamePipeline,
@@ -431,22 +432,27 @@ class GameWatcher(
             )
             return mutableListOf()
         }
-        val current = forcedBottom ?: pipeline.bottom ?: Pieces.Side.WHITE
+        // The side the board is read with, when a game is: the labels may have turned it
+        // since the last Flip.
+        val running = if (rec != null && rec.started) pipeline.bottom else null
+        val current = running ?: forcedBottom ?: pipeline.bottom ?: Pieces.Side.WHITE
         val target = current.other
         val name = target.name.lowercase()
         forcedBottom = target
         pipeline.forcedBottom = target
         PanelEngine.set("bottom" to name)
+        // The board on the screen is read that way now, whether a game was running or it
+        // was the one left unread for its side -- and its labels learn the side from it.
+        val events = if (frame != null && geometry != null) {
+            pipeline.reorient(frame, geometry, target, ts, told = true)
+        } else {
+            mutableListOf()
+        }
+        if (events.isNotEmpty()) {
+            PanelEngine.emit("user", "info", "board re-read with $name at the bottom")
+            return events
+        }
         if (rec != null && rec.started) {
-            val events = if (frame != null && geometry != null) {
-                pipeline.reorient(frame, geometry, target, ts)
-            } else {
-                mutableListOf()
-            }
-            if (events.isNotEmpty()) {
-                PanelEngine.emit("user", "info", "board re-read with $name at the bottom")
-                return events
-            }
             // Mid-move, or unreadable now: forget the game; the next quiet frame is read
             // cold with this side at the bottom.
             val forgotten = endGame(pipeline, "forget", ts)

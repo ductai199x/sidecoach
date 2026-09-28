@@ -695,15 +695,49 @@ TURNED = "r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R b KQkq - 0 1"
 
 
 def a_resync_the_other_way_up() -> list[dict]:
-    """`_resync_reoriented`: a side chosen with Flip keeps the labels from turning the game round
-    as they are read (`_flip_if_turned`), so the next position, shown the other way up, is
-    adopted by a resync, on its head -- and the labels then say which side is at the bottom:
-    the board is read again that way and begun as a new game, in place of the resync."""
+    """`_resync_reoriented`: the next position, shown the other way up, is adopted by a resync,
+    on its head, before the labels read twice a quarter of a second apart turn it round
+    (`_flip_if_turned`) -- and the labels then say which side is at the bottom: the board is
+    read again that way and begun as a new game, in place of the resync. The side chosen with
+    Flip is for a board the labels say nothing about; these say which (desktop 3d0a201)."""
     board = chess.Board()
     states = [_shown(board, 3), *_moves(board, ("e4", "e5"))]
     states.append({"_call": {"forced_bottom": "white"}})
     states.append(_shown(chess.Board(TURNED), 8, bottom=Side.BLACK))
     return states
+
+
+def a_flip_teaches_labels() -> list[dict]:
+    """`test_a_flip_teaches_labels_that_read_no_side_and_the_next_puzzle_turns_itself` (desktop
+    3d0a201): a start seen through a lock off its board cached the labels as solid blocks
+    (`solid_labels`), so every puzzle asked for Flip, and the side flipped to stood over the
+    next puzzle, shown from the other side, which was read on its head (Tai's Pixel,
+    2026-09-27). The puzzle from Black's side is explained as its orientation; the Flip reads
+    it at once, the labels learn from it and are cached with the set; the next puzzle, from
+    White's side, turns round by its labels, the Flip notwithstanding. The desktop's test reads
+    the cached labels back; here a fresh pipeline on the cache adopts the puzzle from Black's
+    side by them, unasked."""
+    turned = dict(board=chess.Board(TURNED), theme="green", style="staunty", bottom=Side.BLACK)
+    puzzle = dict(board=chess.Board(PUZZLE), theme="green", style="staunty", highlight=PUZZLE_LAST)
+
+    def watch(kwargs: dict, seconds: float, start: float, **extra) -> dict:
+        """`_watch`: held for `seconds`, a tick every 0.3 s, its pixels new only on the first."""
+        ticks = len(np.arange(start, start + seconds, 0.3))
+        return dict(
+            board_kwargs(**kwargs), _repeat=ticks, _ts=start, _dt=0.3,
+            _changed=[True] + [False] * (ticks - 1), **extra,
+        )  # fmt: skip
+
+    return [
+        dict(board_kwargs(board=chess.Board(), theme="green", style="staunty"), _repeat=3, _session=True),
+        {"_call": {"solid_labels": True}},
+        watch(turned, 8.0, 0.0, _session=True),
+        # The panel's Flip: the side told, and the board read that way now.
+        {"_call": {"forced_bottom": "black"}},
+        {"_call": {"reorient": "black", "told": True}, "_ts": 10.0},
+        watch(puzzle, 3.0, 20.0),
+        watch(turned, 3.0, 30.0, _session=True),
+    ]
 
 
 def flip_a_joined_position() -> list[dict]:
@@ -843,6 +877,7 @@ SCENARIOS = {
     "slow-jump": a_jump_on_a_slow_stream,
     "resync-turned": a_resync_the_other_way_up,
     "flip-joined": flip_a_joined_position,
+    "flip-teaches-labels": a_flip_teaches_labels,
     **{name: (lambda args=args: moved_any_fraction(*args)) for name, args in MOVED.items()},
     "resized-fantasy-32-48": lambda: resized_half_again("fantasy", 32, 48),
 }
@@ -863,6 +898,7 @@ READ_ONCE = {
     "slow-jump",
     "resync-turned",
     "flip-joined",
+    "flip-teaches-labels",
     *MOVED,
     "resized-fantasy-32-48",
 }
@@ -923,6 +959,18 @@ EXPECT = {
         == ["GameEnded * board reoriented"]
         and sum(line.startswith("GameStarted position") for line in lines) == 2
     ),
+    "flip-teaches-labels": lambda lines, data: (
+        [" ".join(line.split()[:3]) for line in lines if line.startswith(("BoardUnread", "GameStarted"))]
+        == [
+            "GameStarted game white",
+            "BoardUnread orientation",
+            "GameStarted position black",
+            "GameStarted position white",
+            "GameStarted position black",
+        ]
+        and [line.split()[3] for line in lines if line.startswith("GameStarted position")]
+        == [chess.Board(fen).board_fen() for fen in (TURNED, PUZZLE, TURNED)]
+    ),
     **{
         name: (
             lambda lines, data, args=args: _sans(lines) == ["e4", "e5", "Nf3", "Nc6"]
@@ -958,7 +1006,17 @@ def _call(pipeline: GamePipeline, call: dict, image, ts: float) -> list:
     if "reorient" in call:
         assert pipeline.board is not None, "no board locked to re-read"
         geometry = BoardGeometry(pipeline.board.region, pipeline.board.cell_px)
-        return pipeline.reorient(image, geometry, Side(call["reorient"]), ts)
+        told = call.get("told", False)
+        return pipeline.reorient(image, geometry, Side(call["reorient"]), ts, told=told)
+    if "solid_labels" in call:
+        # The set's rank labels cached as solid blocks, as a start seen through a lock off
+        # its board cached them (`test_a_flip_teaches_labels_...`).
+        model = pipeline.model
+        assert pipeline.cache is not None and model is not None, "no set learned to spoil"
+        [(key, cached)] = pipeline.cache.candidates(model.light_bg, model.dark_bg)
+        cached.rank_labels = {rank: np.ones((24, 24), dtype=bool) for rank in range(1, 9)}
+        pipeline.cache.save(cached, key=key)
+        return []
     if "end_game" in call:
         result, reason = call["end_game"]
         return pipeline.end_game(result, reason, ts)

@@ -115,8 +115,8 @@ class GamePipeline(
     val tracker = BoardTracker()
 
     /**
-     * The side at the bottom for a board read cold, when set (the user's Flip, for a board
-     * whose coordinate labels cannot be read or read wrong); the labels otherwise.
+     * The side at the bottom for a board read cold whose coordinate labels say nothing, when
+     * set (the user's Flip); labels that read win over it.
      */
     var forcedBottom: Side? = null
     var board: BoardCandidate? = null
@@ -582,10 +582,6 @@ class GamePipeline(
     }
 
     /**
-     * Read the board again with `bottom` at the bottom and begin again from what it shows. A
-     * game under way ends first. Nothing happens when the board cannot be read cleanly now.
-     */
-    /**
      * A board no move explains whose coordinate labels say the other side is at the bottom:
      * the next puzzle, shown from its solver's side. It is read that way at once, as a new
      * game, from the readings already taken ([reorient]).
@@ -597,12 +593,15 @@ class GamePipeline(
      * takeback fix) turned nothing round at all (Tai's puzzles on the Pixel, 2026-09-23: five
      * to ten seconds, and stuck). The labels cost a few milliseconds; two reads a moment
      * apart must agree, so a piece dragged over the edge is not taken for the board turning.
-     * A side the person chose with Flip stands.
+     * The labels are read even after a Flip: the side the person chose is for a board they say
+     * nothing about, and a Flip that stood over them read the next puzzle from the other side
+     * on its head, where no move was ever found (Tai, 2026-09-27: "The board white or black
+     * should be automatically read ... every time there's a sync or resync").
      */
     private fun flipIfTurned(frame: Mat, geometry: BoardGeometry, ts: Double): MutableList<Event> {
         val rec = reconciler
         val current = model
-        if (rec == null || current == null || forcedBottom != null || rec.unexplainedFor < 1) {
+        if (rec == null || current == null || rec.unexplainedFor < 1) {
             game.flipSeen = null
             return mutableListOf()
         }
@@ -647,16 +646,52 @@ class GamePipeline(
         return ColdRead(current, side, readings, placement)
     }
 
+    /**
+     * Read the board again with `bottom` at the bottom and begin again from what it shows: the
+     * panel's Flip on a game joined from the middle, or a resync whose labels say the other
+     * side. A game under way ends first. Nothing happens when the board cannot be read cleanly
+     * now (a piece in flight): the caller may set [forcedBottom] and forget the game, and the
+     * automatic cold start reads it that way on the next quiet frame. The frame's own readings
+     * serve when they can ([reread]); a cold read from the theme cache otherwise. [told]: the
+     * person said which side is at the bottom (Flip), and the labels learn from them where
+     * they did not say it themselves ([learnLabels]).
+     */
     fun reorient(
         frame: Mat,
         geometry: BoardGeometry,
         bottom: Side,
         ts: Double,
         endPrevious: Boolean = true,
+        told: Boolean = false,
     ): MutableList<Event> {
-        // The frame's own readings serve when they can; a cold read from the theme cache otherwise.
         val read = reread(bottom) ?: coldRead(frame, geometry, bottom) ?: return mutableListOf()
-        return reorientRead(read, ts, endPrevious)
+        val events = reorientRead(read, ts, endPrevious)
+        if (told && events.isNotEmpty()) learnLabels(frame, geometry)
+        return events
+    }
+
+    /**
+     * The coordinate labels learned from a board whose side the person told, when they did
+     * not read that side themselves -- learned where a start position was seen through a lock
+     * off its board, or not learned at all -- and the set saved with them, so the next board
+     * of the set reads its own side. Only a side told for this board teaches: a Flip left
+     * standing from the last puzzle would teach the next one, shown from the other side,
+     * upside down, and every read after it.
+     */
+    private fun learnLabels(frame: Mat, geometry: BoardGeometry) {
+        val current = model ?: return
+        val side = bottom ?: return
+        if (Coordinates.readBottomSide(frame, geometry, current.rankLabels) == side) return
+        val labels = Coordinates.learnRankLabels(frame, geometry, side)
+        if (labels.isEmpty()) return
+        current.rankLabels = labels
+        val store = cache ?: return
+        for ((key, cached) in store.candidates(current.lightBg, current.darkBg)) {
+            if (cached.exemplarVectors.contentDeepEquals(current.exemplarVectors)) {
+                store.save(current, key)
+                return
+            }
+        }
     }
 
     /** `reorient` with its read already taken (the desktop's `read=`): [ColdRead] is private. */
@@ -779,8 +814,9 @@ class GamePipeline(
 
     /**
      * The board read cold from the theme cache: a cached recogniser for its colours, the
-     * orientation ([bottom], or the coordinate labels), the readings and the placement they
-     * make -- or null when no learned set gives all of those.
+     * orientation ([bottom], else the coordinate labels, else [fallback] -- the side a Flip
+     * chose, for a board whose labels say nothing), the readings and the placement they make
+     * -- or null when no learned set gives all of those.
      *
      * One board's colours can carry several learned sets. Each reads the board; a set whose
      * read is not a quiet, complete, legal position is passed over (a set for other pieces
@@ -794,13 +830,15 @@ class GamePipeline(
         geometry: BoardGeometry,
         bottom: Side?,
         asked: Boolean = false,
+        fallback: Side? = null,
     ): ColdRead? {
         val store = cache ?: return null
         val sampled = com.sidecoach.vision.ThemeCache.samplePalette(frame, geometry) ?: return null
         var best: Pair<Double, ColdRead>? = null
         for ((_, cached) in store.candidates(sampled.first, sampled.second)) {
             // Coordinates off, or not this set's; the caller may say the side.
-            val side = bottom ?: Coordinates.readBottomSide(frame, geometry, cached.rankLabels) ?: continue
+            val side = bottom ?: Coordinates.readBottomSide(frame, geometry, cached.rankLabels)
+                ?: fallback ?: continue
             val readings = cached.classifyFrame(frame, geometry, embedder)
             val placement = placementFromReadings(readings, side, asked = asked) ?: continue
             if (adoptPlacement(placement) == null) continue
@@ -860,7 +898,7 @@ class GamePipeline(
         val sampled = com.sidecoach.vision.ThemeCache.samplePalette(frame, geometry) ?: return null
         for ((_, cached) in store.candidates(sampled.first, sampled.second)) {
             val readings = cached.classifyFrame(frame, geometry, embedder)
-            val told = forcedBottom ?: Coordinates.readBottomSide(frame, geometry, cached.rankLabels)
+            val told = Coordinates.readBottomSide(frame, geometry, cached.rankLabels) ?: forcedBottom
             for (side in if (told != null) listOf(told) else listOf(Side.WHITE, Side.BLACK)) {
                 if (adoptPlacement(loosePlacement(bySquare(readings, side))) != null) {
                     return if (told != null) null else "orientation"
@@ -910,7 +948,7 @@ class GamePipeline(
         val seen = Triple(lock.region, Math.round(lock.cellPx * 100.0) / 100.0, forcedBottom)
         val last = game.coldLast
         val read = if (last == null || last.first != seen) {
-            coldRead(frame, geometry, forcedBottom).also { game.coldLast = seen to it }
+            coldRead(frame, geometry, null, fallback = forcedBottom).also { game.coldLast = seen to it }
         } else {
             last.second
         }
