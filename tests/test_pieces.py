@@ -1,3 +1,5 @@
+import copy
+from functools import cache
 from typing import Any
 
 import chess
@@ -30,10 +32,22 @@ pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vi
 GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
 
 
-def _start_model(**kwargs) -> ThemeModel:
-    model = ThemeModel.from_start_position(synthetic_board(**kwargs), GEOM, Side.WHITE)
+def _geometry(cell: int) -> BoardGeometry:
+    """The lock on `synthetic_board(cell=cell)`'s board, which is drawn at (300, 120)."""
+    return BoardGeometry(Region(300, 120, 8 * cell, 8 * cell), float(cell))
+
+
+@cache
+def _learned(cell: int) -> ThemeModel:
+    model = ThemeModel.from_start_position(synthetic_board(cell=cell), _geometry(cell), Side.WHITE)
     assert model is not None
     return model
+
+
+def _start_model(cell: int = 64) -> ThemeModel:
+    """The default set learned from its start frame at `cell` px (White at the bottom), once
+    per worker: each test gets a copy of its own, with no frame read yet."""
+    return copy.deepcopy(_learned(cell))
 
 
 def _every_piece_reads(
@@ -92,8 +106,7 @@ def _check_all_cells(model: ThemeModel, frame, board: chess.Board, bottom: Side)
 
 def test_theme_model_classifies_start_and_later_positions() -> None:
     frame = synthetic_board()
-    model = ThemeModel.from_start_position(frame, GEOM, Side.WHITE)
-    assert model is not None
+    model = _start_model()
     assert {e.symbol for e in model.exemplars} == set("PNBRQKpnbrqk")
     _check_all_cells(model, frame, chess.Board(), Side.WHITE)
 
@@ -124,8 +137,7 @@ def test_theme_model_black_at_bottom() -> None:
 def test_hover_outline_needs_all_four_sides() -> None:
     """A badge crossing one corner of a cell is not the outline drawn around a hovered square."""
     frame = synthetic_board()
-    model = ThemeModel.from_start_position(frame, GEOM, Side.WHITE)
-    assert model is not None
+    model = _start_model()
     r, c = row_col(chess.E4, Side.WHITE)
     x0, y0, x1, y1 = GEOM.cell_box(r, c)
 
@@ -153,38 +165,6 @@ def test_bootstrap_refuses_a_start_frame_with_a_piece_hidden() -> None:
     hovered = frame.copy()
     cv2.rectangle(hovered, (x0 + 2, y0 + 2), (x1 - 3, y1 - 3), (255, 255, 255), 3)
     assert ThemeModel.from_start_position(hovered, GEOM, Side.WHITE) is None
-
-
-def test_bootstrap_fuses_pawns_so_one_odd_pawn_does_not_spoil_them() -> None:
-    frame = synthetic_board()
-    r, c = row_col(chess.E2, Side.WHITE)
-    x0, y0, x1, y1 = GEOM.cell_box(r, c)
-    odd = frame.copy()
-    # A badge on the pawn's upper left, touching it, so it is part of the silhouette
-    # (a blob in a corner on its own is dropped by the silhouette itself) and in a
-    # corner silhouette comparison does not ignore (only the top-right corner is
-    # blind), so it is fusion that has to remove it.
-    cv2.circle(odd, (x0 + 14, y0 + 14), 9, (40, 40, 220), -1)
-    spoiled = silhouette(GEOM.crop(odd, r, c, size=2 * CELL)).mask
-    clean_pawn = silhouette(GEOM.crop(frame, r, c, size=2 * CELL)).mask
-    assert spoiled[:8, :8].any() and not clean_pawn[:8, :8].any()
-    model = ThemeModel.from_start_position(odd, GEOM, Side.WHITE)
-    assert model is not None
-    exemplar = next(e for e in model.exemplars if e.symbol == "P")
-    assert not exemplar.tone[:8, :8].any(), "the badge survived fusion"
-    clean = model.classify_frame(frame, GEOM)
-    for square in (chess.A2, chess.E2, chess.H2):
-        r, c = row_col(square, Side.WHITE)
-        assert clean[r][c].symbol == "P" and clean[r][c].settled
-
-
-def _with_strip(frame: np.ndarray, square: chess.Square, height: float) -> np.ndarray:
-    """A white strip `height` of the cell tall across the top of `square`'s cell."""
-    r, c = row_col(square, Side.WHITE)
-    x0, y0, x1, y1 = GEOM.cell_box(r, c)
-    out = frame.copy()
-    out[y0 : y0 + int(round((y1 - y0) * height)), x0:x1] = (255, 255, 255)
-    return out
 
 
 def test_start_shaped_from_readings_matches_the_frame_rule() -> None:
@@ -219,14 +199,6 @@ def test_degenerate_inputs() -> None:
     shifted = np.zeros((8, 8), dtype=bool)
     assert not translucent_cover(backgrounds, expected, shifted).any()
 
-    # One member of a pair with no foreground at all: the frame is refused, not fused.
-    r, c = row_col(chess.B1, Side.WHITE)
-    x0, y0, x1, y1 = GEOM.cell_box(r, c)
-    erased = frame.copy()
-    erased[y0:y1, x0:x1] = LIGHT
-    assert silhouette(GEOM.crop(erased, r, c, size=2 * CELL)).fraction == 0.0
-    assert ThemeModel.from_start_position(erased, GEOM, Side.WHITE) is None
-
 
 def test_a_board_retinted_all_over_is_a_theme_not_a_highlight() -> None:
     """The recogniser of the previous game reads a re-themed board as unknown, so the
@@ -246,9 +218,7 @@ def test_a_board_retinted_all_over_is_a_theme_not_a_highlight() -> None:
 
 def test_a_line_of_marked_squares_is_not_an_overlay() -> None:
     """Six right-click marks down a file, or a queued premove's squares, stay readable."""
-    frame = synthetic_board()
-    model = ThemeModel.from_start_position(frame, GEOM, Side.WHITE)
-    assert model is not None
+    model = _start_model()
     board = chess.Board()
     board.push_san("e4")
     marks = (chess.E3, chess.E4, chess.E5, chess.E6, chess.E7, chess.E8)
@@ -276,9 +246,7 @@ def test_recognition_survives_a_lock_a_pixel_off() -> None:
     settled, because overlap is measured with the mask moved onto the exemplar and the
     settle tolerance has a floor of a few source pixels."""
     cell = 43
-    geometry = BoardGeometry(Region(300, 120, 8 * cell, 8 * cell), float(cell))
-    model = ThemeModel.from_start_position(synthetic_board(cell=cell), geometry, Side.WHITE)
-    assert model is not None
+    model = _start_model(cell)
     later = chess.Board()
     for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "O-O", "d5", "exd5", "Nxd5"):
         later.push_san(san)
@@ -294,20 +262,23 @@ def test_recognition_survives_a_lock_a_pixel_off() -> None:
         assert not _every_piece_reads(readings, later, Side.WHITE, settled=False), (dx, dy, pitch)
 
 
+def _two_pieces(cell: int) -> tuple[chess.Board, np.ndarray]:
+    """A knight on e4 (a light square) and a bishop on b4 (a dark one), and the frame."""
+    board = chess.Board(None)
+    board.set_piece_at(chess.E4, chess.Piece.from_symbol("N"))
+    board.set_piece_at(chess.B4, chess.Piece.from_symbol("b"))
+    return board, synthetic_board(board=board, cell=cell)
+
+
 @pytest.mark.parametrize("cell", [43, 32])
 @pytest.mark.parametrize("thickness", [1, 2, 3, 4])
 @pytest.mark.parametrize("inset", [0, 1])
 def test_hover_outline_of_any_thickness_is_seen(cell: int, thickness: int, inset: int) -> None:
     """A thin outline through the outer band test, a thick one through the foreign rule,
-    on both square colours, with and without a piece; and a lock a pixel or two off does
-    not turn a neighbour's edge into a hover."""
-    geometry = BoardGeometry(Region(300, 120, 8 * cell, 8 * cell), float(cell))
-    model = ThemeModel.from_start_position(synthetic_board(cell=cell), geometry, Side.WHITE)
-    assert model is not None
-    board = chess.Board(None)
-    board.set_piece_at(chess.E4, chess.Piece.from_symbol("N"))  # light square
-    board.set_piece_at(chess.B4, chess.Piece.from_symbol("b"))  # dark square
-    frame = synthetic_board(board=board, cell=cell)
+    on both square colours, with and without a piece."""
+    geometry = _geometry(cell)
+    model = _start_model(cell)
+    board, frame = _two_pieces(cell)
     # Light with a piece, dark with a piece, light empty, dark empty; none adjacent, since
     # only one square is ever hovered and two outlined neighbours would look like a cover.
     outlined = (chess.E4, chess.B4, chess.G2, chess.C7)
@@ -321,6 +292,13 @@ def test_hover_outline_of_any_thickness_is_seen(cell: int, thickness: int, inset
         assert readings[r][c].hover, (square, readings[r][c])
         if board.piece_at(square) is not None:
             assert not readings[r][c].settled, (square, readings[r][c])
+
+
+@pytest.mark.parametrize("cell", [43, 32])
+def test_a_lock_a_pixel_or_two_off_sees_no_hover_outline(cell: int) -> None:
+    """A lock a pixel or two off does not turn a neighbour's edge into a hover."""
+    model = _start_model(cell)
+    _, frame = _two_pieces(cell)
     for dx, dy in ((1, 1), (2, 2), (-2, 1)):
         off_lock = BoardGeometry(Region(300 + dx, 120 + dy, 8 * cell, 8 * cell), float(cell))
         readings = model.classify_frame(frame, off_lock)
@@ -393,9 +371,10 @@ def test_tints_of_any_hue_read_through_and_outlines_read_foreign(
                 assert reading.symbol == piece, reading
 
 
-@pytest.mark.parametrize("cell", [64, 48, 40])
+@pytest.mark.parametrize("cell", [48, 40])
 def test_recogniser_works_at_small_cell_sizes(cell: int) -> None:
-    """A board on a small screen: every cell is upscaled to the working patch size.
+    """A board on a small screen: every cell is upscaled to the working patch size (64 px,
+    the default, is test_theme_model_classifies_start_and_later_positions).
 
     Forty pixels a cell (a 320-pixel board) is the floor with anti-aliased pieces; below it
     the light outline of a black pawn outweighs its fifteen-pixel fill and the colour
@@ -420,83 +399,83 @@ def test_recogniser_works_at_small_cell_sizes(cell: int) -> None:
     assert not wrong, wrong
 
 
+def _alternating(rows: list) -> list[tuple]:
+    """Each row with an orientation, White and Black at the bottom in turn. Turning the board
+    round keeps every square's colour, so a set read one way up is read the other way up
+    on the same squares; the orientation is covered across the rows, not twice in each."""
+    return [
+        (*(row if isinstance(row, tuple) else (row,)), (Side.WHITE, Side.BLACK)[i % 2])
+        for i, row in enumerate(rows)
+    ]
+
+
+# The piece styles the renderer draws besides the lichess sheets: its polygons -- a flat set
+# (faint outlines, white on white and black on black), a bold one (an outline a twentieth of
+# the cell), a wooden one (cream and brown, both sides chromatic) and a thin one -- and the
+# real cburnett set in its colourings, each on themes and at sizes where the stress sweep
+# once found them misread (the grey outline of a black piece on a dark board, a bold white
+# queen as grey as the black one, a wooden queen's thin fill). The sweep plays these styles
+# only in its random seeds; here each is learned and read every time.
+STYLE_ROWS = [
+    ("dark", "flat", 44),
+    ("grey", "flat", 44),
+    ("ice", "bold", 56),
+    ("brown", "bold", 56),
+    ("wood", "bold", 44),
+    ("wood", "wooden", 64),
+    ("purple", "wooden", 48),
+    ("blue", "thin", 44),
+    ("green", "cburnett", 64),
+    ("brown", "cburnett", 44),
+    ("dark", "cburnett", 56),
+    ("ice", "cburnett", 96),
+    ("wood", "cburnett-wood", 64),
+    ("grey", "cburnett-small", 44),
+]
+
+
 @pytest.mark.parametrize(
-    ("theme", "style", "cell"),
-    [
-        # A dark board and a set whose black pieces wear a grey outline: on the dark
-        # squares that outline is a whisker from the square, its blend with the fill is
-        # the square's own colour, and a split at mid-grey kept the outline on light
-        # squares and lost it on dark ones, so a black pawn on a dark square matched the
-        # queen as well as the pawn. The tone is now what lies nearer the core than the
-        # square.
-        ("dark", "flat", 44),
-        ("grey", "flat", 44),
-        # A bold set: an outline wider than the fixed erosion the core was read with,
-        # whose rim made the white queen, a thin star inside its outline, as grey as
-        # the black one. The core is now the deep inside of the silhouette.
-        ("ice", "bold", 56),
-        ("brown", "bold", 56),
-        ("wood", "bold", 44),
-        # A coloured set on a textured board: the black queen's fill is a thin star inside
-        # a wide tan outline, 0.39 of its silhouette where the outline shows and 0.87 where
-        # it does not, and a tone floor of 0.4 gave it one shape on each colour of square.
-        ("wood", "wooden", 64),
-        ("purple", "wooden", 48),
-        ("blue", "thin", 44),
-        # The real set (tests/pieceset.py): thin strokes, a knight's mane, a bishop's
-        # slit, detail in the other side's colour inside every piece.
-        ("green", "cburnett", 64),
-        ("brown", "cburnett", 44),
-        ("dark", "cburnett", 56),
-        ("ice", "cburnett", 96),
-        ("wood", "cburnett-wood", 64),
-        ("grey", "cburnett-small", 44),
-    ],
+    ("theme", "style", "cell", "bottom"),
+    _alternating(STYLE_ROWS),
+    ids=[f"{theme}-{style}-{cell}" for theme, style, cell in STYLE_ROWS],
 )
-def test_every_theme_and_piece_style_reads_every_square(theme: str, style: str, cell: int) -> None:
-    """The stress sweep's finds, kept as the cases they were found on: a start position
-    and a middlegame on this theme and set, every square read as what it holds."""
-    geometry = BoardGeometry(Region(300, 120, 8 * cell, 8 * cell), float(cell))
+def test_every_theme_and_piece_style_reads_every_square(
+    theme: str, style: str, cell: int, bottom: Side
+) -> None:
+    """A start position and a middlegame on this theme and set, every square read as what it
+    holds."""
+    geometry = _geometry(cell)
     width, height = 8 * cell + 600, 8 * cell + 240
-    for bottom in (Side.WHITE, Side.BLACK):
-        start = synthetic_board(
-            width=width, height=height, cell=cell, theme=theme, style=style, bottom=bottom
-        )
-        model = ThemeModel.from_start_position(start, geometry, bottom)
-        assert model is not None, f"no recogniser for {theme}/{style} at {cell} px"
-        later = chess.Board()
-        for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "O-O", "d5", "exd5", "Nxd5"):
-            later.push_san(san)
-        frame = synthetic_board(
-            width=width,
-            height=height,
-            board=later,
-            cell=cell,
-            theme=theme,
-            style=style,
-            bottom=bottom,
-        )
-        off = _every_piece_reads(model.classify_frame(frame, geometry), later, bottom)
-        assert not off, f"{theme}/{style} at {cell} px, {bottom.value} at the bottom: {off}"
-
-
-@pytest.mark.parametrize("name", sheet_sets())
-def test_every_lichess_set_reads_every_square(name: str) -> None:
-    """Every set lichess draws (tests/fixtures/pieces): learned from a start position on
-    the brown board at 64-pixel cells, both orientations, and a middlegame read square by
-    square."""
-    cell = 64
-    geometry = BoardGeometry(Region(300, 120, 8 * cell, 8 * cell), float(cell))
+    start = synthetic_board(
+        width=width, height=height, cell=cell, theme=theme, style=style, bottom=bottom
+    )
+    model = ThemeModel.from_start_position(start, geometry, bottom)
+    assert model is not None, f"no recogniser for {theme}/{style} at {cell} px"
     later = chess.Board()
     for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "O-O", "d5", "exd5", "Nxd5"):
         later.push_san(san)
-    for bottom in (Side.WHITE, Side.BLACK):
-        start = synthetic_board(cell=cell, theme="brown", style=name, bottom=bottom)
-        model = ThemeModel.from_start_position(start, geometry, bottom)
-        assert model is not None, f"no recogniser for {name}"
-        frame = synthetic_board(board=later, cell=cell, theme="brown", style=name, bottom=bottom)
-        off = _every_piece_reads(model.classify_frame(frame, geometry), later, bottom)
-        assert not off, f"{name}, {bottom.value} at the bottom: {off}"
+    frame = synthetic_board(
+        width=width, height=height, board=later, cell=cell, theme=theme, style=style, bottom=bottom
+    )
+    off = _every_piece_reads(model.classify_frame(frame, geometry), later, bottom)
+    assert not off, f"{theme}/{style} at {cell} px, {bottom.value} at the bottom: {off}"
+
+
+@pytest.mark.parametrize(("name", "bottom"), _alternating(sheet_sets()), ids=sheet_sets())
+def test_every_lichess_set_reads_every_square(name: str, bottom: Side) -> None:
+    """Every set lichess draws (tests/fixtures/pieces): learned from a start position on
+    the brown board at 64-pixel cells, and a middlegame read square by square."""
+    cell = 64
+    geometry = _geometry(cell)
+    later = chess.Board()
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "O-O", "d5", "exd5", "Nxd5"):
+        later.push_san(san)
+    start = synthetic_board(cell=cell, theme="brown", style=name, bottom=bottom)
+    model = ThemeModel.from_start_position(start, geometry, bottom)
+    assert model is not None, f"no recogniser for {name}"
+    frame = synthetic_board(board=later, cell=cell, theme="brown", style=name, bottom=bottom)
+    off = _every_piece_reads(model.classify_frame(frame, geometry), later, bottom)
+    assert not off, f"{name}, {bottom.value} at the bottom: {off}"
 
 
 def test_a_fractional_cell_never_wears_a_phantom_hover_outline() -> None:

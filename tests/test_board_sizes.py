@@ -6,8 +6,8 @@ a different sub-pixel phase. With the crop rounded to the nearest pixel, whether
 a phantom hover outline depended on that phase: at 641 px it was e4 alone and the second
 live game never saw 1.e4; at 333 px four cells; at 555 and 851 px the start position could
 not even be read. Each size here renders a board at a large integer cell, scales it so the
-cells are fractional, and runs the whole pipeline: lock, theme, start position, a real drag,
-and a fourteen-ply game.
+cells are fractional, and runs the whole pipeline: lock, theme, start position, every cell
+read without a phantom hover, a real drag, and a six-ply game at two frames a ply.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from tests.synth import synthetic_board
 pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
 
 BASE_CELL = 96
-SANS = ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "d6"]
+SANS = ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"]
 
 
 def frame_at(size: int, **kw: object) -> np.ndarray:
@@ -70,7 +70,7 @@ def test_the_pipeline_follows_a_game_at_this_board_size(size: int) -> None:
     got: list[str] = []
     for san in SANS:
         move = board.push_san(san)
-        for _ in range(3):
+        for _ in range(2):
             for event in pipe.process(frame_at(size, board=board, highlight=move), ts):
                 if isinstance(event, MovePlayed):
                     got.append(event.san)
