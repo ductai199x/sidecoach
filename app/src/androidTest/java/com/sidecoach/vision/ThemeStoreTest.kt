@@ -15,9 +15,9 @@ import java.io.File
 /**
  * A learned set on disk: its landing crops, its palette and its start cells' embeddings (at
  * half precision, as the desktop keeps them) travel with it and read back as they were; a
- * file of another version -- the phone's first format, with no landing crops, or the one
- * before the palette was the desktop's -- is ignored and the set learned again, as the
- * desktop's `theme_cache._read` ignores one.
+ * file of another version -- the phone's first format, with no landing crops, the one before
+ * the palette was the desktop's, or the one with a single landing crop per kind -- is ignored
+ * and the set learned again, as the desktop's `theme_cache._read` ignores one.
  */
 @RunWith(AndroidJUnit4::class)
 class ThemeStoreTest {
@@ -36,7 +36,13 @@ class ThemeStoreTest {
             startFrame.release()
             assertNotNull("no model from the start frame", model)
             model!!
-            assertEquals(setOf("P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"), model.landingCrops.keys)
+            // A crop per kind and square colour; a king and a queen start on one colour, and
+            // that crop stands for both.
+            val symbols = listOf("P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k")
+            assertEquals(symbols.flatMap { listOf(it to true, it to false) }.toSet(), model.landingCrops.keys)
+            for (symbol in listOf("Q", "K", "q", "k")) {
+                assertTrue(model.landingCrops.getValue(symbol to true) === model.landingCrops.getValue(symbol to false))
+            }
             for (vector in model.exemplarVectors) {
                 for (v in vector) assertEquals("the vectors are held at half precision", halfPrecision(v), v, 0f)
             }
@@ -46,8 +52,8 @@ class ThemeStoreTest {
             val key = store.save(model)!!
             val back = store.candidates(model.lightBg, model.darkBg).single().second
             assertEquals(model.landingCrops.keys, back.landingCrops.keys)
-            for ((symbol, crop) in model.landingCrops) {
-                val read = back.landingCrops.getValue(symbol)
+            for ((kind, crop) in model.landingCrops) {
+                val read = back.landingCrops.getValue(kind)
                 assertEquals(crop.rows, read.rows)
                 assertArrayEquals(crop.pixels, read.pixels)
             }
@@ -65,7 +71,7 @@ class ThemeStoreTest {
             // The same file stamped with an older version: not read, so the set is learned again.
             val file = File(directory, "theme-$key.bin")
             val bytes = file.readBytes()
-            for (older in listOf(1, 2)) {
+            for (older in listOf(1, 2, 5)) {
                 bytes[0] = 0; bytes[1] = 0; bytes[2] = 0; bytes[3] = older.toByte()
                 file.writeBytes(bytes)
                 assertTrue(

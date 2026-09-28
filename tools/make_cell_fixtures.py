@@ -17,7 +17,8 @@ green or the brown board in turn, learned from its start position and read on
 For each model: the square colours, the set's fills and outlines, the palette (k-means,
 seeded: `cv2.setRNGSeed(SEED)` just before the start position is learned, as the Kotlin
 test seeds OpenCV's generator on its own thread), and each exemplar's brightness and tone
-area (all an exemplar keeps since desktop e0ea564) and landing crop. For each cell: every field of the
+area (all an exemplar keeps since desktop e0ea564) and its landing crops, on a light square
+and a dark one (desktop 1eab427). For each cell: every field of the
 `CellReading`, the silhouette's overlay share, and which side the fill under the true
 piece's mask says (`_fill_side`). And what the rest of the vision makes of the same boards:
 the theme cache's key for the square colours and the colours it samples from the dressed
@@ -228,7 +229,9 @@ def main() -> None:
                         e.symbol: [
                             r6(e.brightness),
                             int(e.tone.sum()),
-                            int(model.landing_crops[e.symbol].astype(np.int64).sum()),
+                            # The landing crops on a light square and a dark one (desktop 1eab427).
+                            int(model.landing_crops[(e.symbol, True)].astype(np.int64).sum()),
+                            int(model.landing_crops[(e.symbol, False)].astype(np.int64).sum()),
                         ]
                         for e in model.exemplars
                     },

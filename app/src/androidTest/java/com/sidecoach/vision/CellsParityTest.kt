@@ -126,9 +126,11 @@ class CellsParityTest {
                 failures.add("$name: no exemplar $symbol")
                 continue
             }
-            val crop = model.landingCrops[symbol]
-            val cropSum = crop?.pixels?.sumOf { (it.toInt() and 0xFF).toLong() } ?: -1L
-            val got = listOf(mine.brightness, mine.tone.count { it }.toDouble(), cropSum.toDouble())
+            val cropSums = listOf(true, false).map { light ->
+                val crop = model.landingCrops[symbol to light]
+                (crop?.pixels?.sumOf { (it.toInt() and 0xFF).toLong() } ?: -1L).toDouble()
+            }
+            val got = listOf(mine.brightness, mine.tone.count { it }.toDouble()) + cropSums
             for (f in got.indices) {
                 if (abs(got[f] - e.getDouble(f)) > EXACT) {
                     failures.add("$name exemplar $symbol ${EXEMPLAR_FIELDS[f]}: phone ${got[f]}, desktop ${e.getDouble(f)}")
@@ -255,7 +257,7 @@ class CellsParityTest {
         /** The phase correlation's shift, a share of the cell, on another OpenCV. */
         private const val PHASE = 0.002
 
-        private val EXEMPLAR_FIELDS = listOf("brightness", "tone", "crop sum")
+        private val EXEMPLAR_FIELDS = listOf("brightness", "tone", "light-square crop sum", "dark-square crop sum")
 
         @JvmStatic
         @BeforeClass

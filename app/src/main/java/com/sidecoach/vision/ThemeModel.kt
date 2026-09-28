@@ -66,10 +66,11 @@ class ThemeModel(
     val exemplarLabels: List<String>,
     val whiteAtBottom: Boolean,
     /**
-     * Each piece kind's start-position crop in grey, the reference the phase landing measures a
-     * cell's shift against (an instance off the labelled edge cells).
+     * Each piece kind's start-position crop in grey on each square colour, keyed by (symbol, on
+     * a light square): the reference the phase landing measures a cell's shift against (an
+     * instance off the labelled edge cells).
      */
-    val landingCrops: Map<String, LandingCrop> = emptyMap(),
+    val landingCrops: Map<Pair<String, Boolean>, LandingCrop> = emptyMap(),
     /** The cell size the landing crops were taken at, for [phaseShift] to meet a resize. */
     val landingPx: Double = 0.0,
 ) {
@@ -351,7 +352,7 @@ class ThemeModel(
         if (vector != null && sil.fraction >= Pieces.PIECE_MIN_FRACTION) {
             // Nothing is nothing, whatever tint it wears, and a hint dot is no evidence:
             // the embedding is asked only where a piece's worth of foreground is.
-            return fromEmbedding(sil, vector, highlighted, tint, cellPx, crop)
+            return fromEmbedding(sil, vector, highlighted, tint, cellPx, crop, Squares.isLight(row, col))
         }
         if (sil.fraction <= Pieces.EMPTY_MAX_FRACTION) {
             return reading(
@@ -366,7 +367,7 @@ class ThemeModel(
      * The cell named by the nearest of the start position's cells in embedding space. The
      * side is voted ([voteSide]); once it is, the kind may be named by either side's cells
      * ([kindScores]). Where the piece sits is the phase correlation against the piece's own
-     * start crop.
+     * start crop on a square of the cell's colour ([light]).
      */
     private fun fromEmbedding(
         sil: Sil,
@@ -375,6 +376,7 @@ class ThemeModel(
         tint: String?,
         cellPx: Double?,
         crop: Mat? = null,
+        light: Boolean = true,
     ): Pieces.CellReading {
         val sims = FloatArray(exemplarVectors.size)
         for (i in exemplarVectors.indices) {
@@ -416,7 +418,7 @@ class ThemeModel(
             )
         }
         val colour = Pieces.Side.of(label[0].isUpperCase())
-        val reference = landingCrops[label]
+        val reference = landingCrops[label to light]
         val offset = if (crop != null && reference != null) phaseShift(reference, crop, landingPx, cellPx ?: 0.0) else 0.0
         val settled = offset <= Pieces.settleTolerance(cellPx) && !sil.hover
         if (margin < CellEmbedder.MIN_MARGIN && runnerIndex != null && exemplarLabels[runnerIndex] == "empty") {
@@ -807,16 +809,24 @@ class ThemeModel(
                 if (distance(lightBg, darkBg) <= Pieces.COVER_TOLERANCE) {
                     return null  // the two square colours cannot be told apart
                 }
-                // The phase landing's references: one crop per piece kind, from a cell off the
-                // labelled left column and bottom row where it can be.
-                val landingCrops = LinkedHashMap<String, LandingCrop>()
+                // The phase landing's references: a crop per piece kind and square colour, from
+                // a cell off the labelled left column and bottom row where it can be. Against a
+                // crop on the other colour a knight at rest read 0.138 of a cell off, against
+                // one on its own 0.010 (the desktop's stress sweep, seed 138: the flat set on
+                // green, 2026-09-27). A king and a queen start on one colour: that crop stands
+                // for both.
+                val landingCrops = LinkedHashMap<Pair<String, Boolean>, LandingCrop>()
                 for (r in 0 until 8) {
                     for (c in 0 until 8) {
                         val symbol = labels[r * 8 + c]
                         if (symbol == "empty") continue
-                        if (symbol in landingCrops && (c == 0 || r == 7)) continue
-                        landingCrops[symbol] = LandingCrop.of(crops[r * 8 + c])
+                        val key = symbol to Squares.isLight(r, c)
+                        if (key in landingCrops && (c == 0 || r == 7)) continue
+                        landingCrops[key] = LandingCrop.of(crops[r * 8 + c])
                     }
+                }
+                for ((key, crop) in landingCrops.entries.toList()) {
+                    landingCrops.putIfAbsent(key.first to !key.second, crop)
                 }
                 // Embedded at one resolution, as every later read is (`Pieces.canonical`); the
                 // landing crops above keep the full detail.

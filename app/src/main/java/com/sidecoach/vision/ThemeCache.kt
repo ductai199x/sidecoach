@@ -30,11 +30,12 @@ object ThemeCache {
      * desktop holds them (the parity audit, 2026-09-26); 4: the embeddings are of the crop at
      * one resolution (`Pieces.canonical`, the desktop's 11); 5: the exemplars keep only what
      * the embedding reads, their tone and brightness, and the landing crops' cell size is
-     * always there (the desktop's 12). A file of any other version is ignored and the theme
-     * relearned, as the desktop ignores one (`theme_cache._read`). The desktop's numbering is
-     * its own file's.
+     * always there (the desktop's 12); 6: a landing crop per square colour, each written with
+     * its symbol and whether it is on a light square (the desktop's 13). A file of any other
+     * version is ignored and the theme relearned, as the desktop ignores one
+     * (`theme_cache._read`). The desktop's numbering is its own file's.
      */
-    const val CACHE_VERSION = 5
+    const val CACHE_VERSION = 6
 
     /** Square colours within this many levels share a fingerprint (tolerates lighting). */
     private const val QUANTUM = 8
@@ -278,8 +279,9 @@ class ThemeStore(private val directory: File) {
             writeBits(out, glyph)
         }
         out.writeInt(model.landingCrops.size)
-        for ((symbol, crop) in model.landingCrops) {
-            out.writeUTF(symbol)
+        for ((key, crop) in model.landingCrops) {
+            out.writeUTF(key.first)
+            out.writeBoolean(key.second)
             out.writeInt(crop.rows)
             out.writeInt(crop.cols)
             out.write(crop.pixels)
@@ -316,14 +318,15 @@ class ThemeStore(private val directory: File) {
             val rank = input.readInt()
             rankLabels[rank] = readBits(input)
         }
-        val landingCrops = LinkedHashMap<String, LandingCrop>()
+        val landingCrops = LinkedHashMap<Pair<String, Boolean>, LandingCrop>()
         repeat(input.readInt()) {
             val symbol = input.readUTF()
+            val light = input.readBoolean()
             val rows = input.readInt()
             val cols = input.readInt()
             val pixels = ByteArray(rows * cols)
             input.readFully(pixels)
-            landingCrops[symbol] = LandingCrop(rows, cols, pixels)
+            landingCrops[symbol to light] = LandingCrop(rows, cols, pixels)
         }
         val landingPx = input.readDouble()
         val model = ThemeModel(
