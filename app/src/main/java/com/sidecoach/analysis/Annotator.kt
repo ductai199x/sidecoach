@@ -37,8 +37,12 @@ interface Tagger {
     fun tagsForPosition(board: Board, pv: List<Move> = emptyList(), mateIn: Int? = null): List<MotifTag>
 }
 
-/** A whole measurement while the analyser is behind a fast game: capped, and no threats. */
-const val HURRY_S = 1.0
+/**
+ * A whole measurement while the analyser is behind a fast game, or was within BEHIND_S: at
+ * EARLY_DEPTH, its side searches no deeper -- a tenth of the full depth's time, and the side
+ * searches with it, where the full depth capped at a second went without them (the live panel,
+ * 2026-09-28: a hint asked in a fast stretch waited a third of a second for that second).
+ */
 const val BEHIND_S = 10.0
 
 /**
@@ -174,15 +178,15 @@ class GameAnnotator(
 
     /**
      * The position whole: the candidates, the threats, the decisive-moment and only-move
-     * calls. `hurry` caps the search at [HURRY_S] and skips the threats: the analyser is (or
-     * was just) behind a fast game, and the player is not waiting ten seconds for the
-     * candidates of a position they will have left. `onDepth`: handed the candidates of each
-     * depth the search finishes on its way.
+     * calls. `hurry` measures at [EARLY_DEPTH]: the analyser is (or was just) behind a fast
+     * game, and the player is not waiting seconds for the candidates of a position they will
+     * have left. `onDepth`: handed the candidates of each depth the search finishes on its way.
      */
     fun measure(board: Board, hurry: Boolean = false, onDepth: ((List<Line>) -> Unit)? = null): Measured {
         val key = board.fen()
         cached(key)?.let { return it }
-        val measured = measuredAt(board, depth, hurry = hurry, onDepth = onDepth)
+        val depth = if (hurry) minOf(EARLY_DEPTH, this.depth) else this.depth
+        val measured = measuredAt(board, depth, early = hurry, onDepth = onDepth)
         cache[key] = measured
         return measured
     }
@@ -197,7 +201,6 @@ class GameAnnotator(
     private fun measuredAt(
         board: Board,
         depth: Int,
-        hurry: Boolean = false,
         early: Boolean = false,
         onDepth: ((List<Line>) -> Unit)? = null,
     ): Measured {
@@ -205,12 +208,11 @@ class GameAnnotator(
             board,
             depth = depth,
             multipv = multipv,
-            timeS = if (hurry) HURRY_S else null,
             // The best line carried on to its point costs seconds; the full depth does it.
-            carryBest = !(hurry || early),
+            carryBest = !early,
             onDepth = onDepth,
         )
-        val searched = withThreats && !hurry
+        val searched = withThreats
         return Measured(
             fen = board.fen(),
             lines = lines,

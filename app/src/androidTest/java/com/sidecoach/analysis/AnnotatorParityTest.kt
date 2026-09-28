@@ -467,6 +467,20 @@ class AnnotatorParityTest {
     }
 
     /**
+     * `test_behind_a_fast_game_a_position_is_measured_at_the_early_depth` (desktop dfee797):
+     * behind a fast game the position is measured at EARLY_DEPTH, the threats searched with it
+     * -- where the full depth capped at a second went without them.
+     */
+    @Test
+    fun behindAFastGameAPositionIsMeasuredAtTheEarlyDepth() {
+        val fake = DepthEngine()
+        val annotator = GameAnnotator(fake, depth = 18)
+        val measured = annotator.measure(Board(SCHOLAR), hurry = true)
+        assertTrue("${measured.lines.map { it.depth }}", measured.lines.isNotEmpty() && measured.lines[0].depth == EARLY_DEPTH)
+        assertTrue("no threat search", calls(fake).size > 1)
+    }
+
+    /**
      * `test_a_position_looked_at_ahead_is_whole_at_once` (desktop 316026b): the position the
      * player faces measured ahead of the move: no early word, the whole one at once.
      */
@@ -682,6 +696,9 @@ class AnnotatorParityTest {
     }
 
     private companion object {
+        /** 1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6??, where 4. Qxf7# is mate (the desktop's `SCHOLAR`). */
+        const val SCHOLAR = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
+
         fun strings(array: JSONArray): List<String> = (0 until array.length()).map { array.getString(it) }
     }
 }
