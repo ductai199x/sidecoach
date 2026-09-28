@@ -33,7 +33,6 @@ cells of evidence, so they lower the scores a little and do not move the result.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from itertools import product
 from typing import NamedTuple
 
 import cv2
@@ -45,8 +44,12 @@ _SIGNS = np.array(
     [[1.0 if (r + c) % 2 == 0 else -1.0 for c in range(8)] for r in range(8)], dtype=np.float64
 )
 MIN_READABLE_CELLS = 24
+# The smallest cell looked for: a 192 px board. Below it a set's pieces are a few pixels.
+MIN_CELL_PX = 24
 # Boards whose width is within this fraction of the largest are one size to the ranking.
 SAME_SIZE = 0.95
+# How far the fitted pitch may be from the candidate's: a coarse scale step, a small resize.
+PITCH_SEARCH = 0.12
 
 # (light, dark, tolerance): the square colours a board is read with. `light` is the colour of
 # the cells the checker pattern puts a light square on, the top-left cell and its parity,
@@ -219,7 +222,7 @@ def _nms(
 def coarse_search(
     gray: np.ndarray,
     *,
-    min_cell: int = 24,
+    min_cell: int = MIN_CELL_PX,
     max_cell: int | None = None,
     work_cell: int = 8,
     scale_step: float = 1.06,
@@ -288,10 +291,10 @@ def _comb_strength(profile: np.ndarray, offset: float, pitch: float) -> float:
 
 
 def _comb_fit(
-    profile: np.ndarray, start: float, pitch: float, search: float, offset_cells: float
+    profile: np.ndarray, start: float, pitch: float, offset_cells: float
 ) -> tuple[float, float]:
     """The (offset, pitch) of the best comb over a gradient profile: the offset within
-    `offset_cells` cells of `start`, the pitch within `search` of `pitch`.
+    `offset_cells` cells of `start`, the pitch within PITCH_SEARCH of `pitch`.
 
     The teeth are the boundaries between the cells, which show whatever lies around the
     board. Its outer edges are not teeth: against the frame's edge or past it, or on a
@@ -333,7 +336,7 @@ def _comb_fit(
     reach = pitch * offset_cells
     o, p, _ = best_over(
         _blurred(profile, int(np.ceil(3.5 * step))),
-        np.arange(pitch * (1 - search), pitch * (1 + search), step),
+        np.arange(pitch * (1 - PITCH_SEARCH), pitch * (1 + PITCH_SEARCH), step),
         np.arange(start - reach, start + reach, 1.0),
     )
     span = max(1.0, 4.0 * step)
@@ -684,14 +687,15 @@ def _boundary_weight(
 
 
 # The placements a cell apart that `refine` weighs, the comb's own first so a tie keeps it.
-_PHASES = sorted(product((-1, 0, 1), repeat=2), key=lambda d: abs(d[0]) + abs(d[1]))
+_PHASES: list[tuple[int, int]] = sorted(
+    ((dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)), key=lambda d: abs(d[0]) + abs(d[1])
+)
 
 
 def refine(
     gray: np.ndarray,
     cand: BoardCandidate,
     *,
-    search: float = 0.12,
     offset_cells: float = 0.6,
     colours: Colours | None = None,
 ) -> Refinement:
@@ -738,8 +742,8 @@ def refine(
         weight = _boundary_weight(crop, (x_lo, y_lo), fitted, medians, read, band)
         profile_x = _gradient_profile(crop, 1, weight)
         profile_y = _gradient_profile(crop, 0, weight)
-        ox, px = _comb_fit(profile_x, fitted.region.x - x_lo, cell, search, offset_cells)
-        oy, py = _comb_fit(profile_y, fitted.region.y - y_lo, cell, search, offset_cells)
+        ox, px = _comb_fit(profile_x, fitted.region.x - x_lo, cell, offset_cells)
+        oy, py = _comb_fit(profile_y, fitted.region.y - y_lo, cell, offset_cells)
         pitch = (px + py) / 2.0
         origin = (x_lo + ox, y_lo + oy)
         side = int(round(8 * pitch))
@@ -801,7 +805,7 @@ def detect_boards(
     top_k: int = 3,
     min_fit: float = 0.85,
     min_contrast: float = 6.0,
-    min_cell: int = 24,
+    min_cell: int = MIN_CELL_PX,
     max_cell: int | None = None,
 ) -> list[BoardCandidate]:
     """Boards in a frame, largest first, each validated against the checker pattern."""
@@ -821,7 +825,7 @@ def detect_boards_gray(
     top_k: int = 3,
     min_fit: float = 0.85,
     min_contrast: float = 6.0,
-    min_cell: int = 24,
+    min_cell: int = MIN_CELL_PX,
     max_cell: int | None = None,
 ) -> list[BoardCandidate]:
     """Boards in a grey frame: largest first, then by fit, then the one with more pieces."""
@@ -833,20 +837,18 @@ def detect_boards_gray(
     refined = [refine(gray, cand).board for cand in coarse[: top_k * 4]]
     good = [cand for cand in refined if cand.fit >= min_fit and cand.contrast >= min_contrast]
     good = _nms(good, "fit")
-    # Size first, then fit, so a window that is part board and part background, which can
-    # pass the threshold on a palette read from itself, never outranks a clean board; the
-    # occupied count only decides between boards of one size and fit.
-    good.sort(key=lambda c: (c.region.w, c.fit, c.occupied), reverse=True)
-    if good:
-        # Among boards of about the size of the largest, the one that reads more of its cells
-        # as squares comes first: a window 4 px wider, part board and part background (24
-        # cells readable against the board's 64), outranked a board moved two cells away and
-        # the game was never read again (the parity audit's sweep, 2026-09-26).
-        peers = [c for c in good if c.region.w >= SAME_SIZE * good[0].region.w]
-        best = max(peers, key=lambda c: (c.readable, c.fit, c.occupied))
-        good.remove(best)
-        good.insert(0, best)
-    return good[:top_k]
+    # Size first; among boards of about the size of the largest (SAME_SIZE), the one that
+    # reads more of its cells as squares -- a window 4 px wider, part board and part
+    # background (24 cells readable against the board's 64), outranked a board moved two
+    # cells away and the game was never read again (the parity audit's sweep, 2026-09-26);
+    # then fit, and the occupied count between boards of one size and fit.
+    widest = max((c.region.w for c in good), default=0)
+
+    def rank(c: BoardCandidate) -> tuple[bool, int, int, float, int]:
+        peer = c.region.w >= SAME_SIZE * widest
+        return peer, c.readable if peer else 0, c.region.w, c.fit, c.occupied
+
+    return sorted(good, key=rank, reverse=True)[:top_k]
 
 
 def draw(frame_bgr: np.ndarray, candidates: list[BoardCandidate]) -> np.ndarray:

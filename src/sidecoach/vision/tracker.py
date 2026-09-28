@@ -22,6 +22,7 @@ import numpy as np
 
 from sidecoach.events import Region
 from sidecoach.vision.board_detect import (
+    MIN_CELL_PX,
     BoardCandidate,
     Colours,
     detect_boards_gray,
@@ -140,80 +141,17 @@ class BoardTracker:
 
     def update(self, frame_bgr: np.ndarray) -> BoardCandidate | None:
         gray = to_gray(frame_bgr)
-        if self.board is not None:
-            self._frames_since_refine += 1
-            candidate = self.board
-            fit, contrast = fit_score(gray, candidate.region, candidate.cell_px, self.colours)
-            # A frame that fails is re-fitted at once, the first of a run of failures, with
-            # the lock's own colours: a board that moved a fraction of a cell is likelier than
-            # a new theme, and read where the lock is, its squares' colours come out mixed.
-            # Read afresh there first, the mixed colours validated, the lock kept them, and
-            # the periodic re-fit read the board itself in them as nothing: the lock stayed an
-            # eighth of a cell off for good (the near-edge sweep, 2026-09-27).
-            failed_first = not self._passes(fit, contrast) and self.misses == 0
-            if self._frames_since_refine >= self.refine_every or failed_first:
-                self._frames_since_refine = 0
-                refit = refine(
-                    gray, candidate, offset_cells=self.refine_offset_cells, colours=self.colours
-                )
-                # A re-fit is adopted only when it validates on its own, and then only when
-                # this frame failed at the lock's geometry or the re-fit's boundary comb is
-                # clearly stronger than the comb at that geometry. The fit score cannot
-                # arbitrate: it is blind to shifts of up to a third of a cell, so a drifted
-                # geometry can still score 1.0 while the corrected one loses a cell to a
-                # badge. A re-fit that fails never costs the lock; the region and the fit it
-                # measured itself stand.
-                refined = refit.board
-                if self._passes(refined.fit, refined.contrast) and (
-                    not self._passes(fit, contrast)
-                    or (
-                        refit.strength > self.refit_gain * refit.reference
-                        and _edge_shift(candidate.region, refined.region) > self.refit_deadband_px
-                    )
-                ):
-                    if _edge_shift(candidate.region, refined.region) > self.refit_deadband_px:
-                        # The board is moving: it is re-fitted the next frame too, until a
-                        # re-fit finds it where the lock is. Fitted once mid-slide and left,
-                        # the lock trailed the board by a quarter of a cell once it stopped,
-                        # under what validation sees, until the next re-fit ten frames on,
-                        # and no move was read (the geometry sweep, 2026-09-27, seed 83).
-                        self._frames_since_refine = self.refine_every
-                    candidate = refined
-                    fit, contrast = refined.fit, refined.contrast
-            if not self._passes(fit, contrast) and self.colours is not None:
-                # The theme may have changed between games with the board in place: a
-                # fresh palette that validates, outer ring included, re-locks the colours.
-                # A dialog over most of the board fails this too, since its palette is the
-                # dialog, so it cannot rewrite the lock.
-                # A new theme keeps the board where it was, its light squares the lighter
-                # ones: a palette whose light and dark swap places is the board read a
-                # cell off (moved 0.8 of a cell up, the lock re-read its colours inverted
-                # and stayed where the board was: the parity audit's sweep, 2026-09-26).
-                fresh_fit, fresh_contrast = fit_score(gray, candidate.region, candidate.cell_px)
-                fresh = square_colours(gray, candidate.region, candidate.cell_px)
-                if (
-                    self._passes(fresh_fit, fresh_contrast)
-                    and fresh is not None
-                    and (fresh[0] > fresh[1]) == (self.colours[0] > self.colours[1])
-                ):
-                    self.colours = fresh
-                    fit, contrast = fresh_fit, fresh_contrast
-                    self._readable = 0  # a new palette: what it reads is counted afresh
-            readable = (
-                readable_cells(gray, candidate.region, candidate.cell_px, self.colours)
-                if self.colours is not None and self._passes(fit, contrast)
-                else 0
-            )
-            if self._passes(fit, contrast) and self._lost_cells(readable):
-                moved = self._probe(gray, frame_bgr, candidate, readable)
-                if moved is not None:
-                    return moved
-            if self._passes(fit, contrast):
-                self.misses = 0
-                self._readable = max(self._readable, readable)
-                self.board = replace(candidate, fit=fit, contrast=contrast)
-                self.last_cell_px = self.board.cell_px
-                return self.board
+        if self.board is None:
+            # Without a board on screen, searching every frame would stall capture. The
+            # search near the last cell size is cheap and runs every few frames, so a
+            # window that comes back, or was covered for a moment, re-locks within a few
+            # frames; the full multi-scale search, which costs over a second at 1440p,
+            # backs off for longer.
+            full = self._full.ready()
+            near = self._near.ready() and self.last_cell_px is not None
+            return self._search(gray, frame_bgr, full) if full or near else None
+        candidate, fit, contrast = self._check(gray)
+        if not self._passes(fit, contrast):
             self.misses += 1
             if self.misses < self.max_misses:
                 # Held, not verified: the geometry is the last good one, the fit is this
@@ -222,18 +160,81 @@ class BoardTracker:
                 return self.board
             self.board = None
             self.colours = None
-        else:
-            # Without a board on screen, searching every frame would stall capture. The
-            # search near the last cell size is cheap and runs every few frames, so a
-            # window that comes back, or was covered for a moment, re-locks within a few
-            # frames; the full multi-scale search, which costs over a second at 1440p,
-            # backs off for longer.
-            full = self._full.ready()
-            near = self._near.ready() and self.last_cell_px is not None
-            if not full and not near:
-                return None
-            return self._search(gray, frame_bgr, full)
-        return self._search(gray, frame_bgr, True)
+            return self._search(gray, frame_bgr, True)
+        readable = (
+            readable_cells(gray, candidate.region, candidate.cell_px, self.colours)
+            if self.colours is not None
+            else 0
+        )
+        if self._lost_cells(readable):
+            moved = self._probe(gray, frame_bgr, candidate, readable)
+            if moved is not None:
+                return moved
+        self.misses = 0
+        self._readable = max(self._readable, readable)
+        self.board = replace(candidate, fit=fit, contrast=contrast)
+        self.last_cell_px = self.board.cell_px
+        return self.board
+
+    def _check(self, gray: np.ndarray) -> tuple[BoardCandidate, float, float]:
+        """The lock on this frame: its geometry, fit and contrast. Re-fitted when due, and
+        at once on the first frame it fails; still failing, its palette is read afresh."""
+        assert self.board is not None
+        self._frames_since_refine += 1
+        candidate = self.board
+        fit, contrast = fit_score(gray, candidate.region, candidate.cell_px, self.colours)
+        # A frame that fails is re-fitted at once, the first of a run of failures, with the
+        # lock's own colours: a board that moved a fraction of a cell is likelier than a new
+        # theme, and read where the lock is, its squares' colours come out mixed. Read afresh
+        # there first, the mixed colours validated, the lock kept them, and the periodic
+        # re-fit read the board itself in them as nothing: the lock stayed an eighth of a
+        # cell off for good (the near-edge sweep, 2026-09-27).
+        failed_first = not self._passes(fit, contrast) and self.misses == 0
+        if self._frames_since_refine >= self.refine_every or failed_first:
+            self._frames_since_refine = 0
+            refit = refine(
+                gray, candidate, offset_cells=self.refine_offset_cells, colours=self.colours
+            )
+            # A re-fit is adopted only when it validates on its own, and then only when this
+            # frame failed at the lock's geometry or the re-fit moved it and its boundary comb
+            # is clearly stronger than the comb there. The fit score cannot arbitrate: it is
+            # blind to shifts of up to a third of a cell, so a drifted geometry can still
+            # score 1.0 while the corrected one loses a cell to a badge. A re-fit that fails
+            # never costs the lock; the region and the fit it measured itself stand.
+            refined = refit.board
+            moved = _edge_shift(candidate.region, refined.region) > self.refit_deadband_px
+            if self._passes(refined.fit, refined.contrast) and (
+                not self._passes(fit, contrast)
+                or (moved and refit.strength > self.refit_gain * refit.reference)
+            ):
+                if moved:
+                    # The board is moving: it is re-fitted the next frame too, until a
+                    # re-fit finds it where the lock is. Fitted once mid-slide and left, the
+                    # lock trailed the board by a quarter of a cell once it stopped, under
+                    # what validation sees, until the next re-fit ten frames on, and no
+                    # move was read (the geometry sweep, 2026-09-27, seed 83).
+                    self._frames_since_refine = self.refine_every
+                candidate = refined
+                fit, contrast = refined.fit, refined.contrast
+        if not self._passes(fit, contrast) and self.colours is not None:
+            # The theme may have changed between games with the board in place: a fresh
+            # palette that validates, outer ring included, re-locks the colours. A dialog
+            # over most of the board fails this too, since its palette is the dialog, so it
+            # cannot rewrite the lock. A new theme keeps the board where it was, its light
+            # squares the lighter ones: a palette whose light and dark swap places is the
+            # board read a cell off (moved 0.8 of a cell up, the lock re-read its colours
+            # inverted and stayed where the board was: the parity audit's sweep, 2026-09-26).
+            fresh_fit, fresh_contrast = fit_score(gray, candidate.region, candidate.cell_px)
+            fresh = square_colours(gray, candidate.region, candidate.cell_px)
+            if (
+                self._passes(fresh_fit, fresh_contrast)
+                and fresh is not None
+                and (fresh[0] > fresh[1]) == (self.colours[0] > self.colours[1])
+            ):
+                self.colours = fresh
+                fit, contrast = fresh_fit, fresh_contrast
+                self._readable = 0  # a new palette: what it reads is counted afresh
+        return candidate, fit, contrast
 
     def _search(self, gray: np.ndarray, frame_bgr: np.ndarray, full: bool) -> BoardCandidate | None:
         """Detection with the lock gone; a board found is locked, and a miss backs off."""
@@ -327,7 +328,7 @@ class BoardTracker:
                 gray,
                 min_fit=self.min_fit,
                 min_contrast=self.min_contrast,
-                min_cell=max(8, int(self.last_cell_px * 0.8)),
+                min_cell=max(MIN_CELL_PX, int(self.last_cell_px * 0.8)),
                 max_cell=int(self.last_cell_px * 1.25) + 1,
             )
             if near:
