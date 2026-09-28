@@ -39,9 +39,10 @@ from sidecoach.analysis.threats import AIM_DEPTH, aim_lines, threat_moves
 from sidecoach.analysis.traps import TRAP_DEPTH, trap_lines
 from sidecoach.events import Analysis, Event, Line, MotifTag, MoveAssessment
 
-# A whole measurement while the analyser is behind a fast game, or was within
-# BEHIND_S: capped at HURRY_S and without the threat search (each could take max_seconds).
-HURRY_S = 1.0
+# A whole measurement while the analyser is behind a fast game, or was within BEHIND_S: at
+# EARLY_DEPTH, its side searches no deeper -- a tenth of the full depth's time, and the side
+# searches with it, where the full depth capped at a second went without them (the live panel,
+# 2026-09-28: a hint asked in a fast stretch waited a third of a second for that second).
 BEHIND_S = 10.0
 # While no move waits -- the player thinking, or the opponent -- the engine looks ahead:
 # the positions after the LOOK_AHEAD best moves from the position on the board, each then
@@ -192,15 +193,16 @@ class GameAnnotator:
         on_depth: Callable[[list[Line]], None] | None = None,
     ) -> Measured:
         """The position whole: the candidates, the threats, the decisive-moment and
-        only-move calls. `hurry` caps the search at HURRY_S and skips the threats: the
-        analyser is (or was just) behind a fast game, and the player is not waiting ten
-        seconds for the candidates of a position they will have left. `on_depth`: handed the
+        only-move calls. `hurry` measures at EARLY_DEPTH: the analyser is (or was just)
+        behind a fast game, and the player is not waiting seconds for the candidates of a
+        position they will have left. `on_depth`: handed the
         candidates of each depth the search finishes on its way."""
         key = board.fen()
         cached = self._cached(key)
         if cached is not None:
             return cached
-        measured = self._measured(board, self.depth, hurry=hurry, on_depth=on_depth)
+        depth = min(EARLY_DEPTH, self.depth) if hurry else self.depth
+        measured = self._measured(board, depth, early=hurry, on_depth=on_depth)
         self._cache[key] = measured
         return measured
 
@@ -214,7 +216,6 @@ class GameAnnotator:
         board: chess.Board,
         depth: int,
         *,
-        hurry: bool = False,
         early: bool = False,
         on_depth: Callable[[list[Line]], None] | None = None,
     ) -> Measured:
@@ -222,12 +223,11 @@ class GameAnnotator:
             board,
             depth=depth,
             multipv=self.multipv,
-            time_s=HURRY_S if hurry else None,
             # The best line carried on to its point costs seconds; the full depth does it.
-            carry_best=not (hurry or early),
+            carry_best=not early,
             on_depth=on_depth,
         )
-        searched = self.with_threats and not hurry
+        searched = self.with_threats
         return Measured(
             fen=board.fen(),
             lines=lines,

@@ -695,6 +695,18 @@ def test_the_position_the_player_faces_is_told_early_and_then_whole() -> None:
     assert early.fen == full.fen
 
 
+def test_behind_a_fast_game_a_position_is_measured_at_the_early_depth() -> None:
+    """Behind a fast game the position is measured at EARLY_DEPTH, the threats searched with
+    it -- where the full depth capped at a second went without them."""
+    from sidecoach.analysis.annotator import EARLY_DEPTH
+
+    fake = _DepthEngine({})
+    annotator = GameAnnotator(engine=fake, depth=18)
+    measured = annotator.measure(chess.Board(SCHOLAR), hurry=True)
+    assert measured.lines and measured.lines[0].depth == EARLY_DEPTH
+    assert len(fake.calls) > 1, "no threat search"
+
+
 def test_a_position_looked_at_ahead_is_whole_at_once() -> None:
     """The position the player faces measured ahead of the move: no early word, the whole
     one at once."""
