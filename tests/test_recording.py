@@ -15,9 +15,6 @@ from sidecoach.replay.recording import (
     shrink_recording,
 )
 
-pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
-
-
 LOGGER = "sidecoach.replay.recording"
 
 
@@ -114,18 +111,16 @@ def test_change_region_and_keyframe_gating(tmp_path: Path) -> None:
 def test_wrong_frame_size_rejected(tmp_path: Path) -> None:
     recorder = Recorder(tmp_path / "rec", monitor=0, region=Region(0, 0, 64, 48), fps=10)
     try:
-        import pytest
-
         with pytest.raises(ValueError):
             recorder.write(_frame(1, (10, 10, 3)), ts=0.0)
     finally:
         recorder.close()
 
 
+@pytest.mark.vision  # the synthetic vision pipeline reads the shrunk game
 def test_shrink_keeps_the_ticks_and_the_game_at_half_scale(tmp_path: Path) -> None:
     import chess
 
-    from sidecoach.replay.recording import shrink_recording
     from sidecoach.state.pipeline import GamePipeline
     from tests.synth import synthetic_board
 

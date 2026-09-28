@@ -55,18 +55,26 @@ left where they are by decision (2026-09-19).
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import chess
 import numpy as np
 import pytest
 
-from sidecoach.events import GameEnded, GameStarted, MovePlayed, Side
+from sidecoach.events import GameEnded, GameStarted, MovePlayed, Region, Side
 from sidecoach.state.pipeline import GamePipeline
+from sidecoach.vision.pieces import ThemeModel
 from sidecoach.vision.squares import BoardGeometry, row_col, square_at
 from sidecoach.vision.theme_cache import ThemeCache
-from tests.synth import ARROWS, HIGHLIGHTS, PIECE_STYLES, THEMES, synthetic_board
+from tests.synth import (
+    ARROWS,
+    HIGHLIGHTS,
+    LOW_CONTRAST_GREY,
+    PIECE_STYLES,
+    THEMES,
+    synthetic_board,
+)
 
 pytestmark = pytest.mark.vision
 
@@ -167,6 +175,8 @@ class Played:
     played: list[str]
     same_board: bool  # the pipeline's board is the game's at the end
     cold: str | None  # the placement a second pipeline read cold from the cache, or None
+    starts: int  # the games the pipeline began
+    bottom: Side | None  # the side it read at the bottom from the start position
 
 
 def play(sc: Scenario, cache_dir: Path | None = None) -> Played:
@@ -176,6 +186,7 @@ def play(sc: Scenario, cache_dir: Path | None = None) -> Played:
     ts = 0.0
     got: list[str] = []
     ended = 0
+    starts = 0
 
     def frame_for(**kw: object) -> np.ndarray:
         return synthetic_board(
@@ -194,17 +205,20 @@ def play(sc: Scenario, cache_dir: Path | None = None) -> Played:
         )
 
     def show(frames: int, **kw: object) -> None:
-        nonlocal ts, ended
+        nonlocal ts, ended, starts
         for _ in range(frames):
             for event in pipe.process(frame_for(**kw), ts):
                 if isinstance(event, MovePlayed):
                     got.append(event.san)
                 elif isinstance(event, GameEnded):
                     ended += 1
+                elif isinstance(event, GameStarted):
+                    starts += 1
             ts += 0.1
 
     show(3)
     assert pipe.reconciler is not None and pipe.reconciler.started
+    bottom = pipe.bottom
     user_colour = chess.WHITE if sc.bottom == Side.WHITE else chess.BLACK
     for san, decoration in zip(sc.sans, sc.decorations, strict=True):
         move = board.parse_san(san)
@@ -265,7 +279,7 @@ def play(sc: Scenario, cache_dir: Path | None = None) -> Played:
             cold = other.reconciler.board.board_fen()
             if other.bottom != sc.bottom:
                 cold = f"{cold} (read {other.bottom} at the bottom)"
-    return Played(got, list(sc.sans), same_board, cold)
+    return Played(got, list(sc.sans), same_board, cold, starts, bottom)
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
@@ -282,13 +296,17 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 
 
 def test_a_random_game_is_followed_to_its_position(seed: int, tmp_path: Path) -> None:
-    """Every move committed, nothing invented, the board the game's at the end, and the
-    final position read cold from the cached theme. Two moves that commute (b4 and g4
-    across an opponent's reply) may commit in either order when a drag or an arrow held
-    the frames in between: the pixels do not say which came first, and highlight colours
-    are, by design, never consulted."""
+    """The game begun once, with the side at the bottom read from its start position
+    (test_a_random_game_starts_once); every move committed, nothing invented, the board
+    the game's at the end, and the final position read cold from the cached theme. Two
+    moves that commute (b4 and g4 across an opponent's reply) may commit in either order
+    when a drag or an arrow held the frames in between: the pixels do not say which came
+    first, and highlight colours are, by design, never consulted."""
     sc = scenario(seed)
     result = play(sc, tmp_path)
+    assert result.starts == 1 and result.bottom == sc.bottom, (
+        f"{sc.where}: {result.starts} games begun, {result.bottom} read at the bottom"
+    )
     assert result.same_board and sorted(result.got) == sorted(result.played), (
         f"{sc.where}: committed {result.got}, played {result.played}; decorations {sc.decorations}"
     )
@@ -301,41 +319,32 @@ def test_a_random_game_is_followed_to_its_position(seed: int, tmp_path: Path) ->
     )
 
 
-def test_a_random_game_starts_once(seed: int) -> None:
-    sc = scenario(seed)
-    pipe = GamePipeline()
-    starts = 0
-    for i in range(4):
-        frame = synthetic_board(
-            width=8 * sc.cell + 600,
-            height=8 * sc.cell + 240,
-            theme=sc.theme,
-            cell=sc.cell,
-            bottom=sc.bottom,
-            coordinates=sc.coordinates,
-            style=sc.style,
-        )
-        starts += sum(1 for e in pipe.process(frame, 0.1 * i) if isinstance(e, GameStarted))
-    assert starts == 1 and pipe.bottom == sc.bottom, sc.where
-
-
-def test_a_theme_that_hides_the_black_outline_is_still_followed() -> None:
+def test_a_theme_that_hides_the_black_outline_is_still_read() -> None:
     """Light squares within tolerance of the black pieces' outline (synth.LOW_CONTRAST_GREY)
     hide that outline on light squares, so a black piece had two silhouettes and the
-    exemplars matched one. Matching on the piece's own tone lifted that: this was the
-    sweep's first find, and the case is kept as its regression."""
-    from tests import synth
-
-    kept = synth.THEMES["grey"]
-    synth.THEMES["grey"] = synth.LOW_CONTRAST_GREY
-    try:
-        sc = replace(scenario(5), theme="grey", style="classic", cell=64)
-        result = play(sc)
-    finally:
-        synth.THEMES["grey"] = kept
-    assert result.same_board and sorted(result.got) == sorted(result.played), (
-        f"committed {result.got}, played {result.played}"
-    )
+    exemplars matched one, and a game on that theme lost its moves. Matching on the piece's
+    own tone lifted that: this was the sweep's first find, and the case is kept as its
+    regression -- every square of a start position and a middlegame read, either way up,
+    where a whole game once was played through."""
+    light, dark = LOW_CONTRAST_GREY
+    geometry = BoardGeometry(Region(300, 120, 512, 512), 64.0)
+    later = chess.Board()
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "O-O", "d5", "exd5", "Nxd5"):
+        later.push_san(san)
+    for bottom in (Side.WHITE, Side.BLACK):
+        start = synthetic_board(light=light, dark=dark, bottom=bottom)
+        model = ThemeModel.from_start_position(start, geometry, bottom)
+        assert model is not None, f"no recogniser, {bottom.value} at the bottom"
+        for board in (chess.Board(), later):
+            frame = synthetic_board(board=board, light=light, dark=dark, bottom=bottom)
+            readings = model.classify_frame(frame, geometry)
+            wrong = []
+            for r in range(8):
+                for c in range(8):
+                    piece = board.piece_at(square_at(r, c, bottom))
+                    if readings[r][c].symbol != (piece.symbol() if piece else None):
+                        wrong.append(chess.square_name(square_at(r, c, bottom)))
+            assert not wrong, f"{bottom.value} at the bottom: {wrong} misread"
 
 
 # ---- how games end on screen ------------------------------------------------------------

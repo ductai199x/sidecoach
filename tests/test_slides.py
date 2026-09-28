@@ -43,6 +43,18 @@ def _frame(board: chess.Board, bottom: chess.Color, **kw: object):  # noqa: ANN2
     )
 
 
+# The phone's frame period.
+PERIOD = 0.104
+# When the solver's first move starts and how long the solver thinks after each reply: three
+# and two seconds, less whole frame periods, so each slide is caught at exactly the points
+# of its path it was when three quarters of the frames were a still board (at other points
+# the first case no longer needs `in_flight`); and how long the board is watched after the
+# last move, enough for it to settle.
+FIRST_MOVE_S = 3.0 - 14 * PERIOD
+THINK_S = 2.0 - 13 * PERIOD
+TAIL_S = 1.0
+
+
 def _played(
     start: str, setup: str, moves: list[str], slide: float, power: float, phase: float
 ) -> list[str]:
@@ -52,11 +64,11 @@ def _played(
     board = chess.Board(start)
     solver = not board.turn
     events = [(0.0, chess.Move.from_uci(setup))]
-    t = 3.0
+    t = FIRST_MOVE_S
     for i, uci in enumerate(moves):
         events.append((t, chess.Move.from_uci(uci)))
-        t += slide if i % 2 == 0 else 2.0
-    end = t + 1.5
+        t += slide if i % 2 == 0 else THINK_S
+    end = t + TAIL_S
 
     def scene(time: float):  # noqa: ANN202
         b = board.copy()
@@ -84,13 +96,12 @@ def _played(
 
     pipe = GamePipeline()
     ts = 0.0
-    period = 0.104
     for _ in range(3):
-        ts += period
+        ts += PERIOD
         pipe.process(_frame(chess.Board(), chess.WHITE), ts, frame_id=int(ts * 1000))
     k = 0
-    while (time := phase + k * period) <= end:
-        ts += period
+    while (time := phase + k * PERIOD) <= end:
+        ts += PERIOD
         pipe.process(scene(time), ts, frame_id=int(ts * 1000))
         k += 1
     assert pipe.reconciler is not None
