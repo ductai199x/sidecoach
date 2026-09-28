@@ -671,17 +671,19 @@ class GamePipeline(
     }
 
     /**
-     * The coordinate labels learned from a board whose side the person told, when they did
-     * not read that side themselves -- learned where a start position was seen through a lock
-     * off its board, or not learned at all -- and the set saved with them, so the next board
-     * of the set reads its own side. Only a side told for this board teaches: a Flip left
-     * standing from the last puzzle would teach the next one, shown from the other side,
-     * upside down, and every read after it.
+     * The coordinate labels learned from a board whose side the person told, when they say
+     * no side there -- learned where a start position was seen through a lock off its board,
+     * or not learned at all -- and the set saved with them, so the next board of the set
+     * reads its own side. Only a side told for this board teaches: a Flip left standing from
+     * the last puzzle would teach the next one, shown from the other side, upside down, and
+     * every read after it. Labels that read a side are kept, the Flip's or the other: learned
+     * as they read their start back, they are right, and a Flip by mistake would have taught
+     * every board of the set upside down.
      */
     private fun learnLabels(frame: Mat, geometry: BoardGeometry) {
         val current = model ?: return
         val side = bottom ?: return
-        if (Coordinates.readBottomSide(frame, geometry, current.rankLabels) == side) return
+        if (Coordinates.readBottomSide(frame, geometry, current.rankLabels) != null) return
         val labels = Coordinates.learnRankLabels(frame, geometry, side)
         if (labels.isEmpty()) return
         current.rankLabels = labels
