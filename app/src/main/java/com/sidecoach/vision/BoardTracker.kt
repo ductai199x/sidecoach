@@ -12,7 +12,8 @@ package com.sidecoach.vision
  * consecutive failures the lock is dropped and detection runs again. What validation cannot
  * see is sub-cell drift and a small resize, so every [refineEvery] frames the boundaries are
  * re-fitted with a wide window, and the re-fit is adopted when it validates on its own and
- * its boundary comb is clearly stronger than the one at the lock's geometry.
+ * its boundary comb is clearly stronger than the one at the lock's geometry. A frame that
+ * fails validation is re-fitted at once, before anything else is tried.
  */
 class BoardTracker(
     private val minFit: Double = 0.85,
@@ -148,6 +149,47 @@ class BoardTracker(
             framesSinceRefine++
             var candidate = held
             var (fit, contrast) = fitScore(gray, candidate.region, candidate.cellPx, colours)
+            // A frame that fails is re-fitted at once, the first of a run of failures, with the
+            // lock's own colours: a board that moved a fraction of a cell is likelier than a
+            // new theme, and read where the lock is, its squares' colours come out mixed. Read
+            // afresh there first, the mixed colours validated, the lock kept them, and the
+            // periodic re-fit read the board itself in them as nothing: the lock stayed an
+            // eighth of a cell off for good (the desktop's near-edge sweep, 2026-09-27).
+            val failedFirst = !passes(fit, contrast) && misses == 0
+            if (framesSinceRefine >= refineEvery || failedFirst) {
+                framesSinceRefine = 0
+                val refitColours = colours
+                val atLock = candidate
+                val refit = once(gray, listOf("refine", atLock, refineOffsetCells, refitColours)) {
+                    BoardRefine.refine(gray, atLock, offsetCells = refineOffsetCells, colours = refitColours)
+                }
+                // A re-fit is adopted only when it validates on its own, and then only when
+                // this frame failed at the lock's geometry or the re-fit's comb is clearly
+                // stronger. The fit score cannot arbitrate: it is blind to shifts of up to
+                // a third of a cell. A re-fit that fails never costs the lock.
+                val refined = refit.board
+                if (passes(refined.fit, refined.contrast) &&
+                    (
+                        !passes(fit, contrast) ||
+                            (
+                                refit.strength > refitGain * refit.reference &&
+                                    edgeShift(atLock.region, refined.region) > refitDeadbandPx
+                                )
+                        )
+                ) {
+                    if (edgeShift(atLock.region, refined.region) > refitDeadbandPx) {
+                        // The board is moving: it is re-fitted the next frame too, until a
+                        // re-fit finds it where the lock is. Fitted once mid-slide and left,
+                        // the lock trailed the board by a quarter of a cell once it stopped,
+                        // under what validation sees, until the next re-fit ten frames on, and
+                        // no move was read (the desktop's geometry sweep, 2026-09-27, seed 83).
+                        framesSinceRefine = refineEvery
+                    }
+                    candidate = refined
+                    fit = refined.fit
+                    contrast = refined.contrast
+                }
+            }
             val lockColours = colours
             if (!passes(fit, contrast) && lockColours != null) {
                 // The theme may have changed between games with the board in place: a
@@ -168,32 +210,6 @@ class BoardTracker(
                     fit = freshFit
                     contrast = freshContrast
                     readable = 0 // a new palette: what it reads is counted afresh
-                }
-            }
-            if (framesSinceRefine >= refineEvery) {
-                framesSinceRefine = 0
-                val refitColours = colours
-                val atLock = candidate
-                val refit = once(gray, listOf("refine", atLock, refineOffsetCells, refitColours)) {
-                    BoardRefine.refine(gray, atLock, offsetCells = refineOffsetCells, colours = refitColours)
-                }
-                // A re-fit is adopted only when it validates on its own, and then only when
-                // this frame failed at the lock's geometry or the re-fit's comb is clearly
-                // stronger. The fit score cannot arbitrate: it is blind to shifts of up to
-                // a third of a cell.
-                val refined = refit.board
-                if (passes(refined.fit, refined.contrast) &&
-                    (
-                        !passes(fit, contrast) ||
-                            (
-                                refit.strength > refitGain * refit.reference &&
-                                    edgeShift(atLock.region, refined.region) > refitDeadbandPx
-                                )
-                        )
-                ) {
-                    candidate = refined
-                    fit = refined.fit
-                    contrast = refined.contrast
                 }
             }
             val now = colours

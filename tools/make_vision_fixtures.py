@@ -28,9 +28,11 @@ odd. This records, compactly, one table per part:
   the board flattened: boards flush with the right or bottom edge found, a candidate a
   fraction of a cell off refused though its outer row is cut, boards flush with an edge or a
   cell from it followed through a nudge, a board resized to near the bottom locked where it
-  is, a board gone and back at another size found within `redetect_first` frames, and a
-  tracker asking for 0.95 searching on the first frame and the sixth. Each passes the
-  desktop's own assertions here, or the generator stops.
+  is, a board gone and back at another size found within the full search's first wait, and a
+  tracker asking for 0.95 searching on the first frame and the sixth; and desktop dcbbeaf's: a
+  wood board near the bottom nudged an eighth of a cell, re-fitted before its colours are read
+  again, and a game board moved past a re-fit's reach with an empty board beside it. Each
+  passes the desktop's own assertions here, or the generator stops.
 
     cd D:/chess-coaching-companion
     uv run --no-sync python <worktree>/tools/make_vision_fixtures.py
@@ -339,8 +341,10 @@ def board_cases() -> dict:
     runs = []
     for what, settings, sequence in (
         ("locks once and holds", {}, ["board"] * 6),
-        ("moved half a cell: re-detected", {"max_misses": 2}, ["board"] + ["half-cell-on"] * 4),
-        ("slid a whole cell: the re-fit moves the lock", {"refine_every": 3, "max_misses": 3}, ["board"] + ["cell-on"] * 3),
+        # Desktop dcbbeaf: the frame that fails at the lock is re-fitted at once, so a half-cell
+        # move and a whole-cell slide are followed on that frame, without a detection.
+        ("moved half a cell: followed without a detection", {"max_misses": 2}, ["board"] + ["half-cell-on"] * 4),
+        ("slid a whole cell: re-fitted on the frame it fails", {"refine_every": 10, "max_misses": 3}, ["board"] + ["cell-on"] * 3),
         ("nudged under a third of a cell: the re-fit", {}, ["board"] + ["nudged"] * 12),
         ("resized in place", {}, ["board"] + ["resized"] * 4),
         ("the dialog over it: held, then clear", {}, ["board", "dialog", "dialog", "board", "board"]),
@@ -348,6 +352,10 @@ def board_cases() -> dict:
         ("nothing, then a board", {}, ["noise"] * 4 + ["board"] * 2),
     ):
         runs.append(track(what, settings, sequence, frames, files))
+    for run, x in ((runs[1], 121), (runs[2], 143)):
+        followed = run["states"][1]
+        if not (followed[1] and followed[2] == 1 and followed[3] and abs(followed[3][0] - x) <= 2):
+            raise SystemExit(f"{run['what']}: the desktop's tracker {run['states'][:2]}")
 
     # The board moved as the desktop's scenario test moves it: the cells the lock read at home
     # and at the new place, in the lock's colours, and the tracker following it -- to within
@@ -509,6 +517,38 @@ def edge_cases() -> dict:
             raise SystemExit(f"nudge {cell} ({ax}, {ay}): the desktop's tracker ended at {last}")
         runs.append(run)
 
+    # test_tracker (desktop dcbbeaf): a wood board five pixels above the frame's bottom, nudged
+    # an eighth of a cell, is re-fitted before its colours are read again.
+    board = chess.Board()
+    board.set_board_fen("1r1qk1nr/pbpp4/1pn4p/4Ppp1/P7/bP3PP1/1BPNP2P/2Q1KBNR")
+    kw = {"board": board, "theme": "wood", "style": "cburnett-wood"}
+    first = keep("wood-near-bottom", edge_page(155, 683, 64, **kw))
+    nudged = keep("wood-near-bottom-nudged", edge_page(147, 677, 64, **kw))
+    run = track("a wood board near the bottom, nudged: re-fitted before its colours", {}, [first] + [nudged] * 3, frames, files)
+    if not (run["states"][0][3] and abs(run["states"][0][3][0] - 155) <= 1):
+        raise SystemExit(f"wood near the bottom: the desktop's lock {run['states'][0]}")
+    last = run["states"][-1]
+    if not (last[1] and last[3] and abs(last[3][0] - 147) <= 1 and abs(last[3][1] - 677) <= 1):
+        raise SystemExit(f"wood near the bottom: the desktop's tracker ended at {last}")
+    runs.append(run)
+
+    # test_tracker (desktop dcbbeaf): the game board moves further than a re-fit reaches, with
+    # an empty board of the same size on screen; the search puts the game board first.
+    def game_and_empty(game_x: int) -> np.ndarray:
+        frame = np.full((900, 1400, 3), 90, dtype=np.uint8)
+        render_board(frame, game_x, 100, 48, chess.Board())
+        bulky_pieces(frame, game_x, 100, 48, chess.Board())
+        render_board(frame, 800, 100, 48, chess.Board(None))
+        return frame
+
+    home = keep("game-and-empty-60", game_and_empty(60))
+    moved = keep("game-and-empty-380", game_and_empty(380))
+    run = track("the game board moved past a re-fit's reach, an empty board beside it", {"max_misses": 2}, [home] + [moved] * 4, frames, files)
+    last = run["states"][-1]
+    if not (last[3] and abs(last[3][0] - 380) <= 2 and last[2] == 2):
+        raise SystemExit(f"game and empty: the desktop's tracker ended at {last}")
+    runs.append(run)
+
     # test_tracker: a board back at another size after a moment is found soon.
     small = {"width": 1400, "height": 1000}
     home = keep("back-home", edge_page(300, 120, 64, **small))
@@ -527,7 +567,7 @@ def edge_cases() -> dict:
         board_back = tracker.update(frames[back])
         if board_back is not None and tracker.verified:
             break
-    if not (near(board_back, 200, 60, 100, 2, 1.0) and count <= tracker.redetect_first):
+    if not (near(board_back, 200, 60, 100, 2, 1.0) and count <= tracker._full.first):
         raise SystemExit(f"back: the desktop found {board_back} after {count} frames")
     runs.append(track("gone, then back at another size: found soon", {}, sequence, frames, files))
 

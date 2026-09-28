@@ -160,9 +160,11 @@ class VisionParityTest {
      * (test_board_detect); a candidate two thirds of a cell off a board near the bottom
      * refused, its fit zero beside the board's (test_board_detect); boards flush with an edge,
      * or a cell from it, followed through a nudge; a board resized to near the bottom locked
-     * where it is; a board gone and back at another size found within `redetect_first`
-     * frames; a tracker asking for 0.95 searching on the first frame and the sixth
-     * (test_tracker). Every candidate, fit and tracker state as the desktop's. A page is
+     * where it is; a board gone and back at another size found within the full search's first
+     * wait; a tracker asking for 0.95 searching on the first frame and the sixth; a wood board
+     * near the bottom nudged an eighth of a cell, re-fitted before its colours are read again,
+     * and a game board moved past a re-fit's reach with an empty board beside it (desktop
+     * dcbbeaf's test_tracker). Every candidate, fit and tracker state as the desktop's. A page is
      * read once per case and let go after it: a 1920 by 1200 grey plane is nine megabytes.
      */
     @Test
