@@ -835,13 +835,18 @@ def test_the_position_the_player_left_gives_way_to_the_one_they_face() -> None:
 
 
 @needs_engine
-def test_each_depth_is_delivered_as_the_search_finishes_it(engine: Engine) -> None:
+def test_each_depth_is_delivered_as_the_search_finishes_it(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Tai, 2026-09-28: "if the consumers read after stockfish reaches depth > 12 then they
     will get whatever lines that is available at the time". The position the player faces is
     delivered at the early depth, then at every depth the full search finishes on its way,
     provisional, then whole at the full depth -- the same position, deeper each time."""
     from sidecoach.analysis.annotator import EARLY_DEPTH
 
+    # The analyser closes its engine as it closes; the module's Stockfish stays up for the
+    # tests after this one.
+    monkeypatch.setattr(engine, "close", lambda: None)
     board = chess.Board(SCHOLAR)
     annotator = GameAnnotator(engine=engine, depth=16, multipv=3, with_threats=False)
     with Analyser(annotator) as analyser:
