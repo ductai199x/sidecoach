@@ -61,6 +61,7 @@ import stamp  # noqa: E402
 from sidecoach.cli import _draft_check  # noqa: E402
 from sidecoach.coach import coach as coach_module  # noqa: E402
 from sidecoach.coach.coach import (  # noqa: E402
+    IDEA_LEVEL_WORDS,
     LENGTH_SLACK,
     Speaker,
     _after_best,
@@ -70,7 +71,6 @@ from sidecoach.coach.coach import (  # noqa: E402
     directive_limits,
     omitted,
 )
-from sidecoach.coach.conversation import IDEA_LEVEL_WORDS  # noqa: E402
 from sidecoach.coach.disclosure import PositionFacts  # noqa: E402
 from sidecoach.coach.effects import effects_text  # noqa: E402
 from sidecoach.coach.facts import ascii_board  # noqa: E402

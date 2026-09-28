@@ -88,22 +88,24 @@ def test_a_decisive_moment_earns_the_idea_and_names_no_move() -> None:
     assert "3... Nf6 by the opponent" in current
     assert "Pieces -- White: K e1, Q h5" in current, "the position is given piece by piece"
     assert "Legal moves" in current and "Qxf7#" in current, "the model sees every move"
-    assert "the best first move is the answer they are finding" in current
+    assert "line 1's first move is the answer to the position they face" in current
     assert "On the board (complete lists)" in current
     # The rung's facts -- the goal and the pattern -- stand apart from those past it.
-    facts = current.split("## Facts (the player to move)")[1].split("## Past this level")[0]
+    facts = current.split("## Facts (the player to move)")[1].split("## Beyond this level")[0]
     assert "goal: the player can mate in one move" in facts
     assert "pattern: a mating attack" in facts
     for secret in ("Qxf7", "queen", "h5f7", "candidates"):
         assert secret not in facts, secret
-    beyond = current.split("## Past this level")[1].split("## Disclosure")[0]
+    beyond = current.split("## Beyond this level")[1].split("## On the board")[0]
     assert "piece: the player's queen on h5" in beyond and "Qxf7" in beyond
-    assert "You see everything, the answer included" in current
-    # The first hint whole is on the sheet, the least the model's says (parity, 2026-09-25),
-    # and the idea level names the key fact on the board, as the first hint does.
-    assert "the first hint in the board's own words" in current
+    # What the level keeps back is said once, in the Task, with why the model sees it all.
+    assert "## Disclosure" not in current
+    assert "You see the answer so that the hint can be precise" in directive_of(messages)
+    # The first hint's facts are on the sheet to teach from (parity, 2026-09-25; the prompt
+    # audit, 2026-09-28), and the idea level names the key fact on the board.
+    assert "what a first hint rests on" in current
     assert "Their king on e8 has one free square" in current
-    assert "the idea: what is at stake and the key fact on the board" in directive_of(messages)
+    assert "the idea: what is at stake and the key fact" in directive_of(messages)
     assert "no square" not in directive_of(messages)
     assert out[0].text.startswith("You can mate right now"), "named the key square: it stands"
     # And a second question for the same position is not asked.
@@ -143,10 +145,10 @@ def test_two_hints_give_the_idea_then_the_focus_and_asking_for_the_move_gives_it
     out = drain(coach)
     assert out[0].level is DisclosureLevel.IDEA
     current = _current_move_message(sent(provider, 0))
-    facts = current.split("## Facts (the player to move)")[1].split("## Past this level")[0]
+    facts = current.split("## Facts (the player to move)")[1].split("## Beyond this level")[0]
     assert "goal: the player can mate in one move" in facts and "Qxf7" not in facts
     assert "queen" not in facts and "target:" not in facts, "not the piece or the target yet"
-    assert "target:" in current.split("## Past this level")[1], "the model knows them"
+    assert "target:" in current.split("## Beyond this level")[1], "the model knows them"
     # The player's words stand under the position, verbatim.
     assert '## Said here\n    PLAYER said: "give me a hint"' in current
     # The second, the focus: the target and the piece, never the move.
@@ -154,11 +156,11 @@ def test_two_hints_give_the_idea_then_the_focus_and_asking_for_the_move_gives_it
     out = drain(coach)
     assert out[0].level is DisclosureLevel.FOCUS
     current = _current_move_message(sent(provider, 1))
-    facts = current.split("## Facts (the player to move)")[1].split("## Past this level")[0]
+    facts = current.split("## Facts (the player to move)")[1].split("## Beyond this level")[0]
     assert "target: the opponent's king on e8" in facts
     assert "piece: the player's queen on h5" in facts
     assert "Qxf7" not in facts, "the move is past the focus rung"
-    assert "Qxf7" in current.split("## Past this level")[1], "and the model knows it"
+    assert "Qxf7" in current.split("## Beyond this level")[1], "and the model knows it"
     coach.ask("ok just tell me the move", 9.0)
     out = drain(coach)
     assert out[0].level is DisclosureLevel.MOVE and "Qxf7" in out[0].text
@@ -241,12 +243,14 @@ def test_feedback_after_the_users_move_may_say_everything_about_that_position() 
     # The record is at full disclosure: the earlier verdicts stand in full.
     assert "3... Nf6 (the opponent)" in _record(messages)
     # The lesson is taught from the position they faced, which the record keeps as one line:
-    # its sheet goes with the request, and the template's lesson as the floor, whose better
-    # move the reply must name (parity pass, 2026-09-25).
+    # its sheet goes with the request (parity pass, 2026-09-25), and the better move the reply
+    # must name is the directive's -- not the template's lesson as the least the reply says,
+    # which came back word for word (the prompt audit, 2026-09-28).
     content = str(messages[-1]["content"])
     faced = content.split("# The position they faced, before Bxf7+")[1].split("# Task")[0]
     assert "goal: the player can mate in one move" in faced
-    assert "The lesson in the board's own words" in directive_of(messages)
+    assert "The better move was Qxf7#" in directive_of(messages)
+    assert "says at least this" not in directive_of(messages)
     assert coach.spoken[-1].problems == [], coach.spoken[-1].problems
     # The hints' questions are for the side to move: never on the opponent's sheet, where
     # labelled "to the player" they were the opponent's; nor on the faced sheet, a position
@@ -449,7 +453,7 @@ def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
     )
     assert any(again.startswith(f.format(best="Qxf7#")) for f in FINE_TIGHTER)
     assert "it is mate" not in again and not said_rules
-    assert "Do not open with the move they played" in instruction
+    assert "tells them nothing: do not open with it" in instruction
 
 
 # The leads that announced a rule, gone for good.
@@ -1260,10 +1264,10 @@ def test_a_question_about_the_last_move_gets_its_verdict_in_full() -> None:
     directive = directive_of(sent(provider))
     assert "They ask about the move they already played, Bxf7+" in directive
     assert "Qxf7# was better" in directive
-    assert "nothing about it is withheld" in directive
+    assert "from a position that is past, so all of it may be said" in directive
     # What it cost is said only when they ask it: "It cost you 22% of the game." opened every
     # answer, and Tai had said the figure is for when he asks (2026-09-20).
-    assert "45%" not in directive and "no figures" in directive
+    assert "45%" not in directive and "No figures" in directive
     # Spoken from the position the move was played from, with everything shown: naming
     # the better move is not a leak, as it is not in the lesson after a mistake.
     assert out and out[-1].level is DisclosureLevel.LINE
@@ -1316,7 +1320,7 @@ def test_what_a_move_cost_is_said_when_they_ask_it() -> None:
     provider.replies = ["", ""]
     coach.ask("how much did that cost me?", 12.0)
     out = drain(coach)
-    assert "cost 45% of the game -- they asked" in directive_of(sent(provider))
+    assert "it cost 45% of the game: they asked" in directive_of(sent(provider))
     assert out and out[-1].text.startswith("It cost you 45% of the game. Qxf7# was better")
 
 
@@ -1470,7 +1474,7 @@ def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> No
     )
     assert said[-1] == '    PLAYER said: "what about Bc4?"'
     directive = directive_of(sent(provider))
-    assert "that analysis is theirs to hear in full" in directive
+    assert "theirs to hear in full" in directive
     assert (
         "Engine on your Bc4, which the player asked about: after 3. Bc4 the expected score "
         "is 0.52" in directive
@@ -1959,9 +1963,10 @@ F5 = "rnbqkbnr/ppppp1pp/8/5p2/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
 def test_a_word_after_the_move_never_restates_it_nor_quotes_a_figure() -> None:
     """The owner's rules after a move, checked in code (the eval audit, 2026-09-25): never
     open with the move just played, never say what it plainly did unless the better move does
-    the same, and no figure in a remark nobody asked for. The second audit: "ahead by about
-    1.2 pawns" was no figure to the old check; "you took on d5" and "that d5 pawn" said the
-    capture back; "which was a inaccuracy"."""
+    the same, and no figure in a remark nobody asked for -- the last NO_FIGURES' note, where
+    the directive carries it (`Speaker._notes`). The second audit: "ahead by about 1.2 pawns"
+    was no figure to the old check; "you took on d5" and "that d5 pawn" said the capture back;
+    "which was a inaccuracy"."""
     from sidecoach.coach.coach import _rated, figure_said, restated
 
     capture = "says what Bxc6 plainly did: the capture on c6"
@@ -1975,9 +1980,6 @@ def test_a_word_after_the_move_never_restates_it_nor_quotes_a_figure() -> None:
         (RUY, "Bxc6", "e1g1", "Taking the knight on c6 gives up the bishop pair.", [capture]),
         (RUY, "Bxc6", "e1g1", "You took on c6, giving up the bishop pair.", capture),
         (RUY, "Bxc6", "e1g1", "Winning that c6 knight gives up the bishop pair.", capture),
-        (RUY, "Bxc6", "e1g1", "It cost you 15% of the game.", [
-            "a figure in a remark nobody asked for: say it in words"
-        ]),
         # The better move castles: saying so is the lesson, not a restatement.
         (RUY, "Bxc6", "e1g1",
          "Castling first was better: the king is safe, the rook joins in.", []),
@@ -2010,20 +2012,13 @@ def test_a_word_after_the_move_never_restates_it_nor_quotes_a_figure() -> None:
     ]
 
 
-def test_the_first_hint_sets_the_length_of_the_hint() -> None:
-    """ "Say at least this" and "two or three sentences" asked for both: a first hint that
-    runs longer sets the length (the eval audit, 2026-09-25)."""
-    from sidecoach.coach.coach import IDEA_DIRECTIVE, directive_limits, idea_directive
+def test_the_first_hint_asks_two_or_three_sentences_and_offers_a_question() -> None:
+    """The first hint on the sheet is facts to teach from, not the least a reply says, so the
+    length is the directive's own: one more for the question it offers on top ("then, if you
+    like, one question"), which it does not require (the prompt audit, 2026-09-28)."""
+    from sidecoach.coach.coach import IDEA_DIRECTIVE, directive_limits
 
-    short = PositionFacts(fen=SCHOLAR, side_to_move="white", phase="opening", situation="A. B.")
-    assert idea_directive(short) == IDEA_DIRECTIVE
-    long = short.model_copy(update={"situation": "One. Two. Three. Four. Five."})
-    assert "Five sentences at most." in idea_directive(long)
-    # One more for the question the directive offers on top ("then, if you like, one
-    # question"), which it does not require.
-    assert directive_limits(idea_directive(long)) == (6, None)
-    longest = short.model_copy(update={"situation": " ".join(["Yes."] * 9)})
-    assert directive_limits(idea_directive(longest)) == (7, None)
+    assert directive_limits(IDEA_DIRECTIVE) == (4, None)
 
 
 def test_the_draft_checker_sees_every_line_the_facts_were_read_from() -> None:

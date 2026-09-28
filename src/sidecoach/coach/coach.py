@@ -35,7 +35,7 @@ from sidecoach.analysis.exchange import VALUE, defenders
 from sidecoach.coach import draft_claims, idea_words, situation
 from sidecoach.coach.annotations import annotations_for, mentions_in
 from sidecoach.coach.bag import Bags
-from sidecoach.coach.conversation import IDEA_LEVEL_WORDS, Conversation, PlyRecord
+from sidecoach.coach.conversation import Conversation, PlyRecord
 from sidecoach.coach.disclosure import (
     Disclosure,
     PositionFacts,
@@ -548,21 +548,22 @@ VS_MAX_TOKENS = 2048
 # hot sampling on top of that is where the invented sentence came from.
 VS_TEMPERATURE = 0.1
 _NUMBER_WORDS = {2: "TWO", 3: "THREE", 4: "FOUR", 5: "FIVE"}
-# The unprompted remarks carry no figures: the record says what a move cost in expected
-# score and the model was quoting it in every note ("costing 0.03"); a player who wants
-# the number asks for it (Tai, 2026-09-19).
-NO_NUMBERS = (
-    "Do not quote the cost or any number: say how the move rates in words, and keep the "
-    "figures for when the player asks. Name moves bare, never with a move number in front."
+# No figures unless the player asks: the record says what a move cost in expected score and
+# the model quoted it in every note ("costing 0.03"; Tai, 2026-09-19), and a hint said
+# "ahead by about 1.2 pawns". The code notes a figure where a directive carries this
+# (`Speaker._notes`), so every directive that forbids one says so in these words.
+NO_FIGURES = (
+    "No figures -- no percentage, no score, no move number: say how a move rates, and what it "
+    "cost, in words; the numbers are for when the player asks. Name moves bare."
 )
 # The player has just played the move and sees it on the board: naming it, or saying what
 # it plainly did ("Nxd5 -- the knight taking the pawn on d5"), tells them nothing (Tai,
 # 2026-09-23: "we want the coach to be instructive, always find a moment to teach
 # something, not just a dumb bot").
 NOT_THE_MOVE = (
-    "Do not open with the move they played, and do not say what it plainly did on the board "
-    "-- what it took, the check, the castling, the promotion: they just played it and see it. "
-    "Say what it means instead: the idea behind it and the pattern to keep -- and, when there "
+    "They see their own move on the board, so naming it or saying what it plainly did -- the "
+    "capture, the check, the castling, the promotion -- tells them nothing: do not open with "
+    "it. Say what it means instead: the idea behind it and the pattern to keep and, when there "
     "was a better move, that move and why."
 )
 # While a rule cools down: the same, without the pattern to keep. Told to hold the rule back
@@ -577,6 +578,7 @@ def _hold_rule(directive: str) -> str:
     """`directive` with its ask for a rule to keep taken out, and RULE_HELD said."""
     for asked, held in (
         (NOT_THE_MOVE, NOT_THE_MOVE_HELD),
+        (" -- as a pattern to remember.", "."),
         ("as a pattern to remember, in", "in"),
         (" as a lesson to keep", ""),
     ):
@@ -584,30 +586,51 @@ def _hold_rule(directive: str) -> str:
     return f"{directive} {RULE_HELD}"
 
 
-# A hint, and an answer that is not about a figure: the code faults one (`_problems`), so the
-# directive says so -- the stuck hint was faulted for "ahead by about 1.2 pawns" and never told.
-NO_FIGURES = "Quote no figure -- no percentage, no score, no move number -- and name moves bare."
+def _lesson_data(board: chess.Board | None, best: str, played: str | None, rule: str | None) -> str:
+    """What a lesson's template says that the sheet does not, as facts for the model: which
+    piece should have taken, and the rule of thumb that fits the mistake, when one may be
+    said. The template's finished lesson, handed over as the least a reply says, came back
+    word for word in two lessons of three (the prompt audit, 2026-09-28)."""
+    out = ""
+    other = _recapture(board, best, played)
+    if other is not None:
+        out += f" The right capture: {other}."
+    if rule is not None:
+        out += f" A rule of thumb that fits, if you give one: {rule}."
+    return out
 
 
-# What the model is asked to do on each rung before the player moves. The template for the
-# rung is the floor; the model is there to rise above it (Tai, 2026-09-23: "AI is supposed
-# to elevate good to great"): the same facts, in its own words, sharper for this position,
-# and tied to the player's game where that helps.
+# What the first hint may say, as the Task's level line states it: the key fact is named on
+# the board (Tai, 2026-09-24), and only the answer is kept back (Tai, 2026-09-26: a vague
+# coach is worse than one that says a little too much).
+IDEA_LEVEL_WORDS = (
+    "the idea: what is at stake and the key fact, with every piece, square and move of "
+    "theirs the sheet names, the target's square included. Keep back only the answer: the "
+    "player's move, the square it goes to (unless the target stands there), and which of "
+    "their pieces makes it"
+)
+SEE_ALL_WORDS = (
+    "You see the answer so that the hint can be precise and true; a hint that gives a little "
+    "too much is a lesser fault than a vague one."
+)
+
+
+# What the model is asked to do on each rung before the player moves: the facts the rung's
+# template is built from, said the model's own way, sharper for this position (Tai,
+# 2026-09-23: "AI is supposed to elevate good to great"). What the rung may give away is the
+# level line's to say (`Coach._level_line`), once. The parts it names are not to be said
+# back: "The key fact is that ...; the principle here is ..." was in 41% of the local
+# model's hints (the prompt audit's baseline, 2026-09-28).
 IDEA_DIRECTIVE = (
-    "Give the first hint as a short lesson on this position, from the fact sheet: what is at "
-    "stake (its stakes: how many moves hold, and what even the next best one costs -- or its "
-    "goal, where the sheet gives no stakes, or its nature -- whether there is a tactic to find "
-    "-- where it gives neither), then the key fact on the board, named as the "
-    "sheet names it -- the pieces, the squares, their threat, the target, the plan, the "
-    "pattern -- and what it does, threatens or allows, with the principle behind it in a "
-    "clause, and the trap if the sheet gives one, so they know what to look for; then, if "
-    "you like, one question that sets them looking. Precise, never a principle on its own: "
-    "every sentence says "
-    "something about this board. Never name the player's move, and not which of their own "
-    "pieces makes it -- that is the next hint -- unless the key fact names that piece on its "
-    "square; the target's square, as the sheet names it, "
-    "may be said even where the move goes, and the moves the sheet lists as all as good, "
-    "when several are, may be named. Two or three sentences."
+    "Give the first hint as a short lesson on this position, from what the sheet says a first "
+    "hint rests on: what is at stake (how many moves hold and what the next best costs; or the "
+    "goal, or the nature, where it gives no stakes), then the key fact on the board, named as "
+    "the sheet names it -- the target, their threat, the plan or the pattern -- and what it "
+    "threatens or allows, with the principle behind it, so they know what to look for; and the "
+    "trap when the sheet has one. Those are what the lesson covers, not words to say: give the "
+    "fact itself, never its name. The sheet's words are facts to teach from, not a script: "
+    "every sentence yours, and true only of this board. Two or three sentences, then, if you "
+    "like, one question."
 )
 # The game so far, used: an earlier moment of the same idea is the coach's best material, and
 # the excellence rubric found it used in half the lessons that had one (2026-09-25). The coach
@@ -624,19 +647,6 @@ TIE_LISTED = (
     "earlier moment."
 )
 NO_EARLIER = "Speak of no earlier moment of the game: none had the same idea."
-_LENGTH_WORDS = {4: "Four", 5: "Five", 6: "Six"}
-
-
-def idea_directive(facts: PositionFacts | None) -> str:
-    """IDEA_DIRECTIVE, its length the first hint's own when that runs past three sentences
-    (to six at most): "say at least this" and "two or three sentences" asked for both, and a
-    faithful reply was cut or sent back as too long (the eval audit, 2026-09-25)."""
-    n = _sentence_total(facts.situation) if facts is not None and facts.situation else 0
-    if n <= 3:
-        return IDEA_DIRECTIVE
-    return IDEA_DIRECTIVE.replace(
-        "Two or three sentences.", f"{_LENGTH_WORDS.get(n, 'Six')} sentences at most."
-    )
 
 
 FOCUS_DIRECTIVE = (
@@ -1241,19 +1251,17 @@ _PLAIN_PIECE |= {chess.ROOK: "rook", chess.QUEEN: "queen"}
 
 
 def restated(text: str, request: _Request) -> list[str]:
-    """What a word after the player's move says that they see on the board or did not ask
-    for (Tai, 2026-09-23 and 2026-09-19): opening with the move just played, what it plainly
-    did -- the capture, the check, the castling, the promotion -- unless the better move does
-    the same, and a figure in an unprompted remark. The templates never do; the model could,
-    and nothing checked it (the eval audit, 2026-09-25)."""
+    """What a word after the player's move says that they see on the board (Tai,
+    2026-09-23): opening with the move just played, what it plainly did -- the capture, the
+    check, the castling, the promotion -- unless the better move does the same. The templates
+    never do; the model could, and nothing checked it (the eval audit, 2026-09-25). A figure
+    in it is NO_FIGURES' note (`Speaker._notes`)."""
     if request.trigger not in (Trigger.POST_MOVE, Trigger.POST_MISTAKE) or not request.played_san:
         return []
     played = request.played_san.rstrip("+#")
     faults: list[str] = []
     if re.match(rf"\W*{re.escape(played)}(?![A-Za-z0-9])", text):
         faults.append(f"opens with {played}, the move just played")
-    if figure_said(text):
-        faults.append("a figure in a remark nobody asked for: say it in words")
     try:
         move = request.board.parse_san(request.played_san)
     except ValueError:
@@ -1772,14 +1780,9 @@ class Speaker:
         found.extend(restated(text, request))
         if request.unlisted is not None and _MOVE_NUMBER.search(text):
             found.append("a move with its number: name moves bare")
-        # A figure where none was asked for: an unprompted remark, and an answer whose
-        # directive keeps the figures for when the player asks -- "46...Rh5 was excellent,
-        # costing only 0.01" (quality round 3, 2026-09-25).
-        unasked = request.trigger in (Trigger.DECISIVE_QUESTION, Trigger.STUCK) or (
-            request.trigger is Trigger.USER_ASK
-            and (NO_NUMBERS in directive or NO_FIGURES in directive)
-        )
-        if unasked and figure_said(text):
+        # A figure where the directive keeps the figures for when the player asks -- "46...Rh5
+        # was excellent, costing only 0.01" (quality round 3, 2026-09-25).
+        if NO_FIGURES in directive and figure_said(text):
             found.append("a figure in a remark nobody asked for: say it in words")
         # RULES 7: the coach speaks as the one who saw the game -- "Stockfish gives White
         # about 0.8 pawns" came in seven of the pilot's answers.
@@ -2013,8 +2016,6 @@ def question_part(text: str) -> str:
     return " ".join(asked).replace("…", "...")
 
 
-# A request that asks for a reason as well: the model's to answer.
-_ASKS_WHY = re.compile(r"\b(?:why|how|explain|what does|what's the idea|idea)\b", re.IGNORECASE)
 # The opening asked for by name ("what opening is this?"), not judged ("how is my opening?").
 _OPENING_FACT = re.compile(
     r"\b(?:what|which)(?:'s| is| was)? (?:the |this |my )?opening\b|"
@@ -2359,7 +2360,7 @@ class Coach:
         # the template for the opening's name was all he got. The templates are the offline
         # coach's, and the model's fallback when a reply gets something wrong.
         offline = self._offline
-        # Offline, the quick answer: the template for a bare "hint", the move or the line.
+        # Offline, the answer at once: the template for a bare "hint", the move or the line.
         # The move or the line asked for, or asked about where it is already open: "what
         # happens after the best move?" at the line level is the line, though it unlocks
         # nothing (the harness check of the test audit, 2026-09-26).
@@ -2385,11 +2386,11 @@ class Coach:
             )
         )
         if canned:
-            _, quick = self._instruction(Trigger.USER_ASK, position, level, text, (), None, None)
-            self._take_leads(position, quick)
+            _, answer = self._instruction(Trigger.USER_ASK, position, level, text, (), None, None)
+            self._take_leads(position, answer)
             self._queue_plain(
                 Trigger.USER_ASK,
-                quick,
+                answer,
                 ts,
                 ply=position.ply,
                 level=level,
@@ -2400,11 +2401,8 @@ class Coach:
                 now=True,
                 record_now=True,
             )
-
-        if canned and exact and not _ASKS_WHY.search(text):
-            # Offline, the move or the line asked for bare: the template has said it.
             return
-        if offline and not canned and fact_question(text):
+        if offline and fact_question(text):
             # The material, the opening, the standing: said by the template, exactly.
             _, answer = self._instruction(Trigger.USER_ASK, position, level, text, (), None, None)
             self._queue_plain(
@@ -2459,18 +2457,11 @@ class Coach:
             return found
 
         if self.claims is None or not may_carry_claims(text):
-            verdicts: list[str] = []
-            if may_carry_claims(text):
-                verdicts = examined()
-            self._speak(
-                Trigger.USER_ASK,
-                position,
-                level,
-                ts,
-                user_text=text,
-                verdicts=verdicts,
-                quick=canned or shown_examination,
-            )
+            verdicts = examined() if may_carry_claims(text) else []
+            if not shown_examination:  # offline, the engine's word on it was the answer
+                self._speak(
+                    Trigger.USER_ASK, position, level, ts, user_text=text, verdicts=verdicts
+                )
             return
 
         def checked() -> None:
@@ -2478,17 +2469,16 @@ class Coach:
                 verdicts = self.claims(text, position.board, position.facts)  # type: ignore[misc]
             except Exception:  # noqa: BLE001
                 verdicts = []
-            # The engine on what they asked about, examined now and spoken first.
             found = examined()
-            verdicts = [*verdicts, *found]
+            if shown_examination:
+                return  # offline, the engine's word on it was the answer
             self._speak(
                 Trigger.USER_ASK,
                 position,
                 level,
                 ts,
                 user_text=text,
-                verdicts=verdicts,
-                quick=shown_examination,
+                verdicts=[*verdicts, *found],
             )
 
         if self.sync_claims:
@@ -3352,33 +3342,20 @@ class Coach:
         verdicts: Sequence[str] = (),
         assessment: MoveAssessment | None = None,
         played: MovePlayed | None = None,
-        quick: bool = False,
         candidates: int | None = None,
         routine: bool = False,
         elicit: bool = False,
     ) -> None:
         assert position.facts is not None
         instruction, fallback = self._instruction(
-            trigger,
-            position,
-            level,
-            user_text,
-            verdicts,
-            assessment,
-            played,
-            quick=quick,
-            elicit=elicit,
+            trigger, position, level, user_text, verdicts, assessment, played, elicit=elicit
         )
         self._take_leads(position, fallback)
         must_name = self._must_name(
             trigger, position, level, fallback, assessment, played, user_text
         )
-        if quick:
-            # The template is already out as the quick answer; a model reply that fails the
-            # checks adds nothing, rather than the same line a second time.
-            fallback, must_name = "", ()
-        elif trigger is Trigger.USER_ASK and fallback and fallback in self._said_since_move():
-            # Nor is anything the coach said since the last move said again word for word: a
+        if trigger is Trigger.USER_ASK and fallback and fallback in self._said_since_move():
+            # Nothing the coach said since the last move is said again word for word: a
             # student's answer to the hint got the same hint back, three times (round 5).
             fallback = ""
         # A reply about a position already moved from -- the lesson on a move, an answer
@@ -3415,8 +3392,8 @@ class Coach:
                 moved = own.move
         if moved is not None:
             # The lesson after a move is taught from the position the player faced, which the
-            # record keeps as one line: its sheet goes with the request, and the template's
-            # lesson as the floor (parity pass, 2026-09-25).
+            # record keeps as one line: its sheet goes with the request (parity pass,
+            # 2026-09-25).
             after = self._frames_after(position, moved)[:2]
             if (
                 len(after) == 1
@@ -3440,11 +3417,6 @@ class Coach:
                 )
             if sheet:
                 faced = f"\n\n# The position they faced, before {moved.san}\n{sheet}"
-            if must_name and fallback:
-                directive += (
-                    "\n\nThe lesson in the board's own words, all of it true -- your reply says at "
-                    f"least this, in your own words, and may say more: {fallback}"
-                )
             frames = self._frames_after(position, moved)
         frames += self._analysis_frames(position)
         # The earlier moments of the same idea, for a directive a link belongs in: found in
@@ -3477,7 +3449,7 @@ class Coach:
         unlisted: frozenset[str] | None = None
         if before is not None:
             shown = _GAME_SO_FAR.sub("", str(messages[0]["content"]))
-            for constant in (NO_NUMBERS, NOT_THE_MOVE, NOT_THE_MOVE_HELD, TIE_LISTED, NO_EARLIER):
+            for constant in (NO_FIGURES, NOT_THE_MOVE, NOT_THE_MOVE_HELD, TIE_LISTED, NO_EARLIER):
                 shown = shown.replace(constant, " ")
             facts = position.facts
             sanctioned = {m.rstrip("+#") for m in _SAN.findall(shown)}
@@ -3699,9 +3671,11 @@ class Coach:
         *,
         past: bool = False,
     ) -> str:
-        """What may be said about the position the player faces, stated on the directive;
-        with `now_level`, the reply is about a position already moved from, and the one on
-        the board has its own level."""
+        """What may be said about the position the player faces, stated on the directive, the
+        one place it is stated; with `now_level`, the reply is about a position already moved
+        from, and the one on the board has its own level. Below the move, why the model sees
+        the answer all the same: said as "never" in five places, it gave the vague hint Tai
+        ranks below one that says a little too much (the prompt audit, 2026-09-28)."""
         if position.board.is_game_over():
             return ""
         words = {
@@ -3722,7 +3696,8 @@ class Coach:
                 "The position this is about has been moved from: everything about it may be "
                 "said, and what the opponent can do now.\n\n"
             )
-        return f"Disclosure for the position the player faces: {words[level]}.\n\n"
+        why = f" {SEE_ALL_WORDS}" if DisclosureLevel.IDEA <= level < DisclosureLevel.MOVE else ""
+        return f"Disclosure for the position the player faces: {words[level]}.{why}\n\n"
 
     def _queue_plain(
         self,
@@ -3767,15 +3742,10 @@ class Coach:
         assessment: MoveAssessment | None,
         played: MovePlayed | None,
         *,
-        quick: bool = False,
         elicit: bool = False,
     ) -> tuple[str, str]:
-        """The turn's instruction to the model, and the template used if it fails.
-
-        `quick` means the template has already been shown as an immediate answer, so the
-        model is asked to build on it rather than repeat it. `elicit` ends a mistake's
-        lesson by asking what the player saw (see `_elicit_due`).
-        """
+        """The turn's instruction to the model, and the template used if it fails. `elicit`
+        ends a mistake's lesson by asking what the player saw (see `_elicit_due`)."""
         facts = position.facts
         assert facts is not None
 
@@ -3793,14 +3763,14 @@ class Coach:
             )
         if trigger is Trigger.DECISIVE_QUESTION:
             template, note = self._cool_hint(facts, idea_template(facts))
-            return (f"{idea_directive(facts)} {NO_FIGURES}{note}", template)
+            return (f"{IDEA_DIRECTIVE} {NO_FIGURES}{note}", template)
         if trigger is Trigger.STUCK:
             # The hints unasked stop at the focus: the move is only for when they ask. The
             # template on the level a question had opened named the move while the model was
             # told not to, and every reply that obeyed went for the template (Tai's game,
             # 2026-09-28: "d5: your bishop on c8 is still shut in", twice).
             rung = min(level, DisclosureLevel.FOCUS)
-            directive = FOCUS_DIRECTIVE if rung >= DisclosureLevel.FOCUS else idea_directive(facts)
+            directive = FOCUS_DIRECTIVE if rung >= DisclosureLevel.FOCUS else IDEA_DIRECTIVE
             template, note = self._cool_hint(facts, hint_template(facts, rung))
             return (
                 "The player has been thinking for a while and is stuck. "
@@ -3837,6 +3807,7 @@ class Coach:
                     else None
                 )
                 opener = self._bags.draw("cost", COST_YOU).format(best=best)
+                rule = rule_of(facts, best, board=position.board, played=played.uci)
                 fallback, held = self._fresh_lesson(
                     opener,
                     lambda with_rule: lesson_template(
@@ -3849,22 +3820,26 @@ class Coach:
                         with_rule=with_rule,
                         strong=self.strong_player,
                     ),
-                    rule_of(facts, best, board=position.board, played=played.uci),
+                    rule,
                     facts,
                 )
+                given = rule if not held and not self.strong_player else None
+                data = _lesson_data(position.board, best, played.uci, given)
+                if allowed:
+                    data += f" What {played.san} allowed, from the engine's line: {allowed}."
+                # A question to close on is offered, not asked for: required, it was the one
+                # a lesson had room for once the pattern was said, and often a quiz on what
+                # the reply had just told them.
                 instruction = (
                     f"The player just played {played.san}, which was {_rated(label)}: it cost "
                     f"{loss:.0%} of the game. The better move was {best} ({better_words}). "
-                    "Teach the difference from the fact sheet of the position they faced -- "
-                    "its goal, its pattern and the tactic when the sheet names one, why the "
-                    "better move works, and what their move missed or allowed -- as a pattern "
-                    "to remember, in three sentences at "
-                    "most, then ask one question that makes them find on the board something "
-                    "your reply has not said. "
-                    f"{TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_NUMBERS}"
+                    "Teach the difference so they spot it next time: why the better move works "
+                    "and what their move missed or allowed, from the sheet of the position they "
+                    "faced -- its goal, its pattern, the tactic when it names one -- as a "
+                    "pattern to remember. Three sentences at most, then, if you like, one "
+                    "question that sends them to find on the board something your reply has "
+                    f"not said. {TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_FIGURES}{data}"
                 )
-                if allowed:
-                    instruction += f" What {played.san} allowed, from the engine's line: {allowed}."
                 if elicit:
                     # Sparingly: what they saw at that moment, for the profile's record
                     # (causes.from_words reads "I thought it would..." as a line
@@ -3876,13 +3851,13 @@ class Coach:
                     instruction = (
                         f"The player just played {played.san}, which was {_rated(label)}: it "
                         f"cost {loss:.0%} of the game. The better move was {best} "
-                        f"({better_words}). "
-                        "Teach the difference from the fact sheet of the position they faced "
-                        "-- its goal, its pattern and the tactic when the sheet names one, why "
-                        "the better move works -- as a pattern "
-                        "to remember, in three sentences at most, then -- instead of a check "
+                        f"({better_words}). Teach the difference so they spot it next time: why "
+                        "the better move works, from the sheet of the position they faced -- its "
+                        "goal, its pattern, the tactic when it names one -- as a pattern to "
+                        "remember, in three sentences at most, then -- instead of a check "
                         "question -- ask, in one short question of your own, what they "
-                        f"expected their move to do. {NOT_THE_MOVE} {NO_NUMBERS}"
+                        f"expected their move to do. {NOT_THE_MOVE} {NO_FIGURES}"
+                        + _lesson_data(position.board, best, played.uci, given)
                     )
                 if held:
                     instruction = _hold_rule(instruction)
@@ -3921,7 +3896,7 @@ class Coach:
                     f"the move -- {reason}, and the idea it serves -- from the messages above, "
                     "nothing invented. No question, no advice, and not the same words as your "
                     "last such sentence. "
-                    f"{NOT_THE_MOVE} {NO_NUMBERS}"
+                    f"{NOT_THE_MOVE} {NO_FIGURES}"
                 )
             elif routine:
                 fallback = self._verdict(label)
@@ -3940,7 +3915,7 @@ class Coach:
                     "the plan, the tactic -- and only when it is what the move is for. No "
                     "question, no lecture, no advice, no guess at what it allows or risks, and "
                     "not the same words as your last such sentence. "
-                    f"{NOT_THE_MOVE} {NO_NUMBERS}"
+                    f"{NOT_THE_MOVE} {NO_FIGURES}"
                 )
                 if not self._rule_ok(None):
                     instruction = _hold_rule(instruction)
@@ -3951,7 +3926,7 @@ class Coach:
                 instruction = (
                     f"The player just played {played.san}, which was {_rated(label)}: {best} "
                     f"({better_words}) was better. It is a fast game: one or two sentences, no "
-                    f"lesson, no question. {NOT_THE_MOVE} {NO_NUMBERS}"
+                    f"lesson, no question. {NOT_THE_MOVE} {NO_FIGURES}"
                 )
             else:
                 # The better move and what it does, when the sheet has it, is the lesson.
@@ -3969,13 +3944,15 @@ class Coach:
                     ),
                     None,  # a fine move: the better move and what it does, no rule of thumb
                 )
+                # How it rated goes in passing: asked for first, it opened half these replies
+                # with "Fine", "Playable" or "That works, though" (the prompt audit, 2026-09-28).
                 instruction = (
-                    f"The player just played {played.san}, which was {_rated(label)}: "
-                    f"playable, not the strongest -- {best} ({better_words}) was better, by a "
-                    "little. One or two sentences: how it rated, in plain words, then the "
-                    "better move, what it does, and the idea behind it as a lesson to keep. No "
-                    "lecture, no question. "
-                    f"{TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_NUMBERS}"
+                    f"The player just played {played.san}, which was {_rated(label)}: sound, a "
+                    f"little behind {best} ({better_words}). One or two sentences: the better "
+                    "move, what it does, and the idea behind it as a lesson to keep, with how "
+                    "theirs rated in passing. No lecture, no question. "
+                    f"{TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_FIGURES}"
+                    + _lesson_data(position.board, best, played.uci, None)
                 )
                 if held:
                     instruction = _hold_rule(instruction)
@@ -3993,8 +3970,7 @@ class Coach:
                 + "\n\n"
             )
         if engine_words:
-            # The engine on what they asked about: theirs to hear about in full, and
-            # already said out loud as the coach's last turn when `quick`.
+            # The engine on what they asked about: theirs to hear about in full.
             checks += "\n".join(engine_words) + "\n\n"
         # The rung's template: two hints, then the answer; the line when asked for it.
         fallback = hint_template(facts, level, position.board)
@@ -4038,10 +4014,6 @@ class Coach:
             )
         elif _ASK_EVAL.search(said):
             fallback = self._standing_template(position, material)
-        shown = (
-            " Your last turn above is the quick answer they have already been shown; build on "
-            "it, do not repeat it."
-        )
         # Their words answer the question the coach just asked: the thread is closed, not
         # carried on with another question. Every answer had earned a new question and none
         # was resolved -- the students' "what Nc4 was expected to do was asked but not
@@ -4103,22 +4075,8 @@ class Coach:
             elif level >= DisclosureLevel.FOCUS:
                 directive = (aim or "They asked for another hint. ") + FOCUS_DIRECTIVE
             else:
-                directive = (aim or "They asked for a hint. ") + idea_directive(facts)
-            directive += " " + NO_FIGURES
-            if quick and level < DisclosureLevel.MOVE:
-                # The hint is out already, in the template's words: the model adds to it, in
-                # a sentence or two -- not the whole hint again, which the voice talked over
-                # the template with (the runtime audit, 2026-09-25).
-                directive = (
-                    "They asked for a hint and have just been shown it -- your last turn above. "
-                    "In one or two sentences, build on it: a sharper angle on the same key fact "
-                    "-- a piece or square of it, and what it does, threatens or allows, with the "
-                    "principle behind it in a clause -- then the one question that sets them "
-                    "looking. Do not repeat it, and give nothing the next hint would. Do not "
-                    "comment on anything said earlier. " + NO_FIGURES
-                )
-            else:
-                directive += " Do not comment on anything said earlier." + (shown if quick else "")
+                directive = (aim or "They asked for a hint. ") + IDEA_DIRECTIVE
+            directive += f" {NO_FIGURES} Do not comment on anything said earlier."
         elif level >= DisclosureLevel.LINE and _ASK_LINE.search(said) and facts.line:
             # The line move by move, computed: the only reasons a move of it may be given
             # (4 of the 5 false claims the bench's labellers found were in these answers).
@@ -4131,51 +4089,16 @@ class Coach:
                 else ""
             )
             directive = (
-                (
-                    f"They asked to see the line and have just been shown it: "
-                    f"{' '.join(facts.line)}. Give one or two short sentences on the idea "
-                    "behind it." + by_move + " Do not answer with a question."
-                )
-                if quick
-                else (
-                    f"They asked to see the line: give it -- {' '.join(facts.line)} -- plainly, "
-                    "then one short sentence on the idea behind it." + by_move + " Do not answer "
-                    "with a question."
-                )
+                f"They asked to see the line: give it -- {' '.join(facts.line)} -- plainly, then "
+                "one short sentence on the idea behind it." + by_move + " Do not answer with a "
+                "question."
             )
         elif level >= DisclosureLevel.MOVE and _ASK_MOVE.search(said) and facts.candidates:
             directive = (
-                (
-                    f"They asked what to play and have just been shown that it is "
-                    f"{facts.candidates[0]}, with what it does. Build on it in one or two "
-                    "sentences: why it works, from the fact sheet's why and pattern, and the "
-                    "idea to keep. Do not answer with a question this time."
-                )
-                if quick
-                else (
-                    f"They asked what to play: tell them plainly it is {facts.candidates[0]}, "
-                    "then why it works, from the fact sheet's why and pattern, correctly. Do "
-                    "not answer with a question this time."
-                )
+                f"They asked what to play: tell them plainly it is {facts.candidates[0]}, then why "
+                "it works, from the fact sheet's why and pattern, correctly. Do not answer with a "
+                "question this time."
             )
-        elif engine_words and quick:
-            # The examination is out already; the coach adds the lesson in it, not the
-            # numbers again.
-            directive = (
-                "They asked about a move or line and have just been shown the engine's word on "
-                "it -- your last turn above. Build on it in one or two sentences: what their move "
-                "does or allows, and what that means for their idea, in plain chess words, saying "
-                "only what that analysis and the messages state."
-                + (
-                    " You have already told them the verdict on their move and the better one: "
-                    "do not repeat either, and ask nothing."
-                    if followup
-                    else " Then one question that points them at the idea."
-                )
-                + " Name no move the messages do not give. "
-                + NO_FIGURES
-            )
-            fallback = ""
         elif _ASK_OPPONENT_MOVE.search(said) and (their := self._last_opponent_move()) is not None:
             assert their.assessment is not None
             verdict = their.assessment
@@ -4259,35 +4182,35 @@ class Coach:
                     else None
                 )
                 faced = position.ply == record.move.ply - 1
+                board = position.board if faced else None
                 held = False
+                data = f" What {san} allowed, from the engine's line: {allowed}." if allowed else ""
                 if best:
                     # The better move played out and the pattern to keep, as the lesson says
                     # it -- not "the idea was a pin" and nothing more -- and said whole, what
                     # the lesson after the move said or not: they asked.
                     opener = f"{best} was better"
+                    rule = rule_of(facts, best, board=board, played=record.move.uci)
                     lesson, held = self._fresh_lesson(
                         opener,
                         lambda with_rule: lesson_template(
                             facts,
                             best,
                             opener,
-                            board=position.board if faced else None,
+                            board=board,
                             played=record.move.uci,
                             allowed=allowed,
                             with_rule=with_rule,
                             strong=self.strong_player,
                         ),
-                        rule_of(
-                            facts,
-                            best,
-                            board=position.board if faced else None,
-                            played=record.move.uci,
-                        ),
+                        rule,
                         facts,
                         asked=True,
                     )
                     lesson = _with_line(lesson, opener, best, facts)
                     fallback = (fallback + " " if fallback else "") + lesson
+                    given = rule if not held and not self.strong_player else None
+                    data += _lesson_data(board, best, record.move.uci, given)
                 elif allowed:
                     fallback = (fallback + " " if fallback else "") + _sentence(
                         allowed[0].upper() + allowed[1:]
@@ -4296,37 +4219,40 @@ class Coach:
                     fallback = f"That was {_rated(label)}."
                 reason = f"what {best} does, and " if best else ""
                 cost = (
-                    f" that cost {loss:.0%} of the game -- they asked, so say it"
+                    f" -- it cost {loss:.0%} of the game: they asked, so say it"
                     if asked_cost
-                    else " (what it cost is not theirs to hear unless they ask: no figures)"
+                    else ""
                 )
+                # A question of the coach's own after the answer is offered, not asked for:
+                # they asked theirs, and required, one came after every answer. On a follow-up
+                # the verdict is not said again: "say that plainly" beside "do not repeat
+                # either" asked for both (the prompt audit, 2026-09-28).
+                tell = "Say why" if followup and not answering else "Say that plainly, and say why"
                 directive = (
-                    f"They ask about the move they already played, {san}. Its verdict is in its "
-                    f"move message and is theirs in full: it was {_rated(label)}{cost}"
+                    f"They ask about the move they already played, {san}, from a position that "
+                    f"is past, so all of it may be said: it was {_rated(label)}{cost}"
                     + (f", {best} was better" if best else "")
                     + (f", and the idea was {idea}" if idea else "")
-                    + ". Say that plainly -- the position it was played from is past, so "
-                    "nothing about it is withheld; the disclosure level binds only the position "
-                    f"they face now -- and say why, concretely: {reason}what {san} missed or "
-                    "allowed, naming the pieces, squares or moves, from the sheet of the "
-                    "position they faced (its pattern, and its tactic when it names one)"
+                    + f". {tell}, concretely: {reason}what {san} missed or allowed, with the "
+                    "pieces, squares or moves from the sheet of the position they faced (its "
+                    "pattern, and its tactic when it names one)"
                     + (f" -- {RULE_HELD_MARK.lower()}: they heard one lately." if held else "")
                     + ("" if held else " -- and the pattern to keep.")
-                    + (
-                        f" What {san} allowed, from the engine's line: {allowed}."
-                        if allowed
-                        else ""
-                    )
+                    + data
                     + (
                         close + " Three sentences at most."
                         if answering
                         else follow
                         if followup
-                        else " Three sentences at most, then one question that makes them find "
-                        "on the board something your reply has not said."
+                        else " Three sentences at most, then, if you like, one question that "
+                        "sends them to find on the board something your reply has not said."
                     )
-                    + " Name moves bare, never with a move number in front. "
-                    f"{TIE_TO_THE_GAME}"
+                    + (
+                        " Name moves bare, never with a move number in front."
+                        if asked_cost
+                        else f" {NO_FIGURES}"
+                    )
+                    + f" {TIE_TO_THE_GAME}"
                 )
                 if followup and not asks:
                     fallback = ""  # a nod needs no template: nothing, rather than the lesson again
@@ -4387,17 +4313,22 @@ class Coach:
                 + NO_FIGURES
             )
         else:
+            # What is kept back is the level line's to say: "never reveal that unless the sheet
+            # lists it" stood here after the sheet had come to list everything (the prompt
+            # audit, 2026-09-28).
             directive = (
-                "Answer them directly and be honest about their own claim. If they proposed a "
-                "move, or named a square or piece, you may say it back and tell them plainly "
-                "whether it holds up, and what it does or allows, as the engine's word on it "
-                "gives it -- when the engine does not rate their move, say it is not "
-                "the strongest and, in general terms, why. When the engine's word on the move "
-                "or line they named is given above, that analysis is theirs to hear in full: "
-                "the score after it, how far behind the best, the reply, what the move does. "
-                "Only the engine's better move or line is withheld: never reveal that unless "
-                "the sheet lists it, but do point them toward the right idea"
-                + (" in words." if answering or (followup and not asks) else " with a question.")
+                "Answer them directly, and be honest about their own claim. When they propose a "
+                "move, or name a square or piece, say plainly whether it holds up and what it "
+                "does or allows, from the engine's word on it where given above -- theirs to "
+                "hear in full: the score after it, how far behind the best, the reply, what the "
+                "move does; when the engine does not rate their move, say it is not the "
+                "strongest and, in general terms, why. Of the position they face, keep back only "
+                "what the level line does, and point them toward the right idea"
+                + (
+                    " in words."
+                    if answering or (followup and not asks)
+                    else " -- with a question, if that serves."
+                )
                 + " What you already said in this position is under 'Said here': do not say "
                 "it again in other words; give them something it did not."
                 + (

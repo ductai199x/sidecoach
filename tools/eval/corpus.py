@@ -77,11 +77,9 @@ ANALYSIS_FIELDS = ("traps", "in_book", "defences", "threatens")
 QUICK_NOT_REQUIRED = frozenset({"candidate", "line", "stakes", "goal", "key_fact", "trap"})
 
 
-def quick_followup(request: _Request, directive: str) -> bool:
-    """Whether the request builds on an answer already spoken -- the template went out at
-    once and the model is told so (the coach then gives it no template of its own)."""
-    if "have just been shown" in directive or "already been shown" in directive:
-        return True
+def quick_followup(request: _Request) -> bool:
+    """Whether the request builds on an answer already spoken: a question with no template
+    of its own, the coach having said it since the move (or a nod, which needs none)."""
     return request.trigger.value == "user_ask" and not request.fallback and not request.must_name
 
 
@@ -578,27 +576,19 @@ def build_game(
                 continue
             cls = CLASSES[cls_id]
             # A figure is required only where the directive lets the coach say one: the
-            # lesson after a move is told "Do not quote the cost or any number".
-            no_numbers = getattr(coach_module, "NO_NUMBERS", None)
+            # lesson after a move is told "No figures".
             reqs = required(
                 cls,
                 m,
                 question=question,
-                numbers_allowed=not (no_numbers and no_numbers in directive_text),
+                numbers_allowed=coach_module.NO_FIGURES not in directive_text,
             )
-            quick = quick_followup(request, directive_text)
-            # A quick follow-up -- the template already spoken as the answer ("They asked
-            # what to play and have just been shown that it is Nf3...", "the quick answer
-            # they have already been shown; build on it, do not repeat it") -- is asked only
-            # to build on it: the move, the line, and the first hint's stakes (or the goal in
+            quick = quick_followup(request)
+            # A follow-up whose template was already said since the move is asked only to
+            # build on it: the move, the line, and the first hint's stakes (or the goal in
             # their place), key fact and trap it already said are not required again.
             if quick:
                 reqs = [f for f in reqs if f.key not in QUICK_NOT_REQUIRED]
-            # The engine's word on a move they named is spoken first, as the coach's own
-            # turn (the standing after it, how far behind the best, and at LINE the best
-            # move); the reply that builds on it is not asked to say those again.
-            if "have just been shown the engine's word" in directive_text:
-                reqs = [f for f in reqs if f.key not in ("named_verdict", "better_move")]
             # The master's note is about the move just played: it is the reference for the
             # items about that move and for nothing else asked in the same position.
             note_for_item = reference if cls_id in ABOUT_LAST_MOVE else None

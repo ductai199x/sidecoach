@@ -55,26 +55,11 @@ from sidecoach.events import (
 )
 from sidecoach.llm.base import ChatMessage
 
-# What the first hint may say, as the disclosure line and the directive state it: the key
-# fact is named on the board (Tai, 2026-09-24), so "no square" -- the rule before the first
-# hint was a lesson -- told the model to say less than the template.
-IDEA_LEVEL_WORDS = (
-    "the idea: what is at stake and the key fact on the board -- the pieces, squares and "
-    "their moves the facts name, the target's square too, even where the move goes -- with "
-    "the principle behind it; never the player's move itself, or which of their own pieces "
-    "makes it"
-)
 # Below the move level the model sees everything -- the engine lines, the legal moves, the
-# facts past the rung -- and says only what the rung allows; the reply is checked for the
-# answer before it is spoken (disclosure.leak_check).
-BEYOND_TITLE = (
-    "Past this level (for you to teach from; do not say the move, its square or the piece "
-    "that makes it)"
-)
-SEE_ALL_WORDS = (
-    "You see everything, the answer included, so the hint can be precise and true: say what "
-    "this level allows, built from what you know."
-)
+# facts past the rung -- so that the hint is precise; what a reply gives away of the answer
+# is logged (disclosure.leak_check), never a reason to refuse it. The Task's level line says
+# what the reply may give (`Coach._level_line`); the titles here say only what a section is.
+BEYOND_TITLE = "Beyond this level: the answer and how it works"
 
 # The engine lines the harness shows: the best three, then three weaker ones, each to
 # this many plies.
@@ -570,12 +555,6 @@ class Conversation:
             beyond = self._beyond_lines(record, board, level)
             if beyond:
                 out.append((BEYOND_TITLE, "\n".join(beyond)))
-            out.append(
-                (
-                    "Disclosure",
-                    f"Level {level.name.lower()}: {self._level_words(level)}. {SEE_ALL_WORDS}",
-                )
-            )
         # The inventory lists the checks and captures on offer, the answer among them.
         out.append(
             ("On the board (complete lists)", "\n".join(inventory_lines(board, user_colour)))
@@ -760,7 +739,7 @@ class Conversation:
         user_to_move = to_move == user_colour
         whose = "the player's" if user_to_move else "the opponent's"
         answer = (
-            "; the best first move is the answer they are finding: teach from it, never name it"
+            "; line 1's first move is the answer to the position they face"
             if user_to_move and level < DisclosureLevel.MOVE
             else ""
         )
@@ -849,6 +828,9 @@ class Conversation:
 
     # The facts in the order a coach reads them: what kind of moment, the goal and the
     # pattern, where to look, then the move.
+    # The templates' questions -- the idea rung's and the focus rung's -- are not among them:
+    # the model copied them word for word, and a question of its own is its to ask (the prompt
+    # audit, 2026-09-28). Nor the region: the ladder has had no region rung since 4b6f1b1.
     _FACT_KEYS = (
         "phase",
         "decisive",
@@ -859,11 +841,8 @@ class Conversation:
         "theme",
         "mechanism",
         "plan",
-        "question",
         "target",
         "piece",
-        "nudge",
-        "region",
         "why",
         "tactic",
         "threats",
@@ -874,22 +853,19 @@ class Conversation:
     _FACT_NAMES = {
         # The template's first hint whole: its stakes, key fact, principle and trap, several
         # of which exist nowhere else on the sheet. Without it the model was asked for "the
-        # stakes" and "the trap" and never given them (parity pass, 2026-09-25).
-        "situation": (
-            "the first hint in the board's own words, all of it true (to the player, as it "
-            "stands): the least a hint says"
-        ),
+        # stakes" and "the trap" and never given them (parity pass, 2026-09-25). Facts to teach
+        # from, not the least a reply says: told that, the model said it back, word for word
+        # in a third of the hints (the prompt audit, 2026-09-28).
+        "situation": "what a first hint rests on (to the player, as it stands)",
         "theme": "pattern",
         "mechanism": "how it works",
-        "question": "a question that sets them looking (to the player, as it stands)",
-        "nudge": "a question from the target to the move (to the player, as it stands)",
         "why": "the move and what it does",
         # Whose: the other side's moves, were the side to move to pass.
         # Named per side in `_fact_lines`: whose threats, and at what moment.
         "threats": "threats",
     }
     # The facts addressed to the player, kept in the second person.
-    _TO_THE_PLAYER = ("question", "nudge", "situation")
+    _TO_THE_PLAYER = ("situation",)
 
     @staticmethod
     def _facts_owner(user_to_move: bool) -> str:
@@ -915,11 +891,10 @@ class Conversation:
         level = level if user_to_move else DisclosureLevel.LINE
         visible = visible_facts(facts, level)
         if not user_to_move:
-            # The hints are for the side to move: on the opponent's turn the first hint and the
-            # two questions are the opponent's, and labelled "to the player" the model asked
-            # the player the opponent's question (parity pass 2, 2026-09-25).
-            for key in ("situation", "question", "nudge"):
-                visible.pop(key, None)
+            # The hints are for the side to move: on the opponent's turn the first hint is the
+            # opponent's, and labelled "to the player" the model asked the player the
+            # opponent's question (parity pass 2, 2026-09-25).
+            visible.pop("situation", None)
         side = "player" if user_to_move else "opponent"
         out: list[str] = []
         if record.analysis is not None and record.analysis.opening:
@@ -961,9 +936,6 @@ class Conversation:
         beside 19.Qxg2, which took the pawn, was taught as "the priority was to stop the
         promotion" (the dev audit, 2026-09-26)."""
         visible = visible_facts(facts, DisclosureLevel.LINE)
-        # The hint's questions were for finding the move; the lesson is on the move made.
-        for key in ("question", "nudge"):
-            visible.pop(key, None)
         if after is not None and visible.get("ideas"):
             visible["ideas"] = [i for i in visible["ideas"] if not _gone(str(i), after)]
         lines = self._fact_lines(visible, board, "player", past=True)
@@ -985,7 +957,7 @@ class Conversation:
         if past:
             names = {
                 **names,
-                "situation": "the first hint for that position (to the player, as it stood)",
+                "situation": "what a first hint rested on there (to the player, as it stood)",
             }
         out: list[str] = []
         for key in self._FACT_KEYS:
@@ -1226,13 +1198,3 @@ class Conversation:
         """An expected score from the mover's view, shown from the user's side."""
         value = expected if to_move == user_colour else 1.0 - expected
         return f"{value:.2f}"
-
-    @staticmethod
-    def _level_words(level: DisclosureLevel) -> str:
-        return {
-            DisclosureLevel.SILENT: "say nothing about the position",
-            DisclosureLevel.IDEA: IDEA_LEVEL_WORDS,
-            DisclosureLevel.FOCUS: "the idea, the target and the piece; not the move",
-            DisclosureLevel.MOVE: "the move and why it works may be named",
-            DisclosureLevel.LINE: "everything, the line included",
-        }[level]

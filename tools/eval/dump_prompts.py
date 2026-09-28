@@ -99,7 +99,7 @@ def write_game(out: Path, game: str, side: str, requests: list[Recorded]) -> Non
         )
         head = f"\n## {i}. ply {r.ply}: {r.trigger}, level {r.level}"
         lines.append(head + (f" ({flags})" if flags else ""))
-        lines.append(f"\n**Template (the floor):** {r.fallback or '(none)'}\n")
+        lines.append(f"\n**Template (the fallback):** {r.fallback or '(none)'}\n")
         lines.append(f"~{len(r.user) // CHARS_PER_TOKEN} tokens in the message\n")
         lines.append("```text\n" + r.user + "\n```")
     (out / f"{game}-{side}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -9,9 +9,9 @@ from sidecoach.coach import prompt
 from sidecoach.events import Label
 
 
-def test_the_system_message_is_persona_contract_rules_and_reply_format_in_order() -> None:
+def test_the_system_message_is_persona_contract_and_rules_in_order() -> None:
     text = prompt.system_message(with_corrections=False)
-    parts = (prompt.PERSONA, prompt.CONTRACT, prompt.RULES, prompt.REPLY_FORMAT)
+    parts = (prompt.PERSONA, prompt.CONTRACT, prompt.RULES)
     order = [text.index(part) for part in parts]
     assert order == sorted(order)
     # The contract explains what the harness holds: its sections, the marks of who said what
@@ -49,7 +49,7 @@ def test_corrections_are_appended_only_when_the_file_has_content(
     prompt.corrections.cache_clear()
     text = prompt.system_message()
     assert text.endswith("\nWhen asked about the opening: state its name as the message gives it.")
-    assert text.index(prompt.REPLY_FORMAT) < text.index("Lessons from earlier games")
+    assert text.index(prompt.RULES) < text.index("Lessons from earlier games")
     prompt.corrections.cache_clear()
 
     missing = tmp_path / "missing.md"

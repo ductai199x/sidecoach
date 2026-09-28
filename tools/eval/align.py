@@ -191,12 +191,10 @@ def gaps(item: dict, criteria: list) -> list[str]:
     # The coach's checks, stated: a figure where none was asked for, the earlier moments, the
     # move just played.
     trigger = item["trigger"]
-    figures_checked = trigger in ("decisive_question", "stuck", "post_move", "post_mistake") or (
-        trigger == "user_ask"
-        and (coach_module.NO_NUMBERS in directive or coach_module.NO_FIGURES in directive)
-    )
-    if figures_checked and not (
-        coach_module.NO_NUMBERS in directive or coach_module.NO_FIGURES in directive
+    # The figure check is keyed on the constant itself (`Speaker._notes`), so a remark that
+    # carries no figures unasked must carry it.
+    if trigger in ("decisive_question", "stuck", "post_move", "post_mistake") and (
+        coach_module.NO_FIGURES not in directive
     ):
         out.append("check figures: applied, never stated")
     if item.get("unlisted") is not None and not (
@@ -212,7 +210,8 @@ def gaps(item: dict, criteria: list) -> list[str]:
     if item.get("must_name") and not any(
         p in directive
         for p in (
-            "says at least this",
+            "the better move",
+            "was better",
             "named as the sheet names it",
             "give the move",
             "the move and what it does",

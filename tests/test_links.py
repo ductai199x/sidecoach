@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import chess
 
-from sidecoach.coach.coach import NO_EARLIER, TIE_TO_THE_GAME, unlisted_links
+from sidecoach.coach.coach import NO_EARLIER, NO_FIGURES, TIE_TO_THE_GAME, unlisted_links
 from sidecoach.coach.conversation import Conversation
 from sidecoach.coach.disclosure import PositionFacts
 from sidecoach.events import (
@@ -309,7 +309,7 @@ def test_why_was_that_bad_says_what_the_move_allowed() -> None:
         "What Qxd5 allowed, from the engine's line: after Qxd5, Rxa1+ wins a rook for a pawn."
         in directive
     )
-    assert "say why, concretely: what Rxa8+ does, and what Qxd5 missed or allowed" in directive
+    assert "why, concretely: what Rxa8+ does, and what Qxd5 missed or allowed" in directive
     assert "Name moves bare" in directive
 
 
@@ -322,6 +322,6 @@ def test_a_figure_in_a_hint_nobody_asked_a_figure_of_is_noted() -> None:
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
     coach.ask("give me a hint", 8.0)
     out = drain(coach)
-    assert "Quote no figure" in directive_of(sent(provider, 0))
+    assert NO_FIGURES in directive_of(sent(provider, 0))
     assert [m.text for m in out] == [reply] and len(provider.prompts) == 1
     assert "a figure in a remark nobody asked for: say it in words" in coach.spoken[-1].notes

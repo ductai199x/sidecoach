@@ -568,12 +568,11 @@ def test_quick_followups_owe_nothing_their_template_said():
 
     # Requests with only the fields `quick_followup` reads.
     quick: Any = SimpleNamespace(trigger=Trigger.USER_ASK, fallback="", must_name=())
-    assert corpus.quick_followup(quick, "the quick answer they have already been shown")
-    assert corpus.quick_followup(quick, "")
+    assert corpus.quick_followup(quick)
     hint: Any = SimpleNamespace(
         trigger=Trigger.USER_ASK, fallback="Only one move holds.", must_name=()
     )
-    assert not corpus.quick_followup(hint, "They asked for a hint.")
+    assert not corpus.quick_followup(hint)
     assert {"stakes", "key_fact", "trap"} <= corpus.QUICK_NOT_REQUIRED
 
 

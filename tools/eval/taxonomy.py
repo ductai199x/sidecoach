@@ -108,7 +108,7 @@ def _loss_words(loss: float, *, figure: bool = True) -> str:
     """The cost of a move as the reply should convey it, with the honest number: a 0.06
     loss was required as "about a tenth", and the writer wrote "6%, roughly a tenth".
     Without `figure` the words alone: where the coach is told to quote no number (the lesson
-    after a move, NO_NUMBERS), a figure is not what the reply owes."""
+    after a move, NO_FIGURES), a figure is not what the reply owes."""
     if loss < 0.005:
         return "nothing"
     pct = f" (about {round(loss * 100)}% of the game)" if figure else ""

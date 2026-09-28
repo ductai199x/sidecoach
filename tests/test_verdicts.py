@@ -171,8 +171,8 @@ def test_a_good_move_goes_to_the_model_which_names_the_better_one() -> None:
     assert len(provider.prompts) == 1, "the model, for the better move"
     directive = provider.prompts[0][1][-1]["content"]
     # The label said, which the judge asks the sense of: "fine" alone was said of inaccuracies.
-    assert "which was good: playable, not the strongest" in directive and "Qxf7#" in directive
-    assert "Do not open with the move they played" in directive
+    assert "which was good: sound, a little behind Qxf7#" in directive
+    assert "tells them nothing: do not open with it" in directive
     coach, provider = scripted_coach(["never used"])
     texts = _played(coach, provider, "Nc3", Label.EXCELLENT)
     assert texts and not texts[0].startswith("Nc3") and provider.prompts == [], "the board's word"
@@ -191,7 +191,7 @@ def test_a_great_or_brilliant_move_gets_the_models_delight() -> None:
     assert len(provider.prompts) == 1
     directive = provider.prompts[0][1][-1]["content"]
     assert "Show some delight" in directive and "great" in directive
-    assert "Do not open with the move they played" in directive
+    assert "tells them nothing: do not open with it" in directive
     assert coach.speaker.provider is provider, "the main model, not the routine copy"
     # The reply failing, the board's own line stands in: the mate.
     coach, provider = scripted_coach(["", ""])
