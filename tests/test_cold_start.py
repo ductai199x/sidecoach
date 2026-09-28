@@ -501,6 +501,55 @@ def test_a_board_without_coordinates_is_explained_as_its_orientation(tmp_path: P
     assert not _squares_off(live.reconciler.board, chess.Board(PUZZLE))
 
 
+def test_a_flip_teaches_labels_that_read_no_side_and_the_next_puzzle_turns_itself(
+    tmp_path: Path,
+) -> None:
+    """Tai's Pixel, 2026-09-27: a start seen through a lock off its board cached the labels
+    as solid blocks, so every puzzle asked for Flip, and the side flipped to stood over the
+    next puzzle, shown from the other side, which was read on its head and no move of it
+    was ever found. Now the Flip reads the board on the screen at once, the labels learn
+    from it and are cached with the set, and the next puzzle turns round by its labels,
+    the Flip notwithstanding."""
+    from sidecoach.events import BoardUnread
+    from sidecoach.vision.coordinates import read_bottom_side
+
+    cache = ThemeCache(tmp_path)
+    _learn(cache, "staunty")
+    model_palette = _palette(cache)
+    [(key, model)] = cache.candidates(*model_palette)
+    model.rank_labels = {rank: np.ones((24, 24), dtype=bool) for rank in range(1, 9)}
+    cache.save(model, key=key)
+    black = chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1PN2/PBP2PPP/R3KB1R b KQkq - 0 1")
+    frame = synthetic_board(
+        board=black, theme="green", style="staunty", bottom=Side.BLACK, coordinates=True
+    )
+    live = GamePipeline(cache=cache)
+    events = _watch(live, frame, 8.0)
+    assert [e.reason for e in events if isinstance(e, BoardUnread)] == ["orientation"]
+    assert live.reconciler is None or not live.reconciler.started
+    # The panel's Flip: the side told, and the board read that way now.
+    live.forced_bottom = Side.BLACK
+    events = live.reorient(frame, GEOM, Side.BLACK, 10.0, told=True)
+    assert any(isinstance(e, GameStarted) for e in events)
+    assert live.reconciler is not None and live.bottom is Side.BLACK
+    assert not _squares_off(live.reconciler.board, black)
+    [(_, cached)] = cache.candidates(*model_palette)
+    assert read_bottom_side(frame, GEOM, cached.rank_labels) is Side.BLACK, "not cached"
+    # The next puzzle, from White's side: its labels turn it, the Flip standing or not.
+    events = _watch(live, _puzzle("staunty"), 3.0, start=20.0)
+    assert any(isinstance(e, GameStarted) for e in events)
+    assert live.bottom is Side.WHITE and live.reconciler is not None
+    assert not _squares_off(live.reconciler.board, chess.Board(PUZZLE))
+
+
+def _palette(cache: ThemeCache) -> tuple[np.ndarray, np.ndarray]:
+    """The board colours of the one set in `cache`."""
+    [path] = cache.directory.glob("theme-*.pkl")
+    palette = cache._palette(path)
+    assert palette is not None
+    return palette
+
+
 def test_the_next_puzzle_from_the_other_side_is_turned_round_at_once(
     tmp_path: Path, monkeypatch
 ) -> None:

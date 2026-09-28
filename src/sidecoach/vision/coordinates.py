@@ -30,6 +30,12 @@ _CORNER_W = 0.20  # ... and this fraction of its width (a rook reaches in from t
 # was learned but the 8. A wood grain strays 20 at most.
 _INK = 30.0
 _MIN_INK = 4  # fewer foreground pixels than this is no label
+# A corner window more than this full of ink holds no digit: the square's colour was taken
+# from its neighbour, so the cell is cut off its square -- a lock a tenth of a cell out is
+# enough. A digit fills a quarter to a third of the window, a cut that far out nine tenths
+# or all of it (Tai's Pixel, 2026-09-27: a start seen through a lock that far out cached
+# all eight labels as solid blocks, and every edge digit then read as the same one).
+_CORNER_FULL = 0.6
 
 
 def _square_colour(cell: np.ndarray) -> np.ndarray:
@@ -66,7 +72,7 @@ def _corner_glyph(cell: np.ndarray) -> np.ndarray | None:
     background = _square_colour(cell)
     diff = np.linalg.norm(corner.astype(float) - background, axis=2)
     mask = diff > _INK
-    if int(mask.sum()) < _MIN_INK:
+    if int(mask.sum()) < _MIN_INK or mask.mean() > _CORNER_FULL:
         return None
     # The digit is one component of ink, inset from the cell's edge. A lock a pixel off
     # puts a strip of the neighbouring cell along the window's top or left edge, and a
@@ -99,7 +105,9 @@ def learn_rank_labels(
     """Capture the rank-digit exemplar in each left-edge cell, labelled by its known value.
 
     With `bottom` known (the theme is learned from the start position), the left-edge cell in
-    row r shows rank 8-r when White is at the bottom, r+1 when Black is.
+    row r shows rank 8-r when White is at the bottom, r+1 when Black is. Labels that do not
+    read `bottom` back from the frame they were learned from are none: kept, they would say
+    nothing or the wrong side on every board after it.
     """
     labels: dict[int, np.ndarray] = {}
     for row in range(8):
@@ -107,7 +115,7 @@ def learn_rank_labels(
         glyph = _corner_glyph(geometry.crop(frame, row, 0))
         if glyph is not None:
             labels[rank] = glyph
-    return labels
+    return labels if read_bottom_side(frame, geometry, labels) == bottom else {}
 
 
 def _iou(a: np.ndarray, b: np.ndarray) -> float:

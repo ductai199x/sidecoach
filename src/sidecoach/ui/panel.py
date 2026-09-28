@@ -2456,7 +2456,8 @@ class PanelEngine:
         -- had its orientation from the labels or from the game before, which can be
         wrong (a puzzle for Black read as White's, 2026-09-20): flipping re-reads the
         screen with the other side at the bottom and begins again from that. With no game
-        running, flipping chooses the side the next cold read assumes at the bottom.
+        running, the board on the screen is read that way; with none to read, flipping
+        chooses the side the next cold read assumes when the labels say nothing.
         """
         import chess
 
@@ -2469,16 +2470,25 @@ class PanelEngine:
                 "user", "info", "view flipped (the game is still read from the screen as is)"
             )
             return []
-        current = self._forced_bottom or pipe.bottom or Side.WHITE
+        # The side the board is read with, when a game is: the labels may have turned it
+        # since the last Flip.
+        running = pipe.bottom if rec is not None and rec.started else None
+        current = running or self._forced_bottom or pipe.bottom or Side.WHITE
         target = current.other
         self._forced_bottom = target
         pipe.forced_bottom = target
         self._set(bottom=target.value)
+        # The board on the screen is read that way now, whether a game was running or it
+        # was the one left unread for its side -- and its labels learn the side from it.
+        events = (
+            pipe.reorient(frame, geom, target, ts, told=True)
+            if frame is not None and geom is not None
+            else []
+        )
+        if events:
+            self._emit("user", "info", f"board re-read with {target.value} at the bottom")
+            return events
         if rec is not None and rec.started:
-            events = pipe.reorient(frame, geom, target, ts) if frame is not None else []
-            if events:
-                self._emit("user", "info", f"board re-read with {target.value} at the bottom")
-                return events
             # Mid-move, or unreadable now: forget the game; the next quiet frame is read
             # cold with this side at the bottom.
             events = self._end(pipe, "forget", ts)

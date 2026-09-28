@@ -151,8 +151,8 @@ _RESET_KEEPS = frozenset(
 class GamePipeline:
     start_frames_needed: int = 2
     tracker: BoardTracker = field(default_factory=BoardTracker)
-    # The side at the bottom for a board read cold, when set (the panel's Flip, for a board
-    # whose coordinate labels cannot be read or read wrong); the labels otherwise.
+    # The side at the bottom for a board read cold whose coordinate labels say nothing, when
+    # set (the panel's Flip); labels that read win over it.
     forced_bottom: Side | None = None
     model: ThemeModel | None = None
     reconciler: Reconciler | None = None
@@ -538,14 +538,13 @@ class GamePipeline:
         a Resync (the takeback fix) turned nothing round at all (Tai's puzzles on the Pixel,
         2026-09-23: five to ten seconds, and stuck). The labels cost a few milliseconds;
         two reads a moment apart must agree, so a piece dragged over the edge is not taken
-        for the board turning. A side the person chose with Flip stands."""
+        for the board turning. The labels are read even after a Flip: the side the person
+        chose is for a board they say nothing about, and a Flip that stood over them read
+        the next puzzle from the other side on its head, where no move was ever found
+        (Tai, 2026-09-27: "The board white or black should be automatically read ... every
+        time there's a sync or resync")."""
         rec = self.reconciler
-        if (
-            rec is None
-            or self.model is None
-            or self.forced_bottom is not None
-            or rec.unexplained_frames < 1
-        ):
+        if rec is None or self.model is None or rec.unexplained_frames < 1:
             self._flip_seen = None
             return []
         seen = self._flip_seen
@@ -593,6 +592,7 @@ class GamePipeline:
         *,
         end_previous: bool = True,
         read: _ColdRead | None = None,
+        told: bool = False,
     ) -> list[Event]:
         """Read the board again with `bottom` at the bottom and begin again from what it
         shows: the panel's Flip on a game joined from the middle, or a resync whose labels
@@ -600,13 +600,44 @@ class GamePipeline:
         happens when the board cannot be read cleanly now (a piece in flight): the caller
         may set `forced_bottom` and forget the game, and the automatic cold start reads it
         that way on the next quiet frame. The frame's own readings serve when they can
-        (`_reread`); a cold read from the theme cache otherwise."""
+        (`_reread`); a cold read from the theme cache otherwise. `told`: the person said
+        which side is at the bottom (Flip), and the labels learn from them where they did
+        not say it themselves (`_learn_labels`)."""
         if read is None:
             read = self._reread(bottom) or self._cold_read(frame, geometry, bottom)
         if read is None:
             return []
         events = self._end_in_progress("board reoriented") if end_previous else []
-        return events + self._adopt_cold(*read, ts=ts)
+        events += self._adopt_cold(*read, ts=ts)
+        if told and events:
+            self._learn_labels(frame, geometry)
+        return events
+
+    def _learn_labels(self, frame: np.ndarray, geometry: BoardGeometry) -> None:
+        """The coordinate labels learned from a board whose side the person told, when they
+        did not read that side themselves -- learned where a start position was seen
+        through a lock off its board, or not learned at all -- and the set saved with
+        them, so the next board of the set reads its own side. Only a side told for this
+        board teaches: a Flip left standing from the last puzzle would teach the next one,
+        shown from the other side, upside down, and every read after it."""
+        model, bottom = self.model, self.bottom
+        if model is None or bottom is None:
+            return
+        if read_bottom_side(frame, geometry, model.rank_labels) == bottom:
+            return
+        labels = learn_rank_labels(frame, geometry, bottom)
+        if not labels:
+            return
+        model.rank_labels = labels
+        vectors = model.exemplar_vectors
+        if self.cache is None or model.light_bg is None or model.dark_bg is None or vectors is None:
+            return
+        for key, cached in self.cache.candidates(model.light_bg, model.dark_bg):
+            if cached.exemplar_vectors is not None and np.array_equal(
+                cached.exemplar_vectors, vectors
+            ):
+                self.cache.save(model, key=key)
+                return
 
     def _end_in_progress(self, reason: str) -> list[Event]:
         previous = self.reconciler
@@ -741,9 +772,11 @@ class GamePipeline:
         bottom: Side | None,
         *,
         asked: bool = False,
+        fallback: Side | None = None,
     ) -> tuple[ThemeModel, Side, Readings, chess.Board] | None:
         """The board read cold from the theme cache: a cached recogniser for its colours,
-        the orientation (`bottom`, or the coordinate labels), the readings and the
+        the orientation (`bottom`, else the coordinate labels, else `fallback` -- the side
+        a Flip chose, for a board whose labels say nothing), the readings and the
         placement they make -- or None when no learned set gives all of those.
 
         One board's colours can carry several learned sets. Each reads the board; a set
@@ -759,9 +792,7 @@ class GamePipeline:
             return None
         best: tuple[float, tuple[ThemeModel, Side, Readings, chess.Board]] | None = None
         for _key, model in self.cache.candidates(*sampled):
-            side = bottom
-            if side is None:
-                side = read_bottom_side(frame, geometry, model.rank_labels)
+            side = bottom or read_bottom_side(frame, geometry, model.rank_labels) or fallback
             if side is None:
                 continue  # coordinates off, or not this set's; the caller may say the side
             readings = model.classify_frame(frame, geometry)
@@ -801,7 +832,7 @@ class GamePipeline:
         assert self.board is not None
         seen = (self.board.region, round(self.board.cell_px, 2), self.forced_bottom)
         if self._cold_last is None or self._cold_last[0] != seen:
-            read = self._cold_read(frame, geometry, self.forced_bottom)
+            read = self._cold_read(frame, geometry, None, fallback=self.forced_bottom)
             self._cold_last = (seen, read)
         else:
             read = self._cold_last[1]
@@ -859,9 +890,7 @@ class GamePipeline:
             return None  # the two square colours cannot be told apart: not a board to read
         for _key, model in self.cache.candidates(*sampled):
             readings = model.classify_frame(frame, geometry)
-            told = self.forced_bottom
-            if told is None:
-                told = read_bottom_side(frame, geometry, model.rank_labels)
+            told = read_bottom_side(frame, geometry, model.rank_labels) or self.forced_bottom
             for side in [told] if told is not None else [Side.WHITE, Side.BLACK]:
                 shown = loose_placement(by_square(readings, side))
                 if Reconciler._adopt_placement(shown) is not None:
