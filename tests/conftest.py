@@ -16,13 +16,15 @@ import pytest
 
 # The tests that run the embedding net (vision/embedding.py: the synthetic vision suite,
 # the panel over rendered games) are dealt into this many xdist groups, so this many
-# workers hold a CUDA session (half a GB each) and the GPU stays free for the desktop;
-# everything else spreads over every worker (`--dist loadgroup` in pyproject; the group
-# is the mark below). Measured 2026-09-20 on the 3090 Ti with twelve workers: 4 groups
-# 124 s, 8 groups 80 s, all twelve 70 s -- and it was the voice models, loaded in every
-# worker by the panel tests, that had the GPU at 18 GB and the machine lagging (Tai:
-# "the rest should run on all 24"); they no longer load (see PanelEngine._voice_settings).
-EMBEDDER_WORKERS = int(os.environ.get("SIDECOACH_TEST_EMBEDDER_WORKERS", "8"))
+# workers hold a CUDA session (half a GB each); everything else spreads over every worker
+# (`--dist loadgroup` in pyproject; the group is the mark below). The voice models, loaded
+# in every worker by the panel tests, once had the GPU at 18 GB and the machine lagging
+# (Tai: "the rest should run on all 24"); they no longer load (PanelEngine._voice_settings).
+# Measured 2026-09-28 on 24 workers, once the net really was on the GPU (a broken ml_dtypes
+# had kept it on the CPU: voice/runtime._probe_cuda) and OpenCV kept to a thread a worker
+# (pytest_configure): 8 groups 119 s, 16 groups 93 s and 78 s with one OpenCV thread, 24
+# no faster -- the vision suite is our own Python on the CPU, the net 10 % of it.
+EMBEDDER_WORKERS = int(os.environ.get("SIDECOACH_TEST_EMBEDDER_WORKERS", "16"))
 # Test modules that load the net without the `vision` mark.
 EMBEDDER_MODULES = {
     "test_clock_pipeline",
@@ -99,6 +101,12 @@ def _below_normal_priority() -> None:
 
 def pytest_configure(config: pytest.Config) -> None:
     _below_normal_priority()  # the controller and, since this runs in each, every worker
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        # One OpenCV thread a worker: every worker's own pool, one thread a core each, had
+        # two dozen workers' pools fighting over the cores.
+        import cv2
+
+        cv2.setNumThreads(1)
     # No panel built by a test loads Kokoro or Parakeet; the one that wants the real recogniser
     # says so (PanelEngine(voice_models=True)).
     os.environ.setdefault("SIDECOACH_VOICE_MODELS", "0")
