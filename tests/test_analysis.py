@@ -647,9 +647,136 @@ def test_while_no_move_waits_the_engine_looks_ahead_and_a_move_there_is_answered
         before = len(fake.calls)
         analyser.submit_move("g", start, chess.Move.from_uci("e2e4"), 1)
         got = _drain(analyser)
-    assert [type(e).__name__ for e in got] == ["Analysis", "MoveAssessment", "Analysis"]
+    assert _kinds(got) == ["Analysis(early)", "Analysis", "MoveAssessment", "Analysis"]
     assert _after("e4") not in fake.calls[before:], "the position after e4 was searched again"
     assert annotator.ahead_hits == 1
+
+
+class _DepthEngine(FakeEngine):
+    """A fake engine that answers with the depth it was asked for."""
+
+    def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
+        lines = super().analyse(board, **kwargs)
+        depth = int(kwargs.get("depth") or 0)  # type: ignore[call-overload]
+        return [line.model_copy(update={"depth": depth}) for line in lines]
+
+
+def _kinds(events: list[object]) -> list[str]:
+    out = []
+    for e in events:
+        name = type(e).__name__
+        out.append(f"{name}(early)" if getattr(e, "provisional", False) else name)
+    return out
+
+
+def test_the_position_the_player_faces_is_told_early_and_then_whole() -> None:
+    """Tai, 2026-09-28: "first usable answer is depth 12 ... the computation continues until
+    max depth of 18". After the opponent's move, and for a position begun from, the position
+    the player faces is measured at EARLY_DEPTH and delivered, provisional, before the verdict
+    and the full depth; after the player's own move the verdict comes first, as it did."""
+    from sidecoach.analysis.annotator import EARLY_DEPTH
+
+    board = chess.Board()
+    fake = _DepthEngine({})
+    with Analyser(GameAnnotator(engine=fake, depth=18, with_threats=False)) as analyser:
+        analyser.submit_position("g", board, 0)
+        started = _drain(analyser)
+        analyser.submit_move("g", board, chess.Move.from_uci("e2e4"), 1, by_user=True)
+        own = _drain(analyser)
+        board.push_san("e4")
+        analyser.submit_move("g", board, chess.Move.from_uci("e7e5"), 2, by_user=False)
+        reply = _drain(analyser)
+    assert _kinds(started) == ["Analysis(early)", "Analysis"]
+    assert _kinds(own) == ["MoveAssessment", "Analysis"]
+    assert _kinds(reply) == ["Analysis(early)", "MoveAssessment", "Analysis"]
+    early, full = reply[0], reply[2]
+    assert isinstance(early, Analysis) and isinstance(full, Analysis)
+    assert early.lines[0].depth == EARLY_DEPTH and full.lines[0].depth == 18
+    assert early.fen == full.fen
+
+
+def test_a_position_looked_at_ahead_is_whole_at_once() -> None:
+    """The position the player faces measured ahead of the move: no early word, the whole
+    one at once."""
+    start = chess.Board()
+    fake = _DepthEngine({start.fen(): [_line("e2e4")], _after("e4"): [_line("e7e5")]})
+    annotator = GameAnnotator(engine=fake, depth=18, with_threats=False)
+    with Analyser(annotator, look_ahead=1) as analyser:
+        analyser.submit_position("g", start, 0)
+        _drain(analyser)
+        assert _until(lambda: analyser.looked == 2), analyser.looked
+        analyser.submit_move("g", start, chess.Move.from_uci("e2e4"), 1, by_user=True)
+        _drain(analyser)
+        after = chess.Board()
+        after.push_san("e4")
+        analyser.submit_move("g", after, chess.Move.from_uci("e7e5"), 2, by_user=False)
+        reply = _drain(analyser)
+    assert _kinds(reply) == ["MoveAssessment", "Analysis"]
+    assert annotator.ahead_hits == 2
+
+
+class _YieldOnceEngine(FakeEngine):
+    """A fake engine whose first interruptible search runs until `interrupt` stops it; the
+    ones after answer at once."""
+
+    def __init__(self, answers: dict[str, list[Line]]) -> None:
+        super().__init__(answers)
+        self.held = False
+
+    def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
+        from sidecoach.analysis.engine import Interrupted
+
+        if self._interruptible and not self.held:
+            self.held = True
+            self._stopped.wait(5)
+            raise Interrupted
+        return super().analyse(board, **kwargs)
+
+
+def test_the_position_the_player_left_gives_way_to_the_one_they_face() -> None:
+    """Tai's puzzles, 2026-09-28: the site replies 0.6 s after the player's move, and the
+    position they then faced waited behind the full measure of the one they had left. That
+    measure gives way to the reply, whose position is told first, and is taken up again
+    after it -- still owed until it is."""
+    fake = _YieldOnceEngine({})
+    board = chess.Board()
+    with Analyser(GameAnnotator(engine=fake, depth=18, with_threats=False)) as analyser:
+        analyser.submit_move("g", board, chess.Move.from_uci("e2e4"), 1, by_user=True)
+        assert _until(lambda: analyser._looking), "the full measure never started"
+        board.push_san("e4")
+        analyser.submit_move("g", board, chess.Move.from_uci("e7e5"), 2, by_user=False)
+        got = _drain(analyser)
+    order = [
+        (type(e).__name__, getattr(e, "ply", None), getattr(e, "provisional", False)) for e in got
+    ]
+    assert order == [
+        ("MoveAssessment", 1, False),
+        ("Analysis", 2, True),
+        ("MoveAssessment", 2, False),
+        ("Analysis", 2, False),
+        ("Analysis", 1, False),
+    ], order
+    assert analyser.pending == 0
+
+
+@needs_engine
+def test_each_depth_is_delivered_as_the_search_finishes_it(engine: Engine) -> None:
+    """Tai, 2026-09-28: "if the consumers read after stockfish reaches depth > 12 then they
+    will get whatever lines that is available at the time". The position the player faces is
+    delivered at the early depth, then at every depth the full search finishes on its way,
+    provisional, then whole at the full depth -- the same position, deeper each time."""
+    from sidecoach.analysis.annotator import EARLY_DEPTH
+
+    board = chess.Board(SCHOLAR)
+    annotator = GameAnnotator(engine=engine, depth=16, multipv=3, with_threats=False)
+    with Analyser(annotator) as analyser:
+        analyser.submit_position("g", board, 0)
+        got = [e for e in _drain(analyser, timeout=30) if isinstance(e, Analysis)]
+    depths = [e.lines[0].depth for e in got]
+    assert [e.provisional for e in got] == [True] * (len(got) - 1) + [False]
+    assert depths[0] == EARLY_DEPTH and depths[-1] == 16
+    assert depths == sorted(depths) and len(set(depths)) == len(depths), depths
+    assert {e.fen for e in got} == {board.fen()}
 
 
 class _StoppableEngine(FakeEngine):
@@ -673,7 +800,7 @@ def test_a_move_played_stops_the_look_ahead_at_once() -> None:
         analyser.submit_position("g", chess.Board(), 0)
         assert _until(lambda: analyser._looking), "never looked ahead"
         t = time.monotonic()
-        analyser.submit_move("g", chess.Board(), chess.Move.from_uci("g1f3"), 1)
+        analyser.submit_move("g", chess.Board(), chess.Move.from_uci("g1f3"), 1, by_user=False)
         assert _until(lambda: not analyser._looking and analyser.pending == 0, 1.0)
         assert time.monotonic() - t < 0.5
         got = _drain(analyser)

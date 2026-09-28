@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -145,10 +145,12 @@ class Engine:
         multipv: int | None = None,
         pv_plies: int | None = None,
         carry_best: bool = False,
+        on_depth: Callable[[list[Line]], None] | None = None,
     ) -> list[Line]:
         """The best lines for `board`, best first, from the side to move's point of view.
         `carry_best`: a best line shorter than MIN_BEST_PLIES is carried on to it -- for
         the coach, who reads the line for its point; a verdict needs only the score.
+        `on_depth`: handed each depth's lines as the search finishes it, the search going on.
 
         A finished position has no lines: there is nothing to play. Callers read its value
         from the result instead, with `sidecoach.analysis.score.terminal_expected_score`.
@@ -163,19 +165,24 @@ class Engine:
         limit = chess.engine.Limit(depth=depth, time=capped)
         wanted = multipv if multipv is not None else self.multipv
         wanted = max(1, min(wanted, board.legal_moves.count()))
-        with self._lock:
-            infos = self._analyse_with_restart(board, limit, wanted)
         plies = pv_plies if pv_plies is not None else self.pv_plies
-        lines = [
-            _line(
-                info,
-                board,
-                max(plies, MIN_BEST_PLIES) if carry_best and i == 0 else plies,
-                self.score_model,
-            )
-            for i, info in enumerate(infos)
-        ]
-        lines = [line for line in lines if line.moves]
+
+        def as_lines(infos: list[chess.engine.InfoDict], carry: bool) -> list[Line]:
+            lines = [
+                _line(
+                    info,
+                    board,
+                    max(plies, MIN_BEST_PLIES) if carry and i == 0 else plies,
+                    self.score_model,
+                )
+                for i, info in enumerate(infos)
+            ]
+            return [line for line in lines if line.moves]
+
+        depths = None if on_depth is None else (lambda infos: on_depth(as_lines(infos, False)))
+        with self._lock:
+            infos = self._analyse_with_restart(board, limit, wanted, depths)
+        lines = as_lines(infos, carry_best)
         if carry_best and lines and len(lines[0].moves) < MIN_BEST_PLIES:
             lines[0] = self._carried_on(board, lines[0], MIN_BEST_PLIES)
         return lines
@@ -222,14 +229,18 @@ class Engine:
                 search.stop()
 
     def _analyse_with_restart(
-        self, board: chess.Board, limit: chess.engine.Limit, multipv: int
+        self,
+        board: chess.Board,
+        limit: chess.engine.Limit,
+        multipv: int,
+        on_depth: Callable[[list[chess.engine.InfoDict]], None] | None = None,
     ) -> list[chess.engine.InfoDict]:
         for attempt in (1, 2):
             self.open()
             assert self._engine is not None
             try:
-                if self._interruptible:
-                    return self._stoppable(board, limit, multipv)
+                if self._interruptible or on_depth is not None:
+                    return self._streamed(board, limit, multipv, on_depth)
                 return list(self._engine.analyse(board, limit, multipv=multipv))
             except (chess.engine.EngineTerminatedError, BrokenPipeError) as exc:
                 self.close()
@@ -237,23 +248,39 @@ class Engine:
                     raise EngineUnavailable(f"engine died twice on {board.fen()}: {exc}") from exc
         raise AssertionError("unreachable")
 
-    def _stoppable(
-        self, board: chess.Board, limit: chess.engine.Limit, multipv: int
+    def _streamed(
+        self,
+        board: chess.Board,
+        limit: chess.engine.Limit,
+        multipv: int,
+        on_depth: Callable[[list[chess.engine.InfoDict]], None] | None,
     ) -> list[chess.engine.InfoDict]:
-        """`analyse`'s search, run so that `interrupt` can stop it."""
-        if self._stopped.is_set():
+        """`analyse`'s search, read as it goes: each depth handed to `on_depth` once its
+        last line is in (Stockfish reports a depth's lines best first), and, inside
+        `interruptible`, stopped by `interrupt`."""
+        stoppable = self._interruptible
+        if stoppable and self._stopped.is_set():
             raise Interrupted
         assert self._engine is not None
         with self._engine.analysis(board, limit, multipv=multipv) as search:
-            self._search = search
+            self._search = search if stoppable else None
             try:
-                if self._stopped.is_set():  # interrupted before the search was in reach
+                if stoppable and self._stopped.is_set():  # interrupted before it was in reach
                     search.stop()
-                search.wait()
+                latest: dict[int, chess.engine.InfoDict] = {}
+                done = 0
+                for info in search:
+                    rank, depth = info.get("multipv", 1), info.get("depth")
+                    if depth is None or not info.get("pv"):
+                        continue
+                    latest[rank] = info
+                    if on_depth is not None and rank == multipv and depth > done:
+                        done = depth
+                        on_depth([latest[k] for k in sorted(latest)])
                 infos = list(search.multipv)
             finally:
                 self._search = None
-        if self._stopped.is_set():
+        if stoppable and self._stopped.is_set():
             raise Interrupted
         return infos
 

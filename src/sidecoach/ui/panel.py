@@ -2120,7 +2120,12 @@ class PanelEngine:
                     signals.append("only move")
                 tail = f"  (score {score}, d{depth})"
                 threat_text = ("; threats " + ", ".join(threats[:3])) if threats else ""
-                if signals:
+                if event.provisional:
+                    # Measured early, the full depth to follow: its line is the news.
+                    self._emit(
+                        "engine", "debug", f"early ply {event.ply}" + threat_text + tail, **data
+                    )
+                elif signals:
                     self._emit(
                         "engine",
                         "info",

@@ -198,6 +198,10 @@ class Analysis(Event):
     # The game is still in the opening book at this position (`opening` is the deepest line
     # it passed through, and stays after the game leaves the book).
     in_book: bool = False
+    # The position measured early (`annotator.EARLY_DEPTH`), the full depth to follow: what
+    # the player asks is answered from it at once; the coach's own words, a verdict and the
+    # record wait for the full depth.
+    provisional: bool = False
 
 
 class Severity(StrEnum):

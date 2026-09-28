@@ -200,6 +200,8 @@ class Profiler:
         if isinstance(event, MovePlayed):
             return self._move(game, event, ts)
         if isinstance(event, Analysis):
+            if event.provisional:
+                return []  # the record takes the full depth, which follows
             return [*self._analysis(game, event), *self._maybe_review(game, ts)]
         if isinstance(event, MoveAssessment):
             return [*self._assessment(game, event), *self._maybe_review(game, ts)]

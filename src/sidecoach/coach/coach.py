@@ -2825,6 +2825,9 @@ class Coach:
         position = self.positions.get(event.ply)
         if position is None or position.board.fen() != event.fen:
             return
+        full = position.analysis is not None and not position.analysis.provisional
+        if event.provisional and full:
+            return  # the full depth is in already
         position.analysis = event
         leads: dict[str, str] = {}
 
@@ -2836,6 +2839,15 @@ class Coach:
             position.board, event, last_move=position.last_move, user=self.user_colour, pick=peek
         )
         position.leads = leads
+        if event.provisional:
+            # Measured early, the full depth to follow: what the player asks is answered
+            # from it now; the coach's own words -- a lesson, the decisive question -- and
+            # the conversation's record wait for the full depth.
+            if position is self._current and self._pending_ask is not None:
+                text, _asked = self._pending_ask
+                self._pending_ask = None
+                self.ask(text, ts)
+            return
         self.conversation.analysed(event, position.facts)
         if self._held_lesson is not None and self._held_lesson[3].ply == event.ply:
             self._release_lesson(ts)  # what the move allowed is known now

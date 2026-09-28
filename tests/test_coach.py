@@ -987,6 +987,37 @@ def test_asking_before_the_engine_has_looked_is_answered_when_it_has() -> None:
     assert "One moment" not in answered[0].text
 
 
+def test_an_early_analysis_answers_a_question_waiting_on_it() -> None:
+    """Tai, 2026-09-28: "first usable answer is depth 12 ... the computation continues until
+    max depth of 18". A question asked before the engine has looked is answered from the
+    early analysis, the full depth still to come."""
+    coach, _ = _coach([])
+    _play_to_scholar(coach)
+    coach.ask("hint", 6.5)
+    assert [m.text for m in _messages(coach)] == ["One moment -- still looking at this position."]
+    coach.on_event(_mate_analysis(6).model_copy(update={"provisional": True}), 7.0)
+    answered = _messages(coach)
+    assert answered and all(m.trigger is Trigger.USER_ASK for m in answered)
+
+
+def test_the_coachs_own_words_wait_for_the_full_depth() -> None:
+    """The decisive question is the coach's own: an early analysis asks nothing, the full
+    depth does -- and an early one that comes after it replaces nothing."""
+    coach, _ = _coach(
+        ["You can mate right now: their king on e8 is short of squares. Which check does it?"]
+    )
+    _play_to_scholar(coach)
+    early = _mate_analysis(6).model_copy(update={"provisional": True})
+    coach.on_event(early, 7.0)
+    assert _messages(coach) == []
+    coach.on_event(_mate_analysis(6), 8.0)
+    out = _messages(coach)
+    assert [m.trigger for m in out] == [Trigger.DECISIVE_QUESTION]
+    coach.on_event(early, 9.0)
+    analysis = coach.positions[6].analysis
+    assert analysis is not None and not analysis.provisional
+
+
 # The puzzle of Tai's desktop, 2026-09-24: Black to move, 1...Qd1+ 2.Rxd1 Rxd1+ 3.Qe1 Rxe1#.
 QD1 = "2kr2nr/2p5/2p1p1pp/Q3Pp2/3R4/P3P3/1Pq2PPP/R1B3K1 b - - 1 1"
 QD1_LINE = ["c2d1", "d4d1", "d8d1", "a5e1", "d1e1"]
