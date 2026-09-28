@@ -151,15 +151,6 @@ COST_YOU = [
     "That cost you something: {best} was the move",
     "Not that one -- {best} was better",
 ]
-# How the rule to keep is introduced, rotated like the openers (Tai, 2026-09-25: "there's a
-# lot of 'keep this one' ... it could use some variety"). The first is the templates' own.
-KEEP_LEADS = [
-    "keep this one",
-    "the lesson to keep",
-    "worth remembering",
-    "a rule to take with you",
-    "the thing to remember",
-]
 # The pattern to keep, said after a mistake that missed it: the rule of thumb, not the
 # position. Keyed by the pattern's name as the fact sheet gives it.
 PATTERN_LESSONS: dict[str, str] = {
@@ -386,19 +377,19 @@ def rule_of(
     board: chess.Board | None = None,
     played: str | None = None,
 ) -> str | None:
-    """The rule to keep that `lesson_template` would add after the move: the recapture's,
-    the pattern's (`PATTERN_LESSONS`, a mating attack's for a mate), or the plan's mechanism;
-    None when there is none. The coach holds it back while it is cooling down (`Coach.
-    _rule_ok`)."""
+    """The rule of thumb `lesson_template` would add after the move, when there is one that
+    is the mistake's own: the recapture's, or the pattern of the tactic missed
+    (`PATTERN_LESSONS`, a mating attack's for a mate). A plan's mechanism is not: "pieces
+    still at home take no part in the game" was said of a move that let Qxg7 in, where the
+    lesson was the threat (Tai's phone, 2026-09-27). The coach holds a rule back while it is
+    cooling down (`Coach._rule_ok`)."""
     if _recapture(board, best, played) is not None:
         return RECAPTURE_RULE
     theme = facts.theme or ""
     keep = PATTERN_LESSONS.get(theme)
     if keep is None and any(word in theme for word in _MATES):
         keep = PATTERN_LESSONS["a mating attack"]
-    if keep is None and facts.plan and facts.mechanism:
-        keep = facts.mechanism.split(": ", 1)[-1]
-    return keep or None
+    return keep
 
 
 def lesson_template(
@@ -409,19 +400,20 @@ def lesson_template(
     board: chess.Board | None = None,
     played: str | None = None,
     allowed: str | None = None,
-    keep_lead: str | None = KEEP_LEADS[0],
+    with_rule: bool = True,
     strong: bool = False,
 ) -> str:
     """After a move that cost something: the better move, what it does, what the move made
-    allowed, and the pattern to keep. `opener` is the rotated "That one cost you: {best} was
+    allowed, and the rule of thumb. `opener` is the rotated "That one cost you: {best} was
     better"; `board` and `played` (UCI) are the position the player faced and the move made,
-    `allowed` what it let the opponent do (`idea_words.allowed`), when known, and `keep_lead`
-    how the rule to keep is introduced (`KEEP_LEADS`, rotated by the coach), None to leave
-    the rule out (it was said lately: `Coach._rule_ok`). `strong` (a player of 1800 and up)
-    leaves the rule out too: the concrete point is the lesson."""
+    `allowed` what it let the opponent do (`idea_words.allowed`), when known. The rule is said
+    as a sentence of its own, never announced: "Keep this one:", "Worth remembering:" and
+    three more rotated before it, and nagged (Tai, 2026-09-27). `with_rule` False leaves it
+    out (it was said lately: `Coach._rule_ok`), and so does `strong` (a player of 1800 and
+    up): the concrete point is the lesson."""
     text = opener
     why = facts.why or ""
-    rule = None if strong or keep_lead is None else rule_of(facts, best, board=board, played=played)
+    rule = rule_of(facts, best, board=board, played=played) if with_rule and not strong else None
     other_piece = _recapture(board, best, played)
     if other_piece is not None:
         text += f" -- {other_piece}"
@@ -429,7 +421,7 @@ def lesson_template(
             text = _sentence(text) + " " + allowed
         if rule is None:
             return _sentence(text)
-        return _sentence(text) + " " + _sentence(f"{keep_lead}: {rule}")
+        return _sentence(text) + " " + _sentence(rule)
     if why.startswith(best):
         rest = why[len(best) :].lstrip(" ,:;")
         if rest.startswith("and ") and not rest.startswith("and after"):
@@ -454,7 +446,7 @@ def lesson_template(
     if allowed:
         text += " " + _sentence(allowed)
     if rule is not None and not _said(rule, text):
-        text += " " + _sentence(f"{keep_lead}: {rule}")
+        text += " " + _sentence(rule)
     return text
 
 
@@ -479,30 +471,28 @@ def _stale(reason: str, played: str | None) -> bool:
     return any(re.search(rf"\bon {sq}\b", reason) for sq in squares)
 
 
-# A lesson the player heard over this many plies (their last three moves) is not said again:
-# in amateur games "fine, but not the best" comes move after move, and the same "keep this
-# one" came with it -- 27% of them within three moves in twenty Nova bot games (2026-09-25).
-RECENT_PLIES = 6
 # A rule of thumb -- "a rule to take with you: ...", "rooks belong on open files" -- is not
 # said again for this many of the coach's messages, across games and puzzles alike, and no
 # two rules come within RULE_SPACING messages of each other (Tai, 2026-09-27, after a run of
 # puzzles: "it keeps on nagging me ... there has to be a cooldown of some number of messages
 # before it can appear again"). A puzzle is a new game, so a memory per game started over at
-# every one.
-RULE_COOLDOWN = 30
-RULE_SPACING = 4
+# every one. Thirty messages and four apart still nagged -- a rule in one message of ten,
+# on fine moves and mistakes alike (Tai's phone, 2026-09-27: "the coach is a teacher, not a
+# nagging annoying bot"): a rule once a session, and one in ten messages at most.
+RULE_COOLDOWN = 200
+RULE_SPACING = 10
 # The model's word while a rule is cooling down: the concrete point, no rule of thumb. Every
 # held wording carries RULE_HELD_MARK, which the rubric reads (tools/eval/rubric.py:
 # "transfer" is not asked of a reply told to leave the rule out).
 RULE_HELD_MARK = "No rule of thumb this time"
-RULE_HELD = f"{RULE_HELD_MARK} -- the player heard one lately: only what this position shows."
+RULE_HELD = f"{RULE_HELD_MARK}: only what this position shows."
 
 
 def fresh(text: str, recent: str, opener: str | None = None) -> str:
-    """`text` without what the coach said lately (`recent`, lower case): the "Keep this one"
-    sentence, and the reason after " -- " in the first sentence. The verdict and the better
-    move always stay: that is news. `opener` is what the first sentence opens with, the
-    verdict and the better move; the reason is what follows it."""
+    """`text` without what the coach said lately (`recent`, lower case): the reason after
+    " -- " in the first sentence. The verdict and the better move always stay: that is news.
+    `opener` is what the first sentence opens with, the verdict and the better move; the
+    reason is what follows it. (A rule of thumb said lately is `Coach._rule_ok`'s to hold.)"""
     said = recent.lower()
     sentences = re.split(r"(?<=[.?!])\s+", text.strip())
     if not sentences:
@@ -521,17 +511,7 @@ def fresh(text: str, recent: str, opener: str | None = None) -> str:
         head, reason = first.rsplit(" -- ", 1)
     if reason and reason.rstrip(".").lower() in said:
         first = head.rstrip(".") + "."
-    kept = [s for s in rest if (rule := _kept(s)) is None or rule not in said]
-    return " ".join([first, *kept])
-
-
-def _kept(sentence: str) -> str | None:
-    """The rule a "keep this one" sentence gives, in lower case, whichever lead it has."""
-    low = sentence.lower()
-    for lead in KEEP_LEADS:
-        if low.startswith(lead + ":"):
-            return low[len(lead) + 1 :].strip().rstrip(".")
-    return None
+    return " ".join([first, *rest])
 
 
 def _said(keep: str, text: str) -> bool:
@@ -2215,8 +2195,8 @@ class Coach:
         # The causes of the session's mistakes, from the player model: the pattern is said
         # when one comes back (`_on_evidence`).
         self._causes_seen: Counter[str] = Counter()
-        # The game each cause's pattern was last said in: once a game after the first.
-        self._pattern_told: dict[str, str | None] = {}
+        # The causes whose pattern has been said: once a session.
+        self._pattern_told: set[str] = set()
         # The record's question-answerer (profile/ask.py), set by whoever owns the store;
         # the answers it gave, with their queries, for the panel's log.
         self.profile_ask: Callable[[str], Any] | None = None
@@ -2637,41 +2617,28 @@ class Coach:
         self._speak(Trigger.REVIEW, position, DisclosureLevel.LINE, ts)
 
     def _on_evidence(self, event: ProfileEvidence, ts: float) -> None:
-        """A mistake of the player's placed by the player model. When its cause is behind
-        an earlier mistake of the session's too, the pattern is said, with the habit that
-        answers it, right after the lesson on the move -- the second time, and after that at
-        most once in each game: said every second time it came to "10 times now" in one
-        session (the AI's sessions, 2026-09-26). Each lesson had taught its own moment and a
-        principle of its own, and the threat-blind student's notebook held five unrelated
-        rules, none of them the habit. A player of 1800 and up hears the pattern without the
-        textbook habit. Said from the model's cause, no model call."""
+        """A mistake of the player's placed by the player model. The third time one cause
+        is behind the session's mistakes, the pattern is said once, with the habit that
+        answers it, right after the lesson on the move; the game's review sums it up after
+        that. Each lesson had taught its own moment and a principle of its own, and the
+        threat-blind student's notebook held five unrelated rules, none of them the habit
+        (the simulated students, 2026-09-26); said the second time and then in every game,
+        "this keeps happening -- 5 times now" came on top of a lesson (Tai's phone,
+        2026-09-27). A player of 1800 and up hears the pattern without the textbook habit.
+        Said from the model's cause, no model call."""
         if event.game_id != self.game_id or event.cause not in HABIT:
             return
         self._causes_seen[event.cause] += 1
-        n = self._causes_seen[event.cause]
-        if n < 2 or self._pattern_told.get(event.cause) == self.game_id:
+        if self._causes_seen[event.cause] < 3 or event.cause in self._pattern_told:
             return
-        self._pattern_told[event.cause] = self.game_id
+        self._pattern_told.add(event.cause)
         words, habit = HABIT[event.cause]
-        times = {2: "twice", 3: "three times"}.get(n, f"{n} times")
-        if self.strong_player:
-            text = self._bags.draw(
-                f"pattern-strong:{event.cause}",
-                (
-                    f"That is {times} now: {words}.",
-                    f"Notice the pattern -- {words}, {times} now.",
-                ),
-            )
-        else:
-            text = self._bags.draw(
-                f"pattern:{event.cause}",
-                (
-                    f"That is {times} now: {words}. The habit to build: {habit}.",
-                    f"This keeps happening -- {words}, {times} now. The habit that fixes it: "
-                    f"{habit}.",
-                    f"Notice the pattern: {words}, {times} now. So, {habit}.",
-                ),
-            )
+        text = f"That is three times now: {words}."
+        if not self.strong_player:
+            text += f" The habit to build: {habit}."
+        if not self._rule_ok(None):
+            return  # a rule of thumb just said: the review carries the pattern
+        self._rule_said(f"habit:{event.cause}")
         with self._lock:
             self.conversation.note(f"The pattern, told to the player: {text}")
         self._queue_plain(Trigger.POST_MISTAKE, text, ts, record_now=True)
@@ -3088,26 +3055,23 @@ class Coach:
     def _fresh_lesson(
         self,
         opener: str,
-        lesson: Callable[[str | None], str],
+        lesson: Callable[[bool], str],
         rule: str | None,
         facts: PositionFacts | None = None,
     ) -> tuple[str, bool]:
-        """`lesson`, opening with `opener`, written with the next rule-to-keep lead from its
-        bag, less what was said lately (`fresh`), and whether the rule was held back: said
-        within RULE_COOLDOWN messages, or another within RULE_SPACING. The rule is the
-        template's (`rule`, `rule_of`) or, for the model -- asked for "a pattern to remember"
-        on every lesson, it stated one every time -- the pattern it teaches (`facts`' theme
-        or plan). A held rule is left out: the lesson gets no lead, and the model is told
-        (RULE_HELD). The lead is taken from the bag, and the rule counted as said, only when
-        the lesson still says it -- or, with a model, when the model is asked for it."""
-        key = rule or (facts.theme or facts.plan if facts is not None else None) or None
-        held = not self._rule_ok(key)
-        lead = None if held else self._bags.peek("keep", KEEP_LEADS)
-        text = fresh(lesson(lead), self._recently_said(), opener)
-        if lead is not None and f"{lead}:" in text.lower():
-            self._bags.take("keep", lead)
-            if rule is not None:
-                self._rule_said(rule)
+        """`lesson`, opening with `opener`, written with its rule when one may be said, less
+        what was said lately (`fresh`), and whether the rule was held back: said within
+        RULE_COOLDOWN messages, or another within RULE_SPACING. The rule is the template's
+        (`rule`, `rule_of`) or, for the model -- asked for "a pattern to remember" on every
+        lesson, it stated one every time -- the pattern it teaches (`facts`' theme or plan).
+        A held rule is left out, and the model is told (RULE_HELD). The rule is counted as
+        said only when the lesson still says it -- or, with a model, when the model is asked
+        for it."""
+        key = rule or (facts.theme if facts is not None else None) or None
+        held = key is None or not self._rule_ok(key)
+        text = fresh(lesson(not held), self._recently_said(), opener)
+        if not held and rule is not None and _said(rule, text):
+            self._rule_said(rule)
         elif not held and key is not None and not self._offline:
             self._rule_said(key)
         return text, held
@@ -3144,17 +3108,11 @@ class Coach:
             self._rule_said(kind)
 
     def _recently_said(self) -> str:
-        """What the coach has said over the last RECENT_PLIES plies, as one text."""
-        texts: list[str] = []
-        plies = 0
-        for entry in reversed(list(self.conversation.entries)):
-            if entry.kind == "ply":
-                plies += 1
-                if plies > RECENT_PLIES:
-                    break
-            elif entry.kind == "coach":
-                texts.append(entry.text)
-        return " ".join(texts)
+        """What the coach has said in this game, as one text: a reason is not given twice in
+        a game. Remembered over six plies, "your pawn on h2 can strike at their pawn on g5"
+        was said at move 7 and again at 11 (Tai's phone, 2026-09-27); over none, 27% of the
+        lessons came again within three moves (Nova bot games, 2026-09-25)."""
+        return " ".join(e.text for e in self.conversation.entries if e.kind == "coach")
 
     def _opening_so_far(self) -> str | None:
         """The opening the game was in: the last name the book gave."""
@@ -3844,14 +3802,14 @@ class Coach:
                 opener = self._bags.draw("cost", COST_YOU).format(best=best)
                 fallback, held = self._fresh_lesson(
                     opener,
-                    lambda lead: lesson_template(
+                    lambda with_rule: lesson_template(
                         facts,
                         best,
                         opener,
                         board=position.board,
                         played=played.uci,
                         allowed=allowed,
-                        keep_lead=lead,
+                        with_rule=with_rule,
                         strong=self.strong_player,
                     ),
                     rule_of(facts, best, board=position.board, played=played.uci),
@@ -3963,17 +3921,16 @@ class Coach:
                 opener = self._bags.draw("fine", FINE_TIGHTER).format(best=best)
                 fallback, held = self._fresh_lesson(
                     opener,
-                    lambda lead: lesson_template(
+                    lambda with_rule: lesson_template(
                         facts,
                         best,
                         opener,
                         board=position.board,
                         played=played.uci,
-                        keep_lead=lead,
+                        with_rule=with_rule,
                         strong=self.strong_player,
                     ),
-                    rule_of(facts, best, board=position.board, played=played.uci),
-                    facts,
+                    None,  # a fine move: the better move and what it does, no rule of thumb
                 )
                 instruction = (
                     f"The player just played {played.san}, which was {_rated(label)}: "
@@ -4224,16 +4181,15 @@ class Coach:
                 opener = self._bags.draw("fine", FINE_TIGHTER).format(best=best)
                 fallback, held = self._fresh_lesson(
                     opener,
-                    lambda lead: lesson_template(
+                    lambda with_rule: lesson_template(
                         facts,
                         best,
                         opener,
                         played=record.move.uci,
-                        keep_lead=lead,
+                        with_rule=with_rule,
                         strong=self.strong_player,
                     ),
-                    rule_of(facts, best, played=record.move.uci),
-                    facts,
+                    None,  # a fine move: the better move and what it does, no rule of thumb
                 )
                 directive = (
                     f"They ask about the move they already played, {san}. It was {label}: sound, "
@@ -4270,14 +4226,14 @@ class Coach:
                     opener = f"{best} was better"
                     lesson, held = self._fresh_lesson(
                         opener,
-                        lambda lead: lesson_template(
+                        lambda with_rule: lesson_template(
                             facts,
                             best,
                             opener,
                             board=position.board if faced else None,
                             played=record.move.uci,
                             allowed=allowed,
-                            keep_lead=lead,
+                            with_rule=with_rule,
                             strong=self.strong_player,
                         ),
                         rule_of(

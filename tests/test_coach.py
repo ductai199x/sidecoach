@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 import chess
@@ -515,15 +516,22 @@ def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
     from sidecoach.coach.coach import RULE_SPACING
 
     coach._messages += RULE_SPACING  # past the decisive question's rule of thumb
+    said_rules: list[str] = []
+    record = coach._rule_said
+
+    def spy(rule: str) -> None:
+        said_rules.append(rule)
+        record(rule)
+
+    coach._rule_said = spy  # type: ignore[method-assign]
     _, fallback = coach._instruction(
         Trigger.POST_MOVE, position, DisclosureLevel.LINE, None, (), good, played
     )
-    # The better move and what it does, and the pattern to keep.
+    # The better move and what it does -- and no rule of thumb: a fine move is not a lesson
+    # (Tai, 2026-09-27: "the coach is a teacher, not a nagging annoying bot").
     assert any(fallback.startswith(f.format(best="Qxf7#")) for f in FINE_TIGHTER)
-    from sidecoach.coach.coach import KEEP_LEADS
-
     assert "it is mate" in fallback
-    assert any(f"{lead.capitalize()}:" in fallback for lead in KEEP_LEADS)
+    assert not said_rules and not ANNOUNCED.search(fallback), (said_rules, fallback)
     # Said once, the lesson is not said again a move later: the verdict and the better move
     # stand alone (Nova bot games, 2026-09-25: 27% of lessons came again within three moves).
     coach.conversation.coach_said(fallback)
@@ -531,9 +539,20 @@ def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
         Trigger.POST_MOVE, position, DisclosureLevel.LINE, None, (), good, played
     )
     assert any(again.startswith(f.format(best="Qxf7#")) for f in FINE_TIGHTER)
-    assert "it is mate" not in again
-    assert not any(f"{lead.capitalize()}:" in again for lead in KEEP_LEADS), again
+    assert "it is mate" not in again and not said_rules
     assert "Do not open with the move they played" in instruction
+
+
+# The leads that announced a rule, gone for good.
+ANNOUNCED = re.compile(
+    r"(keep this one|the lesson to keep|worth remembering|a rule to take with you|"
+    r"the thing to remember|remember this):",
+    re.IGNORECASE,
+)
+
+
+def _sentence_of(rule: str) -> str:
+    return rule[0].upper() + rule[1:].rstrip(".") + "."
 
 
 def test_a_rule_of_thumb_cools_down_across_games_and_puzzles() -> None:
@@ -542,7 +561,7 @@ def test_a_rule_of_thumb_cools_down_across_games_and_puzzles() -> None:
     before it can appear again". A rule is not said again for RULE_COOLDOWN of the coach's
     messages, whatever game or puzzle they fall in, and no two rules come within
     RULE_SPACING messages; the model is told to leave it out while it cools."""
-    from sidecoach.coach.coach import KEEP_LEADS, RULE_COOLDOWN, RULE_HELD, RULE_SPACING
+    from sidecoach.coach.coach import RULE_COOLDOWN, RULE_HELD, RULE_SPACING
 
     coach, _ = _coach([])
     _play_to_scholar(coach)
@@ -575,8 +594,17 @@ def test_a_rule_of_thumb_cools_down_across_games_and_puzzles() -> None:
             Trigger.POST_MISTAKE, position, DisclosureLevel.LINE, None, (), mistake, played
         )
 
+    said_rules: list[str] = []
+    record = coach._rule_said
+
+    def spy(rule: str) -> None:
+        said_rules.append(rule)
+        record(rule)
+
+    coach._rule_said = spy  # type: ignore[method-assign]
+
     def has_rule(text: str) -> bool:
-        return any(f"{lead.capitalize()}:" in text for lead in KEEP_LEADS)
+        return any(rule.lower().rstrip(".") in text.lower() for rule in said_rules)
 
     # The decisive question's first hint said its principle: no rule for a few messages.
     instruction, soon = lesson()
@@ -584,6 +612,9 @@ def test_a_rule_of_thumb_cools_down_across_games_and_puzzles() -> None:
     coach._messages += RULE_SPACING
     instruction, first = lesson()
     assert has_rule(first) and RULE_HELD not in instruction
+    # Said as a sentence of its own, never announced (Tai, 2026-09-27: "nagging stuff like
+    # 'Remember this' 'Keep this one'").
+    assert _sentence_of(said_rules[-1]) in first and not ANNOUNCED.search(first), first
     assert "pattern to remember" in instruction
     for _ in range(RULE_COOLDOWN - 1):
         coach._messages += 1
@@ -643,16 +674,19 @@ def test_a_lesson_is_said_of_the_board_the_player_sees_and_not_twice() -> None:
     assert not _stale("after Qg2, Rdg1, and the queen on g2 is trapped", "g2g3")
     said = (
         "That works, though d4 was a touch better -- your bishop on c1 is still shut in behind "
-        "the pawn on d2. The lesson to keep: the centre is where pieces have the most room."
+        "the pawn on d2."
     )
+    rule = "The centre is where pieces have the most room."
     text = (
         "Playable -- d4 was a little more precise -- your bishop on c1 is still shut in behind "
-        "the pawn on d2. Worth remembering: the centre is where pieces have the most room."
+        f"the pawn on d2. {rule}"
     )
-    assert fresh(text, said) == "Playable -- d4 was a little more precise."
+    # The reason said lately goes; a rule of thumb is not `fresh`'s to hold -- one said lately
+    # is never written in (`Coach._rule_ok`), so a rule that is here stays.
+    assert fresh(text, said) == f"Playable -- d4 was a little more precise. {rule}"
     assert fresh(text, "Nice.") == text
     opener = "Playable -- d4 was a little more precise"
-    assert fresh(text, said, opener) == opener + "."
+    assert fresh(text, said, opener) == f"{opener}. {rule}"
     # An opener with its own " -- " and no reason after it: the better move is not a reason,
     # and stays when the same move was just said ("Not that one." -- Nova bot games).
     opener = "Not that one -- Ng3 was better"
@@ -1641,10 +1675,12 @@ def test_a_move_proposed_in_a_statement_is_examined_aloud_and_nothing_is_said_tw
     assert first and not set(again) & set(first)
 
 
-def test_a_cause_that_comes_back_is_named_with_the_habit_that_fixes_it() -> None:
+def test_a_cause_that_comes_back_is_named_once_with_the_habit_that_fixes_it() -> None:
     """Each lesson taught its own moment and a principle of its own, and the threat-blind
     student's notebook held five unrelated rules (the simulated students, 2026-09-26): the
-    second mistake of one cause in the session says the pattern, and every second one after."""
+    third mistake of one cause in the session says the pattern once, with its habit. Said the
+    second time and then in every game, "this keeps happening -- 5 times now" nagged (Tai's
+    phone, 2026-09-27); the review sums it up after."""
     from sidecoach.events import ProfileEvidence
     from sidecoach.profile import causes
 
@@ -1663,21 +1699,32 @@ def test_a_cause_that_comes_back_is_named_with_the_habit_that_fixes_it() -> None
     assert placed(9, causes.MISSED_THREAT) == []
     assert placed(13, causes.POSITIONAL) == []
     assert placed(21, causes.MISSED_THREAT, game_id="old") == []  # another game's
-    second = placed(25, causes.MISSED_THREAT)
-    assert len(second) == 1 and "twice now" in second[0]
-    assert "what their moves threatened" in second[0]
-    assert "look at what their last move attacks" in second[0]
-    # Once a game after that: said every second time it came to "10 times now" in a session.
-    assert placed(31, causes.MISSED_THREAT) == []
+    assert placed(25, causes.MISSED_THREAT) == [], "twice is not a pattern yet"
+    third = placed(31, causes.MISSED_THREAT)
+    assert len(third) == 1 and "three times" in third[0]
+    assert "what their moves threatened" in third[0]
+    assert "look at what their last move attacks" in third[0]
+    # Once a session: not again in this game, nor in the next.
     assert placed(37, causes.MISSED_THREAT) == []
-    coach.game_id = "g2"  # the next game of the session
-    assert "5 times now" in placed(9, causes.MISSED_THREAT, game_id="g2")[0]
+    coach.game_id = "g2"
+    assert placed(9, causes.MISSED_THREAT, game_id="g2") == []
     assert placed(15, causes.MISSED_THREAT, game_id="g2") == []
+
     # A player of 1800 and up hears the pattern without the textbook habit.
-    coach.strong_player = True
-    coach.game_id = "g3"
-    strong = placed(9, causes.MISSED_THREAT, game_id="g3")[0]
-    assert "what their moves threatened" in strong and "look at what" not in strong
+    strong_coach, _ = _coach([])
+    _start(strong_coach)
+    strong_coach.strong_player = True
+    for ply in (9, 13, 17):
+        strong_coach.on_event(
+            ProfileEvidence(
+                game_id="g", ply=ply, phase="middlegame", expected_loss=0.2,
+                cause=causes.MISSED_THREAT,
+            ),
+            float(ply),
+        )  # fmt: skip
+    strong = [m.text for m in _messages(strong_coach)]
+    assert len(strong) == 1 and "what their moves threatened" in strong[0]
+    assert "look at what" not in strong[0]
 
 
 def test_a_strong_players_review_names_the_pattern_without_the_textbook_habit() -> None:

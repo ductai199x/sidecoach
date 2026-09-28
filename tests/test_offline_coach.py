@@ -65,10 +65,10 @@ def test_the_templates_rotate_and_never_repeat_the_last() -> None:
     """Four decisive moments in one game got the same sentence four times (a master-game
     pass, 2026-09-21): each list is a bag, every wording once before any comes again (Tai,
     2026-09-25), and never the last one said."""
-    from sidecoach.coach.coach import COST_YOU, FINE_TIGHTER, KEEP_LEADS
+    from sidecoach.coach.coach import COST_YOU, FINE_TIGHTER
 
     coach = Coach(OfflineProvider(), policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
-    for key, options in (("cost", COST_YOU), ("fine", FINE_TIGHTER), ("keep", KEEP_LEADS)):
+    for key, options in (("cost", COST_YOU), ("fine", FINE_TIGHTER)):
         said = [coach._bags.draw(key, options) for _ in range(len(options) * 8)]
         assert all(a != b for a, b in zip(said, said[1:], strict=False))
         for start in range(0, len(said), len(options)):

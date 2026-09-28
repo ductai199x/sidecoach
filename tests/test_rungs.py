@@ -110,7 +110,7 @@ def test_the_right_capture_with_the_other_piece_is_taught_as_that() -> None:
     )
     assert text == (
         "That one cost you: Rexd1 was better -- take with the rook on e1, not the one on a1. "
-        "Keep this one: when two pieces can take, ask which you want to keep where it is."
+        "When two pieces can take, ask which you want to keep where it is."
     )
 
 
