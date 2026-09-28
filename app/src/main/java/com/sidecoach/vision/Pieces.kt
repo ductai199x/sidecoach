@@ -85,9 +85,6 @@ object Pieces {
      */
     const val OVERLAY_BADGE_RADIUS = 0.4
 
-    /** An outline colour is read from a piece only when this many pixels lie outside its tone. */
-    const val EDGE_MIN_PIXELS = 8
-
     const val EMPTY_MAX_FRACTION = 0.04
 
     /**

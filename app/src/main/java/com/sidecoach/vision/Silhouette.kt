@@ -42,8 +42,6 @@ class Sil(
     val cornerPixels: FloatArray,
     /** The share of inner pixels that are a drawing over the square. */
     val overlay: Double = 0.0,
-    val coreColour: DoubleArray? = null,
-    val edgeColour: DoubleArray? = null,
     /** The two tones of the ink, each as (colour, weight), the fill first. */
     val tones: List<Pair<DoubleArray, Double>> = emptyList(),
     /** How far the square's own pixels stray from its colour (a wood grain's texture). */
@@ -106,7 +104,7 @@ object SilhouetteReader {
             return Sil(
                 BooleanArray(size * size), BooleanArray(size * size), 0.0, 0.0, 0.0,
                 background, false, FloatArray(size * size * 3),
-                FloatArray(0), 0.0, null, null, emptyList(), spread,
+                FloatArray(0), 0.0, emptyList(), spread,
             )
         }
         val cut = patch.submat(Rect(border, border, side, side))
@@ -159,28 +157,20 @@ object SilhouetteReader {
         var luminance = 0.0
         var brightness = 0.0
         var tone = built.mask
-        var coreColour: DoubleArray? = null
-        var edgeColour: DoubleArray? = null
         var tones: List<Pair<DoubleArray, Double>> = emptyList()
         val stats = built.stats
         if (stats != null) {
             luminance = stats.luminance
             tones = stats.tones
-            coreColour = stats.colour
             tone = toneMask(built.mask, size, inner, stats.colour, background)
             brightness = luminance / 255.0
-            val outline = BooleanArray(built.mask.size) { built.mask[it] && !tone[it] }
-            var outlinePixels = 0
-            for (on in outline) if (on) outlinePixels++
-            if (outlinePixels >= Pieces.EDGE_MIN_PIXELS) edgeColour = medianColour(inner, outline, outlinePixels)
         }
         // Chess.com's hover outline is about 5% of the cell wide and sits at its edge, so
         // the ring the background is read from stays clean and serves as the reference.
         val hover = hoverOutline(patchPixels, n, patch.cols(), background)
         return Sil(
             built.mask, tone, built.fraction, luminance, brightness, background,
-            hover, inner, cornerPixels(patchPixels, n, patch.cols()), overlay,
-            coreColour, edgeColour, tones, spread,
+            hover, inner, cornerPixels(patchPixels, n, patch.cols()), overlay, tones, spread,
         )
     }
 
@@ -715,20 +705,6 @@ object SilhouetteReader {
         sorted.sort()
         return if (count % 2 == 1) sorted[count / 2].toDouble()
         else (sorted[count / 2 - 1].toDouble() + sorted[count / 2].toDouble()) / 2.0
-    }
-
-    /** The median colour of the inner pixels [where] marks, [count] of them. */
-    private fun medianColour(inner: FloatArray, where: BooleanArray, count: Int): DoubleArray {
-        val bs = FloatArray(count)
-        val gs = FloatArray(count)
-        val rs = FloatArray(count)
-        var at = 0
-        for (i in where.indices) {
-            if (!where[i]) continue
-            bs[at] = inner[i * 3]; gs[at] = inner[i * 3 + 1]; rs[at] = inner[i * 3 + 2]
-            at++
-        }
-        return doubleArrayOf(medianOf(bs, at), medianOf(gs, at), medianOf(rs, at))
     }
 
     /**
