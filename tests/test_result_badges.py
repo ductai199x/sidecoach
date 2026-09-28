@@ -193,6 +193,29 @@ def test_a_mate_on_the_board_ends_the_game_once_whatever_the_badges_say() -> Non
     assert "Qh4#" in [e.san for e in new if isinstance(e, MovePlayed)]
 
 
+def test_the_badges_commit_a_premoved_mate_still_settling() -> None:
+    """The mate queued as a premove lands in the same frame as the opponent's move before
+    it, and the site stamps the badges at once (the ending the stress sweep calls
+    `together`): a story of two plies, which the board alone settles only on its third
+    frame. The badges, read on two frames, commit the pending mate they agree with
+    (`_end_on_badges`, `commit_pending_terminal`), so the game ends on their second frame
+    with both moves in its record, and ends once."""
+    g = Game(pipeline=True)
+    g.play("e4", "e5", "Bc4", "Nc6", "Qh5")
+    # White queues Qxf7 while Black thinks.
+    g.show(2, premoves=((chess.Move.from_uci("h5f7"),),))
+    g.board.push_san("Nf6")
+    mate = g.board.push_san("Qxf7#")
+    new = g.show(BADGE_FRAMES, highlight=mate, check=True, result="1-0")
+    ended = [e for e in new if isinstance(e, GameEnded)]
+    assert [(e.result, e.reason) for e in ended] == [("1-0", "game over on board")]
+    assert [e.san for e in new if isinstance(e, MovePlayed)] == ["Nf6", "Qxf7#"]
+    assert ended[0].pgn is not None and ended[0].pgn.endswith("3. Qh5 Nf6 4. Qxf7#")
+    # The badges stay; the game does not end twice.
+    again = g.show(2, highlight=mate, check=True, result="1-0")
+    assert not any(isinstance(e, GameEnded | MovePlayed) for e in again)
+
+
 def test_the_reason_comes_from_the_board() -> None:
     """The reason a game ended on the badges is given (`_end_reason`): a mate on the board,
     the loser's clock at zero (a flag, either side), otherwise a resignation."""

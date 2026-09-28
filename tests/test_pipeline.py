@@ -245,6 +245,42 @@ def test_second_game_bootstraps_from_one_changed_tick() -> None:
     assert pipe.reconciler is not None and pipe.reconciler.pgn() == "1. d4"
 
 
+def test_next_game_on_the_same_board_is_begun_by_the_reconciler() -> None:
+    """A game mated on the board, then the next game's start position on the same theme,
+    the same way up. The recogniser reads it as the start it was built on, so no bootstrap
+    runs (`_reads_as_start`); the reconciler, its game finished, begins the next one
+    itself, and the pipeline learns the recogniser again from that frame and keeps the
+    reconciler it reset (`process`, the `_rebuild_model` after the reconciler's own
+    GameStarted): the theme may have changed between games in a way the old recogniser
+    still reads as the start. The game the mate ended is not ended again, and the next
+    game's moves follow in a record of their own."""
+    pipe = GamePipeline()
+    board = chess.Board()
+    _, ts = _start_frames(pipe, 0.0)
+    for san in ("f3", "e5", "g4", "Qh4#"):
+        move = board.push_san(san)
+        for _ in range(2):
+            pipe.process(synthetic_board(board=board, highlight=move), ts)
+            ts += 0.1
+    rec, model = pipe.reconciler, pipe.model
+    assert rec is not None and rec.finished and rec.result == "0-1"
+    first = rec.game_id
+    events, ts = _start_frames(pipe, ts)
+    started = [e for e in events if isinstance(e, GameStarted)]
+    assert len(started) == 1 and started[0].game_id != first
+    assert not any(isinstance(e, GameEnded) for e in events)
+    # The reconciler's own new game: the same reconciler, a recogniser learned again.
+    assert pipe.reconciler is rec and pipe.model is not model and pipe.bootstraps == 2
+    second = chess.Board()
+    move = second.push_san("d4")
+    events = []
+    for _ in range(2):
+        events += pipe.process(synthetic_board(board=second, highlight=move), ts)
+        ts += 0.1
+    assert sans_of(events) == ["d4"]
+    assert rec.game_id == started[0].game_id and rec.pgn() == "1. d4"
+
+
 def test_readings_are_retaken_after_the_lock_moves() -> None:
     """A move and a window move in one changed tick, then only unchanged ticks."""
     pipe = GamePipeline()
