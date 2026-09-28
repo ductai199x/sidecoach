@@ -157,7 +157,6 @@ class Entry(
 
 class Conversation {
     var userSide: Pieces.Side = Pieces.Side.WHITE
-    var levelText: String = "around 1200"
     val entries: MutableList<Entry> = ArrayList()
     val records: MutableList<PlyRecord> = ArrayList()
     var startFen: String = STARTING_FEN
@@ -192,7 +191,6 @@ class Conversation {
      */
     fun newGame(
         event: GameStarted,
-        opponent: String = "a bot",
         control: String = "",
         profile: List<String> = emptyList(),
     ) {

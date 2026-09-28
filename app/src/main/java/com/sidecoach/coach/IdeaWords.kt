@@ -177,15 +177,6 @@ object IdeaWords {
         "overloading" to "one piece with two jobs cannot do both",
     )
 
-    /** What each preparation does, said of the moves before the blow. */
-    val PREPARATION_WHY: Map<String, String> = linkedMapOf(
-        "sacrifice" to "it starts by giving up material",
-        "attraction" to "their king or a defender is lured onto the wrong square first",
-        "deflection" to "a defender is pulled away first",
-        "capturingDefender" to "a defender is taken first",
-        "clearance" to "a line or a square is cleared first",
-    )
-
     /** What a preparation has done, said once the blow comes. */
     val PREPARED: Map<String, String> = linkedMapOf(
         "sacrifice" to "you have given up material to open the way",

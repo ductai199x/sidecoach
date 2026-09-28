@@ -498,9 +498,6 @@ class Profiler(
         return null to ""
     }
 
-    /** The motif a puzzle was recommended for this session, if it was. */
-    fun recommendedMotif(puzzleId: String): String? = recommendedFor[puzzleId]
-
     /**
      * An outcome judged elsewhere (a puzzle solved on the puzzle page's board): kept beside the
      * motif, the level moved; the event for the coach and the panel.

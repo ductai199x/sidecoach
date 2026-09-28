@@ -391,11 +391,6 @@ class PuzzleRooms(
         return if (room != null && !room.closed && !room.closing) room else null
     }
 
-    fun closeAll() {
-        val all = synchronized(lock) { rooms.values.toList() }
-        for (room in all) room.close()
-    }
-
     companion object {
         @Volatile private var shared: PuzzleRooms? = null
 

@@ -17,10 +17,7 @@ sealed class Event {
 /** `ScreenState`: what the screen is showing, as the pipeline can tell; the desktop's members. */
 enum class ScreenState {
     LIVE_GAME,
-    ANALYSIS,
     PUZZLES,
-    LESSON,
-    LOBBY,
     GAME_OVER,
 
     /**

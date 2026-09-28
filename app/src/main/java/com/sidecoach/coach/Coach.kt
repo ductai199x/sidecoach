@@ -658,8 +658,6 @@ fun vsDirective(candidates: Int = VS_CANDIDATES): String {
         "The p values are how likely you would be to choose each; they need not sum to one."
 }
 
-val VS_DIRECTIVE = vsDirective()
-
 private val VS_MARKER = Regex("\\[\\s*p?\\s*=?\\s*([0-9]*\\.?[0-9]+)\\s*\\]\\s*", RegexOption.IGNORE_CASE)
 
 /** A marker fragment left in a candidate's text: a whole one, or one cut off mid-way. */
