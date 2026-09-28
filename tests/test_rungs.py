@@ -11,7 +11,7 @@ import chess
 from sidecoach.analysis import positional
 from sidecoach.coach import idea as idea_of
 from sidecoach.coach import idea_words, plans
-from sidecoach.coach.coach import focus_template, lesson_template
+from sidecoach.coach.coach import RECAPTURE_RULE, focus_template, lesson_template
 from sidecoach.coach.facts import describe_tactic, facts_from_analysis
 from sidecoach.events import Analysis, Line
 
@@ -108,10 +108,11 @@ def test_the_right_capture_with_the_other_piece_is_taught_as_that() -> None:
     text = lesson_template(
         facts, "Rexd1", "That one cost you: Rexd1 was better", board=board, played="a1d1"
     )
-    assert text == (
-        "That one cost you: Rexd1 was better -- take with the rook on e1, not the one on a1. "
-        "When two pieces can take, ask which you want to keep where it is."
+    assert text.startswith(
+        "That one cost you: Rexd1 was better -- take with the rook on e1, not the one on a1."
     )
+    # The recapture's rule, as a plain sentence (f983cd0: no lead-in announces it).
+    assert text.endswith(f" {RECAPTURE_RULE[0].upper()}{RECAPTURE_RULE[1:]}."), text
 
 
 def test_a_lesson_says_it_of_the_better_move() -> None:

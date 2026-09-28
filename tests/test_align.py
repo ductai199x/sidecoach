@@ -41,6 +41,7 @@ QUESTIONS = [
     if cls.kind == "ask"
     for q in cls.questions
 ]
+ASK_CLASSES = sorted({cls for cls, _ in QUESTIONS})
 
 
 def _at_scholar():
@@ -102,14 +103,17 @@ def test_every_class_has_a_marker():
     assert {c for c, _ in QUESTIONS} == set(MARKERS)
 
 
-@pytest.mark.parametrize(("cls", "question"), QUESTIONS)
-def test_every_question_reaches_the_directive_of_its_class(cls: str, question: str):
+@pytest.mark.parametrize("cls", ASK_CLASSES)
+def test_every_question_reaches_the_directive_of_its_class(cls: str):
     marker, level = MARKERS[cls]
+    # One game per class, its questions asked in turn: the directive is the question's, not
+    # the order it came in.
     coach = _after_the_miss() if cls == "ask_last_move" else _at_scholar()
-    directive, _ = coach._instruction(
-        Trigger.USER_ASK, coach.positions[6], level, question, (), None, None
-    )
-    assert marker in directive, (cls, question, directive[:300])
+    for question in (q for c, q in QUESTIONS if c == cls):
+        directive, _ = coach._instruction(
+            Trigger.USER_ASK, coach.positions[6], level, question, (), None, None
+        )
+        assert marker in directive, (cls, question, directive[:300])
 
 
 def _item(directive: str, required: list[dict], cls: str = "verdict_weaker") -> dict:

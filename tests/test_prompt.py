@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from sidecoach.coach import prompt
+from sidecoach.events import Label
 
 
 def test_the_system_message_is_persona_contract_rules_and_reply_format_in_order() -> None:
@@ -12,13 +14,21 @@ def test_the_system_message_is_persona_contract_rules_and_reply_format_in_order(
     parts = (prompt.PERSONA, prompt.CONTRACT, prompt.RULES, prompt.REPLY_FORMAT)
     order = [text.index(part) for part in parts]
     assert order == sorted(order)
-    # The contract tells the model what the one message holds, who "you" is, and where the
-    # course of the game is.
-    assert "'the player' is the person you coach" in prompt.CONTRACT
-    assert "takeback" in prompt.CONTRACT and "re-read" in prompt.CONTRACT
-    assert "the game so far and the player's record, and nowhere else" in prompt.CONTRACT
-    assert "brilliant, great, best, excellent, good, book" in prompt.CONTRACT
-    assert "Demonstrations from earlier games" not in text
+    # The contract explains what the harness holds: its sections, the marks of who said what
+    # and of an event, and every label a move's verdict can carry.
+    for mark in (
+        "# Setting",
+        "# Game so far",
+        "# Position now",
+        "# Task",
+        "PLAYER said:",
+        "YOU (the coach) said:",
+        "EVENT:",
+    ):
+        assert mark in prompt.CONTRACT, mark
+    for label in Label:
+        assert re.search(rf"\b{label.value}\b", prompt.CONTRACT), label
+    assert "Lessons from earlier games" not in text, "no C without it"
 
 
 def test_corrections_are_appended_only_when_the_file_has_content(
@@ -38,9 +48,7 @@ def test_corrections_are_appended_only_when_the_file_has_content(
     monkeypatch.setattr(prompt, "CORRECTIONS_PATH", filled)
     prompt.corrections.cache_clear()
     text = prompt.system_message()
-    assert text.endswith(
-        "in front of you.\nWhen asked about the opening: state its name as the message gives it."
-    )
+    assert text.endswith("\nWhen asked about the opening: state its name as the message gives it.")
     assert text.index(prompt.REPLY_FORMAT) < text.index("Lessons from earlier games")
     prompt.corrections.cache_clear()
 

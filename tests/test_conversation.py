@@ -315,7 +315,8 @@ def test_the_compact_record_drops_stale_nods_and_runs_sound_moves_together() -> 
     # Stale nods are not summarised either: only the exchange is offered to the summariser.
     pending = convo.foldable(2)
     assert [e.text for _, e in pending] == ['"what now?"', "An answer."]
-    assert NOD_PLIES == 6
+    # The first nods (after plies 1 and 3) are older than the last NOD_PLIES plies.
+    assert len(sans) - NOD_PLIES > 3, "the game is long enough for the first nods to be stale"
 
 
 def test_a_capture_the_engine_takes_back_is_said_as_such_before_the_position_is_read() -> None:

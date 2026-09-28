@@ -900,11 +900,11 @@ def test_asking_before_the_engine_has_looked_is_answered_when_it_has() -> None:
     to wait a moment and answered when the analysis lands, never from an older position
     (Tai, 2026-09-24: a hint pressed as a puzzle appeared got "I have not seen enough of
     this game yet to say. Give me a move or two.")."""
-    coach, _ = _coach([])
+    coach, provider = _coach([])
     _start(coach)
     coach.ask("hint", 1.0)
-    out = _messages(coach)
-    assert [m.text for m in out] == ["One moment -- still looking at this position."]
+    wait = _waiting(_messages(coach))
+    assert provider.prompts == []
     coach.ask("hint", 1.5)  # asked again while waiting: one "moment" is enough
     assert _messages(coach) == []
     start = chess.Board()
@@ -924,7 +924,14 @@ def test_asking_before_the_engine_has_looked_is_answered_when_it_has() -> None:
     )
     answered = _messages(coach)
     assert answered and all(m.trigger is Trigger.USER_ASK for m in answered)
-    assert "One moment" not in answered[0].text
+    assert answered[0].text != wait
+
+
+def _waiting(out: list) -> str:
+    """The word while the engine has not looked at the position: one message, the ask's,
+    and nothing else. Its words are the coach's to change."""
+    assert len(out) == 1 and out[0].trigger is Trigger.USER_ASK and out[0].text, out
+    return out[0].text
 
 
 def test_an_early_analysis_answers_a_question_waiting_on_it() -> None:
@@ -934,10 +941,11 @@ def test_an_early_analysis_answers_a_question_waiting_on_it() -> None:
     coach, _ = _coach([])
     _play_to_scholar(coach)
     coach.ask("hint", 6.5)
-    assert [m.text for m in _messages(coach)] == ["One moment -- still looking at this position."]
+    wait = _waiting(_messages(coach))
     coach.on_event(_mate_analysis(6).model_copy(update={"provisional": True}), 7.0)
     answered = _messages(coach)
     assert answered and all(m.trigger is Trigger.USER_ASK for m in answered)
+    assert answered[0].text != wait
 
 
 def test_the_coachs_own_words_wait_for_the_full_depth() -> None:
@@ -1119,7 +1127,6 @@ def test_a_canned_ask_is_answered_at_once_and_the_model_builds_on_it() -> None:
 
 def test_claims_are_checked_off_the_callers_thread_and_only_when_there_are_any() -> None:
     import threading
-    import time
 
     from sidecoach.coach.coach import may_carry_claims
 
@@ -1131,12 +1138,12 @@ def test_claims_are_checked_off_the_callers_thread_and_only_when_there_are_any()
     assert may_carry_claims("can I castle")
 
     calls: list[str] = []
-    started = threading.Event()
+    started, release = threading.Event(), threading.Event()
 
     def slow_claims(text: str, board: chess.Board, facts: object) -> list[str]:
         calls.append(threading.current_thread().name)
         started.set()
-        time.sleep(0.2)
+        release.wait(5.0)  # held until the test has seen the caller come back
         return ["'Nf3 is good': not the strongest, Qxf7# mates"]
 
     provider = ScriptedProvider(["Not quite. What is your most active piece already eyeing?"])
@@ -1145,12 +1152,14 @@ def test_claims_are_checked_off_the_callers_thread_and_only_when_there_are_any()
     )
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)
-    begun = time.perf_counter()
+    # ask() comes back while the check is still held: the caller never waits on it.
     coach.ask("is Nf3 good here", 8.0)
-    assert time.perf_counter() - begun < 0.1, "the caller never waits on the check"
-    assert started.wait(2.0)
-    time.sleep(0.4)
-    assert calls and calls[0] != threading.main_thread().name
+    assert started.wait(5.0)
+    assert calls == ["sidecoach-claims"] and calls[0] != threading.main_thread().name
+    release.set()
+    for thread in threading.enumerate():
+        if thread.name == "sidecoach-claims":
+            thread.join(5.0)
     out = _messages(coach)
     assert [m.text for m in out] == ["Not quite. What is your most active piece already eyeing?"]
     assert "Their claims, checked against the board" in provider.prompts[0][1][-1]["content"]

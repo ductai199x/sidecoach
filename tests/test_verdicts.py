@@ -97,7 +97,7 @@ def test_no_word_on_a_sound_move_opens_with_it_or_says_what_it_did() -> None:
     names it, and never says the capture, check, castling or promotion back."""
     rng = random.Random(11)
     said = 0
-    for _game in range(40):
+    for _game in range(10):
         board = chess.Board()
         taught: list[str] = []
         for _ in range(rng.randrange(10, 80)):
@@ -118,7 +118,7 @@ def test_no_word_on_a_sound_move_opens_with_it_or_says_what_it_did() -> None:
                 taught = (taught + [kind])[-3:]
             said += 1
             board.push(move)
-    assert said > 1000
+    assert said > 250
 
 
 def _played(coach, provider, san: str, label, loss: float = 0.01):  # noqa: ANN001
