@@ -615,15 +615,17 @@ class GamePipeline:
 
     def _learn_labels(self, frame: np.ndarray, geometry: BoardGeometry) -> None:
         """The coordinate labels learned from a board whose side the person told, when they
-        did not read that side themselves -- learned where a start position was seen
-        through a lock off its board, or not learned at all -- and the set saved with
-        them, so the next board of the set reads its own side. Only a side told for this
-        board teaches: a Flip left standing from the last puzzle would teach the next one,
-        shown from the other side, upside down, and every read after it."""
+        say no side there -- learned where a start position was seen through a lock off
+        its board, or not learned at all -- and the set saved with them, so the next board
+        of the set reads its own side. Only a side told for this board teaches: a Flip left
+        standing from the last puzzle would teach the next one, shown from the other side,
+        upside down, and every read after it. Labels that read a side are kept, the Flip's
+        or the other: learned as they read their start back, they are right, and a Flip
+        by mistake would have taught every board of the set upside down."""
         model, bottom = self.model, self.bottom
         if model is None or bottom is None:
             return
-        if read_bottom_side(frame, geometry, model.rank_labels) == bottom:
+        if read_bottom_side(frame, geometry, model.rank_labels) is not None:
             return
         labels = learn_rank_labels(frame, geometry, bottom)
         if not labels:

@@ -542,6 +542,24 @@ def test_a_flip_teaches_labels_that_read_no_side_and_the_next_puzzle_turns_itsel
     assert not _squares_off(live.reconciler.board, chess.Board(PUZZLE))
 
 
+def test_a_flip_by_mistake_teaches_no_labels(tmp_path: Path) -> None:
+    """Labels that read a board's side are kept whatever a Flip says: taught by a mistaken
+    Flip, every later board of the set would be read upside down."""
+    from sidecoach.vision.coordinates import read_bottom_side
+
+    cache = ThemeCache(tmp_path)
+    _learn(cache, "staunty")
+    model_palette = _palette(cache)
+    frame = _puzzle("staunty")
+    live = GamePipeline(cache=cache)
+    _join(live, frame)
+    assert live.bottom is Side.WHITE
+    live.forced_bottom = Side.BLACK
+    live.reorient(frame, GEOM, Side.BLACK, 20.0, told=True)
+    [(_, cached)] = cache.candidates(*model_palette)
+    assert read_bottom_side(frame, GEOM, cached.rank_labels) is Side.WHITE
+
+
 def _palette(cache: ThemeCache) -> tuple[np.ndarray, np.ndarray]:
     """The board colours of the one set in `cache`."""
     [path] = cache.directory.glob("theme-*.pkl")
