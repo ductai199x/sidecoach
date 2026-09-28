@@ -23,6 +23,7 @@
   import { FILES, cellOf, colourOf, motifWords, placement, spriteOf, squareAt } from "$lib/chess";
   import { layoutMode, mobileBoard } from "$lib/layout";
   import { prefs } from "$lib/panel.svelte";
+  import { captureSound, moveSound } from "$lib/sounds";
   import { stickToBottom } from "$lib/stick";
 
   const id = decodeURIComponent(page.params.id ?? "");
@@ -195,6 +196,15 @@
     });
   }
 
+  // The sound of a move made from `fen`: a capture when it lands on a piece, or a pawn steps
+  // aside onto an empty square (en passant); a move otherwise.
+  function sound(fen: string, uci: string) {
+    const board = placement(fen);
+    const mover = board.get(uci.slice(0, 2));
+    const takes = board.has(uci.slice(2, 4)) || (mover?.toUpperCase() === "P" && uci[0] !== uci[2]);
+    if (takes) captureSound(); else moveSound();
+  }
+
   // The solver's move: on the board at once -- dropped where it was let go, or slid there
   // from a click -- and sent; the answer brings the reply, or shows it wrong.
   async function tryMove(from: string, to: string, dropped: boolean): Promise<boolean> {
@@ -210,6 +220,7 @@
     } else if (node) {
       if (dropped) placeNow(node, to); else place(node, to);
     }
+    if (room) sound(room.positions[shown].fen, uci);
     optimistic = uci;
     inFlight = room?.version ?? null;
     const res = await api.move(uci);
@@ -366,12 +377,14 @@
   // already; the line's moves a moment apart.
   function advance() {
     if (!room || stepping !== null || shown >= room.positions.length - 1) return;
+    const before = room.positions[shown].fen;
     const next = room.positions[shown + 1];
     const mine = next.uci !== null && next.uci === optimistic;
     const step = () => {
       stepping = null;
       shown += 1;
       if (mine) optimistic = null;
+      else if (next.uci) sound(before, next.uci); // the solver's own was heard as it went down
       renderPieces(next.fen, next.uci);
       advance();
     };
