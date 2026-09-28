@@ -2217,6 +2217,9 @@ class PanelEngine:
             if spoken.leaks:
                 # For debugging: what the reply gave away of the answer, spoken anyway.
                 meta.append("leak noted: " + "; ".join(spoken.leaks))
+            if spoken.notes:
+                # The same for its form: what it did against the form asked of it.
+                meta.append("form noted: " + "; ".join(spoken.notes))
             if not message.text:
                 # The model's reply failed the checks and the quick answer already stands.
                 self._emit(
@@ -2259,6 +2262,7 @@ class PanelEngine:
                     attempts=spoken.attempts,
                     problems=spoken.problems,
                     leaks=spoken.leaks,
+                    notes=spoken.notes,
                     fallback=bool(spoken.problems),
                     voice=action,
                     fen=message.fen,

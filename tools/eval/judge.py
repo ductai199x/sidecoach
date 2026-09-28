@@ -603,8 +603,12 @@ def deterministic(item: dict, reply: str, draft_check, *, floor: bool = False) -
     rules = list(restated(reply, request)) if restated is not None and speaking else []
     verdict = list(verdict_problems(reply, request)) if verdict_problems and speaking else []
     left_out = omitted(reply, request.must_name) if speaking else None
+    # What the coach refuses and what it only notes (its form, since 2026-09-28): both are
+    # its rules, and a fail here, which the eval measures whatever the coach does live.
+    speaker = Speaker(None, draft_check=draft_check)  # type: ignore[arg-type]
+    notes = getattr(speaker, "_notes", None)
     coach_checks = (
-        Speaker(None, draft_check=draft_check)._problems(reply, request)  # type: ignore[arg-type]
+        [*speaker._problems(reply, request), *(notes(reply, request) if notes else [])]
         if speaking
         else []
     )

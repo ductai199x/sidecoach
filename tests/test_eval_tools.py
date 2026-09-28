@@ -450,8 +450,11 @@ def test_an_empty_answer_is_a_failed_call_and_a_refused_one_is_not(tmp_path):
     ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
     silent = _lesson(_build(tmp_path, provider=FakeModel(""), ledger=ledger))["reply"]
     assert judge.reply_status(silent) == "model_failed"
-    refused = _lesson(_build(tmp_path, provider=FakeModel("Blah."), ledger=ledger))["reply"]
-    assert judge.reply_status(refused) == "rejected"  # the checks said no; the template spoke
+    # A verdict against the record: the checks say no, and the template speaks. (A reply
+    # thin on form, "Blah.", is the model's now: form is noted, not refused.)
+    wrong = FakeModel("That was the best move.")
+    refused = _lesson(_build(tmp_path, provider=wrong, ledger=ledger))["reply"]
+    assert judge.reply_status(refused) == "rejected"
     assert not refused["model_failed"]
 
 

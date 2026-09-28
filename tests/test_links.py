@@ -111,10 +111,11 @@ def test_a_lesson_ties_only_to_the_moments_the_coach_lists() -> None:
     directive = directive_of(sent(provider, 1))
     assert "Under 'Earlier in this game'" in directive and TIE_TO_THE_GAME not in directive
     assert "(as with Bg4)" not in directive, "no example move for the model to copy"
-    # The first reply named 3. Qh5, an earlier move not listed: told so, and redone.
+    # The first reply named 3. Qh5, an earlier move not listed: told so, and redone. Its
+    # move number is form, and only noted (Tai, 2026-09-28).
     retry = str(sent(provider, 2)[-1]["content"])
     assert "names Qh5, an earlier moment not listed" in retry
-    assert "a move with its number" in retry
+    assert "a move with its number" not in retry
     assert out[0].text.startswith("Qxf7# was mate on the spot: as with Bc4")
     assert coach.spoken[-1].problems == [], coach.spoken[-1].problems
 
@@ -312,18 +313,15 @@ def test_why_was_that_bad_says_what_the_move_allowed() -> None:
     assert "Name moves bare" in directive
 
 
-def test_a_figure_in_a_hint_nobody_asked_a_figure_of_is_a_fault() -> None:
-    coach, provider = scripted_coach(
-        [
-            "You are ahead by about 1.2 pawns: their king on e8 has one square. Which check?",
-            "Their king on e8 has one square left. Which check takes it away?",
-        ]
-    )
+def test_a_figure_in_a_hint_nobody_asked_a_figure_of_is_noted() -> None:
+    """The directive asks for no figure; one given anyway is said, and noted for the log
+    (Tai, 2026-09-28: a slip of form is minor, the prompt's to prevent)."""
+    reply = "You are ahead by about 1.2 pawns: their king on e8 has one square. Which check?"
+    coach, provider = scripted_coach([reply])
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
     coach.ask("give me a hint", 8.0)
     out = drain(coach)
     assert "Quote no figure" in directive_of(sent(provider, 0))
-    retry = str(sent(provider, 1)[-1]["content"])
-    assert "a figure in a remark nobody asked for" in retry
-    assert out[-1].text.startswith("Their king on e8 has one square left")
+    assert [m.text for m in out] == [reply] and len(provider.prompts) == 1
+    assert "a figure in a remark nobody asked for: say it in words" in coach.spoken[-1].notes

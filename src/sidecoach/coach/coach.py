@@ -893,8 +893,8 @@ def _sample_reply(passed: list[tuple[float, str]]) -> str:
 
 class _FirstCandidate:
     """Reads the first verbalized candidate off the model's stream and hands it to a sink
-    sentence by sentence. Each new complete sentence is checked (the board and form
-    checks) before it goes; a fault stops the stream with what was said so far kept. The
+    sentence by sentence. Each new complete sentence is checked (`Speaker._problems`: what
+    it gets wrong) before it goes; a fault stops the stream with what was said so far kept. The
     stream is stopped once the candidate is complete -- the second marker seen -- so the
     other candidates are never written. A reply with no marker at all is one candidate."""
 
@@ -903,15 +903,12 @@ class _FirstCandidate:
         sink: Callable[[str], bool],
         check: Callable[[str], list[str]],
         *,
-        must_name: Sequence[str] = (),
         limit: int | None = None,
     ) -> None:
         self.sink = sink
         self.check = check
-        # What the whole reply must name (held until it comes), and the task's length (the
-        # stream is closed there): with the voice on, the reply was never checked whole, and
-        # "Mate is close." and an eight-sentence homily both went out (the runtime audit).
-        self.must_name = tuple(must_name)
+        # The task's length: the stream is closed there (an eight-sentence homily went out
+        # whole with the voice on: the runtime audit).
         self.limit = limit
         self.buffer = ""
         self.spoken = ""  # what the sink has been given
@@ -951,26 +948,7 @@ class _FirstCandidate:
         fresh = complete[len(self.spoken) :].strip()
         if sum(ch.isalpha() for ch in fresh) < 2:
             return True  # a number and a stop: the sentence it begins is still coming
-        if self.must_name and not self.spoken:
-            # Nothing goes out before what the reply must name: held until it comes, and a
-            # reply that ends without it is not said at all -- it is read whole instead.
-            left_out = omitted(complete, self.must_name)
-            if left_out:
-                if final:
-                    self.problems = [left_out]
-                    return False
-                return True
         faults = self.check(fresh) if fresh else []
-        # Sentence by sentence, only what a sentence can get wrong: the length, the closing
-        # question and what the whole must name are the whole reply's.
-        faults = [
-            f
-            for f in faults
-            if not f.startswith(("too long", "left out"))
-            and f != "no closing question"
-            # Only the reply's first sentence can open it with the move.
-            and not (self.spoken and f.startswith("opens with"))
-        ]
         if faults:
             self.problems = faults
             return False
@@ -1039,9 +1017,11 @@ class Spoken:
     # not support, and whether the reply spoken was a repair of the best candidate.
     verified: list[list[str]] = field(default_factory=list)
     repaired: bool = False
-    # What the model's reply gave away of the answer the level withholds (`Speaker._leaks`):
-    # logged for debugging, never a reason the reply was refused.
+    # What the model's reply gave away of the answer the level withholds (`Speaker._leaks`),
+    # and what it did against the form asked of it (`Speaker._notes`): logged for debugging,
+    # never a reason the reply was refused.
     leaks: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1385,9 +1365,10 @@ REPAIR_SYSTEM = (
 class Speaker:
     """Runs the model on a worker thread and checks what it says.
 
-    A draft with a false claim about the board (or against the record, or the form) is
-    sent back once with the problem named; a second failure is replaced by the template,
-    and the failure counted. What a reply gives away of the answer is logged, not refused.
+    A draft with a false claim about the board or against the record is sent back once with
+    the problem named; a second failure is replaced by the template, and the failure
+    counted. What a reply gives away of the answer, and what it does against the form asked
+    of it, are logged, not refused.
     With a `verifier`, every candidate that passes those checks is also read against the
     messages by a second model, the clean ones are sampled from, and when none is clean the
     likeliest is repaired once: test-time verification, on top of the demonstrations in C.
@@ -1544,10 +1525,7 @@ class Speaker:
                     str(request.messages[-1]["content"]).rsplit("# Task", 1)[-1]
                 )
                 reader = _FirstCandidate(
-                    request.stream_to,
-                    lambda t: self._problems(t, request),
-                    must_name=request.must_name,
-                    limit=limit,
+                    request.stream_to, lambda t: self._problems(t, request), limit=limit
                 )
             try:
                 if reader is not None and stream is not None:
@@ -1594,22 +1572,6 @@ class Speaker:
                 for prob, candidate in _parse_candidates(raw)
             ]
             passed = [(prob, candidate) for prob, candidate, faults in scored if not faults]
-            if (
-                not passed
-                and scored
-                and all(
-                    faults and all(f.startswith("too long") for f in faults)
-                    for _, _, faults in scored
-                )
-            ):
-                # Every candidate clean but for its length: the likeliest, cut to the limit,
-                # instead of a second call or the template.
-                directive = str(request.messages[-1]["content"]).rsplit("# Task", 1)[-1]
-                limit, wants_question = directive_limits(directive)
-                prob, candidate, _ = max(scored, key=lambda x: x[0])
-                trimmed = trim_to_limit(candidate, (limit or 2) + LENGTH_SLACK, wants_question)
-                if not self._problems(trimmed, request):
-                    passed = [(prob, trimmed)]
             given = "\n\n---\n\n".join(str(m["content"]) for m in messages[-2:])
             calls.append(ModelCall(raw, stats, len(scored), len(passed), given))
             if passed and self.verifier is not None:
@@ -1646,7 +1608,10 @@ class Speaker:
             self.fallbacks += 1
             text = request.fallback
             leaks: list[str] = []
+            notes: list[str] = []
         else:
+            notes = self._notes(text, request)
+            text = self._trimmed(text, request)
             leaks = self._leaks(text, request)
         message = CoachMessage(
             text=text,
@@ -1667,7 +1632,20 @@ class Speaker:
             repaired=repaired,
             streamed=streamed,
             leaks=leaks,
+            notes=notes,
         )
+
+    @staticmethod
+    def _trimmed(text: str, request: _Request) -> str:
+        """`text` cut to its directive's length and the slack past it: the sentences beyond
+        are not said (the voice reads every one while the player is playing)."""
+        directive = (
+            str(request.messages[-1]["content"]).rsplit("# Task", 1)[-1] if request.messages else ""
+        )
+        limit, wants_question = directive_limits(directive)
+        if limit is None or _sentence_total(text) <= limit + LENGTH_SLACK:
+            return text
+        return trim_to_limit(text, limit + LENGTH_SLACK, wants_question)
 
     def _verify(
         self, passed: list[tuple[float, str]], request: _Request
@@ -1743,25 +1721,47 @@ class Speaker:
         return [], verified, False
 
     def _problems(self, text: str, request: _Request) -> list[str]:
-        """What stops a draft: a false claim about the board, a verdict against the record,
-        the form the directive asks for, the owner's rules. Not a leak: that is logged
-        (`_leaks`), never a reason to refuse a reply (Tai, 2026-09-26: "it should be used as
-        a debugging tool and not something used to reject response")."""
+        """What stops a draft: what it gets wrong -- a false claim about the board, a verdict
+        or cost against the record, an earlier moment of the game it invents. Its form is
+        not among them: that is noted (`_notes`), never a reason to refuse a reply (Tai,
+        2026-09-28: "we don't need to throw anything out ... we just need good prompt
+        engineering"), and neither is a leak (`_leaks`; Tai, 2026-09-26: "it should be used
+        as a debugging tool and not something used to reject response")."""
         found: list[str] = []
-        # The length the directive states: a reply over it is a fault of its own, so
-        # a shorter candidate wins the draw, or the likeliest is cut to size.
+        # The verdict word and the cost the reply gives for the move just played must be
+        # the assessment's own: "best" for an excellent move, "cost 0.10" for a 0.05 loss,
+        # were the judge's commonest remaining faults, and the coach holds the facts.
+        found.extend(_verdict_problems(text, request))
+        if request.unlisted is not None:
+            # An earlier moment named that the coach did not list is one it made up ("as
+            # after 9...a6, when Bc4 saved your bishop"); a move number is only form.
+            found.extend(
+                f for f in unlisted_links(text, request.unlisted) if not f.startswith("a move with")
+            )
+        if self.draft_check is not None:
+            for problem in self.draft_check(
+                text, request.board, _after_best(request), _player(request.facts)
+            ):
+                san = problem.split(":", 1)[0].strip()
+                if san in request.played:
+                    continue  # a move of the game's history, named as such
+                found.append(problem)
+        found.extend(false_illegal(text, request.board))
+        found.extend(self._claim_problems(text, request))
+        return list(dict.fromkeys(found))
+
+    def _notes(self, text: str, request: _Request) -> list[str]:
+        """What a reply does against the form its directive asks for, or the owner's rules
+        of form: logged with the reply, like a leak, and never a reason to refuse it --
+        the prompt asks for the form, and a slip of it is minor (Tai, 2026-09-28). A reply
+        past its length is still cut there (`_trimmed`)."""
+        found: list[str] = []
         directive = (
             str(request.messages[-1]["content"]).rsplit("# Task", 1)[-1] if request.messages else ""
         )
         limit, wants_question = directive_limits(directive)
         if limit is not None and _sentence_total(text) > limit + LENGTH_SLACK:
             found.append(f"too long: {_sentence_total(text)} sentences, {limit} asked for")
-        # The verdict word and the cost the reply gives for the move just played must be
-        # the assessment's own: "best" for an excellent move, "cost 0.10" for a 0.05 loss,
-        # were the judge's commonest remaining faults, and the coach holds the facts.
-        found.extend(_verdict_problems(text, request))
-        # The closing question the directive asks for: without this check the length
-        # rule let a shorter candidate without one win the draw.
         if wants_question is True and not text.rstrip().endswith("?"):
             found.append("no closing question")
         if wants_question is False and text.rstrip().endswith("?"):
@@ -1770,8 +1770,8 @@ class Speaker:
         if left_out:
             found.append(left_out)
         found.extend(restated(text, request))
-        if request.unlisted is not None:
-            found.extend(unlisted_links(text, request.unlisted))
+        if request.unlisted is not None and _MOVE_NUMBER.search(text):
+            found.append("a move with its number: name moves bare")
         # A figure where none was asked for: an unprompted remark, and an answer whose
         # directive keeps the figures for when the player asks -- "46...Rh5 was excellent,
         # costing only 0.01" (quality round 3, 2026-09-25).
@@ -1786,16 +1786,6 @@ class Speaker:
         asked_engine = re.search(r"stockfish|engine", request.user_text or "", re.I)
         if _ENGINE_NAMED.search(text) and not asked_engine:
             found.append("named the engine: say it as the coach who saw the game")
-        if self.draft_check is not None:
-            for problem in self.draft_check(
-                text, request.board, _after_best(request), _player(request.facts)
-            ):
-                san = problem.split(":", 1)[0].strip()
-                if san in request.played:
-                    continue  # a move of the game's history, named as such
-                found.append(problem)
-        found.extend(false_illegal(text, request.board))
-        found.extend(self._claim_problems(text, request))
         return list(dict.fromkeys(found))
 
     def _claim_problems(self, text: str, request: _Request) -> list[str]:
@@ -2077,7 +2067,7 @@ _ASK_MOVE = re.compile(
     re.I,
 )
 _ASK_LINE = re.compile(
-    r"\b(the line|variation|continuation|what happens (after|next)|show me the line|"
+    r"\b(the line|a line|lines|variation|continuation|what happens (after|next)|"
     r"and then what|what follows)\b",
     re.I,
 )
@@ -2362,10 +2352,14 @@ class Coach:
             if before is not None and before.facts is not None:
                 position, level = before, DisclosureLevel.LINE
         assert position.facts is not None
-        # The quick answer, shown before the model has started: the template for a bare
-        # "hint", the move or the line. A question about the plan earns the hint's level
-        # but not its template -- "What is your opponent's most dangerous idea?" as the
-        # first of two answers to "what should I be aiming for?" was noise.
+        # With a model, every question is the model's to answer, the buttons' included:
+        # its answer starts within a second or two (Tai, 2026-09-28: "I'm using AI coach so
+        # I better be able to ask whatever I want and get answers for them ... it's already
+        # almost instant"). Asked "what should I play against this opening? give me a line",
+        # the template for the opening's name was all he got. The templates are the offline
+        # coach's, and the model's fallback when a reply gets something wrong.
+        offline = self._offline
+        # Offline, the quick answer: the template for a bare "hint", the move or the line.
         # The move or the line asked for, or asked about where it is already open: "what
         # happens after the best move?" at the line level is the line, though it unlocks
         # nothing (the harness check of the test audit, 2026-09-26).
@@ -2378,15 +2372,17 @@ class Coach:
         named = may_carry_claims(text) and bool(
             _SAN.search(text) or re.search(r"\b[a-h][1-8]\b", text)
         )
-        canned = (exact and not named) or (
-            (
-                bool(_ASK_HINT.match(text))
-                # The first hint is now the lesson a question about the plan asks for (the
-                # stakes, the key fact, the principle), no longer "what is your opponent's most
-                # dangerous idea?": it goes out at once, as for a bare hint.
-                or bool(_ASK_AIM.search(text))
+        canned = offline and (
+            (exact and not named)
+            or (
+                (
+                    bool(_ASK_HINT.match(text))
+                    # A question about the plan: the first hint is the lesson it asks for
+                    # (the stakes, the key fact, the principle), as for a bare hint.
+                    or bool(_ASK_AIM.search(text))
+                )
+                and not may_carry_claims(text)
             )
-            and not may_carry_claims(text)
         )
         if canned:
             _, quick = self._instruction(Trigger.USER_ASK, position, level, text, (), None, None)
@@ -2406,12 +2402,9 @@ class Coach:
             )
 
         if canned and exact and not _ASKS_WHY.search(text):
-            # The move or the line, asked for bare: the template has said it, each move with
-            # what it does, computed. The model's explanations of moves and lines carried a
-            # false claim in a quarter to a third of its answers, and the rubric scored the
-            # template as high (the locked test set, 2026-09-26): no call is made.
+            # Offline, the move or the line asked for bare: the template has said it.
             return
-        if not canned and fact_question(text):
+        if offline and not canned and fact_question(text):
             # The material, the opening, the standing: said by the template, exactly.
             _, answer = self._instruction(Trigger.USER_ASK, position, level, text, (), None, None)
             self._queue_plain(
@@ -2430,16 +2423,17 @@ class Coach:
         shown_examination = False
 
         def examined() -> list[str]:
-            """The engine on what they asked about; its plain-words form goes out at once
-            as the coach's turn (correct by construction), and the model builds on it.
-            Only what a question names is said: named in a statement ("I see the fork now:
-            Nf6 attacks the queen on e8 and the rook on d7") or before the question ("my
-            rook on e1 stays active. Why is 12...h5 their best reply?"), the pieces and
-            squares came back as the whole answer -- where each can go, what each attacks
-            -- and the question went unanswered (the simulated students, 2026-09-26).
-            Named in a statement they are still examined, for the model to check it by."""
+            """The engine on what they asked about: the model's to answer from, given with
+            the request. Offline its plain-words form is the answer, said as the coach's
+            turn (correct by construction): only what a question names -- named in a
+            statement ("I see the fork now: Nf6 attacks the queen on e8 and the rook on d7")
+            or before the question ("my rook on e1 stays active. Why is 12...h5 their best
+            reply?"), the pieces and squares came back as the whole answer and the question
+            went unanswered (the simulated students, 2026-09-26)."""
             nonlocal shown_examination
             found = self._named_analysis(asked or text, position, level)
+            if not offline:
+                return found  # the model answers, from these
             # A probe the planner made of their words that is no legal move is the model's
             # to know, not the player's to hear: "after pass, Kd1 is not a legal move" was
             # read out as the answer to "How does Qc7+ prevent Re8?" (the students).
@@ -2448,12 +2442,7 @@ class Coach:
             # examined aloud as a question about it would be: that is the answer. Without it
             # the templates said the hint that had asked for it again, word for word, three
             # times (the students' round 5); pieces and squares named in passing stay unsaid.
-            # With a model to answer in words, a piece's or a square's inventory said first is
-            # noise ("Your king on g8 can go to f7, g7, h8; ..." before the AI's own good answer
-            # to "why doesn't the check prevent that capture?", 2026-09-26): only a move's
-            # examination goes out. Offline it is the answer, and stays.
-            offline = getattr(self.speaker.provider, "offline", False)
-            if not asked or not offline:
+            if not asked:
                 said = [f for f in said if "the expected score is" in f]
             if said:
                 shown_examination = True
@@ -3585,6 +3574,8 @@ class Coach:
         )
         if not hint:
             return ()
+        if trigger is Trigger.STUCK:
+            level = min(level, DisclosureLevel.FOCUS)  # the rung its template is on
         if level >= DisclosureLevel.MOVE:
             best = facts.candidates[0] if facts.candidates else ""
             return (best,) if best and _names(template, best) else ()
@@ -3804,8 +3795,13 @@ class Coach:
             template, note = self._cool_hint(facts, idea_template(facts))
             return (f"{idea_directive(facts)} {NO_FIGURES}{note}", template)
         if trigger is Trigger.STUCK:
-            directive = FOCUS_DIRECTIVE if level >= DisclosureLevel.FOCUS else idea_directive(facts)
-            template, note = self._cool_hint(facts, hint_template(facts, level))
+            # The hints unasked stop at the focus: the move is only for when they ask. The
+            # template on the level a question had opened named the move while the model was
+            # told not to, and every reply that obeyed went for the template (Tai's game,
+            # 2026-09-28: "d5: your bishop on c8 is still shut in", twice).
+            rung = min(level, DisclosureLevel.FOCUS)
+            directive = FOCUS_DIRECTIVE if rung >= DisclosureLevel.FOCUS else idea_directive(facts)
+            template, note = self._cool_hint(facts, hint_template(facts, rung))
             return (
                 "The player has been thinking for a while and is stuck. "
                 + directive
@@ -4033,7 +4029,9 @@ class Coach:
         )
         if material and _ASK_MATERIAL.search(said):
             fallback = f"Material: {material}."
-        elif _ASK_OPENING.search(said):
+        elif _OPENING_FACT.search(said):
+            # The opening asked for by name: "what should I play against this opening? give me
+            # a line" was answered with its name (Tai's game, 2026-09-28).
             opening = self._opening_so_far()
             fallback = (
                 f"The opening was the {opening}." if opening else "We left the opening book early."
@@ -4332,7 +4330,7 @@ class Coach:
                 )
                 if followup and not asks:
                     fallback = ""  # a nod needs no template: nothing, rather than the lesson again
-        elif _ASK_MATERIAL.search(said) or _ASK_OPENING.search(said) or _ASK_EVAL.search(said):
+        elif _ASK_MATERIAL.search(said) or _OPENING_FACT.search(said) or _ASK_EVAL.search(said):
             # A plain question about the game as it stands: answered plainly, no question
             # back (the generic answer's "point them ... with a question" asked one).
             directive = (
@@ -4345,7 +4343,7 @@ class Coach:
                     " Who stands better, in the words of the Standing line, and the material "
                     "as it stands."
                 )
-            if _ASK_OPENING.search(said):
+            if _OPENING_FACT.search(said):
                 directive += " The opening by the name the record gives it."
             if material:
                 directive += (
