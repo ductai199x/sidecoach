@@ -953,20 +953,18 @@ internal fun percent(value: Double): String =
 
 /**
  * Reads the first verbalized candidate off the model's stream and hands it to a sink
- * sentence by sentence. Each new complete sentence is checked (the board and form checks)
- * before it goes; a fault stops the stream with what was said so far kept. The stream is
- * stopped once the candidate is complete -- the second marker seen -- so the other
+ * sentence by sentence. Each new complete sentence is checked ([Speaker.problemsOf]: what it
+ * gets wrong) before it goes; a fault stops the stream with what was said so far kept. The
+ * stream is stopped once the candidate is complete -- the second marker seen -- so the other
  * candidates are never written. A reply with no marker at all is one candidate.
  */
 class FirstCandidate(
     private val sink: (String) -> Boolean,
     private val check: (String) -> List<String>,
     /**
-     * What the whole reply must name (held until it comes), and the task's length (the stream is
-     * closed there): with the voice on, the reply was never checked whole, and "Mate is close."
-     * and an eight-sentence homily both went out (the runtime audit).
+     * The task's length: the stream is closed there (an eight-sentence homily went out whole
+     * with the voice on: the runtime audit).
      */
-    private val mustName: List<String> = emptyList(),
     private val limit: Int? = null,
 ) {
     private var buffer = ""
@@ -1025,26 +1023,7 @@ class FirstCandidate(
         if (fresh.count { it.isLetter() } < 2) {
             return true // a number and a stop: the sentence it begins is still coming
         }
-        if (mustName.isNotEmpty() && spoken.isEmpty()) {
-            // Nothing goes out before what the reply must name: held until it comes, and a reply
-            // that ends without it is not said at all -- it is read whole instead.
-            val leftOut = omitted(complete, mustName)
-            if (leftOut != null) {
-                if (final) {
-                    problems = listOf(leftOut)
-                    return false
-                }
-                return true
-            }
-        }
-        var faults = if (fresh.isNotEmpty()) check(fresh) else emptyList()
-        // Sentence by sentence, only what a sentence can get wrong: the length, the closing
-        // question and what the whole must name are the whole reply's.
-        faults = faults.filter {
-            !it.startsWith("too long") && !it.startsWith("left out") && it != "no closing question" &&
-                // Only the reply's first sentence can open it with the move.
-                !(spoken.isNotEmpty() && it.startsWith("opens with"))
-        }
+        val faults = if (fresh.isNotEmpty()) check(fresh) else emptyList()
         if (faults.isNotEmpty()) {
             problems = faults
             return false
@@ -1122,10 +1101,12 @@ class Spoken(
     val verified: List<List<String>> = emptyList(),
     val repaired: Boolean = false,
     /**
-     * What the model's reply gave away of the answer the level withholds ([Speaker.leaks]):
-     * logged for debugging, never a reason the reply was refused.
+     * What the model's reply gave away of the answer the level withholds ([Speaker.leaks]), and
+     * what it did against the form asked of it ([Speaker.notes]): logged for debugging, never a
+     * reason the reply was refused.
      */
     val leaks: List<String> = emptyList(),
+    val notes: List<String> = emptyList(),
 )
 
 class CoachPosition(
@@ -1489,9 +1470,10 @@ internal fun player(facts: PositionFacts): Boolean? {
 /**
  * Runs the model on a worker thread and checks what it says.
  *
- * A draft with a false claim about the board (or against the record, or the form) is sent back
- * once with the problem named; a second failure is replaced by the template, and the failure
- * counted. What a reply gives away of the answer is logged, not refused. With a
+ * A draft with a false claim about the board or against the record is sent back once with the
+ * problem named; a second failure is replaced by the template, and the failure counted. What a
+ * reply gives away of the answer, and what it does against the form asked of it, are logged,
+ * not refused. With a
  * [verifier], every candidate that passes those checks is also read against the messages by
  * a second model, the clean ones are sampled from, and when none is clean the likeliest is
  * repaired once: test-time verification, on top of the demonstrations in C.
@@ -1652,12 +1634,7 @@ class Speaker(
                 // written, each sentence checked before it is said; the stream is
                 // closed once that candidate is complete, the others unwritten.
                 val (limit, _) = directiveLimits(request.messages.last().content.substringAfterLast("# Task"))
-                reader = FirstCandidate(
-                    request.streamTo,
-                    { t -> problemsOf(t, request) },
-                    mustName = request.mustName,
-                    limit = limit,
-                )
+                reader = FirstCandidate(request.streamTo, { t -> problemsOf(t, request) }, limit = limit)
             }
             var raw: String
             try {
@@ -1708,19 +1685,6 @@ class Speaker(
                 Triple(prob, candidate, problemsOf(candidate, request))
             }
             var passed = scored.filter { it.third.isEmpty() }.map { it.first to it.second }
-            if (passed.isEmpty() && scored.isNotEmpty() &&
-                scored.all { (_, _, faults) ->
-                    faults.isNotEmpty() && faults.all { it.startsWith("too long") }
-                }
-            ) {
-                // Every candidate clean but for its length: the likeliest, cut to the limit,
-                // instead of a second call or the template.
-                val directive = request.messages.last().content.substringAfterLast("# Task")
-                val (limit, wantsQuestion) = directiveLimits(directive)
-                val best = scored.maxByOrNull { it.first }!!
-                val trimmed = trimToLimit(best.second, (limit ?: 2) + LENGTH_SLACK, wantsQuestion)
-                if (problemsOf(trimmed, request).isEmpty()) passed = listOf(best.first to trimmed)
-            }
             val given = messages.takeLast(2).joinToString("\n\n---\n\n") { it.content }
             calls.add(ModelCall(raw, stats, scored.size, passed.size, given))
             if (passed.isNotEmpty() && verifier != null) {
@@ -1765,11 +1729,15 @@ class Speaker(
             messages = messages.dropLast(1) + retry
         }
         val leaks: List<String>
+        val notes: List<String>
         if (problems.isNotEmpty() && !streamed) {
             fallbacks += 1
             text = request.fallback
             leaks = emptyList()
+            notes = emptyList()
         } else {
+            notes = notes(text, request)
+            text = trimmed(text, request)
             leaks = leaks(text, request)
         }
         val message = CoachMessage(
@@ -1791,7 +1759,23 @@ class Speaker(
             repaired = repaired,
             streamed = streamed,
             leaks = leaks,
+            notes = notes,
         )
+    }
+
+    /**
+     * [text] cut to its directive's length and the slack past it: the sentences beyond are not
+     * said (the voice reads every one while the player is playing). `Speaker._trimmed`.
+     */
+    private fun trimmed(text: String, request: CoachRequest): String {
+        val directive = if (request.messages.isNotEmpty()) {
+            request.messages.last().content.substringAfterLast("# Task")
+        } else {
+            ""
+        }
+        val (limit, wantsQuestion) = directiveLimits(directive)
+        if (limit == null || sentenceTotal(text) <= limit + LENGTH_SLACK) return text
+        return trimToLimit(text, limit + LENGTH_SLACK, wantsQuestion)
     }
 
     /**
@@ -1871,15 +1855,44 @@ class Speaker(
     }
 
     /**
-     * What stops a draft: a false claim about the board, a verdict against the record, the form
-     * the directive asks for, the owner's rules. Not a leak: that is logged ([leaks]), never a
-     * reason to refuse a reply (Tai, 2026-09-26: "it should be used as a debugging tool and not
-     * something used to reject response"). `Speaker._problems`.
+     * What stops a draft: what it gets wrong -- a false claim about the board, a verdict or cost
+     * against the record, an earlier moment of the game it invents. Its form is not among them:
+     * that is noted ([notes]), never a reason to refuse a reply (Tai, 2026-09-28: "we don't need
+     * to throw anything out ... we just need good prompt engineering"), and neither is a leak
+     * ([leaks]; Tai, 2026-09-26: "it should be used as a debugging tool and not something used to
+     * reject response"). `Speaker._problems`.
      */
     internal fun problemsOf(text: String, request: CoachRequest): List<String> {
         val found = ArrayList<String>()
-        // The length the directive states: a reply over it is a fault of its own, so a
-        // shorter candidate wins the draw, or the likeliest is cut to size.
+        // The verdict word and the cost the reply gives for the move just played must be the
+        // assessment's own: "best" for an excellent move, "cost 0.10" for a 0.05 loss, were
+        // the judge's commonest remaining faults, and the coach holds the facts.
+        found.addAll(verdictProblems(text, request))
+        val unlisted = request.unlisted
+        if (unlisted != null) {
+            // An earlier moment named that the coach did not list is one it made up ("as after
+            // 9...a6, when Bc4 saved your bishop"); a move number is only form.
+            found.addAll(unlistedLinks(text, unlisted).filter { !it.startsWith("a move with") })
+        }
+        if (draftCheck != null) {
+            for (problem in draftCheck.check(text, request.board, afterBest(request), player(request.facts))) {
+                val san = problem.substringBefore(":").trim()
+                if (san in request.played) continue // a move of the game's history, named as such
+                found.add(problem)
+            }
+        }
+        found.addAll(falseIllegal(text, request.board))
+        return found.distinct()
+    }
+
+    /**
+     * What a reply does against the form its directive asks for, or the owner's rules of form:
+     * logged with the reply, like a leak, and never a reason to refuse it -- the prompt asks for
+     * the form, and a slip of it is minor (Tai, 2026-09-28). A reply past its length is still cut
+     * there ([trimmed]). `Speaker._notes`.
+     */
+    internal fun notes(text: String, request: CoachRequest): List<String> {
+        val found = ArrayList<String>()
         val directive = if (request.messages.isNotEmpty()) {
             request.messages.last().content.substringAfterLast("# Task")
         } else {
@@ -1889,12 +1902,6 @@ class Speaker(
         if (limit != null && sentenceTotal(text) > limit + LENGTH_SLACK) {
             found.add("too long: ${sentenceTotal(text)} sentences, $limit asked for")
         }
-        // The verdict word and the cost the reply gives for the move just played must be the
-        // assessment's own: "best" for an excellent move, "cost 0.10" for a 0.05 loss, were
-        // the judge's commonest remaining faults, and the coach holds the facts.
-        found.addAll(verdictProblems(text, request))
-        // The closing question the directive asks for: without this check the length rule
-        // let a shorter candidate without one win the draw.
         if (wantsQuestion == true && !text.trimEnd().endsWith("?")) found.add("no closing question")
         if (wantsQuestion == false && text.trimEnd().endsWith("?")) {
             found.add("a question where the task allows none")
@@ -1902,8 +1909,9 @@ class Speaker(
         val leftOut = omitted(text, request.mustName)
         if (leftOut != null) found.add(leftOut)
         found.addAll(restated(text, request))
-        val unlisted = request.unlisted
-        if (unlisted != null) found.addAll(unlistedLinks(text, unlisted))
+        if (request.unlisted != null && MOVE_NUMBER.containsMatchIn(text)) {
+            found.add("a move with its number: name moves bare")
+        }
         // A figure where none was asked for: an unprompted remark, and an answer whose directive
         // keeps the figures for when the player asks -- "46...Rh5 was excellent, costing only
         // 0.01" (quality round 3, 2026-09-25).
@@ -1919,14 +1927,6 @@ class Speaker(
         if (ENGINE_NAMED.containsMatchIn(text) && !askedEngine) {
             found.add("named the engine: say it as the coach who saw the game")
         }
-        if (draftCheck != null) {
-            for (problem in draftCheck.check(text, request.board, afterBest(request), player(request.facts))) {
-                val san = problem.substringBefore(":").trim()
-                if (san in request.played) continue // a move of the game's history, named as such
-                found.add(problem)
-            }
-        }
-        found.addAll(falseIllegal(text, request.board))
         return found.distinct()
     }
 

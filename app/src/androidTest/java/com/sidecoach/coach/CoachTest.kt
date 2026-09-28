@@ -392,23 +392,22 @@ class CoachTest {
     }
 
     /**
-     * The template is the floor (parity pass, 2026-09-25): a first hint that names nothing of the
-     * key fact -- true, and thinner than the free coach's -- is sent back, and the template speaks
-     * when the second is no better (desktop 717cc9c).
+     * A first hint that names nothing of the key fact is thinner than the free coach's; it was sent
+     * back and the template spoken (parity pass, 2026-09-25). Its form is the prompt's to ask for,
+     * and a slip of it is minor (Tai, 2026-09-28: "we don't need to throw anything out"): it is
+     * said, and noted for the log (desktop 3ff672b).
      */
     @Test
-    fun aReplyThatSaysLessThanTheTemplateIsNotSaid() {
+    fun aReplyThinnerThanTheTemplateIsSaidAndNoted() {
         val thin = "Your king is safe for now, is it not?"
-        val (coach, provider) = coach(listOf(thin, "Think about checks. Which one works?"))
+        val (coach, _) = coach(listOf(thin))
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6), 7.0)
         val out = messages(coach)
-        assertTrue(out[0].text, out[0].text != thin && "e8" in out[0].text)
+        assertEquals(thin, out[0].text)
         val spoken = coach.spoken.last()
-        assertTrue(spoken.attempts == 2 && coach.speaker.fallbacks == 1)
-        assertTrue(spoken.problems.toString(), spoken.problems.any { it.startsWith("left out") })
-        val retry = given(provider, 1)
-        assertTrue("left out" in retry.last().content && "e8" in retry.last().content)
+        assertTrue(spoken.attempts == 1 && coach.speaker.fallbacks == 0 && spoken.problems.isEmpty())
+        assertTrue(spoken.notes.toString(), spoken.notes.any { it.startsWith("left out") })
     }
 
     /**
@@ -443,48 +442,60 @@ class CoachTest {
     }
 
     /**
-     * "What should I be aiming for?" earns the hint's rung, and its template -- the first hint, a
-     * lesson on the position -- goes out at once, as for a bare hint; the model builds on it with
-     * the hint's directive, not the generic answer (parity pass 2, 2026-09-25; desktop 2219e11).
+     * "What should I be aiming for?" earns the hint's rung and the hint's directive, not the
+     * generic answer (parity pass 2, 2026-09-25; desktop 2219e11); asked of the AI coach, the
+     * model answers it, with nothing said before it (Tai, 2026-09-28; desktop 3ff672b).
      */
     @Test
-    fun aQuestionAboutThePlanIsAnsweredByTheFirstHintAtOnce() {
-        val (coach, provider) = coach(listOf("The king on e8 has one square left. Which check takes it away?"))
+    fun aQuestionAboutThePlanIsAnsweredWithTheFirstHint() {
+        val reply = "The king on e8 has one square left. Which check takes it away?"
+        val (coach, provider) = coach(listOf(reply))
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
         assertEquals(emptyList<CoachMessage>(), messages(coach))
         coach.ask("what should I be aiming for here?", 8.0)
         val out = messages(coach)
-        assertTrue(out[0].text, out[0].level == DisclosureLevel.IDEA && "e8" in out[0].text)
-        // The hint is out at once, in the template's words; the model adds to it (desktop
-        // af1bae2).
+        assertTrue(out.map { it.text }.toString(), out.map { it.text } == listOf(reply) && out[0].level == DisclosureLevel.IDEA)
         val directive = directiveOf(given(provider, 0))
-        assertTrue(directive, "have just been shown it" in directive && "Do not repeat it" in directive)
+        assertTrue(directive, "They asked what to aim for: answer with the hint at this rung." in directive)
         assertTrue(directive, "be honest about their own claim" !in directive)
     }
 
     /**
-     * The runtime audit: with the voice on, the reply was checked sentence by sentence only, and
-     * "Mate is close." went out whole. Now the stream holds until what the reply must name has
-     * come, says nothing when it never does, and stops at the task's length (desktop af1bae2).
+     * Tai's game, 2026-09-28: a question had opened the move's level, and the stuck hint after it
+     * told the model not to name the move while its template and its check were the move's; both
+     * replies, focus hints as asked, went for "d5: your bishop on c8 is still shut in", twice. A
+     * hint nobody asked for stays at the focus, template and check too (desktop 3ff672b).
      */
     @Test
-    fun withTheVoiceOnNothingGoesOutBeforeTheKeyFactAndNotPastTheLength() {
+    fun aStuckHintAfterTheMoveWasAskedStaysAtTheFocus() {
+        val focus = "Use your queen: their king on e8 has one square left. Which check takes it away?"
+        val (coach, provider) = coach(listOf("Qxf7# is mate at once.", focus))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        coach.ask("what should I play?", 8.0)
+        assertEquals(listOf("Qxf7# is mate at once."), messages(coach).map { it.text })
+        coach.tick(17.0)
+        val out = messages(coach)
+        assertTrue(out.map { it.text }.toString(), out.map { it.text } == listOf(focus) && out[0].trigger == Trigger.STUCK)
+        assertTrue("Do not name the move" in directiveOf(given(provider, 1)))
+        assertEquals("the focus hint is what its check asks for", emptyList<String>(), coach.spoken.last().notes)
+        val position = coach.positions.getValue(6) // the position on the board (`coach._current`)
+        assertNotNull(position.facts)
+        val template = coach.instruction(
+            Trigger.STUCK, position, DisclosureLevel.MOVE, null, emptyList(), null, null,
+        ).second
+        assertTrue("the template is the focus's, not the move's: $template", "Qxf7" !in template)
+    }
+
+    /**
+     * The runtime audit: with the voice on, an eight-sentence homily went out whole. The stream
+     * stops at the task's length and its slack (desktop af1bae2, 3ff672b).
+     */
+    @Test
+    fun withTheVoiceOnNothingGoesOutPastTheLength() {
         val heard = ArrayList<String>()
-        var reader = FirstCandidate({ heard.add(it); true }, { emptyList() }, mustName = listOf("e8"))
-        reader.feed("Stay calm. Look carefully at the whole board. ")
-        assertEquals("held: the key fact has not come", emptyList<String>(), heard)
-        reader.finish()
-        assertTrue(heard.isEmpty() && reader.problems.isNotEmpty() && reader.problems[0].startsWith("left out"))
-
-        heard.clear()
-        reader = FirstCandidate({ heard.add(it); true }, { emptyList() }, mustName = listOf("e8"))
-        reader.feed("Mate is close. Their king on e8 has one square. Which check takes it? ")
-        reader.finish()
-        assertTrue(heard.toString(), heard.joinToString(" ").startsWith("Mate is close. Their king on e8"))
-
-        heard.clear()
-        reader = FirstCandidate({ heard.add(it); true }, { emptyList() }, limit = 1)
+        val reader = FirstCandidate({ heard.add(it); true }, { emptyList() }, limit = 1)
         reader.feed("One. Two. Three. Four. Five. ")
         reader.finish()
         assertEquals("the limit and its slack, no more", 3, heard.sumOf { t -> t.count { it == '.' } })
@@ -637,67 +648,93 @@ class CoachTest {
 
     /**
      * Round 2: "Stockfish gives White about 0.8 pawns" in seven answers (desktop 47138dd; the
-     * review's costliest losses are held by the conversation fixture).
+     * review's costliest losses are held by the conversation fixture). Noted, never refused: a
+     * reply's form is the prompt's to ask for (Tai, 2026-09-28; desktop 3ff672b).
      */
     @Test
     fun theCoachNeverNamesTheEngine() {
         val request = afterMoveRequest(SCHOLAR, "Bxf7+", "h5f7")
         val speaker = Speaker(ScriptedProvider(emptyList()))
-        val faults = speaker.problemsOf("Qxf7 was better; Stockfish liked it more.", request)
-        assertTrue(faults.toString(), "named the engine: say it as the coach who saw the game" in faults)
+        val said = "Qxf7 was better; Stockfish liked it more."
+        val notes = speaker.notes(said, request)
+        assertTrue(notes.toString(), "named the engine: say it as the coach who saw the game" in notes)
+        assertEquals(emptyList<String>(), speaker.problemsOf(said, request))
         val asked = afterMoveRequest(SCHOLAR, "Bxf7+", "h5f7", userText = "what does the engine say?")
         assertTrue(
             "named the engine: say it as the coach who saw the game" !in
-                speaker.problemsOf("Qxf7 was better; the engine liked it more.", asked)
+                speaker.notes("Qxf7 was better; the engine liked it more.", asked)
         )
     }
 
     /**
-     * Hint, Best move and Line: the template for the level goes out immediately, with its marks;
-     * the buttons felt slow when the answer waited on two model calls. The move and the line
-     * asked for bare are the template's alone (exact); with a why, the model's fuller reply
-     * follows (desktop d8c687c).
+     * Hint, Best move and Line. Asked of the AI coach, the model answers, with its marks and
+     * nothing said before it: its first words come within a second or two (Tai, 2026-09-28: "it's
+     * already almost instant"). Offline the template for the level goes out at once, the move and
+     * the line asked for bare are the template's alone, and no model is asked (desktop 3ff672b).
      */
     @Test
-    fun aCannedAskIsAnsweredAtOnceAndTheModelBuildsOnIt() {
-        val (coach, provider) = coach(listOf("Because it keeps the knight out of play, and eyes e5."))
+    fun theButtonsAreTheModelsToAnswerAndTheTemplatesOffline() {
+        val (coach, provider) = coach(listOf("Qxf7# ends it: the queen takes with check and mate."))
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
         coach.askMove(8.0)
-        val quick = coach.poll() // before the model has answered anything
-        assertEquals(listOf("Qxf7# is mate."), quick.map { it.text })
-        assertTrue(quick[0].trigger == Trigger.USER_ASK && quick[0].level == DisclosureLevel.MOVE)
-        assertTrue(quick[0].annotations.any { it.kind == "arrow" })
-        assertEquals("the move alone: no call", emptyList<CoachMessage>(), messages(coach))
-        assertEquals(0, provider.prompts.size)
-        // With a why, the model answers.
-        coach.ask("what should I play, and why?", 9.0)
+        assertEquals("nothing before the model's answer", emptyList<CoachMessage>(), coach.poll())
         val out = messages(coach)
-        assertEquals("Because it keeps the knight out of play, and eyes e5.", out.map { it.text }.last())
-        assertEquals(1, provider.prompts.size)
+        assertEquals(listOf("Qxf7# ends it: the queen takes with check and mate."), out.map { it.text })
+        assertTrue(out[0].trigger == Trigger.USER_ASK && out[0].level == DisclosureLevel.MOVE)
+        assertTrue(out[0].annotations.any { it.kind == "arrow" })
+        val directive = directiveOf(given(provider, 0))
+        assertTrue(directive, "They asked what to play: tell them plainly it is Qxf7#" in directive)
+        val offline = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+        playToScholar(offline)
+        offline.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        offline.askMove(8.0)
+        val quick = offline.poll() // at once
+        assertEquals(listOf("Qxf7# is mate."), quick.map { it.text })
+        assertEquals(DisclosureLevel.MOVE, quick[0].level)
+        assertTrue(quick[0].annotations.any { it.kind == "arrow" })
+        assertEquals(emptyList<CoachMessage>(), messages(offline))
     }
 
     /**
-     * The material, the opening by name, who stands better: the template says them exactly and
-     * no model is called (the locked test set, 2026-09-26: the model once gave the material after
-     * a recapture as the material now). A judgement or a why still goes to the model (desktop
-     * 4365dfa).
+     * The material, the opening by name, who stands better. Offline the template says them
+     * exactly, the fact itself, never the hint for the position ("How many pieces am I up?" was
+     * once answered "Something forcing is on..."). Asked of the AI coach, the model answers (Tai,
+     * 2026-09-28); and a question that only mentions the opening is not a question about its name:
+     * "what should I play against this opening? give me a line" got "The opening was the A40
+     * Queen's Pawn Game.", and is the line's to answer (desktop 4365dfa, 3ff672b).
      */
     @Test
-    fun aQuestionOnlyAboutAFactIsAnsweredByTheTemplate() {
-        for (said in listOf("who's up material?", "what opening is this?", "am I winning?")) {
-            assertTrue(said, factQuestion(said))
-        }
+    fun aQuestionOnlyAboutAFactIsTheModelsAndOfflineTheTemplates() {
         for (said in listOf("how is my opening?", "why am I losing?", "am I winning? what should I do?")) {
             assertFalse(said, factQuestion(said))
         }
-        val (coach, provider) = coach(listOf("The model's words."))
+        val (coach, provider) = coach(listOf("The model's words.", "Qxf7# -- it is mate at once."))
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
-        coach.ask("who's up material?", 8.0)
-        val out = messages(coach)
-        assertTrue(out.toString(), out.isNotEmpty() && out.last().text.startsWith("Material:"))
-        assertEquals(emptyList<Pair<String, List<ChatMessage>>>(), provider.prompts)
+        coach.ask("what opening is this?", 8.0)
+        assertEquals(listOf("The model's words."), messages(coach).map { it.text })
+        assertTrue("The opening by the name the record gives it." in directiveOf(given(provider, 0)))
+        coach.ask("what should I play against this opening? give me a line", 9.0)
+        assertEquals(listOf("Qxf7# -- it is mate at once."), messages(coach).map { it.text })
+        val directive = directiveOf(given(provider, 1))
+        assertTrue(directive, "They asked to see the line: give it -- Qxf7#" in directive)
+        assertTrue(directive, "The opening by the name" !in directive)
+        val offline = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+        playToScholar(offline)
+        offline.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        for ((i, pair) in listOf(
+            "who's up material?" to listOf("Material:"),
+            "how many pieces am I up?" to listOf("Material:"),
+            "am I winning?" to listOf("Right now you are winning"),
+            "what opening is this?" to listOf("We left the opening book early.", "The opening was the"),
+        ).withIndex()) {
+            val (said, opens) = pair
+            assertTrue(said, factQuestion(said))
+            offline.ask(said, (8 + i).toDouble())
+            val out = messages(offline)
+            assertTrue("$said: $out", out.isNotEmpty() && opens.any { out.last().text.startsWith(it) })
+        }
     }
 
     /**
@@ -1215,12 +1252,12 @@ class CoachTest {
 
     /**
      * "I'll play Qd1, blocking the check" answered the templates' hint, and got the hint back word
-     * for word, three times (the students' round 5): a move proposed is examined aloud as a
-     * question about it is; and a template already said since the last move is not said again
-     * (desktop adc4b26).
+     * for word, three times (the students' round 5): a move proposed is examined as a question
+     * about it is, and the model answers from the examination; and a template already said since
+     * the last move is not said again (desktop adc4b26, 3ff672b).
      */
     @Test
-    fun aMoveProposedInAStatementIsExaminedAloudAndNothingIsSaidTwice() {
+    fun aMoveProposedInAStatementIsExaminedAndNothingIsSaidTwice() {
         val engine = EngineLike { board, _ ->
             if (board.turn == WHITE) {
                 listOf(Line(moves = listOf("f1b5"), depth = 14, expectedScore = 0.55))
@@ -1229,12 +1266,13 @@ class CoachTest {
             }
         }
         // The planner reads their words into a probe (first call); the model answers (second).
-        val (coach, _) = coach(listOf("{\"probes\": [{\"label\": \"your Bc4\", \"moves\": [\"Bc4\"]}]}", "[p=1.0] Fine."))
+        val (coach, provider) = coach(listOf("{\"probes\": [{\"label\": \"your Bc4\", \"moves\": [\"Bc4\"]}]}", "[p=1.0] Fine."))
         coach.engine = engine
         italian(coach)
         coach.ask("I'll play Bc4 and aim at f7.", 6.0)
-        val out = messages(coach).map { it.text }
-        assertTrue(out.toString(), out.isNotEmpty() && out[0].startsWith("your Bc4: after 3. Bc4 it is about equal"))
+        assertEquals(listOf("Fine."), messages(coach).map { it.text })
+        val directive = directiveOf(given(provider))
+        assertTrue(directive, "Engine on your Bc4, which the player asked about" in directive)
         // Offline, a statement naming no move gets the template once, and not again.
         val offline = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
         italian(offline)
@@ -1757,27 +1795,27 @@ class CoachTest {
     }
 
     /**
-     * The quick answer is a turn before the model is asked to build on it, and a failed reply
-     * adds nothing in its place -- the same line a second time (`test_coach.py`).
+     * The model gives nothing usable, twice: the template for the rung speaks in its place, once,
+     * and the failed calls are in the log (`test_coach.py`, desktop 3ff672b).
      */
     @Test
-    fun aQuickAnswerIsATurnBeforeTheModelAndAFailedReplyAddsNothing() {
+    fun aHintTheModelFailsTwiceIsTheTemplates() {
         val (coach, provider) = coach(listOf("", ""))
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
         coach.ask("hint", 8.0)
         val out = messages(coach)
+        // The idea template: the goal and the pattern.
         assertTrue(out.map { it.text }.toString(), out.size == 1 && "mate in one" in out[0].text.split(".")[0])
-        val quick = out[0].text
+        // Nothing was said before the model was asked: their words are the last turn.
         val first = given(provider, 0)
         val said = currentMoveMessage(first).substringAfter("## Said here").trim('\n').lines()
-        assertEquals("    PLAYER said: \"hint\"", said[said.size - 2])
-        assertEquals("    YOU (the coach) said: \"$quick\"", said.last())
+        assertEquals("    PLAYER said: \"hint\"", said.last())
         val directive = directiveOf(first)
-        assertTrue(directive, "build on it" in directive && "Do not repeat it" in directive && "PLAYER said" !in directive)
-        val rejected = coach.spoken.filter { it.message.text.isEmpty() }
-        assertTrue(rejected.size == 1 && rejected[0].attempts == 2 && rejected[0].problems.isNotEmpty())
-        assertEquals(listOf(quick), coach.conversation.entries.filter { it.role == "assistant" }.map { it.text })
+        assertTrue(directive, "They asked for a hint." in directive)
+        val spoken = coach.spoken.last()
+        assertTrue(spoken.attempts == 2 && spoken.problems.isNotEmpty() && coach.speaker.fallbacks == 1)
+        assertEquals(listOf(out[0].text), coach.conversation.entries.filter { it.role == "assistant" }.map { it.text })
     }
 
     /** A question about a fine last move says it was fine and invents no fault (`test_coach.py`). */

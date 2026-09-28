@@ -246,6 +246,9 @@ def spoken_json(s: Any) -> dict[str, Any]:
         "repaired": s.repaired,
         # What the reply gave away of the answer, logged, never refused (desktop 9e2e8e2).
         "leaks": list(getattr(s, "leaks", [])),
+        # What the reply did against the form asked of it, logged, never refused (desktop
+        # 3ff672b).
+        "notes": list(getattr(s, "notes", [])),
         "verified": [list(v) for v in s.verified],
         "calls": [
             {"candidates": c.candidates, "passed": c.passed, "prompt": c.prompt} for c in c_list

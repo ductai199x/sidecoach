@@ -275,7 +275,7 @@ private val ASK_MOVE = Regex(
     RegexOption.IGNORE_CASE,
 )
 private val ASK_LINE = Regex(
-    "\\b(the line|variation|continuation|what happens (after|next)|show me the line|" +
+    "\\b(the line|a line|lines|variation|continuation|what happens (after|next)|" +
         "and then what|what follows)\\b",
     RegexOption.IGNORE_CASE,
 )
@@ -637,10 +637,14 @@ class Coach(
         }
         val where = position
         val facts = where.facts!!
-        // The quick answer, shown before the model has started: the template for a bare
-        // "hint", the move or the line. A question about the plan earns the hint's level but
-        // not its template -- "What is your opponent's most dangerous idea?" as the first of
-        // two answers to "what should I be aiming for?" was noise.
+        // With a model, every question is the model's to answer, the buttons' included: its
+        // answer starts within a second or two (Tai, 2026-09-28: "I'm using AI coach so I better
+        // be able to ask whatever I want and get answers for them ... it's already almost
+        // instant"). Asked "what should I play against this opening? give me a line", the
+        // template for the opening's name was all he got. The templates are the offline coach's,
+        // and the model's fallback when a reply gets something wrong.
+        val offline = this.offline
+        // Offline, the quick answer: the template for a bare "hint", the move or the line.
         // The move or the line asked for, or asked about where it is already open: "what
         // happens after the best move?" at the line level is the line, though it unlocks
         // nothing (the harness check of the test audit, 2026-09-26).
@@ -653,14 +657,15 @@ class Coach(
         val named = mayCarryClaims(text) && (
             SAN.containsMatchIn(text) || NAMED_SQUARE.containsMatchIn(text)
             )
-        val canned = (exact && !named) || (
-            (
-                ASK_HINT.matchesAt(text, 0) ||
-                    // The first hint is now the lesson a question about the plan asks for (the
-                    // stakes, the key fact, the principle), no longer "what is your opponent's most
-                    // dangerous idea?": it goes out at once, as for a bare hint.
-                    ASK_AIM.containsMatchIn(text)
-                ) && !mayCarryClaims(text)
+        val canned = offline && (
+            (exact && !named) || (
+                (
+                    ASK_HINT.matchesAt(text, 0) ||
+                        // A question about the plan: the first hint is the lesson it asks for (the
+                        // stakes, the key fact, the principle), as for a bare hint.
+                        ASK_AIM.containsMatchIn(text)
+                    ) && !mayCarryClaims(text)
+                )
             )
         if (canned) {
             val quick = instruction(
@@ -681,13 +686,10 @@ class Coach(
         }
 
         if (canned && exact && !ASKS_WHY.containsMatchIn(text)) {
-            // The move or the line, asked for bare: the template has said it, each move with what
-            // it does, computed. The model's explanations of moves and lines carried a false claim
-            // in a quarter to a third of its answers, and the rubric scored the template as high
-            // (the locked test set, 2026-09-26): no call is made.
+            // Offline, the move or the line asked for bare: the template has said it.
             return
         }
-        if (!canned && factQuestion(text)) {
+        if (offline && !canned && factQuestion(text)) {
             // The material, the opening, the standing: said by the template, exactly.
             val answer = instruction(
                 Trigger.USER_ASK, where, level, text, emptyList(), null, null
@@ -709,17 +711,17 @@ class Coach(
         var shownExamination = false
 
         /**
-         * The engine on what they asked about; its plain-words form goes out at once as the
-         * coach's turn (correct by construction), and the model builds on it. Only what a
-         * question names is said: named in a statement ("I see the fork now: Nf6 attacks the
-         * queen on e8 and the rook on d7") or before the question ("my rook on e1 stays active.
-         * Why is 12...h5 their best reply?"), the pieces and squares came back as the whole
-         * answer -- where each can go, what each attacks -- and the question went unanswered
-         * (the simulated students, 2026-09-26). Named in a statement they are still examined,
-         * for the model to check it by.
+         * The engine on what they asked about: the model's to answer from, given with the
+         * request. Offline its plain-words form is the answer, said as the coach's turn (correct
+         * by construction): only what a question names -- named in a statement ("I see the fork
+         * now: Nf6 attacks the queen on e8 and the rook on d7") or before the question ("my rook
+         * on e1 stays active. Why is 12...h5 their best reply?"), the pieces and squares came
+         * back as the whole answer and the question went unanswered (the simulated students,
+         * 2026-09-26).
          */
         fun examined(): List<String> {
             val found = namedAnalysis(asked.ifEmpty { text }, where, level)
+            if (!offline) return found // the model answers, from these
             // A probe the planner made of their words that is no legal move is the model's to
             // know, not the player's to hear: "after pass, Kd1 is not a legal move" was read
             // out as the answer to "How does Qc7+ prevent Re8?" (the students).
@@ -727,13 +729,8 @@ class Coach(
             // A move they propose in a statement ("I'll play Qd1, blocking the check") is
             // examined aloud as a question about it would be: that is the answer. Without it the
             // templates said the hint that had asked for it again, word for word, three times
-            // (the students' round 5); pieces and squares named in passing stay unsaid. With a
-            // model to answer in words, a piece's or a square's inventory said first is noise
-            // ("Your king on g8 can go to f7, g7, h8; ..." before the AI's own good answer to
-            // "why doesn't the check prevent that capture?", 2026-09-26): only a move's
-            // examination goes out. Offline it is the answer, and stays.
-            val offline = speaker.provider is OfflineProvider
-            if (asked.isEmpty() || !offline) said = said.filter { "the expected score is" in it }
+            // (the students' round 5); pieces and squares named in passing stay unsaid.
+            if (asked.isEmpty()) said = said.filter { "the expected score is" in it }
             if (said.isNotEmpty()) {
                 shownExamination = true
                 queuePlain(
@@ -1982,6 +1979,10 @@ class Coach(
             trigger == Trigger.USER_ASK && (ASK_HINT.matchesAt(said, 0) || ASK_AIM.containsMatchIn(said))
             )
         if (!hint) return emptyList()
+        var level = level
+        if (trigger == Trigger.STUCK) {
+            level = minOf(level, DisclosureLevel.FOCUS) // the rung its template is on
+        }
         if (level.value >= DisclosureLevel.MOVE.value) {
             val best = facts.candidates.firstOrNull() ?: ""
             return if (best.isNotEmpty() && names(template, best)) listOf(best) else emptyList()
@@ -2206,9 +2207,14 @@ class Coach(
             return "${ideaDirective(facts)} $NO_FIGURES$note" to template
         }
         if (trigger == Trigger.STUCK) {
+            // The hints unasked stop at the focus: the move is only for when they ask. The template
+            // on the level a question had opened named the move while the model was told not to,
+            // and every reply that obeyed went for the template (Tai's game, 2026-09-28: "d5: your
+            // bishop on c8 is still shut in", twice).
+            val rung = minOf(level, DisclosureLevel.FOCUS)
             val directive =
-                if (level.value >= DisclosureLevel.FOCUS.value) FOCUS_DIRECTIVE else ideaDirective(facts)
-            val (template, note) = coolHint(facts, hintTemplate(facts, level))
+                if (rung.value >= DisclosureLevel.FOCUS.value) FOCUS_DIRECTIVE else ideaDirective(facts)
+            val (template, note) = coolHint(facts, hintTemplate(facts, rung))
             return (
                 "The player has been thinking for a while and is stuck. " +
                     directive +
@@ -2455,7 +2461,9 @@ class Coach(
         }
         if (!material.isNullOrEmpty() && ASK_MATERIAL.containsMatchIn(said)) {
             fallback = "Material: $material."
-        } else if (ASK_OPENING.containsMatchIn(said)) {
+        } else if (OPENING_FACT.containsMatchIn(said)) {
+            // The opening asked for by name: "what should I play against this opening? give me a
+            // line" was answered with its name (Tai's game, 2026-09-28).
             val opening = openingSoFar()
             fallback = if (opening != null) {
                 "The opening was the $opening."
@@ -2745,7 +2753,7 @@ class Coach(
                     fallback = "" // a nod needs no template: nothing, rather than the lesson again
                 }
             }
-        } else if (ASK_MATERIAL.containsMatchIn(said) || ASK_OPENING.containsMatchIn(said) ||
+        } else if (ASK_MATERIAL.containsMatchIn(said) || OPENING_FACT.containsMatchIn(said) ||
             ASK_EVAL.containsMatchIn(said)
         ) {
             // A plain question about the game as it stands: answered plainly, no question back
@@ -2758,7 +2766,7 @@ class Coach(
                 plainly += " Who stands better, in the words of the Standing line, and the material " +
                     "as it stands."
             }
-            if (ASK_OPENING.containsMatchIn(said)) plainly += " The opening by the name the record gives it."
+            if (OPENING_FACT.containsMatchIn(said)) plainly += " The opening by the name the record gives it."
             if (!material.isNullOrEmpty()) {
                 plainly += " The material is this, and your answer gives all of it, in these terms: " +
                     "$material. Never count the pieces yourself."

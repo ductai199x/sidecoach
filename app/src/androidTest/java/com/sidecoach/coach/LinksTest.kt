@@ -206,10 +206,11 @@ class LinksTest {
         val directive = directive(given(provider, 1))
         assertTrue(directive, "Under 'Earlier in this game'" in directive && TIE_TO_THE_GAME !in directive)
         assertTrue("no example move for the model to copy", "(as with Bg4)" !in directive)
-        // The first reply named 3. Qh5, an earlier move not listed: told so, and redone.
+        // The first reply named 3. Qh5, an earlier move not listed: told so, and redone. Its move
+        // number is form, and only noted (Tai, 2026-09-28; desktop 3ff672b).
         val retry = given(provider, 2).last().content
         assertTrue(retry, "names Qh5, an earlier moment not listed" in retry)
-        assertTrue(retry, "a move with its number" in retry)
+        assertTrue(retry, "a move with its number" !in retry)
         assertTrue(out[0].text, out[0].text.startsWith("Qxf7# was mate on the spot: as with Bc4"))
         assertEquals(emptyList<String>(), coach.spoken.last().problems)
     }
@@ -426,14 +427,14 @@ class LinksTest {
         assertTrue(directive, "Name moves bare" in directive)
     }
 
+    /**
+     * The directive asks for no figure; one given anyway is said, and noted for the log (Tai,
+     * 2026-09-28: a slip of form is minor, the prompt's to prevent; desktop 3ff672b).
+     */
     @Test
-    fun aFigureInAHintNobodyAskedAFigureOfIsAFault() {
-        val (coach, provider) = coach(
-            listOf(
-                "You are ahead by about 1.2 pawns: their king on e8 has one square. Which check?",
-                "Their king on e8 has one square left. Which check takes it away?",
-            )
-        )
+    fun aFigureInAHintNobodyAskedAFigureOfIsNoted() {
+        val reply = "You are ahead by about 1.2 pawns: their king on e8 has one square. Which check?"
+        val (coach, provider) = coach(listOf(reply))
         start(coach)
         val board = Board()
         for ((i, san) in listOf("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6").withIndex()) {
@@ -443,9 +444,9 @@ class LinksTest {
         coach.ask("give me a hint", 8.0)
         val out = messages(coach)
         assertTrue("Quote no figure" in directive(given(provider, 0)))
-        val retry = given(provider, 1).last().content
-        assertTrue(retry, "a figure in a remark nobody asked for" in retry)
-        assertTrue(out.last().text, out.last().text.startsWith("Their king on e8 has one square left"))
+        assertTrue(out.map { it.text }.toString(), out.map { it.text } == listOf(reply) && provider.prompts.size == 1)
+        val notes = coach.spoken.last().notes
+        assertTrue(notes.toString(), "a figure in a remark nobody asked for: say it in words" in notes)
     }
 
     companion object {

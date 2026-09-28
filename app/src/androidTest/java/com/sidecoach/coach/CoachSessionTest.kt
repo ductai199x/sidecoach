@@ -439,6 +439,7 @@ class CoachSessionTest {
             s.verified.joinToString(";") { it.joinToString(",") },
             s.calls.joinToString("\u0002") { "${it.candidates}/${it.passed}\u0003${it.prompt}" },
             s.leaks.joinToString(";"),
+            s.notes.joinToString(";"),
         ).joinToString("\u0001")
 
     private fun wantSpoken(o: JSONObject): String =
@@ -463,6 +464,8 @@ class CoachSessionTest {
             },
             // What the reply gave away of the answer, logged (desktop 9e2e8e2).
             strings(o.optJSONArray("leaks") ?: JSONArray()).joinToString(";"),
+            // What the reply did against the form asked of it, logged (desktop 3ff672b).
+            strings(o.optJSONArray("notes") ?: JSONArray()).joinToString(";"),
         ).joinToString("\u0001")
 
     private fun lines(array: JSONArray): List<Line> = (0 until array.length()).map { i ->

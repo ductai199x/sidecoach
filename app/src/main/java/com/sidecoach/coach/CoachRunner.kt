@@ -262,6 +262,10 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
                 // For debugging: what the reply gave away of the answer, spoken anyway.
                 meta.add("leak noted: " + one.leaks.joinToString("; "))
             }
+            if (one.notes.isNotEmpty()) {
+                // The same for its form: what it did against the form asked of it.
+                meta.add("form noted: " + one.notes.joinToString("; "))
+            }
             if (message.text.isEmpty()) {
                 // The model's reply failed the checks and the quick answer already stands.
                 PanelEngine.emit(
