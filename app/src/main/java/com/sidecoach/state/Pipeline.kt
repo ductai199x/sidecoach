@@ -324,7 +324,7 @@ class GamePipeline(
         events.addAll(dialogOverTheBoard(game.readingsValue!!, ts))
         if (wasStarted && !rebuilt && fresh &&
             events.any { it is GameStarted } &&
-            ThemeModel.looksLikeStartPosition(frame, geometry)
+            ThemeModel.startShapedReadings(game.readingsValue!!)
         ) {
             // The reconciler saw the start position come back with the same orientation. The
             // theme may still have changed between games, so rebuild the recogniser from this

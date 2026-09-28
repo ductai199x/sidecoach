@@ -274,13 +274,6 @@ fun cellAgrees(reading: CellReading, piece: Piece?): Boolean {
     return true
 }
 
-/** A reading a badge or a ring leaves: an unsettled piece, or a piece of no known kind. */
-fun isJunk(reading: CellReading): Boolean =
-    reading.kind == Kind.PIECE && (!reading.settled || reading.symbol == null)
-
-fun exact(reading: CellReading): Boolean =
-    reading.kind == Kind.EMPTY || (reading.kind == Kind.PIECE && reading.symbol != null)
-
 fun matches(board: Board, obs: Observation, squares: Set<Int>): Boolean =
     squares.all { sq -> sq !in obs || cellAgrees(obs.getValue(sq), board.pieceAt(sq)) }
 
@@ -458,7 +451,7 @@ class Reconciler(
                     continue
                 }
                 out[sq] = reading
-                if (!(exact(reading) && reading.settled && !reading.hover)) {
+                if (!(reading.exact && reading.settled && !reading.hover)) {
                     previous.remove(sq)
                     continue
                 }
@@ -485,27 +478,49 @@ class Reconciler(
     // Lifecycle
 
     fun start(): MutableList<Event> {
-        board = Board()
-        gameId = UUID.randomUUID().toString().replace("-", "").take(8)
-        pending = null
-        stale.clear()
-        unexplainedFrames = 0
-        startedFlag = true
-        finishedFlag = false
-        resultValue = null
+        clearStory()
         viewing = null
-        baseFenValue = STARTING_FEN
         turnUnknownFlag = false
         resyncCandidate = null
         lastSeen.clear()
         previous.clear()
         pendingAge = 0
+        val started = begin(Board(), "game")
+        return mutableListOf(started, PositionChanged(gameId = gameId, fen = board.fen(), ply = 0))
+    }
+
+    /** A game of [kind] begun on [board], under a new id (`_begin`). */
+    private fun begin(board: Board, kind: String): GameStarted {
+        gameId = UUID.randomUUID().toString().replace("-", "").take(8)
+        this.kind = kind
+        startedFlag = true
+        setPosition(board)
+        return gameStarted()
+    }
+
+    /**
+     * [board] adopted as the game's position, the base its moves are counted from; the first
+     * move's think time counts from now (`_set_position`).
+     */
+    private fun setPosition(board: Board) {
+        this.board = board
+        baseFenValue = board.fen()
+        finishedFlag = false
+        resultValue = null
         lastCommitTs = tsValue
-        kind = "game"
-        return mutableListOf(
-            GameStarted(gameId = gameId, userSide = userSide, startFen = board.fen()),
-            PositionChanged(gameId = gameId, fen = board.fen(), ply = 0),
-        )
+    }
+
+    private fun gameStarted(): GameStarted =
+        GameStarted(gameId = gameId, userSide = userSide, startFen = board.fen(), kind = kind)
+
+    /**
+     * No story pending, no cell remembered as stale or unexplained: the position they were
+     * read against is gone (`_clear_story`).
+     */
+    private fun clearStory() {
+        pending = null
+        stale.clear()
+        unexplainedFrames = 0
     }
 
     /** The game under way ended, unless it had, and a new one begun from the start (`_restart`). */
@@ -523,17 +538,12 @@ class Reconciler(
     fun reorient(bottom: Side): MutableList<Event> {
         this.bottom = bottom
         userSide = bottom
-        pending = null
+        clearStory()
         pendingAge = 0
-        stale.clear()
         lastSeen.clear()
         previous.clear()
         viewing = null
-        unexplainedFrames = 0
-        if (!startedFlag) return mutableListOf()
-        return mutableListOf(
-            GameStarted(gameId = gameId, userSide = userSide, startFen = board.fen(), kind = kind),
-        )
+        return if (startedFlag) mutableListOf(gameStarted()) else mutableListOf()
     }
 
     // Explanations
@@ -596,11 +606,11 @@ class Reconciler(
                         continue  // a second move told through wild cells alone
                     }
                     val lenient = touched.filter { sq ->
-                        sq !in wild && !(sq in obs && exact(obs.getValue(sq))) &&
+                        sq !in wild && !(sq in obs && obs.getValue(sq).exact) &&
                             kingLands(board, move, sq, obs)
                     }.toSet()
                     if (!touched.all { sq ->
-                            sq in wild || (sq in obs && exact(obs.getValue(sq))) || sq in lenient
+                            sq in wild || (sq in obs && obs.getValue(sq).exact) || sq in lenient
                         }
                     ) {
                         continue
@@ -750,7 +760,7 @@ class Reconciler(
             if (sq in wild || sq in decorated) continue
             if (sq in drawn) return false
             val reading = obs[sq]
-            if (reading != null && reading.kind == Kind.PIECE && !reading.settled) return false
+            if (reading != null && reading.unsettled) return false
         }
         return true
     }
@@ -841,12 +851,12 @@ class Reconciler(
             // badge has spoiled without contradicting the position cannot be ignored as
             // stale, yet they can be neither read exactly nor trusted as settled; in this
             // retry they are wildcards alongside the ignored cells.
-            val soft = obs.filter { (_, r) -> isJunk(r) }.keys.toSet()
+            val soft = obs.filter { (_, r) -> r.junk }.keys.toSet()
             val subsets = staleSubsets(staleCells, obs)
             // Soft wildcards only go with junk cells: ignoring a clean reading as well would
             // let the search invent a story through the cells nobody can read.
             val attempts = ArrayList<Pair<Set<Int>, Set<Int>>>()
-            for (sub in subsets) if (sub.all { isJunk(obs.getValue(it)) }) attempts.add(sub to (sub + soft))
+            for (sub in subsets) if (sub.all { obs.getValue(it).junk }) attempts.add(sub to (sub + soft))
             for (sub in subsets) attempts.add(sub to sub)
             val tried = HashSet<Pair<Set<Int>, Set<Int>>>()
             for ((ignored, wild) in attempts) {
@@ -867,7 +877,7 @@ class Reconciler(
                 denied = Observation()
                 for (sq in ignored) {
                     val r = obs.getValue(sq)
-                    if (exact(r) && !isJunk(r)) denied[sq] = r
+                    if (r.exact && !r.junk) denied[sq] = r
                 }
                 val explained = try {
                     explain(liveObs, fresh, obs, allowPaths = true, cautious = true, wild = wild)
@@ -1122,9 +1132,7 @@ class Reconciler(
     fun commitPendingTerminal(): MutableList<Event> {
         val story = pendingTerminal() ?: return mutableListOf()
         val events = commitMoves(story.first)()
-        pending = null
-        stale.clear()
-        unexplainedFrames = 0
+        clearStory()
         return events
     }
 
@@ -1195,23 +1203,12 @@ class Reconciler(
         if (finishedFlag) {
             // The finished game is over for good; a position that appears after it is another
             // game, seen from the middle -- or a puzzle, or an analysis board.
-            gameId = UUID.randomUUID().toString().replace("-", "").take(8)
-            kind = "position"
-            events.add(
-                GameStarted(
-                    gameId = gameId, userSide = userSide, startFen = adoptedBoard.fen(), kind = kind,
-                ),
-            )
+            events.add(begin(adoptedBoard, "position"))
+        } else {
+            setPosition(adoptedBoard)
         }
-        board = adoptedBoard
-        baseFenValue = adoptedBoard.fen()
-        finishedFlag = false
-        resultValue = null
-        lastCommitTs = tsValue
-        pending = null
-        stale.clear()
+        clearStory()
         viewing = null
-        unexplainedFrames = 0
         resyncCandidate = null
         var reason = "position adopted after ${diff.size} unexplained cells"
         if (turnUnknownFlag) reason += "; side to move pending"
@@ -1269,19 +1266,7 @@ class Reconciler(
         if (ts != null) tsValue = ts
         val (adoptedBoard, unknownTurn) = adopted
         turnUnknownFlag = unknownTurn
-        board = adoptedBoard
-        baseFenValue = adoptedBoard.fen()
-        startedFlag = true
-        finishedFlag = false
-        resultValue = null
-        lastCommitTs = tsValue
-        gameId = UUID.randomUUID().toString().replace("-", "").take(8)
-        kind = "position"
-        return mutableListOf(
-            GameStarted(
-                gameId = gameId, userSide = userSide, startFen = adoptedBoard.fen(), kind = kind,
-            ),
-        )
+        return mutableListOf(begin(adoptedBoard, "position"))
     }
 
     /**
@@ -1364,9 +1349,7 @@ class Reconciler(
                 return null
             }
             viewing = index
-            pending = null
-            stale.clear()
-            unexplainedFrames = 0
+            clearStory()
             return mutableListOf()
         }
 
@@ -1469,7 +1452,7 @@ class Reconciler(
         for (sq in squares) {
             val reading = obs[sq] ?: return false
             if (reading.hover) return false
-            if (reading.kind == Kind.PIECE && !reading.settled) return false
+            if (reading.unsettled) return false
         }
         return true
     }
@@ -1772,9 +1755,7 @@ class Reconciler(
             (if (key.kind == "moves-cautious") 1 else 0)
         if (pending!!.second < needed) return mutableListOf()
         val events = commit()
-        pending = null
-        stale.clear()
-        unexplainedFrames = 0
+        clearStory()
         viewing = null
         return events
     }
@@ -1814,8 +1795,8 @@ class Reconciler(
      * or two, and only a position resync may act.
      */
     private fun staleSubsets(staleCells: Set<Int>, obs: Observation): List<Set<Int>> {
-        val junk = staleCells.filter { isJunk(obs.getValue(it)) }.sorted()
-        val clean = staleCells.filter { !isJunk(obs.getValue(it)) }.sorted()
+        val junk = staleCells.filter { obs.getValue(it).junk }.sorted()
+        val clean = staleCells.filter { !obs.getValue(it).junk }.sorted()
         val pool = if (staleCells.size > maxStaleSubsetCells) junk else junk + clean
         val subsets = ArrayList<Set<Int>>()
         for (sq in pool) subsets.add(setOf(sq))

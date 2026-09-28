@@ -299,9 +299,7 @@ class ThemeModel(
             for (r in 0 until 8) {
                 for (c in 0 until 8) {
                     val reading = readings[r * 8 + c]
-                    val junk = reading.hover ||
-                        (reading.kind == Pieces.Kind.PIECE && (!reading.settled || reading.symbol == null))
-                    if (!junk || covered[r * 8 + c]) continue
+                    if (!(reading.hover || reading.junk) || covered[r * 8 + c]) continue
                     var beside = false
                     for (rr in max(0, r - 1)..min(7, r + 1)) {
                         for (cc in max(0, c - 1)..min(7, c + 1)) if (covered[rr * 8 + cc]) beside = true

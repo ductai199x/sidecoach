@@ -250,6 +250,15 @@ object Pieces {
         /** Something drawn over the square: no move commits through it. */
         val drawn: Boolean = false,
     ) {
+        /** The square's content named: empty, or a piece of a known kind. */
+        val exact: Boolean get() = kind == Kind.EMPTY || (kind == Kind.PIECE && symbol != null)
+
+        /** A piece not where a piece at rest sits: dragged, in flight, or under a mark. */
+        val unsettled: Boolean get() = kind == Kind.PIECE && !settled
+
+        /** What a badge or a ring leaves: an unsettled piece, or a piece of no known kind. */
+        val junk: Boolean get() = kind == Kind.PIECE && (!settled || symbol == null)
+
         /**
          * Equal field by field, as the desktop's frozen dataclass is: the background too, by
          * its values (a data class would compare the array by identity).
