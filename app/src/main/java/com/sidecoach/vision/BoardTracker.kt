@@ -37,9 +37,10 @@ class BoardTracker(
      * for two seconds while the moves went on (the desktop's geometry sweep, 2026-09-27: five
      * plies played before the board was seen again).
      */
-    val redetectFirst: Int = 5,
-    private val redetectBackoff: Int = 20,
-    private val nearBackoff: Int = 3,
+    redetectFirst: Int = 5,
+    redetectBackoff: Int = 20,
+    /** The search near the last cell size is cheap: every [nearBackoff] frames. */
+    nearBackoff: Int = 3,
     /**
      * A lock that still validates after the board moved away: the fit counts only the cells
      * that read as square colours, so a board scrolled two and a half cells kept its old lock
@@ -49,9 +50,38 @@ class BoardTracker(
      * dialog over the board) it waits longer each time.
      */
     private val probeLostCells: Int = 8,
-    private val probeBackoff: Int = 10,
-    private val probeBackoffMax: Int = 80,
+    probeBackoff: Int = 10,
+    probeBackoffMax: Int = 80,
 ) {
+
+    /**
+     * How long a search that found nothing waits before it runs again: [first] frames, twice
+     * that after the next miss, up to [most]; a board found starts it over (`tracker._Wait`).
+     */
+    private class Wait(val first: Int, val most: Int) {
+        private var left = 0 // frames still to wait
+        private var next = first // the wait after the next miss
+
+        /** Counts this frame; whether the wait is over. */
+        fun ready(): Boolean {
+            left--
+            return left <= 0
+        }
+
+        fun missed() {
+            left = next
+            next = minOf(2 * next, most)
+        }
+
+        fun reset() {
+            left = 0
+            next = first
+        }
+    }
+
+    private val fullWait = Wait(redetectFirst, redetectBackoff)
+    private val nearWait = Wait(nearBackoff, nearBackoff)
+    private val probeWait = Wait(probeBackoff, probeBackoffMax)
 
     var board: BoardCandidate? = null
         private set
@@ -67,19 +97,12 @@ class BoardTracker(
     var probes = 0
         private set
 
-    /** The next wait of the full search that finds nothing: [redetectFirst], doubling. */
-    private var fullWait = redetectFirst
-
     private var lastCellPx: Double? = null
     private var misses = 0
     private var framesSinceRefine = 0
-    private var cooldown = 0
-    private var nearCooldown = 0
 
     /** The most cells this lock has read as square colours. */
     private var readable = 0
-    private var probeCooldown = 0
-    private var probeWait = probeBackoff
 
     val locked: Boolean get() = board != null
 
@@ -201,45 +224,47 @@ class BoardTracker(
             colours = null
         } else {
             // Without a board on screen, searching every frame would stall the capture. The
-            // search near the last cell size is cheap and runs every few frames; the full
-            // multi-scale search backs off for longer.
-            cooldown--
-            nearCooldown--
-            if (cooldown > 0 && (lastCellPx == null || nearCooldown > 0)) return null
+            // search near the last cell size is cheap and runs every few frames, so a window
+            // that comes back, or was covered for a moment, re-locks within a few frames; the
+            // full multi-scale search backs off for longer.
+            val full = fullWait.ready()
+            val near = nearWait.ready() && lastCellPx != null
+            if (!full && !near) return null
+            return search(gray, full)
         }
+        return search(gray, true)
+    }
 
-        val found = detect(gray, full = cooldown <= 0).firstOrNull()
+    /** Detection with the lock gone; a board found is locked, and a miss backs off (`_search`). */
+    private fun search(gray: Plane, full: Boolean): BoardCandidate? {
+        val found = detect(gray, full = full).firstOrNull()
         lock(gray, found, if (found != null) squareColours(gray, found.region, found.cellPx) else null)
-        if (found != null) {
-            cooldown = 0
-            nearCooldown = 0
-            fullWait = redetectFirst
+        if (board != null) {
+            fullWait.reset()
+            nearWait.reset()
         } else {
-            nearCooldown = nearBackoff
-            if (cooldown <= 0) {
-                cooldown = fullWait
-                fullWait = minOf(2 * fullWait, redetectBackoff)
-            }
+            nearWait.missed()
+            if (full) fullWait.missed()
         }
         return board
     }
 
     /**
-     * A lock taken (or none): what it reads is its measure, and the probe starts fresh
-     * (`tracker._lock`).
+     * A lock taken (or none): the last cell size is its, what it reads is its measure, and the
+     * probe starts fresh (`tracker._lock`).
      */
     private fun lock(gray: Plane, found: BoardCandidate?, lockColours: Colours?) {
         misses = 0
         framesSinceRefine = 0
         board = found
         colours = lockColours
+        if (found != null) lastCellPx = found.cellPx
         readable = if (found != null && lockColours != null) {
             readableCells(gray, found.region, found.cellPx, lockColours)
         } else {
             0
         }
-        probeCooldown = 0
-        probeWait = probeBackoff
+        probeWait.reset()
     }
 
     /**
@@ -248,10 +273,7 @@ class BoardTracker(
      */
     private fun lostCells(cells: Int): Boolean {
         val lost = cells <= readable - probeLostCells
-        if (!lost) {
-            probeCooldown = 0
-            probeWait = probeBackoff
-        }
+        if (!lost) probeWait.reset()
         return lost
     }
 
@@ -264,10 +286,7 @@ class BoardTracker(
      * twice as long. Counted in [probes], not [detections].
      */
     private fun probe(gray: Plane, lock: BoardCandidate): BoardCandidate? {
-        if (probeCooldown > 0) {
-            probeCooldown--
-            return null
-        }
+        if (!probeWait.ready()) return null
         probes++
         val boards = detect(gray, full = false, count = false)
         for (found in boards) {
@@ -277,13 +296,11 @@ class BoardTracker(
             val cells = readableCells(gray, found.region, found.cellPx, own)
             if (passes(fit, contrast) && cells > readable - probeLostCells) {
                 lock(gray, found.copy(fit = fit, contrast = contrast), own)
-                lastCellPx = found.cellPx
                 detections++
                 return board
             }
         }
-        probeCooldown = probeWait
-        probeWait = minOf(probeWait * 2, probeBackoffMax)
+        probeWait.missed()
         return null
     }
 
@@ -301,15 +318,10 @@ class BoardTracker(
             val near = once(gray, listOf("detect", minCell, maxCell)) {
                 BoardDetect.detect(gray, minFit = minFit, minContrast = minContrast, minCell = minCell, maxCell = maxCell)
             }
-            if (near.isNotEmpty()) {
-                lastCellPx = near[0].cellPx
-                return near
-            }
+            if (near.isNotEmpty()) return near
         }
         if (!full) return emptyList()
-        val boards = once(gray, listOf("detect")) { BoardDetect.detect(gray, minFit = minFit, minContrast = minContrast) }
-        if (boards.isNotEmpty()) lastCellPx = boards[0].cellPx
-        return boards
+        return once(gray, listOf("detect")) { BoardDetect.detect(gray, minFit = minFit, minContrast = minContrast) }
     }
 }
 
