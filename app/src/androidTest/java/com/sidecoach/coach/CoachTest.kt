@@ -1042,6 +1042,27 @@ class CoachTest {
     }
 
     /**
+     * Desktop f363ea0 (which adds no test of its own): asked "why was that bad?", an answer that
+     * would name nothing but the better move gives the engine's line from the position the move
+     * was played from -- "g6 was better." alone answered nothing, 13 of 95 answers in the
+     * desktop's offline sweep of bot games (2026-09-27). An answer with a reason, or a line that
+     * does not start with the better move, stands as it is.
+     */
+    @Test
+    fun anAnswerThatNamesOnlyTheBetterMoveGivesTheLine() {
+        val facts = PositionFacts(
+            fen = SCHOLAR, sideToMove = "white", phase = "middlegame",
+            line = listOf("g6", "O-O-O", "Bg7", "Qf3", "Ne8", "Nf6"),
+        )
+        val opener = "g6 was better"
+        assertEquals("g6 was better -- the line runs g6 O-O-O Bg7 Qf3 Ne8.", withLine("g6 was better.", opener, "g6", facts))
+        val reasoned = "g6 was better -- it keeps the long diagonal."
+        assertEquals(reasoned, withLine(reasoned, opener, "g6", facts))
+        assertEquals("h6 was better.", withLine("h6 was better.", "h6 was better", "h6", facts))
+        assertEquals("g6 was better.", withLine("g6 was better.", opener, "g6", null))
+    }
+
+    /**
      * `test_offline_coach.py`: four decisive moments in one game got the same sentence four times
      * (a master-game pass, 2026-09-21): each list is a bag, every wording once before any comes
      * again (Tai, 2026-09-25), and never the last one said.

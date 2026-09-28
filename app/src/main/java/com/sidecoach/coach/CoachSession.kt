@@ -1415,18 +1415,23 @@ class Coach(
      * or, for the model -- asked for "a pattern to remember" on every lesson, it stated one every
      * time -- the pattern it teaches ([facts]' theme or plan). A held rule is left out, and the
      * model is told ([RULE_HELD]). The rule is counted as said only when the lesson still says it
-     * -- or, with a model, when the model is asked for it. `Coach._fresh_lesson`.
+     * -- or, with a model, when the model is asked for it. [asked]: the player asked about the
+     * move, and hears the reason whole, what the lesson after it said or not: trimmed of it, "why
+     * was that bad?" was answered "f3 was better." and nothing more, 61 times in 95 (the
+     * desktop's offline sweep of bot games, 2026-09-27). `Coach._fresh_lesson`.
      */
     private fun freshLesson(
         opener: String,
         rule: String?,
         facts: PositionFacts? = null,
+        asked: Boolean = false,
         lesson: (Boolean) -> String,
     ): Pair<String, Boolean> {
         // `rule or (facts.theme if facts is not None else None) or None`
         val key = rule?.ifEmpty { null } ?: facts?.theme?.ifEmpty { null }
         val held = key == null || !ruleOk(key)
-        val text = fresh(lesson(!held), recentlySaid(), opener)
+        var text = lesson(!held)
+        if (!asked) text = fresh(text, recentlySaid(), opener)
         if (!held && rule != null && said(rule, text)) {
             ruleSaid(rule)
         } else if (!held && key != null && !offline) {
@@ -2603,8 +2608,9 @@ class Coach(
                 // Sound but not the best: said as the word after it said it ("Fine, but a3 was a
                 // little tighter"), never "it cost nothing" (the runtime audit).
                 val opener = bags.draw("fine", FINE_TIGHTER).replace("{best}", best)
-                // A fine move: the better move and what it does, no rule of thumb.
-                fallback = freshLesson(opener, null) { withRule ->
+                // A fine move: the better move and what it does, no rule of thumb; asked, said
+                // whole.
+                fallback = freshLesson(opener, null, asked = true) { withRule ->
                     lessonTemplate(
                         facts,
                         best,
@@ -2614,6 +2620,7 @@ class Coach(
                         strong = strongPlayer,
                     )
                 }.first
+                fallback = withLine(fallback, opener, best, facts)
                 directive =
                     "They ask about the move they already played, $san. It was $label: sound, " +
                         "a little behind $best. Say so plainly -- it was fine, then the better move " +
@@ -2643,10 +2650,10 @@ class Coach(
                 var held = false
                 if (best.isNotEmpty()) {
                     // The better move played out and the pattern to keep, as the lesson says it
-                    // -- not "the idea was a pin" and nothing more.
-                    // Asked about the move just taught, the lesson is not said twice.
+                    // -- not "the idea was a pin" and nothing more -- and said whole, what the
+                    // lesson after the move said or not: they asked.
                     val opener = "$best was better"
-                    val (lesson, wasHeld) = freshLesson(
+                    val (written, wasHeld) = freshLesson(
                         opener,
                         ruleOf(
                             facts,
@@ -2655,6 +2662,7 @@ class Coach(
                             played = lastOwn.move.uci,
                         ),
                         facts,
+                        asked = true,
                     ) { withRule ->
                         lessonTemplate(
                             facts,
@@ -2668,6 +2676,7 @@ class Coach(
                         )
                     }
                     held = wasHeld
+                    val lesson = withLine(written, opener, best, facts)
                     fallback = (if (fallback.isNotEmpty()) "$fallback " else "") + lesson
                 } else if (!allowed.isNullOrEmpty()) {
                     fallback = (if (fallback.isNotEmpty()) "$fallback " else "") +

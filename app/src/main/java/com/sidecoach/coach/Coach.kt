@@ -418,6 +418,18 @@ fun lessonTemplate(
     return text
 }
 
+/**
+ * `coach._with_line`: an answer to "why was that bad?" with the engine's line when it would name
+ * nothing but the better move: "g6 was better." alone answered nothing (13 of 95 answers in the
+ * desktop's offline sweep of bot games, 2026-09-27). The line is the concrete reason, and the
+ * position the move was played from withholds nothing.
+ */
+internal fun withLine(text: String, opener: String, best: String, facts: PositionFacts?): String {
+    val line = facts?.line ?: emptyList()
+    if (facts == null || text.trimEnd('.') != opener || line.isEmpty() || line[0] != best) return text
+    return templateSentence("$opener -- the line runs ${line.take(5).joinToString(" ")}")
+}
+
 /** [text] with [sentence] taken out, the spaces closed up. `coach._without`. */
 internal fun without(text: String, sentence: String): String =
     com.sidecoach.voice.Py.split(text.replace(sentence, " ")).joinToString(" ")
