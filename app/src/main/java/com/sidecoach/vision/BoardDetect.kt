@@ -22,11 +22,16 @@ import kotlin.math.min
  *    doubled or halved cell cancels the pattern. The rings rather than whole cells, so
  *    pieces do not drag the means. The amplitude |sum(sign * mean)| / 64 is the contrast
  *    gate: background cannot inflate it the way it inflates the deviation.
- * 2. Refinement ([BoardRefine]): the nine boundary peaks of the gradient profiles are fitted
- *    with a nine-tooth comb for sub-pixel offset and pitch.
- * 3. Validation: each cell's colour is the median of a thin border ring; the fit is the
- *    share of readable cells matching the checker pattern, and a candidate whose pattern
- *    carries on just outside it is rejected.
+ * 2. Refinement ([BoardRefine]): around each surviving candidate the gradient profiles along x
+ *    and y show peaks at the cell boundaries. A comb on the seven boundaries between the
+ *    cells is fitted for sub-pixel offset and pitch; it places the board to within a whole
+ *    cell, and of the placements a cell apart the one whose cells read most like a board is
+ *    kept.
+ * 3. Validation: each cell's colour is the median of a thin border ring, which pieces and
+ *    highlights rarely disturb; a cell the frame cuts is read on the part it shows when that
+ *    is half the cell or more. The fit is the share of readable cells matching the checker
+ *    pattern; a candidate whose pattern carries on just outside it is rejected, and so is a
+ *    board the frame does not show whole.
  */
 object BoardDetect {
 
@@ -97,14 +102,9 @@ object BoardDetect {
      * contributes at most [perScale] peaks, no two within half a board of each other, so a
      * plateau of perfect scores around one board cannot hide a second board.
      *
-     * The shrunken frame is padded on the right and at the bottom by half a work cell, its
-     * last pixels repeated: at a scale a few percent larger than the board's cells, the
-     * window that sits on a board flush with the frame's right or bottom edge runs a pixel
-     * or two past the shrunken frame, and without the pad the best window left was one a
-     * whole cell off, which the refinement cannot reach (a 136 px board against the right
-     * edge of a 1920 px frame was not found at all: the desktop's geometry sweep,
-     * 2026-09-27). The board's left and top edges need no pad: there the window starts
-     * where the board does.
+     * A board flush with the frame's right or bottom edge may be found a cell inward: at a
+     * scale a few percent larger than its cells, the window that sits on it runs past the
+     * frame. The refinement's choice of phase puts it back.
      */
     fun coarseSearch(
         gray: Plane,
@@ -122,7 +122,7 @@ object BoardDetect {
         while (size <= limit) {
             // Every caller searches from well above the work cell, so the frame always shrinks.
             val factor = workCell / size
-            val small = gray.resized(factor).padded(workCell / 2)
+            val small = gray.resized(factor)
             val cell = workCell
             val response = checkerResponse(small, cell, minContrast)
             if (response != null) {
@@ -409,25 +409,6 @@ class Plane(val width: Int, val height: Int, val data: FloatArray) {
         mat.release()
         out.release()
         return plane
-    }
-
-    /**
-     * The plane with [pad] pixels more on the right and at the bottom, its last column and
-     * row repeated: `cv2.copyMakeBorder(plane, 0, pad, 0, pad, cv2.BORDER_REPLICATE)`.
-     */
-    fun padded(pad: Int): Plane {
-        if (pad <= 0) return this
-        val w = width + pad
-        val h = height + pad
-        val out = FloatArray(w * h)
-        for (y in 0 until h) {
-            val from = min(y, height - 1) * width
-            val row = y * w
-            System.arraycopy(data, from, out, row, width)
-            val edge = data[from + width - 1]
-            for (x in width until w) out[row + x] = edge
-        }
-        return Plane(w, h, out)
     }
 
     fun toMat(): Mat {
