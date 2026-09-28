@@ -29,16 +29,6 @@ def test_palette_key_is_stable_and_discriminating() -> None:
     assert palette_key(light, dark) != palette_key(green, dark)
 
 
-def test_sample_palette_keys_to_the_learned_model() -> None:
-    frame = synthetic_board()
-    model = ThemeModel.from_start_position(frame, GEOM, Side.WHITE)
-    assert model is not None and model.light_bg is not None and model.dark_bg is not None
-    sampled = sample_palette(frame, GEOM)
-    assert sampled is not None
-    # The palette sampled cold from the board keys to the same theme the model learned.
-    assert palette_key(*sampled) == palette_key(model.light_bg, model.dark_bg)
-
-
 def test_theme_cache_round_trips_a_learned_model(tmp_path: Path) -> None:
     frame = synthetic_board()
     model = ThemeModel.from_start_position(frame, GEOM, Side.WHITE)

@@ -202,9 +202,8 @@ def test_an_arrow_over_a_coloured_set_is_a_drawing_too() -> None:
 
 def test_moves_elsewhere_commit_under_a_standing_arrow() -> None:
     """An arrow is a drawing, not a drag: while it stands, the moves on the rest of the
-    board commit as usual, and only a move onto or off its squares waits for it to go.
-    An arrow that stood across four plies once held all four back, past what the
-    missed-move search could bridge."""
+    board commit as usual. An arrow that stood across four plies once held all four back,
+    past what the missed-move search could bridge."""
     pipe = GamePipeline()
     ts = 0.0
     for _ in range(3):
@@ -221,21 +220,14 @@ def test_moves_elsewhere_commit_under_a_standing_arrow() -> None:
             played += [e.san for e in pipe.process(frame, ts) if isinstance(e, MovePlayed)]
             ts += 0.1
     assert played == ["a3", "h6", "b3", "h5", "Nc3", "Nf6"], played
-    # A move that lands on the arrow's squares waits until the arrow is gone, unless
-    # the piece is read through the arrow (the embedding matcher reads a pawn under an
-    # arrowhead; the overlap could not, and had to wait): either way nothing wrong
-    # commits, and once the arrow is gone the move is there.
+    # A move that lands on the arrow's squares commits under it too: the embedding reads
+    # the pawn under the arrowhead.
     move = board.push_san("d4")
     for _ in range(3):
         frame = synthetic_board(board=board, theme="brown", highlight=move, arrows=(arrow,))
         played += [e.san for e in pipe.process(frame, ts) if isinstance(e, MovePlayed)]
         ts += 0.1
-    assert played[-1] in ("Nf6", "d4"), played
-    for _ in range(3):
-        frame = synthetic_board(board=board, theme="brown", highlight=move)
-        played += [e.san for e in pipe.process(frame, ts) if isinstance(e, MovePlayed)]
-        ts += 0.1
-    assert played[-1] == "d4"
+    assert played == ["a3", "h6", "b3", "h5", "Nc3", "Nf6", "d4"], played
 
 
 def test_the_real_arrow_frames_read_the_same() -> None:

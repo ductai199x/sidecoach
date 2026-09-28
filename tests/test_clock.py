@@ -106,6 +106,8 @@ def test_running_comes_from_the_icon_and_the_falling_value() -> None:
     reader = ClockReader()
     assert running(reader, first, board, 0.0) is None  # nothing has moved yet
     assert running(reader, second, board, 0.1) == "bottom"
+    # Neither clock runs once that evidence goes stale.
+    assert running(reader, second, board, 10.0) is None
 
 
 def test_a_clock_that_only_moves_its_icon_is_still_the_running_one() -> None:
@@ -122,14 +124,6 @@ def test_a_clock_that_rises_has_taken_its_increment_and_stopped() -> None:
     reader = ClockReader()
     reader.read(first, board, 0.0)
     assert running(reader, second, board, 0.1) == "top"
-
-
-def test_neither_clock_runs_once_the_evidence_goes_stale() -> None:
-    first, second, board = _running_frames()
-    reader = ClockReader()
-    reader.read(first, board, 0.0)
-    assert running(reader, second, board, 0.1) == "bottom"
-    assert running(reader, second, board, 10.0) is None
 
 
 def test_no_clock_drawn_reads_as_none() -> None:

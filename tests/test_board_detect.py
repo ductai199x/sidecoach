@@ -108,12 +108,6 @@ def _checkerboard(frame: np.ndarray, x0: int, y0: int, cell: int, n: int) -> Non
             frame[y0 + r * cell : y0 + (r + 1) * cell, x0 + c * cell : x0 + (c + 1) * cell] = colour
 
 
-def test_a_larger_checkerboard_is_not_a_board() -> None:
-    frame = np.full((900, 1000, 3), 90, dtype=np.uint8)
-    _checkerboard(frame, 100, 100, 60, 12)
-    assert detect_boards(frame) == []
-
-
 INVERTED: dict[str, Any] = {"light": (60, 60, 200), "dark": (200, 200, 60)}
 
 
@@ -164,10 +158,13 @@ def test_empty_board_does_not_hide_the_game_board() -> None:
     assert len(boards) == 2 and abs(boards[0].cell_px - 56) <= 0.5, boards
 
 
-def test_larger_checkerboard_does_not_hide_the_game_board() -> None:
+def test_a_larger_checkerboard_is_not_a_board_and_does_not_hide_the_game_board() -> None:
     """A 12x12 checkerboard has hundreds of positions scoring 1.0 at the game board's
-    scale; each is rejected by the outer ring, but only if the game board reaches
-    refinement at all."""
+    scale; each is rejected by the outer ring -- on its own it is no board at all -- but
+    beside a game board only if the game board reaches refinement at all."""
+    alone = np.full((900, 1000, 3), 90, dtype=np.uint8)
+    _checkerboard(alone, 100, 100, 60, 12)
+    assert detect_boards(alone) == []
     for game_x, checker_x in ((60, 700), (900, 100)):
         frame = np.full((900, 1400, 3), 90, dtype=np.uint8)
         _checkerboard(frame, checker_x, 100, 48, 12)
@@ -197,8 +194,10 @@ def test_boards_half_a_cell_or_more_apart_are_both_found(gap: float) -> None:
 
 @pytest.mark.parametrize("gap", [0.0, 0.25])
 def test_boards_closer_than_half_a_cell_read_as_one_pattern(gap: float) -> None:
-    """Pins accepted behaviour: the outer ring of each board reads the other's squares, so
-    the checker pattern continues and both are rejected, as a larger checkerboard is."""
+    """A known limitation of the detector, pinned so that a change to it is seen, not a
+    requirement: the outer ring of each board reads the other's squares, so the checker
+    pattern continues and both are rejected, as a larger checkerboard is. A detector that
+    found both boards would be better, and this test would change with it."""
     frame, _ = _two_boards(gap)
     assert detect_boards(frame) == []
 

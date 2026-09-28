@@ -31,27 +31,18 @@ def test_tracker_locks_and_validates_cheaply() -> None:
     assert tracker.detections == 1
 
 
-def test_a_half_cell_move_is_followed_without_a_detection() -> None:
+@pytest.mark.parametrize("x", [330, 364], ids=["half a cell", "a whole cell"])
+def test_a_move_is_refitted_on_the_frame_it_fails(x: int) -> None:
     """The frame that fails at the lock is re-fitted at once, and the re-fit reaches the
-    board half a cell away."""
-    tracker = BoardTracker(max_misses=2)
-    tracker.update(synthetic_board(x0=300, y0=120, cell=64))
-    board = tracker.update(synthetic_board(x0=330, y0=120, cell=64))
-    assert board is not None and tracker.verified
-    assert abs(board.region.x - 330) <= 2
-    assert tracker.detections == 1
-
-
-def test_a_one_cell_slide_is_refitted_on_the_frame_it_fails() -> None:
-    """A whole-cell slide fails validation at once (the locked palette reads every cell
-    wrong), and the frame that fails is re-fitted at once: the lock moves on that frame,
-    without a detection."""
-    tracker = BoardTracker(refine_every=10, max_misses=3)
+    board half a cell away, or a whole cell (a whole-cell slide fails validation at once:
+    the locked palette reads every cell wrong). The lock moves on that frame, without a
+    detection."""
+    tracker = BoardTracker()
     locked = tracker.update(synthetic_board(x0=300, y0=120, cell=64))
     assert locked is not None
-    board = tracker.update(synthetic_board(x0=364, y0=120, cell=64))
+    board = tracker.update(synthetic_board(x0=x, y0=120, cell=64))
     assert board is not None and tracker.verified
-    assert abs(board.region.x - 364) <= 2
+    assert abs(board.region.x - x) <= 2
     assert tracker.detections == 1
 
 
@@ -203,10 +194,14 @@ def test_tracker_relocks_on_the_game_board_not_the_empty_one() -> None:
 def test_tracker_holds_through_brief_occlusion_then_redetects() -> None:
     tracker = BoardTracker(max_misses=3)
     frame = synthetic_board(x0=300, y0=120, cell=64)
-    tracker.update(frame)
+    locked = tracker.update(frame)
+    assert locked is not None and locked.fit >= 0.85
     occluded = frame.copy()
     occluded[100:700, 250:850] = 128
-    assert tracker.update(occluded) is not None  # miss 1, still holding
+    held = tracker.update(occluded)  # miss 1, still holding
+    # A held frame reports the fit it measured, at the lock's geometry, unverified.
+    assert held is not None and held.fit < 0.85 and not tracker.verified
+    assert held.region == locked.region
     assert tracker.update(occluded) is not None  # miss 2
     assert tracker.update(occluded) is None  # miss 3 drops the lock, detection finds nothing
     board = None
@@ -343,18 +338,6 @@ def test_tracker_thresholds_reach_detection() -> None:
     results = [tracker.update(spoiled) for _ in range(12)]
     assert all(board is None for board in results)
     assert tracker.detections == 2  # on the first frame and the sixth; the next on the 16th
-
-
-def test_held_frames_report_the_measured_fit() -> None:
-    tracker = BoardTracker(max_misses=3)
-    frame = synthetic_board(x0=300, y0=120, cell=64)
-    locked = tracker.update(frame)
-    assert locked is not None and locked.fit >= 0.85
-    occluded = frame.copy()
-    occluded[100:700, 250:850] = 128
-    held = tracker.update(occluded)
-    assert held is not None and held.fit < 0.85 and not tracker.verified
-    assert held.region == locked.region
 
 
 def test_periodic_refit_is_stable_on_a_busy_frame() -> None:

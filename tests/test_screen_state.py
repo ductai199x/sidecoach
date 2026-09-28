@@ -49,6 +49,7 @@ def test_screen_state_goes_live_then_game_over_on_a_mate() -> None:
     # Once the recogniser bootstraps a game, the screen reads as a live game.
     assert ScreenState.LIVE_GAME in _states(events)
     assert pipe._screen_state is ScreenState.LIVE_GAME
+    every = events
 
     # Fool's mate ends the game from the board alone; the screen reads as game over.
     events = []
@@ -60,6 +61,11 @@ def test_screen_state_goes_live_then_game_over_on_a_mate() -> None:
     assert board.is_checkmate()
     assert ScreenState.GAME_OVER in _states(events)
     assert pipe._screen_state is ScreenState.GAME_OVER
+    # A transition is announced once, not on every frame the state holds: the game was
+    # live across the six frames before the mate.
+    every += events
+    assert _states(every).count(ScreenState.LIVE_GAME) == 1
+    assert _states(every).count(ScreenState.GAME_OVER) == 1
 
 
 def test_screen_state_falls_back_to_unknown_when_the_board_is_lost() -> None:
@@ -79,15 +85,3 @@ def test_screen_state_falls_back_to_unknown_when_the_board_is_lost() -> None:
         ts += 0.1
     assert ScreenState.UNKNOWN in _states(events)
     assert pipe._screen_state is ScreenState.UNKNOWN
-
-
-def test_a_transition_emits_once_not_every_frame() -> None:
-    pipe = GamePipeline()
-    board = chess.Board()
-    ts = 0.0
-    events: list[Event] = []
-    for _ in range(6):
-        events += pipe.process(synthetic_board(board=board), ts)
-        ts += 0.1
-    # The board sits in one live game across six frames: LIVE_GAME is announced exactly once.
-    assert _states(events).count(ScreenState.LIVE_GAME) == 1

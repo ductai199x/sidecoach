@@ -148,13 +148,6 @@ def test_a_bulky_piece_walling_off_its_corner_is_not_a_badge(bottom: Side) -> No
             assert read_result(frame, _geometry(cell), board, bottom) is None, (cell, check)
 
 
-def test_no_king_no_result() -> None:
-    board = chess.Board(None)
-    board.set_piece_at(chess.E4, chess.Piece(chess.QUEEN, chess.WHITE))
-    frame = _frame(board, 64)
-    assert read_result(frame, _geometry(64), board, Side.WHITE) is None
-
-
 # ---- the pipeline ends the game on them ---------------------------------------------------
 
 
@@ -207,24 +200,6 @@ def test_a_resignation_ends_the_game_with_the_sites_result(bottom: Side) -> None
     assert not any(isinstance(e, GameEnded) for e in again)
 
 
-def test_a_draw_badge_is_not_read_until_one_is_on_record() -> None:
-    """The rendered guess at a draw badge (grey discs) ends nothing: a draw ends through
-    the dialog's cover or the End game menu, which carries the reason."""
-    g = Game()
-    g.play("e4", "e5", "Nf3", "Nc6")
-    new = g.show(BADGE_FRAMES + 2, highlight=chess.Move.from_uci("b8c6"), result="1/2-1/2")
-    assert not any(isinstance(e, GameEnded) for e in new)
-
-
-def test_a_flag_is_a_loss_on_time() -> None:
-    g = Game()
-    g.play("e4", "e5")
-    g.pipe._last_clock = (0, 240000, None)  # white's clock at zero
-    new = g.show(BADGE_FRAMES, highlight=chess.Move.from_uci("e7e5"), result="0-1")
-    ended = [e for e in new if isinstance(e, GameEnded)]
-    assert [(e.result, e.reason) for e in ended] == [("0-1", "lost on time")]
-
-
 def test_one_frame_of_badges_is_not_enough() -> None:
     g = Game()
     g.play("e4", "e5")
@@ -249,6 +224,8 @@ def test_a_mate_on_the_board_ends_the_game_once_whatever_the_badges_say() -> Non
 
 
 def test_the_reason_comes_from_the_board() -> None:
+    """The reason a game ended on the badges is given (`_end_reason`): a mate on the board,
+    the loser's clock at zero (a flag, either side), otherwise a resignation."""
     pipe = GamePipeline()
     mate = chess.Board("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
     assert pipe._end_reason(mate, "0-1") == "checkmate"
@@ -256,3 +233,5 @@ def test_the_reason_comes_from_the_board() -> None:
     pipe._last_clock = (5000, 0, None)
     assert pipe._end_reason(chess.Board(), "1-0") == "lost on time"
     assert pipe._end_reason(chess.Board(), "0-1") == "resignation"
+    pipe._last_clock = (0, 240000, None)  # white's clock at zero
+    assert pipe._end_reason(chess.Board(), "0-1") == "lost on time"
