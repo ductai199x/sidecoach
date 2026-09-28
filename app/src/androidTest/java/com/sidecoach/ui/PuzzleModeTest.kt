@@ -19,9 +19,11 @@ import org.junit.runner.RunWith
 
 /**
  * A puzzle on a page of its own (PuzzleSession, PuzzleRoom): the position from the solver's
- * side, the line's replies, a wrong move shown and taken back, any mate where the line mates,
- * the solution on give-up; and the room around it, over the API -- its own coach and log, the
- * outcome to the profile once. `tests/test_puzzle_mode.py`, test for test.
+ * side, the solver's legal moves with the state, a version that grows with every change, the
+ * positions played one by one, the line's replies, a wrong move shown and taken back, any mate
+ * where the line mates, the solution on give-up; and the room around it, over the API -- each
+ * move answered with the state it leaves, its own coach and log, the outcome to the profile
+ * once. `tests/test_puzzle_mode.py`, test for test.
  */
 @RunWith(AndroidJUnit4::class)
 class PuzzleModeTest {
@@ -55,15 +57,26 @@ class PuzzleModeTest {
         val started = s.started()
         assertTrue(started is GameStarted && started.kind == "puzzle")
         assertTrue(started.gameId == "puzzle-000Pw" && started.userSide == Pieces.Side.BLACK)
-        assertEquals(listOf("b3", "b5", "c2", "c6", "e2", "f3", "f5"), s.targets("d4"))
-        // Python's `a and b and c == []`: the queen and the king may move, White's knight is not theirs.
-        assertTrue("not theirs", s.targets("e5").isNotEmpty() && s.targets("g8").isNotEmpty() && s.targets("d2").isEmpty())
+        val legal = legal(s.state())
+        assertEquals(listOf("b3", "b5", "c2", "c6", "e2", "f3", "f5"), legal["d4"])
+        assertTrue("the solver's pieces only", "e5" in legal && "g8" in legal && "d2" !in legal)
         assertTrue(s.state()["your_move"] == true && s.state()["remaining"] == 2)
+        val before = s.state()
+        assertEquals("the start alone", listOf<String?>(null), positions(before).map { it["uci"] })
         var events = s.move("d4e2")
         assertEquals("the move, then the line's reply", listOf("Ne2+", "Kf1"), events.map { it.san })
         assertTrue(events[0].byUser && !events[1].byUser)
         assertTrue(events[0].gameId == "puzzle-000Pw" && events[0].ply == 1 && events[1].ply == 2)
-        assertTrue(s.state()["your_move"] == true && s.state()["remaining"] == 1)
+        val after = s.state()
+        assertTrue(after["your_move"] == true && after["remaining"] == 1)
+        assertTrue("a newer answer tells itself apart", (after["version"] as Int) > (before["version"] as Int))
+        // One position a ply, for the page to step through: its move, the check, who played it.
+        val plies = positions(after).drop(1)
+        assertEquals(
+            listOf(Triple("d4e2", "g1", true), Triple("g1f1", null, false)),
+            plies.map { Triple(it["uci"], it["check"], it["by_user"]) },
+        )
+        assertEquals(s.board.fen(), plies.last()["fen"])
         events = s.move("e2c3")
         assertTrue(events.map { it.san } == listOf("Nxc3") && s.status == "solved" && s.done)
         assertTrue(s.state()["message"] == "Solved." && !s.failed)
@@ -78,9 +91,10 @@ class PuzzleModeTest {
         assertTrue(st["wrong"] == "d4c2" && st["your_move"] == false && st["misses"] == 1)
         assertTrue((st["message"] as String).contains("Not that one"))
         assertTrue("nothing moves while the wrong move is shown", s.move("d4e2").isEmpty())
-        assertTrue(s.targets("d4").isEmpty())
+        assertEquals(emptyMap<String, List<String>>(), st["legal"])
         s.retract()
         assertTrue(s.state()["wrong"] == null && s.state()["your_move"] == true)
+        assertTrue("the take-back is a newer state", (s.state()["version"] as Int) > (st["version"] as Int))
         assertEquals("the position as it was", s.startFen, s.board.fen())
         assertTrue(s.move("d4e2").isNotEmpty() && s.move("e2c3").isNotEmpty() && s.status == "solved" && s.failed)
         assertEquals("Solved, after a miss.", s.state()["message"])
@@ -123,29 +137,20 @@ class PuzzleModeTest {
             val state = opened.getJSONObject("state")
             assertTrue(state.getString("id") == fork.id && state.getString("motif") == "fork" && state.getString("bottom") == "black")
             assertTrue(state.getBoolean("your_move") && !state.getBoolean("closed"))
-            val targets = call(api, "POST", "/api/puzzle/${fork.id}/targets", """{"square": "d4"}""")
-            assertEquals(listOf("b3", "b5", "c2", "c6", "e2", "f3", "f5"), strings(targets, "targets"))
-            // A wrong move shows, then is taken back.
-            assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/move", """{"uci": "d4c2"}""").getBoolean("ok"))
-            waitFor(api, fork.id) { it.optString("wrong") == "d4c2" }
-            call(api, "POST", "/api/puzzle/${fork.id}/retract")
-            waitFor(api, fork.id) { it.isNull("wrong") && it.getBoolean("your_move") }
+            assertEquals(listOf("b3", "b5", "c2", "c6", "e2", "f3", "f5"), strings(state.getJSONObject("legal"), "d4"))
+            // Each move is answered with the state it leaves, at once. A wrong move shows, then
+            // is taken back.
+            val wrong = call(api, "POST", "/api/puzzle/${fork.id}/move", """{"uci": "d4c2"}""")
+            assertTrue(wrong.getBoolean("ok") && wrong.getJSONObject("state").getString("wrong") == "d4c2")
+            val back = call(api, "POST", "/api/puzzle/${fork.id}/retract").getJSONObject("state")
+            assertTrue(back.isNull("wrong") && back.getBoolean("your_move"))
+            assertTrue(back.getInt("version") > wrong.getJSONObject("state").getInt("version"))
             // The line: the reply comes with the right move.
-            call(api, "POST", "/api/puzzle/${fork.id}/move", """{"uci": "d4e2"}""")
-            var res = waitFor(api, fork.id) { strings(it, "moves") == listOf("Ne2+", "Kf1") }
-            assertTrue(res.getJSONObject("state").getBoolean("your_move"))
-            call(api, "POST", "/api/puzzle/${fork.id}/move", """{"uci": "e2c3"}""")
-            res = waitFor(api, fork.id) { it.getString("status") == "solved" }
-            assertEquals("Solved, after a miss.", res.getJSONObject("state").getString("message"))
-            // The outcome's line follows the state by a moment; wait for it.
-            var lines = emptyList<String>()
-            for (i in 0 until 50) {
-                val all = call(api, "GET", "/api/puzzle/${fork.id}/poll").getJSONArray("lines")
-                lines = (0 until all.length()).map { all.getJSONObject(it).getString("text") }
-                if (lines.any { it.startsWith("puzzle ${fork.id} failed (fork)") }) break
-                Thread.sleep(50)
-            }
-            assertTrue(lines.toString(), lines.any { it.startsWith("puzzle ${fork.id} failed (fork)") })
+            val right = call(api, "POST", "/api/puzzle/${fork.id}/move", """{"uci": "d4e2"}""").getJSONObject("state")
+            assertTrue(strings(right, "moves") == listOf("Ne2+", "Kf1") && right.getBoolean("your_move"))
+            val done = call(api, "POST", "/api/puzzle/${fork.id}/move", """{"uci": "e2c3"}""").getJSONObject("state")
+            assertTrue(done.getString("status") == "solved" && done.getString("message") == "Solved, after a miss.")
+            logged(api, fork.id, "puzzle ${fork.id} failed (fork)")
             var store = Store(File(tmp, "profile.sqlite"))
             assertTrue(store.attempts().map { it.first } == listOf(fork.id) && !store.attempts()[0].third)
             assertEquals("1075", store.setting("puzzle_level"))
@@ -163,15 +168,10 @@ class PuzzleModeTest {
             store.close()
             // Giving up on the next one: a fail, the solution played out, recorded once.
             assertTrue(call(api, "POST", "/api/puzzle/${mate.id}/open").getBoolean("ok"))
-            call(api, "POST", "/api/puzzle/${mate.id}/giveup")
-            res = waitFor(api, mate.id) { it.getString("status") == "given_up" }
-            assertEquals(listOf("Ra8#"), strings(res.getJSONObject("state"), "moves"))
-            // The attempt follows the state by a moment, as the outcome's line does.
+            val gave = call(api, "POST", "/api/puzzle/${mate.id}/giveup").getJSONObject("state")
+            assertTrue(gave.getString("status") == "given_up" && strings(gave, "moves") == listOf("Ra8#"))
+            logged(api, mate.id, "puzzle ${mate.id} failed")
             store = Store(File(tmp, "profile.sqlite"))
-            for (i in 0 until 50) {
-                if (store.attempts().size == 2) break
-                Thread.sleep(50)
-            }
             assertEquals(listOf(mate.id, fork.id), store.attempts().map { it.first })
             assertEquals("1050", store.setting("puzzle_level"))
             store.close()
@@ -245,17 +245,26 @@ class PuzzleModeTest {
         return JSONObject(String(reply.body))
     }
 
-    /** Poll the room until [want] holds of its state; the loop runs a quarter second apart. */
-    private fun waitFor(api: PanelApi, id: String, want: (JSONObject) -> Boolean): JSONObject {
-        val deadline = System.nanoTime() + 5_000_000_000L
-        var res = JSONObject()
-        while (System.nanoTime() < deadline) {
-            res = call(api, "GET", "/api/puzzle/$id/poll")
-            if (res.optBoolean("ok") && want(res.getJSONObject("state"))) return res
+    /**
+     * Wait for the room's log line that starts with [prefix]: the outcome is recorded by the
+     * room's loop, a tick after the answer that ended the puzzle.
+     */
+    private fun logged(api: PanelApi, id: String, prefix: String) {
+        var lines = emptyList<String>()
+        repeat(100) {
+            val all = call(api, "GET", "/api/puzzle/$id/poll").getJSONArray("lines")
+            lines = (0 until all.length()).map { all.getJSONObject(it).getString("text") }
+            if (lines.any { it.startsWith(prefix) }) return
             Thread.sleep(50)
         }
-        throw AssertionError("the room never reached the state wanted: $res")
+        throw AssertionError("no line '$prefix' in $lines")
     }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun legal(state: Map<String, Any?>) = state["legal"] as Map<String, List<String>>
+
+    @Suppress("UNCHECKED_CAST")
+    private fun positions(state: Map<String, Any?>) = state["positions"] as List<Map<String, Any?>>
 
     private fun strings(json: JSONObject, key: String): List<String> {
         val all = json.getJSONArray(key)

@@ -31,7 +31,9 @@ import org.json.JSONObject
  * the current window where the game capture is going on". So a puzzle room has its own coach
  * (quiet unless asked), its own engine, its own log and its own little loop thread; the
  * session goes on following the screen. The room drives a [PuzzleSession] -- the board, the
- * line, the outcome -- and the page polls it the way the panel polls the engine. The outcome
+ * line, the outcome -- and the page polls it the way the panel polls the engine; a move, a
+ * take-back and a give-up are played on the page's request and answered with the state they
+ * leave. The outcome
  * goes to the profile store beside the puzzle's motif (`Puzzles.recordAttempt`). The coach
  * speaks through the voice the panel was given (`PanelVoice`), when the page has it on.
  *
@@ -106,7 +108,14 @@ class PuzzleRoom(
 
     // ---- the page's side -----------------------------------------------------------------
 
-    fun poll(since: Int = 0): JSONObject {
+    fun poll(since: Int = 0): JSONObject = JSONObject().apply {
+        put("state", state())
+        put("lines", log.since(since))
+        put("cursor", log.cursor)
+    }
+
+    /** The session's state as the page reads it, with the room's voice, its closing and its model calls. */
+    fun state(): JSONObject {
         touched = SystemClock.elapsedRealtime()
         val state = synchronized(lock) { session.state() }
         state["voice"] = voice
@@ -117,16 +126,36 @@ class PuzzleRoom(
             val model = modelOf(coaching.coach?.speaker?.provider)
             state["llm"] = usage.summary(pricesFor(settings.llm(), model))
         }
-        return JSONObject().apply {
-            put("state", jsonOf(state))
-            put("lines", log.since(since))
-            put("cursor", log.cursor)
-        }
+        return jsonOf(state)
     }
 
-    fun targets(square: String): List<String> = synchronized(lock) { session.targets(square) }
+    // A move, a take-back and a give-up are played on the page's request and answered with the
+    // state they leave: they waited for the loop's next tick, and the page for its next poll
+    // after that, half a second the board stood still after a move (Tai, 2026-09-27). What the
+    // engine and the coach are told goes through the loop as before.
 
-    /** A command for the loop thread: move <uci> | retract | giveup | ask <text> | voice <bool> | close. */
+    fun move(uci: String): JSONObject {
+        synchronized(lock) {
+            val events = session.move(uci)
+            commands.add("played" to (uci to events))
+        }
+        return state()
+    }
+
+    fun retract(): JSONObject {
+        synchronized(lock) { session.retract() }
+        return state()
+    }
+
+    fun giveUp(): JSONObject {
+        synchronized(lock) {
+            val events = session.giveUp()
+            commands.add("gave_up" to events)
+        }
+        return state()
+    }
+
+    /** A command for the loop thread: ask <text> | voice <bool> | close. */
     fun command(name: String, payload: Any? = null) {
         touched = SystemClock.elapsedRealtime()
         if (name == "close") {
@@ -163,21 +192,20 @@ class PuzzleRoom(
         val taken = synchronized(lock) { ArrayList(commands).also { commands.clear() } }
         for ((name, payload) in taken) {
             when (name) {
-                "move" -> {
-                    val (events, state) = synchronized(lock) {
-                        session.move(payload.toString()) to session.state()
-                    }
+                "played" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val played = payload as Pair<String, List<MovePlayed>>
+                    val (uci, events) = played
                     dispatch(events, ts)
                     if (events.isEmpty()) {
-                        if (state["wrong"] != null) emit("game", "info", "$payload: not the move")
+                        if (session.wrong == uci) emit("game", "info", "$uci: not the move")
                     } else if (session.done && session.status == "solved") {
                         record(solved = !session.failed)
                     }
                 }
-                "retract" -> synchronized(lock) { session.retract() }
-                "giveup" -> {
-                    val events = synchronized(lock) { session.giveUp() }
-                    dispatch(events, ts)
+                "gave_up" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    dispatch(payload as List<MovePlayed>, ts)
                     record(solved = false)
                 }
                 "ask" -> {

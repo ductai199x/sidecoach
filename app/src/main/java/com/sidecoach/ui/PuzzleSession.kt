@@ -3,7 +3,6 @@ package com.sidecoach.ui
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.QUEEN
-import com.sidecoach.chess.parseSquare
 import com.sidecoach.chess.squareName
 import com.sidecoach.events.GameStarted
 import com.sidecoach.events.MovePlayed
@@ -41,11 +40,22 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
     var ply = 0
         private set
     val sans = ArrayList<String>()
-    var lastMove: String? = null
-        private set
+
+    /**
+     * The positions the page steps through: the start, then one per ply, each with the move
+     * that made it, the king in check, and whether the solver played it.
+     */
+    val positions = ArrayList<Map<String, Any?>>()
 
     /** A wrong move shown, to be taken back. */
     var wrong: String? = null
+        private set
+
+    /**
+     * Counts every change, so the page can tell an older answer from a newer one: a poll that
+     * left before a move and came back after it showed the move taken back.
+     */
+    var version = 0
         private set
     var misses = 0
         private set
@@ -67,6 +77,7 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
         solver = board.turn
         side = Pieces.Side.of(solver)
         startFen = board.fen()
+        positions.add(position(null, byUser = false))
     }
 
     // ---- what the page shows -------------------------------------------------------------
@@ -75,36 +86,38 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
 
     val failed: Boolean get() = misses > 0 || status == "given_up"
 
-    fun state(): LinkedHashMap<String, Any?> = linkedMapOf(
-        "id" to puzzle.id,
-        "url" to puzzle.url,
-        "rating" to puzzle.rating,
-        "themes" to puzzle.themes.toList(),
-        "motif" to motif,
-        "fen" to board.fen(),
-        "bottom" to side.name.lowercase(),
-        "turn" to if (board.turn) "white" else "black",
-        "your_move" to (!done && board.turn == solver && wrong == null),
-        "check" to if (board.isCheck()) board.king(board.turn)?.let { squareName(it) } else null,
-        "status" to status,
-        "message" to message,
-        "moves" to sans.toList(),
-        "last_move" to lastMove,
-        "wrong" to wrong,
-        "misses" to misses,
-        "remaining" to maxOf(0, (puzzle.moves.size - index + 1) / 2),
-    )
+    fun state(): LinkedHashMap<String, Any?> {
+        val yourMove = !done && board.turn == solver && wrong == null
+        return linkedMapOf(
+            "id" to puzzle.id,
+            "url" to puzzle.url,
+            "rating" to puzzle.rating,
+            "themes" to puzzle.themes.toList(),
+            "motif" to motif,
+            "version" to version,
+            "positions" to positions.toList(),
+            "bottom" to side.name.lowercase(),
+            "your_move" to yourMove,
+            "legal" to if (yourMove) legal() else emptyMap<String, List<String>>(),
+            "status" to status,
+            "message" to message,
+            "moves" to sans.toList(),
+            "wrong" to wrong,
+            "misses" to misses,
+            "remaining" to maxOf(0, (puzzle.moves.size - index + 1) / 2),
+        )
+    }
 
     /**
-     * Where the piece on [square] may go, for the page's dots; empty unless it is the solver's
-     * turn and their piece.
+     * Where each of the solver's pieces may go, for the page's dots: sent with the state, so a
+     * piece picked up shows its squares at once.
      */
-    fun targets(square: String): List<String> {
-        if (done || wrong != null || board.turn != solver) return emptyList()
-        val sq = squareOf(square) ?: return emptyList()
-        val piece = board.pieceAt(sq)
-        if (piece == null || piece.colour != solver) return emptyList()
-        return board.legalMoves().filter { it.from == sq }.map { squareName(it.to) }.toSortedSet().toList()
+    fun legal(): LinkedHashMap<String, List<String>> {
+        val out = LinkedHashMap<String, java.util.TreeSet<String>>()
+        for (move in board.legalMoves()) {
+            out.getOrPut(squareName(move.from)) { java.util.TreeSet() }.add(squareName(move.to))
+        }
+        return out.entries.associateTo(LinkedHashMap()) { it.key to it.value.toList() }
     }
 
     // ---- the moves -----------------------------------------------------------------------
@@ -130,6 +143,7 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
             }
         }
         val expected = if (index < puzzle.moves.size) puzzle.moves[index] else null
+        version += 1
         if (move.uci() != expected && !mates(move)) {
             wrong = move.uci()
             misses += 1
@@ -157,6 +171,7 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
 
     /** The wrong move shown is taken back; the position stands as it was. */
     fun retract() {
+        version += 1
         wrong = null
         if (!done) message = "Your move."
     }
@@ -164,6 +179,7 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
     /** The rest of the line, played out on the board. */
     fun giveUp(): List<MovePlayed> {
         if (done) return emptyList()
+        version += 1
         wrong = null
         val events = ArrayList<MovePlayed>()
         while (index < puzzle.moves.size) {
@@ -175,6 +191,18 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
         status = "given_up"
         message = "The solution, played out."
         return events
+    }
+
+    /** A position the page steps through: the placement, the move that made it, the king in check, whose. */
+    private fun position(move: Move?, byUser: Boolean): Map<String, Any?> {
+        val king = board.king(board.turn)
+        val checked = board.isCheck() && king != null
+        return linkedMapOf(
+            "fen" to board.fen(),
+            "uci" to move?.uci(),
+            "check" to if (checked) squareName(king) else null,
+            "by_user" to byUser,
+        )
     }
 
     /** Lichess takes any mate where the line's move mates. */
@@ -196,7 +224,7 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
         board.push(move)
         ply += 1
         sans.add(san)
-        lastMove = move.uci()
+        positions.add(position(move, byUser = byUser))
         return MovePlayed(
             gameId = gameId,
             ply = ply,
@@ -206,11 +234,5 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
             fenAfter = board.fen(),
             byUser = byUser,
         )
-    }
-
-    private companion object {
-        /** `chess.parse_square`: a square's name, or null for anything else. */
-        fun squareOf(name: String): Int? =
-            if (name.length == 2 && name[0] in 'a'..'h' && name[1] in '1'..'8') parseSquare(name) else null
     }
 }

@@ -279,23 +279,25 @@ class PanelApi(
                 for (key in polled.keys()) out.put(key, polled.get(key))
                 ok(out)
             }
-            "targets" -> {
-                if (!json.has("square")) return unprocessable()
-                val room = rooms.get(id)
-                ok(
-                    JSONObject()
-                        .put("ok", room != null)
-                        .put("targets", JSONArray(room?.targets(json.getString("square")) ?: emptyList<String>()))
-                )
+            // A move, a take-back, a give-up: played at once, answered with the state they leave.
+            "move" -> {
+                if (!json.has("uci")) return unprocessable()
+                val uci = json.getString("uci")
+                played(rooms, id) { it.move(uci) }
             }
-            "move" -> if (json.has("uci")) roomCommand(rooms, id, "move", json.getString("uci")) else unprocessable()
-            "retract" -> roomCommand(rooms, id, "retract")
-            "giveup" -> roomCommand(rooms, id, "giveup")
+            "retract" -> played(rooms, id) { it.retract() }
+            "giveup" -> played(rooms, id) { it.giveUp() }
             "ask" -> if (json.has("text")) roomCommand(rooms, id, "ask", json.getString("text")) else unprocessable()
             "voice" -> if (json.has("on")) roomCommand(rooms, id, "voice", json.getBoolean("on")) else unprocessable()
             "close" -> roomCommand(rooms, id, "close")
             else -> null
         }
+    }
+
+    /** `{"ok": True, "state": ...}` of what [play] leaves the room in, or `{"ok": False}` without one. */
+    private fun played(rooms: PuzzleRooms, id: String, play: (PuzzleRoom) -> JSONObject): LocalServer.Reply {
+        val room = rooms.get(id) ?: return ok(JSONObject().put("ok", false))
+        return ok(JSONObject().put("ok", true).put("state", play(room)))
     }
 
     /** `server._room_command`. */
@@ -339,7 +341,7 @@ class PanelApi(
         /** A puzzle room's routes, `/api/puzzle/{puzzle_id}/<action>`, by method. */
         val PUZZLE_ROUTES: Map<String, Set<String>> = mapOf(
             "GET" to setOf("poll"),
-            "POST" to setOf("open", "targets", "move", "retract", "giveup", "ask", "voice", "close"),
+            "POST" to setOf("open", "move", "retract", "giveup", "ask", "voice", "close"),
         )
 
         /** Whether the server serves [method] [path]. */
