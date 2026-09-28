@@ -109,9 +109,6 @@ OVERLAY_MAX = 0.03
 # The move-classification badge sits on the top-right corner; a quarter-disc of this
 # radius (as a share of the cell) around that corner is not measured for drawings.
 OVERLAY_BADGE_RADIUS = 0.4
-# An outline colour is read from a piece only when this many pixels of its silhouette
-# lie outside its own tone.
-EDGE_MIN_PIXELS = 8
 EMPTY_MAX_FRACTION = 0.04
 # Chess.com's legal-move hint dots cover about a tenth of a cell; the smallest piece, a pawn,
 # covers a third. Anything in between is reported as unknown, which carries no evidence.
@@ -271,10 +268,6 @@ class Silhouette:
     # The share of inner pixels that are saturated colour far from the square's own colour
     # and the set's (an arrow drawn over the square).
     overlay: float = 0.0
-    # The colour of the piece's fill and of the rest of its silhouette (its outline),
-    # when there is one: the set's colours, learned at the start.
-    core_colour: np.ndarray | None = None
-    edge_colour: np.ndarray | None = None
     # The two tones of the ink, each as (colour, weight), the fill first.
     tones: tuple[tuple[np.ndarray, float], ...] = ()
     # How far the square's own pixels stray from its colour (a wood grain's texture).
@@ -716,17 +709,11 @@ def silhouette(
     luminance = 0.0
     brightness = 0.0
     tone = mask.astype(bool)
-    core_colour: np.ndarray | None = None
-    edge_colour: np.ndarray | None = None
     tones: tuple[tuple[np.ndarray, float], ...] = ()
     if stats is not None:
         core, luminance, tones = stats
-        core_colour = core
         tone = _tone_mask(mask.astype(bool), inner, core, background)
         brightness = luminance / 255.0
-        outline = mask.astype(bool) & ~tone
-        if int(outline.sum()) >= EDGE_MIN_PIXELS:
-            edge_colour = np.median(inner[outline], axis=0)
     # Chess.com's hover outline is about 5% of the cell wide and sits at its edge, so the
     # ring the background is read from stays clean and serves as the reference. The corner
     # blocks are kept as well, for telling a tint (which reaches them) from an outline or
@@ -743,8 +730,6 @@ def silhouette(
         inner,
         corner_pixels(patch),
         overlay,
-        core_colour,
-        edge_colour,
         tones,
         spread,
     )
