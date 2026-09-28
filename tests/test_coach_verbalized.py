@@ -1,37 +1,77 @@
-def test_a_reply_cut_off_mid_marker_leaks_no_marker_fragment() -> None:
-    """The token budget can end the model's output in the middle of the next candidate's
-    marker; that fragment must never reach the user (it did: "...move?\n\n[p=0.2")."""
-    from sidecoach.coach.coach import _parse_candidates
+import pytest
 
-    raw = (
-        "[p=0.5] Placing it on c5 pins the piece. What would that gain?\n\n"
-        "[p=0.3] Consider the long-term implications. How might a pawn move help?\n\n[p=0.2"
-    )
-    out = _parse_candidates(raw)
-    assert [t for _, t in out] == [
-        "Placing it on c5 pins the piece. What would that gain?",
-        "Consider the long-term implications. How might a pawn move help?",
-    ]
-    # A lone reply with no proper markers, cut the same way, is cleaned too.
-    assert _parse_candidates("Think about the e-file. What does it need?\n\n[p=")[0][1] == (
-        "Think about the e-file. What does it need?"
-    )
+from sidecoach.coach.coach import _parse_candidates, _sample_reply, complete_sentences
+
+CUT_MID_MARKER = (
+    "[p=0.5] Placing it on c5 pins the piece. What would that gain?\n\n"
+    "[p=0.3] Consider the long-term implications. How might a pawn move help?\n\n[p=0.2"
+)
 
 
-def test_a_reply_cut_off_mid_sentence_is_trimmed_to_its_last_full_sentence() -> None:
-    """The first live game spoke "Given" and "The key was using": stumps of replies the
-    budget cut short that happened to be the only candidates passing every check."""
-    from sidecoach.coach.coach import _parse_candidates, complete_sentences
+@pytest.mark.parametrize(
+    ("raw", "texts", "weights"),
+    [
+        pytest.param(
+            "[p=0.5] First reply here.\n[p=0.3] Second reply,\nwrapping on.\n[p=0.2] Third.",
+            ["First reply here.", "Second reply,\nwrapping on.", "Third."],
+            [0.5, 0.3, 0.2],
+            id="weighted-and-a-wrapped-reply-kept-whole",
+        ),
+        # A reply with no markers is one candidate, so a plain model still works.
+        pytest.param("Just one plain reply.", ["Just one plain reply."], [1.0], id="plain"),
+        pytest.param("<think>hidden</think>\n[p=1] Clean.", ["Clean."], [1.0], id="think-block"),
+        # The token budget can end the output inside the next candidate's marker: the fragment
+        # never reaches the user (it did: "...move?\n\n[p=0.2").
+        pytest.param(
+            CUT_MID_MARKER,
+            [
+                "Placing it on c5 pins the piece. What would that gain?",
+                "Consider the long-term implications. How might a pawn move help?",
+            ],
+            None,
+            id="cut-mid-marker",
+        ),
+        pytest.param(
+            "Think about the e-file. What does it need?\n\n[p=",
+            ["Think about the e-file. What does it need?"],
+            None,
+            id="a-lone-reply-cut-mid-marker",
+        ),
+        # The first live game spoke "Given" and "The key was using": stumps of replies the
+        # budget cut short that happened to be the only candidates passing every check.
+        pytest.param(
+            "[p=0.5] Fine move. What is the plan?\n[p=0.3] Given",
+            ["Fine move. What is the plan?"],
+            None,
+            id="a-stump-dropped",
+        ),
+        pytest.param("[p=0.5] The key was using", [], None, id="only-a-stump"),
+        pytest.param("The key was using", [], None, id="only-a-stump-unmarked"),
+    ],
+)
+def test_a_reply_parses_into_weighted_candidates_and_never_a_fragment(
+    raw: str, texts: list[str], weights: list[float] | None
+) -> None:
+    candidates = _parse_candidates(raw)
+    assert [text for _, text in candidates] == texts
+    if weights is not None:
+        assert [round(p, 2) for p, _ in candidates] == weights
+    if len(candidates) == 1:
+        assert _sample_reply(candidates) == texts[0], "one candidate: no draw"
 
-    assert complete_sentences("Your idea is spot-on. Given") == "Your idea is spot-on."
-    assert complete_sentences("Given") == ""
-    assert complete_sentences("What now? Reflect") == "What now?"
-    assert complete_sentences('He said "go." Then') == 'He said "go."'
-    assert complete_sentences("Look at e5 (the pawn!)") == "Look at e5 (the pawn!)"
-    raw = "[p=0.5] Fine move. What is the plan?\n[p=0.3] Given"
-    assert [t for _, t in _parse_candidates(raw)] == ["Fine move. What is the plan?"]
-    assert _parse_candidates("[p=0.5] The key was using") == []
-    assert _parse_candidates("The key was using") == []
+
+@pytest.mark.parametrize(
+    ("text", "kept"),
+    [
+        ("Your idea is spot-on. Given", "Your idea is spot-on."),
+        ("Given", ""),
+        ("What now? Reflect", "What now?"),
+        ('He said "go." Then', 'He said "go."'),
+        ("Look at e5 (the pawn!)", "Look at e5 (the pawn!)"),
+    ],
+)
+def test_a_reply_cut_off_mid_sentence_keeps_its_last_full_sentence(text: str, kept: str) -> None:
+    assert complete_sentences(text) == kept
 
 
 def test_a_stump_never_reaches_the_user_even_when_it_is_the_only_clean_candidate() -> None:

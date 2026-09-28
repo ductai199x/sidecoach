@@ -743,21 +743,6 @@ def test_a_reply_that_says_less_than_the_template_is_not_said() -> None:
     assert "left out" in retry[-1]["content"] and "e8" in retry[-1]["content"]
 
 
-def test_verbalized_replies_parse_into_weighted_candidates() -> None:
-    from sidecoach.coach.coach import _parse_candidates, _sample_reply
-
-    raw = "[p=0.5] First reply here.\n[p=0.3] Second reply,\nwrapping on.\n[p=0.2] Third."
-    cands = _parse_candidates(raw)
-    assert [round(p, 2) for p, _ in cands] == [0.5, 0.3, 0.2]
-    assert cands[1][1] == "Second reply,\nwrapping on.", "a wrapped reply is kept whole"
-    # A reply with no markers is treated as a single candidate, so a plain model still works.
-    assert _parse_candidates("Just one plain reply.") == [(1.0, "Just one plain reply.")]
-    # A think block is stripped before parsing.
-    assert _parse_candidates("<think>hidden</think>\n[p=1] Clean.") == [(1.0, "Clean.")]
-    # Sampling from a single passed candidate is deterministic.
-    assert _sample_reply([(0.9, "only one")]) == "only one"
-
-
 def test_verbalized_sampling_keeps_the_checked_candidate() -> None:
     # The model offers a leaky reply and a clean one in one distribution; VS keeps the clean
     # one on the first attempt, no retry, no template.
@@ -2040,52 +2025,13 @@ def test_a_fast_game_gets_the_templates_and_no_model_call() -> None:
     assert not coach.fast_pace
 
 
-def test_the_pace_is_the_games_own() -> None:
-    """A puzzle's last moves come quick -- the line found, played out -- and carried over
-    they made the next puzzle fast from its first move: a find after two minutes' thought
-    was only shown (Tai's puzzles, 2026-09-27: "sometimes it's just completely muted")."""
-    coach, _provider = _coach([])
-    _start(coach)
-    board = chess.Board()
-    for ply, san in enumerate(("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"), start=1):
-        move = board.parse_san(san)
-        before = board.fen()
-        board.push(move)
-        coach.on_event(
-            MovePlayed(
-                game_id="g",
-                ply=ply,
-                san=san,
-                uci=move.uci(),
-                fen_before=before,
-                fen_after=board.fen(),
-                by_user=(ply % 2 == 1),
-                think_ms=1000,
-            ),
-            float(ply),
-        )
-    assert coach.fast_pace
-    coach.on_event(
-        GameStarted(game_id="h", user_side=Side.WHITE, start_fen=chess.Board().fen()), 10.0
-    )
-    assert coach.pace_s is None and not coach.fast_pace
-
-
-def test_the_voice_holds_its_word_in_a_fast_game_and_says_it_when_the_player_slows() -> None:
-    from sidecoach.ui.panel import PanelEngine
-
-    va = PanelEngine.voice_action
-    assert va("post_move", "Qxf7#: mate.", 7, 7, False, None, True) == "text"
-    assert va("post_mistake", "Bb7 was a miss.", 7, 7, False, None, True) == "text"
-    assert va("user_ask", "Yes.", 7, 7, False, None, True) == "speak", "an ask is answered aloud"
-    assert va("review", "You won.", 7, 7, False, None, True) == "speak"
-    assert va("post_move", "Qxf7#: mate.", 7, 7, False, None, False) == "speak"
-
-
-def test_a_player_who_slows_down_in_a_fast_game_gets_the_model_back() -> None:
-    """The pace is the last few think times; the player thinking longer than that in
-    the position at hand has slowed down, and a hint or lesson may take the model's
-    time (and the voice) again."""
+def test_the_pace_is_the_last_think_times_and_the_games_own() -> None:
+    """The pace is the last few think times; the player thinking longer than that in the
+    position at hand has slowed down, and a hint or lesson may take the model's time (and
+    the voice) again. And it is the game's own: a puzzle's last moves come quick -- the line
+    found, played out -- and carried over they made the next puzzle fast from its first
+    move: a find after two minutes' thought was only shown (Tai's puzzles, 2026-09-27:
+    "sometimes it's just completely muted")."""
     from sidecoach.coach.coach import FAST_PACE_S
 
     coach, _provider = _coach([])
@@ -2111,6 +2057,21 @@ def test_a_player_who_slows_down_in_a_fast_game_gets_the_model_back() -> None:
     assert coach.fast_pace and coach.user_to_move
     assert coach.fast_now(6.0 + 1.0), "a second into the position: still fast"
     assert not coach.fast_now(6.0 + FAST_PACE_S + 1), "thinking longer than the pace: slowed"
+    coach.on_event(
+        GameStarted(game_id="h", user_side=Side.WHITE, start_fen=chess.Board().fen()), 10.0
+    )
+    assert coach.pace_s is None and not coach.fast_pace
+
+
+def test_the_voice_holds_its_word_in_a_fast_game_and_says_it_when_the_player_slows() -> None:
+    from sidecoach.ui.panel import PanelEngine
+
+    va = PanelEngine.voice_action
+    assert va("post_move", "Qxf7#: mate.", 7, 7, False, None, True) == "text"
+    assert va("post_mistake", "Bb7 was a miss.", 7, 7, False, None, True) == "text"
+    assert va("user_ask", "Yes.", 7, 7, False, None, True) == "speak", "an ask is answered aloud"
+    assert va("review", "You won.", 7, 7, False, None, True) == "speak"
+    assert va("post_move", "Qxf7#: mate.", 7, 7, False, None, False) == "speak"
 
 
 def _after_move_request(fen: str, san: str, best_uci: str):  # noqa: ANN202
@@ -2141,36 +2102,62 @@ def _after_move_request(fen: str, san: str, best_uci: str):  # noqa: ANN202
     )
 
 
+RUY = "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
+F5 = "rnbqkbnr/ppppp1pp/8/5p2/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+
+
 def test_a_word_after_the_move_never_restates_it_nor_quotes_a_figure() -> None:
     """The owner's rules after a move, checked in code (the eval audit, 2026-09-25): never
     open with the move just played, never say what it plainly did unless the better move does
-    the same, and no figure in a remark nobody asked for."""
-    from sidecoach.coach.coach import restated
+    the same, and no figure in a remark nobody asked for. The second audit: "ahead by about
+    1.2 pawns" was no figure to the old check; "you took on d5" and "that d5 pawn" said the
+    capture back; "which was a inaccuracy"."""
+    from sidecoach.coach.coach import _rated, figure_said, restated
 
-    ruy = "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
-    trade = _after_move_request(ruy, "Bxc6", "e1g1")
-    assert restated("Bxc6 gives up the bishop pair.", trade) == [
-        "opens with Bxc6, the move just played"
+    capture = "says what Bxc6 plainly did: the capture on c6"
+    check = "says what Qh5 plainly did: the check"
+    # (position, move played, the better move, the words, the faults: a list is all of them,
+    # a string one among them)
+    rows: list[tuple[str, str, str, str, list[str] | str]] = [
+        (RUY, "Bxc6", "e1g1", "Bxc6 gives up the bishop pair.", [
+            "opens with Bxc6, the move just played"
+        ]),
+        (RUY, "Bxc6", "e1g1", "Taking the knight on c6 gives up the bishop pair.", [capture]),
+        (RUY, "Bxc6", "e1g1", "You took on c6, giving up the bishop pair.", capture),
+        (RUY, "Bxc6", "e1g1", "Winning that c6 knight gives up the bishop pair.", capture),
+        (RUY, "Bxc6", "e1g1", "It cost you 15% of the game.", [
+            "a figure in a remark nobody asked for: say it in words"
+        ]),
+        # The better move castles: saying so is the lesson, not a restatement.
+        (RUY, "Bxc6", "e1g1",
+         "Castling first was better: the king is safe, the rook joins in.", []),
+        # The better move takes on the same square with check: the words are about it.
+        (SCHOLAR, "Bxf7+", "h5f7",
+         "Taking the pawn on f7 with check was right, but with the queen.", []),
+        # The check said of the move played is a restatement; a check in the better line is not
+        # (the benchmark's smoke run, 2026-09-25: "after Bg4 your knight jumps in with check").
+        (F5, "Qh5+", "e4f5", "Sure, Qh5+ gives check, but exf5 wins a pawn.", check),
+        (F5, "Qh5+", "e4f5", "That gave check, but exf5 wins a pawn.", check),
+        (F5, "Qh5+", "e4f5", "exf5 wins a pawn, and after Nf6 your queen comes in with check.", []),
+    ]  # fmt: skip
+    for fen, played, best, text, faults in rows:
+        found = restated(text, _after_move_request(fen, played, best))
+        if isinstance(faults, str):
+            assert faults in found, (text, found)
+        else:
+            assert found == faults, (text, found)
+    for text, figure in (
+        ("You are ahead by about 1.2 pawns.", True),
+        ("It cost you 15% of the game.", True),
+        ("Your rook on the 7th rank and Nf3 were strong.", False),
+    ):
+        assert figure_said(text) is figure, text
+    assert [_rated(x) for x in ("inaccuracy", "miss", "best", "book")] == [
+        "an inaccuracy",
+        "a miss",
+        "best",
+        "a book move",
     ]
-    assert restated("Taking the knight on c6 gives up the bishop pair.", trade) == [
-        "says what Bxc6 plainly did: the capture on c6"
-    ]
-    assert restated("It cost you 15% of the game.", trade) == [
-        "a figure in a remark nobody asked for: say it in words"
-    ]
-    # The better move castles: saying so is the lesson, not a restatement.
-    assert restated("Castling first was better: the king is safe, the rook joins in.", trade) == []
-    # The better move takes on the same square with check: the words are about it.
-    miss = _after_move_request(SCHOLAR, "Bxf7+", "h5f7")
-    assert restated("Taking the pawn on f7 with check was right, but with the queen.", miss) == []
-    # The check said of the move played is a restatement; a check in the better line is not
-    # (the benchmark's smoke run, 2026-09-25: "after Bg4 your knight jumps in with check").
-    f5 = "rnbqkbnr/ppppp1pp/8/5p2/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
-    check = _after_move_request(f5, "Qh5+", "e4f5")
-    said = "says what Qh5 plainly did: the check"
-    assert said in restated("Sure, Qh5+ gives check, but exf5 wins a pawn.", check)
-    assert said in restated("That gave check, but exf5 wins a pawn.", check)
-    assert restated("exf5 wins a pawn, and after Nf6 your queen comes in with check.", check) == []
 
 
 def test_the_first_hint_sets_the_length_of_the_hint() -> None:
@@ -2394,26 +2381,6 @@ def test_a_mistakes_lesson_waits_for_what_the_move_allowed() -> None:
     coach.on_event(after, 13.5)
     out = _messages(coach)
     assert [m.trigger for m in out] == [Trigger.POST_MISTAKE]
-
-
-def test_figures_ordinals_captures_and_articles() -> None:
-    """The second audit: "ahead by about 1.2 pawns" was no figure to the old check; "you took
-    on d5" and "that d5 pawn" said the capture back; "which was a inaccuracy"."""
-    from sidecoach.coach.coach import _rated, figure_said, restated
-
-    assert figure_said("You are ahead by about 1.2 pawns.")
-    assert figure_said("It cost you 15% of the game.")
-    assert not figure_said("Your rook on the 7th rank and Nf3 were strong.")
-    ruy = "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
-    trade = _after_move_request(ruy, "Bxc6", "e1g1")
-    assert restated("You took on c6, giving up the bishop pair.", trade)
-    assert restated("Winning that c6 knight gives up the bishop pair.", trade)
-    assert [_rated(x) for x in ("inaccuracy", "miss", "best", "book")] == [
-        "an inaccuracy",
-        "a miss",
-        "best",
-        "a book move",
-    ]
 
 
 def test_the_models_markdown_never_reaches_the_voice_or_the_checks() -> None:

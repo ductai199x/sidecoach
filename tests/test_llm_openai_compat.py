@@ -1,41 +1,53 @@
 import json
 
 import httpx
+import pytest
 
 from sidecoach.llm.openai_compat import EMPTY_THINK_PREFILL, OpenAICompatProvider, build_messages
 
 USER = [{"role": "user", "content": "hi"}]
 
 
-def test_prefill_strategy_appends_empty_think_block() -> None:
-    wire = build_messages("sys", USER, thinking=False, control="prefill")  # type: ignore[arg-type]
+PREFILL = {"role": "assistant", "content": EMPTY_THINK_PREFILL}
+LAST_USER = {"role": "user", "content": "hi"}
+
+
+@pytest.mark.parametrize(
+    ("control", "thinking", "last"),
+    [
+        # LM Studio skips reasoning only for a trailing empty think block.
+        ("prefill", False, PREFILL),
+        ("prefill", True, LAST_USER),
+        ("param", False, LAST_USER),
+        ("none", False, LAST_USER),
+    ],
+)
+def test_only_the_prefill_strategy_ends_on_an_empty_think_block(
+    control: str, thinking: bool, last: dict[str, str]
+) -> None:
+    wire = build_messages("sys", USER, thinking=thinking, control=control)  # type: ignore[arg-type]
     assert wire[0] == {"role": "system", "content": "sys"}
-    assert wire[-1] == {"role": "assistant", "content": EMPTY_THINK_PREFILL}
+    assert wire[-1] == last
 
 
-def test_prefill_omitted_when_thinking_on() -> None:
-    wire = build_messages("sys", USER, thinking=True, control="prefill")  # type: ignore[arg-type]
-    assert wire[-1] == {"role": "user", "content": "hi"}
-
-
-def test_param_and_none_strategies_never_prefill() -> None:
-    for control in ("param", "none"):
-        wire = build_messages("sys", USER, thinking=False, control=control)  # type: ignore[arg-type]
-        assert wire[-1] == {"role": "user", "content": "hi"}
-
-
-def test_param_strategy_sets_enable_thinking() -> None:
-    provider = OpenAICompatProvider("x", "http://h/v1", "m", thinking_control="param")
-    body = provider.request_body("sys", USER, max_tokens=10, temperature=0.1, thinking=False)  # type: ignore[arg-type]
-    assert body["enable_thinking"] is False
-    body = provider.request_body("sys", USER, max_tokens=10, temperature=0.1, thinking=True)  # type: ignore[arg-type]
-    assert body["enable_thinking"] is True
-
-
-def test_prefill_strategy_does_not_send_enable_thinking() -> None:
-    provider = OpenAICompatProvider("x", "http://h/v1", "m", thinking_control="prefill")
-    body = provider.request_body("sys", USER, max_tokens=10, temperature=0.1, thinking=False)  # type: ignore[arg-type]
-    assert "enable_thinking" not in body
+@pytest.mark.parametrize(
+    ("control", "thinking", "sent"),
+    [
+        # DashScope honours enable_thinking in the body; nothing else is sent it.
+        ("param", False, False),
+        ("param", True, True),
+        ("prefill", False, None),
+    ],
+)
+def test_only_the_param_strategy_sends_enable_thinking(
+    control: str, thinking: bool, sent: bool | None
+) -> None:
+    provider = OpenAICompatProvider("x", "http://h/v1", "m", thinking_control=control)  # type: ignore[arg-type]
+    body = provider.request_body("sys", USER, max_tokens=10, temperature=0.1, thinking=thinking)  # type: ignore[arg-type]
+    if sent is None:
+        assert "enable_thinking" not in body
+    else:
+        assert body["enable_thinking"] is sent
 
 
 def test_chat_parses_content_reasoning_and_usage() -> None:
@@ -109,7 +121,5 @@ def test_chat_reports_cached_tokens_and_keeps_the_status_in_errors() -> None:
     assert provider.complete("sys", "hi").stats["cached_tokens"] == 40
     failing = OpenAICompatProvider("x", "http://h/v1", "m", transport=httpx.MockTransport(handler))
     failing._client.headers["x-fail"] = "1"
-    import pytest
-
     with pytest.raises(RuntimeError, match="429"):
         failing.complete("sys", "hi")

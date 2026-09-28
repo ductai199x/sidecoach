@@ -8,17 +8,19 @@ import pytest
 
 from sidecoach.coach.bag import Bags
 
-WORDINGS = ["keep this one", "the lesson to keep", "worth remembering", "a rule", "remember"]
+WORDINGS = ["first", "second", "third", "fourth", "fifth"]
 
 
-@pytest.mark.parametrize("seed", range(50))
-def test_every_wording_once_before_any_comes_again_and_never_twice_running(seed: int) -> None:
-    bags = Bags(random.Random(seed))
-    said = [bags.draw("keep", WORDINGS) for _ in range(len(WORDINGS) * 8)]
-    for start in range(0, len(said), len(WORDINGS)):
-        assert sorted(said[start : start + len(WORDINGS)]) == sorted(WORDINGS)
-    # Across a refill too: the new bag never opens with the wording just said.
-    assert all(a != b for a, b in zip(said, said[1:], strict=False))
+def test_every_wording_once_before_any_comes_again_and_never_twice_running() -> None:
+    """Four decisive moments in one game got the same sentence four times (a master-game
+    pass, 2026-09-21); "random, but never the last one" still said A, B, A, B."""
+    for seed in range(50):
+        bags = Bags(random.Random(seed))
+        said = [bags.draw("cost", WORDINGS) for _ in range(len(WORDINGS) * 8)]
+        for start in range(0, len(said), len(WORDINGS)):
+            assert sorted(said[start : start + len(WORDINGS)]) == sorted(WORDINGS), seed
+        # Across a refill too: the new bag never opens with the wording just said.
+        assert all(a != b for a, b in zip(said, said[1:], strict=False)), seed
 
 
 def test_each_key_is_its_own_bag_and_a_list_of_one_is_said_again() -> None:

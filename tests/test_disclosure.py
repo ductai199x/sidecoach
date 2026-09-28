@@ -1,3 +1,5 @@
+import pytest
+
 from sidecoach.coach.disclosure import (
     Disclosure,
     PositionFacts,
@@ -24,38 +26,30 @@ def facts() -> PositionFacts:
     )
 
 
-def test_autonomous_escalation_gives_the_idea_then_stops_at_the_focus() -> None:
-    d = Disclosure()
-    assert d.apply(Unlock.DECISIVE) == L.IDEA
-    assert d.apply(Unlock.STUCK) == L.FOCUS
-    assert d.apply(Unlock.STUCK) is None
-    assert d.level == L.FOCUS
-
-
-def test_two_hints_then_the_answer() -> None:
-    d = Disclosure()
-    assert d.apply(Unlock.HINT) == L.IDEA
-    assert d.apply(Unlock.HINT) == L.FOCUS
-    assert d.apply(Unlock.HINT) == L.MOVE, "the third hint is the move, explained"
-    assert d.apply(Unlock.HINT) is None
-    assert d.level == L.MOVE
-
-
-def test_asking_for_the_move_unlocks_candidates() -> None:
-    d = Disclosure()
-    assert d.apply(Unlock.ASK_MOVE) == L.CANDIDATE
-    assert d.apply(Unlock.ASK_MOVE) is None
-
-
-def test_naming_the_move_unlocks_candidates() -> None:
-    d = Disclosure(level=L.THEME)
-    assert d.apply(Unlock.USER_NAMED_MOVE) == L.CANDIDATE
-
-
-def test_playing_the_move_unlocks_the_line() -> None:
-    d = Disclosure()
-    assert d.apply(Unlock.MOVE_PLAYED) == L.LINE
-    assert d.history == [(Unlock.MOVE_PLAYED, L.LINE)]
+@pytest.mark.parametrize(
+    ("start", "unlocks", "levels"),
+    [
+        # Unprompted: the idea, then the focus, and never the move.
+        pytest.param(
+            L.SILENT, [Unlock.DECISIVE, Unlock.STUCK, Unlock.STUCK], [L.IDEA, L.FOCUS, None],
+            id="unprompted-stops-at-the-focus",
+        ),
+        # Two hints, then the answer: the third hint is the move, explained.
+        pytest.param(
+            L.SILENT, [Unlock.HINT] * 4, [L.IDEA, L.FOCUS, L.MOVE, None],
+            id="two-hints-then-the-move",
+        ),
+        pytest.param(L.SILENT, [Unlock.ASK_MOVE] * 2, [L.MOVE, None], id="asking-for-the-move"),
+        pytest.param(L.IDEA, [Unlock.USER_NAMED_MOVE], [L.MOVE], id="naming-the-move"),
+        pytest.param(L.SILENT, [Unlock.MOVE_PLAYED], [L.LINE], id="playing-gives-the-line"),
+    ],
+)  # fmt: skip
+def test_the_rungs_climb_by_what_unlocks_them(
+    start: L, unlocks: list[Unlock], levels: list[L | None]
+) -> None:
+    d = Disclosure(level=start)
+    assert [d.apply(unlock) for unlock in unlocks] == levels
+    assert d.level == [level for level in levels if level is not None][-1]
 
 
 def test_visible_facts_hide_moves_below_the_move_level() -> None:
@@ -68,7 +62,7 @@ def test_visible_facts_hide_moves_below_the_move_level() -> None:
     assert "fen" in bundle
     idea = visible_facts(facts(), L.IDEA)
     assert idea["theme"] == "loose piece"
-    for hidden in ("region", "piece", "candidates"):
+    for hidden in ("region", "piece", "candidates", "line"):
         assert hidden not in idea
     # Their threat is the first hint's key fact as often as not: words from the idea level.
     assert idea["threats"] == ["Qxd4"]
@@ -80,51 +74,46 @@ def test_visible_facts_show_everything_at_line() -> None:
     assert bundle["candidates"] == ["Ng5"]
 
 
-def test_leak_check_flags_withheld_square_and_move() -> None:
-    leaks = leak_check("Have you considered Ng5, hitting f7?", facts(), L.THEME)
-    assert "move Ng5" in leaks
-    assert "square f7" in leaks
-
-
-def test_leak_check_withholds_the_answer_and_nothing_else_below_the_move() -> None:
-    """Tai, 2026-09-25: "leaking is not a criminal offense ... clamp down egregious offense
-    but be smart about it". The moves to find and the squares they go to are withheld; a
-    plan, a weakness, another move or square may be named."""
-    assert leak_check("Maybe d3 or Nc3 here, then a plan on the queenside?", facts(), L.IDEA) == []
-    leaks = leak_check("Try Ng5, then Nxf7.", facts(), L.IDEA)
-    assert "move Ng5" in leaks and "move Nxf7" in leaks
-    assert "square g5" in leak_check("A knight on g5 would be strong.", facts(), L.IDEA)
-    # The opponent's move in the line is not the player's answer.
-    assert leak_check("If they push d5, the centre opens.", facts(), L.IDEA) == []
-
-
-def test_leak_check_allows_candidates_but_not_line_at_candidate_level() -> None:
-    assert leak_check("Ng5 is the idea.", facts(), L.CANDIDATE) == []
-    leaks = leak_check("After Ng5 d5 Nxf7 you win.", facts(), L.CANDIDATE)
-    assert "square d5" in leaks
-    assert "move Nxf7" in leaks
-
-
-def test_leak_check_allows_region_anchor_square() -> None:
-    assert leak_check("Look at what is happening around f7.", facts(), L.REGION) == []
-
-
-def test_leak_check_flags_piece_below_piece_level() -> None:
-    assert "piece knight" in leak_check("What is your knight doing?", facts(), L.QUESTION)
-    assert leak_check("What is your knight doing?", facts(), L.PIECE) == []
-
-
-def test_leak_check_clean_question() -> None:
-    assert leak_check("What is your opponent threatening right now?", facts(), L.QUESTION) == []
+@pytest.mark.parametrize(
+    ("text", "level", "leaks"),
+    [
+        # Tai, 2026-09-25: "leaking is not a criminal offense ... clamp down egregious offense
+        # but be smart about it". Below the move, the moves to find and the squares they go to
+        # are withheld; a plan, a weakness, another move or square may be named.
+        ("Have you considered Ng5, hitting f7?", L.IDEA, ["move Ng5", "square f7"]),
+        ("Try Ng5, then Nxf7.", L.IDEA, ["move Ng5", "move Nxf7"]),
+        ("A knight on g5 would be strong.", L.IDEA, ["square g5"]),
+        ("Maybe d3 or Nc3 here, then a plan on the queenside?", L.IDEA, []),
+        # The opponent's move in the line is not the player's answer.
+        ("If they push d5, the centre opens.", L.IDEA, []),
+        ("What is your opponent threatening right now?", L.IDEA, []),
+        # At the move level the move may be said, the rest of the line not.
+        ("Ng5 is the idea.", L.MOVE, []),
+        ("After Ng5 d5 Nxf7 you win.", L.MOVE, ["square d5", "move Nxf7"]),
+        # The focus level names the region, and the square its words anchor on.
+        ("Look at what is happening around f7.", L.FOCUS, []),
+        # The piece to move is the focus level's.
+        ("What is your knight doing?", L.IDEA, ["piece knight"]),
+        ("What is your knight doing?", L.FOCUS, []),
+    ],
+)
+def test_leak_check_withholds_the_answer_and_nothing_else(
+    text: str, level: L, leaks: list[str]
+) -> None:
+    found = leak_check(text, facts(), level)
+    if leaks:
+        assert set(leaks) <= set(found), found
+    else:
+        assert found == []
 
 
 def test_leak_check_allows_squares_and_pieces_the_user_named() -> None:
     # The user asked about f7 and the knight; confirming them back is not a leak.
     said = "Is my bishop on c4 attacking f7? And what is my knight doing?"
-    assert leak_check("Yes, your bishop hits f7.", facts(), L.QUESTION, said=said) == []
-    assert leak_check("Your knight is well placed.", facts(), L.QUESTION, said=said) == []
+    assert leak_check("Yes, your bishop hits f7.", facts(), L.IDEA, said=said) == []
+    assert leak_check("Your knight is well placed.", facts(), L.IDEA, said=said) == []
     # An answer square the user did not name is still withheld.
-    assert "square g5" in leak_check("Look at g5.", facts(), L.QUESTION, said=said)
+    assert "square g5" in leak_check("Look at g5.", facts(), L.IDEA, said=said)
 
 
 def test_the_record_and_other_pieces_of_a_kind_are_no_leak() -> None:

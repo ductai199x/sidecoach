@@ -4,30 +4,46 @@ from sidecoach.config import LLMSettings
 from sidecoach.llm.factory import make_provider
 
 
-def test_the_default_is_luna_and_local_is_a_preset(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_default_is_luna_an_effort_provider_and_local_is_a_preset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "k")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     provider = make_provider(LLMSettings())
     assert provider.name == "openai" and provider.model == "gpt-5.6-luna"
+    assert provider.base_url == "https://api.openai.com/v1"
     assert provider.thinking_control == "effort" and provider.reasoning_effort == "medium"
+    named = make_provider(LLMSettings(provider="openai"))
+
+    def preset(p):  # noqa: ANN001, ANN202
+        return (p.name, p.model, p.base_url, p.thinking_control, p.reasoning_effort)
+
+    assert preset(named) == preset(provider), "the default is the openai preset"
+    # The effort is the provider's: another effort is another provider of the same model.
+    quiet = provider.with_effort("none")
+    assert quiet is not provider and quiet.reasoning_effort == "none"
+    assert quiet.model == provider.model and quiet.base_url == provider.base_url
+    assert provider.with_effort("medium") is provider
     local = make_provider(LLMSettings(provider="local"))
     assert local.name == "local"
     assert local.base_url == "http://localhost:1234/v1"
     assert local.thinking_control == "prefill"
 
 
-def test_dashscope_defaults_and_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dashscope_defaults_and_what_the_environment_and_settings_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("DASHSCOPE_API_KEY", "k")
     monkeypatch.delenv("DASHSCOPE_BASE_URL", raising=False)
     provider = make_provider(LLMSettings(provider="dashscope"))
     assert provider.base_url == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
     assert provider.model == "qwen3.8-max"
     assert provider.thinking_control == "param"
-
-
-def test_dashscope_endpoint_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The account's endpoint is set beside the key; a settings base_url still wins."""
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "k")
+    # The model and the reasoning control from the settings.
+    settings = LLMSettings(provider="dashscope", model="qwen3.8-flash", thinking_control="none")
+    provider = make_provider(settings)
+    assert provider.model == "qwen3.8-flash" and provider.thinking_control == "none"
+    # The account's endpoint is set beside the key; a settings base_url still wins.
     monkeypatch.setenv("DASHSCOPE_BASE_URL", "https://account.example/compatible-mode/v1")
     provider = make_provider(LLMSettings(provider="dashscope"))
     assert provider.base_url == "https://account.example/compatible-mode/v1"
@@ -41,32 +57,11 @@ def test_dashscope_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
         make_provider(LLMSettings(provider="dashscope"))
 
 
-def test_overrides_win(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "k")
-    settings = LLMSettings(provider="dashscope", model="qwen3.8-flash", thinking_control="none")
-    provider = make_provider(settings)
-    assert provider.model == "qwen3.8-flash"
-    assert provider.thinking_control == "none"
-
-
 def test_unknown_provider_and_control() -> None:
     with pytest.raises(ValueError, match="unknown llm.provider"):
         make_provider(LLMSettings(provider="nope"))
     with pytest.raises(ValueError, match="thinking_control"):
         make_provider(LLMSettings(provider="local", thinking_control="maybe"))
-
-
-def test_openai_preset_is_an_effort_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "k")
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    provider = make_provider(LLMSettings(provider="openai"))
-    assert provider.base_url == "https://api.openai.com/v1"
-    assert provider.thinking_control == "effort"
-    assert provider.reasoning_effort == "medium"
-    quiet = provider.with_effort("none")
-    assert quiet is not provider and quiet.reasoning_effort == "none"
-    assert quiet.model == provider.model and quiet.base_url == provider.base_url
-    assert provider.with_effort("medium") is provider
 
 
 def test_custom_endpoint_needs_only_base_url_and_model(monkeypatch: pytest.MonkeyPatch) -> None:

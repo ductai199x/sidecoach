@@ -63,15 +63,29 @@ def _played(coach, ucis: list[str], mistake_at: int) -> None:
         )
 
 
-def test_chat_on_the_opponents_turn_is_about_the_players_move() -> None:
-    coach, _ = _coach([])
-    _played(coach, ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "f3g5"], mistake_at=7)
-    assert not coach.user_to_move  # the player's 4.Ng5 is the last move
-    own = coach._asked_own_move("I didn't even notice they were aiming for my rook")
-    assert own is not None and own.move.ply == 7
-    # About the opponent's side of the board: not the player's move.
-    assert coach._asked_own_move("what are they threatening?") is None
-    assert coach._asked_own_move("how did I do this game?") is None
+ITALIAN = ["e2e4", "e7e5", "g1f3", "b8c6"]
+NG5 = [*ITALIAN, "f1c4", "g8f6", "f3g5"]
+
+
+def test_chat_is_about_the_players_move_on_the_opponents_turn_and_the_position_on_theirs() -> None:
+    # (the moves, the player's mistake, what they say, the ply of the move it is about)
+    rows = [
+        # The player's 4.Ng5 is the last move: their words are about it.
+        (NG5, 7, "I didn't even notice they were aiming for my rook", 7),
+        # About the opponent's side of the board, or the game: not the player's move.
+        (NG5, 7, "what are they threatening?", None),
+        (NG5, 7, "how did I do this game?", None),
+        # On the player's own turn their words are about the position...
+        (ITALIAN, 3, "I didn't even notice they were aiming for my rook", None),
+        # ...unless they ask about their move in so many words.
+        (ITALIAN, 3, "why was my last move bad?", 3),
+    ]
+    for ucis, mistake_at, said, about in rows:
+        coach, _ = _coach([])
+        _played(coach, ucis, mistake_at=mistake_at)
+        assert coach.user_to_move is (len(ucis) % 2 == 0)
+        own = coach._asked_own_move(said)
+        assert (own.move.ply if own is not None else None) == about, said
 
 
 def test_what_a_question_names_is_examined_aloud_and_what_a_statement_names_is_not() -> None:
@@ -190,12 +204,3 @@ def test_a_piece_asked_about_is_read_on_the_board_as_it_stands() -> None:
     coach.ask("Is my bishop on b5 safe there?", 6.0)
     said = " ".join(m.text for m in _messages(coach))
     assert "Your bishop on b5" in said and "b5 is empty" not in said
-
-
-def test_chat_on_the_players_own_turn_is_about_the_position() -> None:
-    coach, _ = _coach([])
-    _played(coach, ["e2e4", "e7e5", "g1f3", "b8c6"], mistake_at=3)
-    assert coach.user_to_move
-    assert coach._asked_own_move("I didn't even notice they were aiming for my rook") is None
-    # Asked in so many words, it is still about the player's move.
-    assert coach._asked_own_move("why was my last move bad?") is not None
