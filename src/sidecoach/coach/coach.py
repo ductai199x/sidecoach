@@ -450,6 +450,16 @@ def lesson_template(
     return text
 
 
+def _with_line(text: str, opener: str, best: str, facts: PositionFacts | None) -> str:
+    """An answer to "why was that bad?" with the engine's line when it would name nothing
+    but the better move: "g6 was better." alone answered nothing (13 of 95 answers in the
+    offline sweep's bot games, 2026-09-27). The line is the concrete reason, and the
+    position the move was played from withholds nothing."""
+    if facts is None or text.rstrip(".") != opener or not facts.line or facts.line[0] != best:
+        return text
+    return _sentence(f"{opener} -- the line runs {' '.join(facts.line[:5])}")
+
+
 def _without(text: str, sentence: str) -> str:
     """`text` with `sentence` taken out, the spaces closed up."""
     return " ".join(text.replace(sentence, " ").split())
@@ -3058,6 +3068,8 @@ class Coach:
         lesson: Callable[[bool], str],
         rule: str | None,
         facts: PositionFacts | None = None,
+        *,
+        asked: bool = False,
     ) -> tuple[str, bool]:
         """`lesson`, opening with `opener`, written with its rule when one may be said, less
         what was said lately (`fresh`), and whether the rule was held back: said within
@@ -3066,10 +3078,14 @@ class Coach:
         lesson, it stated one every time -- the pattern it teaches (`facts`' theme or plan).
         A held rule is left out, and the model is told (RULE_HELD). The rule is counted as
         said only when the lesson still says it -- or, with a model, when the model is asked
-        for it."""
+        for it. `asked`: the player asked about the move, and hears the reason whole, what the
+        lesson after it said or not: trimmed of it, "why was that bad?" was answered "f3 was
+        better." and nothing more, 61 times in 95 (the offline sweep's bot games, 2026-09-27)."""
         key = rule or (facts.theme if facts is not None else None) or None
         held = key is None or not self._rule_ok(key)
-        text = fresh(lesson(not held), self._recently_said(), opener)
+        text = lesson(not held)
+        if not asked:
+            text = fresh(text, self._recently_said(), opener)
         if not held and rule is not None and _said(rule, text):
             self._rule_said(rule)
         elif not held and key is not None and not self._offline:
@@ -4190,7 +4206,9 @@ class Coach:
                         strong=self.strong_player,
                     ),
                     None,  # a fine move: the better move and what it does, no rule of thumb
+                    asked=True,
                 )
+                fallback = _with_line(fallback, opener, best, facts)
                 directive = (
                     f"They ask about the move they already played, {san}. It was {label}: sound, "
                     f"a little behind {best}. Say so plainly -- it was fine, then the better move "
@@ -4221,8 +4239,8 @@ class Coach:
                 held = False
                 if best:
                     # The better move played out and the pattern to keep, as the lesson says
-                    # it -- not "the idea was a pin" and nothing more.
-                    # Asked about the move just taught, the lesson is not said twice.
+                    # it -- not "the idea was a pin" and nothing more -- and said whole, what
+                    # the lesson after the move said or not: they asked.
                     opener = f"{best} was better"
                     lesson, held = self._fresh_lesson(
                         opener,
@@ -4243,7 +4261,9 @@ class Coach:
                             played=record.move.uci,
                         ),
                         facts,
+                        asked=True,
                     )
+                    lesson = _with_line(lesson, opener, best, facts)
                     fallback = (fallback + " " if fallback else "") + lesson
                 elif allowed:
                     fallback = (fallback + " " if fallback else "") + _sentence(
