@@ -21,12 +21,12 @@ What we know is wrong and have chosen to ship with, desktop and phone alike (the
   nearly tied (0.961 against 0.957). The misread held back a three-ply story until six plies
   were missing, more than the missed-move search bridges, and the position was adopted anew.
   Found 2026-09-27.
-- **After a fast animated drag, the lock can trail the board by up to a third of a cell for up
-  to ten frames** (the geometry sweep's seed 97: the board slid 133 px up, the lock 27 px
-  behind it), under what validation can see. For that second every piece reads as not landed
-  and no move is read; nothing is invented (a move needs a cleanly read square to commit from,
-  59763b9, after this lock once committed a phantom Kd3). Found 2026-09-27.
-- **A lock up to 3 px off after a nudge near the frame's edge** in 4 of 1000 near-edge sweep
-  cases, inside the re-fit's 2 px dead band. Reading holds at that offset. Found 2026-09-27.
+- **A board nudged less than a third of a cell is followed only at the next periodic re-fit,
+  up to ten frames on**: the checker fit cannot see such a shift, so the lock stays where the
+  board was (the geometry sweep's seeds 83 and 97: 10 to 37 px off at 110 to 136 px cells).
+  For that second every piece reads as not landed and no move is read; nothing is invented
+  (a move needs a cleanly read square to commit from, 59763b9). A move the fit does see is
+  re-fitted on the frame it fails, and again every frame while the board keeps moving.
+  Found 2026-09-27.
 - **A board smaller than 24 px a cell (a 192 px board) is not seen at all**: the detector's
   floor. The game waits until the board is larger again.

@@ -9,7 +9,8 @@ that slid by a whole cell, or a window that moved, fails validation on the first
 validation cannot see is sub-cell drift and a small resize: the ring medians read the same
 colours up to about a third of a cell of shift. Every `refine_every` frames the boundaries are
 therefore re-fitted with a wide search window, and the re-fit is adopted when it validates on
-its own and its boundary comb is clearly stronger than the one at the lock's geometry.
+its own and its boundary comb is clearly stronger than the one at the lock's geometry. A frame
+that fails validation is re-fitted at once, before anything else is tried.
 """
 
 from __future__ import annotations
@@ -143,26 +144,14 @@ class BoardTracker:
             self._frames_since_refine += 1
             candidate = self.board
             fit, contrast = fit_score(gray, candidate.region, candidate.cell_px, self.colours)
-            if not self._passes(fit, contrast) and self.colours is not None:
-                # The theme may have changed between games with the board in place: a
-                # fresh palette that validates, outer ring included, re-locks the colours.
-                # A dialog over most of the board fails this too, since its palette is the
-                # dialog, so it cannot rewrite the lock.
-                # A new theme keeps the board where it was, its light squares the lighter
-                # ones: a palette whose light and dark swap places is the board read a
-                # cell off (moved 0.8 of a cell up, the lock re-read its colours inverted
-                # and stayed where the board was: the parity audit's sweep, 2026-09-26).
-                fresh_fit, fresh_contrast = fit_score(gray, candidate.region, candidate.cell_px)
-                fresh = square_colours(gray, candidate.region, candidate.cell_px)
-                if (
-                    self._passes(fresh_fit, fresh_contrast)
-                    and fresh is not None
-                    and (fresh[0] > fresh[1]) == (self.colours[0] > self.colours[1])
-                ):
-                    self.colours = fresh
-                    fit, contrast = fresh_fit, fresh_contrast
-                    self._readable = 0  # a new palette: what it reads is counted afresh
-            if self._frames_since_refine >= self.refine_every:
+            # A frame that fails is re-fitted at once, the first of a run of failures, with
+            # the lock's own colours: a board that moved a fraction of a cell is likelier than
+            # a new theme, and read where the lock is, its squares' colours come out mixed.
+            # Read afresh there first, the mixed colours validated, the lock kept them, and
+            # the periodic re-fit read the board itself in them as nothing: the lock stayed an
+            # eighth of a cell off for good (the near-edge sweep, 2026-09-27).
+            failed_first = not self._passes(fit, contrast) and self.misses == 0
+            if self._frames_since_refine >= self.refine_every or failed_first:
                 self._frames_since_refine = 0
                 refit = refine(
                     gray, candidate, offset_cells=self.refine_offset_cells, colours=self.colours
@@ -182,8 +171,34 @@ class BoardTracker:
                         and _edge_shift(candidate.region, refined.region) > self.refit_deadband_px
                     )
                 ):
+                    if _edge_shift(candidate.region, refined.region) > self.refit_deadband_px:
+                        # The board is moving: it is re-fitted the next frame too, until a
+                        # re-fit finds it where the lock is. Fitted once mid-slide and left,
+                        # the lock trailed the board by a quarter of a cell once it stopped,
+                        # under what validation sees, until the next re-fit ten frames on,
+                        # and no move was read (the geometry sweep, 2026-09-27, seed 83).
+                        self._frames_since_refine = self.refine_every
                     candidate = refined
                     fit, contrast = refined.fit, refined.contrast
+            if not self._passes(fit, contrast) and self.colours is not None:
+                # The theme may have changed between games with the board in place: a
+                # fresh palette that validates, outer ring included, re-locks the colours.
+                # A dialog over most of the board fails this too, since its palette is the
+                # dialog, so it cannot rewrite the lock.
+                # A new theme keeps the board where it was, its light squares the lighter
+                # ones: a palette whose light and dark swap places is the board read a
+                # cell off (moved 0.8 of a cell up, the lock re-read its colours inverted
+                # and stayed where the board was: the parity audit's sweep, 2026-09-26).
+                fresh_fit, fresh_contrast = fit_score(gray, candidate.region, candidate.cell_px)
+                fresh = square_colours(gray, candidate.region, candidate.cell_px)
+                if (
+                    self._passes(fresh_fit, fresh_contrast)
+                    and fresh is not None
+                    and (fresh[0] > fresh[1]) == (self.colours[0] > self.colours[1])
+                ):
+                    self.colours = fresh
+                    fit, contrast = fresh_fit, fresh_contrast
+                    self._readable = 0  # a new palette: what it reads is counted afresh
             readable = (
                 readable_cells(gray, candidate.region, candidate.cell_px, self.colours)
                 if self.colours is not None and self._passes(fit, contrast)

@@ -31,33 +31,49 @@ def test_tracker_locks_and_validates_cheaply() -> None:
     assert tracker.detections == 1
 
 
-def test_tracker_relocks_after_board_moves_half_a_cell() -> None:
+def test_a_half_cell_move_is_followed_without_a_detection() -> None:
+    """The frame that fails at the lock is re-fitted at once, and the re-fit reaches the
+    board half a cell away."""
     tracker = BoardTracker(max_misses=2)
     tracker.update(synthetic_board(x0=300, y0=120, cell=64))
-    moved = synthetic_board(x0=330, y0=120, cell=64)
-    board = None
-    for _ in range(4):
-        board = tracker.update(moved)
-    assert board is not None
+    board = tracker.update(synthetic_board(x0=330, y0=120, cell=64))
+    assert board is not None and tracker.verified
     assert abs(board.region.x - 330) <= 2
-    assert tracker.detections == 2
+    assert tracker.detections == 1
 
 
-def test_refit_while_held_relocks_a_one_cell_slide_without_detection() -> None:
+def test_a_one_cell_slide_is_refitted_on_the_frame_it_fails() -> None:
     """A whole-cell slide fails validation at once (the locked palette reads every cell
-    wrong), so the lock is held, not verified. With the re-fit due before the misses run
-    out, its wide window finds the slid board and the lock moves without a detection."""
-    tracker = BoardTracker(refine_every=3, max_misses=3)
+    wrong), and the frame that fails is re-fitted at once: the lock moves on that frame,
+    without a detection."""
+    tracker = BoardTracker(refine_every=10, max_misses=3)
     locked = tracker.update(synthetic_board(x0=300, y0=120, cell=64))
     assert locked is not None
-    slid = synthetic_board(x0=364, y0=120, cell=64)
-    for _ in range(2):
-        held = tracker.update(slid)
-        assert held is not None and not tracker.verified and held.region == locked.region
-    board = tracker.update(slid)
+    board = tracker.update(synthetic_board(x0=364, y0=120, cell=64))
     assert board is not None and tracker.verified
     assert abs(board.region.x - 364) <= 2
     assert tracker.detections == 1
+
+
+def test_a_nudge_is_refitted_before_the_colours_are_read_again() -> None:
+    """A wood board five pixels above the frame's bottom, nudged an eighth of a cell: at the
+    lock its textured squares read mixed, and read afresh there they validated, so the lock
+    kept the mixed colours and stayed 8 px off for good (the near-edge sweep, 2026-09-27).
+    The failing frame is re-fitted first, in the lock's own colours."""
+    board = chess.Board()
+    board.set_board_fen("1r1qk1nr/pbpp4/1pn4p/4Ppp1/P7/bP3PP1/1BPNP2P/2Q1KBNR")
+    kw: dict[str, Any] = dict(
+        width=1920, height=1200, board=board, theme="wood", cell=64, style="cburnett-wood"
+    )
+    tracker = BoardTracker()
+    locked = tracker.update(synthetic_board(x0=155, y0=683, **kw))
+    assert locked is not None and abs(locked.region.x - 155) <= 1
+    nudged = synthetic_board(x0=147, y0=677, **kw)
+    lock = None
+    for _ in range(3):
+        lock = tracker.update(nudged)
+    assert lock is not None and tracker.verified
+    assert abs(lock.region.x - 147) <= 1 and abs(lock.region.y - 677) <= 1, lock
 
 
 def test_sub_cell_nudge_is_recovered_by_the_refit() -> None:
@@ -171,16 +187,16 @@ def _game_and_empty_board(game_x: int) -> np.ndarray:
 
 
 def test_tracker_relocks_on_the_game_board_not_the_empty_one() -> None:
-    """The window moves half a cell with an empty board of the same size on screen: the
-    search must see both boards and put the game board first."""
+    """The game board moves further than a re-fit reaches, with an empty board of the same
+    size on screen: the search must see both boards and put the game board first."""
     tracker = BoardTracker(max_misses=2)
     locked = tracker.update(_game_and_empty_board(60))
     assert locked is not None and abs(locked.region.x - 60) <= 2
-    moved = _game_and_empty_board(84)
+    moved = _game_and_empty_board(380)
     board = None
     for _ in range(4):
         board = tracker.update(moved)
-    assert board is not None and abs(board.region.x - 84) <= 2, board
+    assert board is not None and abs(board.region.x - 380) <= 2, board
     assert tracker.detections == 2
 
 
