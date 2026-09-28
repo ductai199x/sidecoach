@@ -1095,6 +1095,9 @@ def board_back(board: chess.Board, fen: str) -> chess.Board:
 # gets the coach's templates, written from the board at once, and gets them as text;
 # the voice resumes when the player slows down (see the panel's PACE_RESUME_S) and for
 # what they ask (Tai, 2026-09-22: "the coach has to be able to keep up with the game").
+# The pace is the game's own: carried over, the quick last moves of one puzzle -- a line
+# found and played out -- made the next one fast, and a find after two minutes' thought
+# was only shown (Tai's puzzles, 2026-09-27: "sometimes it's just completely muted").
 FAST_PACE_S = 6.0
 PACE_MOVES = 4
 # How many plies back the coach keeps a position and its facts.
@@ -2582,6 +2585,7 @@ class Coach:
         self.positions = {0: _Position(ply=0, board=self.board.copy())}
         self.moves = {}
         self.conversation.new_game(event, profile=self._profile_lines())
+        self._think_s.clear()
         self._mistakes = 0
         # The review is the game's own: a new game answered "how did I do overall?" with
         # the last game's sentences when the model failed (the parity audit, 2026-09-26).
@@ -2709,8 +2713,8 @@ class Coach:
 
     @property
     def pace_s(self) -> float | None:
-        """The user's recent think time, in seconds: the median of the last few moves,
-        or None before there are two to go by."""
+        """The user's recent think time in this game, in seconds: the median of its last
+        few moves, or None before there are two to go by."""
         if len(self._think_s) < 2:
             return None
         return statistics.median(self._think_s)

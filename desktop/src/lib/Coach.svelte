@@ -17,7 +17,9 @@
   const ORDER = ["brilliant", "great", "best", "excellent", "good", "book", "inaccuracy", "mistake", "miss", "blunder"];
 
   function meta(m: Extract<CoachItem, { kind: "message" }>): string {
-    return m.trigger + " · level " + m.disclosure + (m.ply != null ? " · ply " + m.ply : "") + (m.fallback ? " · template" : "");
+    // A notice about the board (trigger "board") has no disclosure level to show.
+    const level = m.disclosure != null ? " · level " + m.disclosure : "";
+    return m.trigger + level + (m.ply != null ? " · ply " + m.ply : "") + (m.fallback ? " · template" : "");
   }
   function notes(r: Record<string, any>): string {
     return ((r.lines || []) as string[]).filter((l) => /^(Expected score|Most ground|No move cost|The opening)/.test(l)).join(" ");

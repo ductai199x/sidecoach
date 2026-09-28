@@ -2089,6 +2089,37 @@ def test_a_fast_game_gets_the_templates_and_no_model_call() -> None:
     assert not coach.fast_pace
 
 
+def test_the_pace_is_the_games_own() -> None:
+    """A puzzle's last moves come quick -- the line found, played out -- and carried over
+    they made the next puzzle fast from its first move: a find after two minutes' thought
+    was only shown (Tai's puzzles, 2026-09-27: "sometimes it's just completely muted")."""
+    coach, _provider = _coach([])
+    _start(coach)
+    board = chess.Board()
+    for ply, san in enumerate(("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"), start=1):
+        move = board.parse_san(san)
+        before = board.fen()
+        board.push(move)
+        coach.on_event(
+            MovePlayed(
+                game_id="g",
+                ply=ply,
+                san=san,
+                uci=move.uci(),
+                fen_before=before,
+                fen_after=board.fen(),
+                by_user=(ply % 2 == 1),
+                think_ms=1000,
+            ),
+            float(ply),
+        )
+    assert coach.fast_pace
+    coach.on_event(
+        GameStarted(game_id="h", user_side=Side.WHITE, start_fen=chess.Board().fen()), 10.0
+    )
+    assert coach.pace_s is None and not coach.fast_pace
+
+
 def test_the_voice_holds_its_word_in_a_fast_game_and_says_it_when_the_player_slows() -> None:
     from sidecoach.ui.panel import PanelEngine
 
