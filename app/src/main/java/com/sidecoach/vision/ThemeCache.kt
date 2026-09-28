@@ -19,8 +19,9 @@ import kotlin.math.sqrt
  *
  * The desktop pickles the model. Android has no pickle, so the bytes below are ours: the
  * same payload, written field by field. Everything about the cache's behaviour -- the
- * quantised key, the nearest-palette match within tolerance, a file that no longer loads
- * being ignored and the theme relearned -- is the Python's.
+ * quantised key, the nearest-palette match within tolerance, a file that does not load
+ * being ignored and the theme relearned -- is the Python's, but for the files of older
+ * versions, which the phone reads into today's model ([OLDEST_VERSION]).
  */
 object ThemeCache {
 
@@ -31,11 +32,25 @@ object ThemeCache {
      * one resolution (`Pieces.canonical`, the desktop's 11); 5: the exemplars keep only what
      * the embedding reads, their tone and brightness, and the landing crops' cell size is
      * always there (the desktop's 12); 6: a landing crop per square colour, each written with
-     * its symbol and whether it is on a light square (the desktop's 13). A file of any other
-     * version is ignored and the theme relearned, as the desktop ignores one
-     * (`theme_cache._read`). The desktop's numbering is its own file's.
+     * its symbol and whether it is on a light square (the desktop's 13). The desktop's
+     * numbering is its own file's. Only this version is written.
      */
     const val CACHE_VERSION = 6
+
+    /**
+     * The oldest file still read; one older is ignored and the theme relearned. Unlike the
+     * desktop's (`theme_cache._read`, which ignores any other version), the phone reads every
+     * version from 4 on into today's model: 0.1.19 took the version from 4 to 6 in one release,
+     * every learned set on Tai's phone was ignored, and a game joined mid-way said it had not
+     * learned the pieces (2026-09-27). What a newer version dropped is read and let go; what
+     * it split is shared ([ThemeStore]'s reader says how, version by version). A version
+     * raised later must keep reading this one and those after it: `ThemeMigrationTest` holds a
+     * file of each, written by that version's own writer.
+     */
+    const val OLDEST_VERSION = 4
+
+    /** Whether a theme file of [version] is read. */
+    fun reads(version: Int): Boolean = version in OLDEST_VERSION..CACHE_VERSION
 
     /** Square colours within this many levels share a fingerprint (tolerates lighting). */
     private const val QUANTUM = 8
@@ -145,8 +160,10 @@ object ThemeCache {
 class ThemeStore(private val directory: File) {
 
     /**
-     * Each file's palette, read once per file version: a board waiting to be read cold asks
-     * twice a second, and a theme file is a few hundred KB. Only the matching file is loaded.
+     * Each file's palette, read once per file version (its size and time, [stamp]): a board
+     * waiting to be read cold asks twice a second, and a theme file is a few hundred KB. Only
+     * the matching file is loaded. Every version read ([ThemeCache.reads]) begins alike: the
+     * version, then the light and the dark square colours.
      */
     private val palettes = HashMap<String, Pair<DoubleArray, DoubleArray>?>()
 
@@ -234,7 +251,7 @@ class ThemeStore(private val directory: File) {
         if (!palettes.containsKey(key)) {
             palettes[key] = try {
                 DataInputStream(file.inputStream().buffered()).use { stream ->
-                    if (stream.readInt() != ThemeCache.CACHE_VERSION) return@use null
+                    if (!ThemeCache.reads(stream.readInt())) return@use null
                     val light = DoubleArray(3) { stream.readDouble() }
                     val dark = DoubleArray(3) { stream.readDouble() }
                     light to dark
@@ -246,7 +263,8 @@ class ThemeStore(private val directory: File) {
         return palettes[key]
     }
 
-    // The payload. A file that does not read back is ignored and the theme relearned.
+    // The payload, written at CACHE_VERSION only. A file that does not read back, or is older
+    // than OLDEST_VERSION, is ignored and the theme relearned.
 
     private fun write(out: DataOutputStream, model: ThemeModel) {
         out.writeInt(ThemeCache.CACHE_VERSION)
@@ -289,16 +307,33 @@ class ThemeStore(private val directory: File) {
         out.writeDouble(model.landingPx)
     }
 
+    /**
+     * A theme file of any version [ThemeCache.reads], as today's model. The versions differ in
+     * two places, and the rest of the file is the same in all of them:
+     *
+     * - An exemplar of version 4 also carries its silhouette mask, after its symbol, and three
+     *   centroids (the silhouette's, the one it was aligned by, the one it landed by: two
+     *   doubles each), after its brightness; 5 dropped them with the matcher that used them
+     *   (desktop e0ea564). They are read and let go.
+     * - A landing crop of version 4 or 5 is one per piece kind, the one 0.1.18 measured a piece
+     *   against on either square colour; 6 keeps one per kind and square colour (desktop
+     *   1eab427). An old crop stands for both colours, as it did. And version 4 wrote the cell
+     *   size the crops were taken at only from desktop cfaa416 on: a file without it compares
+     *   at full detail (0), as it did.
+     */
     private fun read(input: DataInputStream): ThemeModel? {
-        if (input.readInt() != ThemeCache.CACHE_VERSION) return null
+        val version = input.readInt()
+        if (!ThemeCache.reads(version)) return null
         val lightBg = DoubleArray(3) { input.readDouble() }
         val darkBg = DoubleArray(3) { input.readDouble() }
         val whiteAtBottom = input.readBoolean()
         val exemplars = ArrayList<Exemplar>()
         repeat(input.readInt()) {
             val symbol = input.readUTF()
+            if (version <= 4) readBits(input) // the silhouette mask
             val tone = readBits(input)
             exemplars.add(Exemplar(symbol, tone, input.readDouble()))
+            if (version <= 4) repeat(6) { input.readDouble() } // the three centroids
         }
         val pieceColours = ArrayList<Pair<DoubleArray, DoubleArray?>>()
         repeat(input.readInt()) {
@@ -321,14 +356,28 @@ class ThemeStore(private val directory: File) {
         val landingCrops = LinkedHashMap<Pair<String, Boolean>, LandingCrop>()
         repeat(input.readInt()) {
             val symbol = input.readUTF()
-            val light = input.readBoolean()
+            val light = if (version >= 6) input.readBoolean() else null
             val rows = input.readInt()
             val cols = input.readInt()
             val pixels = ByteArray(rows * cols)
             input.readFully(pixels)
-            landingCrops[symbol to light] = LandingCrop(rows, cols, pixels)
+            val crop = LandingCrop(rows, cols, pixels)
+            if (light != null) {
+                landingCrops[symbol to light] = crop
+            } else {
+                landingCrops[symbol to true] = crop
+                landingCrops[symbol to false] = crop
+            }
         }
-        val landingPx = input.readDouble()
+        val landingPx = if (version >= 5) {
+            input.readDouble()
+        } else {
+            try {
+                input.readDouble()
+            } catch (e: java.io.EOFException) {
+                0.0 // cached before the size was kept
+            }
+        }
         val model = ThemeModel(
             exemplars = exemplars,
             lightBg = lightBg,

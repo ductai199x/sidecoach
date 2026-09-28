@@ -15,9 +15,10 @@ import java.io.File
 /**
  * A learned set on disk: its landing crops, its palette and its start cells' embeddings (at
  * half precision, as the desktop keeps them) travel with it and read back as they were; a
- * file of another version -- the phone's first format, with no landing crops, the one before
- * the palette was the desktop's, or the one with a single landing crop per kind -- is ignored
- * and the set learned again, as the desktop's `theme_cache._read` ignores one.
+ * file older than the oldest version read -- the phone's first format, with no landing crops, or
+ * the ones before the palette was the desktop's and the embeddings were of the crop at one
+ * resolution -- is ignored and the set learned again. The versions still read, 4 on, are
+ * `ThemeMigrationTest`'s.
  */
 @RunWith(AndroidJUnit4::class)
 class ThemeStoreTest {
@@ -71,7 +72,7 @@ class ThemeStoreTest {
             // The same file stamped with an older version: not read, so the set is learned again.
             val file = File(directory, "theme-$key.bin")
             val bytes = file.readBytes()
-            for (older in listOf(1, 2, 5)) {
+            for (older in listOf(1, 2, 3)) {
                 bytes[0] = 0; bytes[1] = 0; bytes[2] = 0; bytes[3] = older.toByte()
                 file.writeBytes(bytes)
                 assertTrue(
