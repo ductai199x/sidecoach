@@ -226,7 +226,14 @@ class Conversation:
         self.records = []
         self._drained = 0
         side = "White" if event.user_side == Side.WHITE else "Black"
-        text = f"You coach {side}."
+        # Left and right as the player says them: playing Black, "he will just move away to the
+        # right" (Kh1-g2, seen from Black's side) was answered "their King cannot move to the
+        # right" (Tai's puzzle, 2026-09-28).
+        left = "a" if event.user_side == Side.WHITE else "h"
+        text = (
+            f"You coach {side}. They see the board from {side}'s side, the {left}-file on their "
+            "left."
+        )
         if control:
             text += f" Time control: {control}."
         if event.kind == "puzzle":

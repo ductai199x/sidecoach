@@ -1279,7 +1279,8 @@ def test_a_question_about_the_last_move_gets_its_verdict_in_full() -> None:
 def test_a_follow_up_gets_what_it_asks_and_a_nod_one_sentence() -> None:
     """The verdict and the better move came back in every reply, and "I understand: I should
     play Nxc3" got the lesson again and "Which White piece is still at home on g1?" (the AI's
-    sessions, 2026-09-26)."""
+    sessions, 2026-09-26). With a model the words are the model's to read, with the sheet of
+    the position the move was played from beside them (Tai's puzzle, 2026-09-28)."""
     coach, provider = scripted_coach(["...", "...", "...", "..."])
     _bishop_check_instead_of_mate(coach)
     with coach._lock:
@@ -1288,14 +1289,16 @@ def test_a_follow_up_gets_what_it_asks_and_a_nod_one_sentence() -> None:
     coach.ask("I see, I should have seen the mate.", 12.0)
     drain(coach)
     directive = directive_of(sent(provider))
-    assert "do not repeat either" in directive
+    assert "do not say it again in other words" in directive
     assert "They ask nothing: reply in one short sentence" in directive
     assert "then one question" not in directive
     provider.replies = ["", ""]
     coach.ask("Why does the bishop check not work?", 13.0)
     drain(coach)
+    request = str(sent(provider)[-1]["content"])
+    assert "# The position they faced, before Bxf7+" in request
     directive = directive_of(sent(provider))
-    assert "Answer only what they ask now" in directive and "do not repeat either" in directive
+    assert "Answer them directly" in directive and "do not say it again" in directive
 
 
 def test_a_follow_up_about_their_move_need_not_name_the_better_move_again() -> None:
@@ -1360,8 +1363,8 @@ def test_a_question_about_a_fine_last_move_says_it_was_fine() -> None:
     coach.ask("was that a mistake?", 12.0)
     drain(coach)
     directive = directive_of(sent(provider))
-    assert "It was not bad: the verdict was best" in directive
-    assert "do not invent a fault" in directive
+    assert "its verdict was best, and it cost nothing" in directive
+    assert "invent no fault" in directive
 
 
 def test_asked_why_the_answer_says_why_whole_and_a_bare_one_gets_the_line() -> None:

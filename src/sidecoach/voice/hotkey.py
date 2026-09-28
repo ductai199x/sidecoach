@@ -31,12 +31,10 @@ class GlobalPushToTalk:
         key: str,
         on_press: Callable[[], None],
         on_release: Callable[[], None],
-        on_seen: Callable[[str], None] | None = None,
     ) -> None:
         self.key = (key or "").strip().lower()
         self._on_press = on_press
         self._on_release = on_release
-        self._on_seen = on_seen  # every key the hook sees, by name: what a keyboard sends
         self._listener: Any = None
         self._down = False
         self._lock = threading.Lock()
@@ -113,23 +111,15 @@ class GlobalPushToTalk:
             # arrives, just not under the name the setting uses.
             return got.startswith(name + "_") or (got == generic and "_" in name)
 
-        def seen(key: Any, what: str) -> None:
-            # Only a key that could be the push-to-talk key is named: modifiers, function
-            # keys and the like. Never a character -- the hook sees every key in every
-            # window, and a log that names them is a keylogger (found in a live ring on
-            # 2026-09-22, with a whole typed message in it).
-            if self._on_seen is None or not isinstance(key, keyboard.Key):
-                return
-            vk = getattr(key, "vk", None)
-            self._on_seen(f"{what} {key.name}" + (f" (vk {vk})" if vk else ""))
-
+        # No key but the push-to-talk key is ever reported: the hook sees every key in every
+        # window. Naming them for debugging became a keylogger (a live ring, 2026-09-22, held
+        # a whole typed message), and named keys alone still traced the typing (the space and
+        # backspace of every message, 2026-09-28), so it is gone.
         def pressed(key: Any) -> None:
-            seen(key, "down")
             if same(key):
                 self._press()
 
         def released(key: Any) -> None:
-            seen(key, "up")
             if same(key):
                 self._release()
 

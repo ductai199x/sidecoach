@@ -1300,7 +1300,12 @@ def _claims_check(provider: object) -> Callable[[str, chess.Board, object], list
         # the claims come out the same in a fifth of the time.
         found = claims.extract_claims(text, board, provider, thinking=False)
         verdicts = claims.verify_claims(found, board, facts=facts)
-        return [f"{v.claim.text!r}: {v.result}, {v.reason}" for v in verdicts]
+        # What the board cannot decide tells the model nothing: "whose bishop? mine?" came to
+        # it as "unclear, I cannot check that against the board; what do you expect to happen,
+        # concretely?" (Tai's puzzle, 2026-09-28).
+        return [
+            f"{v.claim.text!r}: {v.result}, {v.reason}" for v in verdicts if v.result != "unclear"
+        ]
 
     return check
 

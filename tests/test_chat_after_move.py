@@ -1,7 +1,7 @@
-"""What the player says while the opponent is to move is about the move they just played (a
-simulated student's session, 2026-09-26: "I didn't even notice they were aiming for my rook"
-after 9.Nf3? was answered for the side to move -- "You can win a knight. Their knight on f3
-can simply be taken" -- the student's own knight)."""
+"""What the player says while the opponent is to move is, offline, about the move they just
+played (a simulated student's session, 2026-09-26: "I didn't even notice they were aiming for
+my rook" after 9.Nf3? was answered for the side to move -- "You can win a knight. Their knight
+on f3 can simply be taken" -- the student's own knight); with a model, the model reads it."""
 
 from __future__ import annotations
 
@@ -59,24 +59,33 @@ NG5 = [*ITALIAN, "f1c4", "g8f6", "f3g5"]
 
 
 def test_chat_is_about_the_players_move_on_the_opponents_turn_and_the_position_on_theirs() -> None:
-    # (the moves, the player's mistake, what they say, the ply of the move it is about)
+    """Offline, words said on the opponent's turn are about the player's last move unless they
+    ask about something else. With a model only a question about the move in so many words
+    is: the model reads the rest from the record, and the guess made for it answered "how
+    would this position continues?" four times as a question about the move just made (Tai's
+    puzzle, 2026-09-28)."""
+    # (the moves, the player's mistake, what they say, the ply of the move it is about offline,
+    # and with a model)
     rows = [
-        # The player's 4.Ng5 is the last move: their words are about it.
-        (NG5, 7, "I didn't even notice they were aiming for my rook", 7),
-        # About the opponent's side of the board, or the game: not the player's move.
-        (NG5, 7, "what are they threatening?", None),
-        (NG5, 7, "how did I do this game?", None),
+        # The player's 4.Ng5 is the last move: offline, their words are about it.
+        (NG5, 7, "I didn't even notice they were aiming for my rook", 7, None),
+        # About the opponent's side of the board, the game or how it goes on: not the move.
+        (NG5, 7, "what are they threatening?", None, None),
+        (NG5, 7, "how did I do this game?", None, None),
+        (NG5, 7, "how would this position continue?", None, None),
+        # About the move in so many words.
+        (NG5, 7, "why was my last move bad?", 7, 7),
         # On the player's own turn their words are about the position...
-        (ITALIAN, 3, "I didn't even notice they were aiming for my rook", None),
+        (ITALIAN, 3, "I didn't even notice they were aiming for my rook", None, None),
         # ...unless they ask about their move in so many words.
-        (ITALIAN, 3, "why was my last move bad?", 3),
+        (ITALIAN, 3, "why was my last move bad?", 3, 3),
     ]
-    for ucis, mistake_at, said, about in rows:
-        coach, _ = scripted_coach([])
-        _played(coach, ucis, mistake_at=mistake_at)
-        assert coach.user_to_move is (len(ucis) % 2 == 0)
-        own = coach._asked_own_move(said)
-        assert (own.move.ply if own is not None else None) == about, said
+    for ucis, mistake_at, said, offline, with_model in rows:
+        for coach, about in ((offline_coach(), offline), (scripted_coach([])[0], with_model)):
+            _played(coach, ucis, mistake_at=mistake_at)
+            assert coach.user_to_move is (len(ucis) % 2 == 0)
+            own = coach._asked_own_move(said)
+            assert (own.move.ply if own is not None else None) == about, said
 
 
 def test_what_a_question_names_is_examined_aloud_and_what_a_statement_names_is_not() -> None:

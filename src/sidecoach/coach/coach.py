@@ -2067,9 +2067,15 @@ _ASK_MOVE = re.compile(
     r"just tell me|what'?s the move|tell me the move|the answer)\b",
     re.I,
 )
+# How the position goes on is the line: "how would this position continues?" and "ok and after
+# that?" after a puzzle's last move unlocked nothing (Tai's puzzle, 2026-09-28). "After that"
+# only as a question: in a statement ("and after that I lost my queen") it asks for nothing.
 _ASK_LINE = re.compile(
-    r"\b(the line|a line|lines|variation|continuation|what happens (after|next)|"
-    r"and then what|what follows)\b",
+    r"\b(?:the line|a line|lines|variation|continuation|what happens (?:after|next)|"
+    r"and then what|what follows|what(?:'s| is| comes) next|then what)\b"
+    r"|\bafter that\s*\?"
+    r"|\bhow (?:would|will|does|do|could|can) (?:it|this|that|the game|(?:this|the) position|"
+    r"things) (?:continue|continues|go on|goes on|play out|proceed)\b",
     re.I,
 )
 _SAN = re.compile(r"\b(O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?)\b")
@@ -3104,6 +3110,16 @@ class Coach:
     def _rule_said(self, rule: str) -> None:
         self._rules[rule] = self._last_rule = self._messages
 
+    def _budgeted(self, instruction: str, key: str) -> str:
+        """A word on a sound move held to the rule budget: its pattern to keep asked for only
+        while a rule may be said (`_rule_ok`), and then counted as said, under `key` -- with a
+        model, being asked for it is the saying (as in `_fresh_lesson`)."""
+        if not self._rule_ok(None):
+            return _hold_rule(instruction)
+        if not self._offline:
+            self._rule_said(key)
+        return instruction
+
     def _verdict_taught(self) -> tuple[str, ...]:
         """What a sound move's word may not teach now: the kinds of the last few lessons
         (TAUGHT_MEMORY), and every principle that may not be said (`_rule_ok`)."""
@@ -3212,19 +3228,23 @@ class Coach:
         against a bot the reply comes at once, and "what should I have played?" then found
         the opponent's move last and got a hint for the next one (the runtime audit).
 
-        Words said while the opponent is to move -- the player's own move the last one played
-        -- are about that move too, unless they ask about the opponent's threat or move, the
-        material, the opening, the standing or the game: a simulated student's "I didn't even
-        notice they were aiming for my rook" after 9.Nf3? was answered for the side to move,
-        "You can win a knight. Their knight on f3 can simply be taken" -- the student's own
-        knight (2026-09-26)."""
-        if _ASK_LAST_MOVE.search(text):
+        Offline, words said while the opponent is to move -- the player's own move the last
+        one played -- are about that move too, unless they ask about the opponent's threat or
+        move, the material, the opening, the standing or the game: a simulated student's "I
+        didn't even notice they were aiming for my rook" after 9.Nf3? was answered for the side
+        to move, "You can win a knight. Their knight on f3 can simply be taken" -- the student's
+        own knight (2026-09-26). With a model that guess is the model's to make, from the
+        record: made here, "how would this position continue?" after a puzzle's last move was
+        answered four times running as a question about that move, from the position before
+        it ("Best, and it cost nothing: Rxf1+ ...", Tai's puzzle, 2026-09-28)."""
+        if _ASK_LAST_MOVE.search(text) or _ASK_COST.search(text):
             return self._last_own_move(mine=bool(_MY_MOVE.search(text)))
-        if self.finished or self.user_to_move:
+        if self.finished or self.user_to_move or not self._offline:
             return None
         elsewhere = (
             _ASK_THREAT,
             _ASK_OPPONENT_MOVE,
+            _ASK_LINE,
             _ASK_MATERIAL,
             _ASK_OPENING,
             _ASK_EVAL,
@@ -3386,15 +3406,33 @@ class Coach:
         faced = ""
         frames: list[chess.Board] = []
         moved = played if trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE) else None
+        faced_at = position  # the position `moved` was played from
         if moved is None and trigger is Trigger.USER_ASK:
             own = self._asked_own_move(user_text or "")
+            last = self._last_own_move()
             if own is not None and own.move.ply == position.ply + 1:
                 moved = own.move
+            elif (
+                own is None
+                and last is not None
+                and last.move.ply in (position.ply, position.ply + 1)
+            ):
+                # The player's move is the last one played (its new position read, or not
+                # yet): its sheet goes with any question, and the model reads which position
+                # the words are about -- "why does the bishop check not work?" is about the
+                # move, "how would this position continue?" is not (Tai's puzzle, 2026-09-28).
+                prior = (
+                    position
+                    if last.move.ply == position.ply + 1
+                    else self.positions.get(last.move.ply - 1)
+                )
+                if prior is not None and prior.facts is not None:
+                    moved, faced_at = last.move, prior
         if moved is not None:
             # The lesson after a move is taught from the position the player faced, which the
             # record keeps as one line: its sheet goes with the request (parity pass,
             # 2026-09-25).
-            after = self._frames_after(position, moved)[:2]
+            after = self._frames_after(faced_at, moved)[:2]
             if (
                 len(after) == 1
                 and assessment is not None
@@ -3408,16 +3446,17 @@ class Coach:
                         replied = after[0].copy(stack=False)
                         replied.push(reply)
                         after.append(replied)
+            assert faced_at.facts is not None
             with self._lock:
                 sheet = self.conversation.faced_text(
-                    position.facts,
-                    position.board,
+                    faced_at.facts,
+                    faced_at.board,
                     after[-1] if after else None,
                     after[0] if after else None,
                 )
             if sheet:
                 faced = f"\n\n# The position they faced, before {moved.san}\n{sheet}"
-            frames = self._frames_after(position, moved)
+            frames = self._frames_after(faced_at, moved)
         frames += self._analysis_frames(position)
         # The earlier moments of the same idea, for a directive a link belongs in: found in
         # the record by the coach and listed with how each went and what was said, and every
@@ -3898,6 +3937,10 @@ class Coach:
                     "last such sentence. "
                     f"{NOT_THE_MOVE} {NO_FIGURES}"
                 )
+                # The pattern to keep is a rule of thumb like any other, on the one budget:
+                # two great moves running got "Keep spotting this pattern ..." and "keep
+                # recognizing this pattern ..." back to back (Tai's puzzle, 2026-09-28).
+                instruction = self._budgeted(instruction, f"verdict:{kind}")
             elif routine:
                 fallback = self._verdict(label)
                 meaning = {
@@ -3917,8 +3960,7 @@ class Coach:
                     "not the same words as your last such sentence. "
                     f"{NOT_THE_MOVE} {NO_FIGURES}"
                 )
-                if not self._rule_ok(None):
-                    instruction = _hold_rule(instruction)
+                instruction = self._budgeted(instruction, f"verdict:{label}")
             elif assessment.severity in (Severity.MISTAKE, Severity.BLUNDER) or label == "miss":
                 # A mistake in blitz: the policy keeps it to the word after the move (no
                 # lesson), but the word says what the move was -- never "fine".
@@ -3972,8 +4014,12 @@ class Coach:
         if engine_words:
             # The engine on what they asked about: theirs to hear about in full.
             checks += "\n".join(engine_words) + "\n\n"
-        # The rung's template: two hints, then the answer; the line when asked for it.
+        # The rung's template: two hints, then the answer; the line when asked for it. The
+        # hints speak to the side to move: on the opponent's turn a failed reply falls back to
+        # what they will play, never their hint in the player's voice.
         fallback = hint_template(facts, level, position.board)
+        if position.board.turn != self.user_colour and level < DisclosureLevel.LINE:
+            fallback = their_move_now(position.board, facts)
         # The position answered about is not the one on the board (its analysis has not
         # landed): say so, or the template speaks of a past position as the present --
         # "the line is Bb3 ..." right after Bb3 was played (the offline pass, 2026-09-21).
@@ -4155,17 +4201,34 @@ class Coach:
                     asked=True,
                 )
                 fallback = _with_line(fallback, opener, best, facts)
+                # What they ask is the answer; the verdict is its ground, said once: told "say
+                # so plainly" on every question about the move, the verdict came back four
+                # times running (Tai's puzzle, 2026-09-28).
                 directive = (
                     f"They ask about the move they already played, {san}. It was {label}: sound, "
-                    f"a little behind {best}. Say so plainly -- it was fine, then the better move "
-                    "and the idea behind it. Two sentences at most, no question."
+                    f"a little behind {best}. Answer what they ask"
+                    + (
+                        "; your turns above already gave the verdict and the better move, so "
+                        "repeat them only where that is what they ask."
+                        if followup
+                        else "; where they ask how the move was, say so plainly -- it was fine -- "
+                        "then the better move and the idea behind it."
+                    )
+                    + f" Two sentences at most, no question. {NO_FIGURES}"
                 )
             elif verdict.severity is Severity.NONE:
                 fallback = self._verdict(label)
                 directive = (
-                    f"They ask about the move they already played, {san}. It was not bad: the "
-                    f"verdict was {label}, and it cost nothing. Tell them so plainly, in one or "
-                    "two sentences, and do not invent a fault. No question."
+                    f"They ask about the move they already played, {san}: its verdict was "
+                    f"{label}, and it cost nothing. Answer what they ask, from the record and the "
+                    "sheet of the position it was played from, and invent no fault"
+                    + (
+                        "; your turns above already gave the verdict, so repeat it only where "
+                        "that is what they ask."
+                        if followup
+                        else "; where they ask how the move was, say so plainly."
+                    )
+                    + f" One or two sentences, no question. {NO_FIGURES}"
                 )
             else:
                 # What it cost only when they ask: "It cost you 22% of the game." opened every
@@ -4254,8 +4317,8 @@ class Coach:
                     )
                     + f" {TIE_TO_THE_GAME}"
                 )
-                if followup and not asks:
-                    fallback = ""  # a nod needs no template: nothing, rather than the lesson again
+            if followup and not asks:
+                fallback = ""  # a nod needs no template: nothing, rather than the verdict again
         elif _ASK_MATERIAL.search(said) or _OPENING_FACT.search(said) or _ASK_EVAL.search(said):
             # A plain question about the game as it stands: answered plainly, no question
             # back (the generic answer's "point them ... with a question" asked one).

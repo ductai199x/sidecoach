@@ -325,9 +325,6 @@ class PanelEngine:
             self.settings.voice.ptt_key,
             on_press=lambda: self.ptt(True),
             on_release=lambda: self.ptt(False),
-            # Every key the hook sees, in the verbose terminal: what a keyboard calls the
-            # key a person is pressing when push-to-talk does not react.
-            on_seen=lambda what: self._emit("voice", "debug", f"key {what}"),
         )
         self._state = {
             "running": False,
@@ -678,7 +675,6 @@ class PanelEngine:
                 new.voice.ptt_key,
                 on_press=lambda: self.ptt(True),
                 on_release=lambda: self.ptt(False),
-                on_seen=lambda what: self._emit("voice", "debug", f"key {what}"),
             )
             if self._listener.mode == "ptt":
                 self.set_listen("ptt")
