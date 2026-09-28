@@ -14,13 +14,17 @@ works in three passes, see DESIGN.md section 5.2:
    per board-sized neighbourhood, so the plateau around an empty board and the many windows
    into a larger checkerboard cannot crowd out a board whose pieces lower its score.
 2. Refinement. Around each surviving candidate the gradient profiles along x and y show peaks
-   at the nine cell boundaries. A nine-tooth comb is fitted for sub-pixel offset and pitch.
+   at the cell boundaries. A comb on the seven boundaries between the cells is fitted for
+   sub-pixel offset and pitch; it places the board to within a whole cell, and of the
+   placements a cell apart the one whose cells read most like a board is kept.
 3. Validation. Each cell's colour is read as the median of a thin border ring, which pieces
-   and highlights rarely disturb. The two square colours are the medians of the even and the
+   and highlights rarely disturb; a cell the frame cuts is read on the part it shows when
+   that is half the cell or more. The two square colours are the medians of the even and the
    odd cells, or the colours a lock was taken with, and the fit score is the fraction of the
    readable cells that match the checker pattern in the polarity of those colours. A
    candidate whose pattern carries on in the ring of cells just outside it, a whole-cell
-   shift or a window into a larger checkerboard, is rejected.
+   shift or a window into a larger checkerboard, is rejected, and so is a board the frame
+   does not show whole.
 
 Pieces, the cursor, arrows, highlights and coordinate labels are local outliers against 64
 cells of evidence, so they lower the scores a little and do not move the result.
@@ -29,6 +33,8 @@ cells of evidence, so they lower the scores a little and do not move the result.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from itertools import product
+from typing import NamedTuple
 
 import cv2
 import numpy as np
@@ -41,7 +47,6 @@ _SIGNS = np.array(
 MIN_READABLE_CELLS = 24
 # Boards whose width is within this fraction of the largest are one size to the ranking.
 SAME_SIZE = 0.95
-_DILATE = np.ones((3, 3), dtype=np.uint8)
 
 # (light, dark, tolerance): the square colours a board is read with. `light` is the colour of
 # the cells the checker pattern puts a light square on, the top-left cell and its parity,
@@ -66,10 +71,11 @@ class BoardCandidate:
 class Refinement:
     """A candidate after the boundary fit, with the comb strength at its new and old geometry.
 
-    `strength` is the summed boundary gradient at the nine teeth of the fitted comb on both
-    axes; `reference` is the same sum at the geometry the fit started from, over the same
-    profiles, so the two compare: a re-fit that found nothing better than where it started
-    scores about the same, one that corrected a drift or a resize scores clearly more.
+    `strength` is the summed boundary gradient at the teeth of the comb (the boundaries
+    between the cells) on both axes; `reference` is the same sum at the geometry the fit
+    started from, over the same profiles, so the two compare: a re-fit that found nothing
+    better than where it started scores about the same, one that corrected a drift or a
+    resize scores clearly more.
     """
 
     board: BoardCandidate
@@ -227,13 +233,9 @@ def coarse_search(
     half a board of each other, so a plateau of perfect scores around one board cannot fill
     the quota and hide a second board whose pieces lower its score.
 
-    The shrunken frame is padded on the right and at the bottom by half a work cell, its
-    last pixels repeated: at a scale a few percent larger than the board's cells, the
-    window that sits on a board flush with the frame's right or bottom edge runs a pixel
-    or two past the shrunken frame, and without the pad the best window left was one a
-    whole cell off, which the refinement cannot reach (a 136 px board against the right
-    edge of a 1920 px frame was not found at all: the geometry sweep, 2026-09-27). The
-    board's left and top edges need no pad: there the window starts where the board does.
+    A board flush with the frame's right or bottom edge may be found a cell inward: at a
+    scale a few percent larger than its cells, the window that sits on it runs past the
+    frame. The refinement's choice of phase puts it back.
     """
     height, width = gray.shape
     limit = max_cell if max_cell is not None else min(height, width) // 8
@@ -243,8 +245,6 @@ def coarse_search(
         # Every caller searches from well above the work cell, so the frame always shrinks.
         factor = work_cell / size
         small = cv2.resize(gray, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
-        pad = work_cell // 2
-        small = cv2.copyMakeBorder(small, 0, pad, 0, pad, cv2.BORDER_REPLICATE)
         cell = work_cell
         score, contrast = _checker_response(small, cell, min_contrast=min_contrast)
         if score.size:
@@ -260,63 +260,47 @@ def coarse_search(
     return _nms(found, "score")
 
 
-def _gradient_profile(gray: np.ndarray, axis: int, weight: np.ndarray | None = None) -> np.ndarray:
-    """Summed absolute gradient across the other axis. axis=1 gives a profile along x.
+def _gradient_profile(gray: np.ndarray, axis: int, weight: np.ndarray) -> np.ndarray:
+    """The summed step across every pixel edge; axis=1 gives a profile along x.
 
-    `weight` (same shape as `gray`) zeroes out pixels that must not take part, such as cells
-    covered by a dialog whose straight edges would otherwise attract the grid fit.
+    Entry k is the edge between pixels k - 1 and k, where a board whose cells start at pixel
+    k has its boundary, so a tooth lands on the boundary itself and not half a pixel to one
+    side (entry 0 reads nothing). A step counts only where both its pixels take part
+    (`weight`): the mask leaves out the cells' middles, where the pieces are, and within the
+    board whatever is not the square's own colour.
     """
     if axis == 1:
-        grad = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))
-    else:
-        grad = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
-    if weight is not None:
-        grad = grad * weight
-    return grad.sum(axis=0) if axis == 1 else grad.sum(axis=1)
+        step = np.abs(np.diff(gray, axis=1)) * (weight[:, 1:] * weight[:, :-1])
+        return np.concatenate([[0.0], step.sum(axis=0)])
+    step = np.abs(np.diff(gray, axis=0)) * (weight[1:] * weight[:-1])
+    return np.concatenate([[0.0], step.sum(axis=1)])
 
 
-_TEETH = np.arange(9, dtype=np.float64)
+# The comb's teeth: the seven boundaries between a board's cells, in cells from its edge.
+_TEETH = np.arange(1, 8, dtype=np.float64)
 
 
-def _seen(positions: np.ndarray, n: int, blind: tuple[bool, bool]) -> np.ndarray:
-    """The teeth a profile of length `n` can show: all of them, but for one on the frame's
-    own edge when the profile starts or ends there (`blind`). The gradient is taken with
-    the border reflected, so it reads nothing on the frame's first and last pixel: a board
-    flush with the frame's edge has a boundary there that no profile shows."""
-    seen = np.ones(positions.shape, dtype=bool)
-    if blind[0]:
-        seen &= positions >= 1.0
-    if blind[1]:
-        seen &= positions <= n - 2.0
-    return seen
-
-
-def _comb_strength(
-    profile: np.ndarray, offset: float, pitch: float, blind: tuple[bool, bool] = (False, False)
-) -> float:
-    """Summed profile at the nine teeth of a comb; teeth past the profile's end read zero,
-    and a tooth on the frame's edge, or past it, reads as the mean of the ones the frame
-    shows (as `_comb_fit` scores it)."""
-    n = len(profile)
-    positions = offset + pitch * _TEETH
-    hidden = ~_seen(positions, n, blind)
-    counted = (positions >= 0) & (positions <= n - 1) & ~hidden
-    if not counted.any():
-        return 0.0
-    xs = np.arange(n, dtype=np.float64)
-    total = float(np.interp(positions[counted], xs, profile).sum())
-    return total * (int(counted.sum()) + int(hidden.sum())) / int(counted.sum())
+def _comb_strength(profile: np.ndarray, offset: float, pitch: float) -> float:
+    """Summed profile at the teeth of a board whose first cell starts at `offset`; a tooth
+    past either end of the profile reads nothing."""
+    xs = np.arange(len(profile), dtype=np.float64)
+    return float(np.interp(offset + pitch * _TEETH, xs, profile, left=0.0, right=0.0).sum())
 
 
 def _comb_fit(
-    profile: np.ndarray,
-    start: float,
-    pitch: float,
-    search: float,
-    offset_cells: float = 0.6,
-    blind: tuple[bool, bool] = (False, False),
-) -> tuple[float, float, float]:
-    """Best (offset, pitch, strength) of a nine-tooth comb over a gradient profile.
+    profile: np.ndarray, start: float, pitch: float, search: float, offset_cells: float
+) -> tuple[float, float]:
+    """The (offset, pitch) of the best comb over a gradient profile: the offset within
+    `offset_cells` cells of `start`, the pitch within `search` of `pitch`.
+
+    The teeth are the boundaries between the cells, which show whatever lies around the
+    board. Its outer edges are not teeth: against the frame's edge or past it, or on a
+    background of one of the square colours, they show nothing, and a comb that counted them
+    favoured the placement a cell over (a board flush with the frame's edge, or a cell from
+    it, re-fitted a cell off: the geometry sweep, 2026-09-27). So the comb places the board
+    to within a whole cell: of the placements a cell apart it returns the one nearest
+    `start`, and `refine` picks the cell. (Its passes, each started where the last ended,
+    walked two cells off a board past the frame's edge when each took the strongest.)
 
     Coarse to fine: whole pixels and one-percent pitch steps over the whole window first,
     then quarter pixels and 0.2 percent steps around the best, which is twenty times
@@ -324,81 +308,47 @@ def _comb_fit(
     searches offsets as far as a coarse pitch step moves the far teeth: a pitch a step
     off wants its offset a few pixels off to hold the middle of the board, and a window
     of one pixel kept the comb there, three pixels early and a quarter of a percent
-    long at 144-pixel cells.
-
-    `blind` says the profile starts, or ends, at the frame's own edge, where no boundary
-    shows (`_seen`). A tooth there is scored as the mean of the others: a board flush with
-    the frame's edge has only eight boundaries to show, and a comb a cell over, its ninth
-    tooth on whatever lay beyond the board's far edge, outscored it by that much -- the
-    lock of a board pushed against the screen's edge was never corrected again (the
-    geometry sweep, 2026-09-27). At the far end the last tooth may sit on the frame's edge
-    itself, half a pixel past the last pixel, where a flush board's boundary lies, and no
-    further. The coarse grid, a pixel and a percent apart, may hold no comb of a flush
-    board's pitch that stops there (the last tooth a pixel past it, or the teeth a pixel
-    off the boundaries, and a comb a cell over won): so the coarse pass also keeps the
-    best comb whose last tooth runs past the edge by the offset step and the drift of a
-    pitch step, and each of the two is fitted finely within the frame. Past the edge, a
-    comb a cell over, its last tooth hidden beyond the frame, can tie the flush board's
-    in the coarse pass; the fine pass inside the frame tells them apart. At the near end
-    likewise the first tooth may sit on the frame's edge, half a pixel before the first
-    pixel, and the best coarse comb that starts there is fitted finely too: the coarse grid
-    held a flush board's comb only from the first pixel, half a pixel off its boundaries,
-    where a pitch a coarse step long moved the far teeth off them, and a comb a cell over,
-    every tooth on a boundary, won -- a lock a fifth of a cell off a board in the frame's
-    top-left corner re-fitted a whole cell off it.
+    long at 144-pixel cells. A boundary's peak is a pixel wide, and each pass reads the
+    profile blurred by as far as its grid lets a tooth fall from a boundary: the coarse
+    pass's last tooth half a pitch step times seven, which at 105-pixel cells is four
+    pixels, and a comb at the board's own pitch read its far boundaries as nothing, lost
+    to one on the pieces' edges, and the re-fit settled seven percent short (lock_bench,
+    2026-09-27); the fine pass's, a pixel.
     """
-    n = len(profile)
-    xs = np.arange(n, dtype=np.float64)
-    reach = pitch * offset_cells
+    xs = np.arange(len(profile), dtype=np.float64)
     step = max(0.25, pitch * 0.01)
-    first = -0.5 if blind[0] else 0.0
-    last = n - 0.5 if blind[1] else n - 1.0
-    ends = (last, last + 1.0 + 4.0 * step) if blind[1] else (last,)
 
     def best_over(
-        pitches: np.ndarray, offsets: np.ndarray, limits: tuple[float, ...]
-    ) -> list[tuple[float, float, float]]:
-        """The best comb whose last tooth lies at or before each of `limits`."""
-        bests = [(start, pitch, -np.inf) for _ in limits]
-        if offsets.size == 0 or pitches.size == 0:
-            return bests
+        seen: np.ndarray, pitches: np.ndarray, offsets: np.ndarray
+    ) -> tuple[float, float, float]:
+        best = (start, pitch, 0.0)
         for p in pitches:
             positions = offsets[:, None] + p * _TEETH[None, :]
-            if not (positions[:, -1] <= limits[-1]).any():
-                continue
-            seen = _seen(positions, n, blind)
-            values = np.interp(positions, xs, profile, right=0.0)
-            count = np.maximum(seen.sum(axis=1), 1)
-            strength = (values * seen).sum(axis=1) * len(_TEETH) / count
-            for k, limit in enumerate(limits):
-                scored = np.where(positions[:, -1] <= limit, strength, -np.inf)
-                i = int(np.argmax(scored))
-                if scored[i] > bests[k][2]:
-                    bests[k] = (float(offsets[i]), float(p), float(scored[i]))
-        return bests
+            strength = np.interp(positions, xs, seen, left=0.0, right=0.0).sum(axis=1)
+            i = int(np.argmax(strength))
+            if strength[i] > best[2]:
+                best = (float(offsets[i]), float(p), float(strength[i]))
+        return best
 
-    pitches = np.arange(pitch * (1 - search), pitch * (1 + search), step)
-    coarse = best_over(
-        pitches, np.arange(max(0.0, start - reach), min(n - 1.0, start + reach), 1.0), ends
+    reach = pitch * offset_cells
+    o, p, _ = best_over(
+        _blurred(profile, int(np.ceil(3.5 * step))),
+        np.arange(pitch * (1 - search), pitch * (1 + search), step),
+        np.arange(start - reach, start + reach, 1.0),
     )
-    if first < 0.0 and start - reach < 0.0:
-        coarse += best_over(pitches, np.array([first]), ends[-1:])
     span = max(1.0, 4.0 * step)
-    found: list[tuple[float, float, float]] = []
-    for k, (o, p, s) in enumerate(coarse):
-        if s == -np.inf or (k and (o, p) == coarse[0][:2]):
-            continue
-        found += best_over(
-            np.arange(p * 0.99, p * 1.01, max(0.05, p * 0.002)),
-            np.arange(max(first, o - span), min(n - 1.0, o + span) + 0.01, 0.25),
-            (last,),
-        )
-        if k == 0:
-            found.append((o, p, s))  # within the frame as it stands; a tie goes to the fine
-    best = max(found, key=lambda fit: fit[2], default=None)
-    if best is None or best[2] == -np.inf:
-        return start, pitch, 0.0
-    return best
+    o, p, _ = best_over(
+        _blurred(profile, 1),
+        np.arange(p * 0.99, p * 1.01, max(0.05, p * 0.002)),
+        np.arange(o - span, o + span + 0.01, 0.25),
+    )
+    return o - p * round((o - start) / p), p
+
+
+def _blurred(profile: np.ndarray, half: int) -> np.ndarray:
+    """The profile under a triangle `half` pixels to either side, its peaks where they were."""
+    kernel = np.bartlett(2 * half + 3)[1:-1]
+    return np.convolve(profile, kernel / kernel.sum(), mode="same")
 
 
 def cell_bounds(region: Region, cell: float, r: int, c: int) -> tuple[int, int, int, int]:
@@ -414,76 +364,77 @@ def _ring_band(cell: float) -> int:
     return max(1, int(round(cell * 0.12)))
 
 
-def _ring_median(gray: np.ndarray, box: tuple[int, int, int, int], band: int) -> float | None:
-    """Median of a cell's border ring, or None when the cell is not wholly in the frame."""
-    x0, y0, x1, y1 = box
-    height, width = gray.shape
-    if x0 < 0 or y0 < 0 or x1 > width or y1 > height:
-        return None
-    patch = gray[y0:y1, x0:x1]
-    if patch.shape[0] <= 2 * band or patch.shape[1] <= 2 * band:
-        return None
-    ring = np.concatenate(
-        [
-            patch[:band].ravel(),
-            patch[-band:].ravel(),
-            patch[band:-band, :band].ravel(),
-            patch[band:-band, -band:].ravel(),
-        ]
-    )
-    return float(np.median(ring))
-
-
 def _ring_indices(
-    shape: tuple[int, int], region: Region, cell: float
-) -> list[tuple[list[int], np.ndarray]] | None:
-    """The flat pixel indices of every cell's border ring, grouped by ring length so each
-    group's medians come from one call: (cells of the group, an (n, length) index array).
-    None when a cell runs off the frame. The geometry holds for as long as a lock does,
-    so the result is cached on it."""
-    height, width = shape
+    shape: tuple[int, ...], region: Region, cell: float, pad: int
+) -> list[tuple[list[int], np.ndarray]]:
+    """The flat pixel indices of the border ring of every cell from row and column -pad to
+    7 + pad, grouped by ring length so each group's medians come from one call: (the cells
+    of the group, row by row, and an (n, length) index array). A cell the frame cuts keeps
+    the part of its ring the frame shows, when that is half the cell or more both ways, and
+    is in no group when it is less. The geometry holds for as long as a lock does, so the
+    result is cached on it."""
+    height, width = shape[:2]
     band = _ring_band(cell)
+    side = 8 + 2 * pad
     groups: dict[int, tuple[list[int], list[np.ndarray]]] = {}
-    for r in range(8):
-        for c in range(8):
-            x0, y0, x1, y1 = cell_bounds(region, cell, r, c)
-            if x0 < 0 or y0 < 0 or x1 > width or y1 > height:
-                return None
-            if x1 - x0 <= 2 * band or y1 - y0 <= 2 * band:
-                return None
-            ys, xs = np.mgrid[y0:y1, x0:x1]
+    for r in range(side):
+        for c in range(side):
+            x0, y0, x1, y1 = cell_bounds(region, cell, r - pad, c - pad)
+            cx0, cy0, cx1, cy1 = max(0, x0), max(0, y0), min(width, x1), min(height, y1)
+            if 2 * (cx1 - cx0) < x1 - x0 or 2 * (cy1 - cy0) < y1 - y0:
+                continue
+            ys, xs = np.mgrid[cy0:cy1, cx0:cx1]
             on_ring = (ys < y0 + band) | (ys >= y1 - band) | (xs < x0 + band) | (xs >= x1 - band)
             flat = (ys * width + xs)[on_ring]
             cells, rows = groups.setdefault(flat.size, ([], []))
-            cells.append(r * 8 + c)
+            cells.append(r * side + c)
             rows.append(flat)
     return [(cells, np.stack(rows)) for cells, rows in groups.values()]
 
 
 _RING_CACHE: dict[
-    tuple[tuple[int, int], Region, float], list[tuple[list[int], np.ndarray]] | None
+    tuple[tuple[int, ...], Region, float, int], list[tuple[list[int], np.ndarray]]
 ] = {}
 
 
-def cell_medians(gray: np.ndarray, region: Region, cell: float) -> np.ndarray | None:
-    """8x8 border-ring medians, or None when the board runs off the frame."""
-    key = (gray.shape, region, cell)
+def _cells(gray: np.ndarray, region: Region, cell: float, pad: int = 1) -> np.ndarray:
+    """The border-ring medians of a board's cells and of `pad` rings of cells around it, an
+    (8 + 2 pad)-square grid; NaN where the frame shows less than half a cell."""
+    key = (gray.shape, region, cell, pad)
     groups = _RING_CACHE.get(key)
-    if key not in _RING_CACHE:
+    if groups is None:
         if len(_RING_CACHE) > 64:
             _RING_CACHE.clear()
-        groups = _RING_CACHE[key] = _ring_indices(gray.shape, region, cell)
-    if groups is None:
-        return None
+        groups = _RING_CACHE[key] = _ring_indices(gray.shape, region, cell, pad)
+    side = 8 + 2 * pad
+    medians = np.full(side * side, np.nan)
     flat = gray.reshape(-1)
-    medians = np.zeros(64, dtype=np.float64)
     for cells, indices in groups:
         medians[cells] = np.median(flat[indices], axis=1)
-    return medians.reshape(8, 8)
+    return medians.reshape(side, side)
 
 
-def palette(medians: np.ndarray) -> Colours:
-    """The square colours read from a grid of cell medians, with their tolerance.
+# A board is read only when the frame shows it, to within this many pixels a side: a board
+# flush with the frame's edge is fitted a pixel past it now and then. Of a board further off,
+# the cells the frame cuts would reach the pieces' reader squeezed, so it is not locked; it is
+# found when it is back (a partly shown board was locked a cell inward instead, on the window
+# of part board and part background: lock_bench, 2026-09-27, 7 boards of 17).
+EDGE_SLACK_PX = 2
+
+
+def _on_frame(shape: tuple[int, ...], region: Region) -> bool:
+    height, width = shape[:2]
+    return (
+        region.x >= -EDGE_SLACK_PX
+        and region.y >= -EDGE_SLACK_PX
+        and region.x + region.w <= width + EDGE_SLACK_PX
+        and region.y + region.h <= height + EDGE_SLACK_PX
+    )
+
+
+def palette(medians: np.ndarray) -> Colours | None:
+    """The square colours read from a grid of cell medians, with their tolerance; None when
+    the frame shows fewer than MIN_READABLE_CELLS of the cells.
 
     The two colours are the medians of the cells the checker pattern expects to be light and
     dark, so which one is the brighter depends on the theme. A cell is readable when its
@@ -492,8 +443,11 @@ def palette(medians: np.ndarray) -> Colours:
     a tooltip, or a highlight drawn over a cell is left out of the fit. That is what lets a
     partly covered board keep its lock.
     """
-    lights = medians[_SIGNS > 0]
-    darks = medians[_SIGNS < 0]
+    shown = np.isfinite(medians)
+    if int(shown.sum()) < MIN_READABLE_CELLS:
+        return None
+    lights = medians[(_SIGNS > 0) & shown]
+    darks = medians[(_SIGNS < 0) & shown]
     light = float(np.median(lights))
     dark = float(np.median(darks))
     spread = max(float(np.median(np.abs(lights - light))), float(np.median(np.abs(darks - dark))))
@@ -501,7 +455,8 @@ def palette(medians: np.ndarray) -> Colours:
 
 
 def readable_against(medians: np.ndarray, colours: Colours) -> np.ndarray:
-    """Cells that read as either square colour."""
+    """Cells that read as either square colour; a cell the frame does not show reads as
+    neither."""
     light, dark, tolerance = colours
     return (np.abs(medians - light) <= tolerance) | (np.abs(medians - dark) <= tolerance)
 
@@ -516,85 +471,75 @@ def expected_signs(colours: Colours) -> np.ndarray:
     return _SIGNS if light > dark else -_SIGNS
 
 
-# An outer cell is read when at least this share of it, either way, is on the frame.
-OUTER_MIN_SHOWN = 0.5
-
-
-def _outer_box(
-    shape: tuple[int, int], box: tuple[int, int, int, int]
-) -> tuple[int, int, int, int] | None:
-    """An outer cell's box cut to the frame, or None when less than OUTER_MIN_SHOWN of it
-    is on the frame either way."""
-    height, width = shape
-    x0, y0, x1, y1 = box
-    cx0, cy0, cx1, cy1 = max(0, x0), max(0, y0), min(width, x1), min(height, y1)
-    if cx1 - cx0 < OUTER_MIN_SHOWN * (x1 - x0) or cy1 - cy0 < OUTER_MIN_SHOWN * (y1 - y0):
-        return None
-    return cx0, cy0, cx1, cy1
-
-
-def outer_continues_board(gray: np.ndarray, region: Region, cell: float, colours: Colours) -> bool:
-    """Whether the checker pattern carries on outside the candidate on any of its sides.
+def _continues(cells: np.ndarray, colours: Colours) -> bool:
+    """Whether the checker pattern carries on in the ring of cells around a board (`cells`,
+    the board and its ring as `_cells` reads them) on any of its sides.
 
     A candidate shifted by whole cells, or a window of a larger checkerboard, reads a
     perfect board inside its 64 cells; only the cells just outside tell. A side continues
-    the board when most of its eight outer cells read as square colours and alternate.
-    Cells outside the frame are not counted, so a board flush with the screen edge passes.
-    An outer cell that runs off the frame is read on the part the frame shows when that is
-    half the cell or more: a candidate two thirds of a cell above a board that ended two
-    pixels above the frame's bottom had its row of outer cells above it off the frame and
-    the row below it a third off, so neither side was read, the board's last row went
-    unseen below it, and the lock validated with every cell reading across two squares
-    (the geometry sweep, 2026-09-27, seed 260).
+    the board when most of its eight outer cells read as square colours and alternate. A
+    cell the frame does not show does not read, so a board flush with the frame's edge
+    passes; one the frame cuts is read on what it shows, when that is half the cell or more:
+    a candidate two thirds of a cell above a board that ended two pixels above the frame's
+    bottom had its row of outer cells above it off the frame and the row below it a third
+    off, so neither side was read, the board's last row went unseen below it, and the lock
+    validated with every cell reading across two squares (the geometry sweep, 2026-09-27,
+    seed 260).
     """
-    light, dark, tolerance = colours
-    band = _ring_band(cell)
-    sides = (
-        [(-1, c) for c in range(8)],
-        [(8, c) for c in range(8)],
-        [(r, -1) for r in range(8)],
-        [(r, 8) for r in range(8)],
-    )
-    mid = 0.5 * (light + dark)
-    for cells in sides:
-        signs: list[float | None] = []
-        for r, c in cells:
-            box = _outer_box(gray.shape, cell_bounds(region, cell, r, c))
-            value = None if box is None else _ring_median(gray, box, band)
-            if value is None or (abs(value - light) > tolerance and abs(value - dark) > tolerance):
-                signs.append(None)
-            else:
-                signs.append(1.0 if value > mid else -1.0)
-        readable = [v for v in signs if v is not None]
-        if len(readable) < 6:
-            continue
-        alternating = sum(
-            1
-            for a, b in zip(signs, signs[1:], strict=False)
-            if a is not None and b is not None and a != b
-        )
-        if alternating >= 5:
+    light, dark, _ = colours
+    readable = readable_against(cells, colours)
+    bright = cells > 0.5 * (light + dark)
+    for side in (np.s_[0, 1:9], np.s_[9, 1:9], np.s_[1:9, 0], np.s_[1:9, 9]):
+        read, up = readable[side], bright[side]
+        if read.sum() >= 6 and (read[1:] & read[:-1] & (up[1:] != up[:-1])).sum() >= 5:
             return True
     return False
 
 
-def _score_cells(
-    gray: np.ndarray, region: Region, cell: float, medians: np.ndarray, colours: Colours
-) -> tuple[float, float]:
-    """(fit, contrast) of a grid of cell medians read against `colours`."""
-    light, dark, _ = colours
-    readable = readable_against(medians, colours)
+class _Reading(NamedTuple):
+    """How a board reads (`_judge`)."""
+
+    fit: float
+    contrast: float
+    readable: int
+    evidence: int
+    colours: Colours | None  # the palette it was read with
+
+
+def _judge(cells: np.ndarray, colours: Colours | None) -> _Reading:
+    """How a board reads against `colours`, or in its own (`palette`) without them; `cells`
+    is the board and its ring, as `_cells` reads them.
+
+    The fit is the fraction of the readable cells that match the checker pattern: zero when
+    fewer than MIN_READABLE_CELLS read, or when the pattern carries on outside the board. The
+    evidence weighs placements a cell apart against each other: the matching cells less the
+    cells the frame shows that do not match; a cell the frame does not show counts neither
+    way. Read in its own colours, a board must also match on most of the cells the frame
+    shows: a window of part board and part background reads a palette of blends from itself,
+    and matched on the few cells that happened to fall within it (26 of 64, lock_bench case
+    106, 2026-09-27). A lock's colours are exempt, so a dialog over most of the board does
+    not cost it.
+    """
+    board = cells[1:9, 1:9]
+    read = colours or palette(board)
+    shown = int(np.isfinite(board).sum())
+    if read is None:
+        return _Reading(0.0, 0.0, 0, -shown, None)
+    light, dark, _ = read
     # The threshold sits between the two square colours rather than at the board mean, which
     # a dark dialog over a light board would drag below the dark squares.
     mid = 0.5 * (light + dark)
-    if int(readable.sum()) < MIN_READABLE_CELLS:
-        return 0.0, float(np.abs(medians - mid).mean())
-    contrast = float(np.abs(medians[readable] - mid).mean())
-    expected = expected_signs(colours)
-    match = float((np.sign(medians - mid)[readable] == expected[readable]).mean())
-    if match >= 0.5 and outer_continues_board(gray, region, cell, colours):
-        return 0.0, contrast
-    return match, contrast
+    readable = readable_against(board, read)
+    count = int(readable.sum())
+    matched = int((readable & (np.sign(board - mid) == expected_signs(read))).sum())
+    evidence = 2 * matched - shown
+    if count < MIN_READABLE_CELLS:
+        return _Reading(0.0, 0.0, count, evidence, read)
+    contrast = float(np.abs(board[readable] - mid).mean())
+    fit = matched / count
+    if (colours is None and evidence <= 0) or (fit >= 0.5 and _continues(cells, read)):
+        fit = 0.0
+    return _Reading(fit, contrast, count, evidence, read)
 
 
 def readable_cells(gray: np.ndarray, region: Region, cell: float, colours: Colours) -> int:
@@ -603,8 +548,9 @@ def readable_cells(gray: np.ndarray, region: Region, cell: float, colours: Colou
     The fit counts only these, so a board that moved away by two cells and a fraction still
     fits where it was, on the cells it left behind; what gives it away is how few are left
     to read (the tracker's probe)."""
-    medians = cell_medians(gray, region, cell)
-    return 0 if medians is None else int(readable_against(medians, colours).sum())
+    if not _on_frame(gray.shape, region):
+        return 0
+    return int(readable_against(_cells(gray, region, cell, pad=0), colours).sum())
 
 
 def fit_score(
@@ -619,18 +565,21 @@ def fit_score(
     so a dialog over most of the board cannot rewrite the palette, and the pattern must keep
     the lock's polarity, so a board that slid by a whole cell reads every cell wrong. Without
     them the palette is read from the candidate itself, in whichever polarity the theme has,
-    and the cells just outside the candidate decide whether it is shifted.
+    and the cells just outside the candidate decide whether it is shifted. A board the frame
+    does not show whole scores zero.
     """
-    medians = cell_medians(gray, region, cell)
-    if medians is None:
+    if not _on_frame(gray.shape, region):
         return 0.0, 0.0
-    return _score_cells(gray, region, cell, medians, colours or palette(medians))
+    reading = _judge(_cells(gray, region, cell), colours)
+    return reading.fit, reading.contrast
 
 
 def square_colours(gray: np.ndarray, region: Region, cell: float) -> Colours | None:
-    """The square colours of a board as read now, with their tolerance, for a lock to keep."""
-    medians = cell_medians(gray, region, cell)
-    return None if medians is None else palette(medians)
+    """The square colours of a board as read now, with their tolerance, for a lock to keep;
+    None for a board the frame does not show whole."""
+    if not _on_frame(gray.shape, region):
+        return None
+    return palette(_cells(gray, region, cell, pad=0))
 
 
 def occupied_cells(
@@ -658,6 +607,86 @@ def occupied_cells(
     return count
 
 
+def _boundary_weight(
+    crop: np.ndarray,
+    origin: tuple[int, int],
+    board: BoardCandidate,
+    medians: np.ndarray,
+    colours: Colours | None,
+    band: int,
+) -> np.ndarray:
+    """Which pixels of `crop` (whose top-left is `origin` in the frame) take part in the
+    boundary fit around `board`, as a weight of 0 or 1.
+
+    Only the strips around the cell boundaries take part, and in them only the pixels of
+    the square's own colour. Pieces sit in the middle of their squares and their outlines
+    out-gradient faint boundaries on a low-contrast theme; a dialog over part of the board
+    has straight edges and text that would pull the grid towards them. The mask repeats
+    with the cell pitch, so a board that slid by a whole cell still has its boundaries in
+    unmasked strips, and everything outside the board, such as its outer edge, stays. A real
+    set's pieces reach into the strips (their bases sit at 0.87 of the cell), and a rank of
+    them draws one line as strong as a boundary a tenth of a cell above it: at 144-pixel
+    cells the comb settled between the two, a pitch two percent long and the top edge a
+    quarter of a cell off. So within the board a pixel that is not its cell's own colour, to
+    the palette's tolerance, takes no part: a piece's fill and outline are gone, so are the
+    labels and a dialog. The blends at a boundary, between the two square colours, lie on
+    the grid lines (within `band` of them) and are kept there: without them the comb drifted
+    a third of a percent. A pixel of a piece's edge is not: eight bases in a rank, each one
+    pixel of square kept beside black, summed to three boundaries' worth and pulled the comb
+    a tenth of a cell.
+
+    A cell that does not read as a square colour, under a dialog or a highlight, keeps only a
+    thin strip along its boundaries. When too few cells read to tell the squares' own colour
+    at all, the geometry is too far off to lay the mask on (a lock a quarter of a cell off on
+    a textured theme reads most cells across two squares): its strips hid the boundaries
+    themselves and kept the pieces' edges, and the comb settled nine percent long (lock_bench,
+    2026-09-27). Then nothing is left out. The boundaries run the width of the board, the
+    pieces' edges do not, and that pass finds the boundaries near enough for the next to lay
+    the mask.
+    """
+    x_lo, y_lo = origin
+    region, cell = board.region, board.cell_px
+    weight = np.ones(crop.shape, dtype=np.float32)
+    if colours is None:
+        return weight
+    readable = readable_against(medians, colours)
+    if readable.sum() < MIN_READABLE_CELLS:
+        return weight
+    light, dark, tolerance = colours
+    own = np.zeros(crop.shape, dtype=bool)
+    for r in range(8):
+        for c in range(8):
+            x0, y0, x1, y1 = cell_bounds(region, cell, r, c)
+            x0, y0 = max(0, x0 - x_lo), max(0, y0 - y_lo)
+            x1, y1 = min(crop.shape[1], x1 - x_lo), min(crop.shape[0], y1 - y_lo)
+            if x1 > x0 and y1 > y0:
+                own[y0:y1, x0:x1] = np.abs(crop[y0:y1, x0:x1] - medians[r, c]) <= tolerance
+    in_range = (crop >= min(light, dark) - tolerance) & (crop <= max(light, dark) + tolerance)
+    lines = np.zeros(crop.shape, dtype=bool)
+    for k in range(1, 8):
+        gx = int(round(region.x - x_lo + k * cell))
+        gy = int(round(region.y - y_lo + k * cell))
+        lines[:, max(0, gx - band) : gx + band + 1] = True
+        lines[max(0, gy - band) : gy + band + 1, :] = True
+    x0, y0 = max(0, region.x - x_lo), max(0, region.y - y_lo)
+    x1 = min(crop.shape[1], region.x - x_lo + int(round(8 * cell)))
+    y1 = min(crop.shape[0], region.y - y_lo + int(round(8 * cell)))
+    weight[y0:y1, x0:x1] = (own | (in_range & lines))[y0:y1, x0:x1]
+    for r in range(8):
+        for c in range(8):
+            inset = int(round(cell * (0.2 if readable[r, c] else 0.08)))
+            x0, y0, x1, y1 = cell_bounds(region, cell, r, c)
+            x0, y0 = x0 - x_lo + inset, y0 - y_lo + inset
+            x1, y1 = x1 - x_lo - inset, y1 - y_lo - inset
+            if x1 > x0 and y1 > y0:
+                weight[max(0, y0) : y1, max(0, x0) : x1] = 0.0
+    return weight
+
+
+# The placements a cell apart that `refine` weighs, the comb's own first so a tie keeps it.
+_PHASES = sorted(product((-1, 0, 1), repeat=2), key=lambda d: abs(d[0]) + abs(d[1]))
+
+
 def refine(
     gray: np.ndarray,
     cand: BoardCandidate,
@@ -666,7 +695,8 @@ def refine(
     offset_cells: float = 0.6,
     colours: Colours | None = None,
 ) -> Refinement:
-    """Sub-pixel boundaries from gradient peaks, then validation.
+    """Sub-pixel boundaries from gradient peaks, the whole-cell phase from the cells, then
+    validation.
 
     `offset_cells` is how far, in cells, the boundaries may move from the candidate. The
     detector needs less than a cell, since a coarse candidate is within a few pixels; the
@@ -674,34 +704,16 @@ def refine(
     sub-cell drift and a small resize (a whole-cell slide fails validation outright and goes
     through re-detection). With `colours` the cells are read against a lock's palette.
 
-    A comb with a tooth on the frame's edge, where no boundary shows, is scored as if one
-    were there (`_comb_fit`): that is a board flush with the edge. A board a cell or less
-    from the edge has a comb a cell nearer the edge that scores the same -- its tooth on
-    the edge unseen, the board's far boundary left out -- and the re-fit of a lock nudged
-    a few pixels took it about as often as the right one, failed validation, and kept the
-    lock where the board had been (the geometry sweep's near-edge cases, 2026-09-27: a
-    board 81 px below the frame's top re-fitted to 0). The comb cannot tell the two
-    apart; the cells can. So when the fitted comb leans on a tooth on the frame's edge,
-    the fit without that credit is made as well, and the one that validates better is
-    kept (the flush one on a tie).
+    The comb places the board to within a whole cell (`_comb_fit`). Of the placements a cell
+    apart on each axis, the one kept validates and has the most evidence (`_judge`): a board
+    partly off the frame and the window a cell inward, part board and part background, match
+    as many cells, and the window's row of background is what tells them apart. The mask the
+    boundaries are fitted through is laid out on a geometry, and a candidate a cell pitch or
+    two percent off lays it a fraction of a cell off at the far side, where it then masks the
+    boundaries themselves and keeps its own error: the comb settled two percent long there
+    once. So the fit runs again, up to twice, while a pass moves it, each time with the mask
+    laid out on the last pass's geometry.
     """
-    fitted, hidden = _refine(gray, cand, search, offset_cells, colours, credit=True)
-    if not hidden:
-        return fitted
-    seen, _ = _refine(gray, cand, search, offset_cells, colours, credit=False)
-    return seen if seen.board.fit > fitted.board.fit else fitted
-
-
-def _refine(
-    gray: np.ndarray,
-    cand: BoardCandidate,
-    search: float,
-    offset_cells: float,
-    colours: Colours | None,
-    credit: bool,
-) -> tuple[Refinement, bool]:
-    """`refine`'s fit, and whether its comb has a tooth on the frame's edge. Without
-    `credit` the frame's edges are not taken as blind: no comb scores a tooth there."""
     height, width = gray.shape
     cell = cand.cell_px
     margin = cell * (offset_cells + 0.1)
@@ -711,125 +723,27 @@ def _refine(
     y_hi = int(min(height, np.ceil(cand.region.y + 8 * cell + margin)))
     crop = gray[y_lo:y_hi, x_lo:x_hi]
     if crop.size == 0:
-        return Refinement(cand, 0.0, 0.0), False
-    # Where the crop meets the frame's edge, the profiles cannot show a boundary.
-    blind_x = (x_lo == 0, x_hi == width)
-    blind_y = (y_lo == 0, y_hi == height)
-    comb_x, comb_y = (blind_x, blind_y) if credit else ((False, False), (False, False))
-
-    # Only the strips around the cell boundaries take part in the boundary fit, and in
-    # them only the pixels of the square's own colour. Pieces sit in the middle of their
-    # squares and their outlines out-gradient faint boundaries on a low-contrast theme;
-    # a dialog over part of the board has straight edges and text that would pull the
-    # grid towards them. The mask repeats with the cell pitch, so a board that slid by a
-    # whole cell still has its boundaries in unmasked strips, and everything outside the
-    # candidate, such as the board's outer edge, stays. A real set's pieces reach into
-    # the strips (their bases sit at 0.87 of the cell), and a rank of them draws one
-    # line as strong as a boundary a tenth of a cell above it: at 144-pixel cells the
-    # comb settled between the two, a pitch two percent long and the top edge a quarter
-    # of a cell off. So within the board a pixel that is not its cell's own colour, to
-    # the palette's tolerance, takes no part: a piece's fill and outline are gone, so
-    # are the labels and a dialog. The mask is grown by a pixel so that the blends at a
-    # boundary stay and the fit keeps its sub-pixel precision (without that the comb
-    # drifted a third of a percent, and dropping the outer side of the board's edge
-    # moved the last tooth a pixel in). Outside the board nothing is masked.
-    # The mask is laid out on a geometry, and a candidate a cell pitch or two percent off
-    # lays it a fraction of a cell off at the far side, where it then masks the boundaries
-    # themselves and keeps its own error: the comb settled two percent long there once.
-    # So the fit runs again, up to twice, while a pass moves it, each time with the mask
-    # laid out on the last pass's geometry.
+        return Refinement(cand, 0.0, 0.0)
     fitted = cand
-    reference = 0.0
-    strength = 0.0
-    hidden = False
+    origin = (float(cand.region.x), float(cand.region.y))
+    profile_x = profile_y = np.zeros(0)
     for attempt in range(3):
         cell = fitted.cell_px
-        weight = np.ones(crop.shape, dtype=np.float32)
-        medians = cell_medians(gray, fitted.region, cell)
-        readable = np.ones((8, 8), dtype=bool)
-        if medians is not None:
-            read = colours or palette(medians)
-            readable = readable_against(medians, read)
-            if int(readable.sum()) < MIN_READABLE_CELLS:
-                # Too few cells to place the mask; the candidate stays where it is and
-                # carries the fit and contrast measured there, which is a fit of zero.
-                fit, contrast = fit_score(gray, cand.region, cand.cell_px, colours)
-                return Refinement(replace(cand, fit=fit, contrast=contrast), 0.0, 0.0), False
-            own = np.zeros(crop.shape, dtype=np.uint8)
-            for r in range(8):
-                for c in range(8):
-                    x0, y0, x1, y1 = cell_bounds(fitted.region, cell, r, c)
-                    x0, y0 = max(0, x0 - x_lo), max(0, y0 - y_lo)
-                    x1, y1 = min(crop.shape[1], x1 - x_lo), min(crop.shape[0], y1 - y_lo)
-                    if x1 > x0 and y1 > y0:
-                        block = crop[y0:y1, x0:x1]
-                        own[y0:y1, x0:x1] = np.abs(block - medians[r, c]) <= read[2]
-            # The blends at a boundary, between the two square colours, lie on the grid
-            # lines and are kept there; a pixel grown from a piece's edge is not: eight
-            # bases in a rank, each one pixel of square kept beside black, summed to
-            # three boundaries' worth and pulled the comb a tenth of a cell.
-            lo, hi = min(read[0], read[1]) - read[2], max(read[0], read[1]) + read[2]
-            in_range = (crop >= lo) & (crop <= hi)
-            lines = np.zeros(crop.shape, dtype=bool)
-            # The first pass does not know where the lines are to within the search
-            # window (the tracker's re-fit hands in a lock a third of a cell off), so
-            # its bands span the window; the passes after it know to a few pixels.
-            band = 3 if attempt else int(round(cell * offset_cells)) + 3
-            for k in range(1, 8):
-                gx = int(round(fitted.region.x - x_lo + k * cell))
-                gy = int(round(fitted.region.y - y_lo + k * cell))
-                lines[:, max(0, gx - band) : gx + band + 1] = True
-                lines[max(0, gy - band) : gy + band + 1, :] = True
-            kept = own.astype(bool) | (in_range & lines)
-            x0, y0 = max(0, fitted.region.x - x_lo), max(0, fitted.region.y - y_lo)
-            x1 = min(crop.shape[1], fitted.region.x - x_lo + int(round(8 * cell)))
-            y1 = min(crop.shape[0], fitted.region.y - y_lo + int(round(8 * cell)))
-            # At the board's own edge both sides of the gradient are kept, as everywhere
-            # outside: dropping the outer side moved the last tooth a pixel in.
-            grown = cv2.dilate(own, _DILATE).astype(bool)
-            edge = np.zeros(crop.shape, dtype=bool)
-            edge[max(0, y0 - band) : y0 + band + 1, :] = True
-            edge[max(0, y1 - band) : y1 + band + 1, :] = True
-            edge[:, max(0, x0 - band) : x0 + band + 1] = True
-            edge[:, max(0, x1 - band) : x1 + band + 1] = True
-            kept |= grown & edge
-            weight[y0:y1, x0:x1] *= kept[y0:y1, x0:x1].astype(np.float32)
-        for r in range(8):
-            for c in range(8):
-                inset = int(round(cell * (0.2 if readable[r, c] else 0.08)))
-                x0, y0, x1, y1 = cell_bounds(fitted.region, cell, r, c)
-                x0, y0 = x0 - x_lo + inset, y0 - y_lo + inset
-                x1, y1 = x1 - x_lo - inset, y1 - y_lo - inset
-                if x1 > x0 and y1 > y0:
-                    weight[max(0, y0) : y1, max(0, x0) : x1] = 0.0
-
-        profile_x = _gradient_profile(crop, axis=1, weight=weight)
-        profile_y = _gradient_profile(crop, axis=0, weight=weight)
-        start_x = fitted.region.x - x_lo
-        start_y = fitted.region.y - y_lo
-        ox, px, sx = _comb_fit(profile_x, start_x, cell, search, offset_cells, comb_x)
-        oy, py, sy = _comb_fit(profile_y, start_y, cell, search, offset_cells, comb_y)
-        # The strength the candidate itself has on this pass's profiles, for the caller
-        # to weigh the re-fit against: the geometry it was handed, not the last pass's.
-        reference = _comb_strength(
-            profile_x, cand.region.x - x_lo, cand.cell_px, blind_x
-        ) + _comb_strength(profile_y, cand.region.y - y_lo, cand.cell_px, blind_y)
-        strength = sx + sy
-        if not credit:  # scored as the reference is, so the two still compare
-            strength = _comb_strength(profile_x, ox, px, blind_x) + _comb_strength(
-                profile_y, oy, py, blind_y
-            )
-        hidden = bool(
-            (~_seen(ox + px * _TEETH, len(profile_x), blind_x)).any()
-            or (~_seen(oy + py * _TEETH, len(profile_y), blind_y)).any()
-        )
+        medians = _cells(gray, fitted.region, cell, pad=0)
+        # The first pass does not know where the lines are to within the search window
+        # (the tracker's re-fit hands in a lock a third of a cell off), so its bands span
+        # the window; the passes after it know to a few pixels.
+        band = 3 if attempt else int(round(cell * offset_cells)) + 3
+        read = colours or palette(medians)
+        weight = _boundary_weight(crop, (x_lo, y_lo), fitted, medians, read, band)
+        profile_x = _gradient_profile(crop, 1, weight)
+        profile_y = _gradient_profile(crop, 0, weight)
+        ox, px = _comb_fit(profile_x, fitted.region.x - x_lo, cell, search, offset_cells)
+        oy, py = _comb_fit(profile_y, fitted.region.y - y_lo, cell, search, offset_cells)
         pitch = (px + py) / 2.0
-        region = Region(
-            int(round(x_lo + ox)),
-            int(round(y_lo + oy)),
-            int(round(8 * pitch)),
-            int(round(8 * pitch)),
-        )
+        origin = (x_lo + ox, y_lo + oy)
+        side = int(round(8 * pitch))
+        region = Region(int(round(origin[0])), int(round(origin[1])), side, side)
         moved = (
             abs(pitch - cell) > 0.005 * cell
             or abs(region.x - fitted.region.x) > 2
@@ -838,15 +752,33 @@ def _refine(
         fitted = replace(fitted, region=region, cell_px=pitch)
         if not moved:
             break
-    region, pitch = fitted.region, fitted.cell_px
-    medians = cell_medians(gray, region, pitch)
-    if medians is None:
-        fit, contrast, occupied, readable = 0.0, 0.0, 0, 0
-    else:
-        read = colours or palette(medians)
-        fit, contrast = _score_cells(gray, region, pitch, medians, read)
-        occupied = occupied_cells(gray, region, pitch, medians, read)
-        readable = int(readable_against(medians, read).sum())
+    pitch, side = fitted.cell_px, fitted.region.w
+    grid = _cells(gray, fitted.region, pitch, pad=2)
+
+    def weighed(phase: tuple[int, int]) -> tuple[bool, int, float]:
+        dx, dy = phase
+        reading = _judge(grid[1 + dy : 11 + dy, 1 + dx : 11 + dx], colours)
+        return reading.fit > 0.0, reading.evidence, reading.fit
+
+    dx, dy = max(_PHASES, key=weighed)
+    x, y = origin[0] + dx * pitch, origin[1] + dy * pitch
+    region = Region(int(round(x)), int(round(y)), side, side)
+    fit = contrast = 0.0
+    occupied = readable = 0
+    if _on_frame(gray.shape, region):
+        cells = _cells(gray, region, pitch)
+        reading = _judge(cells, colours)
+        fit, contrast, readable = reading.fit, reading.contrast, reading.readable
+        if reading.colours is not None:
+            occupied = occupied_cells(gray, region, pitch, cells[1:9, 1:9], reading.colours)
+    # The comb's strength at the board kept and at the geometry the fit started from, over
+    # the same profiles, for the tracker to weigh a re-fit against its lock.
+    strength = _comb_strength(profile_x, region.x - x_lo, pitch) + _comb_strength(
+        profile_y, region.y - y_lo, pitch
+    )
+    reference = _comb_strength(profile_x, cand.region.x - x_lo, cand.cell_px) + _comb_strength(
+        profile_y, cand.region.y - y_lo, cand.cell_px
+    )
     board = replace(
         cand,
         region=region,
@@ -856,7 +788,7 @@ def _refine(
         occupied=occupied,
         readable=readable,
     )
-    return Refinement(board, strength, reference), credit and hidden
+    return Refinement(board, strength, reference)
 
 
 def to_gray(frame_bgr: np.ndarray) -> np.ndarray:

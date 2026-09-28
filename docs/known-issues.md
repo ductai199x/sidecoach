@@ -15,11 +15,6 @@ What we know is wrong and have chosen to ship with, desktop and phone alike (the
   nearer; a premove is then read as two pawn moves and the mate is never committed. Teaching
   the model recoloured kings and queens fixed it, but made a set never learned read as a
   position (2026-09-27).
-- **A small board of a thin-outlined set may never start a game** (the geometry sweep's seed
-  40: the thin set on the dark board at 32 px): the white pawn on a dark square covers 15.9 to
-  16.1% of its cell, on the 16% floor for a piece, and the detector locks sharp-edged boards a
-  pixel up and left (the comb settles on the first pixel of a two-pixel boundary), so the
-  start position does not read as one and no game begins. Found 2026-09-27.
 - **A piece whose outline is as heavy as its fill can read as the other side's after a large
   shrink** (the geometry sweep's seed 122: the caliente set learned at 40 px, read at 29): the
   white bishop's dark outline was taken for its fill, brightness voted black and the embedding
