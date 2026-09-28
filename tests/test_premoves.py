@@ -409,6 +409,39 @@ def test_a_reply_seen_for_one_frame_under_the_next_queue_is_told_before_its_step
     assert g.sans[-2:] == ["Be7", "Ne6"], g.sans
 
 
+def test_a_pawn_run_to_a_queen_queued_behind_the_queen_that_leaves_its_first_square() -> None:
+    """Tai's game, 2026-09-28, as the site draws it: after 57...Qxb5 the queen's Qc4+ is
+    queued, and behind it the pawn's run b6 to b1=Q, drawn as a queen on b1 from the first
+    step, whose first square, b5, is the one the queen leaves. On his own frames the game
+    fell behind there and twelve plies later was re-read, the moves lost (the square under
+    the pawn's ghost read as nothing; `Reconciler._hidden`). Rendered frames let the queen's
+    move through another way, so this pins the sequence end to end, not that frame."""
+    g = Game(Side.BLACK, fen="8/8/1p4K1/1P6/2q5/3k4/8/8 b - - 3 57")
+    _run_queue(
+        g,
+        "Qxb5",
+        _uci("b5c4", "b6b5", "b5b4", "b4b3", "b3b2", "b2b1q"),
+        ("Kf7", "Kf6", "Ke5", "Kf5", "Kf6", "Kg6"),
+        frames_per_state=2,
+    )
+    assert g.sans == [
+        "Qxb5",
+        "Kf7",
+        "Qc4+",
+        "Kf6",
+        "b5",
+        "Ke5",
+        "b4",
+        "Kf5",
+        "b3",
+        "Kf6",
+        "b2",
+        "Kg6",
+        "b1=Q",
+    ], g.sans
+    assert not [e for e in g.events if isinstance(e, Resync)]
+
+
 def test_black_runs_a_long_queue_to_mate() -> None:
     """The same ladder from Black's side, black at the bottom: the queen climbs the d-file
     while White pushes a pawn, and ...Qd1 is mate. A frame a picture: three frames a

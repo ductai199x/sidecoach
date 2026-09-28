@@ -145,12 +145,20 @@ def last_move_seen(board: chess.Board, highlighted: frozenset[chess.Square]) -> 
 
 @dataclass(frozen=True)
 class _QueueWay:
-    """One way a premove ghost could have been queued: from `origin`, landing on the red
-    squares `visited`; `passes_over` when a slider's step crossed a red square."""
+    """One way a premove ghost could have been queued: by the piece `symbol` from `origin`,
+    landing on the red squares of `route` in turn (the target not among them); `passes_over`
+    when a slider's step crossed a red square. The symbol is the piece standing on the
+    origin: the ghost's own, or a pawn's when the ghost is the piece a queued pawn promotes
+    to."""
 
     origin: chess.Square
-    visited: frozenset[chess.Square]
+    route: tuple[chess.Square, ...]
+    symbol: str
     passes_over: bool = False
+
+    @property
+    def visited(self) -> frozenset[chess.Square]:
+        return frozenset(self.route)
 
 
 Explanation = tuple[chess.Move, ...]
@@ -162,6 +170,11 @@ STORY_KEYS = ("moves", "moves-cautious")
 # How long a premove queue, once its red tint is seen, is taken to be about: a queue
 # executes one step for each of the opponent's replies, within a second or two.
 QUEUE_MEMORY_S = 3.0
+# How long a premove queue drawn on the board holds a position resync off (`_red_since`). A
+# player may queue a whole opening before the opponent's first move (a stream of Hikaru's:
+# some twenty premoves, over ten seconds); a red mark left on the board past this is not a
+# queue, and must not stall the game for good.
+QUEUE_RESYNC_S = 30.0
 
 
 def in_flight(moves: Sequence[chess.Move]) -> bool:
@@ -317,8 +330,19 @@ class Reconciler:
     _last_obs: Observation = field(default_factory=dict)
     _ts: float = 0.0
     _last_commit_ts: float | None = None
-    # When a premove queue's red tint was last seen (`_flight`).
+    # When a premove queue's red tint was last seen (`_flight`), and since when it has been
+    # on every frame (`_maybe_position_resync`).
     _red_ts: float | None = None
+    _red_since: float | None = None
+    # In the current frame: the squares a premove ghost or its queue covers (`_unqueue`),
+    # unread and wild for every story -- a real move may leave or reach one unseen. The queen
+    # that left b5 as the pawn's queue was drawn onto it was never told, and the game after
+    # it was lost (Tai's game, 2026-09-28).
+    _hidden: frozenset[chess.Square] = frozenset()
+    # Each premove queue as last undone: its origin, the squares it lands on in turn, and its
+    # ghost's square. A picture shows a queue's squares and not their order; the frames it
+    # was built on and executed on show the order (`_route_seen`).
+    _routes: tuple[tuple[chess.Square, ...], ...] = ()
 
     @property
     def started(self) -> bool:
@@ -512,6 +536,7 @@ class Reconciler:
         accepted, while different final positions are a genuine ambiguity and nothing is
         committed.
         """
+        wild = wild | self._hidden
         # A move touches at most four squares (castling), so more disagreements than that
         # times the depth cannot be a missed-move story.
         if len(diff) + len(wild) < 3 or len(diff) > 4 * self.max_plies:
@@ -695,14 +720,22 @@ class Reconciler:
         arrow, which is no drag, holds nothing else back.
         Highlights are not consulted: their colours vary by theme and by what the user
         clicks, and the reconciler stays agnostic to them by design (DESIGN.md section 5.3).
+        One tint is: a piece of the user's on a premove square is a queue's ghost, drawn
+        where the queue ends, and never a move played -- a queued piece that arrives for real
+        turns its square the last-move colour. Taken for a move (Qe4+ where the queen had
+        only got to h4 of its queue h4-e4), it left the game a piece off once the queue
+        cleared, two cells too few for a resync to put right (the premove sweep, seed 90).
+        A king is exempt: a king in check glows red.
         """
         if self._hover_seen or any(reading.hover for reading in obs.values()):
             return False
+        wild = wild | self._hidden
         touched: set[chess.Square] = set()
         # The squares a king of the story lands on: its reading may be unsettled and of
         # no known kind, the king under what the site draws on it (see `_king_lands`).
         decorated: set[chess.Square] = set()
         board = (base if base is not None else self.board).copy(stack=False)
+        user = self.user_side.color
         for move in moves:
             if move not in board.legal_moves:
                 return False
@@ -710,6 +743,15 @@ class Reconciler:
                 # The piece must be seen where it landed. A bishop animated across a
                 # square read as unknown while it passed over it, and the square it
                 # had left explained the move to that square on its own.
+                return False
+            landed = obs.get(move.to_square)
+            if (
+                board.turn == user
+                and board.piece_type_at(move.from_square) != chess.KING
+                and landed is not None
+                and landed.kind == "piece"
+                and landed.tint == "red"
+            ):
                 return False
             if self._king_lands(board, move, move.to_square, obs):
                 decorated.add(move.to_square)
@@ -761,6 +803,10 @@ class Reconciler:
         # stands on a piece, and says nothing of a queue.
         if any(r.tint == "red" and r.kind == "empty" for r in seen.values()):
             self._red_ts = ts
+            if self._red_since is None:
+                self._red_since = ts
+        else:
+            self._red_since = None
         obs = self._unqueue(seen)  # premove ghosts put back
         if len(obs) < self.min_readable_cells:
             self._hold_pending(True)
@@ -904,8 +950,11 @@ class Reconciler:
         over the piece it will take. Nothing is undone when the picture cannot be read for
         certain.
         """
+        self._hidden = frozenset()
         red_empty = frozenset(sq for sq, r in obs.items() if r.tint == "red" and r.kind == "empty")
         if not red_empty:
+            if self._red_ts is None or self._ts - self._red_ts > QUEUE_MEMORY_S:
+                self._routes = ()  # no queue for a while: what was seen of one is history
             return obs
         pending = self._pending_story()
         anchor = pending[1] if pending is not None else self.board
@@ -921,15 +970,34 @@ class Reconciler:
             ghosts.append((sq, reading))
         if not ghosts:
             return obs
+        # A piece of the opponent's on a red square is a queue's victim, taken on the way and
+        # gone on from (g4xf3 queued after g7-g6-g5, then f3-f2: the premove sweep,
+        # 2026-09-28): a square a route lands on and must account for, under a real piece
+        # that stays. Never a king, which no queue takes and whose check glows red.
+        victims = frozenset(
+            sq
+            for sq, r in obs.items()
+            if r.tint == "red"
+            and r.kind == "piece"
+            and r.colour not in (None, self.user_side)
+            and (r.symbol or "k").upper() != "K"
+        )
+        red = red_empty | victims
         options: list[list[_QueueWay]] = []
         for target, reading in ghosts:
             symbol = reading.symbol
             assert symbol is not None
-            options.append(self._queue_origins(symbol, target, red_empty, obs, anchor))
+            options.append(self._queue_origins(symbol, target, red, obs, anchor))
             if not options[-1]:
                 return obs
-        # Every red square is one queue's origin or one queue's landing, never two.
-        ranked: dict[tuple[int, int], set[tuple[chess.Square, ...]]] = {}
+        # Every red square is one queue's origin or one queue's landing, never two. A way
+        # that goes on from a queue as it was last seen ranks first (`_route_seen`), then one
+        # built square by square, then one whose origin is red.
+        targets = [target for target, _ in ghosts]
+        # By rank, the readings of every ghost's way, grouped by their origins.
+        ranked: dict[
+            tuple[int, int, int], dict[tuple[chess.Square, ...], list[tuple[_QueueWay, ...]]]
+        ] = {}
         for choice in itertools.product(*options):
             origins = tuple(way.origin for way in choice)
             if len(set(origins)) != len(origins):
@@ -937,27 +1005,63 @@ class Reconciler:
             covered = [o for o in origins if o in red_empty]
             for way in choice:
                 covered.extend(way.visited)
-            if len(covered) != len(set(covered)) or set(covered) != set(red_empty):
+            if len(covered) != len(set(covered)) or set(covered) != set(red):
                 continue
+            unseen = [not self._route_seen(w, t) for w, t in zip(choice, targets, strict=True)]
             rank = (
+                sum(unseen),
                 sum(1 for way in choice if way.passes_over),
                 sum(1 for o in origins if o not in red_empty),
             )
-            ranked.setdefault(rank, set()).add(origins)
+            ranked.setdefault(rank, {}).setdefault(origins, []).append(choice)
         if not ranked:
             return obs
         best = ranked[min(ranked)]
         if len(best) != 1:
             return obs
-        chosen = next(iter(best))
+        chosen, choices = next(iter(best.items()))
+        ways = choices[0]
+        routes = {
+            tuple((way.origin, *way.route, t) for way, t in zip(c, targets, strict=True))
+            for c in choices
+        }
+        if len(routes) == 1:
+            # Remembered only when the picture leaves one order: a whole queue shown at once
+            # reads as well rook c2-c5 with queen b3-c3-c4-d5-d6-d8 as the true c2-c3-c4-c5
+            # with b3-d5-d6-d8, and the wrong one remembered misread every step after.
+            self._routes = next(iter(routes))
         out = dict(obs)
-        for (target, reading), origin in zip(ghosts, chosen, strict=True):
-            out[origin] = replace(reading, highlighted=False, tint=None, settled=True)
+        for (target, reading), way in zip(ghosts, ways, strict=True):
+            # The piece on the origin: a pawn under a promoted ghost.
+            out[way.origin] = replace(
+                reading, symbol=way.symbol, highlighted=False, tint=None, settled=True
+            )
             out.pop(target, None)
         for sq in red_empty:
             if sq not in chosen:
                 out.pop(sq, None)  # an intermediate square of a queue: unread
+        # What the ghosts and the queues cover is unknown, not contradicted: a real move may
+        # start or end there without a reading (`_hidden`).
+        self._hidden = frozenset(
+            sq for sq in (*(t for t, _ in ghosts), *red_empty) if sq not in chosen
+        )
         return out
+
+    def _route_seen(self, way: _QueueWay, target: chess.Square) -> bool:
+        """Whether a way to the ghost on `target` goes on from a queue as last seen: that
+        route with its executed steps gone from the front, or new ones added at the end, or
+        both. With no queue seen, every way does. A king queued g2-f3-f2-e3-f4 whose first
+        step had executed read as well from f2 by f3 and e3 as from f3 by f2 and e3; the
+        frames it was built on said which (the premove sweep, 2026-09-28)."""
+        if not self._routes:
+            return True
+        route = (way.origin, *way.route, target)
+        for seen in self._routes:
+            for i in range(len(seen)):
+                rest = seen[i:]
+                if route[: len(rest)] == rest or rest[: len(route)] == route:
+                    return True
+        return False
 
     def _queue_origins(
         self,
@@ -968,93 +1072,108 @@ class Reconciler:
         anchor: chess.Board,
     ) -> list[_QueueWay]:
         """Every way a ghost of `symbol` at `target` could have been queued: from a square
-        `anchor` has such a piece on, or one move of it away (see `_unqueue`)."""
+        `anchor` has such a piece on, or one move of it away (see `_unqueue`). A queen, rook,
+        bishop or knight may also be a pawn queued to promotion: chess.com draws the piece it
+        will promote to, a queen, from the moment the queue reaches the last rank (Tai's game,
+        2026-09-28: b6 to b1 premoved, drawn as a queen on b1), and a queue may go on with
+        that queen."""
         piece = chess.Piece.from_symbol(symbol)
+        walkers = [piece]
+        if piece.piece_type in (chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT):
+            walkers.append(chess.Piece(chess.PAWN, piece.color))
         out: list[_QueueWay] = []
         scratch = anchor.copy(stack=False)
         scratch.turn = piece.color
-        for stand, here in anchor.piece_map().items():
-            if here != piece:
-                continue
-            reading = obs.get(stand)
-            if reading is None or reading.kind != "empty":
-                continue  # still shown there, or unreadable: not this piece
-            if stand in red:
-                out.extend(self._queue_ways(symbol, stand, target, red, obs))
-                continue
-            # The first queued step has executed: the piece is one move on, on a tinted,
-            # empty square the queue continues from.
-            for move in scratch.generate_pseudo_legal_moves(chess.BB_SQUARES[stand]):
-                to = move.to_square
-                if to == target:
+        for walker in walkers:
+            for stand, here in anchor.piece_map().items():
+                if here != walker:
                     continue
-                landed = obs.get(to)
-                if landed is None or landed.kind != "empty" or landed.tint is None:
+                reading = obs.get(stand)
+                if reading is None or reading.kind != "empty":
+                    continue  # still shown there, or unreadable: not this piece
+                if stand in red:
+                    out.extend(self._queue_ways(walker, stand, target, red, obs, piece))
                     continue
-                out.extend(self._queue_ways(symbol, to, target, red, obs))
+                # The first queued step has executed: the piece is one move on, on a tinted,
+                # empty square the queue continues from -- promoted, if that step promoted.
+                for move in scratch.generate_pseudo_legal_moves(chess.BB_SQUARES[stand]):
+                    to = move.to_square
+                    if to == target or move.promotion not in (None, piece.piece_type):
+                        continue
+                    landed = obs.get(to)
+                    if landed is None or landed.kind != "empty" or landed.tint is None:
+                        continue
+                    moved = piece if move.promotion else walker
+                    out.extend(self._queue_ways(moved, to, target, red, obs, piece))
         return out
 
     def _queue_ways(
         self,
-        symbol: str,
+        walker: chess.Piece,
         origin: chess.Square,
         target: chess.Square,
         red: frozenset[chess.Square],
         obs: Observation,
+        ghost: chess.Piece,
     ) -> list[_QueueWay]:
-        """The ways a piece `symbol` could be queued from `origin` to `target`: every step
-        lands on a red square, past the pieces the picture shows; a slider either stops at
-        the first red square on its ray, as a queue built square by square does, or
-        passes one over (another piece's queue crossing the ray). Empty when it cannot get
-        there within the queue length chess.com allows."""
-        piece = chess.Piece.from_symbol(symbol)
+        """The ways the piece `walker` on `origin` could be queued to `target`, where the
+        picture draws `ghost`: every step lands on a red square, past the pieces the picture
+        shows, within the queue length chess.com allows; a pawn reaching its last rank goes
+        on as the ghost, the piece it promotes to, and must arrive as the ghost. A slider's
+        step that passes a red square over (another piece's queue crossing its ray) marks its
+        way `passes_over`, which ranks below one built square by square. Every route counts,
+        not only the shortest: a king queued e1-d2-d1 lands on d2, and the direct e1-d1 left
+        d2 unaccounted for, so nothing was undone (the premove sweep, 2026-09-28)."""
+        # The board the queue was made on, as far as the picture tells it: the user's own
+        # pieces standing still (not the ghosts, on red), and the opponent's pieces under red,
+        # a queue's victims. The opponent's other pieces may have come since, into the way:
+        # chess.com draws a queue until its step comes and fails (h2-h4-h5 queued, then
+        # h7-h5 played in front of it: the premove sweep, 2026-09-28).
         scratch = chess.Board(None)
         for sq, reading in obs.items():
-            if reading.kind == "piece" and reading.symbol is not None and reading.tint != "red":
-                scratch.set_piece_at(sq, chess.Piece.from_symbol(reading.symbol))
-        scratch.turn = piece.color
-        landings = red | {target}
-        slider = piece.piece_type in (chess.QUEEN, chess.ROOK, chess.BISHOP)
-        ways: list[_QueueWay] = []
-        for stop_at_red in (True, False) if slider else (False,):
-            frontier = {origin}
-            parent: dict[chess.Square, chess.Square | None] = {origin: None}
-            found: frozenset[chess.Square] | None = None
-            for _ in range(self.max_queue_steps):
-                next_frontier: set[chess.Square] = set()
-                # In square order: a set's order decided which of two equal routes was
-                # kept, and it differs between Python and the phone (the parity audit).
-                for sq in sorted(frontier):
-                    scratch.set_piece_at(sq, piece)
-                    for move in scratch.generate_pseudo_legal_moves(chess.BB_SQUARES[sq]):
-                        to = move.to_square
-                        if to not in landings or to in parent:
-                            continue
-                        if stop_at_red and any(
-                            b in red for b in chess.SquareSet(chess.between(sq, to))
-                        ):
-                            continue
-                        parent[to] = sq
-                        if to == target:
-                            visited: set[chess.Square] = set()
-                            back = parent[to]
-                            while back is not None and back != origin:
-                                visited.add(back)
-                                back = parent[back]
-                            found = frozenset(visited)
-                            break
-                        next_frontier.add(to)
-                    scratch.remove_piece_at(sq)
-                    if found is not None:
-                        break
-                if found is not None or not next_frontier:
-                    break
-                frontier = next_frontier
-            if found is None:
+            if reading.kind != "piece" or reading.symbol is None:
                 continue
-            way = _QueueWay(origin, found, passes_over=not stop_at_red and slider)
-            if all(w.visited != found for w in ways):
-                ways.append(way)
+            piece = chess.Piece.from_symbol(reading.symbol)
+            if (piece.color == walker.color) == (reading.tint != "red"):
+                scratch.set_piece_at(sq, piece)
+        scratch.turn = walker.color
+        landings = red | {target}
+        last_rank = 7 if walker.color == chess.WHITE else 0
+        ways: list[_QueueWay] = []
+
+        def steps(sq: chess.Square, piece: chess.Piece) -> list[chess.Square]:
+            scratch.set_piece_at(sq, piece)
+            out = {m.to_square for m in scratch.generate_pseudo_legal_moves(chess.BB_SQUARES[sq])}
+            scratch.remove_piece_at(sq)
+            if piece.piece_type == chess.PAWN:
+                if chess.BB_PAWN_ATTACKS[piece.color][sq] & chess.BB_SQUARES[target]:
+                    # A queued capture is drawn over its victim, which the picture then does
+                    # not show; a pawn takes only onto a piece (d5xc6 queued after d4-d5 onto
+                    # a knight on c6, the premove sweep, 2026-09-28).
+                    out.add(target)
+                ahead = sq + (8 if piece.color == chess.WHITE else -8)
+                if 0 <= ahead < 64 and ahead in red:
+                    out.add(ahead)  # a push queued before a piece stepped in front of it
+            # In square order: a set's order decided which of two equal routes was kept,
+            # and it differs between Python and the phone (the parity audit).
+            return sorted(out & landings)
+
+        def walk(
+            sq: chess.Square, piece: chess.Piece, route: tuple[chess.Square, ...], over: bool
+        ) -> None:
+            for to in steps(sq, piece):
+                if to == origin or to in route:
+                    continue
+                crossed = over or any(b in red for b in chess.SquareSet(chess.between(sq, to)))
+                promotes = piece.piece_type == chess.PAWN and chess.square_rank(to) == last_rank
+                now = ghost if promotes else piece
+                if to == target:
+                    if now == ghost:
+                        ways.append(_QueueWay(origin, route, walker.symbol(), crossed))
+                elif len(route) + 2 <= self.max_queue_steps:
+                    walk(to, now, (*route, to), crossed)
+
+        walk(origin, walker, (), False)
         return ways
 
     @property
@@ -1129,6 +1248,13 @@ class Reconciler:
             self._resync_candidate = None
             return []
         if any(r.hover for r in obs.values()):
+            self._resync_candidate = None
+            return []
+        if self._red_since is not None and self._ts - self._red_since < QUEUE_RESYNC_S:
+            # A premove queue drawn: the picture is the position with the queued pieces at
+            # the ends of their queues, not a position. Adopted, it was the queue's end
+            # taken for the game (Tai's game, 2026-09-28: b6-b1=Q premoved; the moves till
+            # then lost). Once the queue has resolved it is a position again.
             self._resync_candidate = None
             return []
         soft = 0

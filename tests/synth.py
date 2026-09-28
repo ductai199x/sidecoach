@@ -686,9 +686,14 @@ def render_board(
         tinted.append((selected, highlight_colour))
     tinted += [(square, RED) for square in red_marks]
     queued_from: dict[chess.Square, chess.Square] = {}  # the piece's real square -> queue end
+    # A pawn queued to promotion is drawn as the piece it becomes, from then on (chess.com's
+    # queen: Tai's game, 2026-09-28, b6-b1=Q premoved and drawn as a queen on b1).
+    promoted: dict[chess.Square, int] = {}
     for queue in premoves:
         for move in queue:
             tinted += [(move.from_square, RED), (move.to_square, RED)]
+            if move.promotion:
+                promoted[queue[0].from_square] = move.promotion
         if queue:
             queued_from[queue[0].from_square] = queue[-1].to_square
     for square, overlay in tinted:
@@ -721,6 +726,8 @@ def render_board(
         piece = board.piece_at(origin)
         if piece is None:
             continue
+        if origin in promoted:
+            piece = chess.Piece(promoted[origin], piece.color)
         r, c = row_col(end, bottom)
         draw_piece(
             frame, x0 + c * cell + cell // 2, y0 + r * cell + cell // 2, cell, piece.symbol(), style
