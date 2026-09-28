@@ -11,13 +11,11 @@ from pathlib import Path
 
 import numpy as np
 
-from sidecoach.events import Region, Side
+from sidecoach.events import Side
+from sidecoach.state.pipeline import GamePipeline
 from sidecoach.vision.pieces import ThemeModel
-from sidecoach.vision.squares import BoardGeometry
 from sidecoach.vision.theme_cache import ThemeCache, palette_key, sample_palette
-from tests.synth import synthetic_board
-
-GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
+from tests.synth import GEOM, synthetic_board
 
 
 def test_palette_key_is_stable_and_discriminating() -> None:
@@ -47,3 +45,21 @@ def test_theme_cache_round_trips_a_learned_model(tmp_path: Path) -> None:
     assert cache.get(model.light_bg + 4, model.dark_bg - 3) is not None
     # An unseen palette is a miss.
     assert cache.get(np.array([10.0, 10.0, 10.0]), np.array([250.0, 250.0, 250.0])) is None
+
+
+def test_a_cached_theme_carries_no_frame(tmp_path: Path) -> None:
+    """The theme file holds the exemplars, the palette and the digits, not the last
+    frame's 64 cells: pickled with them it was 2.8 MB instead of 60 KB, and a theme read
+    back would have started its next game believing it had read a frame."""
+    cache = ThemeCache(tmp_path)
+    warm = GamePipeline(cache=cache)
+    for i in range(3):
+        warm.process(synthetic_board(theme="green", coordinates=True), 0.1 * i)
+    assert warm.model is not None and warm.model._cells, "the live model caches its cells"
+    files = list(tmp_path.glob("theme-*.pkl"))
+    # The embedding matcher's 64 exemplar vectors (float16) are 164 KB of the file.
+    assert len(files) == 1 and files[0].stat().st_size < 400_000, files[0].stat().st_size
+    light, dark = warm.model.light_bg, warm.model.dark_bg
+    assert light is not None and dark is not None
+    again = cache.get(light, dark)
+    assert again is not None and again._cells == {}

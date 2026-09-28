@@ -6,6 +6,7 @@ the factory builds are test_voice_factory.py's.
 from __future__ import annotations
 
 import wave
+from collections.abc import Callable
 from importlib.util import find_spec
 from pathlib import Path
 
@@ -13,10 +14,12 @@ import numpy as np
 import pytest
 
 from sidecoach.config import Settings, VoiceSettings
+from sidecoach.ui.panel import PanelEngine
 from sidecoach.voice import runtime
 from sidecoach.voice.kokoro import KokoroTTS
 from sidecoach.voice.stt import ParakeetSTT
 from sidecoach.voice.vad import Endpointer
+from tests.fakes import FedMic
 
 AUDIO = Path(__file__).parent / "audio"
 
@@ -163,26 +166,6 @@ class _ScriptedGate:
         return self.probs.pop(0) if self.probs else 0.0
 
 
-class _FedMic:
-    """A microphone whose frames the test puts in; quiet when it puts none."""
-
-    def __init__(self) -> None:
-        import queue
-
-        self.frames: queue.Queue = queue.Queue()
-        self.detail = "fed by the test"
-        self.dropped = 0
-
-    def healthcheck(self) -> tuple[bool, str]:
-        return True, self.detail
-
-    def open(self) -> bool:
-        return True
-
-    def close(self) -> None:
-        pass
-
-
 def test_an_utterance_that_comes_to_nothing_is_said() -> None:
     """Whoever was told an utterance began is told when it comes to nothing: a click the
     endpointer drops in voice mode, a push-to-talk tap too short to hold a word. Neither was
@@ -195,7 +178,7 @@ def test_an_utterance_that_comes_to_nothing_is_said() -> None:
     starts: list[str] = []
     dropped: list[str] = []
     heard: list[float] = []
-    mic = _FedMic()
+    mic = FedMic()
     # Two confident frames start speech; the silence after it is a click, not an ask.
     gate = _ScriptedGate([0.9, 0.9] + [0.1] * 20)
     listener = Listener(
@@ -225,16 +208,15 @@ def test_an_utterance_that_comes_to_nothing_is_said() -> None:
 
 @pytest.mark.slow
 @pytest.mark.skipif(find_spec("onnx_asr") is None, reason="voice extras not installed")
-def test_a_spoken_move_reaches_the_coach_as_san(tmp_path: Path) -> None:
+def test_a_spoken_move_reaches_the_coach_as_san(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path
+) -> None:
     from fastapi.testclient import TestClient
 
-    from sidecoach.ui.panel import PanelEngine
     from sidecoach.ui.server import build_app
 
     settings = Settings(data_dir=tmp_path, voice=VoiceSettings(stt_device="cpu", listen="off"))
-    engine = PanelEngine(
-        settings, analysis=False, coach=False, frame_source=iter(()), voice_models=True
-    )
+    engine = make_panel(settings, voice_models=True)
     # A position where Nf3 is legal: the start position, as the engine would report it.
     engine._state["fen"] = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
     engine._state["running"] = True  # a session: the ask is queued for its loop
@@ -271,19 +253,19 @@ class _MishearingEar:
         return True, "a test ear"
 
 
-def test_the_microphone_test_keeps_what_it_hears_and_asks_no_coach(tmp_path: Path) -> None:
+def test_the_microphone_test_keeps_what_it_hears_and_asks_no_coach(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path
+) -> None:
     """The settings page's live test (Tai, 2026-09-21): while it is on, an utterance is
     transcribed and corrected into the test's list, the coach is not asked, and the
     listening mode it interrupted comes back when it stops. No voice model and no
     microphone: the real ear is test_a_spoken_move_reaches_the_coach_as_san's."""
     from fastapi.testclient import TestClient
 
-    from sidecoach.ui.panel import PanelEngine
     from sidecoach.ui.server import build_app
 
-    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(listen="off"))
-    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
-    mic = _FedMic()
+    engine = make_panel(Settings(data_dir=tmp_path, voice=VoiceSettings(listen="off")))
+    mic = FedMic()
     engine._stt = _MishearingEar()  # type: ignore[assignment]
     engine._mic = mic  # type: ignore[assignment]
     engine._listener.mic = mic  # type: ignore[assignment]

@@ -6,6 +6,8 @@ import chess
 
 from sidecoach.coach.conversation import Conversation
 from sidecoach.events import GameStarted, Label, MoveAssessment, MovePlayed, Severity, Side
+from tests.coaching import sent
+from tests.fakes import ScriptedProvider
 
 
 def test_the_preferred_line_is_dropped_only_when_its_first_move_was_played() -> None:
@@ -194,18 +196,6 @@ def test_the_earlier_dialogue_folds_into_a_summary_and_the_last_plies_stay_verba
     one summary block at the top of the record; the summariser sees only the dialogue, each
     line with the move it followed; the last plies keep their words."""
     from sidecoach.coach.summarise import summarise
-    from sidecoach.llm.base import Completion
-
-    class Summariser:
-        name = "s"
-        prompts: list[str] = []
-
-        def healthcheck(self) -> tuple[bool, str]:
-            return True, "s"
-
-        def chat(self, system: str, messages, *, max_tokens=1500, temperature=0.7, thinking=False):
-            self.prompts.append(str(messages[-1]["content"]))
-            return Completion(text="The coach praised 1. e4 and told the player to develop.")
 
     convo = Conversation()
     convo.new_game(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.Board().fen()))
@@ -232,9 +222,9 @@ def test_the_earlier_dialogue_folds_into_a_summary_and_the_last_plies_stay_verba
             convo.coach_said("Develop a piece.")
         if ply == 5:
             convo.coach_said("The Ruy Lopez.")
-    summariser = Summariser()
+    summariser = ScriptedProvider(then="The coach praised 1. e4 and told the player to develop.")
     assert summarise(convo, summariser, keep=2)
-    prompt = summariser.prompts[-1]
+    prompt = str(sent(summariser)[-1]["content"])
     assert "after 1. e4, COACH: A fine first move." in prompt
     assert 'after 1... e5, PLAYER: "what now?"' in prompt
     assert "The Ruy Lopez" not in prompt, "within the last two plies: kept verbatim"

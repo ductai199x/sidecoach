@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import chess
 
+from tests.lines import san_moves
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "eval"))
 
 import habits  # noqa: E402  # pyright: ignore[reportMissingImports]
@@ -33,15 +35,6 @@ def _reads(key: str, s) -> list[str]:
     return sorted(m.uci() for m in h.misses(s)) if h.bites(s) else []
 
 
-def _line(board: chess.Board, sans: str) -> list[chess.Move]:
-    b = board.copy()
-    out = []
-    for san in sans.split():
-        out.append(b.parse_san(san))
-        b.push(out[-1])
-    return out
-
-
 def test_candidates_are_the_likeliest_moves_until_the_mass_or_the_limit():
     probs = {chess.Move.from_uci(u): p for u, p in [("e2e4", 0.5), ("d2d4", 0.3), ("g1f3", 0.2)]}
     assert [m.uci() for m in habits.top_moves(probs, mass=0.75)] == ["e2e4", "d2d4"]
@@ -52,10 +45,10 @@ def test_a_line_is_read_where_it_settles_not_at_its_best_moment():
     # If White passed here, ...Bxf4 takes the bishop, but Re1+ Kf8 Qxf4 takes back: a trade,
     # which the line's best moment read as a bishop won (the hand review, 2026-09-26).
     passed = chess.Board("rn2k2r/ppp2ppp/3b3n/2qP4/2B2B2/2PP1QPb/PP3P1P/RN3RK1 b kq - 1 2")
-    assert habits.settled(passed, _line(passed, "Bxf4 Re1+ Kf8 Qxf4"), 4) == 0
+    assert habits.settled(passed, san_moves(passed, "Bxf4 Re1+ Kf8 Qxf4"), 4) == 0
     # A line cut in the middle of an exchange is followed through it.
     board = chess.Board()
-    line = _line(board, "e4 d5 exd5 Qxd5")
+    line = san_moves(board, "e4 d5 exd5 Qxd5")
     assert habits.settled(board, line, 1) == 0  # past exd5, Qxd5 takes back
 
 
@@ -63,13 +56,13 @@ def test_a_tactic_is_read_from_every_near_best_line_net_of_what_was_just_taken()
     board = chess.Board()
     for uci in ["e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5c6"]:
         board.push_uci(uci)  # 4.Bxc6: Black is owed the knight
-    retake = (0.5, _line(board, "dxc6"), None)
+    retake = (0.5, san_moves(board, "dxc6"), None)
     assert habits.tactic_of(board, [retake], 0.5)[:2] == (0, False)  # taking back is no tactic
     # Two moves as good: a quiet one, and one whose line wins material. The tactic is there
     # whichever the engine happened to list first.
     start = chess.Board("4k3/8/8/3q4/8/8/3R4/4K3 w - - 0 1")
-    quiet = (0.9, _line(start, "Ke2"), None)
-    win = (0.9, _line(start, "Rxd5"), None)
+    quiet = (0.9, san_moves(start, "Ke2"), None)
+    win = (0.9, san_moves(start, "Rxd5"), None)
     assert habits.tactic_of(start, [quiet, win], 0.9)[0] == 9
     assert habits.tactic_of(start, [win, quiet], 0.9)[0] == 9
     # A line far below the best is not the position's tactic.
@@ -385,7 +378,6 @@ def test_the_why_probe_s_truth_is_the_reply_that_wins_or_the_win_missed():
 
 
 def test_code_says_a_text_gives_the_reason_when_it_names_the_move_the_mate_or_the_loss():
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "eval"))
     import student_loop  # pyright: ignore[reportMissingImports]
 
     truth = {"kind": "allowed", "text": "", "moves": ["Kxf7"], "piece": "bishop"}

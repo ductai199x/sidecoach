@@ -1,8 +1,6 @@
 import json
 import os
 import time
-from collections.abc import Sequence
-from typing import Any
 
 import chess
 import pytest
@@ -18,7 +16,7 @@ from sidecoach.coach.claims import (
 )
 from sidecoach.coach.disclosure import PositionFacts
 from sidecoach.events import Line
-from sidecoach.llm.base import ChatMessage, Completion
+from tests.fakes import FakeEngine, ScriptedProvider
 
 # 1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6, white to move. The f3 knight attacks e5, which the c6
 # knight defends; the e4 pawn is attacked by the f6 knight and defended by nothing.
@@ -31,7 +29,7 @@ FRIED_LIVER = "r1bqkb1r/pppp1ppp/2n2n2/4p1N1/2B1P3/8/PPPP1PPP/RNBQK2R b KQkq - 5
 KNIGHT_E5 = "rnbqkb1r/ppp2ppp/3p1n2/4N3/3PP3/8/PPP2PPP/RNBQKB1R w KQkq - 0 5"
 # Scholar's mate threatened, black to move: the h5 queen and the c4 bishop both hit f7, so
 # after either one takes, the other still covers f7 and the e8 king cannot take back.
-SCHOLAR = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 4 4"
+SCHOLAR_THREAT = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 4 4"
 # The white knight on c3 is pinned to its king by the b4 bishop and reaches the black knight
 # on e4, which it cannot take. White to move, then black.
 PINNED_ATTACKER_W = "4k3/8/8/8/1b2n3/2N5/8/4K3 w - - 0 1"
@@ -47,49 +45,8 @@ X_RAY = "3q2k1/3r4/8/8/3R4/8/8/3Q2K1 w - - 0 1"
 MATED = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"
 # After 9...h5, white to move: the bishop on b3 is not pinned, the knight on f3 not attacked.
 AFTER_H5 = "r1bq1rk1/2p2pp1/p1np1n2/1p2p2p/4P3/1BNP1N2/PPP2PPP/R1BQ1RK1 w - - 0 10"
-
-
-class FakeProvider:
-    name = "fake"
-
-    def __init__(self, reply: str, *, fail: bool = False) -> None:
-        self.reply = reply
-        self.fail = fail
-        self.calls: list[dict[str, Any]] = []
-
-    def healthcheck(self) -> tuple[bool, str]:
-        return True, "fake"
-
-    def chat(
-        self,
-        system: str,
-        messages: Sequence[ChatMessage],
-        *,
-        max_tokens: int = 1500,
-        temperature: float = 0.7,
-        thinking: bool = False,
-    ) -> Completion:
-        self.calls.append(
-            {
-                "system": system,
-                "messages": list(messages),
-                "temperature": temperature,
-                "thinking": thinking,
-            }
-        )
-        if self.fail:
-            raise RuntimeError("server down")
-        return Completion(text=self.reply)
-
-
-class FakeEngine:
-    def __init__(self, lines: list[Line]) -> None:
-        self.lines = lines
-        self.boards: list[str] = []
-
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
-        self.boards.append(board.fen())
-        return self.lines
+# A white knight on f3 and the two kings: nothing defends it, nothing attacks it.
+LONE_KNIGHT = "4k3/8/8/8/8/5N2/8/4K3 w - - 0 1"
 
 
 def claim(
@@ -162,13 +119,13 @@ ATTACKS, HANGING, BEST, PLAN = ClaimKind.ATTACKS, ClaimKind.HANGING, ClaimKind.B
     ],
 )
 def test_extract_reads_the_reply_or_nothing(reply: str, kinds: list[ClaimKind]) -> None:
-    claims = extract_claims("...", chess.Board(ITALIAN), FakeProvider(reply), thinking=False)
+    claims = extract_claims("...", chess.Board(ITALIAN), ScriptedProvider([reply]), thinking=False)
     assert [c.kind for c in claims] == kinds
 
 
 def test_extract_keeps_the_fields_and_never_raises() -> None:
     board = chess.Board(ITALIAN)
-    provider = FakeProvider(json.dumps(CANNED))
+    provider = ScriptedProvider([json.dumps(CANNED)])
     claims = extract_claims("my knight is attacking e5 ...", board, provider, thinking=False)
     assert claims[0].subject == "my knight" and claims[0].target == "e5"
     assert claims[0].text == "my knight is attacking e5"
@@ -176,16 +133,16 @@ def test_extract_keeps_the_fields_and_never_raises() -> None:
     assert claims[2].move == "Nxe5"
     # Missing keys are None.
     reply = json.dumps([{"kind": "PLAN", "text": "push h"}])
-    (plan,) = extract_claims("...", board, FakeProvider(reply), thinking=False)
+    (plan,) = extract_claims("...", board, ScriptedProvider([reply]), thinking=False)
     assert plan.subject is None and plan.move is None
     # A failed call, or nothing to read, is no claims.
-    assert extract_claims("...", board, FakeProvider("[]", fail=True), thinking=False) == []
-    blank = FakeProvider(json.dumps(CANNED))
+    assert extract_claims("...", board, ScriptedProvider(fail=True), thinking=False) == []
+    blank = ScriptedProvider([json.dumps(CANNED)])
     assert extract_claims("   ", board, blank, thinking=False) == [] and blank.calls == []
 
 
 def test_extract_asks_at_low_temperature_with_the_position() -> None:
-    provider = FakeProvider("[]")
+    provider = ScriptedProvider(["[]"])
     # Reasoning off, as every caller asks (cli._claims_check, the judge).
     extract_claims("the pawn is hanging", chess.Board(ITALIAN), provider, thinking=False)
     (call,) = provider.calls  # one call: no retry
@@ -355,12 +312,12 @@ VERIFY = [
     ),
     # The 2026-09-23 audit: attack and defence by legal moves, a threat by who can take back.
     pytest.param(
-        SCHOLAR, claim("threatens", "they", "my f7 pawn"), "true",
+        SCHOLAR_THREAT, claim("threatens", "they", "my f7 pawn"), "true",
         ["their queen on h5 takes your pawn on f7 with Qxf7#", "checkmate"], [],
         id="a-threat-that-mates",
     ),
     pytest.param(
-        SCHOLAR, claim("threatens", "they", None, move="Bxf7+"), "true",
+        SCHOLAR_THREAT, claim("threatens", "they", None, move="Bxf7+"), "true",
         ["their bishop on c4 takes your pawn on f7 with Bxf7+", "for free"], [],
         id="a-threat-no-one-can-take-back",
     ),
@@ -370,7 +327,7 @@ VERIFY = [
         id="a-pinned-attacker-takes-nothing",
     ),
     pytest.param(
-        SCHOLAR, claim("hanging", None, "my f7 pawn"), "true",
+        SCHOLAR_THREAT, claim("hanging", None, "my f7 pawn"), "true",
         ["attacked by the c4 bishop and the h5 queen", "the e8 king cannot take back"], [],
         id="the-king-cannot-take-back",
     ),
@@ -449,7 +406,7 @@ def test_best_against_candidates() -> None:
 def test_best_against_a_fake_engine() -> None:
     board = chess.Board(ITALIAN)
     engine = FakeEngine(
-        [
+        default=[
             Line(moves=["d2d4"], depth=12, expected_score=0.55),
             Line(moves=["b1c3"], depth=12, expected_score=0.54),
             Line(moves=["a2a3"], depth=12, expected_score=0.45),
@@ -459,18 +416,18 @@ def test_best_against_a_fake_engine() -> None:
     assert v.result == "true" and "(d4 and Nc3)" in v.reason
     v = verdict(board, claim("best", None, None, move="a3"), engine=engine)
     assert v.result == "false" and "it prefers d4 and Nc3" in v.reason
-    assert engine.boards == [board.fen(), board.fen()]
+    assert engine.calls == [board.fen(), board.fen()]
 
 
 def test_best_prefers_facts_but_ignores_facts_for_another_position() -> None:
     board = chess.Board(ITALIAN)
-    engine = FakeEngine([Line(moves=["d2d4"], depth=12, expected_score=0.55)])
+    engine = FakeEngine(default=[Line(moves=["d2d4"], depth=12, expected_score=0.55)])
     stale = PositionFacts(
         fen=chess.STARTING_FEN, side_to_move="white", phase="opening", candidates=["e4"]
     )
     v = verdict(board, claim("best", None, None, move="d4"), facts=stale, engine=engine)
     assert v.result == "true" and "d4 is the engine's best move" in v.reason
-    assert engine.boards == [board.fen()]
+    assert engine.calls == [board.fen()]
 
 
 def test_verify_keeps_order_and_claims() -> None:
@@ -601,6 +558,18 @@ DRAFT = [
         ("the knight on f4 is attacked and undefended",), id="a-hanging-piece-called-safe",
     ),
     pytest.param(ITALIAN, "Your knight on f3 is safe.", None, (), (), id="a-quiet-piece-safe"),
+    # "Undefended" means no defender; only "hanging" needs an attacker as well (2026-09-17).
+    pytest.param(
+        LONE_KNIGHT, "Your knight on f3 is undefended.", None, (), (), id="undefended-alone"
+    ),
+    pytest.param(
+        LONE_KNIGHT, "Your knight on f3 is hanging.", None, (),
+        ("nothing attacks the knight on f3",), id="hanging-with-no-attacker",
+    ),
+    pytest.param(
+        "4k3/8/8/8/8/5N2/4P3/4K3 w - - 0 1", "Your knight on f3 is undefended.", None, (),
+        ("the knight on f3 is defended",), id="undefended-but-defended",
+    ),
     # The 2026-09-23 audit: attack and defence count only legal captures and recaptures.
     pytest.param(
         PINNED_ATTACKER_W, "Their knight on e4 is hanging.", None, (),
@@ -610,7 +579,7 @@ DRAFT = [
         PINNED_DEFENDER_B, "Their pawn on e4 is hanging.", None, (), (),
         id="hanging-behind-a-pinned-defender",
     ),
-    pytest.param(SCHOLAR, "Your pawn on f7 is hanging.", None, (), (), id="hanging-f7"),
+    pytest.param(SCHOLAR_THREAT, "Your pawn on f7 is hanging.", None, (), (), id="hanging-f7"),
     pytest.param(
         KNIGHT_E5, "Your knight on e5 is safe.", None, (),
         ("the knight on e5 can be taken for profit",), id="safe-but-lost-to-the-exchange",

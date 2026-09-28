@@ -11,25 +11,7 @@ from sidecoach.coach import idea as idea_of
 from sidecoach.coach import idea_words
 from sidecoach.coach.coach import focus_template, lesson_template
 from sidecoach.coach.facts import describe_tactic, facts_from_analysis
-from sidecoach.events import Analysis, Line
-
-
-def _analysis(fen: str, sans: str, *, score: float) -> Analysis:
-    board = chess.Board(fen)
-    moves = []
-    for san in sans.split():
-        move = board.parse_san(san)
-        moves.append(move.uci())
-        board.push(move)
-    return Analysis(
-        game_id="g",
-        fen=fen,
-        ply=0,
-        lines=[Line(moves=moves, depth=20, expected_score=score)],
-        decisive=False,
-        only_move=False,
-    )
-
+from tests.lines import analysed
 
 # What the move played let the opponent do (`idea_words.allowed`), read off their best line
 # in the position it left. (case, FEN (None: the start), the moves played on it, their line
@@ -93,7 +75,7 @@ def test_the_lesson_says_what_a_mistake_allowed(
     board = chess.Board(fen) if fen else chess.Board()
     for uci in played:
         board.push_uci(uci)  # the moves stay on the board, as the coach keeps them
-    text = idea_words.allowed(board, _analysis(board.fen(), sans, score=score), san)
+    text = idea_words.allowed(board, analysed(board.fen(), sans, score=score), san)
     if said is None or not said.endswith("..."):
         assert text == said, case
     else:
@@ -105,7 +87,7 @@ def test_the_lesson_says_what_a_mistake_allowed(
 def test_the_lesson_says_what_the_move_allowed() -> None:
     fen = "r2qk2r/p1p1bppp/2p5/4p3/2b1P3/2N4P/PPP2PP1/R1BQR1K1 w kq - 0 12"
     board = chess.Board(fen)
-    facts = facts_from_analysis(board, _analysis(fen, "Qg4 g6 b3 Be6", score=0.6))
+    facts = facts_from_analysis(board, analysed(fen, "Qg4 g6 b3 Be6", score=0.6))
     text = lesson_template(
         facts,
         "Qg4",
@@ -120,7 +102,7 @@ def test_a_win_far_down_the_line_is_not_read_out_move_by_move() -> None:
     fen = "rnbqkb1r/pppp4/4p1p1/5n2/3P4/2N2N2/PPP2PPP/R1BQKB1R w KQkq - 0 7"
     board = chess.Board(fen)
     line = "h4 d5 g4 Nxh4 Bg5 Be7 Bxh4 Bxh4 g5 Nc6 Rxh4 Rxh4 Nxh4 Qxg5"
-    idea = idea_of.read(board, _analysis(fen, line, score=0.9))
+    idea = idea_of.read(board, analysed(fen, line, score=0.9))
     assert idea.goal == "win" and idea.gain_ply > idea_words.LATER_READ
     assert idea_words.why(idea, board, describe_tactic) == (
         f"h4: you win {idea.won}, a few moves on"
@@ -131,7 +113,7 @@ def test_the_focus_rung_names_no_stray_feature() -> None:
     # g06, before 9.O-O: "your king is still in the centre and can still castle" when a3
     # was the move and castling the inaccuracy.
     fen = "rnbqkb1r/pppp4/4p1p1/5n2/3P4/2N2N2/PPP2PPP/R1BQKB1R w KQkq - 0 7"
-    facts = facts_from_analysis(chess.Board(fen), _analysis(fen, "a3 d5", score=0.5))
+    facts = facts_from_analysis(chess.Board(fen), analysed(fen, "a3 d5", score=0.5))
     facts = facts.model_copy(
         update={"target": None, "plan": None, "ideas": ["a stray feature elsewhere"]}
     )

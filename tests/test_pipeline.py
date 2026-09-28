@@ -3,8 +3,9 @@ from typing import Any
 import chess
 import pytest
 
-from sidecoach.events import GameEnded, GameStarted, MovePlayed, Side
+from sidecoach.events import GameEnded, GameStarted, Side
 from sidecoach.state.pipeline import GamePipeline
+from tests.games import sans_of
 from tests.synth import synthetic_board
 
 pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
@@ -12,10 +13,6 @@ pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vi
 
 BROWN_LIGHT = (181, 217, 240)
 BROWN_DARK = (99, 136, 181)
-
-
-def _sans(events) -> list[str]:
-    return [e.san for e in events if isinstance(e, MovePlayed)]
 
 
 def test_pipeline_bootstraps_and_rebootstraps_on_new_theme() -> None:
@@ -34,7 +31,7 @@ def test_pipeline_bootstraps_and_rebootstraps_on_new_theme() -> None:
         for _ in range(2):
             events += pipe.process(synthetic_board(board=board, highlight=move), ts)
             ts += 0.1
-    assert _sans(events) == ["e4", "e5"]
+    assert sans_of(events) == ["e4", "e5"]
 
     # A new game on a different theme with black at the bottom.
     board = chess.Board()
@@ -64,7 +61,7 @@ def test_pipeline_bootstraps_and_rebootstraps_on_new_theme() -> None:
                 ts,
             )
             ts += 0.1
-    assert _sans(events) == ["d4", "Nf6"]
+    assert sans_of(events) == ["d4", "Nf6"]
     assert pipe.reconciler is not None and pipe.reconciler.board.fen() == board.fen()
 
 
@@ -97,7 +94,7 @@ def test_browsing_to_the_start_position_keeps_the_game() -> None:
     for _ in range(2):
         events += pipe.process(synthetic_board(board=board, highlight=move), ts)
         ts += 0.1
-    assert _sans(events) == ["Nf3"]
+    assert sans_of(events) == ["Nf3"]
     assert len(pipe.reconciler.board.move_stack) == 3
 
 
@@ -138,7 +135,7 @@ def test_bootstrap_counts_ticks_so_a_fast_first_move_does_not_starve_it() -> Non
     events = []
     for i in range(2):
         events += pipe.process(synthetic_board(board=board, highlight=move), 0.3 + 0.1 * i)
-    assert _sans(events) == ["d4"]
+    assert sans_of(events) == ["d4"]
 
 
 def test_events_carry_the_tick_time_and_frame_id() -> None:
@@ -210,7 +207,7 @@ def test_board_flipped_or_rethemed_before_the_first_move_keeps_the_game(
         for _ in range(2):
             events += pipe.process(synthetic_board(board=board, highlight=move, **look), ts)
             ts += 0.1
-    assert _sans(events) == list(sans)
+    assert sans_of(events) == list(sans)
     assert pipe.reconciler.game_id == game_id
 
 
@@ -244,7 +241,7 @@ def test_second_game_bootstraps_from_one_changed_tick() -> None:
     for _ in range(2):
         events += pipe.process(synthetic_board(board=second, highlight=move, **theme), ts)
         ts += 0.1
-    assert _sans(events) == ["d4"]
+    assert sans_of(events) == ["d4"]
     assert pipe.reconciler is not None and pipe.reconciler.pgn() == "1. d4"
 
 
@@ -264,7 +261,7 @@ def test_readings_are_retaken_after_the_lock_moves() -> None:
     for _ in range(12):
         events += pipe.process(moved, ts, changed=False)
         ts += 0.1
-    assert _sans(events) == ["e5"]
+    assert sans_of(events) == ["e5"]
 
 
 def test_browsing_back_with_a_stray_reading_is_not_a_new_game() -> None:

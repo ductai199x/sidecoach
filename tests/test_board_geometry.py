@@ -27,8 +27,8 @@ import pytest
 
 from sidecoach.events import GameEnded, GameStarted, MovePlayed, Resync, Side, Unexplained
 from sidecoach.state.pipeline import GamePipeline
+from tests.games import drag_path, scenario
 from tests.synth import synthetic_board
-from tests.test_stress import _drag_path, scenario
 
 pytestmark = pytest.mark.vision
 
@@ -242,9 +242,7 @@ def play(seed: int) -> Outcome:
         move = board.parse_san(san)
         mover = board.turn
         drag = (
-            _drag_path(move, sc.bottom, rng)
-            if decoration == "drag" and mover == user_colour
-            else []
+            drag_path(move, sc.bottom, rng) if decoration == "drag" and mover == user_colour else []
         )
         slide = rng.choice([1, 2, 3, 5]) if decoration == "animate" else 0
         frames = len(drag) + slide + 3
@@ -352,17 +350,8 @@ def play(seed: int) -> Outcome:
     return Outcome(got, list(sc.sans), same, locked, log)
 
 
-def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
-    if "seed" in metafunc.fixturenames:
-        spec = str(metafunc.config.getoption("--seeds") or "")
-        if not spec:
-            seeds = [1, 2, 3, 4]
-        elif "-" in spec:
-            lo, hi = (int(x) for x in spec.split("-", 1))
-            seeds = list(range(lo, hi + 1))
-        else:
-            seeds = list(range(1, int(spec) + 1))
-        metafunc.parametrize("seed", seeds)
+# The seeds a default run plays (tests/conftest.py; `--seeds` sweeps more).
+SEEDS = range(1, 5)
 
 
 def test_a_game_survives_the_board_moved_resized_covered_and_scrolled(seed: int) -> None:

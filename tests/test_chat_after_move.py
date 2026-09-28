@@ -17,16 +17,7 @@ from sidecoach.events import (
     Severity,
     Side,
 )
-from tests.test_coach import _coach
-
-
-def _offline():
-    """The coach with no model: its templates are the answer."""
-    from sidecoach.coach.coach import Coach
-    from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
-    from sidecoach.llm.offline import OfflineProvider
-
-    return Coach(OfflineProvider(), policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
+from tests.coaching import directive_of, drain, offline_coach, scripted_coach, sent
 
 
 def _played(coach, ucis: list[str], mistake_at: int) -> None:
@@ -81,7 +72,7 @@ def test_chat_is_about_the_players_move_on_the_opponents_turn_and_the_position_o
         (ITALIAN, 3, "why was my last move bad?", 3),
     ]
     for ucis, mistake_at, said, about in rows:
-        coach, _ = _coach([])
+        coach, _ = scripted_coach([])
         _played(coach, ucis, mistake_at=mistake_at)
         assert coach.user_to_move is (len(ucis) % 2 == 0)
         own = coach._asked_own_move(said)
@@ -93,7 +84,6 @@ def test_what_a_question_names_is_examined_aloud_and_what_a_statement_names_is_n
     -- where each can go, what each attacks -- and the question went unanswered (the
     simulated students, 2026-09-26)."""
     from sidecoach.coach.coach import question_part
-    from tests.test_coach import _messages
 
     assert question_part("I see it now: my rook on e1 stays active. Why is h5 their reply?") == (
         "Why is h5 their reply?"
@@ -119,29 +109,28 @@ def test_what_a_question_names_is_examined_aloud_and_what_a_statement_names_is_n
             ),
             4.5,
         )
-        _messages(coach)
+        drain(coach)
 
     # Offline the examination is the answer: a question's pieces are read out, a statement's not.
-    coach = _offline()
+    coach = offline_coach()
     italian(coach)
     coach.ask("I see it now: my knight on f3 attacks the pawn on e5.", 5.0)
-    assert not any("can go to" in m.text for m in _messages(coach))
+    assert not any("can go to" in m.text for m in drain(coach))
     coach.ask("Where can my knight on f3 go?", 6.0)
-    assert any("Your knight on f3 can go to" in m.text for m in _messages(coach))
+    assert any("Your knight on f3 can go to" in m.text for m in drain(coach))
     # With a model to answer in words, a piece's inventory said first is noise ("Your king on
     # g8 can go to f7, g7, h8; ..." before the AI's own answer).
-    coach, _ = _coach(["[p=1.0] It can go to d4, e5, g5 or h4."])
+    coach, _ = scripted_coach(["[p=1.0] It can go to d4, e5, g5 or h4."])
     italian(coach)
     coach.ask("Where can my knight on f3 go?", 6.0)
-    assert not any("Your knight on f3 can go to" in m.text for m in _messages(coach))
+    assert not any("Your knight on f3 can go to" in m.text for m in drain(coach))
 
 
 def test_an_answer_to_the_coachs_question_closes_it_without_another() -> None:
     """Every answer to the coach's question had earned a new question and none was resolved
     (the simulated students: "what Nc4 was expected to do was asked but not answered")."""
-    from tests.test_coach import _directive, _given, _messages
 
-    coach, provider = _coach(["You have it: the knight was loose.", "Right."])
+    coach, provider = scripted_coach(["You have it: the knight was loose.", "Right."])
     _played(coach, ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "f3g5"], mistake_at=7)
     board = chess.Board()
     for uci in ("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "f3g5"):
@@ -158,14 +147,14 @@ def test_an_answer_to_the_coachs_question_closes_it_without_another() -> None:
         ),
         7.5,
     )
-    _messages(coach)
+    drain(coach)
     with coach._lock:
         coach.conversation.coach_said("What were you expecting that move to do?")
     assert coach._answering_our_question("I wanted to attack f7 with the knight.")
     assert not coach._answering_our_question("Why is that bad?")
     coach.ask("I wanted to attack f7 with the knight.", 8.0)
-    _messages(coach)
-    directive = _directive(_given(provider))
+    drain(coach)
+    directive = directive_of(sent(provider))
     assert "They are answering the question you just asked" in directive
     assert "then one question" not in directive
     # Once answered, the thread is closed: words after the coach's reply answer nothing.
@@ -176,9 +165,8 @@ def test_a_piece_asked_about_is_read_on_the_board_as_it_stands() -> None:
     """Asked about their own last move, the coach answers from the position it was played
     from -- but "b5 is empty" was said with the player's bishop on b5 (the students' round
     6): pieces and squares are read on the board as it stands."""
-    from tests.test_coach import _messages
 
-    coach = _offline()
+    coach = offline_coach()
     ucis = ["e2e4", "e7e5", "g1f3", "b8c6", "f1b5"]
     _played(coach, ucis, mistake_at=5)
     board = chess.Board()
@@ -199,8 +187,8 @@ def test_a_piece_asked_about_is_read_on_the_board_as_it_stands() -> None:
                 ),
                 ply + 0.7,
             )
-    _messages(coach)
+    drain(coach)
     assert not coach.user_to_move
     coach.ask("Is my bishop on b5 safe there?", 6.0)
-    said = " ".join(m.text for m in _messages(coach))
+    said = " ".join(m.text for m in drain(coach))
     assert "Your bishop on b5" in said and "b5 is empty" not in said

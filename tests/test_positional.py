@@ -177,6 +177,9 @@ IDEAS: list[tuple[str, str, str, str | None, str | None, str | None, bool]] = [
         "prophylaxis",
         False,
     ),
+    # c8=Q was "prophylaxis: stop their plan before pushing your own" (Tai's game g02): a
+    # promotion is praised plainly, with no idea of its own.
+    ("a promotion", "8/2P5/8/8/8/k7/8/K7 w - - 0 1", "c8=Q", "endgame", None, None, True),
 ]
 
 
@@ -199,6 +202,13 @@ def test_the_best_move_s_idea(
     idea = P.best_move_idea(board, board.parse_san(san), chess.WHITE, **kw)  # type: ignore[arg-type]
     got = idea.kind if idea is not None else None
     assert (got == kind) is is_it, f"{case}: {got}"
+
+
+def test_a_capture_away_from_the_centre_is_not_the_fight_for_it() -> None:
+    board = chess.Board("rnbqkbnr/ppppp1pp/8/5p2/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2")
+    assert not P._is_central_break(board, chess.Move.from_uci("e4f5"), chess.WHITE)
+    board = chess.Board("4k3/8/8/4p3/5P2/8/8/4K3 w - - 0 1")
+    assert P._is_central_break(board, chess.Move.from_uci("f4e5"), chess.WHITE)
 
 
 def test_a_piece_is_in_danger_only_from_a_legal_capture() -> None:

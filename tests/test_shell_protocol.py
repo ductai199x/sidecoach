@@ -7,25 +7,22 @@ from __future__ import annotations
 import json
 import socket
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from sidecoach.config import Settings, VoiceSettings
+from sidecoach.config import Settings
 from sidecoach.ui import server
 from sidecoach.ui.panel import FrameRing, PanelEngine
 from sidecoach.ui.server import build_app
 from tests.synth import game_frames
 
 
-def _settings(tmp_path: Path) -> Settings:
-    return Settings(data_dir=tmp_path, voice=VoiceSettings())
-
-
-def test_health_perf_and_the_token(tmp_path: Path) -> None:
-    engine = PanelEngine(_settings(tmp_path), analysis=False, coach=False, frame_source=iter(()))
+def test_health_perf_and_the_token(make_panel: Callable[..., PanelEngine], tmp_path: Path) -> None:
+    engine = make_panel()
     client = TestClient(build_app(engine, token="s3cret"))
     health = client.get("/api/health").json()
     assert health["ok"] is True and health["running"] is False and health["pid"] > 0
@@ -60,14 +57,11 @@ def test_health_perf_and_the_token(tmp_path: Path) -> None:
 
 
 @pytest.mark.embedder  # a session started builds the stages: the net loads
-def test_a_session_that_persists_nothing_keeps_its_frames_in_memory(tmp_path: Path) -> None:
-    engine = PanelEngine(
-        _settings(tmp_path),
-        analysis=False,
-        coach=False,
-        persist=False,
-        frame_source=game_frames(("e4", "e5")),  # a few frames are enough to keep
-    )
+def test_a_session_that_persists_nothing_keeps_its_frames_in_memory(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path
+) -> None:
+    # A few frames are enough to keep.
+    engine = make_panel(persist=False, frame_source=game_frames(("e4", "e5")))
     client = TestClient(build_app(engine))
     assert client.post("/api/start").json()["ok"] is True
     assert engine._thread is not None
@@ -99,7 +93,7 @@ def test_the_frame_ring_bounds_itself() -> None:
 
 
 def test_a_second_launch_attaches_through_the_lock_file(tmp_path: Path) -> None:
-    settings = _settings(tmp_path)
+    settings = Settings(data_dir=tmp_path)
     assert server._attached_port(settings, "127.0.0.1") is None
     # A stale lock (a dead pid) is removed.
     lock = tmp_path / server.LOCK_FILE

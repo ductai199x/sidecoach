@@ -1,6 +1,8 @@
 import pytest
 
 from sidecoach.coach.coach import _parse_candidates, _sample_reply, complete_sentences
+from tests.coaching import drain, mate_analysis, play_to_scholar, scripted_coach
+from tests.fakes import ScriptedProvider
 
 CUT_MID_MARKER = (
     "[p=0.5] Placing it on c5 pins the piece. What would that gain?\n\n"
@@ -82,7 +84,6 @@ def test_a_stump_never_reaches_the_user_even_when_it_is_the_only_clean_candidate
 
     from sidecoach.coach.coach import Coach
     from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
-    from tests.test_coach import ScriptedProvider, _mate_analysis, _messages, _play_to_scholar
 
     def checker(
         text: str,
@@ -98,9 +99,9 @@ def test_a_stump_never_reaches_the_user_even_when_it_is_the_only_clean_candidate
     coach = Coach(
         provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), draft_check=checker
     )
-    _play_to_scholar(coach)
-    coach.on_event(_mate_analysis(6), 7.0)
-    out = _messages(coach)
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    out = drain(coach)
     assert out[0].text == "Their king on e8 is short of squares. What is their threat?"
     spoken = coach.spoken[-1]
     # The false claim is sent back and the second draft spoken: no template.
@@ -115,17 +116,16 @@ def test_a_bare_hint_is_asked_for_as_a_hint_not_as_a_claim() -> None:
     its own previous message as though the player had said it ("Your suggestion to focus on
     opening lines is spot-on")."""
     from sidecoach.coach.coach import _ASK_HINT
-    from tests.test_coach import _coach, _mate_analysis, _messages, _play_to_scholar
 
     for said in ("hint", "Hint", "give me a hint", "a clue please", "help", "any tips?"):
         assert _ASK_HINT.match(said), said
     for said in ("what should I play", "is Nf3 a good idea", "help me with the knight"):
         assert not _ASK_HINT.match(said), said
-    coach, provider = _coach(["Where is their king weakest?"])
-    _play_to_scholar(coach)
-    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    coach, provider = scripted_coach(["Where is their king weakest?"])
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
     coach.hint(8.0)
-    _messages(coach)
+    drain(coach)
     prompt = provider.prompts[0][1][-1]["content"]
     assert "They asked for a hint" in prompt
     assert "their own claim" not in prompt and "anything said earlier" in prompt
@@ -139,8 +139,6 @@ def test_a_verifier_keeps_the_clean_candidate_and_repairs_when_none_is() -> None
     from sidecoach.coach.coach import Speaker, _Request
     from sidecoach.coach.disclosure import PositionFacts
     from sidecoach.events import DisclosureLevel, Trigger
-    from sidecoach.llm.base import Completion
-    from tests.test_coach import ScriptedProvider
 
     board = chess.Board()
     board.push_san("e4")
@@ -169,25 +167,11 @@ def test_a_verifier_keeps_the_clean_candidate_and_repairs_when_none_is() -> None
             candidates=2,
         )
 
-    class Verifier:
-        name = model = "scripted-verifier"
-
-        def __init__(self, answers: list[str]) -> None:
-            self.answers = answers
-            self.seen: list[str] = []
-
-        def healthcheck(self):
-            return True, "ok"
-
-        def chat(self, system, messages, **kw):
-            self.seen.append(messages[-1]["content"])
-            return Completion(text=self.answers.pop(0))
-
     coach_model = ScriptedProvider(
         ["[p=0.6] Nf3 develops and eyes e5.\n[p=0.4] Nf3 develops a piece."]
     )
     # The first candidate invents "eyes e5"; the second is clean.
-    verifier = Verifier(['{"unsupported": ["eyes e5"]}', '{"unsupported": []}'])
+    verifier = ScriptedProvider(['{"unsupported": ["eyes e5"]}', '{"unsupported": []}'])
     speaker = Speaker(coach_model, verifier=verifier)  # type: ignore[arg-type]
     spoken = speaker.speak_now(_request())
     assert spoken.message.text == "Nf3 develops a piece."
@@ -197,7 +181,7 @@ def test_a_verifier_keeps_the_clean_candidate_and_repairs_when_none_is() -> None
     coach_model = ScriptedProvider(
         ["[p=0.7] Nf3 develops and eyes e5.\n[p=0.3] Nf3 pins the knight."]
     )
-    verifier = Verifier(
+    verifier = ScriptedProvider(
         [
             '{"unsupported": ["eyes e5"]}',
             '{"unsupported": ["pins the knight"]}',

@@ -15,110 +15,18 @@ dialog go through the whole pipeline, whose dialog they need.
 
 from __future__ import annotations
 
-import functools
-from collections.abc import Iterable
-
 import chess
-import numpy as np
 import pytest
 
-from sidecoach.events import Event, GameEnded, MovePlayed, Region, Resync, Side
-from sidecoach.state.pipeline import GamePipeline
+from sidecoach.events import MovePlayed, Resync, Side
 from sidecoach.state.reconcile import Reconciler
 from sidecoach.vision.pieces import ThemeModel
-from sidecoach.vision.squares import BoardGeometry
-from tests.synth import synthetic_board
-from tests.test_occlusion import with_dialog
+from tests.games import Game, Queue, reconciler_at
+from tests.synth import GEOM, synthetic_board, with_dialog
 
 pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
 
 BOTTOMS = [Side.WHITE, Side.BLACK]
-Queue = tuple[chess.Move, ...]
-GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
-
-
-@functools.cache
-def _model(bottom: Side) -> ThemeModel:
-    """The recogniser learned from the start position, built once for each side at the
-    bottom and shared: it reads pixels and nothing else. A plain module helper, not a
-    fixture: the phone's fixture maker calls these tests directly."""
-    model = ThemeModel.from_start_position(synthetic_board(bottom=bottom), GEOM, bottom)
-    assert model is not None
-    return model
-
-
-class Game:
-    """Synthetic frames fed to a reconciler, or with `pipeline` to the whole pipeline (the
-    game-over dialog is the pipeline's); `board` is the truth, `sans` what was committed."""
-
-    def __init__(self, bottom: Side, fen: str | None = None, pipeline: bool = False) -> None:
-        self.bottom = bottom
-        self.pipe = GamePipeline() if pipeline else None
-        self._rec = (
-            None if pipeline else Reconciler(bottom=bottom, user_side=bottom, settle_frames=2)
-        )
-        self.board = chess.Board()
-        self.ts = 0.0
-        self.sans: list[str] = []
-        self.ended: list[GameEnded] = []
-        self.show(frames=2)
-        assert self.rec.started
-        if fen is not None:
-            # A mid-game position: play the pieces there through a resync-free path is
-            # not always possible, so the reconciler adopts it like a cold start would.
-            self.board = chess.Board(fen)
-            rec = self.rec
-            rec.board = self.board.copy()
-            rec._base_fen = fen
-            self.show(frames=2)
-
-    @property
-    def rec(self) -> Reconciler:
-        rec = self.pipe.reconciler if self.pipe is not None else self._rec
-        assert rec is not None
-        return rec
-
-    def frame(self, **kw: object) -> np.ndarray:
-        return synthetic_board(board=self.board, bottom=self.bottom, **kw)  # type: ignore[arg-type]
-
-    def process(self, frame: np.ndarray) -> None:
-        """One frame read, its moves and its end noted."""
-        events: list[Event]
-        if self.pipe is not None:
-            events = self.pipe.process(frame, self.ts)
-        else:
-            assert self._rec is not None
-            events = self._rec.update(_model(self.bottom).classify_frame(frame, GEOM), self.ts)
-        for event in events:
-            if isinstance(event, MovePlayed):
-                self.sans.append(event.san)
-            elif isinstance(event, GameEnded):
-                self.ended.append(event)
-        self.ts += 0.1
-
-    def show(self, frames: int = 2, **kw: object) -> None:
-        for _ in range(frames):
-            self.process(self.frame(**kw))
-
-    def play(self, *sans: str, frames: int = 2, **kw: object) -> chess.Move:
-        """Moves made on the board, each followed by its frames with the last-move
-        highlight; the last move is returned."""
-        move: chess.Move | None = None
-        for san in sans:
-            move = self.board.push_san(san)
-            self.show(frames=frames, highlight=move, **kw)
-        assert move is not None, "no move to play"
-        return move
-
-    def queue(self, *queues: Iterable[str]) -> tuple[Queue, ...]:
-        """Premove queues from SAN-like uci strings, checked to be the user's pieces."""
-        out: list[Queue] = []
-        for spec in queues:
-            moves = tuple(chess.Move.from_uci(uci) for uci in spec)
-            piece = self.board.piece_at(moves[0].from_square)
-            assert piece is not None and piece.color == (self.bottom == Side.WHITE)
-            out.append(moves)
-        return tuple(out)
 
 
 def _uci(*ucis: str) -> tuple[str, ...]:
@@ -540,19 +448,6 @@ def test_two_queues_of_different_lengths_finish_at_different_times() -> None:
 ENDGAME = "8/2K2k2/1P6/4Bp1p/P4PpP/6P1/8/8 w - - 0 60"
 
 
-def _reconciler_at(fen: str) -> tuple[ThemeModel, Reconciler, chess.Board]:
-    start = synthetic_board()
-    model = _model(Side.WHITE)
-    rec = Reconciler(bottom=Side.WHITE, user_side=Side.WHITE, settle_frames=2)
-    rec.update(model.classify_frame(start, GEOM), 0.0)
-    board = chess.Board(fen)
-    rec.board = board.copy()
-    rec._base_fen = fen
-    for i in range(2):
-        rec.update(model.classify_frame(synthetic_board(board=board), GEOM), 0.1 + 0.1 * i)
-    return model, rec, board
-
-
 def _displayed(board: chess.Board, origin: chess.Square, target: chess.Square, symbol: str):
     """The true position with the user's piece drawn at the queue's end instead."""
     shown = chess.Board(None)
@@ -581,7 +476,7 @@ class _Feed:
 
 def test_pawn_drawn_on_the_last_rank_waits_for_the_promotion_choice() -> None:
     """Before the piece is chosen a pawn sits on a8; the bot's move then cuts the queue."""
-    model, rec, board = _reconciler_at(ENDGAME)
+    model, rec, board = reconciler_at(ENDGAME)
     feed = _Feed(model, rec)
     board.push_san("a5")
     assert feed(board, 2) == ["a5"]
@@ -592,7 +487,7 @@ def test_pawn_drawn_on_the_last_rank_waits_for_the_promotion_choice() -> None:
 
 
 def test_single_king_premove_still_waits_for_the_opponent() -> None:
-    model, rec, board = _reconciler_at(ENDGAME)
+    model, rec, board = reconciler_at(ENDGAME)
     feed = _Feed(model, rec)
     board.push_san("a5")
     assert feed(board, 2) == ["a5"]

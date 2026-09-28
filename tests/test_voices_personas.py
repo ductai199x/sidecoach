@@ -4,21 +4,17 @@ in sections by what a field applies to."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from sidecoach.coach.prompt import DEFAULT_PERSONA, PERSONAS, persona_text, system_message
-from sidecoach.config import CoachSettings, LLMSettings, Settings, VoiceSettings
+from sidecoach.config import CoachSettings, LLMSettings, Settings
 from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.server import build_app
 from sidecoach.ui.settings_api import describe
 from sidecoach.voice.voices import ENGLISH_VOICES, english_voices, is_english, voice_label
-
-
-def _silent() -> VoiceSettings:
-    return VoiceSettings()
-
 
 # The persona the coach was evaluated with, as it read before the choice existed
 # (docs/eval-results.md): the default must still be this, word for word.
@@ -64,7 +60,7 @@ def test_the_default_persona_is_the_evaluated_one_and_the_choices_match() -> Non
 
 
 def test_the_settings_describe_the_pickers_and_the_ai_coach_sections(tmp_path: Path) -> None:
-    settings = Settings(data_dir=tmp_path, voice=_silent())
+    settings = Settings(data_dir=tmp_path)
     described = describe(settings)
     assert described["voices"] == list(ENGLISH_VOICES)
     assert described["personas"] == {name: label for name, (label, _) in PERSONAS.items()}
@@ -81,10 +77,13 @@ def test_the_settings_describe_the_pickers_and_the_ai_coach_sections(tmp_path: P
     assert set(LLMSettings.model_fields) == set(groups), "every field is in a section"
 
 
-def test_the_preview_line_says_whether_the_voice_could_speak(tmp_path: Path) -> None:
-    settings = Settings(data_dir=tmp_path, voice=_silent())
-    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+def test_the_preview_line_says_whether_the_voice_could_speak(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path
+) -> None:
+    settings = Settings(data_dir=tmp_path)
+    engine = make_panel(settings)
     client = TestClient(build_app(engine))
-    # The silent provider cannot speak: the button is told so, nothing breaks.
+    # No voice models under pytest: the voice cannot speak, the button is told so, nothing
+    # breaks.
     assert client.post("/api/say", json={"voice": "bf_emma"}).json() == {"ok": False}
     assert engine.voice == settings.voice.voice, "the coach's own voice is untouched"

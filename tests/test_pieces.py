@@ -23,13 +23,22 @@ from sidecoach.vision.pieces import (
     translucent_cover,
 )
 from sidecoach.vision.squares import BoardGeometry, row_col, square_at
+from tests.games import recogniser
 from tests.pieceset import sheet_sets
-from tests.synth import DARK, LIGHT, blend_outline, blend_rect, draw_piece, synthetic_board
+from tests.synth import (
+    DARK,
+    GEOM,
+    LIGHT,
+    RED,
+    YELLOW,
+    blend_outline,
+    blend_rect,
+    draw_piece,
+    synthetic_board,
+    tint,
+)
 
 pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
-
-
-GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
 
 
 def _geometry(cell: int) -> BoardGeometry:
@@ -675,3 +684,17 @@ def test_a_rook_on_a_labelled_corner_lands_at_the_size_its_set_was_learned_at() 
     )  # fmt: skip
     assert reading.kind == "piece" and reading.symbol == "R", reading
     assert reading.settled, reading.offset
+
+
+def test_highlight_kinds() -> None:
+    model = recogniser(Side.WHITE)
+    light = np.array(LIGHT, dtype=np.float32)
+    assert model.highlight_kind(light, 0, 0) == "none"
+    assert model.highlight_kind(np.array(tint(LIGHT, YELLOW), dtype=np.float32), 0, 0) == "move"
+    assert model.highlight_kind(np.array(tint(LIGHT, RED), dtype=np.float32), 0, 0) == "red"
+    assert model.highlight_kind(np.array([245, 245, 245], dtype=np.float32), 0, 0) == "foreign"
+    assert model.highlight_kind(np.array([200, 200, 200], dtype=np.float32), 0, 0) == "foreign"
+    dark = np.array(DARK, dtype=np.float32)
+    assert model.highlight_kind(dark, 0, 1) == "none"
+    assert model.highlight_kind(np.array(tint(DARK, YELLOW), dtype=np.float32), 0, 1) == "move"
+    assert model.highlight_kind(np.array([200, 200, 200], dtype=np.float32), 0, 1) == "foreign"

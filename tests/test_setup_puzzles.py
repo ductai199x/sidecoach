@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-HEADER = "PuzzleId,FEN,Moves,Rating,RatingDeviation,Popularity,NbPlays,Themes,GameUrl,OpeningTags"
+from tests.fakes import PUZZLE_HEADER
+
 FEN = "6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1"
 
 
@@ -24,7 +25,7 @@ def test_the_sample_keeps_a_few_per_theme_and_reports_in_bytes(
     import sidecoach.setup as setup
     from sidecoach.config import Settings
 
-    lines = [HEADER]
+    lines = [PUZZLE_HEADER]
     # Three forks, two pins (one row is both): the pins never fill, so the scan runs on to its
     # limit through rows nothing wants.
     lines += [_row(0, "fork short"), _row(1, "pin long"), _row(2, "fork pin"), _row(3, "fork")]
@@ -51,7 +52,7 @@ def test_the_sample_keeps_a_few_per_theme_and_reports_in_bytes(
     assert item.present()
     written = (tmp_path / "puzzles" / "sample.csv").read_text(encoding="utf-8").splitlines()
     # The forks, then the pins; a puzzle of both is written once, where it first came.
-    assert written[0] == HEADER
+    assert written[0] == PUZZLE_HEADER
     assert [line.split(",")[0] for line in written[1:]] == ["p00000", "p00002", "p00003", "p00001"]
     # The bar moves in the item's bytes, never past its size, and ends on it.
     assert seen == [(item.size // 2, item.size), (item.size, item.size)]

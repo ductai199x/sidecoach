@@ -1,6 +1,7 @@
-"""Suite-wide options: `--seeds N` (or `--seeds A-B`) widens the random-game stress sweep
-(tests/test_stress.py); the guard that keeps the suite off a live session; and the tests
-that load the embedding net kept to a few workers while the rest use every core."""
+"""Suite-wide options: `--seeds N` (or `--seeds A-B`) widens the random-game sweeps
+(tests/test_stress.py, tests/test_board_geometry.py); the guard that keeps the suite off a
+live session; the tests that load the embedding net kept to a few workers while the rest use
+every core; and `make_panel`, the panel most panel tests start from."""
 
 from __future__ import annotations
 
@@ -11,8 +12,14 @@ import pathlib
 import socket
 import tempfile
 import zlib
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 import pytest
+
+if TYPE_CHECKING:
+    from sidecoach.config import Settings
+    from sidecoach.ui.panel import PanelEngine
 
 # The tests that run the embedding net (vision/embedding.py: the synthetic vision suite,
 # the panel over rendered games) are dealt into this many xdist groups, so this many
@@ -149,3 +156,34 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="how many seeded random games the stress tests play, or a range A-B of seeds "
         "(default: a fixed handful)",
     )
+
+
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    """A test taking `seed` plays its module's few seeds (the module's SEEDS), or the ones
+    `--seeds` asks for."""
+    if "seed" not in metafunc.fixturenames:
+        return
+    spec = str(metafunc.config.getoption("--seeds") or "")
+    if not spec:
+        seeds = list(metafunc.module.SEEDS)
+    elif "-" in spec:  # "251-1000": a range of seeds
+        lo, hi = (int(x) for x in spec.split("-", 1))
+        seeds = list(range(lo, hi + 1))
+    else:
+        seeds = list(range(1, int(spec) + 1))
+    metafunc.parametrize("seed", seeds)
+
+
+@pytest.fixture
+def make_panel(tmp_path: pathlib.Path) -> Callable[..., PanelEngine]:
+    """Makes a panel with its data under `tmp_path`: the settings' defaults unless a test
+    gives its own (no voice models: SIDECOACH_VOICE_MODELS=0 above), and no engine, no coach
+    and no frames unless it asks for them."""
+    from sidecoach.config import Settings
+    from sidecoach.ui.panel import PanelEngine
+
+    def make(settings: Settings | None = None, **kw: Any) -> PanelEngine:
+        kw = {"analysis": False, "coach": False, "frame_source": iter(()), **kw}
+        return PanelEngine(settings or Settings(data_dir=tmp_path), **kw)
+
+    return make

@@ -10,8 +10,8 @@ from pathlib import Path
 import chess
 import pytest
 
-from sidecoach.events import DisclosureLevel, Label, MoveAssessment, MovePlayed, Severity, Trigger
-from tests.test_coach import SCHOLAR, _coach, _mate_analysis, _play_to_scholar
+from sidecoach.events import DisclosureLevel, Label, MoveAssessment, Severity, Trigger
+from tests.coaching import SCHOLAR, mate_analysis, mate_missed, play_to_scholar, scripted_coach
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "eval"))
 
@@ -46,8 +46,8 @@ ASK_CLASSES = sorted({cls for cls, _ in QUESTIONS})
 
 def _at_scholar():
     """The player to move after 3... Nf6, the position analysed and Nf6 judged."""
-    coach, _ = _coach([])
-    _play_to_scholar(coach)
+    coach, _ = scripted_coach([])
+    play_to_scholar(coach)
     board = chess.Board(SCHOLAR)
     coach.on_event(
         MoveAssessment(
@@ -61,7 +61,7 @@ def _at_scholar():
         ),
         6.5,
     )
-    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
     assert coach.board.fen() == board.fen()
     return coach
 
@@ -69,33 +69,7 @@ def _at_scholar():
 def _after_the_miss():
     """The player has just played 4. Bxf7+, a miss, and it is judged."""
     coach = _at_scholar()
-    board = chess.Board(SCHOLAR)
-    move = board.parse_san("Bxf7+")
-    board.push(move)
-    coach.on_event(
-        MovePlayed(
-            game_id="g",
-            ply=7,
-            san="Bxf7+",
-            uci=move.uci(),
-            fen_before=SCHOLAR,
-            fen_after=board.fen(),
-            by_user=True,
-        ),
-        10.0,
-    )
-    coach.on_event(
-        MoveAssessment(
-            game_id="g",
-            ply=7,
-            uci=move.uci(),
-            expected_loss=0.45,
-            severity=Severity.BLUNDER,
-            best=["h5f7"],
-            label=Label.MISS,
-        ),
-        11.0,
-    )
+    mate_missed(coach)
     return coach
 
 
@@ -117,7 +91,7 @@ def test_every_question_reaches_the_directive_of_its_class(cls: str):
 
 
 def _item(directive: str, required: list[dict], cls: str = "verdict_weaker") -> dict:
-    coach, _ = _coach([])
+    coach, _ = scripted_coach([])
     return {
         "id": "t",
         "class": cls,

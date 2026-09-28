@@ -3,28 +3,25 @@ and over the panel's API."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import chess
 from fastapi.testclient import TestClient
 
-from sidecoach.config import Settings, VoiceSettings
+from sidecoach.config import Settings
 from sidecoach.events import GameStarted, Side
 from sidecoach.maintenance import clear_caches, reset_profile
 from sidecoach.profile.puzzles import PuzzleStore, open_store
 from sidecoach.profile.store import Store
 from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.server import build_app
+from tests.fakes import puzzle_file
 
-CSV = (
-    "PuzzleId,FEN,Moves,Rating,RatingDeviation,Popularity,NbPlays,Themes,GameUrl,OpeningTags\n"
+FORK = (
     "fork1,r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2,g8f6 f3e5 c6e5,"
-    "1000,80,90,500,fork opening short,https://lichess.org/x#3,\n"
+    "1000,80,90,500,fork opening short,https://lichess.org/x#3,"
 )
-
-
-def _settings(tmp_path: Path) -> Settings:
-    return Settings(data_dir=tmp_path, voice=VoiceSettings())
 
 
 def _filled(tmp_path: Path) -> None:
@@ -36,8 +33,7 @@ def _filled(tmp_path: Path) -> None:
     store.close()
     (tmp_path / "themes").mkdir()
     (tmp_path / "themes" / "theme-abc.pkl").write_bytes(b"x")
-    (tmp_path / "puzzles").mkdir()
-    (tmp_path / "puzzles" / "sample.csv").write_text(CSV, encoding="utf-8")
+    puzzle_file(tmp_path / "puzzles" / "sample.csv", [FORK])
     puzzles = open_store(tmp_path)
     assert puzzles is not None and puzzles.count() == 1
     puzzles.close()
@@ -47,7 +43,7 @@ def test_reset_profile_empties_every_table_and_clear_caches_removes_the_files(
     tmp_path: Path,
 ) -> None:
     _filled(tmp_path)
-    settings = _settings(tmp_path)
+    settings = Settings(data_dir=tmp_path)
     assert reset_profile(settings) == tmp_path / "profile.sqlite"
     store = Store(tmp_path / "profile.sqlite")
     assert (
@@ -75,9 +71,11 @@ def test_reset_profile_empties_every_table_and_clear_caches_removes_the_files(
     assert reset_profile(settings) == tmp_path / "profile.sqlite"
 
 
-def test_the_panel_resets_the_profile_and_clears_the_caches_over_the_api(tmp_path: Path) -> None:
+def test_the_panel_resets_the_profile_and_clears_the_caches_over_the_api(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path
+) -> None:
     _filled(tmp_path)
-    engine = PanelEngine(_settings(tmp_path), analysis=False, coach=False, frame_source=iter(()))
+    engine = make_panel()
     engine.practice_ids = ["fork1"]
     engine.puzzle_motifs["fork1"] = "fork"
     client = TestClient(build_app(engine))

@@ -26,7 +26,7 @@ import numpy as np
 from sidecoach.events import Region, Side
 from sidecoach.vision.board_detect import BoardCandidate
 from sidecoach.vision.clock import GlyphTemplates
-from sidecoach.vision.squares import row_col
+from sidecoach.vision.squares import BoardGeometry, row_col
 from tests.pieceset import WOODEN_SET, draw_sprite, sheet_sets
 
 LIGHT = (208, 236, 238)
@@ -1180,3 +1180,70 @@ def game_frames(
     for san in sans:
         move = board.push_san(san)
         yield from emit(highlight=move)
+
+
+# ---- the board as the tests show it ---------------------------------------------------
+
+# Where `synthetic_board` draws the board by default: at (300, 120), 64 px squares.
+GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
+
+
+def puzzle_frame(board: chess.Board, bottom: chess.Color, **kw: object) -> np.ndarray:
+    """A puzzle as the site shows it: the solver's side at the bottom, the coordinates on."""
+    return synthetic_board(
+        board=board,
+        bottom=Side.WHITE if bottom == chess.WHITE else Side.BLACK,
+        coordinates=True,
+        **kw,  # type: ignore[arg-type]
+    )
+
+
+def bulky_start(frame: np.ndarray, x0: int, y0: int, cell: int) -> None:
+    """A start position drawn with bulky pieces (`bulky_pieces`), whose coarse checker score
+    is well under an empty board's."""
+    render_board(frame, x0, y0, cell, chess.Board())
+    bulky_pieces(frame, x0, y0, cell, chess.Board())
+
+
+# A game-over dialog over the default board: columns a to e, rows 2 to 6.
+DIALOG_X0, DIALOG_Y0 = 300 - 40, 120 + 140
+DIALOG_X1, DIALOG_Y1 = 300 + 330, 120 + 420
+
+
+def _dialog_rect(bottom: Side) -> tuple[int, int, int, int]:
+    """The dialog's rectangle, mirrored through the board's centre when black sits at the
+    bottom so that it covers the same squares in either orientation."""
+    if bottom == Side.WHITE:
+        return DIALOG_X0, DIALOG_Y0, DIALOG_X1, DIALOG_Y1
+    cx, cy = 300 + 256, 120 + 256
+    return 2 * cx - DIALOG_X1, 2 * cy - DIALOG_Y1, 2 * cx - DIALOG_X0, 2 * cy - DIALOG_Y0
+
+
+def with_dialog(
+    frame: np.ndarray, dark: bool = False, alpha: float = 1.0, bottom: Side = Side.WHITE
+) -> np.ndarray:
+    """A game-over dialog with text covering the left half and middle of the default board
+    (test_occlusion).
+
+    `alpha` below 1 blends the dialog over the board, as chess.com does while it fades in.
+    """
+    if alpha < 1.0:
+        full = with_dialog(frame, dark=dark, bottom=bottom)
+        return cv2.addWeighted(full, alpha, frame, 1.0 - alpha, 0.0)
+    fill = (50, 50, 50) if dark else (245, 245, 245)
+    ink = (230, 230, 230) if dark else (40, 40, 40)
+    width, height = DIALOG_X1 - DIALOG_X0 + 1, DIALOG_Y1 - DIALOG_Y0 + 1
+    dialog = np.zeros((height, width, 3), dtype=np.uint8)
+    cv2.rectangle(dialog, (0, 0), (width - 1, height - 1), fill, -1)
+    cv2.rectangle(dialog, (0, 0), (width - 1, height - 1), (120, 120, 120), 2)
+    for i in range(6):
+        cv2.putText(
+            dialog, "You won by checkmate", (15, 40 + 40 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.6, ink, 2
+        )
+    if bottom == Side.BLACK:
+        # The same pixels over the same squares: the dialog turned with the board.
+        dialog = cv2.rotate(dialog, cv2.ROTATE_180)
+    out = frame.copy()
+    x0, y0, x1, y1 = _dialog_rect(bottom)
+    out[y0 : y1 + 1, x0 : x1 + 1] = dialog[: out.shape[0] - y0, : out.shape[1] - x0]
+    return out

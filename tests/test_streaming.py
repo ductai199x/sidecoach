@@ -13,25 +13,9 @@ import chess
 from sidecoach.coach.coach import Coach, Speaker, _FirstCandidate, _Request, _sample_reply
 from sidecoach.coach.disclosure import DisclosureLevel, PositionFacts
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
-from sidecoach.events import Analysis, GameStarted, Line, Side, Trigger
+from sidecoach.events import GameStarted, Side, Trigger
 from sidecoach.llm.base import ChatMessage, Completion
-
-FEN = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
-
-
-def _mate_analysis() -> Analysis:
-    """FEN measured: Qxf7 mates."""
-    return Analysis(
-        game_id="g",
-        fen=FEN,
-        ply=0,
-        lines=[
-            Line(moves=["h5f7"], depth=12, expected_score=1.0, mate=1),
-            Line(moves=["c4f7"], depth=12, expected_score=0.55),
-        ],
-        decisive=False,
-        only_move=True,
-    )
+from tests.coaching import SCHOLAR, mate_analysis
 
 
 class StreamingProvider:
@@ -86,13 +70,13 @@ class StreamingProvider:
 
 
 def _request(sink: Callable[[str], bool] | None, *, routine: bool = False) -> _Request:
-    board = chess.Board(FEN)
+    board = chess.Board(SCHOLAR)
     return _Request(
         trigger=Trigger.POST_MOVE,
         level=DisclosureLevel.LINE,
         system="coach",
         messages=[{"role": "user", "content": "# Task\nA word on the move, two sentences."}],
-        facts=PositionFacts(fen=FEN, side_to_move="white", phase="opening", material="level"),
+        facts=PositionFacts(fen=SCHOLAR, side_to_move="white", phase="opening", material="level"),
         board=board,
         fallback="Fine.",
         ply=6,
@@ -245,8 +229,8 @@ def test_the_coach_hands_its_sink_to_the_request() -> None:
         return sink
 
     coach.stream_sink = factory
-    coach.on_event(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=FEN), 0.0)
-    coach.on_event(_mate_analysis(), 1.0)
+    coach.on_event(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=SCHOLAR), 0.0)
+    coach.on_event(mate_analysis(0, decisive=False), 1.0)
     coach.tick(12.0)  # stuck: the idea, unprompted
     assert seen == [(Trigger.STUCK, 0)]
     queued = coach.speaker._requests.get_nowait()

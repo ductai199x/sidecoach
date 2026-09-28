@@ -31,8 +31,10 @@ from sidecoach.profile.puzzles import (
     position_key,
 )
 from sidecoach.profile.store import Store
+from tests.coaching import drain, scripted_coach
+from tests.fakes import puzzle_file
+from tests.profiling import Feed
 
-HEADER = "PuzzleId,FEN,Moves,Rating,RatingDeviation,Popularity,NbPlays,Themes,GameUrl,OpeningTags"
 # Rows in the Lichess database's format: the opponent's move first, then the solution.
 ROWS = [
     "000Pw,6k1/5p1p/4p3/4q3/3nN3/2Q3P1/PP3P1P/6K1 w - - 2 37,e4d2 d4e2 g1f1 e2c3,1547,76,92,629,"
@@ -52,9 +54,7 @@ ROWS = [
 
 
 def _csv(tmp_path: Path) -> Path:
-    path = tmp_path / "sample.csv"
-    path.write_text(HEADER + "\n" + "\n".join(ROWS) + "\n", encoding="utf-8")
-    return path
+    return puzzle_file(tmp_path / "sample.csv", ROWS)
 
 
 def test_the_store_imports_the_csv_and_finds_puzzles_by_position_and_theme(
@@ -130,7 +130,6 @@ def _fork_missed(f: object, san: str) -> None:
 
 
 def test_a_review_brings_a_recommendation_for_the_weak_motif(tmp_path: Path) -> None:
-    from tests.test_profile import Feed
 
     puzzles = PuzzleStore(None)
     puzzles.import_csv(_csv(tmp_path))
@@ -246,9 +245,8 @@ def test_the_next_puzzle_adopted_by_a_resync_is_scored_too(tmp_path: Path) -> No
 
 
 def test_the_coach_says_one_line_on_the_practice_and_a_word_on_a_fail() -> None:
-    from tests.test_coach import _coach, _messages
 
-    coach, provider = _coach([])
+    coach, provider = scripted_coach([])
     coach.on_event(
         GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.STARTING_FEN), 0.0
     )
@@ -264,27 +262,27 @@ def test_the_coach_says_one_line_on_the_practice_and_a_word_on_a_fail() -> None:
         1.0,
     )
     # One line, naming the count and the motif, the level, and why.
-    (text,) = [m.text for m in _messages(coach)]
+    (text,) = [m.text for m in drain(coach)]
     assert "1 fork puzzle " in text and "1100" in text
     assert "fork: 3 of 5 chances missed over your games" in text
     solved = PuzzleOutcome(game_id="p", puzzle_id="fork1", motif="fork", solved=True, level=1125)
     coach.on_event(solved, 2.0)
-    assert _messages(coach) == [], "a solve: the site says so"
+    assert drain(coach) == [], "a solve: the site says so"
     failed = PuzzleOutcome(game_id="p", puzzle_id="fork1", motif="fork", solved=False, level=1100)
     coach.on_event(failed, 3.0)
-    (text,) = [m.text for m in _messages(coach)]
+    (text,) = [m.text for m in drain(coach)]
     assert "fork puzzle" in text, "a word on the fail, naming the motif"
     assert provider.prompts == [], "no model call"
     assert "Practice recommended" in coach.conversation.render()
     # On the panel's own board (the coach kept quiet) the bar says it; the coach does not.
     coach.quiet = True
     coach.on_event(failed, 4.0)
-    assert _messages(coach) == []
+    assert drain(coach) == []
 
 
 def test_a_row_too_short_for_a_rating_or_moves_is_skipped(tmp_path: Path) -> None:
     # csv.DictReader fills a short row with None: int(None) and None.split() crashed the import.
-    path = tmp_path / "short.csv"
-    rows = [HEADER, ROWS[0], "short1,8/8/8/8/8/8/8/K6k w - - 0 1", "short2"]
-    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    path = puzzle_file(
+        tmp_path / "short.csv", [ROWS[0], "short1,8/8/8/8/8/8/8/K6k w - - 0 1", "short2"]
+    )
     assert PuzzleStore(None).import_csv(path) == 1

@@ -15,8 +15,9 @@ import pytest
 from sidecoach.coach import idea as idea_of
 from sidecoach.coach import idea_words
 from sidecoach.coach.coach import board_after, board_back
-from sidecoach.events import Analysis, GameStarted, Line, MovePlayed, Side
-from tests.test_coach import _coach
+from sidecoach.events import GameStarted, MovePlayed, Side
+from tests.coaching import scripted_coach
+from tests.lines import analysed
 
 RUY = ["e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6"]
 
@@ -49,25 +50,8 @@ def _board(fen: str | None, moves: list[str]) -> chess.Board:
     return board
 
 
-def _analysis(board: chess.Board, sans: str, *, score: float) -> Analysis:
-    b = board.copy()
-    moves = []
-    for san in sans.split():
-        move = b.parse_san(san)
-        moves.append(move.uci())
-        b.push(move)
-    return Analysis(
-        game_id="g",
-        fen=board.fen(),
-        ply=0,
-        lines=[Line(moves=moves, depth=20, expected_score=score)],
-        decisive=False,
-        only_move=False,
-    )
-
-
 def _goal(board: chess.Board, sans: str, *, score: float) -> tuple[idea_of.Idea, str | None]:
-    idea = idea_of.read(board, _analysis(board, sans, score=score))
+    idea = idea_of.read(board, analysed(board.fen(), sans, score=score))
     return idea, idea_words.goal(idea)
 
 
@@ -144,7 +128,7 @@ def test_taking_back_is_winning_back(
 def test_the_live_coach_keeps_the_moves_that_led_to_a_position() -> None:
     """The coach built each position from the move's FEN, so the exchange in progress was
     never seen live: the fix reached only the benches (the Android port's review, 2026-09-26)."""
-    coach, _ = _coach([])
+    coach, _ = scripted_coach([])
     start = chess.Board().fen()
     coach.on_event(GameStarted(game_id="g", user_side=Side.BLACK, start_fen=start), 0.0)
     for i, event in enumerate(_moves([*RUY, "b5c6"])):
@@ -152,7 +136,7 @@ def test_the_live_coach_keeps_the_moves_that_led_to_a_position() -> None:
     position = coach.positions[7]
     assert [m.uci() for m in position.board.move_stack] == [*RUY, "b5c6"]
     assert idea_of.exchange_owed(position.board) == {chess.KNIGHT: 1}
-    analysis = _analysis(position.board, "dxc6 O-O", score=0.5)
+    analysis = analysed(position.board.fen(), "dxc6 O-O", score=0.5)
     coach.on_event(analysis.model_copy(update={"ply": 7}), 8.0)
     assert position.facts is not None and position.facts.goal == "you can win back a bishop"
 

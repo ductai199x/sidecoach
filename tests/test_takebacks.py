@@ -34,9 +34,9 @@ from sidecoach.events import (
     Unexplained,
 )
 from sidecoach.state.pipeline import GamePipeline
+from tests.coaching import scripted_coach
+from tests.fakes import FakeEngine
 from tests.synth import synthetic_board
-from tests.test_analysis import FakeEngine
-from tests.test_coach import _coach
 
 pytestmark = pytest.mark.vision
 
@@ -97,7 +97,7 @@ class Chain:
 
         self.assessing.analyser.withdraw = told  # type: ignore[method-assign]
         self.assessing.analyser.start()
-        self.coach, _ = _coach(["never used"] * 50)
+        self.coach, _ = scripted_coach(["never used"] * 50)
         self.events: list[object] = []
         self.drained: list[object] = []
         self.told_at = 0  # where `drained` stood when the last takeback was told (`feed`)

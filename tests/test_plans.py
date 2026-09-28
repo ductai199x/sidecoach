@@ -6,7 +6,6 @@ import chess
 import pytest
 
 from sidecoach.analysis import positional
-from sidecoach.coach import idea as idea_of
 from sidecoach.coach import plans
 
 
@@ -201,16 +200,3 @@ def test_like_pieces_face_to_face_are_a_trade_when_the_line_makes_it() -> None:
     # Not when the line does not take it up.
     elsewhere = [move, chess.Move.from_uci("h8g8"), chess.Move.from_uci("b2c2")]
     assert plans.threat(board, move, elsewhere) is None
-
-
-def test_a_level_line_that_repeats_is_a_draw_only_when_it_saves_the_game() -> None:
-    board, pv = _line("6k1/5ppp/8/8/8/8/5PPP/6K1 w - - 0 1", "g1h1 g8h8 h1g1 h8g8")
-    boards = [board.copy(stack=False)]
-    for move in pv:
-        nxt = boards[-1].copy(stack=False)
-        nxt.push(move)
-        boards.append(nxt)
-    assert idea_of._drawn(boards, pv, 0.5) == "repetition"
-    assert idea_of._drawn(boards, pv, 0.5, second=0.2) == "repetition"
-    # Every other move holds as well: the engine marking time, not a rescue.
-    assert idea_of._drawn(boards, pv, 0.5, second=0.48) is None

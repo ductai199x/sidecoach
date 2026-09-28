@@ -295,16 +295,6 @@ def test_a_piece_attacks_and_is_defended_by_legal_captures_only(
     assert _piece(fen, square, user_colour) == head + said, case
 
 
-def test_undefended_means_no_defender_and_hanging_means_attacked_too() -> None:
-    lone = chess.Board("4k3/8/8/8/8/5N2/8/4K3 w - - 0 1")
-    assert check_draft("Your knight on f3 is undefended.", lone) == []
-    problems = check_draft("Your knight on f3 is hanging.", lone)
-    assert [p.reason for p in problems] == ["nothing attacks the knight on f3"]
-    held = chess.Board("4k3/8/8/8/8/5N2/4P3/4K3 w - - 0 1")
-    problems = check_draft("Your knight on f3 is undefended.", held)
-    assert [p.reason for p in problems] == ["the knight on f3 is defended"]
-
-
 def test_a_piece_examined_is_said_to_the_player() -> None:
     """A simulated student's 9.Nf3? -- the square the student named went out as written for
     the model: 'f3: the player's knight on f3 stands there; it can go to ...' (2026-09-26)."""

@@ -15,23 +15,12 @@ from sidecoach.coach.coach import focus_template, idea_template, move_template
 from sidecoach.coach.disclosure import leak_check
 from sidecoach.coach.facts import describe_tactic, facts_from_analysis
 from sidecoach.events import Analysis, DisclosureLevel, Line
+from tests.lines import analysed, boards_along, san_moves
 
 
 def analysis(fen: str, line: str, *, score: float = 0.95, mate: int | None = None) -> Analysis:
-    board = chess.Board(fen)
-    moves = []
-    for san in line.split():
-        move = board.parse_san(san)
-        moves.append(move.uci())
-        board.push(move)
-    return Analysis(
-        game_id="g",
-        fen=fen,
-        ply=0,
-        lines=[Line(moves=moves, depth=20, expected_score=score, mate=mate)],
-        decisive=True,
-        only_move=False,
-    )
+    """A puzzle's analysis: a decisive position, `line` its best line, a win by default."""
+    return analysed(fen, line, score=score, mate=mate, decisive=True)
 
 
 def read(fen: str, line: str, **kw: object) -> idea_of.Idea:
@@ -79,6 +68,31 @@ def test_a_rook_sacrifice_that_opens_the_king_is_said() -> None:
     assert [kind for _, kind in idea.sacrifices] == ["rook"]
 
 
+def test_material_given_for_their_attack_is_not_won() -> None:
+    # 29.exf4 in a lost game: the knight Black gives with ...Ng4+ is not "won back".
+    board = chess.Board("6rk/3b1prq/1p1p1n2/p1pP1n1p/P1P1pp2/2P1P1PP/R6K/2BQ1NRB w - - 0 29")
+    moves = ["e3f4", "f6g4", "h3g4", "h5h4", "h1e4", "h4g3", "h2g2", "f5h4", "g2h3", "d7g4"]
+    analysis = Analysis(
+        game_id="",
+        fen=board.fen(),
+        ply=0,
+        lines=[Line(moves=moves, depth=18, expected_score=0.055)],
+        decisive=False,
+        only_move=False,
+    )
+    assert idea_of.read(board, analysis).goal != "win"
+
+
+def test_a_level_line_that_repeats_is_a_draw_only_when_it_saves_the_game() -> None:
+    board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/6K1 w - - 0 1")
+    pv = [chess.Move.from_uci(uci) for uci in ("g1h1", "g8h8", "h1g1", "h8g8")]
+    boards = boards_along(board, pv)
+    assert idea_of._drawn(boards, pv, 0.5) == "repetition"
+    assert idea_of._drawn(boards, pv, 0.5, second=0.2) == "repetition"
+    # Every other move holds as well: the engine marking time, not a rescue.
+    assert idea_of._drawn(boards, pv, 0.5, second=0.48) is None
+
+
 # ---- the blow ---------------------------------------------------------------------------
 
 
@@ -124,19 +138,9 @@ def test_a_fork_of_the_king_and_a_pawn_is_not_the_point() -> None:
 
 def test_a_rook_given_in_two_steps_is_one_sacrifice() -> None:
     """Rxf7+ Rxf7 Rxf7+ Kxf7: the first rook comes back, the second does not (00ZPK)."""
-    fen = "5rk1/5p2/P7/8/8/8/5R2/5RK1 w - - 0 1"
-    board = chess.Board(fen)
-    line = []
-    for san in ["Rxf7", "Rxf7", "Rxf7", "Kxf7", "a7"]:
-        move = board.parse_san(san)
-        line.append(move)
-        board.push(move)
-    boards = [chess.Board(fen)]
-    for move in line:
-        after = boards[-1].copy(stack=False)
-        after.push(move)
-        boards.append(after)
-    assert idea_of._sacrifices(boards, line, 8) == ((2, "rook"),)
+    board = chess.Board("5rk1/5p2/P7/8/8/8/5R2/5RK1 w - - 0 1")
+    line = san_moves(board, "Rxf7 Rxf7 Rxf7 Kxf7 a7")
+    assert idea_of._sacrifices(boards_along(board, line), line, 8) == ((2, "rook"),)
 
 
 def test_a_queen_sacrifice_for_mate_is_said_at_each_rung() -> None:

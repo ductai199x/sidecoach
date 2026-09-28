@@ -22,15 +22,18 @@ from sidecoach.events import (
     Side,
     Trigger,
 )
-from tests.test_coach import (
+from tests.coaching import (
     SCHOLAR,
-    _coach,
-    _directive,
-    _given,
-    _harness,
-    _mate_analysis,
-    _messages,
-    _start,
+    directive_of,
+    drain,
+    harness_of,
+    mate_analysis,
+    mate_missed,
+    play,
+    play_to_scholar,
+    scripted_coach,
+    sent,
+    start_game,
 )
 
 
@@ -56,7 +59,7 @@ def _move(coach, board: chess.Board, ply: int, san: str, *, by_user: bool, ts: f
 def _scholar_with_an_earlier_moment(coach) -> None:
     """The scholar's game, with 2. Bc4 judged best from a position read as the same idea (a
     mating attack) and the coach's word after it."""
-    _start(coach)
+    start_game(coach)
     board = chess.Board()
     for ply, san in enumerate(("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"), start=1):
         uci = _move(coach, board, ply, san, by_user=ply % 2 == 1, ts=float(ply))
@@ -81,38 +84,8 @@ def _scholar_with_an_earlier_moment(coach) -> None:
     assert coach.board.fen() == SCHOLAR
 
 
-def _miss_the_mate(coach, ts: float = 10.0) -> None:
-    board = chess.Board(SCHOLAR)
-    move = board.parse_san("Bxf7+")
-    board.push(move)
-    coach.on_event(
-        MovePlayed(
-            game_id="g",
-            ply=7,
-            san="Bxf7+",
-            uci=move.uci(),
-            fen_before=SCHOLAR,
-            fen_after=board.fen(),
-            by_user=True,
-        ),
-        ts,
-    )
-    coach.on_event(
-        MoveAssessment(
-            game_id="g",
-            ply=7,
-            uci=move.uci(),
-            expected_loss=0.45,
-            severity=Severity.BLUNDER,
-            best=["h5f7"],
-            label=Label.MISS,
-        ),
-        ts + 1,
-    )
-
-
 def test_a_lesson_ties_only_to_the_moments_the_coach_lists() -> None:
-    coach, provider = _coach(
+    coach, provider = scripted_coach(
         [
             "Their king on e8 is nearly out of squares.",
             # Names an earlier move the list does not give, with its number.
@@ -122,12 +95,12 @@ def test_a_lesson_ties_only_to_the_moments_the_coach_lists() -> None:
         ]
     )
     _scholar_with_an_earlier_moment(coach)
-    coach.on_event(_mate_analysis(6), 7.0)
-    _messages(coach)
-    _miss_the_mate(coach)
-    out = _messages(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    drain(coach)
+    mate_missed(coach)
+    out = drain(coach)
     assert len(out) == 1 and out[0].trigger is Trigger.POST_MISTAKE
-    content = _harness(_given(provider, 1))
+    content = harness_of(sent(provider, 1))
     section = content.split("# Earlier in this game, the same idea: a mating attack\n")[1]
     # The coach's words on a line of their own, as everywhere in the record: the judge marks
     # them as the coach's, evidence only of what was said.
@@ -135,11 +108,11 @@ def test_a_lesson_ties_only_to_the_moments_the_coach_lists() -> None:
         "- At Bc4 (the player's move): best -- the player found it.\n"
         '    YOU (the coach) said: "Nice -- Bc4 eyes f7."'
     )
-    directive = _directive(_given(provider, 1))
+    directive = directive_of(sent(provider, 1))
     assert "Under 'Earlier in this game'" in directive and TIE_TO_THE_GAME not in directive
     assert "(as with Bg4)" not in directive, "no example move for the model to copy"
     # The first reply named 3. Qh5, an earlier move not listed: told so, and redone.
-    retry = str(_given(provider, 2)[-1]["content"])
+    retry = str(sent(provider, 2)[-1]["content"])
     assert "names Qh5, an earlier moment not listed" in retry
     assert "a move with its number" in retry
     assert out[0].text.startswith("Qxf7# was mate on the spot: as with Bc4")
@@ -147,20 +120,17 @@ def test_a_lesson_ties_only_to_the_moments_the_coach_lists() -> None:
 
 
 def test_with_no_earlier_moment_of_the_same_idea_the_lesson_speaks_of_none() -> None:
-    coach, provider = _coach(
+    coach, provider = scripted_coach(
         ["Their king on e8 is nearly out of squares.", "Qxf7# was mate. Which check ends it?"]
     )
-    _start(coach)
-    board = chess.Board()
-    for ply, san in enumerate(("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"), start=1):
-        _move(coach, board, ply, san, by_user=ply % 2 == 1, ts=float(ply))
-    coach.on_event(_mate_analysis(6), 7.0)
-    _messages(coach)
-    _miss_the_mate(coach)
-    _messages(coach)
-    content = _harness(_given(provider, 1))
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    drain(coach)
+    mate_missed(coach)
+    drain(coach)
+    content = harness_of(sent(provider, 1))
     assert "# Earlier in this game" not in content
-    assert NO_EARLIER in _directive(_given(provider, 1))
+    assert NO_EARLIER in directive_of(sent(provider, 1))
 
 
 def _conversation_game() -> Conversation:
@@ -245,10 +215,8 @@ def test_an_unlisted_earlier_move_and_a_move_number_are_faults() -> None:
 
 def _capture_game(coach) -> None:
     """1. e4 d5 2. Nc3 dxe4: the player, White, to move, a pawn down, with Nxe4 to come."""
-    _start(coach)
-    board = chess.Board()
-    for ply, san in enumerate(("e4", "d5", "Nc3", "dxe4"), start=1):
-        _move(coach, board, ply, san, by_user=ply % 2 == 1, ts=float(ply))
+    start_game(coach)
+    board = play(coach, ("e4", "d5", "Nc3", "dxe4"))
     coach.on_event(
         Analysis(
             game_id="g",
@@ -263,7 +231,7 @@ def _capture_game(coach) -> None:
 
 
 def test_the_material_is_said_whole_now_and_after_the_recapture() -> None:
-    coach, _ = _coach([])
+    coach, _ = scripted_coach([])
     _capture_game(coach)
     position = coach.positions[4]
     directive, template = coach._instruction(
@@ -287,7 +255,7 @@ def test_the_material_is_said_whole_now_and_after_the_recapture() -> None:
 def test_why_was_that_bad_says_what_the_move_allowed() -> None:
     # 1. Qxd5?? leaves the rook on a1 to Rxa1+; Rxa8+ was the move.
     start = "r3k3/5ppp/8/3p4/8/8/5PPP/R2QK3 w - - 0 1"
-    coach, provider = _coach([])
+    coach, provider = scripted_coach([])
     coach.on_event(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=start), 0.0)
     coach.on_event(
         Analysis(
@@ -331,10 +299,10 @@ def test_why_was_that_bad_says_what_the_move_allowed() -> None:
         ),
         2.0,
     )
-    _messages(coach)
+    drain(coach)
     coach.ask("why was that bad?", 3.0)
-    _messages(coach)
-    directive = _directive(_given(provider))
+    drain(coach)
+    directive = directive_of(sent(provider))
     # Counted with the pawn Qxd5 took: the coach's board keeps its moves (f513fd5's follow-up).
     assert (
         "What Qxd5 allowed, from the engine's line: after Qxd5, Rxa1+ wins a rook for a pawn."
@@ -345,20 +313,17 @@ def test_why_was_that_bad_says_what_the_move_allowed() -> None:
 
 
 def test_a_figure_in_a_hint_nobody_asked_a_figure_of_is_a_fault() -> None:
-    coach, provider = _coach(
+    coach, provider = scripted_coach(
         [
             "You are ahead by about 1.2 pawns: their king on e8 has one square. Which check?",
             "Their king on e8 has one square left. Which check takes it away?",
         ]
     )
-    _start(coach)
-    board = chess.Board()
-    for ply, san in enumerate(("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"), start=1):
-        _move(coach, board, ply, san, by_user=ply % 2 == 1, ts=float(ply))
-    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
     coach.ask("give me a hint", 8.0)
-    out = _messages(coach)
-    assert "Quote no figure" in _directive(_given(provider, 0))
-    retry = str(_given(provider, 1)[-1]["content"])
+    out = drain(coach)
+    assert "Quote no figure" in directive_of(sent(provider, 0))
+    retry = str(sent(provider, 1)[-1]["content"])
     assert "a figure in a remark nobody asked for" in retry
     assert out[-1].text.startswith("Their king on e8 has one square left")

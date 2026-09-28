@@ -18,10 +18,11 @@ import cv2
 import numpy as np
 import pytest
 
-from sidecoach.events import Event, GameEnded, MovePlayed, Region, ScreenState, Side
+from sidecoach.events import GameEnded, MovePlayed, Region, ScreenState, Side
 from sidecoach.state.pipeline import BADGE_FRAMES, GamePipeline
 from sidecoach.vision.result_badges import Badge, badge_at, badge_on, result_of
 from sidecoach.vision.squares import BoardGeometry
+from tests.games import Game
 from tests.synth import THEMES, draw_result_badge, synthetic_board
 
 pytestmark = pytest.mark.vision
@@ -151,42 +152,11 @@ def test_a_bulky_piece_walling_off_its_corner_is_not_a_badge(bottom: Side) -> No
 # ---- the pipeline ends the game on them ---------------------------------------------------
 
 
-class Game:
-    """A pipeline fed rendered frames of a game played on `board`."""
-
-    def __init__(self, bottom: Side = Side.WHITE) -> None:
-        self.bottom = bottom
-        self.pipe = GamePipeline()
-        self.board = chess.Board()
-        self.ts = 0.0
-        self.events: list[Event] = []
-        self.show(2)
-        assert self.pipe.reconciler is not None and self.pipe.reconciler.started
-
-    def show(self, frames: int = 2, **kw: Any) -> list[Event]:
-        out: list[Event] = []
-        for _ in range(frames):
-            out += self.pipe.process(
-                synthetic_board(board=self.board, bottom=self.bottom, **kw), self.ts
-            )
-            self.ts += 0.1
-        self.events += out
-        return out
-
-    def play(self, *sans: str) -> None:
-        for san in sans:
-            move = self.board.push_san(san)
-            self.show(2, highlight=move)
-
-    def ended(self) -> list[GameEnded]:
-        return [e for e in self.events if isinstance(e, GameEnded)]
-
-
 @pytest.mark.parametrize("bottom", [Side.WHITE, Side.BLACK])
 def test_a_resignation_ends_the_game_with_the_sites_result(bottom: Side) -> None:
-    g = Game(bottom)
+    g = Game(bottom, pipeline=True)
     g.play("e4", "e5", "Nf3", "Nc6", "Bb5")
-    assert not g.ended()
+    assert not g.ended
     # Black resigns: the badges appear, the board unchanged.
     new = g.show(BADGE_FRAMES, highlight=chess.Move.from_uci("f1b5"), result="1-0")
     ended = [e for e in new if isinstance(e, GameEnded)]
@@ -194,25 +164,25 @@ def test_a_resignation_ends_the_game_with_the_sites_result(bottom: Side) -> None
     assert ended[0].result == "1-0"
     assert ended[0].reason == "resignation"
     assert ended[0].pgn is not None and ended[0].pgn.endswith("Bb5")
-    assert g.pipe._screen_state is ScreenState.GAME_OVER
+    assert g.pipe is not None and g.pipe._screen_state is ScreenState.GAME_OVER
     # The badges stay on screen; the game does not end twice.
     again = g.show(3, highlight=chess.Move.from_uci("f1b5"), result="1-0")
     assert not any(isinstance(e, GameEnded) for e in again)
 
 
 def test_one_frame_of_badges_is_not_enough() -> None:
-    g = Game()
+    g = Game(pipeline=True)
     g.play("e4", "e5")
     new = g.show(1, highlight=chess.Move.from_uci("e7e5"), result="1-0")
     assert not any(isinstance(e, GameEnded) for e in new)
     # Gone again: a mark that flashed past.
     new = g.show(2, highlight=chess.Move.from_uci("e7e5"))
     assert not any(isinstance(e, GameEnded) for e in new)
-    assert g.pipe._badges is None
+    assert g.pipe is not None and g.pipe._badges is None
 
 
 def test_a_mate_on_the_board_ends_the_game_once_whatever_the_badges_say() -> None:
-    g = Game()
+    g = Game(pipeline=True)
     g.play("f3", "e5", "g4")
     move = g.board.push_san("Qh4#")
     # The mating move and the badges arrive together, and stay.

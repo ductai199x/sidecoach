@@ -9,18 +9,15 @@ coach and the voice have the time they had in the real game.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
 
-from sidecoach.config import Settings, VoiceSettings
+from sidecoach.config import Settings
 from sidecoach.events import Region
 from sidecoach.replay.recording import Recorder
 from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.server import make_engine
 from tests.synth import game_frames
-
-# No voice models: the panel is silent and deaf (PanelEngine.voice_models, which
-# SIDECOACH_VOICE_MODELS=0 turns off under pytest: tests/conftest.py).
-_SILENT = VoiceSettings()
 
 LONG = "Your knight on f5 is loose; the queen check on g6 wins it. What defends it?"
 SHORT = "exf5: good."
@@ -69,7 +66,20 @@ def test_short_verdicts_yield_to_a_busy_voice_and_substance_cuts_in() -> None:
     assert act("user_ask", LONG, ply=4, ply_now=4, busy=True, playing=("review", 4)) == "supersede"
 
 
-def test_speak_records_the_action_and_stops_before_cutting_in(tmp_path: Path) -> None:
+def test_the_voice_holds_its_word_in_a_fast_game_and_says_it_when_the_player_slows() -> None:
+    """In a fast game a word on a move is shown, not said; an ask and the review are still
+    said aloud, and a slower game has its words said again (`fast`)."""
+    va = PanelEngine.voice_action
+    assert va("post_move", "Qxf7#: mate.", 7, 7, False, None, True) == "text"
+    assert va("post_mistake", "Bb7 was a miss.", 7, 7, False, None, True) == "text"
+    assert va("user_ask", "Yes.", 7, 7, False, None, True) == "speak", "an ask is answered aloud"
+    assert va("review", "You won.", 7, 7, False, None, True) == "speak"
+    assert va("post_move", "Qxf7#: mate.", 7, 7, False, None, False) == "speak"
+
+
+def test_speak_records_the_action_and_stops_before_cutting_in(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
     class FakeTTS:
         name = "fake"
 
@@ -86,12 +96,7 @@ def test_speak_records_the_action_and_stops_before_cutting_in(tmp_path: Path) ->
         def stop(self) -> None:
             self.calls.append("stop")
 
-    engine = PanelEngine(
-        Settings(data_dir=tmp_path, voice=_SILENT),
-        analysis=False,
-        coach=False,
-        frame_source=iter(()),
-    )
+    engine = make_panel()
     fake = FakeTTS()
     engine._tts = fake  # type: ignore[assignment]
     engine._state["ply"] = 12
@@ -126,7 +131,7 @@ def test_replay_is_paced_to_its_timestamps(tmp_path: Path) -> None:
     for i, frame in enumerate(frames):
         recorder.write(frame, ts=float(i), store=True)
     recorder.close()
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
+    settings = Settings(data_dir=tmp_path)
 
     fast = make_engine(settings, replay=rec, speed=0)
     assert fast.frame_source is not None
@@ -147,21 +152,17 @@ def test_replay_is_paced_to_its_timestamps(tmp_path: Path) -> None:
     assert elapsed >= 0.2, f"replay ran unpaced: {elapsed:.2f}s for a second at 4x"
 
 
-def test_the_way_from_a_move_to_its_first_sound_is_timed(tmp_path: Path) -> None:
+def test_the_way_from_a_move_to_its_first_sound_is_timed(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
     """The status strip's move->speech latency: the move is noted when committed, the
     reply's first line remembered when queued, and the time taken the moment the voice
     says the line's audio has started; amortised over the session."""
     import time
 
     from sidecoach.events import Trigger
-    from sidecoach.ui.panel import PanelEngine
 
-    engine = PanelEngine(
-        Settings(data_dir=tmp_path, voice=_SILENT),
-        analysis=False,
-        coach=False,
-        frame_source=iter(()),
-    )
+    engine = make_panel()
     engine._note_move(1)
     assert engine._latency()["move_to_speech_s"] is None
     sink = engine._stream_sink(Trigger.POST_MOVE, 0)

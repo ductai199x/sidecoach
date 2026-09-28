@@ -7,23 +7,18 @@ the static page and its routes are served. The game a session follows is the eng
 
 from __future__ import annotations
 
-from pathlib import Path
+from collections.abc import Callable
 
 import pytest
 from fastapi.testclient import TestClient
 
-from sidecoach.config import Settings, VoiceSettings
 from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.server import build_app
 
 
-def _settings(tmp_path: Path) -> Settings:
-    return Settings(data_dir=tmp_path, voice=VoiceSettings())
-
-
 @pytest.mark.embedder  # a session started builds the stages: the net loads
-def test_controls_and_static_page(tmp_path: Path) -> None:
-    engine = PanelEngine(_settings(tmp_path), analysis=False, coach=False, frame_source=iter(()))
+def test_controls_and_static_page(make_panel: Callable[..., PanelEngine]) -> None:
+    engine = make_panel()
     client = TestClient(build_app(engine))
 
     poll = client.get("/api/poll").json()

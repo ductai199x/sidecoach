@@ -8,37 +8,29 @@ polls.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from sidecoach.config import Settings, VoiceSettings
 from sidecoach.ui.panel import PanelApi, PanelEngine
+from tests.fakes import FakeEngine, FedMic
 from tests.synth import game_frames
-
-# No voice models: the panel is silent and deaf (PanelEngine.voice_models, which
-# SIDECOACH_VOICE_MODELS=0 turns off under pytest: tests/conftest.py).
-_SILENT = VoiceSettings()
-
 
 # Scholar's mate: a game short enough to render cheaply, with an end the board shows.
 MATE = ("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6", "Qxf7#")
 
 
 @pytest.mark.embedder  # a session started builds the stages: the net loads
-def test_engine_follows_a_game_and_reports_it(tmp_path: Path) -> None:
+def test_engine_follows_a_game_and_reports_it(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path
+) -> None:
     """A game from its start to its mate, as the page sees it: the board locked, the moves
     and the end in the terminal and the state. Without an engine there are no verdicts,
     but the game itself reaches the profile, the review card and the session summary; a
     replay (an injected frame source) keeps the profile in memory and writes no file."""
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(
-        settings,
-        analysis=False,  # no Stockfish needed in a unit test
-        coach=False,  # no LLM needed in a unit test
-        record=False,
-        frame_source=game_frames(MATE),
-    )
+    engine = make_panel(record=False, frame_source=game_frames(MATE))
     engine.start()
     assert engine._thread is not None
     engine._thread.join(timeout=90)
@@ -80,9 +72,8 @@ def test_engine_follows_a_game_and_reports_it(tmp_path: Path) -> None:
     assert any(t.startswith("session:") for t in texts)
 
 
-def test_api_poll_is_incremental(tmp_path: Path) -> None:
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+def test_api_poll_is_incremental(make_panel: Callable[..., PanelEngine]) -> None:
+    engine = make_panel()
     api = PanelApi(engine)
 
     first = api.poll(0)
@@ -107,16 +98,15 @@ def test_ending_a_game_on_the_users_word_scores_it_from_their_side() -> None:
     assert outcome("forget", "black")[0] == "*"
 
 
-def test_end_game_refuses_unknown_outcomes(tmp_path: Path) -> None:
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+def test_end_game_refuses_unknown_outcomes(make_panel: Callable[..., PanelEngine]) -> None:
+    engine = make_panel()
     with pytest.raises(ValueError):
         engine.end_game("rage-quit")
     engine.end_game("draw")
     assert engine._commands.get_nowait() == ("end", "draw")
 
 
-def test_legal_move_dots_are_not_a_degraded_reading(tmp_path: Path) -> None:
+def test_legal_move_dots_are_not_a_degraded_reading(make_panel: Callable[..., PanelEngine]) -> None:
     """A picked-up rook puts a dot on a dozen squares, each too small to be a piece and read
     as unknown; the first live game logged "reading degraded" on nearly every endgame move
     for it. Only covered cells and unknowns that are piece-sized or hovered count."""
@@ -128,8 +118,7 @@ def test_legal_move_dots_are_not_a_degraded_reading(tmp_path: Path) -> None:
     def cell(kind: str, fraction: float = 0.0, **kw: object) -> CellReading:
         return CellReading(kind, None, None, 0.0, fraction, 0.0, **kw)  # type: ignore[arg-type]
 
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+    engine = make_panel()
     dots = [[cell("empty") for _ in range(8)] for _ in range(8)]
     for c in range(8):  # a rook's whole rank of dots, plus its own hovered square
         dots[3][c] = cell("unknown", 0.08)
@@ -148,15 +137,14 @@ def test_legal_move_dots_are_not_a_degraded_reading(tmp_path: Path) -> None:
     assert degraded is True
 
 
-def test_a_correction_moves_through_the_api(tmp_path: Path) -> None:
+def test_a_correction_moves_through_the_api(make_panel: Callable[..., PanelEngine]) -> None:
     import chess
 
     from sidecoach.events import GameStarted, Side
     from sidecoach.profile.profiler import Profiler
     from sidecoach.profile.store import Store
 
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+    engine = make_panel()
     api = PanelApi(engine)
     assert api.correct("g", 0, 3, "time pressure") is False  # no session, no profile
     store = Store(None)
@@ -190,13 +178,12 @@ def test_a_correction_moves_through_the_api(tmp_path: Path) -> None:
 
 
 @pytest.mark.embedder  # a session started builds the stages: the net loads
-def test_the_engine_and_coach_outlive_a_session(tmp_path: Path) -> None:
+def test_the_engine_and_coach_outlive_a_session(make_panel: Callable[..., PanelEngine]) -> None:
     """Everything a session needs is built when the panel opens (`warm`), before any
     Start; Start and Stop only start and stop reading the screen (Tai, 2026-09-21), so the
     same engine and coach glue serve one session after another; `close` ends them. No
     game is needed: a session that reads nothing still builds or reuses the stages."""
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
+    engine = make_panel(record=False)
     assert engine._assessing is None and engine._coaching is None
     assert engine.warm_status()["done"] is False
     engine.warm(background=False)
@@ -232,37 +219,14 @@ def test_the_engine_and_coach_outlive_a_session(tmp_path: Path) -> None:
     assert engine._assessing is None and engine._coaching is None
 
 
-class _QuietMic:
-    """A microphone that opens and hears nothing."""
-
-    def __init__(self) -> None:
-        import queue
-
-        self.frames: queue.Queue = queue.Queue()
-        self.detail = "a quiet test microphone"
-        self.dropped = 0
-        self.opened = False
-
-    def healthcheck(self) -> tuple[bool, str]:
-        return True, self.detail
-
-    def open(self) -> bool:
-        self.opened = True
-        return True
-
-    def close(self) -> None:
-        self.opened = False
-
-
 @pytest.mark.embedder  # a session started builds the stages: the net loads
-def test_listening_outlives_a_session(tmp_path: Path) -> None:
+def test_listening_outlives_a_session(make_panel: Callable[..., PanelEngine]) -> None:
     """The warm-up opens listening, and Start and Stop only start and stop reading the
     screen: a session that ends leaves listening as it was. It used to turn the listener
     off on its way out, and after a Stop push-to-talk did nothing while the page still
     showed it on (2026-09-23)."""
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
-    mic = _QuietMic()
+    engine = make_panel(record=False)
+    mic = FedMic()
     engine._mic = mic  # type: ignore[assignment]
     engine._listener.mic = mic  # type: ignore[assignment]
     engine._listener.set_mode("ptt")  # what set_listen does, without hooking the keyboard
@@ -278,11 +242,12 @@ def test_listening_outlives_a_session(tmp_path: Path) -> None:
 
 
 @pytest.mark.embedder  # a session started builds the stages: the net loads
-def test_a_start_without_a_warm_up_builds_the_stages_once(tmp_path: Path) -> None:
+def test_a_start_without_a_warm_up_builds_the_stages_once(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
     """The CLI's replay and the tests start without a warm-up: the session builds the
     stages itself, and keeps them for the next one."""
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
+    engine = make_panel(record=False)
     engine.start()
     assert engine._thread is not None
     engine._thread.join(timeout=30)
@@ -296,7 +261,7 @@ def test_a_start_without_a_warm_up_builds_the_stages_once(tmp_path: Path) -> Non
 
 
 def test_an_engine_installed_after_the_warm_up_is_built_at_the_next_start(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A first run warms up before Setup has fetched Stockfish; the stage built then has
     no engine. Once Setup has put one in place, the next Start builds the engine -- and
@@ -323,8 +288,7 @@ def test_an_engine_installed_after_the_warm_up_is_built_at_the_next_start(
 
     monkeypatch.setattr(cli_mod, "_Assessing", _Stage)
     monkeypatch.setattr(config_mod, "find_stockfish", lambda _s: None)
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, coach=False, record=False, frame_source=iter(()))
+    engine = make_panel(analysis=True, record=False)
     first, coaching = engine._prepare_stages()
     assert not first.on
     assert engine._prepare_stages()[0] is first, "nothing new to find: kept"
@@ -339,7 +303,7 @@ def test_an_engine_installed_after_the_warm_up_is_built_at_the_next_start(
 
 
 def test_opening_tables_fetched_after_the_warm_up_reach_the_kept_engine(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The engine is built at the warm-up; Setup may fetch the opening tables after it. The
     next Start gives the kept annotator the book, without building anything again."""
@@ -347,7 +311,6 @@ def test_opening_tables_fetched_after_the_warm_up_reach_the_kept_engine(
 
     import sidecoach.cli as cli_mod
     from sidecoach.analysis.annotator import GameAnnotator
-    from tests.test_analysis import FakeEngine
 
     class _Stage:
         def __init__(self, _settings: Settings, enabled: bool, **_: object) -> None:
@@ -359,8 +322,7 @@ def test_opening_tables_fetched_after_the_warm_up_reach_the_kept_engine(
             return
 
     monkeypatch.setattr(cli_mod, "_Assessing", _Stage)
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, coach=False, record=False, frame_source=iter(()))
+    engine = make_panel(analysis=True, record=False)
     first, _ = engine._prepare_stages()
     assert first.analyser.annotator.book is None, "no tables yet"
 
@@ -372,21 +334,23 @@ def test_opening_tables_fetched_after_the_warm_up_reach_the_kept_engine(
     assert again.analyser.annotator.book is not None, "the book the tables make"
 
 
-def test_the_panel_starts_with_the_settings_voice(tmp_path: Path) -> None:
+def test_the_panel_starts_with_the_settings_voice(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path
+) -> None:
     """The saved voice is the one the panel speaks with from the start (Tai, 2026-09-21:
     the settings said bm_george, the panel came up with af_sarah -- the field's old
     default always won). A caller may still name one, as a test does."""
     settings = Settings(data_dir=tmp_path, voice=VoiceSettings(voice="bm_george"))
-    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
+    engine = make_panel(settings, record=False)
     assert engine.voice == "bm_george"
     assert engine.poll(0)["state"]["voice"] == "bm_george"
-    named = PanelEngine(
-        settings, analysis=False, coach=False, record=False, frame_source=iter(()), voice="af_bella"
-    )
+    named = make_panel(settings, record=False, voice="af_bella")
     assert named.voice == "af_bella"
 
 
-def test_recording_is_a_saved_opt_in_applied_on_the_spot(tmp_path: Path) -> None:
+def test_recording_is_a_saved_opt_in_applied_on_the_spot(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path
+) -> None:
     """The app starts the sidecar with --no-record --no-persist; the setting
     capture.record (Settings > Screen, or Debug > Record sessions, the same switch) turns
     recording on for the running session or the next Start, and stays until turned off
@@ -394,11 +358,9 @@ def test_recording_is_a_saved_opt_in_applied_on_the_spot(tmp_path: Path) -> None
     2026-09-22: an option in Settings, working on the spot)."""
     from sidecoach.config import load_settings
 
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
+    settings = Settings(data_dir=tmp_path)
     settings._source = tmp_path / "sidecoach.toml"
-    engine = PanelEngine(
-        settings, analysis=False, coach=False, record=False, persist=False, frame_source=iter(())
-    )
+    engine = make_panel(settings, record=False, persist=False)
     state = engine.poll(0)["state"]
     assert state["record_wanted"] is False and state["recording_dir"] is None
     # The Debug menu writes the setting.
@@ -439,7 +401,7 @@ class _Recogniser:
 
 
 def test_dictation_streams_into_the_box_and_sends_after_a_second_of_quiet(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """What is said reaches the page as it is recognised, and is asked of the coach a second
     after the utterance ends -- unless more is said first, which appends (Tai, 2026-09-22:
@@ -451,8 +413,7 @@ def test_dictation_streams_into_the_box_and_sends_after_a_second_of_quiet(
     from sidecoach.ui import panel as panel_mod
 
     monkeypatch.setattr(panel_mod, "DICTATION_SEND_DELAY_S", 0.3)
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
+    engine = make_panel(record=False)
     engine._stt = _Recogniser()  # type: ignore[assignment]
     engine._state["running"] = True  # a session: the ask is queued for its loop
 
@@ -503,7 +464,7 @@ def test_dictation_streams_into_the_box_and_sends_after_a_second_of_quiet(
 
 
 def test_a_click_after_the_words_does_not_hold_their_send(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Words said, then a click in voice mode before they send: the click starts an
     utterance (the send waits) and is dropped -- the words go on to send, and the box stops
@@ -513,8 +474,7 @@ def test_a_click_after_the_words_does_not_hold_their_send(
     from sidecoach.ui import panel as panel_mod
 
     monkeypatch.setattr(panel_mod, "DICTATION_SEND_DELAY_S", 0.3)
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
+    engine = make_panel(record=False)
     engine._stt = _Recogniser()  # type: ignore[assignment]
     engine._state["running"] = True
     engine._on_utterance(np.zeros(16000, dtype=np.float32), 1.0)
@@ -535,7 +495,7 @@ def test_a_click_after_the_words_does_not_hold_their_send(
 
 
 def test_typing_over_a_dictation_keeps_the_words_and_stops_the_send(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import time
 
@@ -544,8 +504,7 @@ def test_typing_over_a_dictation_keeps_the_words_and_stops_the_send(
     from sidecoach.ui import panel as panel_mod
 
     monkeypatch.setattr(panel_mod, "DICTATION_SEND_DELAY_S", 0.3)
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
+    engine = make_panel(record=False)
     engine._stt = _Recogniser()  # type: ignore[assignment]
     engine._on_utterance(np.zeros(16000, dtype=np.float32), 1.0)
     assert engine.poll(0)["state"]["dictation"]["sends_at"] is not None
@@ -556,13 +515,12 @@ def test_typing_over_a_dictation_keeps_the_words_and_stops_the_send(
 
 
 def test_an_ask_before_start_is_answered_at_once_not_kept_for_a_later_session(
-    tmp_path: Path,
+    make_panel: Callable[..., PanelEngine],
 ) -> None:
     """A question typed or spoken with no session running used to sit in the command
     queue and be asked of the coach at the next Start -- minutes later, about another
     game. It gets a plain answer now, and nothing is queued."""
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
+    engine = make_panel(record=False)
     PanelApi(engine).ask("what should I play")
     assert engine._commands.empty()
     lines = engine.poll(0)["lines"]
@@ -571,7 +529,9 @@ def test_an_ask_before_start_is_answered_at_once_not_kept_for_a_later_session(
     assert reply["data"]["full"].startswith("Press Start first")
 
 
-def test_the_move_list_badges_follow_takebacks_and_resyncs(tmp_path: Path) -> None:
+def test_the_move_list_badges_follow_takebacks_and_resyncs(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
     """A takeback's withdrawn moves take their badges with them -- a replacement played at
     the same ply showed the withdrawn move's -- and a resync, which numbers the plies again,
     clears them all; both reach the engine glue (Tai's game, 2026-09-23)."""
@@ -588,8 +548,7 @@ def test_the_move_list_badges_follow_takebacks_and_resyncs(tmp_path: Path) -> No
         Takeback,
     )
 
-    settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+    engine = make_panel()
 
     class Glue:
         def __init__(self) -> None:

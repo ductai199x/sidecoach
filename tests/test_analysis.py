@@ -17,16 +17,21 @@ from sidecoach.analysis.score import (
     engine_expected_score,
     eval_loss,
     expected_score,
+    game_accuracy,
     human_expected_score,
     is_decisive,
     is_only_move,
+    label_move,
+    move_accuracy,
     position_score,
     severity,
     terminal_expected_score,
 )
 from sidecoach.analysis.threats import threat_moves
 from sidecoach.config import CoachSettings, find_stockfish, load_settings
-from sidecoach.events import Analysis, Line, MotifTag, MoveAssessment, Severity
+from sidecoach.events import Analysis, Label, Line, MotifTag, MoveAssessment, Severity
+from tests.coaching import SCHOLAR
+from tests.fakes import FakeEngine
 
 STOCKFISH = find_stockfish(load_settings())
 
@@ -41,8 +46,6 @@ def needs_engine[F: Callable[..., None]](test: F) -> F:
 # Deep enough to be right about the positions below, shallow enough to keep the suite quick.
 DEPTH = 10
 
-# 1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6??, where 4. Qxf7# is mate.
-SCHOLAR = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
 # Black to move at queen odds: winning, but with no mate in sight to hide the numbers.
 BLACK_WINS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR b KQkq - 0 1"
 # White to move and not in check, but ...Rd1 would be mate: a threat, not a position.
@@ -54,29 +57,6 @@ def engine():
     assert STOCKFISH is not None
     with Engine(path=STOCKFISH, threads=2, hash_mb=64, multipv=4) as running:
         yield running
-
-
-class FakeEngine(Engine):
-    """An engine that answers from a script, so the annotator can be tested without one."""
-
-    def __init__(self, answers: dict[str, list[Line]]) -> None:
-        super().__init__(path=Path("fake"))
-        self.answers = answers
-        self.calls: list[str] = []
-        self.multipvs: list[int] = []
-
-    def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
-        self.calls.append(board.fen())
-        self.multipvs.append(int(kwargs.get("multipv", 1) or 1))  # type: ignore[call-overload]
-        if board.is_game_over(claim_draw=True):
-            return []
-        return self.answers.get(board.fen(), [Line(moves=["a2a3"], depth=1, expected_score=0.5)])
-
-    def open(self) -> None:  # never starts a process
-        return
-
-    def close(self) -> None:
-        return
 
 
 class RecordingTagger:
@@ -197,6 +177,80 @@ def test_severity_names_the_thresholds() -> None:
     assert severity(0.9, t) is Severity.BLUNDER
     # The fitted lines are the settings' defaults: a re-fit changes both or neither.
     assert Thresholds() == Thresholds.from_settings(CoachSettings())
+
+
+def _label(
+    loss: float,
+    *,
+    is_best: bool = False,
+    in_book: bool = False,
+    only_move: bool = False,
+    sacrifice: bool = False,
+    before_score: float = 0.5,
+    opponent_erred: bool = False,
+    obvious: bool = False,
+) -> Label:
+    return label_move(
+        loss,
+        Thresholds(),
+        is_best=is_best,
+        in_book=in_book,
+        only_move=only_move,
+        sacrifice=sacrifice,
+        before_score=before_score,
+        opponent_erred=opponent_erred,
+        obvious=obvious,
+    )
+
+
+def test_labels_follow_the_review_vocabulary() -> None:
+    assert _label(0.0, in_book=True) is Label.BOOK
+    assert _label(0.14, in_book=True) is Label.MISTAKE, "a gambit in the tables still loses"
+    assert _label(0.0, is_best=True) is Label.BEST
+    assert _label(0.01) is Label.EXCELLENT
+    assert _label(0.03) is Label.GOOD
+    assert _label(0.06) is Label.INACCURACY
+    assert _label(0.12) is Label.MISTAKE
+    assert _label(0.30) is Label.BLUNDER
+    # The opponent handed over a chance: taking it with the best move is great, letting it
+    # go is a miss however large the loss, and a decent move that is neither is just good.
+    assert _label(0.0, opponent_erred=True, is_best=True) is Label.GREAT
+    assert _label(0.0, opponent_erred=True, only_move=True) is Label.GREAT
+    assert _label(0.03, opponent_erred=True) is Label.GOOD
+    assert _label(0.06, opponent_erred=True) is Label.MISS
+    assert _label(0.90, opponent_erred=True) is Label.MISS
+    # A sound sacrifice is brilliant, unless the position was already decided either way.
+    assert _label(0.0, sacrifice=True) is Label.BRILLIANT
+    assert _label(0.0, sacrifice=True, before_score=0.97, is_best=True) is Label.BEST
+    assert _label(0.0, sacrifice=True, before_score=0.05, is_best=True) is Label.BEST
+    # The only move is great whether or not it was the engine's first choice, unless it is
+    # obvious (a recapture, the only legal move) or the game was already decided.
+    assert _label(0.0, only_move=True) is Label.GREAT
+    assert _label(0.0, only_move=True, obvious=True) is Label.EXCELLENT
+    assert _label(0.0, only_move=True, obvious=True, is_best=True) is Label.BEST
+    assert _label(0.0, opponent_erred=True, is_best=True, obvious=True) is Label.BEST
+    # A great move in a won position is still great; only brilliant needs a live game.
+    assert _label(0.0, only_move=True, before_score=0.95) is Label.GREAT
+    assert _label(0.0, opponent_erred=True, is_best=True, before_score=0.98) is Label.GREAT
+    # In a lost position the best move changes nothing: neither great nor brilliant.
+    assert _label(0.0, only_move=True, before_score=0.02, is_best=True) is Label.BEST
+    assert _label(0.0, sacrifice=True, before_score=0.02) is Label.EXCELLENT
+    # A move as good as the engine's choice but not that choice is excellent, not best:
+    # measured against chess.com's tallies, "best" is the engine's first choice only.
+    assert _label(0.0) is Label.EXCELLENT
+    # An unsound sacrifice is judged by its loss like any move.
+    assert _label(0.3, sacrifice=True) is Label.BLUNDER
+
+
+def test_accuracy_is_a_hundred_for_no_loss_and_falls_with_it() -> None:
+    assert move_accuracy(0.0) == 100.0
+    assert 75 < move_accuracy(0.01) < 80
+    assert 24 < move_accuracy(0.05) < 29, "an inaccuracy on chess.com's scale"
+    assert move_accuracy(0.30) == 0.0 and move_accuracy(1.0) == 0.0
+    assert game_accuracy([]) is None
+    assert game_accuracy([100.0, 100.0]) == 100.0
+    assert game_accuracy([100.0, 50.0]) == 75.0
+    assert game_accuracy([100.0, 0.0]) == 50.0, "one lost game does not halve the number"
 
 
 def test_eval_loss_is_measured_from_the_movers_side() -> None:

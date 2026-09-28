@@ -2,6 +2,7 @@ import pytest
 
 from sidecoach.config import LLMSettings
 from sidecoach.llm.factory import make_provider
+from sidecoach.llm.offline import OfflineProvider
 
 
 def test_the_default_is_luna_an_effort_provider_and_local_is_a_preset(
@@ -55,6 +56,17 @@ def test_dashscope_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="DASHSCOPE_API_KEY"):
         make_provider(LLMSettings(provider="dashscope"))
+
+
+def test_the_factory_gives_the_offline_provider_and_it_reports_itself() -> None:
+    """No model at all (llm.provider = none, llm/offline.py): the coach's templates speak,
+    free and offline (Tai, 2026-09-21)."""
+    provider = make_provider(LLMSettings(provider="none"))
+    assert isinstance(provider, OfflineProvider) and provider.offline
+    ok, detail = provider.healthcheck()
+    assert ok and "offline" in detail
+    assert provider.with_effort("low") is provider
+    assert provider.usage.calls == 0
 
 
 def test_unknown_provider_and_control() -> None:

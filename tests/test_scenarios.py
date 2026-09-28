@@ -9,17 +9,14 @@ import chess
 import numpy as np
 import pytest
 
-from sidecoach.events import GameStarted, MovePlayed, Resync
+from sidecoach.events import GameStarted, Resync
 from sidecoach.state.pipeline import GamePipeline
+from tests.games import sans_of
 from tests.synth import busy_background, synthetic_board
 
 pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
 
 FRAME = dict(width=1280, height=800)
-
-
-def _played(events) -> list[str]:
-    return [e.san for e in events if isinstance(e, MovePlayed)]
 
 
 class Session:
@@ -50,7 +47,7 @@ class Session:
             self.ts += 0.1
             events = self.pipe.process(frame, self.ts, frame_id=int(self.ts * 10))
             self.events += events
-            out += _played(events)
+            out += sans_of(events)
         self.played += out
         return out
 

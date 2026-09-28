@@ -65,108 +65,15 @@ import pytest
 from sidecoach.events import GameEnded, GameStarted, MovePlayed, Region, Side
 from sidecoach.state.pipeline import GamePipeline
 from sidecoach.vision.pieces import ThemeModel
-from sidecoach.vision.squares import BoardGeometry, row_col, square_at
+from sidecoach.vision.squares import BoardGeometry, square_at
 from sidecoach.vision.theme_cache import ThemeCache
+from tests.games import Scenario, drag_path, scenario
 from tests.synth import (
-    ARROWS,
-    HIGHLIGHTS,
     LOW_CONTRAST_GREY,
-    PIECE_STYLES,
-    THEMES,
     synthetic_board,
 )
 
 pytestmark = pytest.mark.vision
-
-SIZES = (44, 56, 64, 80, 96, 112, 128, 144)
-ARROW_WIDTHS = (0.12, 0.2, 0.3)  # thin lichess-like, chess.com's, a fat one
-PLIES = 16
-
-
-@dataclass(frozen=True)
-class Scenario:
-    seed: int
-    theme: str
-    cell: int
-    bottom: Side
-    sans: tuple[str, ...]
-    # Per ply: "plain" | "drag" | "arrow" | "badge" | "premove" | "select" (the user clicks
-    # a piece before moving it: its square highlighted, its legal moves hinted) | "animate"
-    # (the site slides the piece to its square over a few frames).
-    decorations: tuple[str, ...]
-    style: str = "classic"
-    highlight_colour: str = "yellow"
-    arrow_colour: str = "orange"
-    arrow_width: float = 0.2
-    coordinates: bool = True
-
-    @property
-    def where(self) -> str:
-        return (
-            f"seed {self.seed} ({self.theme}, {self.style} pieces, {self.cell}px, "
-            f"{self.bottom.value} at the bottom, {self.highlight_colour} highlight, "
-            f"{self.arrow_colour} arrow x{self.arrow_width}, "
-            f"coordinates {'on' if self.coordinates else 'off'})"
-        )
-
-
-def scenario(seed: int) -> Scenario:
-    rng = random.Random(seed)
-    board = chess.Board()
-    sans: list[str] = []
-    for _ in range(PLIES):
-        moves = list(board.legal_moves)
-        if not moves or board.is_game_over():
-            break
-        # Prefer captures and developing moves a little, so the games look like games.
-        captures = [m for m in moves if board.is_capture(m)]
-        move = rng.choice(captures) if captures and rng.random() < 0.3 else rng.choice(moves)
-        sans.append(board.san(move))
-        board.push(move)
-    decorations = tuple(
-        rng.choices(
-            ["plain", "drag", "arrow", "badge", "premove", "select", "animate"],
-            [4, 2, 1, 2, 1, 1, 2],
-        )[0]
-        for _ in sans
-    )
-    return Scenario(
-        seed,
-        rng.choice(list(THEMES)),
-        rng.choice(SIZES),
-        rng.choice([Side.WHITE, Side.BLACK]),
-        tuple(sans),
-        decorations,
-        # Half the games on the real set, half on the polygons and their variants.
-        rng.choice([s for s in PIECE_STYLES if PIECE_STYLES[s].real])
-        if rng.random() < 0.5
-        else rng.choice([s for s in PIECE_STYLES if not PIECE_STYLES[s].real]),
-        rng.choice(list(HIGHLIGHTS)),
-        rng.choice(list(ARROWS)),
-        rng.choice(ARROW_WIDTHS),
-        rng.random() < 0.8,
-    )
-
-
-def _drag_path(
-    move: chess.Move, bottom: Side, rng: random.Random
-) -> list[tuple[chess.Square, chess.Square, float, float]]:
-    """The frames of a drag from the move's origin to its destination, as (origin, square
-    under the cursor, dx, dy) for the renderer: one to five frames along the straight
-    line, a touch of wobble, the piece off the cursor's square centre by up to a third
-    of a cell -- a flick or a slow deliberate drag."""
-    r0, c0 = row_col(move.from_square, bottom)
-    r1, c1 = row_col(move.to_square, bottom)
-    frames = rng.choice([1, 2, 3, 5])
-    out = []
-    for i in range(1, frames + 1):
-        t = i / (frames + 1)
-        row = r0 + (r1 - r0) * t + rng.uniform(-0.2, 0.2)
-        col = c0 + (c1 - c0) * t + rng.uniform(-0.2, 0.2)
-        over_r, over_c = min(7, max(0, round(row))), min(7, max(0, round(col)))
-        over = square_at(over_r, over_c, bottom)
-        out.append((move.from_square, over, col - over_c, row - over_r))
-    return out
 
 
 @dataclass(frozen=True)
@@ -225,7 +132,7 @@ def play(sc: Scenario, cache_dir: Path | None = None) -> Played:
         mover = board.turn
         if decoration == "drag" and mover == user_colour:
             # The piece lifted and carried to its square under the outline, fast or slow.
-            for step in _drag_path(move, sc.bottom, rng):
+            for step in drag_path(move, sc.bottom, rng):
                 show(1, dragging=step)
         if decoration == "animate":
             # The site slides the piece to its square, a fast bot reply or a slow setting,
@@ -282,17 +189,8 @@ def play(sc: Scenario, cache_dir: Path | None = None) -> Played:
     return Played(got, list(sc.sans), same_board, cold, starts, bottom)
 
 
-def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
-    if "seed" in metafunc.fixturenames:
-        spec = str(metafunc.config.getoption("--seeds") or "")
-        if not spec:
-            seeds = [1, 2, 3, 4, 5, 6, 7, 8]
-        elif "-" in spec:  # "251-1000": a range of seeds
-            lo, hi = (int(x) for x in spec.split("-", 1))
-            seeds = list(range(lo, hi + 1))
-        else:
-            seeds = list(range(1, int(spec) + 1))
-        metafunc.parametrize("seed", seeds)
+# The seeds a default run plays (tests/conftest.py; `--seeds` sweeps more).
+SEEDS = range(1, 9)
 
 
 def test_a_random_game_is_followed_to_its_position(seed: int, tmp_path: Path) -> None:

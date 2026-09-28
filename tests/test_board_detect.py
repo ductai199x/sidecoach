@@ -8,7 +8,7 @@ import pytest
 
 from sidecoach.events import Region, Side
 from sidecoach.vision.board_detect import detect_boards, fit_score, square_colours, to_gray
-from tests.synth import DARK, LIGHT, bulky_pieces, render_board, synthetic_board, with_overlays
+from tests.synth import DARK, LIGHT, bulky_start, render_board, synthetic_board, with_overlays
 
 pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
 
@@ -77,18 +77,12 @@ def test_a_real_chesscom_page_yields_its_board() -> None:
 def test_whole_cell_shifts_are_not_a_fit() -> None:
     """Inside its 64 cells a shifted window is a perfect board; the cells outside tell."""
     frame = np.full((800, 1280, 3), 90, dtype=np.uint8)
-    render_board(frame, 300, 120, 64, chess_start())
+    render_board(frame, 300, 120, 64, chess.Board())
     gray = to_gray(frame)
     assert fit_score(gray, Region(300, 120, 512, 512), 64.0)[0] >= 0.95
     for dx, dy in ((64, 0), (-64, 0), (0, 64), (0, -64), (128, 0), (64, 64)):
         fit, _ = fit_score(gray, Region(300 + dx, 120 + dy, 512, 512), 64.0)
         assert fit < 0.5, (dx, dy, fit)
-
-
-def chess_start():
-    import chess
-
-    return chess.Board()
 
 
 def test_low_contrast_board_is_found_in_place() -> None:
@@ -133,18 +127,11 @@ def test_locked_colours_keep_the_theme_polarity(theme: dict[str, Any]) -> None:
     assert fit_score(gray, Region(364, 120, 512, 512), 64.0, colours)[0] < 0.5
 
 
-def _game_board(frame: np.ndarray, x0: int, y0: int, cell: int) -> None:
-    """A start position drawn with bulky pieces, whose coarse checker score is well under
-    an empty board's, so the coarse ranking alone would leave it behind."""
-    render_board(frame, x0, y0, cell, chess.Board())
-    bulky_pieces(frame, x0, y0, cell, chess.Board())
-
-
 def test_empty_board_does_not_hide_the_game_board() -> None:
     """An empty board's coarse score sits at 1.0 on a plateau of positions; taking the
     top scores per scale used to fill the quota with that plateau."""
     frame = np.full((900, 1400, 3), 90, dtype=np.uint8)
-    _game_board(frame, 60, 100, 48)
+    bulky_start(frame, 60, 100, 48)
     render_board(frame, 800, 100, 48, chess.Board(None))
     boards = detect_boards(frame)
     assert len(boards) == 2, boards
@@ -152,7 +139,7 @@ def test_empty_board_does_not_hide_the_game_board() -> None:
     assert abs(boards[1].region.x - 800) <= 2 and boards[1].occupied == 0, boards
 
     larger = np.full((900, 1400, 3), 90, dtype=np.uint8)
-    _game_board(larger, 60, 100, 56)
+    bulky_start(larger, 60, 100, 56)
     render_board(larger, 800, 100, 48, chess.Board(None))
     boards = detect_boards(larger)
     assert len(boards) == 2 and abs(boards[0].cell_px - 56) <= 0.5, boards
@@ -168,7 +155,7 @@ def test_a_larger_checkerboard_is_not_a_board_and_does_not_hide_the_game_board()
     for game_x, checker_x in ((60, 700), (900, 100)):
         frame = np.full((900, 1400, 3), 90, dtype=np.uint8)
         _checkerboard(frame, checker_x, 100, 48, 12)
-        _game_board(frame, game_x, 100, 48)
+        bulky_start(frame, game_x, 100, 48)
         boards = detect_boards(frame)
         assert len(boards) == 1 and abs(boards[0].region.x - game_x) <= 2, (game_x, boards)
 
@@ -204,7 +191,7 @@ def test_boards_closer_than_half_a_cell_read_as_one_pattern(gap: float) -> None:
 
 def test_board_flush_with_the_frame_corner() -> None:
     frame = np.full((600, 800, 3), 90, dtype=np.uint8)
-    render_board(frame, 800 - 512, 600 - 512, 64, chess_start())
+    render_board(frame, 800 - 512, 600 - 512, 64, chess.Board())
     boards = detect_boards(frame)
     assert boards and abs(boards[0].cell_px - 64) <= 0.5
     assert abs(boards[0].region.x - 288) <= 2 and abs(boards[0].region.y - 88) <= 2

@@ -9,10 +9,9 @@ import pytest
 
 from sidecoach.analysis import positional
 from sidecoach.analysis.traps import _worse
-from sidecoach.coach import idea as idea_of
 from sidecoach.coach import situation
 from sidecoach.coach.coach import _said
-from sidecoach.events import Analysis, Line
+from sidecoach.events import Line
 
 
 def _line(moves: list[str], score: float, mate: int | None = None) -> Line:
@@ -102,21 +101,6 @@ def test_a_trap_is_worse_than_the_best_by_a_margin() -> None:
     trap = _line(["h2h3", "h7f5", "g3g4", "g7g4", "g1g4", "f5g4", "h3h2", "g4g1"], 0.0, mate=-9)
     assert _worse(trap, _line(["h1e4"], 0.06))
     assert not _worse(_line(["h1e4"], 0.04), _line(["h1e4"], 0.06))
-
-
-def test_material_given_for_their_attack_is_not_won() -> None:
-    # 29.exf4 in a lost game: the knight Black gives with ...Ng4+ is not "won back".
-    board = chess.Board("6rk/3b1prq/1p1p1n2/p1pP1n1p/P1P1pp2/2P1P1PP/R6K/2BQ1NRB w - - 0 29")
-    moves = ["e3f4", "f6g4", "h3g4", "h5h4", "h1e4", "h4g3", "h2g2", "f5h4", "g2h3", "d7g4"]
-    analysis = Analysis(
-        game_id="",
-        fen=board.fen(),
-        ply=0,
-        lines=[_line(moves, 0.055)],
-        decisive=False,
-        only_move=False,
-    )
-    assert idea_of.read(board, analysis).goal != "win"
 
 
 def test_one_good_move_is_said_in_the_singular() -> None:

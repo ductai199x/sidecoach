@@ -15,8 +15,7 @@ import pytest
 
 from sidecoach.state.pipeline import GamePipeline
 from sidecoach.state.reconcile import in_flight
-from sidecoach.vision.pieces import Side
-from tests.synth import synthetic_board
+from tests.synth import puzzle_frame
 
 
 def test_a_piece_that_stops_partway_and_goes_on_is_in_flight() -> None:
@@ -27,20 +26,6 @@ def test_a_piece_that_stops_partway_and_goes_on_is_in_flight() -> None:
     assert not in_flight([m("g1f3"), m("e7e5"), m("f3g1")])
     assert not in_flight([m("c8c7"), m("h1f1"), m("c7a7")])  # on, but another way
     assert not in_flight([m("e2e4"), m("e7e5"), m("g1f3")])
-
-
-def _frame(board: chess.Board, bottom: chess.Color, **kw: object):  # noqa: ANN202
-    return synthetic_board(
-        board=board,
-        x0=300,
-        y0=120,
-        cell=64,
-        width=1280,
-        height=800,
-        bottom=Side.WHITE if bottom == chess.WHITE else Side.BLACK,
-        coordinates=True,
-        **kw,  # type: ignore[arg-type]
-    )
 
 
 # The phone's frame period.
@@ -80,10 +65,14 @@ def _played(
             if u < 1.0:
                 p = u**power
                 sq = (move.from_square, move.to_square)
-                img = _frame(b, solver, highlight=move, animating=(*sq, p))
+                img = puzzle_frame(b, solver, highlight=move, animating=(*sq, p))
                 if p > 0.05:
-                    g1 = _frame(b, solver, highlight=move, animating=(*sq, max(0.0, p - 0.08)))
-                    g2 = _frame(b, solver, highlight=move, animating=(*sq, max(0.0, p - 0.16)))
+                    g1 = puzzle_frame(
+                        b, solver, highlight=move, animating=(*sq, max(0.0, p - 0.08))
+                    )
+                    g2 = puzzle_frame(
+                        b, solver, highlight=move, animating=(*sq, max(0.0, p - 0.16))
+                    )
                     img = (
                         0.70 * img.astype(np.float32)
                         + 0.20 * g1.astype(np.float32)
@@ -92,13 +81,13 @@ def _played(
                 return img
             b.push(move)
             last = move
-        return _frame(b, solver, highlight=last)
+        return puzzle_frame(b, solver, highlight=last)
 
     pipe = GamePipeline()
     ts = 0.0
     for _ in range(3):
         ts += PERIOD
-        pipe.process(_frame(chess.Board(), chess.WHITE), ts, frame_id=int(ts * 1000))
+        pipe.process(puzzle_frame(chess.Board(), chess.WHITE), ts, frame_id=int(ts * 1000))
     k = 0
     while (time := phase + k * PERIOD) <= end:
         ts += PERIOD

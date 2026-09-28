@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from sidecoach.config import Settings, VoiceSettings, secrets_get, secrets_set, to_toml
+from sidecoach.config import Settings, secrets_get, secrets_set, to_toml
 from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.server import build_app
 
@@ -20,10 +20,7 @@ def _client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient
     monkeypatch.setenv("SIDECOACH_CONFIG", str(tmp_path / "sidecoach.toml"))
     monkeypatch.delenv("SIDECOACH_DATA_DIR", raising=False)
     engine = PanelEngine(
-        Settings(data_dir=tmp_path, voice=VoiceSettings()),
-        analysis=False,
-        coach=False,
-        frame_source=iter(()),
+        Settings(data_dir=tmp_path), analysis=False, coach=False, frame_source=iter(())
     )
     return TestClient(build_app(engine)), engine
 

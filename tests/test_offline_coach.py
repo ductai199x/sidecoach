@@ -3,47 +3,36 @@ and its templates, so the app works free and offline (Tai, 2026-09-21)."""
 
 from __future__ import annotations
 
-import chess
-
-from sidecoach.coach.coach import Coach, Trigger
-from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
+from sidecoach.coach.coach import Trigger
 from sidecoach.coach.verdicts import MATE
-from sidecoach.config import LLMSettings
-from sidecoach.events import Analysis, DisclosureLevel, Line, MovePlayed
-from sidecoach.llm.factory import make_provider
+from sidecoach.events import Analysis, DisclosureLevel, Line
 from sidecoach.llm.offline import OfflineProvider
-from tests.test_coach import (
-    _mate_analysis,
-    _mate_in_one_played,
-    _messages,
-    _play_to_scholar,
-    _start,
+from tests.coaching import (
+    drain,
+    mate_analysis,
+    mate_played,
+    offline_coach,
+    play,
+    play_to_scholar,
+    start_game,
 )
 
 
-def test_the_factory_gives_the_offline_provider_and_it_reports_itself() -> None:
-    provider = make_provider(LLMSettings(provider="none"))
-    assert isinstance(provider, OfflineProvider) and provider.offline
-    ok, detail = provider.healthcheck()
-    assert ok and "offline" in detail
-    assert provider.with_effort("low") is provider
-    assert provider.usage.calls == 0
-
-
 def test_a_decisive_moment_and_a_move_get_the_templates_with_no_call() -> None:
-    provider = OfflineProvider()
-    coach = Coach(provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
-    _play_to_scholar(coach)
+    coach = offline_coach()
+    provider = coach.speaker.provider
+    assert isinstance(provider, OfflineProvider)
+    play_to_scholar(coach)
     # The decisive moment: the question template, no model.
-    coach.on_event(_mate_analysis(6), 7.0)
-    out = _messages(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    out = drain(coach)
     assert len(out) == 1 and out[0].trigger is Trigger.DECISIVE_QUESTION
     assert out[0].text and "?" in out[0].text
     assert coach.speaker.fallbacks == 1
     # The player's best move: the verdict written from the board -- here the mate, and
     # never the move itself.
-    _mate_in_one_played(coach)
-    out = _messages(coach)
+    mate_played(coach)
+    out = drain(coach)
     assert len(out) == 1 and out[0].trigger is Trigger.POST_MOVE
     assert out[0].text in MATE and "Qxf7#" not in out[0].text
     assert provider.usage.calls == 0, "nothing was ever called"
@@ -56,16 +45,16 @@ def test_the_first_hints_lead_is_drawn_when_the_hint_is_said() -> None:
     from sidecoach.coach.idea_words import _MATE_ONE_LEADS
     from sidecoach.coach.situation import spoken
 
-    coach = Coach(OfflineProvider(), policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
-    _play_to_scholar(coach)
+    coach = offline_coach()
+    play_to_scholar(coach)
     for ts in (7.0, 7.5):  # the engine's word twice over; nothing asked
-        coach.on_event(_mate_analysis(6, decisive=False), ts)
-    _messages(coach)
+        coach.on_event(mate_analysis(6, decisive=False), ts)
+    drain(coach)
     position = coach.positions[6]
     lead = position.leads["lead:mate-one"]
     assert sorted(coach._bags._bags["lead:mate-one"]) == sorted(_MATE_ONE_LEADS)
     coach.ask("hint", 8.0)
-    out = _messages(coach)
+    out = drain(coach)
     assert len(out) == 1, out
     assert out[0].text.lower().startswith(spoken(lead).lower()), (lead, out[0].text)
     left = coach._bags._bags["lead:mate-one"]
@@ -73,7 +62,7 @@ def test_the_first_hints_lead_is_drawn_when_the_hint_is_said() -> None:
     assert position.leads == {}
     # The next hint is the focus rung's template, from the board as well.
     coach.ask("another hint", 9.0)
-    out = _messages(coach)
+    out = drain(coach)
     assert len(out) == 1 and out[0].text and out[0].level is DisclosureLevel.FOCUS
 
 
@@ -81,25 +70,9 @@ def test_no_decisive_question_on_an_obvious_recapture() -> None:
     """9...Nxd4 in a Dragon drew "This is a moment to slow down" (a master-game pass,
     offline, 2026-09-21): when the opponent has just captured and the engine's move takes
     back on that square, the lines diverge only because everything else hangs a piece."""
-    coach = Coach(OfflineProvider(), policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
-    _start(coach)
-    board = chess.Board()
-    for ply, san in enumerate(("e4", "c5", "Nf3", "d6", "d4", "cxd4"), start=1):
-        move = board.parse_san(san)
-        before = board.fen()
-        board.push(move)
-        coach.on_event(
-            MovePlayed(
-                game_id="g",
-                ply=ply,
-                san=san,
-                uci=move.uci(),
-                fen_before=before,
-                fen_after=board.fen(),
-                by_user=(ply % 2 == 1),
-            ),
-            float(ply),
-        )
+    coach = offline_coach()
+    start_game(coach)
+    board = play(coach, ("e4", "c5", "Nf3", "d6", "d4", "cxd4"))
     lines = [
         Line(moves=["f3d4"], depth=12, expected_score=0.52),
         Line(moves=["c2c3"], depth=12, expected_score=0.35),
@@ -108,7 +81,7 @@ def test_no_decisive_question_on_an_obvious_recapture() -> None:
         Analysis(game_id="g", fen=board.fen(), ply=6, lines=lines, decisive=True, only_move=False),
         7.0,
     )
-    assert _messages(coach) == [], "the recapture is the move; no question"
+    assert drain(coach) == [], "the recapture is the move; no question"
     # The same gap with a zwischenzug as the best move keeps the question.
     lines = [
         Line(moves=["f1b5"], depth=12, expected_score=0.52),
@@ -118,5 +91,5 @@ def test_no_decisive_question_on_an_obvious_recapture() -> None:
         Analysis(game_id="g", fen=board.fen(), ply=6, lines=lines, decisive=True, only_move=False),
         8.0,
     )
-    out = _messages(coach)
+    out = drain(coach)
     assert len(out) == 1 and out[0].trigger is Trigger.DECISIVE_QUESTION

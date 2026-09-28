@@ -16,24 +16,9 @@ import chess
 import pytest
 
 from sidecoach.state.pipeline import GamePipeline
-from sidecoach.vision.pieces import Side
-from tests.synth import synthetic_board
+from tests.synth import puzzle_frame
 
 pytestmark = pytest.mark.vision
-
-
-def _frame(board: chess.Board, bottom: bool, **kw: object):  # noqa: ANN202
-    return synthetic_board(
-        board=board,
-        x0=300,
-        y0=120,
-        cell=64,
-        width=1280,
-        height=800,
-        bottom=Side.WHITE if bottom == chess.WHITE else Side.BLACK,
-        coordinates=True,
-        **kw,  # type: ignore[arg-type]
-    )
 
 
 class _Feed:
@@ -57,15 +42,15 @@ def test_the_solvers_move_and_the_instant_reply_are_both_recorded() -> None:
     # Lichess 000rO at two frames a second: the setup move a6-a5 highlighted, then Bc7 and
     # the reply Kb4 land between two frames.
     f = _Feed(2.0)
-    f.show(_frame(chess.Board(), chess.WHITE), 3)
+    f.show(puzzle_frame(chess.Board(), chess.WHITE), 3)
     board = chess.Board("3R4/8/K7/pB2b3/1p6/1P2k3/3p4/8 w - - 4 58")
     solver = chess.BLACK
-    f.show(_frame(board, solver), 1)
+    f.show(puzzle_frame(board, solver), 1)
     setup = board.push_uci("a6a5")
-    f.show(_frame(board, solver, highlight=setup), 4)
+    f.show(puzzle_frame(board, solver, highlight=setup), 4)
     board.push_uci("e5c7")
     reply = board.push_uci("a5b4")
-    f.show(_frame(board, solver, highlight=reply), 4)
+    f.show(puzzle_frame(board, solver, highlight=reply), 4)
     assert f.rec.board.board_fen() == board.board_fen()
     assert [m.uci() for m in f.rec.board.move_stack][-2:] == ["e5c7", "a5b4"]
 
@@ -74,18 +59,18 @@ def test_a_turned_board_is_not_adopted_while_a_piece_slides_in() -> None:
     # A game from White's side, then the next puzzle from Black's: its setup move is caught
     # sliding on the first frames that show it turned round.
     f = _Feed(2.0)
-    f.show(_frame(chess.Board(), chess.WHITE), 3)
+    f.show(puzzle_frame(chess.Board(), chess.WHITE), 3)
     board = chess.Board("4rrk1/ppp2pp1/7p/3n4/3P3q/1P2p2P/P5P1/R1BQRBK1 w - - 2 23")
     solver = chess.BLACK
     setup = chess.Move.from_uci("c1b2")
-    sliding = _frame(board, solver, animating=(setup.from_square, setup.to_square, 0.5))
+    sliding = puzzle_frame(board, solver, animating=(setup.from_square, setup.to_square, 0.5))
     f.show(sliding, 2)  # the labels read turned twice, the bishop still in flight
     board.push(setup)
-    f.show(_frame(board, solver, highlight=setup), 4)
+    f.show(puzzle_frame(board, solver, highlight=setup), 4)
     assert f.rec.board.board_fen() == board.board_fen()
     # The solver plays on, and the record follows.
     move = board.push_uci("h4f2")
-    f.show(_frame(board, solver, highlight=move), 3)
+    f.show(puzzle_frame(board, solver, highlight=move), 3)
     assert f.rec.board.board_fen() == board.board_fen()
     assert f.rec.board.move_stack and f.rec.board.move_stack[-1].uci() == "h4f2"
 
@@ -98,15 +83,15 @@ def test_the_next_puzzle_is_not_adopted_as_its_setup_move_lights_up() -> None:
     # invented 1...Qxh7 2.Qb1 2...Qh6. The two reads must show the same view: the same
     # pieces and the same lit squares.
     f = _Feed(10.0)
-    f.show(_frame(chess.Board(), chess.WHITE), 3)
+    f.show(puzzle_frame(chess.Board(), chess.WHITE), 3)
     board = chess.Board("2k5/7N/3p3q/1n2p2P/4P3/3P4/2P1KPP1/3Q1B1R w - - 0 1")
     solver = chess.BLACK
     setup = chess.Move.from_uci("d1b1")
-    f.show(_frame(board, solver), 4)  # the puzzle, nothing lit yet
-    f.show(_frame(board, solver, highlight=setup), 3)  # lit, the queen not yet off d1
+    f.show(puzzle_frame(board, solver), 4)  # the puzzle, nothing lit yet
+    f.show(puzzle_frame(board, solver, highlight=setup), 3)  # lit, the queen not yet off d1
     for progress in (0.35, 0.8):
         f.show(
-            _frame(
+            puzzle_frame(
                 board,
                 solver,
                 highlight=setup,
@@ -114,12 +99,12 @@ def test_the_next_puzzle_is_not_adopted_as_its_setup_move_lights_up() -> None:
             )
         )
     board.push(setup)
-    f.show(_frame(board, solver, highlight=setup), 6)
+    f.show(puzzle_frame(board, solver, highlight=setup), 6)
     assert f.rec.board.board_fen() == board.board_fen()
     assert f.rec.board.turn == chess.BLACK, "the solver is to move"
     # The fork the puzzle is about, recorded as the solver's move and nothing else.
     fork = board.push_uci("b5c3")
-    f.show(_frame(board, solver, highlight=fork), 6)
+    f.show(puzzle_frame(board, solver, highlight=fork), 6)
     assert f.rec.board.board_fen() == board.board_fen()
     played = [m.uci() for m in f.rec.board.move_stack]
     assert played[-1] == "b5c3" and "h6h7" not in played, played

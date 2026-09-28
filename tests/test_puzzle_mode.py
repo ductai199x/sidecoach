@@ -5,13 +5,16 @@ its own coach and log, the outcome to the profile once, the screen's engine unto
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import chess
 
 from sidecoach.events import GameStarted, MovePlayed, Side
 from sidecoach.profile.puzzles import Puzzle
+from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.puzzle import PuzzleSession
+from tests.fakes import puzzle_file
 
 FORK = Puzzle(
     id="000Pw",
@@ -106,16 +109,11 @@ def test_a_mate_puzzle_and_giving_up_on_it() -> None:
 
 
 def _csv(tmp_path: Path) -> None:
-    header = (
-        "PuzzleId,FEN,Moves,Rating,RatingDeviation,Popularity,NbPlays,Themes,GameUrl,OpeningTags"
-    )
     rows = [
         f"{FORK.id},{FORK.fen},{' '.join(FORK.moves)},{FORK.rating},76,92,629,fork endgame,u,",
         f"{MATE.id},{MATE.fen},{' '.join(MATE.moves)},{MATE.rating},70,95,900,mateIn1,u,",
     ]
-    (tmp_path / "puzzles").mkdir()
-    lines = [header, *rows, ""]
-    (tmp_path / "puzzles" / "sample.csv").write_text("\n".join(lines), encoding="utf-8")
+    puzzle_file(tmp_path / "puzzles" / "sample.csv", rows)
 
 
 def _logged(client, puzzle_id: str, prefix: str) -> None:  # noqa: ANN001
@@ -132,17 +130,16 @@ def _logged(client, puzzle_id: str, prefix: str) -> None:  # noqa: ANN001
     raise AssertionError(f"no line {prefix!r} in {lines}")
 
 
-def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(tmp_path: Path) -> None:
+def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path
+) -> None:
     from fastapi.testclient import TestClient
 
-    from sidecoach.config import Settings, VoiceSettings
     from sidecoach.profile.store import Store
-    from sidecoach.ui.panel import PanelEngine
     from sidecoach.ui.server import build_app
 
     _csv(tmp_path)
-    settings = Settings(data_dir=tmp_path, voice=VoiceSettings())
-    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+    engine = make_panel()
     engine.puzzle_motifs[FORK.id] = "fork"
     engine.practice_ids = [FORK.id, MATE.id]
     client = TestClient(build_app(engine))
@@ -197,17 +194,16 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(tmp_path
     client.post(f"/api/puzzle/{MATE.id}/close")
 
 
-def test_puzzles_fetched_after_the_server_started_open_in_a_room(tmp_path: Path) -> None:
+def test_puzzles_fetched_after_the_server_started_open_in_a_room(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path
+) -> None:
     # Setup fetches the puzzles while the app runs: the session finds them at its next
     # Start and recommends one, and the room must find it too, without a restart.
     from fastapi.testclient import TestClient
 
-    from sidecoach.config import Settings, VoiceSettings
-    from sidecoach.ui.panel import PanelEngine
     from sidecoach.ui.server import build_app
 
-    settings = Settings(data_dir=tmp_path, voice=VoiceSettings())
-    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+    engine = make_panel()
     client = TestClient(build_app(engine))
     assert client.post(f"/api/puzzle/{FORK.id}/open").json()["ok"] is False
     _csv(tmp_path)

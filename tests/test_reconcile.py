@@ -1,7 +1,4 @@
-import functools
-
 import chess
-import numpy as np
 import pytest
 
 from sidecoach.events import (
@@ -9,7 +6,6 @@ from sidecoach.events import (
     GameStarted,
     MovePlayed,
     PositionChanged,
-    Region,
     Resync,
     Side,
     Takeback,
@@ -17,38 +13,22 @@ from sidecoach.events import (
 )
 from sidecoach.state.reconcile import Reconciler, cell_agrees
 from sidecoach.vision.pieces import CellReading, ThemeModel
-from sidecoach.vision.squares import BoardGeometry, row_col
-from tests.synth import DARK, LIGHT, RED, YELLOW, synthetic_board, tint
+from sidecoach.vision.squares import row_col
+from tests.games import recogniser, sans_of
+from tests.synth import GEOM, synthetic_board
 
 pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
 
 
-GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
-
-
-@functools.cache
-def _model(bottom: Side) -> ThemeModel:
-    """The recogniser learned from the start position with `bottom` at the bottom, built
-    once and shared by every test: it reads pixels and nothing else (its cell cache compares
-    crops pixel for pixel), so a model shared reads every frame as a fresh one would. It
-    was built again for every test, a third of this file's time. A plain module helper,
-    not a fixture: the phone's fixture maker calls these tests directly."""
-    model = ThemeModel.from_start_position(synthetic_board(bottom=bottom), GEOM, bottom)
-    assert model is not None
-    return model
-
-
 def _setup(bottom: Side = Side.WHITE) -> tuple[ThemeModel, Reconciler]:
-    return _model(bottom), Reconciler(bottom=bottom, user_side=bottom, settle_frames=2)
+    """The recogniser learned once for `bottom` (a plain helper, not a fixture: the phone's
+    fixture maker calls these tests directly), and a fresh reconciler."""
+    return recogniser(bottom), Reconciler(bottom=bottom, user_side=bottom, settle_frames=2)
 
 
 def _feed(model, rec, board, bottom, ts, highlight=None, dragging=None):
     frame = synthetic_board(board=board, bottom=bottom, highlight=highlight, dragging=dragging)
     return rec.update(model.classify_frame(frame, GEOM), ts)
-
-
-def _played(events) -> list[str]:
-    return [e.san for e in events if isinstance(e, MovePlayed)]
 
 
 def _play(model, rec, board, sans, bottom=Side.WHITE, ts=0.0):
@@ -77,10 +57,10 @@ def test_moves_are_committed_after_settling() -> None:
         move = board.parse_san(san)
         board.push(move)
         first = _feed(model, rec, board, Side.WHITE, ts + 0.1, highlight=move)
-        assert not _played(first), "committed on one frame"
+        assert not sans_of(first), "committed on one frame"
         ts += 0.2
         second = _feed(model, rec, board, Side.WHITE, ts, highlight=move)
-        assert _played(second) == [san]
+        assert sans_of(second) == [san]
         by_user += [e.by_user for e in second if isinstance(e, MovePlayed)]
         think_ms += [e.think_ms for e in second if isinstance(e, MovePlayed)]
     assert rec.board.fen() == board.fen()
@@ -100,10 +80,10 @@ def test_first_move_is_not_committed_mid_drag() -> None:
     centred = ((0.0, 0.0),) * 4
     for i, (dx, dy) in enumerate(off_centre + centred):
         drag = (chess.E2, chess.E4, dx, dy)
-        assert not _played(_feed(model, rec, board, Side.WHITE, 0.1 * i, dragging=drag))
+        assert not sans_of(_feed(model, rec, board, Side.WHITE, 0.1 * i, dragging=drag))
     move = board.push_san("e4")
     _feed(model, rec, board, Side.WHITE, 1.0, highlight=move)
-    assert _played(_feed(model, rec, board, Side.WHITE, 1.1, highlight=move)) == ["e4"]
+    assert sans_of(_feed(model, rec, board, Side.WHITE, 1.1, highlight=move)) == ["e4"]
 
 
 def test_drag_in_progress_is_held() -> None:
@@ -113,7 +93,7 @@ def test_drag_in_progress_is_held() -> None:
     lifted = board.copy()
     lifted.remove_piece_at(chess.E2)
     for i in range(5):
-        assert not _played(_feed(model, rec, lifted, Side.WHITE, 0.1 * i))
+        assert not sans_of(_feed(model, rec, lifted, Side.WHITE, 0.1 * i))
     assert rec.board.fen() == chess.Board().fen()
 
 
@@ -125,10 +105,10 @@ def test_long_hover_over_destination_is_not_a_move() -> None:
 
     for i in range(8):
         drag = (chess.E7, chess.E5, 0.15, -0.2)
-        assert not _played(_feed(model, rec, board, Side.WHITE, 0.3 + 0.1 * i, dragging=drag))
+        assert not sans_of(_feed(model, rec, board, Side.WHITE, 0.3 + 0.1 * i, dragging=drag))
     dropped = board.push_san("e5")
     _feed(model, rec, board, Side.WHITE, 1.2, highlight=dropped)
-    assert _played(_feed(model, rec, board, Side.WHITE, 1.3, highlight=dropped)) == ["e5"]
+    assert sans_of(_feed(model, rec, board, Side.WHITE, 1.3, highlight=dropped)) == ["e5"]
 
 
 def test_browsing_history_is_not_a_takeback() -> None:
@@ -162,7 +142,7 @@ def test_browsing_history_is_not_a_takeback() -> None:
     reply = board.push_san("a6")
     events = _feed(model, rec, board, Side.WHITE, ts + 0.1, highlight=reply)
     events += _feed(model, rec, board, Side.WHITE, ts + 0.2, highlight=reply)
-    assert _played(events) == ["a6"]
+    assert sans_of(events) == ["a6"]
     assert rec.viewing is None
     assert rec.board.fen() == board.fen()
 
@@ -185,7 +165,7 @@ def test_takeback_is_a_new_move_from_an_earlier_position() -> None:
     events = _feed(model, rec, board, Side.WHITE, 1.3, highlight=move)
     takebacks = [e for e in events if isinstance(e, Takeback)]
     assert len(takebacks) == 1 and takebacks[0].plies == 2
-    assert _played(events) == ["d4"]
+    assert sans_of(events) == ["d4"]
     assert rec.pgn() == "1. e4 e5 2. d4"
     assert rec.board.fen() == board.fen()
 
@@ -211,25 +191,11 @@ def test_animation_across_a_still_highlighted_square_is_not_a_move() -> None:
     ):
         drag = (chess.B5, over, dx, dy)
         events = _feed(model, rec, board, Side.WHITE, ts, highlight=reply, dragging=drag)
-        assert not _played(events), "animation frame taken as a move"
+        assert not sans_of(events), "animation frame taken as a move"
     # Landed: b5 and d6 highlighted, check on the black king.
     move = board.push_san("Nd6+")
     _feed(model, rec, board, Side.WHITE, 2.0, highlight=move)
-    assert _played(_feed(model, rec, board, Side.WHITE, 2.1, highlight=move)) == ["Nd6+"]
-
-
-def test_highlight_kinds() -> None:
-    model = _model(Side.WHITE)
-    light = np.array(LIGHT, dtype=np.float32)
-    assert model.highlight_kind(light, 0, 0) == "none"
-    assert model.highlight_kind(np.array(tint(LIGHT, YELLOW), dtype=np.float32), 0, 0) == "move"
-    assert model.highlight_kind(np.array(tint(LIGHT, RED), dtype=np.float32), 0, 0) == "red"
-    assert model.highlight_kind(np.array([245, 245, 245], dtype=np.float32), 0, 0) == "foreign"
-    assert model.highlight_kind(np.array([200, 200, 200], dtype=np.float32), 0, 0) == "foreign"
-    dark = np.array(DARK, dtype=np.float32)
-    assert model.highlight_kind(dark, 0, 1) == "none"
-    assert model.highlight_kind(np.array(tint(DARK, YELLOW), dtype=np.float32), 0, 1) == "move"
-    assert model.highlight_kind(np.array([200, 200, 200], dtype=np.float32), 0, 1) == "foreign"
+    assert sans_of(_feed(model, rec, board, Side.WHITE, 2.1, highlight=move)) == ["Nd6+"]
 
 
 def test_red_marks_do_not_block_moves() -> None:
@@ -247,7 +213,7 @@ def test_red_marks_do_not_block_moves() -> None:
     r, c = row_col(chess.E5, Side.WHITE)
     assert readings[r][c].highlighted is True
     events = rec.update(readings, 1.0) + rec.update(readings, 1.1)
-    assert _played(events) == ["e5"]
+    assert sans_of(events) == ["e5"]
 
 
 def test_two_move_catch_up_when_one_move_was_missed() -> None:
@@ -259,7 +225,7 @@ def test_two_move_catch_up_when_one_move_was_missed() -> None:
     events = []
     for ts in (0.1, 0.2, 0.3):
         events += _feed(model, rec, board, Side.WHITE, ts, highlight=reply)
-    assert _played(events) == ["e4", "c5"]
+    assert sans_of(events) == ["e4", "c5"]
     assert rec.board.fen() == board.fen()
 
 
@@ -289,7 +255,7 @@ def test_ambiguous_paths_are_not_committed() -> None:
         r, c = row_col(sq, Side.WHITE)
         readings[r][c] = CellReading("unknown", None, None, 0.0, 0.05, 0.0, False)
     for ts in (1.0, 1.1, 1.2):
-        assert not _played(rec.update(readings, ts))
+        assert not sans_of(rec.update(readings, ts))
 
 
 def test_stale_cell_does_not_stall_the_game() -> None:
@@ -310,7 +276,7 @@ def test_stale_cell_does_not_stall_the_game() -> None:
     frame = synthetic_board(board=board, highlight=move)
     events = rec.update(poison(model.classify_frame(frame, GEOM)), 1.0)
     events += rec.update(poison(model.classify_frame(frame, GEOM)), 1.1)
-    assert _played(events) == ["e4"]
+    assert sans_of(events) == ["e4"]
 
 
 def test_promotion_and_en_passant() -> None:
@@ -325,7 +291,7 @@ def test_promotion_and_en_passant() -> None:
     rec2.board = promo.copy()
     rec2._started = True
     promo.push_san("a8=N")
-    assert _played(_feed(model, rec2, promo, Side.WHITE, 0.0)) == ["a8=N"]
+    assert sans_of(_feed(model, rec2, promo, Side.WHITE, 0.0)) == ["a8=N"]
 
 
 def test_move_from_start_position_mid_game_is_a_new_game() -> None:
@@ -346,7 +312,7 @@ def test_move_from_start_position_mid_game_is_a_new_game() -> None:
     assert len(ended) == 1 and ended[0].pgn == "1. e4 e5 2. Nf3"
     assert any(isinstance(e, GameStarted) for e in events)
     assert not any(isinstance(e, Takeback) for e in events)
-    assert _played(events) == ["d4"]
+    assert sans_of(events) == ["d4"]
     assert rec.game_id != first_id and rec.pgn() == "1. d4"
 
 
@@ -376,14 +342,14 @@ def test_position_resync_after_a_long_gap() -> None:
     assert rec.board.board_fen() == board.board_fen()
     assert rec.board.has_kingside_castling_rights(chess.BLACK)  # king and rook at home
     assert not rec.board.has_castling_rights(chess.WHITE)  # white castled
-    assert not _played(events)
+    assert not sans_of(events)
 
     # The next move settles whose turn it was and is committed normally.
     move = board.push_san("d6")
     events = []
     for ts in (2.0, 2.1):
         events += _feed(model, rec, board, Side.WHITE, ts, highlight=move)
-    assert _played(events) == ["d6"]
+    assert sans_of(events) == ["d6"]
     assert not rec.turn_unknown
     assert rec.board.fen().split()[0] == board.board_fen()
     assert rec.pgn() == "1... d6"
@@ -416,7 +382,7 @@ def test_move_from_adopted_position_is_a_takeback_not_a_new_game() -> None:
         events += _feed(model, rec, adopted, Side.WHITE, ts, highlight=move)
     assert any(isinstance(e, Takeback) and e.plies == 2 for e in events)
     assert not any(isinstance(e, GameEnded) for e in events)
-    assert _played(events) == ["d3"]
+    assert sans_of(events) == ["d3"]
     assert rec.board.fen().split()[0] == adopted.board_fen()
 
 
@@ -436,7 +402,7 @@ def test_takeback_move_legal_only_in_the_earlier_position() -> None:
     for ts in (1.2, 1.3):
         events += _feed(model, rec, earlier, Side.WHITE, ts, highlight=move)
     assert any(isinstance(e, Takeback) and e.plies == 1 for e in events)
-    assert _played(events) == ["Bc4"]
+    assert sans_of(events) == ["Bc4"]
     assert rec.board.fen() == earlier.fen()
 
 
@@ -510,7 +476,7 @@ def test_badge_arriving_with_the_move_does_not_block_it() -> None:
     events = []
     for i in range(8):
         events += rec.update(badge(model.classify_frame(frame, GEOM)), 2.0 + 0.1 * i)
-    assert _played(events) == ["Qxf7#"]
+    assert sans_of(events) == ["Qxf7#"]
 
 
 def test_story_seen_before_a_drag_is_extended_after_it() -> None:
@@ -536,7 +502,7 @@ def test_story_seen_before_a_drag_is_extended_after_it() -> None:
         nonlocal ts
         for _ in range(frames):
             ts += 0.1
-            played.extend(_played(_feed(model, rec, board, Side.WHITE, ts, dragging=dragging)))
+            played.extend(sans_of(_feed(model, rec, board, Side.WHITE, ts, dragging=dragging)))
 
     see(2)
     board.push_san("Ke7")
@@ -588,7 +554,7 @@ def test_mate_settles_with_two_badge_cells_as_wildcards() -> None:
     events = []
     for i in range(8):
         events += rec.update(badge(model.classify_frame(frame, GEOM)), 1.0 + 0.1 * i)
-    assert _played(events) == ["Kh6", "Qaf8#"]
+    assert sans_of(events) == ["Kh6", "Qaf8#"]
     assert any(isinstance(e, GameEnded) for e in events)
 
 
@@ -627,7 +593,7 @@ def test_a_queen_nobody_can_read_is_not_moved_there_and_back(frames: int) -> Non
             ts += 0.1
             frame = synthetic_board(board=board, bottom=Side.BLACK, highlight=move, badge=badge)
             events += rec.update(blind_queens(model.classify_frame(frame, GEOM)), ts)
-    told = _played(events)
+    told = sans_of(events)
     assert all(san in played for san in told), told
 
 
@@ -696,10 +662,10 @@ def test_opponent_move_waits_while_its_squares_are_under_the_drag() -> None:
     for i in range(4):
         drag = (chess.D2, chess.E5, 0.05, 0.05)
         events += _feed(model, rec, board, Side.WHITE, 1.0 + 0.1 * i, dragging=drag)
-    assert not _played(events)
+    assert not sans_of(events)
     for i in range(2):
         events += _feed(model, rec, board, Side.WHITE, 2.0 + 0.1 * i)
-    assert _played(events) == ["e5"]
+    assert sans_of(events) == ["e5"]
 
 
 def test_user_can_end_the_game_by_resigning() -> None:
@@ -734,7 +700,7 @@ def test_takeback_with_a_quick_reply_is_not_told_as_retreats() -> None:
         events += _feed(model, rec, earlier, Side.WHITE, ts, highlight=earlier.peek())
     takebacks = [e for e in events if isinstance(e, Takeback)]
     assert len(takebacks) == 1 and takebacks[0].plies == 2
-    assert _played(events) == ["d4", "exd4"]
+    assert sans_of(events) == ["d4", "exd4"]
     assert rec.pgn() == "1. e4 e5 2. d4 exd4"
 
 
@@ -762,7 +728,7 @@ def test_start_position_after_a_resync_is_a_new_game() -> None:
     events = []
     for i in range(2):
         events += _feed(model, rec, fresh, Side.WHITE, 1.3 + 0.1 * i, highlight=move)
-    assert _played(events) == ["d4"] and rec.pgn() == "1. d4"
+    assert sans_of(events) == ["d4"] and rec.pgn() == "1. d4"
 
 
 def test_drag_frames_do_not_settle_the_side_to_move_after_a_resync() -> None:
@@ -782,7 +748,7 @@ def test_drag_frames_do_not_settle_the_side_to_move_after_a_resync() -> None:
     events = []
     for i in range(2):
         events += _feed(model, rec, pos, Side.WHITE, 0.9 + 0.1 * i, highlight=move)
-    assert _played(events) == ["b5"]
+    assert sans_of(events) == ["b5"]
     assert not rec.turn_unknown and rec.board.turn == chess.WHITE
 
 
@@ -937,14 +903,14 @@ def test_arrows_over_empty_squares_do_not_stall_the_game() -> None:
 
     for _ in range(8):
         ts += 0.1
-        assert not _played(rec.update(frame(), ts))
+        assert not sans_of(rec.update(frame(), ts))
     board.push_san("Nf3")
     move = board.push_san("Nc6")
     events = []
     for _ in range(4):
         ts += 0.1
         events += rec.update(frame(move), ts)
-    assert _played(events) == ["Nf3", "Nc6"]
+    assert sans_of(events) == ["Nf3", "Nc6"]
 
 
 def test_the_clock_settles_the_side_to_move_before_a_takeback_can_mislead() -> None:
@@ -967,7 +933,7 @@ def test_the_clock_settles_the_side_to_move_before_a_takeback_can_mislead() -> N
     events = []
     for i in range(3):
         events += _feed(model, rec, undone, Side.WHITE, 0.1 + 0.1 * i)
-    assert _played(events) == ["Ba4", "Bf8"], "the retreat retold white-first"
+    assert sans_of(events) == ["Ba4", "Bf8"], "the retreat retold white-first"
     assert rec.board.turn == chess.WHITE, "white to move, as on the board"
 
     # The clock saying black re-announces the position with the turn.
@@ -1013,5 +979,5 @@ def test_no_move_is_told_through_wildcards_alone() -> None:
     events = []
     for i in range(3 * rec.stale_after):
         events += rec.update(readings, 0.1 * i)
-    assert _played(events) == [], _played(events)
+    assert sans_of(events) == [], sans_of(events)
     assert rec.board.fen() == fen

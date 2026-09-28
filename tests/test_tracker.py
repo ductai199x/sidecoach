@@ -11,7 +11,7 @@ from sidecoach.vision.tracker import BoardTracker
 from tests.synth import (
     DARK,
     LIGHT,
-    bulky_pieces,
+    bulky_start,
     busy_background,
     render_board,
     synthetic_board,
@@ -171,8 +171,7 @@ def test_locked_fit_keeps_polarity_on_an_inverted_theme() -> None:
 
 def _game_and_empty_board(game_x: int) -> np.ndarray:
     frame = np.full((900, 1400, 3), 90, dtype=np.uint8)
-    render_board(frame, game_x, 100, 48, chess.Board())
-    bulky_pieces(frame, game_x, 100, 48, chess.Board())
+    bulky_start(frame, game_x, 100, 48)
     render_board(frame, 800, 100, 48, chess.Board(None))
     return frame
 

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import chess
@@ -19,17 +20,30 @@ from story_checks import story_checks  # noqa: E402
 
 
 def _hints(
-    fen: str, lines: list[tuple[list[str], float]], threats: tuple[str, ...] = ()
+    fen: str,
+    lines: list[tuple[list[str], float]],
+    threats: tuple[str, ...] = (),
+    *,
+    defences: Sequence[Line] = (),
+    traps: Sequence[Line] = (),
+    threatens: Sequence[Line] = (),
+    decisive: bool = False,
 ) -> tuple[dict[str, str], bool]:
+    """The three hints of a puzzle whose best lines are `lines` (UCI moves and a score), and
+    whether they tell its story. `decisive`: a position with one move that wins, the lines
+    that answer the obvious try (`defences`) and the rest the engine found with it."""
     board = chess.Board(fen)
     analysis = Analysis(
         game_id="",
         fen=fen,
         ply=0,
         lines=[Line(moves=moves, depth=18, expected_score=score) for moves, score in lines],
-        decisive=False,
-        only_move=False,
+        decisive=decisive,
+        only_move=decisive,
         threats=list(threats),
+        defences=list(defences),
+        traps=list(traps),
+        threatens=list(threatens),
     )
     facts = facts_from_analysis(board, analysis, user=board.turn)
     texts = {
@@ -137,52 +151,23 @@ def test_a_piece_with_no_safe_square_is_taught_as_trapped() -> None:
     assert told
 
 
-def _hints_with(
-    fen: str,
-    lines: list[tuple[list[str], float]],
-    defences: list[Line],
-    traps: list[Line] = (),
-    threatens: list[Line] = (),
-) -> tuple[dict[str, str], bool]:
-    board = chess.Board(fen)
-    analysis = Analysis(
-        game_id="",
-        fen=fen,
-        ply=0,
-        lines=[Line(moves=moves, depth=18, expected_score=score) for moves, score in lines],
-        decisive=True,
-        only_move=True,
-        defences=defences,
-        traps=list(traps),
-        threatens=list(threatens),
-    )
-    facts = facts_from_analysis(board, analysis, user=board.turn)
-    texts = {
-        "idea": idea_template(facts),
-        "focus": focus_template(facts),
-        "move": move_template(facts),
-    }
-    pv = [chess.Move.from_uci(u) for u in lines[0][0]]
-    checks, _ = story_checks(board, pv, idea_of.read(board, analysis), texts)
-    return texts, all(checks.values())
-
-
 def test_why_the_obvious_recapture_fails_is_the_lesson() -> None:
     # Tai's chess.com puzzle, 2026-09-24: 1...Qxg3 and White does not take back -- 2.fxg3
     # Bc5+ loses more. "You can win their queen" alone read as a lie beside fxg3.
-    texts, told = _hints_with(
+    texts, told = _hints(
         "2kr1b1r/ppq2p2/2p1pp2/8/2B5/3P2Q1/PPPB1PP1/R4RK1 b - - 1 1",
         [
             (["c7g3", "f1e1", "g3h4", "g1f1", "h4g4", "f1g1"], 0.975),
             (["f8d6", "f2f4", "f7f5", "f1f3", "c7b6", "g3f2"], 0.267),
         ],
-        [
+        defences=[
             Line(
                 moves=["c7g3", "f2g3", "f8c5", "d3d4", "c5d4", "f1f2", "d4f2"],
                 depth=14,
                 expected_score=0.931,
             )
         ],
+        decisive=True,
     )
     # Said as a coach speaks (Tai, 2026-09-25): a tactic to find, the target and the defender
     # that cannot take back as one sentence, the pattern said of it.
@@ -201,13 +186,13 @@ def test_a_defender_with_two_jobs_is_not_a_loose_piece() -> None:
     # Tai's chess.com puzzle, 2026-09-24: 2.exf7+ Kh8 3.Qxb8 wins the rook because the rook
     # on f8 must stop f8=Q; "a loose piece: nothing defends it" was the wrong lesson, and
     # 2.Qxb8? at once (Qd2+) was the natural mistake, unwarned.
-    texts, told = _hints_with(
+    texts, told = _hints(
         "1r3rk1/pp3ppp/2pQP3/1P1pP1q1/3Nn3/6P1/P5KP/2R2R2 w - - 1 2",
         [
             (["e6f7", "g8h8", "d6b8", "g5d2", "g2h1", "d2b4"], 0.975),
             (["d6c7", "g5d2", "g2h1", "f7e6", "d4e6"], 0.261),
         ],
-        [
+        defences=[
             Line(
                 moves=["e6f7", "f8f7", "d6b8", "g5d8", "b8d8", "f7f8", "d8f8"],
                 depth=14,
@@ -221,7 +206,8 @@ def test_a_defender_with_two_jobs_is_not_a_loose_piece() -> None:
                 mate=2,
             ),
         ],
-        [Line(moves=["d6b8", "g5d2", "g2h1", "f8b8", "d4f3"], depth=14, expected_score=0.09)],
+        traps=[Line(moves=["d6b8", "g5d2", "g2h1", "f8b8", "d4f3"], depth=14, expected_score=0.09)],
+        decisive=True,
     )
     assert (
         "Your pawn on e6 is two squares from queening, and their rook on f8 has to stop it, so it "
@@ -240,14 +226,14 @@ def test_a_quiet_move_is_told_by_what_it_threatens() -> None:
     # The 28 wins of the puzzle sample whose first hint was "their X is the target" and no
     # more (2026-09-25): a quiet first move's point is its threat, asked of the engine
     # (`threats.aim_lines`). Lichess 06VoP: 32.Qg4, threatening Qxg7#.
-    texts, told = _hints_with(
+    texts, told = _hints(
         "2rr2k1/5pp1/p1qp3p/4pP1N/1p6/1P4PK/PP5P/R2Q4 w - - 5 32",
         [
             (["d1g4", "g8f8", "g4g7", "f8e8", "g7g8", "e8e7", "f5f6", "e7e6"], 0.924),
             (["d1f1"], 0.241),
         ],
-        [],
         threatens=[Line(moves=["g4g7"], depth=14, expected_score=1.0, mate=1)],
+        decisive=True,
     )
     assert "The first move is quiet, but it threatens mate." in texts["idea"]
     assert "Which quiet move sets up a mate?" in texts["focus"]
@@ -256,13 +242,12 @@ def test_a_quiet_move_is_told_by_what_it_threatens() -> None:
 
 def test_a_quiet_move_that_threatens_a_piece_names_it_where_it_stands() -> None:
     # Lichess 05cb6: in check, 35.Kd2 steps out and threatens Rxb1, their queen.
-    texts, told = _hints_with(
+    texts, told = _hints(
         "r4rk1/p3pp1p/1p4p1/3P4/2P4b/1Q3R2/PP2N3/1q1K2R1 w - - 3 35",
         [
             (["d1d2", "b1e4", "f3f4", "e4e5", "f4h4", "e7e6", "b3c3", "e5c3"], 0.797),
             (["e2c1", "a8c8", "g1g4", "h4f6", "f3f6", "e7f6", "b3c2", "b1c2"], 0.093),
         ],
-        [],
         threatens=[
             Line(
                 moves=["g1b1", "e7e6", "b1h1", "a7a5", "h1h4", "a5a4"],
@@ -270,6 +255,7 @@ def test_a_quiet_move_that_threatens_a_piece_names_it_where_it_stands() -> None:
                 expected_score=0.959,
             )
         ],
+        decisive=True,
     )
     assert "The first move is quiet, but it threatens to take their queen on b1." in texts["idea"]
     assert told
@@ -277,7 +263,7 @@ def test_a_quiet_move_that_threatens_a_piece_names_it_where_it_stands() -> None:
 
 def test_a_quiet_pawn_move_threatens_a_break() -> None:
     # Lichess 00pWF, a king and pawn ending: 53...a5, threatening a4 and a passed pawn.
-    texts, told = _hints_with(
+    texts, told = _hints(
         "8/8/p3k3/1p1pP3/5P2/1P3K2/8/8 b - - 1 53",
         [
             (
@@ -319,7 +305,6 @@ def test_a_quiet_pawn_move_threatens_a_break() -> None:
                 0.089,
             ),
         ],
-        [],
         threatens=[
             Line(
                 moves=["a5a4", "b3a4", "b5a4", "f3e3", "a4a3", "f4f5"],
@@ -327,6 +312,7 @@ def test_a_quiet_pawn_move_threatens_a_break() -> None:
                 expected_score=0.872,
             )
         ],
+        decisive=True,
     )
     assert "The first move is quiet, but it threatens a pawn break." in texts["idea"]
     assert told
