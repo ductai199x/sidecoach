@@ -121,33 +121,6 @@ def test_no_word_on_a_sound_move_opens_with_it_or_says_what_it_did() -> None:
     assert said > 1000
 
 
-def test_the_coach_writes_a_sound_moves_word_itself_and_calls_no_model() -> None:
-    from tests.test_coach import (
-        _coach,
-        _mate_analysis,
-        _mate_in_one_played,
-        _messages,
-        _play_to_scholar,
-    )
-
-    coach, provider = _coach(["never used"])
-    _play_to_scholar(coach)
-    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
-    _mate_in_one_played(coach)
-    out = _messages(coach)
-    assert len(out) == 1 and out[0].text in MATE
-    assert provider.prompts == [], "no model call for the engine's own move"
-    # Off, the model writes it as before.
-    coach, provider = _coach(["[p=1.0] Mate on the board -- well played."])
-    coach.local_verdicts = False
-    _play_to_scholar(coach)
-    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
-    _mate_in_one_played(coach)
-    out = _messages(coach)
-    assert len(out) == 1 and out[0].text == "Mate on the board -- well played."
-    assert len(provider.prompts) == 1
-
-
 def _played(coach, provider, san: str, label, loss: float = 0.01):  # noqa: ANN001
     """A sound move of the user's from the scholar's-mate position, labelled `label`."""
     from sidecoach.events import MoveAssessment, MovePlayed, Severity

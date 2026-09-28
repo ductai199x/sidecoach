@@ -63,7 +63,8 @@ def test_a_stump_never_reaches_the_user_even_when_it_is_the_only_clean_candidate
     out = _messages(coach)
     assert out[0].text == "Their king on e8 is short of squares. What is their threat?"
     spoken = coach.spoken[-1]
-    assert spoken.attempts == 2
+    # The false claim is sent back and the second draft spoken: no template.
+    assert spoken.attempts == 2 and coach.speaker.fallbacks == 0
     # Both calls are kept for the log: what the model wrote and how the candidates fared.
     assert [call.raw for call in spoken.calls] == [first, second]
     assert [(call.candidates, call.passed) for call in spoken.calls] == [(1, 0), (1, 1)]

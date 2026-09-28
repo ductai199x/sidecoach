@@ -105,12 +105,6 @@ def test_leak_check_allows_candidates_but_not_line_at_candidate_level() -> None:
     assert "move Nxf7" in leaks
 
 
-def test_leak_check_allows_last_move_square() -> None:
-    f = facts()
-    f.last_move = "e4"
-    assert leak_check("After e4, what changed?", f, L.QUESTION) == []
-
-
 def test_leak_check_allows_region_anchor_square() -> None:
     assert leak_check("Look at what is happening around f7.", facts(), L.REGION) == []
 

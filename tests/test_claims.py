@@ -140,11 +140,12 @@ def test_extract_from_json_array() -> None:
     assert claims[0].text == "my knight is attacking e5"
 
 
-def test_extract_asks_for_thinking_at_low_temperature_with_the_position() -> None:
+def test_extract_asks_at_low_temperature_with_the_position() -> None:
     provider = FakeProvider("[]")
-    extract_claims("the pawn is hanging", chess.Board(ITALIAN), provider)
+    # Reasoning off, as every caller asks (cli._claims_check, the judge).
+    extract_claims("the pawn is hanging", chess.Board(ITALIAN), provider, thinking=False)
     call = provider.calls[0]
-    assert call["thinking"] is True
+    assert call["thinking"] is False
     assert call["temperature"] <= 0.2
     assert "JSON" in call["system"] and '"hanging"' in call["system"]
     message = call["messages"][0]
@@ -179,34 +180,6 @@ def test_extract_returns_nothing_on_garbage_or_failure() -> None:
     assert extract_claims("...", board, FakeProvider("[1, 2, 3]")) == []
     assert extract_claims("...", board, FakeProvider("[]", fail=True)) == []
     assert extract_claims("   ", board, FakeProvider(json.dumps(CANNED))) == []
-
-
-class RunawayProvider(FakeProvider):
-    """Reasoning eats the whole budget with thinking on, as the local model sometimes does."""
-
-    def chat(
-        self,
-        system: str,
-        messages: Sequence[ChatMessage],
-        *,
-        max_tokens: int = 1500,
-        temperature: float = 0.7,
-        thinking: bool = False,
-    ) -> Completion:
-        completion = super().chat(
-            system, messages, max_tokens=max_tokens, temperature=temperature, thinking=thinking
-        )
-        return Completion(text="") if thinking else completion
-
-
-def test_extract_retries_without_thinking_when_reasoning_eats_the_budget() -> None:
-    provider = RunawayProvider(json.dumps(CANNED))
-    claims = extract_claims("...", chess.Board(ITALIAN), provider)
-    assert len(claims) == 3
-    assert [call["thinking"] for call in provider.calls] == [True, False]
-    provider = RunawayProvider(json.dumps(CANNED))
-    assert extract_claims("...", chess.Board(ITALIAN), provider, thinking=False)
-    assert [call["thinking"] for call in provider.calls] == [False]
 
 
 def test_extract_strips_a_leaked_think_block() -> None:

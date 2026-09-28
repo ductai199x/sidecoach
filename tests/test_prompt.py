@@ -4,11 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import chess
-
 from sidecoach.coach import prompt
-from sidecoach.coach.conversation import Conversation
-from sidecoach.events import GameStarted, Side
 
 
 def test_the_system_message_is_persona_contract_rules_and_reply_format_in_order() -> None:
@@ -51,7 +47,7 @@ def test_corrections_are_appended_only_when_the_file_has_content(
     missing = tmp_path / "missing.md"
     monkeypatch.setattr(prompt, "CORRECTIONS_PATH", missing)
     prompt.corrections.cache_clear()
-    assert "Demonstrations from earlier games" not in prompt.system_message()
+    assert "Lessons from earlier games" not in prompt.system_message()
     prompt.corrections.cache_clear()
 
 
@@ -59,13 +55,3 @@ def test_the_shipped_corrections_file_exists_and_is_read() -> None:
     assert prompt.CORRECTIONS_PATH.exists()
     prompt.corrections.cache_clear()
     assert prompt.corrections() == prompt.CORRECTIONS_PATH.read_text(encoding="utf-8").strip()
-
-
-def test_the_new_game_message_states_the_side_and_never_a_rating() -> None:
-    """Whoever is playing gets the same coach: no rating is stated or pitched to."""
-    convo = Conversation()
-    convo.new_game(GameStarted(game_id="g", user_side=Side.BLACK, start_fen=chess.Board().fen()))
-    first = convo.messages()[0]["content"]
-    assert first.startswith("# Setting" + chr(10) + "You coach Black.")
-    assert "rated" not in first
-    assert "rating" not in prompt.system_message(with_corrections=False).lower()

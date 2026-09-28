@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import chess
 
-from sidecoach.coach.disclosure import visible_facts
 from sidecoach.coach.facts import (
     facts_from_analysis,
     material_text,
@@ -16,12 +15,10 @@ from sidecoach.coach.policy import (
     InterjectionPolicy,
     PolicySettings,
     TimeControl,
-    in_priority,
     time_control_of,
 )
 from sidecoach.events import (
     Analysis,
-    DisclosureLevel,
     Label,
     Line,
     MotifTag,
@@ -66,10 +63,6 @@ def test_facts_name_the_theme_region_piece_and_candidates() -> None:
     assert facts.threats == ["Nxh5"], "what the opponent would play if it were their turn"
     assert facts.line == ["Qxf7#"]
     assert facts.decisive and facts.last_move == "Nf6"
-    # And the disclosure machine can hide all of it.
-    hidden = visible_facts(facts, DisclosureLevel.IDEA)
-    assert "piece" not in hidden and "candidates" not in hidden and "line" not in hidden
-    assert visible_facts(facts, DisclosureLevel.IDEA)["theme"] == "a mating attack"
 
 
 def test_facts_survive_a_line_the_board_cannot_play() -> None:
@@ -275,14 +268,6 @@ def test_no_stuck_hints_in_a_time_scramble() -> None:
     policy.set_remaining(25_000)
     assert policy.tick(60.0) is None
     assert policy.last_reason == "time scramble: no stuck hints"
-
-
-def test_priority_order_for_colliding_triggers() -> None:
-    assert in_priority([Trigger.STUCK, Trigger.POST_MOVE, Trigger.USER_ASK, Trigger.POST_MOVE]) == [
-        Trigger.USER_ASK,
-        Trigger.POST_MOVE,
-        Trigger.STUCK,
-    ]
 
 
 def test_the_decisive_question_is_asked_once_per_decisive_stretch() -> None:

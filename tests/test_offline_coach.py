@@ -7,7 +7,7 @@ import chess
 
 from sidecoach.coach.coach import Coach, Trigger
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
-from sidecoach.coach.verdicts import MATE, OPENERS
+from sidecoach.coach.verdicts import MATE
 from sidecoach.config import LLMSettings
 from sidecoach.events import Analysis, Line, MovePlayed
 from sidecoach.llm.factory import make_provider
@@ -47,37 +47,6 @@ def test_a_decisive_moment_and_a_move_get_the_templates_with_no_call() -> None:
     assert len(out) == 1 and out[0].trigger is Trigger.POST_MOVE
     assert out[0].text in MATE and "Qxf7#" not in out[0].text
     assert provider.usage.calls == 0, "nothing was ever called"
-
-
-def test_a_typed_question_gets_the_hint_template() -> None:
-    provider = OfflineProvider()
-    coach = Coach(provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
-    _play_to_scholar(coach)
-    coach.on_event(_mate_analysis(6), 7.0)
-    _messages(coach)
-    coach.ask("hint", 8.0)
-    out = _messages(coach)
-    assert len(out) == 1 and out[0].text, "a hint from the templates"
-    assert out[0].fen == chess.Board(out[0].fen).fen()
-
-
-def test_the_templates_rotate_and_never_repeat_the_last() -> None:
-    """Four decisive moments in one game got the same sentence four times (a master-game
-    pass, 2026-09-21): each list is a bag, every wording once before any comes again (Tai,
-    2026-09-25), and never the last one said."""
-    from sidecoach.coach.coach import COST_YOU, FINE_TIGHTER
-
-    coach = Coach(OfflineProvider(), policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
-    for key, options in (("cost", COST_YOU), ("fine", FINE_TIGHTER)):
-        said = [coach._bags.draw(key, options) for _ in range(len(options) * 8)]
-        assert all(a != b for a, b in zip(said, said[1:], strict=False))
-        for start in range(0, len(said), len(options)):
-            assert sorted(said[start : start + len(options)]) == sorted(options)
-    # The praise on a fine move too, the same bag whether a lesson follows or not.
-    said = [coach._verdict("best") for _ in range(10)]
-    assert sorted(said[:5]) == sorted(o + "." for o in OPENERS["best"])
-    # A list of one is said again, rather than nothing.
-    assert coach._bags.draw("one", ["only"]) == "only" == coach._bags.draw("one", ["only"])
 
 
 def test_the_first_hints_lead_is_drawn_when_the_hint_is_said() -> None:

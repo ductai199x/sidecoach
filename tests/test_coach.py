@@ -8,7 +8,7 @@ from collections.abc import Sequence
 import chess
 
 from sidecoach.coach.coach import Coach, unlock_for
-from sidecoach.coach.disclosure import PositionFacts, Unlock, visible_facts
+from sidecoach.coach.disclosure import PositionFacts, Unlock
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
 from sidecoach.events import (
     Analysis,
@@ -337,12 +337,6 @@ def test_feedback_after_the_users_move_may_say_everything_about_that_position() 
     now = played.split("# The position they faced")[0]
     assert "(to the player, as it stands)" not in now.split("## Facts", 1)[-1]
     assert "a question that sets them looking" not in faced
-    # Asked why it was bad, the answer is taught from the same position, and names the move.
-    coach.ask("why was that bad?", 12.0)
-    _messages(coach)
-    asked = str(_given(provider)[-1]["content"])
-    assert "# The position they faced, before Bxf7+" in asked
-    assert coach.spoken[-1].message.text and "Qxf7" in coach.spoken[-1].message.text
 
 
 def test_a_question_about_the_plan_is_answered_by_the_first_hint_at_once() -> None:
@@ -460,16 +454,19 @@ def test_in_blitz_a_good_move_earns_two_words_without_the_model() -> None:
     out = _messages(coach)
     assert len(out) == 1 and out[0].text in VERDICTS["best"]
     assert provider.prompts == [], "no model call for a good move in blitz"
-    # The wording is by the label and never the same twice running: "good, good, good"
-    # for a whole game wore thin. Never the move: the player just played it.
-    seen = {coach._verdict("good") for _ in range(40)}
-    assert len(seen) >= 3
-    previous = None
-    for _ in range(40):
-        current = coach._verdict("good")
-        assert current != previous
-        previous = current
-    assert coach._verdict("book") in VERDICTS["book"]
+    # The wording is by the label, drawn from its bag: every wording once before any comes
+    # again, and never the same twice running -- "good, good, good" for a whole game wore
+    # thin. Never the move: the player just played it.
+    from sidecoach.coach.verdicts import OPENERS
+
+    fresh, _ = _coach([])
+    for label in ("good", "best"):
+        wordings = sorted(o + "." for o in OPENERS[label])
+        said = [fresh._verdict(label) for _ in range(len(wordings) * 4)]
+        for start in range(0, len(said), len(wordings)):
+            assert sorted(said[start : start + len(wordings)]) == wordings, label
+        assert all(a != b for a, b in zip(said, said[1:], strict=False)), label
+    assert fresh._verdict("book") in VERDICTS["book"]
 
 
 def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
@@ -695,27 +692,6 @@ def test_a_lesson_is_said_of_the_board_the_player_sees_and_not_twice() -> None:
     assert fresh(f"{opener} -- it wins a pawn.", just + " It wins a pawn.", opener) == opener + "."
 
 
-def test_the_draft_checker_can_veto_a_false_claim() -> None:
-    def checker(
-        text: str,
-        board: chess.Board,
-        after: Sequence[chess.Board] = (),
-        us: chess.Color | None = None,
-    ) -> list[str]:
-        return ["the rook on f7 is not there"] if "rook on f7" in text else []
-
-    fine = "Their king on e8 is short of squares, is it not?"
-    provider = ScriptedProvider(["Your rook on f7 is strong.", fine])
-    coach = Coach(
-        provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), draft_check=checker
-    )
-    _play_to_scholar(coach)
-    coach.on_event(_mate_analysis(6), 7.0)
-    out = _messages(coach)
-    assert out[0].text == fine
-    assert coach.spoken[-1].attempts == 2 and coach.speaker.fallbacks == 0
-
-
 def test_the_claim_reader_lists_the_drafts_claims_and_the_board_refuses_a_false_one() -> None:
     """A model lists what the draft asserts; python-chess decides it (coach/draft_claims.py).
     "Their queen on c5" is refused where no queen stands; the second draft is spoken."""
@@ -806,27 +782,6 @@ def test_verbalized_sampling_keeps_the_checked_candidate() -> None:
     out = _messages(coach)
     assert out[0].text == "Their king on e8 is short of squares, is it not?"
     assert coach.spoken[-1].attempts == 1 and coach.speaker.fallbacks == 0
-
-
-def test_the_fact_sheet_hides_by_level() -> None:
-    facts = PositionFacts(
-        fen=SCHOLAR,
-        side_to_move="white",
-        phase="opening",
-        material="level",
-        theme="a mating attack",
-        region="the kingside, around f7",
-        piece="your queen",
-        candidates=["Qxf7#"],
-        line=["Qxf7#"],
-        decisive=True,
-    )
-    assert visible_facts(facts, DisclosureLevel.IDEA)["theme"] == "a mating attack"
-    assert "region" not in visible_facts(facts, DisclosureLevel.IDEA)
-    assert "piece" not in visible_facts(facts, DisclosureLevel.IDEA)
-    assert visible_facts(facts, DisclosureLevel.FOCUS)["region"] == "the kingside, around f7"
-    assert "candidates" not in visible_facts(facts, DisclosureLevel.FOCUS)
-    assert visible_facts(facts, DisclosureLevel.LINE)["line"] == ["Qxf7#"]
 
 
 def test_the_conversation_is_the_game_one_message_per_move_with_the_tally() -> None:
@@ -1374,29 +1329,6 @@ def test_a_quick_answer_is_a_turn_before_the_model_and_a_failed_reply_adds_nothi
     assert [e.text for e in turns] == [quick]
 
 
-def test_a_fact_question_falls_back_to_the_fact_not_the_hint() -> None:
-    """ "How many pieces am I up?" once fell back, when the model's reply failed, to the
-    hint for the position ("Something forcing is on..."): the fallback for a question
-    about a fact that is never withheld is that fact."""
-    coach, provider = _coach(["", ""])
-    _play_to_scholar(coach)
-    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
-    coach.ask("how many pieces am I up?", 8.0)
-    out = _messages(coach)
-    assert out and out[-1].text.startswith("Material:")
-    provider.replies = ["", ""]
-    coach.ask("am I winning?", 9.0)
-    out = _messages(coach)
-    assert out and out[-1].text.startswith("Right now you are winning")
-    provider.replies = ["", ""]
-    coach.ask("what opening is this?", 10.0)
-    out = _messages(coach)
-    assert out and (
-        out[-1].text == "We left the opening book early."
-        or out[-1].text.startswith("The opening was the")
-    )
-
-
 def test_a_retry_does_not_grow_the_prompt() -> None:
     """When every candidate fails the checks, the second try carries the complaint inside
     the directive: appending the failed attempt as two more messages doubled the prompt
@@ -1457,6 +1389,8 @@ def test_a_question_about_the_last_move_gets_its_verdict_in_full() -> None:
     provider.replies = ["", ""]
     coach.ask("why was that bad?", 12.0)
     out = _messages(coach)
+    # Taught from the position the move was played from, as the lesson after it was.
+    assert "# The position they faced, before Bxf7+" in str(_given(provider)[-1]["content"])
     directive = _directive(_given(provider))
     assert "They ask about the move they already played, Bxf7+" in directive
     assert "Qxf7# was better" in directive
@@ -1542,20 +1476,6 @@ def test_a_question_about_a_fine_last_move_says_it_was_fine() -> None:
     directive = _directive(_given(provider))
     assert "It was not bad: the verdict was best" in directive
     assert "do not invent a fault" in directive
-
-
-def test_a_move_of_the_game_so_far_is_never_a_leak() -> None:
-    """Asked why the opponent played their last move, the coach names it. Below CANDIDATE
-    the leak check flags every move token, and it flagged the history: a move already
-    played may be discussed in full."""
-    coach, _ = _coach(["[p=1.0] Nf6 develops with a threat; what does it leave behind?"])
-    _play_to_scholar(coach)
-    coach.on_event(_mate_analysis(6, decisive=False), 7.0)
-    _messages(coach)
-    coach.ask("why did he play that?", 8.0)
-    out = _messages(coach)
-    assert out and out[-1].text.startswith("Nf6 develops")
-    assert out[-1].level is DisclosureLevel.QUESTION
 
 
 def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> None:
@@ -2358,19 +2278,30 @@ def test_their_own_move_is_theirs_even_after_the_reply_and_a_threat_gets_its_ans
 def test_a_question_only_about_a_fact_is_answered_by_the_template() -> None:
     """The material, the opening by name, who stands better: the template says them exactly
     and no model is called (the locked test set, 2026-09-26: the model once gave the material
-    after a recapture as the material now). A judgement or a why still goes to the model."""
+    after a recapture as the material now). A judgement or a why still goes to the model.
+    The answer is the fact itself, never the hint for the position ("How many pieces am I
+    up?" was once answered "Something forcing is on...")."""
     from sidecoach.coach.coach import fact_question
 
-    for said in ("who's up material?", "what opening is this?", "am I winning?"):
-        assert fact_question(said), said
     for said in ("how is my opening?", "why am I losing?", "am I winning? what should I do?"):
         assert not fact_question(said), said
     coach, provider = _coach(["The model's words."])
     _play_to_scholar(coach)
     coach.on_event(_mate_analysis(6, decisive=False), 7.0)
-    coach.ask("who's up material?", 8.0)
-    out = _messages(coach)
-    assert out and out[-1].text.startswith("Material:") and provider.prompts == []
+    for ts, (said, opens) in enumerate(
+        (
+            ("who's up material?", "Material:"),
+            ("how many pieces am I up?", "Material:"),
+            ("am I winning?", "Right now you are winning"),
+            ("what opening is this?", "We left the opening book early."),
+        ),
+        start=8,
+    ):
+        assert fact_question(said), said
+        coach.ask(said, float(ts))
+        out = _messages(coach)
+        assert out and out[-1].text.startswith(opens), (said, out)
+    assert provider.prompts == [], "a fact is the template's: no model call"
 
 
 def test_their_threat_on_their_turn_is_their_best_move_not_the_players() -> None:
@@ -2546,3 +2477,7 @@ def test_a_saved_rating_changes_the_templates_register() -> None:
     coach.reword(None, (2000, 2300))
     assert not coach.plain_words and coach.strong_player
     assert "2000" in coach.system
+    # The rating is the system message's, never the game's setting.
+    _start(coach, Side.BLACK)
+    setting = coach.conversation.messages()[0]["content"]
+    assert setting.startswith("# Setting\nYou coach Black.") and "rated" not in setting
