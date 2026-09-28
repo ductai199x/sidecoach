@@ -346,9 +346,3 @@ class PuzzleRooms:
         with self._lock:
             room = self._rooms.get(puzzle_id)
         return room if room is not None and not room.closed and not room.closing else None
-
-    def close_all(self) -> None:
-        with self._lock:
-            rooms = list(self._rooms.values())
-        for room in rooms:
-            room.close()

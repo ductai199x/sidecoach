@@ -299,9 +299,7 @@ def _harness_messages(item: dict[str, Any], facts: dict[str, Any]) -> list[dict[
     user_colour = board.turn
     gid = item["task_id"]
     convo = Conversation()
-    convo.new_game(
-        GameStarted(game_id=gid, user_side=user_side, start_fen=board.fen()), opponent="an opponent"
-    )
+    convo.new_game(GameStarted(game_id=gid, user_side=user_side, start_fen=board.fen()))
     convo.level = DisclosureLevel.LINE
     if facts.get("move"):
         after = board.copy()

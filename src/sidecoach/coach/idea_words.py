@@ -165,14 +165,6 @@ PATTERN_WHY: dict[str, str] = {
     "overloading": "one piece with two jobs cannot do both",
 }
 
-# What each preparation does, said of the moves before the blow.
-PREPARATION_WHY: dict[str, str] = {
-    "sacrifice": "it starts by giving up material",
-    "attraction": "their king or a defender is lured onto the wrong square first",
-    "deflection": "a defender is pulled away first",
-    "capturingDefender": "a defender is taken first",
-    "clearance": "a line or a square is cleared first",
-}
 
 # What a preparation has done, said once the blow comes.
 PREPARED: dict[str, str] = {

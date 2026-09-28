@@ -209,7 +209,6 @@ class Entry:
 @dataclass
 class Conversation:
     user_side: Side = Side.WHITE
-    level_text: str = "around 1200"
     entries: list[Entry] = field(default_factory=list)
     records: list[PlyRecord] = field(default_factory=list)
     start_fen: str = chess.STARTING_FEN
@@ -230,7 +229,6 @@ class Conversation:
         self,
         event: GameStarted,
         *,
-        opponent: str = "a bot",
         control: str = "",
         profile: Sequence[str] = (),
     ) -> None:

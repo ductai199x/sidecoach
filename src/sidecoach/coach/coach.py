@@ -673,7 +673,6 @@ def vs_directive(candidates: int = VS_CANDIDATES) -> str:
     )
 
 
-VS_DIRECTIVE = vs_directive()
 _VS_MARKER = re.compile(r"\[\s*p?\s*=?\s*([0-9]*\.?[0-9]+)\s*\]\s*", re.IGNORECASE)
 # A marker fragment left in a candidate's text: a whole one, or one cut off mid-way.
 _STRAY_MARKER = re.compile(r"\s*\[\s*p\s*=\s*[0-9.]*\]?\s*")

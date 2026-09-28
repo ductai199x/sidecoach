@@ -487,17 +487,3 @@ def _check(claim: DraftClaim, frame: chess.Board, player: chess.Color) -> str | 
             return f"the king's free squares are {said}"
         return None
     return None
-
-
-def _stops(claim: DraftClaim, frame: chess.Board, line: Sequence[str]) -> str | None:
-    """A move said to stop another is contradicted when the engine's line plays that other
-    move straight after it ("Rae1 ... before they can use Re3" of Rae1 Re3: the test audit)."""
-    move, reply = str(claim.fields.get("move") or "").rstrip("+#"), claim.fields.get("target_move")
-    if not move or not reply:
-        return None
-    path = [m.rstrip("+#") for m in claim.after] + [move]
-    if list(line[: len(path)]) != path or len(line) <= len(path):
-        return None
-    if line[len(path)] == str(reply).rstrip("+#"):
-        return f"{reply} is still played straight after {claim.fields.get('move')}"
-    return None

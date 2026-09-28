@@ -578,10 +578,6 @@ class Profiler:
                 return point.motif, f"{motif_words(point.motif)}: the turning point of this game"
         return None, ""
 
-    def recommended_motif(self, puzzle_id: str) -> str | None:
-        """The motif a puzzle was recommended for this session, if it was."""
-        return self._recommended_for.get(puzzle_id)
-
     def record_puzzle(
         self, puzzle_id: str, motif: str | None, solved: bool, moves: list[str], ts: float
     ) -> list[Event]:

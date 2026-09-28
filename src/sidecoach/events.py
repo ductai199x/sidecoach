@@ -59,25 +59,6 @@ class Side(StrEnum):
         return Side.WHITE if color else Side.BLACK
 
 
-class BoardLocated(Event):
-    monitor: int
-    region: Region
-    cell_px: float
-    fit_score: float
-
-
-class BoardLost(Event):
-    reason: str
-
-
-class SquareObservation(Event):
-    """Per-frame board reading. `placement` is the piece-placement field of a FEN."""
-
-    placement: str
-    bottom: Side
-    min_confidence: float
-
-
 class ClockObservation(Event):
     white_ms: int | None = None
     black_ms: int | None = None
@@ -86,10 +67,7 @@ class ClockObservation(Event):
 
 class ScreenState(StrEnum):
     LIVE_GAME = "live_game"
-    ANALYSIS = "analysis"
     PUZZLES = "puzzles"
-    LESSON = "lesson"
-    LOBBY = "lobby"
     GAME_OVER = "game_over"
     # A dialog or a large overlay over the board of a live game: the game may be over (a
     # resignation, a flag, the site's game-over dialog) or merely interrupted; the board
