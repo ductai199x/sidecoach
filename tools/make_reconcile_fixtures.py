@@ -24,7 +24,9 @@ events it answers, every call from outside (`start_from`, `turn_from_clock`, `en
 record, whether it is browsing, whose turn is open, whether a story is pending, ...). The
 tests' own assertions run as well, so a fixture is only written from tests that pass.
 `ReconcileOpsTest` on the phone does the same things to the ported reconciler and must answer
-the same, op for op (the parity audit's st-T01, st-T02).
+the same, op for op (the parity audit's st-T01, st-T02). The cases the desktop's test audit
+folded into other tests are still played, as they stood and under the names they had
+(`KEPT` here, `FOLDED` in `reconcile_folded_cases.py`), so the fixture loses none.
 
 Run from the desktop repo, whose environment has python-chess and the test helpers:
 
@@ -344,7 +346,6 @@ RECORDED: dict[str, list[str] | None] = {
         "test_cold_start_reads_the_real_frames_the_same",
         "test_a_game_joined_from_the_middle_is_adopted_without_being_asked",
         "test_the_side_to_move_of_an_adopted_position_comes_from_the_running_clock",
-        "test_a_stale_clock_does_not_settle_the_side_to_move",
         "test_a_board_mid_move_is_never_adopted_and_a_start_position_bootstraps",
         "test_a_position_for_black_is_read_from_the_labels_and_coached_for_black",
         "test_flip_re_reads_a_joined_position_the_other_way_up",
@@ -685,9 +686,33 @@ def _cases(func) -> list[tuple[str, dict]]:
     return cases or [("", {})]
 
 
-def record_tests() -> dict:
-    """Every recorded desktop test run with the recording reconciler in place."""
+def _record_case(name: str, func: Callable[..., None], params: dict) -> None:
+    """One test case run with its arguments and pytest's `tmp_path` and `monkeypatch`, what
+    its reconcilers were told written down under `name`."""
     import pytest
+
+    with tempfile.TemporaryDirectory() as tmp:
+        patch = pytest.MonkeyPatch()
+        kwargs = dict(params)
+        wants = inspect.signature(func).parameters
+        if "tmp_path" in wants:
+            kwargs["tmp_path"] = Path(tmp)
+        if "monkeypatch" in wants:
+            kwargs["monkeypatch"] = patch
+        LOG.begin(name)
+        try:
+            func(**kwargs)
+        finally:
+            patch.undo()
+            ops = LOG.end()
+    print(f"  {name}: {ops} ops")
+
+
+def record_tests() -> dict:
+    """Every recorded desktop test run with the recording reconciler in place, and after
+    each module's own tests the cases of it the state audit folded (`reconcile_folded_cases`:
+    played as they stood, under the names they had)."""
+    from reconcile_folded_cases import FOLDED
 
     from sidecoach.state import pipeline as pipeline_module
 
@@ -696,27 +721,15 @@ def record_tests() -> dict:
         module = importlib.import_module(module_name)
         if hasattr(module, "Reconciler"):
             module.Reconciler = _Recording
+        short = module_name.split(".")[-1]
         kept = KEPT.get(module_name, {})
         names = wanted or sorted({n for n in dir(module) if n.startswith("test_")} | set(kept))
         for test_name in names:
             func = kept.get(test_name) or getattr(module, test_name)
             for label, params in _cases(func):
-                name = f"{module_name.split('.')[-1]}::{test_name}" + (f"[{label}]" if label else "")
-                with tempfile.TemporaryDirectory() as tmp:
-                    patch = pytest.MonkeyPatch()
-                    kwargs = dict(params)
-                    wants = inspect.signature(func).parameters
-                    if "tmp_path" in wants:
-                        kwargs["tmp_path"] = Path(tmp)
-                    if "monkeypatch" in wants:
-                        kwargs["monkeypatch"] = patch
-                    LOG.begin(name)
-                    try:
-                        func(**kwargs)
-                    finally:
-                        patch.undo()
-                        ops = LOG.end()
-                print(f"  {name}: {ops} ops")
+                _record_case(f"{short}::{test_name}" + (f"[{label}]" if label else ""), func, params)
+        for test_name, func, params in FOLDED.get(module_name, []):
+            _record_case(f"{short}::{test_name}", func, params)
     return {"readings": LOG.table, "runs": LOG.runs}
 
 
