@@ -92,14 +92,20 @@ class GameAnnotator(
     var withThreats: Boolean = true,
 ) {
 
-    private val cache = HashMap<String, Measured>()
+    /**
+     * The positions measured whole. Concurrent, as the maps below: the worker writes them while
+     * [reset] clears them from the capture thread -- a Python dict's operations are atomic
+     * under the GIL, a HashMap's are not, and with the look ahead the worker is at them far
+     * more often.
+     */
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, Measured>()
 
     /**
      * Positions measured for a verdict only: the best line at the full depth, no candidates,
      * no threats. Kept apart from [cache], so a later whole measurement of the same position
      * is not answered with the thin one.
      */
-    private val verdictCache = HashMap<String, Measured>()
+    private val verdictCache = java.util.concurrent.ConcurrentHashMap<String, Measured>()
 
     /**
      * The last move assessed: game, ply, loss, where it landed and whether it captured, so
@@ -120,7 +126,7 @@ class GameAnnotator(
      * Positions measured ahead of the game ([lookAhead]) and not yet reached, and how many the
      * game has reached: what looking ahead saved.
      */
-    private val ahead = HashSet<String>()
+    private val ahead: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     @Volatile var aheadHits = 0
         private set
 
@@ -309,7 +315,7 @@ class GameAnnotator(
     }
 
     /** Whether the position is measured whole already (the game's own, or ahead of it). */
-    fun measured(board: Board): Boolean = board.fen() in cache
+    fun measured(board: Board): Boolean = cache.containsKey(board.fen())
 
     /** What the move cost its mover, and what the position it led to holds. */
     fun assess(gameId: String, before: Board, move: Move, ply: Int): Pair<MoveAssessment, Analysis> {
@@ -529,15 +535,14 @@ class Analyser(
     @Volatile private var ahead: MutableList<Pair<Board, Int>> = ArrayList()
 
     /**
-     * The positions after the player's own moves whose full measure gave way to the opponent's
-     * reply ([yielding]), measured again once the reply's position has been; changed with the
-     * count of work owed, under [countLock].
+     * The game's positions whose full measure gave way to a newer request ([yielding]), measured
+     * again once the worker is free; changed with the count of work owed, under [countLock].
      */
     private val deferred = ArrayList<Pair<Request, Board>>()
 
     /**
-     * Whether the worker is on a search a request interrupts: a look ahead, or a position the
-     * player is about to leave.
+     * Whether the worker is on a search a request interrupts: a look ahead, or a full measure of
+     * one of the game's positions.
      */
     @Volatile internal var looking = false
         private set
@@ -785,8 +790,12 @@ class Analyser(
         }
     }
 
-    /** A position whose full measure gave way, measured again now the worker is free. */
+    /**
+     * A position whose full measure gave way, measured again now the worker is free -- the
+     * request current meanwhile, so a takeback lets go of it as of any other.
+     */
     private fun resume(request: Request, board: Board) {
+        current = request
         try {
             if (request.withdrawn) return
             val event = yielding(request, board)
@@ -795,6 +804,7 @@ class Analyser(
             failures += 1
             lastError = "${exc::class.java.simpleName}: ${exc.message}"
         } finally {
+            current = null
             settle()
         }
     }
