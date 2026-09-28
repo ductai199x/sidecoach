@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from sidecoach.config import Settings, VoiceSettings
@@ -20,6 +21,7 @@ def _settings(tmp_path: Path) -> Settings:
     return Settings(data_dir=tmp_path, voice=VoiceSettings())
 
 
+@pytest.mark.embedder  # a session started builds the stages: the net loads
 def test_controls_and_static_page(tmp_path: Path) -> None:
     engine = PanelEngine(_settings(tmp_path), analysis=False, coach=False, frame_source=iter(()))
     client = TestClient(build_app(engine))

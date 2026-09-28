@@ -24,6 +24,7 @@ _SILENT = VoiceSettings()
 MATE = ("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6", "Qxf7#")
 
 
+@pytest.mark.embedder  # a session started builds the stages: the net loads
 def test_engine_follows_a_game_and_reports_it(tmp_path: Path) -> None:
     """A game from its start to its mate, as the page sees it: the board locked, the moves
     and the end in the terminal and the state. Without an engine there are no verdicts,
@@ -187,14 +188,14 @@ def test_a_correction_moves_through_the_api(tmp_path: Path) -> None:
         api.correct("g", 0, 3, "bad luck")
 
 
+@pytest.mark.embedder  # a session started builds the stages: the net loads
 def test_the_engine_and_coach_outlive_a_session(tmp_path: Path) -> None:
     """Everything a session needs is built when the panel opens (`warm`), before any
     Start; Start and Stop only start and stop reading the screen (Tai, 2026-09-21), so the
-    same engine and coach glue serve one session after another; `close` ends them."""
+    same engine and coach glue serve one session after another; `close` ends them. No
+    game is needed: a session that reads nothing still builds or reuses the stages."""
     settings = Settings(data_dir=tmp_path, voice=_SILENT)
-    engine = PanelEngine(
-        settings, analysis=False, coach=False, record=False, frame_source=game_frames()
-    )
+    engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
     assert engine._assessing is None and engine._coaching is None
     assert engine.warm_status()["done"] is False
     engine.warm(background=False)
@@ -213,7 +214,7 @@ def test_the_engine_and_coach_outlive_a_session(tmp_path: Path) -> None:
 
     engine.start()
     assert engine._thread is not None
-    engine._thread.join(timeout=90)
+    engine._thread.join(timeout=30)
     assert not engine._thread.is_alive()
     assert engine._assessing is assessing and engine._coaching is coaching, (
         "a session must use what the warm-up built, and Stop must keep it"
@@ -252,6 +253,7 @@ class _QuietMic:
         self.opened = False
 
 
+@pytest.mark.embedder  # a session started builds the stages: the net loads
 def test_listening_outlives_a_session(tmp_path: Path) -> None:
     """The warm-up opens listening, and Start and Stop only start and stop reading the
     screen: a session that ends leaves listening as it was. It used to turn the listener
@@ -274,6 +276,7 @@ def test_listening_outlives_a_session(tmp_path: Path) -> None:
     assert engine._listener.mode == "off" and not mic.opened
 
 
+@pytest.mark.embedder  # a session started builds the stages: the net loads
 def test_a_start_without_a_warm_up_builds_the_stages_once(tmp_path: Path) -> None:
     """The CLI's replay and the tests start without a warm-up: the session builds the
     stages itself, and keeps them for the next one."""
@@ -530,9 +533,16 @@ def test_a_click_after_the_words_does_not_hold_their_send(
     assert engine.poll(0)["state"]["dictation"] == {"text": "", "live": False, "sends_at": None}
 
 
-def test_typing_over_a_dictation_keeps_the_words_and_stops_the_send(tmp_path: Path) -> None:
+def test_typing_over_a_dictation_keeps_the_words_and_stops_the_send(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
     import numpy as np
 
+    from sidecoach.ui import panel as panel_mod
+
+    monkeypatch.setattr(panel_mod, "DICTATION_SEND_DELAY_S", 0.3)
     settings = Settings(data_dir=tmp_path, voice=_SILENT)
     engine = PanelEngine(settings, analysis=False, coach=False, record=False, frame_source=iter(()))
     engine._stt = _Recogniser()  # type: ignore[assignment]
@@ -540,9 +550,7 @@ def test_typing_over_a_dictation_keeps_the_words_and_stops_the_send(tmp_path: Pa
     assert engine.poll(0)["state"]["dictation"]["sends_at"] is not None
     assert engine.cancel_dictation() == {"ok": True, "text": "hello hello"}
     assert engine.poll(0)["state"]["dictation"] == {"text": "", "live": False, "sends_at": None}
-    import time
-
-    time.sleep(1.2)
+    time.sleep(0.5)  # past the send delay
     assert engine._commands.empty()
 
 

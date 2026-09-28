@@ -164,13 +164,17 @@ class _ScriptedGate:
 
 
 class _FedMic:
-    """A microphone whose frames the test puts in."""
+    """A microphone whose frames the test puts in; quiet when it puts none."""
 
     def __init__(self) -> None:
         import queue
 
         self.frames: queue.Queue = queue.Queue()
         self.detail = "fed by the test"
+        self.dropped = 0
+
+    def healthcheck(self) -> tuple[bool, str]:
+        return True, self.detail
 
     def open(self) -> bool:
         return True
@@ -257,27 +261,37 @@ def test_a_spoken_move_reaches_the_coach_as_san(tmp_path: Path) -> None:
     assert ear.device.name == "cpu"
 
 
+class _MishearingEar:
+    """A recogniser that hears every clip the way an ear mishears a spoken move."""
+
+    def transcribe(self, audio: np.ndarray) -> str:
+        return "Night F3"
+
+    def healthcheck(self) -> tuple[bool, str]:
+        return True, "a test ear"
+
+
 def test_the_microphone_test_keeps_what_it_hears_and_asks_no_coach(tmp_path: Path) -> None:
     """The settings page's live test (Tai, 2026-09-21): while it is on, an utterance is
     transcribed and corrected into the test's list, the coach is not asked, and the
-    listening mode it interrupted comes back when it stops."""
+    listening mode it interrupted comes back when it stops. No voice model and no
+    microphone: the real ear is test_a_spoken_move_reaches_the_coach_as_san's."""
     from fastapi.testclient import TestClient
 
     from sidecoach.ui.panel import PanelEngine
     from sidecoach.ui.server import build_app
 
-    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(stt_device="cpu", listen="off"))
-    engine = PanelEngine(
-        settings, analysis=False, coach=False, frame_source=iter(()), voice_models=True
-    )
-    if not engine._stt.load():
-        pytest.skip(f"parakeet not loadable here: {engine._stt.healthcheck()[1]}")
+    settings = Settings(data_dir=tmp_path, voice=VoiceSettings(listen="off"))
+    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+    mic = _FedMic()
+    engine._stt = _MishearingEar()  # type: ignore[assignment]
+    engine._mic = mic  # type: ignore[assignment]
+    engine._listener.mic = mic  # type: ignore[assignment]
+    engine._listener.gate = _ScriptedGate([])  # type: ignore[assignment]
     engine._state["fen"] = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
     client = TestClient(build_app(engine))
     status = client.get("/api/hear_test").json()
     assert status["on"] is False and status["heard"] == []
-    if not engine._mic.healthcheck()[0]:
-        pytest.skip("no microphone here")
     started = client.post("/api/hear_test", json={"on": True}).json()
     assert started["ok"] and started["on"] and engine._listener.mode == "vad"
     # An utterance while the test is on: kept for the page, corrected, and not an ask.
@@ -285,7 +299,7 @@ def test_the_microphone_test_keeps_what_it_hears_and_asks_no_coach(tmp_path: Pat
     client.post("/api/hear", content=(AUDIO / "knight_f3.wav").read_bytes())
     status = client.get("/api/hear_test").json()
     assert status["heard"] and status["heard"][0]["heard"] == "Nf3", "corrected to the legal move"
-    assert status["heard"][0]["raw"] and status["heard"][0]["stt_ms"] >= 0
+    assert status["heard"][0]["raw"] == "Night F3" and status["heard"][0]["stt_ms"] >= 0
     assert "level" in status and status["ok"]
     assert engine._commands.qsize() == queued_before, "nothing was asked of the coach"
     stopped = client.post("/api/hear_test", json={"on": False}).json()

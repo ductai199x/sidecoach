@@ -10,6 +10,7 @@ import threading
 from pathlib import Path
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from sidecoach.config import Settings, VoiceSettings
@@ -58,13 +59,14 @@ def test_health_perf_and_the_token(tmp_path: Path) -> None:
     assert pre.headers.get("access-control-allow-origin") == "http://tauri.localhost"
 
 
+@pytest.mark.embedder  # a session started builds the stages: the net loads
 def test_a_session_that_persists_nothing_keeps_its_frames_in_memory(tmp_path: Path) -> None:
     engine = PanelEngine(
         _settings(tmp_path),
         analysis=False,
         coach=False,
         persist=False,
-        frame_source=game_frames(),
+        frame_source=game_frames(("e4", "e5")),  # a few frames are enough to keep
     )
     client = TestClient(build_app(engine))
     assert client.post("/api/start").json()["ok"] is True
@@ -72,7 +74,7 @@ def test_a_session_that_persists_nothing_keeps_its_frames_in_memory(tmp_path: Pa
     engine._thread.join(timeout=90)
     assert not engine._thread.is_alive()
     state = client.get("/api/poll").json()["state"]
-    assert state["session_dir"] is None and state["ply"] >= 8
+    assert state["session_dir"] is None and state["ply"] == 2
     # No session folder, no debug.jsonl, no recording anywhere under the data directory.
     written = [p for p in tmp_path.rglob("*") if p.is_file()]
     assert not any(p.suffix in {".jsonl", ".mkv", ".avi", ".mp4"} for p in written), written

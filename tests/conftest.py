@@ -25,13 +25,12 @@ import pytest
 # (pytest_configure): 8 groups 119 s, 16 groups 93 s and 78 s with one OpenCV thread, 24
 # no faster -- the vision suite is our own Python on the CPU, the net 10 % of it.
 EMBEDDER_WORKERS = int(os.environ.get("SIDECOACH_TEST_EMBEDDER_WORKERS", "16"))
-# Test modules that load the net without the `vision` mark.
+# Test modules that load the net without the `vision` mark. A test elsewhere that loads it
+# -- a panel session started, which builds the stages -- is marked `embedder` instead, so
+# the rest of its module runs on every core.
 EMBEDDER_MODULES = {
     "test_clock_pipeline",
     "test_embedding",
-    "test_panel_engine",
-    "test_panel_server",
-    "test_panel_voice_policy",
     "test_theme_cache",
 }
 
@@ -100,6 +99,9 @@ def _below_normal_priority() -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers", "embedder: loads the embedding net outside the vision suite (tests/conftest.py)"
+    )
     _below_normal_priority()  # the controller and, since this runs in each, every worker
     if os.environ.get("PYTEST_XDIST_WORKER"):
         # One OpenCV thread a worker: every worker's own pool, one thread a core each, had
@@ -130,7 +132,8 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     for item in items:
         module = item.path.stem
-        if item.get_closest_marker("vision") is None and module not in EMBEDDER_MODULES:
+        marked = item.get_closest_marker("vision") or item.get_closest_marker("embedder")
+        if marked is None and module not in EMBEDDER_MODULES:
             continue
         # The same test lands in the same group on every run; a module's tests spread
         # over the groups rather than queueing behind one another.

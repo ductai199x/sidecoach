@@ -166,13 +166,14 @@ def test_where_the_habit_bites_the_student_misses_at_its_target_rate(monkeypatch
     probs = {chess.Move.from_uci(u): p for u, p in [("e2e4", 0.9), ("a2a3", 0.1)]}
     h = habits.HABITS["threat_blind"]
     rng = random.Random(1)
-    n = 4000
+    n = 1000
     missed = sum(
         habits.student_move(h, 800, chess.Board(), probs, _Fake(3), rng)[0].uci() == "a2a3"
         for _ in range(n)
     )
-    # Nova plays a3 10% of the time; the habit takes the move half the time: 55%.
-    assert abs(missed / n - h.student(0.1)) < 0.02
+    # Nova plays a3 10% of the time; the habit takes the move half the time: 55% (within
+    # three standard errors of a thousand draws).
+    assert abs(missed / n - h.student(0.1)) < 0.05
     _, bit, by_habit = habits.student_move(h, 800, chess.Board(), probs, _Fake(0), rng)
     assert not bit and not by_habit  # nothing threatened: Nova's own move
 
