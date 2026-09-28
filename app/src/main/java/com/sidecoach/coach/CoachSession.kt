@@ -1146,6 +1146,9 @@ class Coach(
         if (event.gameId != gameId) return // the engine's late word on the game before this one
         val position = positions[event.ply] ?: return
         if (position.board.fen() != event.fen) return
+        val had = position.analysis
+        val full = had != null && !had.provisional
+        if (event.provisional && full) return // the full depth is in already
         position.analysis = event
         val leads = LinkedHashMap<String, String>()
         val peek = { key: String, options: List<String> ->
@@ -1157,6 +1160,18 @@ class Coach(
             position.board, event, lastMove = position.lastMove, user = userColour, pick = peek
         )
         position.leads = leads
+        if (event.provisional) {
+            // Measured early, the full depth to follow: what the player asks is answered from it
+            // now; the coach's own words -- a lesson, the decisive question -- and the
+            // conversation's record wait for the full depth.
+            val asked = pendingAsk
+            if (position === current && asked != null) {
+                val (text, _) = asked
+                pendingAsk = null
+                ask(text, ts)
+            }
+            return
+        }
         conversation.analysed(event, position.facts!!)
         if (heldLesson?.played?.ply == event.ply) releaseLesson(ts) // what the move allowed is known now
         val pending = pendingAsk

@@ -69,7 +69,7 @@ class Assessing(
             is MovePlayed -> {
                 val before = historyTo(event.fenBefore)
                 val move = Move.fromUci(event.uci)
-                worker.submitMove(event.gameId, before, move, event.ply)
+                worker.submitMove(event.gameId, before, move, event.ply, byUser = event.byUser)
                 from[event.ply] = event.fenBefore
                 before.push(move)
                 game = before

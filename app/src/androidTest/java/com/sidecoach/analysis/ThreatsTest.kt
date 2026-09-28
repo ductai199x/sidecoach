@@ -24,7 +24,7 @@ class ThreatsTest {
 
     /** The desktop test's `FakeEngine`: scripted lines, a quiet move for anything else. */
     private class FakeEngine(private val answers: Map<String, List<Line>>) : Engine(File("fake"), null) {
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> {
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
             if (board.isGameOver(claimDraw = true)) return emptyList()
             return answers[board.fen()] ?: listOf(Line(moves = listOf("a2a3"), depth = 1, expectedScore = 0.5))
         }
@@ -36,7 +36,7 @@ class ThreatsTest {
     private class RecordingEngine(private val lines: List<Line>) : Engine(File("fake"), null) {
         val seen = ArrayList<Triple<String, Int?, Int?>>()
 
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> {
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
             seen.add(Triple(board.fen(), depth, multipv))
             return lines
         }

@@ -257,6 +257,7 @@ class ProfileTest {
             threats = strings(e.getJSONArray("threats")),
             tags = tags(e.getJSONArray("tags")),
             opening = if (e.isNull("opening")) null else e.getString("opening"),
+            provisional = e.optBoolean("provisional"),
         )
         "CoachMessage" -> CoachMessage(
             text = e.getString("text"),

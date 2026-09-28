@@ -665,7 +665,10 @@ object PanelEngine {
                     if (event.onlyMove) signals.add("only move")
                     val tail = "  (score $score, d$depth)"
                     val threatText = if (threats.isNotEmpty()) "; threats " + threats.take(3).joinToString(", ") else ""
-                    if (signals.isNotEmpty()) {
+                    if (event.provisional) {
+                        // Measured early, the full depth to follow: its line is the news.
+                        emit("engine", "debug", "early ply ${event.ply}" + threatText + tail, data)
+                    } else if (signals.isNotEmpty()) {
                         emit("engine", "info", "ply ${event.ply}: " + signals.joinToString(", ") + threatText + tail, data)
                     } else {
                         emit("engine", "debug", "analysed ply ${event.ply}" + threatText + tail, data)

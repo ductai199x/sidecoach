@@ -148,11 +148,55 @@ class AnnotatorTest {
         }
     }
 
+    /**
+     * `test_each_depth_is_delivered_as_the_search_finishes_it` (desktop 316026b). Tai,
+     * 2026-09-28: "if the consumers read after stockfish reaches depth > 12 then they will get
+     * whatever lines that is available at the time". The position the player faces is delivered
+     * at the early depth, then at every depth the full search finishes on its way, provisional,
+     * then whole at the full depth -- the same position, deeper each time.
+     */
+    @Test
+    fun eachDepthIsDeliveredAsTheSearchFinishesIt() {
+        val engine = engine()
+        assumeTrue("the engine or its network is missing", engine != null)
+        val board = Board(SCHOLAR)
+        val annotator = GameAnnotator(engine!!, depth = 16, multipv = 3, withThreats = false)
+        val analyser = Analyser(annotator)
+        analyser.start()
+        val got = try {
+            analyser.submitPosition("g", board, 0)
+            drain(analyser, 30.0).filterIsInstance<Analysis>()
+        } finally {
+            analyser.close()
+        }
+        val depths = got.map { it.lines[0].depth }
+        Log.i(TAG, "the depths delivered: $depths, provisional ${got.map { it.provisional }}")
+        assertEquals(List(got.size - 1) { true } + false, got.map { it.provisional })
+        assertTrue("$depths", depths.first() == EARLY_DEPTH && depths.last() == 16)
+        assertTrue("$depths", depths == depths.sorted() && depths.toSet().size == depths.size)
+        assertEquals(setOf(board.fen()), got.map { it.fen }.toSet())
+    }
+
+    /** `_drain`: what the analyser delivers until nothing is owed, or [timeoutS]. */
+    private fun drain(analyser: Analyser, timeoutS: Double = 10.0): List<com.sidecoach.events.Event> {
+        val deadline = System.currentTimeMillis() + (timeoutS * 1000).toLong()
+        val events = ArrayList<com.sidecoach.events.Event>()
+        while (System.currentTimeMillis() < deadline) {
+            events += analyser.poll()
+            if (events.isNotEmpty() && analyser.pending == 0) return events
+            Thread.sleep(10)
+        }
+        return events
+    }
+
     /** The desktop pushes SAN; here the move is found by name among the legal ones. */
     private fun playSan(board: Board, san: String): Move =
         board.legalMoves().first { board.san(it).trimEnd('+', '#') == san.trimEnd('+', '#') }
 
     companion object {
         private const val TAG = "sidecoach.analysis"
+
+        /** 1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6??, where 4. Qxf7# is mate (the desktop's `SCHOLAR`). */
+        private const val SCHOLAR = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
     }
 }

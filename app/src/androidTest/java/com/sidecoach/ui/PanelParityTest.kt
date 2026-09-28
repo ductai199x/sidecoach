@@ -250,6 +250,7 @@ class PanelParityTest {
             onlyMove = o.getBoolean("only_move"),
             threats = strings(o.getJSONArray("threats")),
             opening = if (o.isNull("opening")) null else o.getString("opening"),
+            provisional = o.optBoolean("provisional"),
         )
         "Takeback" -> Takeback(o.getString("game_id"), o.getInt("plies"), o.getString("fen"))
         "Resync" -> Resync(o.getString("game_id"), o.getString("fen"), o.getString("reason"))

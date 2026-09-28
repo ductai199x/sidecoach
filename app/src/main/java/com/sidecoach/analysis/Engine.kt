@@ -299,6 +299,7 @@ open class Engine(
      *
      * `carryBest`: a best line shorter than [MIN_BEST_PLIES] is carried on to it -- for the
      * coach, who reads the line for its point; a verdict needs only the score.
+     * `onDepth`: handed each depth's lines as the search finishes it, the search going on.
      */
     open fun analyse(
         board: Board,
@@ -307,6 +308,7 @@ open class Engine(
         multipv: Int? = null,
         pvPlies: Int? = null,
         carryBest: Boolean = false,
+        onDepth: ((List<Line>) -> Unit)? = null,
     ): List<Line> {
         // Over, a claimable draw included, as python-chess's `is_game_over(claim_draw=True)`:
         // with the game's moves on the board, a threefold repetition can be claimed.
@@ -317,12 +319,16 @@ open class Engine(
         if (depth != null && cap != null) capped = if (timeS == null) cap else minOf(timeS, cap)
         var wanted = multipv ?: this.multipv
         wanted = maxOf(1, minOf(wanted, board.legalMoves().size))
-        val infos = lock.withLock { analyseWithRestart(board, depth, capped, wanted) }
         val plies = pvPlies ?: this.pvPlies
-        val lines = infos
-            .mapIndexed { i, info -> line(info, board, if (carryBest && i == 0) maxOf(plies, MIN_BEST_PLIES) else plies) }
+
+        fun asLines(infos: List<Info>, carry: Boolean): MutableList<Line> = infos
+            .mapIndexed { i, info -> line(info, board, if (carry && i == 0) maxOf(plies, MIN_BEST_PLIES) else plies) }
             .filter { it.moves.isNotEmpty() }
             .toMutableList()
+
+        val depths: ((List<Info>) -> Unit)? = if (onDepth == null) null else { infos -> onDepth(asLines(infos, false)) }
+        val infos = lock.withLock { analyseWithRestart(board, depth, capped, wanted, depths) }
+        val lines = asLines(infos, carryBest)
         if (carryBest && lines.isNotEmpty() && lines[0].moves.size < MIN_BEST_PLIES) {
             lines[0] = carriedOn(board, lines[0], MIN_BEST_PLIES)
         }
@@ -382,11 +388,12 @@ open class Engine(
         depth: Int?,
         timeS: Double?,
         multipv: Int,
+        onDepth: ((List<Info>) -> Unit)? = null,
     ): List<Info> {
         for (attempt in 1..2) {
             open()
             try {
-                return search(board, depth, timeS, multipv)
+                return search(board, depth, timeS, multipv, onDepth)
             } catch (exc: IOException) {
                 close()
                 if (attempt == 2) throw EngineUnavailable("engine died twice on ${board.fen()}: $exc")
@@ -416,10 +423,17 @@ open class Engine(
     }
 
     /**
-     * `analyse`'s search; inside [interruptible], run so that [interrupt] can stop it
-     * (`_stoppable`).
+     * `analyse`'s search, read as it goes (`_streamed`): each depth handed to [onDepth] once its
+     * last line is in (Stockfish reports a depth's lines best first), and, inside
+     * [interruptible], stopped by [interrupt].
      */
-    private fun search(board: Board, depth: Int?, timeS: Double?, multipv: Int): List<Info> {
+    private fun search(
+        board: Board,
+        depth: Int?,
+        timeS: Double?,
+        multipv: Int,
+        onDepth: ((List<Info>) -> Unit)? = null,
+    ): List<Info> {
         val stoppable = interruptibleNow
         if (stoppable && stopped) throw Interrupted()
         // What python-chess's analysis sends before the search: pondering off and analysis
@@ -451,10 +465,26 @@ open class Engine(
         // from the start; its moves read against the position sent (`self.engine.board`).
         val root = board.copy(withStack = false)
         val infos = arrayListOf(Info())
+        // Each index's last line as it came, not merged (python-chess yields the line itself),
+        // and the deepest depth handed on.
+        val latest = java.util.TreeMap<Int, Info>()
+        var done = 0
         try {
             readUntil("bestmove") { line ->
                 val words = words(line)
-                if (words.firstOrNull() == "info") post(infos, parseInfo(words, root))
+                if (words.firstOrNull() == "info") {
+                    val info = parseInfo(words, root)
+                    post(infos, info)
+                    val rank = info.multipv ?: 1
+                    val at = info.depth
+                    if (at != null && !info.pv.isNullOrEmpty()) {
+                        latest[rank] = info
+                        if (onDepth != null && rank == multipv && at > done) {
+                            done = at
+                            onDepth(latest.values.toList())
+                        }
+                    }
+                }
             }
         } finally {
             if (stoppable) synchronized(stopping) { searching = false }

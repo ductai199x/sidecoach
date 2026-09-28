@@ -135,7 +135,10 @@ class Profiler(
         if (event is MoveAssessment && event.gameId != game.gameId) return emptyList()
         return when (event) {
             is MovePlayed -> move(game, event, ts)
-            is Analysis -> analysis(game, event) + maybeReview(game, ts)
+            is Analysis -> {
+                if (event.provisional) return emptyList()  // the record takes the full depth, which follows
+                analysis(game, event) + maybeReview(game, ts)
+            }
             is MoveAssessment -> assessment(game, event) + maybeReview(game, ts)
             is Takeback -> takeback(game, event)
             is Resync -> {

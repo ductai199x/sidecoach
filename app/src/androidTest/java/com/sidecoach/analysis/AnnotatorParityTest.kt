@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
+import com.sidecoach.events.Analysis
 import com.sidecoach.events.Event
 import com.sidecoach.events.Label
 import com.sidecoach.events.Line
@@ -49,7 +50,7 @@ class AnnotatorParityTest {
             asked.clear()
         }
 
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> {
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
             val key = "${board.fen()}|$multipv|$carryBest"
             val calls = answers.optJSONArray(key)
             val n = asked.getOrDefault(key, 0)
@@ -174,7 +175,7 @@ class AnnotatorParityTest {
         val calls = java.util.Collections.synchronizedList(ArrayList<String>())
         val multipvs = java.util.Collections.synchronizedList(ArrayList<Int>())
 
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> {
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
             calls.add(board.fen())
             multipvs.add(multipv ?: 1)
             if (board.isGameOver(claimDraw = true)) return emptyList()
@@ -257,7 +258,7 @@ class AnnotatorParityTest {
         assertEquals(0, answered.failures)
 
         val broken = object : FakeEngine() {
-            override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> =
+            override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> =
                 throw RuntimeException("engine gone")
         }
         val failing = Analyser(GameAnnotator(broken, depth = 6, withThreats = false))
@@ -285,10 +286,10 @@ class AnnotatorParityTest {
         val searching = java.util.concurrent.CountDownLatch(1)
         val go = java.util.concurrent.CountDownLatch(1)
         val held = object : FakeEngine() {
-            override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> {
+            override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
                 searching.countDown()
                 go.await(5, java.util.concurrent.TimeUnit.SECONDS)
-                return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest)
+                return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
             }
         }
         val analyser = Analyser(GameAnnotator(held, depth = 6, withThreats = false))
@@ -410,9 +411,151 @@ class AnnotatorParityTest {
         } finally {
             analyser.close()
         }
-        assertEquals(listOf("Analysis", "MoveAssessment", "Analysis"), got.map { it::class.java.simpleName })
+        assertEquals(listOf("Analysis(early)", "Analysis", "MoveAssessment", "Analysis"), kinds(got))
         assertTrue("the position after e4 was searched again", after("e4") !in calls(fake).drop(before))
         assertEquals(1, annotator.aheadHits)
+    }
+
+    /** `_DepthEngine`: a fake engine that answers with the depth it was asked for. */
+    private class DepthEngine(answers: Map<String, List<Line>> = emptyMap()) : FakeEngine(answers) {
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
+            val lines = super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
+            return lines.map { it.copy(depth = depth ?: 0) }
+        }
+    }
+
+    /** `_kinds`: each event's type, an early analysis marked. */
+    private fun kinds(events: List<Event>): List<String> = events.map {
+        val name = it::class.java.simpleName
+        if (it is Analysis && it.provisional) "$name(early)" else name
+    }
+
+    /**
+     * `test_the_position_the_player_faces_is_told_early_and_then_whole` (desktop 316026b). Tai,
+     * 2026-09-28: "first usable answer is depth 12 ... the computation continues until max depth
+     * of 18". After the opponent's move, and for a position begun from, the position the player
+     * faces is measured at EARLY_DEPTH and delivered, provisional, before the verdict and the
+     * full depth; after the player's own move the verdict comes first, as it did.
+     */
+    @Test
+    fun thePositionThePlayerFacesIsToldEarlyAndThenWhole() {
+        val board = Board()
+        val fake = DepthEngine()
+        val analyser = Analyser(GameAnnotator(fake, depth = 18, withThreats = false))
+        analyser.start()
+        val started: List<Event>
+        val own: List<Event>
+        val reply: List<Event>
+        try {
+            analyser.submitPosition("g", board, 0)
+            started = drain(analyser)
+            analyser.submitMove("g", board, Move.fromUci("e2e4"), 1, byUser = true)
+            own = drain(analyser)
+            board.push(board.parseSan("e4")!!)
+            analyser.submitMove("g", board, Move.fromUci("e7e5"), 2, byUser = false)
+            reply = drain(analyser)
+        } finally {
+            analyser.close()
+        }
+        assertEquals(listOf("Analysis(early)", "Analysis"), kinds(started))
+        assertEquals(listOf("MoveAssessment", "Analysis"), kinds(own))
+        assertEquals(listOf("Analysis(early)", "MoveAssessment", "Analysis"), kinds(reply))
+        val early = reply[0] as Analysis
+        val full = reply[2] as Analysis
+        assertTrue("${early.lines[0].depth} ${full.lines[0].depth}", early.lines[0].depth == EARLY_DEPTH && full.lines[0].depth == 18)
+        assertEquals(early.fen, full.fen)
+    }
+
+    /**
+     * `test_a_position_looked_at_ahead_is_whole_at_once` (desktop 316026b): the position the
+     * player faces measured ahead of the move: no early word, the whole one at once.
+     */
+    @Test
+    fun aPositionLookedAtAheadIsWholeAtOnce() {
+        val start = Board()
+        val fake = DepthEngine(mapOf(start.fen() to listOf(line("e2e4")), after("e4") to listOf(line("e7e5"))))
+        val annotator = GameAnnotator(fake, depth = 18, withThreats = false)
+        val analyser = Analyser(annotator, lookAhead = 1)
+        analyser.start()
+        val reply: List<Event>
+        try {
+            analyser.submitPosition("g", start, 0)
+            drain(analyser)
+            assertTrue("${analyser.looked}", until { analyser.looked == 2 })
+            analyser.submitMove("g", start, Move.fromUci("e2e4"), 1, byUser = true)
+            drain(analyser)
+            val after = Board()
+            after.push(after.parseSan("e4")!!)
+            analyser.submitMove("g", after, Move.fromUci("e7e5"), 2, byUser = false)
+            reply = drain(analyser)
+        } finally {
+            analyser.close()
+        }
+        assertEquals(listOf("MoveAssessment", "Analysis"), kinds(reply))
+        assertEquals(2, annotator.aheadHits)
+    }
+
+    /**
+     * `_YieldOnceEngine`: a fake engine whose first interruptible search runs until `interrupt`
+     * stops it; the ones after answer at once.
+     */
+    private class YieldOnceEngine : FakeEngine() {
+        @Volatile var held = false
+
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
+            if (interruptibleNow && !held) {
+                held = true
+                val until = SystemClock.elapsedRealtime() + 5000
+                while (!stopped && SystemClock.elapsedRealtime() < until) Thread.sleep(1)
+                throw Interrupted()
+            }
+            return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
+        }
+    }
+
+    /**
+     * `test_the_position_the_player_left_gives_way_to_the_one_they_face` (desktop 316026b).
+     * Tai's puzzles, 2026-09-28: the site replies 0.6 s after the player's move, and the
+     * position they then faced waited behind the full measure of the one they had left. That
+     * measure gives way to the reply, whose position is told first, and is taken up again after
+     * it -- still owed until it is.
+     */
+    @Test
+    fun thePositionThePlayerLeftGivesWayToTheOneTheyFace() {
+        val fake = YieldOnceEngine()
+        val board = Board()
+        val analyser = Analyser(GameAnnotator(fake, depth = 18, withThreats = false))
+        analyser.start()
+        val got: List<Event>
+        try {
+            analyser.submitMove("g", board, Move.fromUci("e2e4"), 1, byUser = true)
+            assertTrue("the full measure never started", until { analyser.looking })
+            board.push(board.parseSan("e4")!!)
+            analyser.submitMove("g", board, Move.fromUci("e7e5"), 2, byUser = false)
+            got = drain(analyser)
+        } finally {
+            analyser.close()
+        }
+        val order = got.map { e ->
+            val ply = when (e) {
+                is MoveAssessment -> e.ply
+                is Analysis -> e.ply
+                else -> null
+            }
+            Triple(e::class.java.simpleName, ply, e is Analysis && e.provisional)
+        }
+        assertEquals(
+            order.toString(),
+            listOf(
+                Triple("MoveAssessment", 1, false),
+                Triple("Analysis", 2, true),
+                Triple("MoveAssessment", 2, false),
+                Triple("Analysis", 2, false),
+                Triple("Analysis", 1, false),
+            ),
+            order,
+        )
+        assertEquals(0, analyser.pending)
     }
 
     /**
@@ -420,13 +563,13 @@ class AnnotatorParityTest {
      * (`_stopped.wait(5)`, then `Interrupted`).
      */
     private class StoppableEngine(answers: Map<String, List<Line>>) : FakeEngine(answers) {
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean): List<Line> {
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
             if (interruptibleNow) {
                 val until = SystemClock.elapsedRealtime() + 5000
                 while (!stopped && SystemClock.elapsedRealtime() < until) Thread.sleep(1)
                 throw Interrupted()
             }
-            return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest)
+            return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
         }
     }
 
@@ -446,7 +589,7 @@ class AnnotatorParityTest {
             analyser.submitPosition("g", Board(), 0)
             assertTrue("never looked ahead", until { analyser.looking })
             val t = SystemClock.elapsedRealtime()
-            analyser.submitMove("g", Board(), Move.fromUci("g1f3"), 1)
+            analyser.submitMove("g", Board(), Move.fromUci("g1f3"), 1, byUser = false)
             assertTrue(until(1.0) { !analyser.looking && analyser.pending == 0 })
             assertTrue(SystemClock.elapsedRealtime() - t < 500)
             got = drain(analyser)

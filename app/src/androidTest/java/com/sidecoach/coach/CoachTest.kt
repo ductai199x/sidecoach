@@ -124,6 +124,48 @@ class CoachTest {
         assertTrue(answered[0].text, "One moment" !in answered[0].text)
     }
 
+    /**
+     * `test_an_early_analysis_answers_a_question_waiting_on_it` (desktop 316026b). Tai,
+     * 2026-09-28: "first usable answer is depth 12 ... the computation continues until max depth
+     * of 18". A question asked before the engine has looked is answered from the early
+     * analysis, the full depth still to come.
+     */
+    @Test
+    fun anEarlyAnalysisAnswersAQuestionWaitingOnIt() {
+        val (coach, _) = coach(emptyList())
+        playToScholar(coach)
+        coach.ask("hint", 6.5)
+        assertEquals(listOf("One moment -- still looking at this position."), messages(coach).map { it.text })
+        coach.onEvent(mateAnalysis(6, provisional = true), 7.0)
+        val answered = messages(coach)
+        assertTrue(
+            answered.map { it.trigger }.toString(),
+            answered.isNotEmpty() && answered.all { it.trigger == Trigger.USER_ASK },
+        )
+    }
+
+    /**
+     * `test_the_coachs_own_words_wait_for_the_full_depth` (desktop 316026b): the decisive
+     * question is the coach's own: an early analysis asks nothing, the full depth does -- and an
+     * early one that comes after it replaces nothing.
+     */
+    @Test
+    fun theCoachsOwnWordsWaitForTheFullDepth() {
+        val (coach, _) = coach(
+            listOf("You can mate right now: their king on e8 is short of squares. Which check does it?")
+        )
+        playToScholar(coach)
+        val early = mateAnalysis(6, provisional = true)
+        coach.onEvent(early, 7.0)
+        assertEquals(emptyList<CoachMessage>(), messages(coach))
+        coach.onEvent(mateAnalysis(6), 8.0)
+        val out = messages(coach)
+        assertEquals(listOf(Trigger.DECISIVE_QUESTION), out.map { it.trigger })
+        coach.onEvent(early, 9.0)
+        val analysis = coach.positions.getValue(6).analysis
+        assertTrue(analysis != null && !analysis.provisional)
+    }
+
     private fun puzzle(coach: Coach, fen: String = QD1): Board {
         coach.onEvent(
             GameStarted(gameId = "g", userSide = Pieces.Side.BLACK, startFen = fen, kind = "position"),
@@ -263,8 +305,11 @@ class CoachTest {
         assertTrue(coach.userToMove && coach.board.fen() == SCHOLAR)
     }
 
-    /** `_mate_analysis`: Qxf7# on the scholar's board. */
-    private fun mateAnalysis(ply: Int, decisive: Boolean = true) = Analysis(
+    /**
+     * `_mate_analysis`: Qxf7# on the scholar's board; `provisional`, as the desktop's
+     * `model_copy(update={"provisional": True})` makes it.
+     */
+    private fun mateAnalysis(ply: Int, decisive: Boolean = true, provisional: Boolean = false) = Analysis(
         gameId = "g",
         fen = SCHOLAR,
         ply = ply,
@@ -275,6 +320,7 @@ class CoachTest {
         decisive = decisive,
         onlyMove = true,
         tags = listOf(MotifTag(name = "mateIn1", squares = listOf("f7", "e8"), move = "h5f7")),
+        provisional = provisional,
     )
 
     /** The directive of the last model call: the harness after its "# Task" line. */

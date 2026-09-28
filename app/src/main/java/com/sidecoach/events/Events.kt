@@ -132,6 +132,12 @@ class Analysis(
      * passed through, and stays after the game leaves the book).
      */
     val inBook: Boolean = false,
+    /**
+     * The position measured early (`annotator.EARLY_DEPTH`), the full depth to follow: what the
+     * player asks is answered from it at once; the coach's own words, a verdict and the record
+     * wait for the full depth.
+     */
+    val provisional: Boolean = false,
 ) : Event()
 
 enum class Severity { NONE, INACCURACY, MISTAKE, BLUNDER }

@@ -50,6 +50,16 @@ const val BEHIND_S = 10.0
  */
 const val LOOK_AHEAD = 2
 
+/**
+ * The depth a position the player faces is measured to first, the full depth following: its
+ * best move is the full depth's in every one of 77 puzzle positions and 81 % of 232 game
+ * positions, found in a twentieth of the time (0.05-0.08 s at the phone's two threads, on the
+ * desktop), so a hint, the move or the line asked for at once is answered at once (Tai,
+ * 2026-09-28: "first usable answer is depth 12 ... the computation continues until max depth
+ * of 18").
+ */
+const val EARLY_DEPTH = 12
+
 /** One position, measured once: its lines and what they mean. */
 class Measured(
     val fen: String,
@@ -166,42 +176,68 @@ class GameAnnotator(
      * The position whole: the candidates, the threats, the decisive-moment and only-move
      * calls. `hurry` caps the search at [HURRY_S] and skips the threats: the analyser is (or
      * was just) behind a fast game, and the player is not waiting ten seconds for the
-     * candidates of a position they will have left.
+     * candidates of a position they will have left. `onDepth`: handed the candidates of each
+     * depth the search finishes on its way.
      */
-    fun measure(board: Board, hurry: Boolean = false): Measured {
+    fun measure(board: Board, hurry: Boolean = false, onDepth: ((List<Line>) -> Unit)? = null): Measured {
         val key = board.fen()
         cached(key)?.let { return it }
-        val lines = engine.analyse(
-            board,
-            depth = depth,
-            multipv = multipv,
-            timeS = if (hurry) HURRY_S else null,
-            carryBest = !hurry,
-        )
-        val measured = Measured(
-            fen = key,
-            lines = lines,
-            score = positionScore(board, lines),
-            decisive = isDecisive(board, lines, thresholds),
-            onlyMove = isOnlyMove(board, lines, thresholds),
-            threats = if (withThreats && !hurry) threatMoves(engine, board, depth) else emptyList(),
-            // The captures that look free and are not, beside the threats: what the first hint
-            // warns of ("the knight on g4 is bait"), searched only when not hurried.
-            traps = if (withThreats && !hurry) Traps.trapLines(engine, board, lines) else emptyList(),
-            // And the recaptures the best line declines, with what refutes them: why the obvious
-            // defence fails is the lesson ("the pawn on f2 cannot take back").
-            defences = if (withThreats && !hurry) Defences.defenceLines(engine, board, lines) else emptyList(),
-            // And what a quiet best move threatens: how it wins ("it threatens mate").
-            threatens = if (withThreats && !hurry) aimLines(engine, board, lines) else emptyList(),
-        )
+        val measured = measuredAt(board, depth, hurry = hurry, onDepth = onDepth)
         cache[key] = measured
         return measured
     }
 
     /**
+     * The position whole at [EARLY_DEPTH], its side searches no deeper: what the player can be
+     * told while the full depth is searched. Not cached: the full depth follows.
+     */
+    fun measureEarly(board: Board): Measured = measuredAt(board, minOf(EARLY_DEPTH, depth), early = true)
+
+    /** `_measured`: the position whole at [depth], its side searches no deeper than it. */
+    private fun measuredAt(
+        board: Board,
+        depth: Int,
+        hurry: Boolean = false,
+        early: Boolean = false,
+        onDepth: ((List<Line>) -> Unit)? = null,
+    ): Measured {
+        val lines = engine.analyse(
+            board,
+            depth = depth,
+            multipv = multipv,
+            timeS = if (hurry) HURRY_S else null,
+            // The best line carried on to its point costs seconds; the full depth does it.
+            carryBest = !(hurry || early),
+            onDepth = onDepth,
+        )
+        val searched = withThreats && !hurry
+        return Measured(
+            fen = board.fen(),
+            lines = lines,
+            score = positionScore(board, lines),
+            decisive = isDecisive(board, lines, thresholds),
+            onlyMove = isOnlyMove(board, lines, thresholds),
+            threats = if (searched) threatMoves(engine, board, depth) else emptyList(),
+            // The captures that look free and are not, beside the threats: what the first hint
+            // warns of ("the knight on g4 is bait"), searched only when not hurried.
+            traps = if (searched) Traps.trapLines(engine, board, lines, depth = minOf(Traps.TRAP_DEPTH, depth)) else emptyList(),
+            // And the recaptures the best line declines, with what refutes them: why the obvious
+            // defence fails is the lesson ("the pawn on f2 cannot take back").
+            defences = if (searched) {
+                Defences.defenceLines(engine, board, lines, depth = minOf(Defences.DEFENCE_DEPTH, depth))
+            } else {
+                emptyList()
+            },
+            // And what a quiet best move threatens: how it wins ("it threatens mate").
+            threatens = if (searched) aimLines(engine, board, lines, depth = minOf(AIM_DEPTH, depth)) else emptyList(),
+        )
+    }
+
+    /**
      * What the position holds, for the side to move. `thin`: only what the verdict already
      * measured -- the analysis of a position the game has left, so the coach still has the
-     * facts of the position each move was played from and the review has its score.
+     * facts of the position each move was played from and the review has its score. `early`:
+     * at [EARLY_DEPTH] ([measureEarly]), a provisional analysis the full depth follows.
      */
     fun analysisEvent(
         gameId: String,
@@ -209,8 +245,14 @@ class GameAnnotator(
         ply: Int,
         hurry: Boolean = false,
         thin: Boolean = false,
+        early: Boolean = false,
+        onDepth: ((List<Line>) -> Unit)? = null,
     ): Analysis {
-        val measured = if (thin) measureForVerdict(board) else measure(board, hurry)
+        val measured = when {
+            early -> measureEarly(board)
+            thin -> measureForVerdict(board)
+            else -> measure(board, hurry, onDepth)
+        }
         return Analysis(
             gameId = gameId,
             fen = measured.fen,
@@ -225,8 +267,47 @@ class GameAnnotator(
             tags = positionTags(board, measured),
             opening = opening(board),
             inBook = inBook(board),
+            provisional = early,
         )
     }
+
+    /**
+     * The early analysis of [board] with the lines of a deeper depth: its candidates, the
+     * decisive-moment and only-move calls and the pattern read from them again; its threats,
+     * traps and defences the early depth's, until the full depth brings its own.
+     */
+    fun deepened(early: Analysis, board: Board, lines: List<Line>): Analysis {
+        val measured = Measured(
+            fen = early.fen,
+            lines = lines,
+            score = positionScore(board, lines),
+            decisive = isDecisive(board, lines, thresholds),
+            onlyMove = isOnlyMove(board, lines, thresholds),
+        )
+        // `early.model_copy(update=...)`: every other field the early analysis's.
+        return Analysis(
+            gameId = early.gameId,
+            fen = early.fen,
+            ply = early.ply,
+            lines = lines,
+            decisive = measured.decisive,
+            onlyMove = measured.onlyMove,
+            threats = early.threats,
+            traps = early.traps,
+            defences = early.defences,
+            threatens = early.threatens,
+            tags = positionTags(board, measured),
+            opening = early.opening,
+            inBook = early.inBook,
+            provisional = early.provisional,
+        ).also {
+            it.ts = early.ts
+            it.sourceFrameId = early.sourceFrameId
+        }
+    }
+
+    /** Whether the position is measured whole already (the game's own, or ahead of it). */
+    fun measured(board: Board): Boolean = board.fen() in cache
 
     /** What the move cost its mover, and what the position it led to holds. */
     fun assess(gameId: String, before: Board, move: Move, ply: Int): Pair<MoveAssessment, Analysis> {
@@ -422,6 +503,11 @@ class Analyser(
         val ply: Int,
         val board: Board,
         val move: Move?,
+        /**
+         * The player's own move: judged first, its word the news; the opponent's is not, and
+         * the position after it, which the player faces, is measured early first.
+         */
+        val byUser: Boolean = true,
     ) {
         /**
          * Set when the game takes the move back while it is being measured ([withdraw]):
@@ -439,6 +525,18 @@ class Analyser(
      * a new game or a takeback puts a new one in its place.
      */
     @Volatile private var ahead: MutableList<Pair<Board, Int>> = ArrayList()
+
+    /**
+     * The positions after the player's own moves whose full measure gave way to the opponent's
+     * reply ([yielding]), measured again once the reply's position has been; changed with the
+     * count of work owed, under [countLock].
+     */
+    private val deferred = ArrayList<Pair<Request, Board>>()
+
+    /**
+     * Whether the worker is on a search a request interrupts: a look ahead, or a position the
+     * player is about to leave.
+     */
     @Volatile internal var looking = false
         private set
 
@@ -470,10 +568,10 @@ class Analyser(
         annotator.engine.close()
     }
 
-    fun submitMove(gameId: String, before: Board, move: Move, ply: Int) {
+    fun submitMove(gameId: String, before: Board, move: Move, ply: Int, byUser: Boolean = true) {
         // With its moves: the book is asked with the moves that led here (`inBook`,
         // `opening`), and a copy without them was in the book on the first move alone.
-        submit(Request(gameId, ply, before.copy(), move))
+        submit(Request(gameId, ply, before.copy(), move, byUser))
     }
 
     fun submitPosition(gameId: String, board: Board, ply: Int) {
@@ -493,6 +591,10 @@ class Analyser(
             settle()
         }
         ahead = ArrayList()
+        synchronized(countLock) {
+            outstanding = maxOf(0, outstanding - deferred.size)
+            deferred.clear()
+        }
         annotator.reset()
     }
 
@@ -516,6 +618,13 @@ class Analyser(
         }
         for (request in kept) requests.put(request)
         ahead = ArrayList()  // ahead of moves no longer played
+        // Under the lock the worker takes from the list with ([next]): an ArrayList walked while
+        // another thread takes from it throws.
+        synchronized(countLock) {
+            for ((request, _) in deferred) {
+                if (request.gameId == gameId && request.ply > ply) request.withdrawn = true
+            }
+        }
         val now = current
         if (now != null && now.gameId == gameId && now.ply > ply) {
             now.withdrawn = true
@@ -556,7 +665,13 @@ class Analyser(
             current = request
             try {
                 if (request.move == null) {
-                    val event = annotator.analysisEvent(request.gameId, request.board, request.ply)
+                    val early = early(request, request.board)
+                    val event = annotator.analysisEvent(
+                        request.gameId,
+                        request.board,
+                        request.ply,
+                        onDepth = deepening(request, request.board, early),
+                    )
                     if (!request.withdrawn) {
                         results.add(event)
                         planAhead(request.board, event.lines)
@@ -565,19 +680,35 @@ class Analyser(
                     // The verdict first, from the best line alone; the position whole after --
                     // unless newer moves are waiting: then this ply is history, its verdict is
                     // all the coach and the review need, and the whole analysis goes to the
-                    // position the player is actually looking at.
+                    // position the player is actually looking at. The position after the
+                    // opponent's move is the one the player faces: measured early first.
+                    val after = request.board.copy()
+                    after.push(request.move)
+                    var early: Analysis? = null
+                    if (!request.byUser && requests.isEmpty()) early = this.early(request, after)
                     val verdict = annotator.assessMove(request.gameId, request.board, request.move, request.ply)
                     if (request.withdrawn) continue
                     results.add(verdict)
-                    val after = request.board.copy()
-                    after.push(request.move)
                     val behind = requests.isNotEmpty()
                     if (behind) {
                         skipped += 1
                         behindUntil = System.nanoTime() + TimeUnit.SECONDS.toNanos(BEHIND_S.toLong())
                     }
                     val hurry = System.nanoTime() < behindUntil
-                    val event = annotator.analysisEvent(request.gameId, after, request.ply, thin = behind, hurry = hurry)
+                    val event = if (request.byUser && !(behind || hurry)) {
+                        // The position after the player's own move is left the moment the
+                        // opponent replies, and the reply's position is the one they face.
+                        yielding(request, after) ?: continue
+                    } else {
+                        annotator.analysisEvent(
+                            request.gameId,
+                            after,
+                            request.ply,
+                            thin = behind,
+                            hurry = hurry,
+                            onDepth = if (behind) null else deepening(request, after, early),
+                        )
+                    }
                     results.add(event)
                     if (!(behind || hurry)) planAhead(after, event.lines)
                 }
@@ -593,16 +724,87 @@ class Analyser(
     }
 
     /**
+     * The position measured at [EARLY_DEPTH] and delivered, provisional, unless it is measured
+     * whole already (ahead of the game) or the game was behind a moment ago.
+     */
+    private fun early(request: Request, board: Board): Analysis? {
+        if (annotator.measured(board) || System.nanoTime() < behindUntil) return null
+        val event = annotator.analysisEvent(request.gameId, board, request.ply, early = true)
+        if (!request.withdrawn) results.add(event)
+        return event
+    }
+
+    /**
+     * Each depth between the early one and the full delivered as the search finishes it,
+     * provisional ([GameAnnotator.deepened]): whoever reads gets the deepest search done so far
+     * (Tai, 2026-09-28: "if the consumers read after stockfish reaches depth > 12 then they will
+     * get whatever lines that is available at the time"). The results queue is the hand-over:
+     * each depth goes in whole, the reader takes the newest.
+     */
+    private fun deepening(request: Request, board: Board, early: Analysis?): ((List<Line>) -> Unit)? {
+        if (early == null) return null
+        return { lines ->
+            val depth = if (lines.isNotEmpty()) lines[0].depth else 0
+            if (!request.withdrawn && EARLY_DEPTH < depth && depth < annotator.depth) {
+                results.add(annotator.deepened(early, board, lines))
+            }
+        }
+    }
+
+    /**
      * The next request, and while none waits, the positions ahead measured one by one
      * ([lookAhead]), a request interrupting the one being measured.
      */
     private fun next(): Request {
         while (true) {
             requests.poll()?.let { return it }
+            val deferred = synchronized(countLock) { if (this.deferred.isNotEmpty()) this.deferred.removeAt(0) else null }
+            if (deferred != null) {
+                resume(deferred.first, deferred.second)
+                continue
+            }
             val ahead = ahead
             if (ahead.isEmpty()) return requests.take()
             val (board, moves) = ahead.removeAt(0)
             lookAhead(board, moves, ahead)
+        }
+    }
+
+    /**
+     * The position measured whole, giving way to any request: interrupted, it waits in
+     * [deferred] for the worker to be free again, still owed ([pending]), and null is returned
+     * (Tai's puzzles, 2026-09-28: the site replies 0.6 s after the player's move, and the
+     * position they then faced waited behind the full measure of the one they had left).
+     */
+    private fun yielding(request: Request, board: Board): Analysis? {
+        looking = true
+        try {
+            return annotator.engine.interruptible {
+                if (requests.isNotEmpty()) throw Interrupted()
+                annotator.analysisEvent(request.gameId, board, request.ply)
+            }
+        } catch (exc: Interrupted) {
+            synchronized(countLock) {
+                outstanding += 1
+                deferred.add(request to board)
+            }
+            return null
+        } finally {
+            looking = false
+        }
+    }
+
+    /** A position whose full measure gave way, measured again now the worker is free. */
+    private fun resume(request: Request, board: Board) {
+        try {
+            if (request.withdrawn) return
+            val event = yielding(request, board)
+            if (event != null && !request.withdrawn) results.add(event)
+        } catch (exc: Exception) {
+            failures += 1
+            lastError = "${exc::class.java.simpleName}: ${exc.message}"
+        } finally {
+            settle()
         }
     }
 

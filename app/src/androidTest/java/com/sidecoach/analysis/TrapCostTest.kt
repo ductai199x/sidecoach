@@ -38,9 +38,10 @@ class TrapCostTest {
             multipv: Int?,
             pvPlies: Int?,
             carryBest: Boolean,
+            onDepth: ((List<Line>) -> Unit)?,
         ): List<Line> {
             calls += 1
-            return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest)
+            return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
         }
     }
 
