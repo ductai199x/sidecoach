@@ -57,12 +57,7 @@ def test_fixture_loads(book: OpeningBook) -> None:
     assert len(book) == 15
 
 
-def test_identify_takes_the_longest_match(book: OpeningBook) -> None:
-    italian = moves("1. e4 e5 2. Nf3 Nc6 3. Bc4")
-    assert book.identify(italian) == Opening(eco="C50", name="Italian Game", ply=5)
-
-
-def test_identify_grows_more_specific_with_more_moves(book: OpeningBook) -> None:
+def test_identify_takes_the_longest_match_and_grows_more_specific(book: OpeningBook) -> None:
     assert book.identify(moves("1. e4")) == Opening("B00", "King's Pawn Game", 1)
     assert book.identify(moves("1. e4 e5")) == Opening("C20", "King's Pawn Game", 2)
     assert book.identify(moves("1. e4 e5 2. Nf3")) == Opening("C40", "King's Knight Opening", 3)

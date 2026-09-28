@@ -5,6 +5,7 @@ and to the Lichess puzzles that caught its first slips."""
 from __future__ import annotations
 
 import chess
+import pytest
 
 from sidecoach.analysis import positional
 from sidecoach.analysis.traps import _worse
@@ -22,41 +23,85 @@ def _moves(*uci: str) -> list[chess.Move]:
     return [chess.Move.from_uci(u) for u in uci]
 
 
-def test_the_bait_knight_is_a_trap() -> None:
+# The capture that looks free and is not (`situation.trap_words`). (case, FEN, the trap's
+# line, its score and mate, the square the line wins later (or None), the best line's score,
+# and what is said: the words, their start (a `...` at the end), or None: no trap.)
+TRAPS: list[tuple[str, str, list[str], float, int | None, int | None, float, str | None]] = [
     # Capablanca-Marshall, 14.Qf3: "14 hxg4? Qh4" and Black's attack comes.
-    board = chess.Board("r1bq1rk1/2p2ppp/p2b4/1p6/6n1/1BP4P/PP1P1PP1/RNBQR1K1 w - - 1 14")
-    trap = _line(["h3g4", "d8h4", "d1f3", "h4h2", "g1f1", "h2h1", "f1e2", "f8e8"], 0.45)
-    said = situation.trap_words(board, trap, None, 0.60)
-    assert said is not None
-    assert said.startswith("careful, though: hxg4 looks like it wins a knight, but after hxg4 Qh4")
-
-
-def test_the_rook_the_line_wins_later_is_not_yet() -> None:
+    (
+        "the bait knight",
+        "r1bq1rk1/2p2ppp/p2b4/1p6/6n1/1BP4P/PP1P1PP1/RNBQR1K1 w - - 1 14",
+        ["h3g4", "d8h4", "d1f3", "h4h2", "g1f1", "h2h1", "f1e2", "f8e8"],
+        0.45,
+        None,
+        None,
+        0.60,
+        "careful, though: hxg4 looks like it wins a knight, but after hxg4 Qh4...",
+    ),
     # 16.Re2: the rook on a8 falls later; 16.Qxa8? Nxh3+ mates.
-    board = chess.Board("r1b2rk1/2p2ppp/p2b4/1p6/3P3q/1BP2Q1P/PP3nP1/RNB1R1K1 w - - 0 16")
-    trap = _line(["f3a8", "f2h3", "g2h3", "h4e1", "g1g2", "e1e2", "g2g1", "e2h2"], 0.0, mate=-8)
-    assert situation.trap_words(board, trap, chess.A8, 0.68) == (
+    (
+        "the rook the line wins later",
+        "r1b2rk1/2p2ppp/p2b4/1p6/3P3q/1BP2Q1P/PP3nP1/RNB1R1K1 w - - 0 16",
+        ["f3a8", "f2h3", "g2h3", "h4e1", "g1g2", "e1e2", "g2g1", "e2h2"],
+        0.0,
+        -8,
+        chess.A8,
+        0.68,
         "their rook on a8 can be won, but not at once: Qxa8 right away runs into Nxh3+, and they "
-        "have mate"
-    )
-
-
-def test_a_capture_that_comes_out_ahead_is_no_trap() -> None:
+        "have mate",
+    ),
     # 19...Bxf2 Qxf2 wins the exchange: only worse than 19...Qh1+, in a game lost either way.
-    board = chess.Board("r4rk1/2p2ppp/p7/1p6/3P2Pq/1BP2Qb1/PP3RP1/RNB2K2 b - - 0 19")
-    trap = _line(["g3f2", "f3f2", "h4h1", "f2g1", "h1h4", "b1d2", "a8e8", "d2f3"], 0.052)
-    assert situation.trap_words(board, trap, None, 0.25) is None
-
-
-def test_a_capture_into_mate_is_a_trap_in_a_lost_game() -> None:
+    (
+        "a capture that comes out ahead",
+        "r4rk1/2p2ppp/p7/1p6/3P2Pq/1BP2Qb1/PP3RP1/RNB2K2 b - - 0 19",
+        ["g3f2", "f3f2", "h4h1", "f2g1", "h1h4", "b1d2", "a8e8", "d2f3"],
+        0.052,
+        None,
+        None,
+        0.25,
+        None,
+    ),
     # Johner-Nimzowitsch, 34.Bxe4: "34 Kxh3 allows mate after 34...Qf5+", 0.06 below the best.
-    board = chess.Board("6rk/5prq/1p1p1n2/p1pP3p/P1P1pP1n/2P1R1Pb/2Q4K/2B2NRB w - - 0 34")
+    (
+        "a capture into mate in a lost game",
+        "6rk/5prq/1p1p1n2/p1pP3p/P1P1pP1n/2P1R1Pb/2Q4K/2B2NRB w - - 0 34",
+        ["h2h3", "h7f5", "g3g4", "g7g4", "g1g4", "f5g4", "h3h2", "g4g1"],
+        0.0,
+        -9,
+        None,
+        0.06,
+        "careful, though: Kxh3 looks like it wins a bishop, but after Kxh3 Qf5+, they have mate",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("case", "fen", "moves", "score", "mate", "target", "best", "said"),
+    TRAPS,
+    ids=[r[0] for r in TRAPS],
+)
+def test_a_trap_is_the_capture_that_looks_free_and_is_not(
+    case: str,
+    fen: str,
+    moves: list[str],
+    score: float,
+    mate: int | None,
+    target: int | None,
+    best: float,
+    said: str | None,
+) -> None:
+    words = situation.trap_words(chess.Board(fen), _line(moves, score, mate), target, best)
+    if said is None or not said.endswith("..."):
+        assert words == said, case
+    else:
+        assert words is not None and words.startswith(said[:-3]), f"{case}: {words}"
+
+
+def test_a_trap_is_worse_than_the_best_by_a_margin() -> None:
+    # Johner-Nimzowitsch, 34.Kxh3: mate, 0.06 below the best, is worse; 0.02 is not.
     trap = _line(["h2h3", "h7f5", "g3g4", "g7g4", "g1g4", "f5g4", "h3h2", "g4g1"], 0.0, mate=-9)
     assert _worse(trap, _line(["h1e4"], 0.06))
     assert not _worse(_line(["h1e4"], 0.04), _line(["h1e4"], 0.06))
-    assert situation.trap_words(board, trap, None, 0.06) == (
-        "careful, though: Kxh3 looks like it wins a bishop, but after Kxh3 Qf5+, they have mate"
-    )
 
 
 def test_material_given_for_their_attack_is_not_won() -> None:

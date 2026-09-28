@@ -1,7 +1,8 @@
 """Taking back is not winning (Tai's puzzles, 2026-09-26: "why is the coaching telling me to
 win a knight when I have to trade equal value to it"): what the opponent's last capture took
 counts against the line (`idea.exchange_owed`), so a recapture is "you can win back a knight",
-a net win is named by what it nets, and a lesson never says a move "allowed" a recapture.
+a net win is named by what it nets, and a lesson never says a move "allowed" a recapture
+(test_allowed.py).
 
 The positions are Lichess puzzles from the sample (the setup move played on the board, as the
 coach has it), with the engine's line written out."""
@@ -9,6 +10,7 @@ coach has it), with the engine's line written out."""
 from __future__ import annotations
 
 import chess
+import pytest
 
 from sidecoach.coach import idea as idea_of
 from sidecoach.coach import idea_words
@@ -79,40 +81,64 @@ def test_the_exchange_in_progress_is_what_the_last_captures_took() -> None:
     assert idea_of.exchange_owed(chess.Board(_board(None, [*RUY, "b5c6"]).fen())) == {}
 
 
-def test_a_plain_recapture_is_winning_back() -> None:
-    idea, goal = _goal(_board(None, [*RUY, "b5c6"]), "dxc6 O-O", score=0.5)
-    assert idea.back and goal == "you can win back a bishop"
-
-
-def test_a_puzzle_recapture_is_winning_back() -> None:
+# The goal of a line after the opponent captured (`idea.read`, `idea_words.goal`). (case,
+# the FEN (None: the start), the moves played on it, the line in SAN, its score, whether it
+# wins back what was taken, the goal in words.)
+GOALS: list[tuple[str, str | None, list[str], str, float, bool, str]] = [
+    # 4.Bxc6: Black takes back.
+    ("a plain recapture", None, [*RUY, "b5c6"], "dxc6 O-O", 0.5, True, "you can win back a bishop"),
     # Lichess 00tMQ: 20...Nxh5 took the bishop; Qxh5 takes the knight back.
-    board = _board("r5rk/p2nq2p/2pppn1b/1p2p1PB/7P/1PN5/PBPRQ3/2K3R1 b - - 0 20", ["f6h5"])
-    idea, goal = _goal(board, "Qxh5 Bg7", score=0.7)
-    assert idea.back and goal == "you can win back a knight"
+    (
+        "00tMQ",
+        "r5rk/p2nq2p/2pppn1b/1p2p1PB/7P/1PN5/PBPRQ3/2K3R1 b - - 0 20",
+        ["f6h5"],
+        "Qxh5 Bg7",
+        0.7,
+        True,
+        "you can win back a knight",
+    ),
     # Lichess 00s16: 10...Rxb8 took the bishop; the check wins the one on b4 back.
-    board = _board("rBbqk2r/1p3ppp/p3pn2/8/1b1P4/2N2N1P/PP3PP1/R2QKB1R b KQkq - 0 10", ["a8b8"])
-    idea, goal = _goal(board, "Qa4+ b5 Qxb4", score=0.75)
-    assert idea.back and goal == "you can win back a bishop"
-
-
-def test_winning_their_queen_back_after_they_took_yours() -> None:
+    (
+        "00s16",
+        "rBbqk2r/1p3ppp/p3pn2/8/1b1P4/2N2N1P/PP3PP1/R2QKB1R b KQkq - 0 10",
+        ["a8b8"],
+        "Qa4+ b5 Qxb4",
+        0.75,
+        True,
+        "you can win back a bishop",
+    ),
     # Lichess 00ISm: 29...Bxg5 took the queen; Nxg5+ Kh6 Nxe6 takes the bishop, then theirs.
-    board = _board("5r2/4bp1k/2ppq1p1/4p1Q1/4N2P/3P4/1P1R1P2/4K1R1 b - - 0 29", ["e7g5"])
-    idea, goal = _goal(board, "Nxg5+ Kh6 Nxe6 fxe6", score=0.6)
-    assert idea.back and goal == "you can win back their queen"
+    (
+        "their queen back after they took yours",
+        "5r2/4bp1k/2ppq1p1/4p1Q1/4N2P/3P4/1P1R1P2/4K1R1 b - - 0 29",
+        ["e7g5"],
+        "Nxg5+ Kh6 Nxe6 fxe6",
+        0.6,
+        True,
+        "you can win back their queen",
+    ),
+    # Lichess 00d6g: 23...Nxe6 took the rook; Bxf5+ g6 Bxe6 takes both knights: a net win is
+    # named by what it nets.
+    (
+        "a net win",
+        "r4n2/1p4pk/2p1R3/p2p1nPp/7P/3P1P1B/PP6/2K4R b - - 0 23",
+        ["f8e6"],
+        "Bxf5+ g6 Bxe6 Rf8",
+        0.9,
+        False,
+        "you can win two knights for a rook",
+    ),
+]
 
 
-def test_a_net_win_is_named_by_what_it_nets() -> None:
-    # Lichess 00d6g: 23...Nxe6 took the rook; Bxf5+ g6 Bxe6 takes both knights.
-    board = _board("r4n2/1p4pk/2p1R3/p2p1nPp/7P/3P1P1B/PP6/2K4R b - - 0 23", ["f8e6"])
-    idea, goal = _goal(board, "Bxf5+ g6 Bxe6 Rf8", score=0.9)
-    assert not idea.back and goal == "you can win two knights for a rook"
-
-
-def test_a_lesson_never_says_a_capture_allowed_the_recapture() -> None:
-    board = _board(None, [*RUY, "b5c6"])  # the player's 4.Bxc6, Black to move
-    analysis = _analysis(board, "dxc6 O-O", score=0.5)
-    assert idea_words.allowed(board, analysis, "Bxc6") is None
+@pytest.mark.parametrize(
+    ("case", "fen", "played", "sans", "score", "back", "words"), GOALS, ids=[r[0] for r in GOALS]
+)
+def test_taking_back_is_winning_back(
+    case: str, fen: str | None, played: list[str], sans: str, score: float, back: bool, words: str
+) -> None:
+    idea, goal = _goal(_board(fen, played), sans, score=score)
+    assert idea.back is back and goal == words, f"{case}: {goal}"
 
 
 def test_the_live_coach_keeps_the_moves_that_led_to_a_position() -> None:

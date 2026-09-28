@@ -9,6 +9,7 @@ the coach leans on, which had no direct tests.
 from __future__ import annotations
 
 import chess
+import pytest
 
 from sidecoach.coach.facts import describe_move, describe_tactic, facts_from_analysis
 from sidecoach.events import Analysis, Line
@@ -66,62 +67,112 @@ def test_describe_move_reads_a_move_in_words() -> None:
     )
 
 
-def test_describe_tactic_names_the_pieces_or_says_nothing() -> None:
-    board = chess.Board("r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 3 3")
+# A tactic's squares in words (`describe_tactic`), or None when the board does not bear
+# them. (case, FEN, the tag, its squares, the best move (UCI) whose board is tried after the
+# one given, the sentence or None.)
+RUY = "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 3 3"
+DESCRIBED: list[tuple[str, str, str, list[str], str | None, str | None]] = [
     # A pin, given as [attacker, pinned, target].
-    assert describe_tactic(board, "pin", ["b5", "c6", "e8"]) == (
-        "the knight on c6 is pinned to the king on e8 by the bishop on b5"
-    )
-    # A loose piece.
-    assert describe_tactic(board, "hangingPiece", ["e5"]) == "the pawn on e5 is loose"
+    (
+        "a pin",
+        RUY,
+        "pin",
+        ["b5", "c6", "e8"],
+        None,
+        "the knight on c6 is pinned to the king on e8 by the bishop on b5",
+    ),
+    ("a loose piece", RUY, "hangingPiece", ["e5"], None, "the pawn on e5 is loose"),
     # A fork, given as [forker, then the forked].
-    fork = chess.Board("3r1r2/8/4N3/8/8/8/8/4K1k1 w - - 0 1")
-    assert describe_tactic(fork, "fork", ["e6", "d8", "f8"]) == (
-        "the knight on e6 forks the rook on d8 and the rook on f8"
-    )
+    (
+        "a fork",
+        "3r1r2/8/4N3/8/8/8/8/4K1k1 w - - 0 1",
+        "fork",
+        ["e6", "d8", "f8"],
+        None,
+        "the knight on e6 forks the rook on d8 and the rook on f8",
+    ),
     # When the squares do not hold what the tag claims, nothing is said.
-    assert describe_tactic(board, "pin", ["a1", "a2", "a3"]) is None
-
-
-def test_describe_tactic_reads_a_fork_the_best_move_creates() -> None:
-    # The tactic is not on the board yet: the knight forks only after it lands. describe_tactic
-    # is handed the best move and tries the position after it, so the fork still reads true.
-    board = chess.Board("5rkr/8/8/4N3/8/8/8/4K3 w - - 0 1")
-    best = chess.Move.from_uci("e5g6")  # Ng6 forks the rooks on f8 and h8
-    text = describe_tactic(board, "fork", ["g6", "f8", "h8"], best_move=best)
-    assert text == "the knight on g6 forks the rook on f8 and the rook on h8"
-
-
-def test_describe_tactic_names_only_enemy_targets() -> None:
-    """A master-game pass offline (2026-09-21) said "the rook on e5 bears on the pawn on
-    d6" of the player's own pawn: the capturing-defender tag's second square is where a
-    later move lands, and the board had moved on. A described target is the enemy's, and
-    the piece named must bear on it, or the square alone is named."""
-    # Discovered attack, given as [vacated, slider, target]: read after the move only.
-    board = chess.Board("4k3/8/8/8/8/8/8/R2N1K2 w - - 0 1")
-    best = chess.Move.from_uci("d1e3")  # the knight steps off the rank; the rook does not see e8
-    assert describe_tactic(board, "discoveredAttack", ["d1", "a1", "e8"], best_move=best) is None
+    ("squares that hold nothing", RUY, "pin", ["a1", "a2", "a3"], None, None),
+    # The fork is not on the board yet: the knight forks only after it lands, and the board
+    # after the best move is tried, so it still reads true.
+    (
+        "a fork the best move creates",
+        "5rkr/8/8/4N3/8/8/8/4K3 w - - 0 1",
+        "fork",
+        ["g6", "f8", "h8"],
+        "e5g6",
+        "the knight on g6 forks the rook on f8 and the rook on h8",
+    ),
+    # A master-game pass offline (2026-09-21) said "the rook on e5 bears on the pawn on d6"
+    # of the player's own pawn: the capturing-defender tag's second square is where a later
+    # move lands, and the board had moved on. A described target is the enemy's, and the
+    # piece named must bear on it, or the square alone is named.
+    # Discovered attack, given as [vacated, slider, target], read after the move only: the
+    # knight steps off the rank and the rook does not see e8.
+    (
+        "a discovery onto nothing",
+        "4k3/8/8/8/8/8/8/R2N1K2 w - - 0 1",
+        "discoveredAttack",
+        ["d1", "a1", "e8"],
+        "d1e3",
+        None,
+    ),
     # A slider whose line opens onto an enemy piece.
-    board = chess.Board("r3k3/8/8/8/8/8/8/R2N3K w - - 0 1")
-    best = chess.Move.from_uci("d1e3")
-    assert describe_tactic(board, "discoveredAttack", ["d1", "a1", "a8"], best_move=best) == (
-        "the rook on a1 now bears on the rook on a8"
-    )
+    (
+        "a discovery onto a rook",
+        "r3k3/8/8/8/8/8/8/R2N3K w - - 0 1",
+        "discoveredAttack",
+        ["d1", "a1", "a8"],
+        "d1e3",
+        "the rook on a1 now bears on the rook on a8",
+    ),
     # Capturing the defender: nothing is said unless an enemy piece stands on the square.
-    board = chess.Board("4k3/8/3P4/4R3/8/8/8/4K3 w - - 0 1")
-    assert describe_tactic(board, "capturingDefender", ["e5", "d6"]) is None
-    board = chess.Board("4k3/8/3p4/4R3/8/8/8/4K3 w - - 0 1")
-    assert describe_tactic(board, "capturingDefender", ["e5", "d6"]) == (
-        "the rook on e5 removes a defender of the pawn on d6"
-    )
+    (
+        "the defender of our own pawn",
+        "4k3/8/3P4/4R3/8/8/8/4K3 w - - 0 1",
+        "capturingDefender",
+        ["e5", "d6"],
+        None,
+        None,
+    ),
+    (
+        "the defender of their pawn",
+        "4k3/8/3p4/4R3/8/8/8/4K3 w - - 0 1",
+        "capturingDefender",
+        ["e5", "d6"],
+        None,
+        "the rook on e5 removes a defender of the pawn on d6",
+    ),
     # A queen check that picks up pawns: the king first, the rest by value, three at most.
-    board = chess.Board("8/5pQp/5p1k/8/8/1p6/8/4K3 b - - 0 1")
-    assert describe_tactic(board, "fork", ["g7", "f6", "h6", "f7", "h7"]) == (
-        "the queen on g7 forks the king on h6, the pawn on f6 and the pawn on f7"
-    )
+    (
+        "a queen forking pawns",
+        "8/5pQp/5p1k/8/8/1p6/8/4K3 b - - 0 1",
+        "fork",
+        ["g7", "f6", "h6", "f7", "h7"],
+        None,
+        "the queen on g7 forks the king on h6, the pawn on f6 and the pawn on f7",
+    ),
     # A fork whose targets are not both the enemy's is not described.
-    fork = chess.Board("3r1R2/8/4N3/8/8/8/8/4K1k1 w - - 0 1")
-    assert describe_tactic(fork, "fork", ["e6", "d8", "f8"]) is None
+    (
+        "a fork of our own rook",
+        "3r1R2/8/4N3/8/8/8/8/4K1k1 w - - 0 1",
+        "fork",
+        ["e6", "d8", "f8"],
+        None,
+        None,
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("case", "fen", "name", "squares", "best", "said"), DESCRIBED, ids=[r[0] for r in DESCRIBED]
+)
+def test_describe_tactic_names_the_pieces_or_says_nothing(
+    case: str, fen: str, name: str, squares: list[str], best: str | None, said: str | None
+) -> None:
+    board = chess.Board(fen)
+    move = chess.Move.from_uci(best) if best else None
+    assert describe_tactic(board, name, squares, best_move=move) == said, case
 
 
 def test_in_check_the_question_is_the_check() -> None:

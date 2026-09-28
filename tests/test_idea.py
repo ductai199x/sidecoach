@@ -83,13 +83,13 @@ def test_a_rook_sacrifice_that_opens_the_king_is_said() -> None:
 
 
 def test_a_trapped_queen_is_trapped_not_loose() -> None:
-    """Na4 traps the queen on b2 (Lichess 048VU): it was called "a loose piece"."""
-    idea = read(
-        "rbb2rk1/1p3ppp/p1n2n2/3p4/3Pp3/P1N1B2P/1qP1BPPN/R2QK2R w KQ - 0 14", "Na4 Qxa1 Qxa1"
-    )
+    """Na4 traps the queen on b2 (Lichess 048VU): it was called "a loose piece". And the rook
+    that goes, Qxa1 Qxa1, is no sacrifice: the trapped queen follows at once."""
+    fen = "rbb2rk1/1p3ppp/p1n2n2/3p4/3Pp3/P1N1B2P/1qP1BPPN/R2QK2R w KQ - 0 14"
+    idea = read(fen, "Na4 Qxa1 Qxa1")
     assert idea.blow is not None and idea.blow.name == "trappedPiece"
-    board = chess.Board("rbb2rk1/1p3ppp/p1n2n2/3p4/3Pp3/P1N1B2P/1qP1BPPN/R2QK2R w KQ - 0 14")
-    assert idea_words.target(idea, board) == "their queen on b2: it has no safe square"
+    assert idea_words.target(idea, chess.Board(fen)) == "their queen on b2: it has no safe square"
+    assert idea.sacrifices == ()
 
 
 def test_a_pin_is_gone_once_its_pinner_is_taken() -> None:
@@ -137,12 +137,6 @@ def test_a_rook_given_in_two_steps_is_one_sacrifice() -> None:
         after.push(move)
         boards.append(after)
     assert idea_of._sacrifices(boards, line, 8) == ((2, "rook"),)
-
-
-def test_a_rook_given_for_a_queen_next_move_is_no_sacrifice() -> None:
-    """Na4 Qxa1 Qxa1: the rook goes, the trapped queen follows at once (048VU)."""
-    fen = "rbb2rk1/1p3ppp/p1n2n2/3p4/3Pp3/P1N1B2P/1qP1BPPN/R2QK2R w KQ - 0 14"
-    assert read(fen, "Na4 Qxa1 Qxa1").sacrifices == ()
 
 
 def test_a_queen_sacrifice_for_mate_is_said_at_each_rung() -> None:

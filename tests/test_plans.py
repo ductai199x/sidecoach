@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import chess
+import pytest
 
 from sidecoach.analysis import positional
 from sidecoach.coach import idea as idea_of
@@ -13,78 +14,154 @@ def _line(fen: str, ucis: str) -> tuple[chess.Board, list[chess.Move]]:
     return chess.Board(fen), [chess.Move.from_uci(u) for u in ucis.split()]
 
 
-def test_rooks_brought_to_an_open_file_are_doubled() -> None:
-    board, pv = _line("6k1/p4ppp/8/8/8/8/5PPP/R4RK1 w - - 0 1", "a1d1 a7a6 d1d2 a6a5 f1d1 a5a4")
-    plan = plans.read(board, pv)
-    assert plan is not None and plan.kind == "double"
-    assert plan.where == "d" and plan.detail == "open"
-    assert plans.pieces(plan, board) == "your rook on f1 and your rook on a1"
-    assert plans.why(plan, board) == "Rad1 and Rfd1 double your rooks on the open d-file"
-
-
-def test_a_knight_taken_in_two_moves_to_an_outpost() -> None:
-    board, pv = _line("4k3/8/3p4/8/4P3/8/8/1N2K3 w - - 0 1", "b1c3 e8f7 c3d5 f7e6")
-    plan = plans.read(board, pv)
-    assert plan is not None and plan.kind == "outpost"
-    assert plan.square == chess.D5
-    assert plans.target(plan) == "the d5 square, an outpost for a knight"
-
-
-def test_a_knight_that_goes_out_and_back_is_no_route() -> None:
-    board, pv = _line("4k3/8/3p4/3N4/4P3/8/8/4K3 w - - 0 1", "d5c3 e8f7 c3d5 f7e6")
-    assert plans.read(board, pv) is None
-
-
-def test_a_passed_pawn_pushed_twice() -> None:
-    board, pv = _line("4k3/7p/8/8/P7/8/8/4K3 w - - 0 1", "a4a5 h7h6 a5a6 h6h5")
-    plan = plans.read(board, pv)
-    assert plan is not None and plan.kind == "passer" and plan.square == chess.A4
-
-
-def test_pawns_rolled_at_a_king_on_the_other_wing_are_a_storm() -> None:
-    board, pv = _line("6k1/p4ppp/8/8/8/8/6PP/2K5 w - - 0 1", "g2g4 a7a6 h2h4 a6a5 g4g5 a5a4")
-    plan = plans.read(board, pv)
-    assert plan is not None and plan.kind == "storm" and plan.where == "kingside"
-
-
-def test_pawns_in_front_of_your_own_king_are_no_storm() -> None:
+# The plan `plans.read` finds in a best line, white's. (case, FEN, the line in UCI, the
+# score given (None: the default), the plan's kind (None: no plan), its fields (a set is
+# compared as one), and its words: `pieces`, `target` and `why`.)
+READS: list[tuple[str, str, str, float | None, str | None, dict[str, object], dict[str, str]]] = [
+    (
+        "rooks doubled on an open file",
+        "6k1/p4ppp/8/8/8/8/5PPP/R4RK1 w - - 0 1",
+        "a1d1 a7a6 d1d2 a6a5 f1d1 a5a4",
+        None,
+        "double",
+        {"where": "d", "detail": "open"},
+        {
+            "pieces": "your rook on f1 and your rook on a1",
+            "why": "Rad1 and Rfd1 double your rooks on the open d-file",
+        },
+    ),
+    (
+        "a knight in two moves to an outpost",
+        "4k3/8/3p4/8/4P3/8/8/1N2K3 w - - 0 1",
+        "b1c3 e8f7 c3d5 f7e6",
+        None,
+        "outpost",
+        {"square": chess.D5},
+        {"target": "the d5 square, an outpost for a knight"},
+    ),
+    # A knight that goes out and back is no route.
+    (
+        "out and back",
+        "4k3/8/3p4/3N4/4P3/8/8/4K3 w - - 0 1",
+        "d5c3 e8f7 c3d5 f7e6",
+        None,
+        None,
+        {},
+        {},
+    ),
+    (
+        "a passed pawn pushed twice",
+        "4k3/7p/8/8/P7/8/8/4K3 w - - 0 1",
+        "a4a5 h7h6 a5a6 h6h5",
+        None,
+        "passer",
+        {"square": chess.A4},
+        {},
+    ),
+    (
+        "pawns rolled at a king on the other wing",
+        "6k1/p4ppp/8/8/8/8/6PP/2K5 w - - 0 1",
+        "g2g4 a7a6 h2h4 a6a5 g4g5 a5a4",
+        None,
+        "storm",
+        {"where": "kingside"},
+        {},
+    ),
     # Both kings behind the kingside pawns: h3 and h4 make room or keep a piece out.
+    (
+        "pawns in front of your own king",
+        "6k1/p4ppp/8/8/8/8/5PPP/6K1 w - - 0 1",
+        "g2g4 a7a6 h2h4 a6a5",
+        None,
+        None,
+        {},
+        {},
+    ),
+    (
+        "queenside pawns away from both kings",
+        "6k1/p4ppp/8/8/8/8/PP3PPP/6K1 w - - 0 1",
+        "b2b4 g8f8 a2a4 f8e7",
+        None,
+        "wing",
+        {"where": "queenside"},
+        {},
+    ),
+    (
+        "a break prepared by the best move",
+        "4k3/8/8/4p3/8/8/3P4/4K1N1 w - - 0 1",
+        "g1f3 e8e7 d2d4 e7e6",
+        None,
+        "break",
+        {"square": chess.D4},
+        {"why": "Nf3 brings a piece to bear on d4, then d4 breaks open the centre"},
+    ),
+    # The lift and the swing both belong to it.
+    (
+        "queen and rook lifted to their king",
+        "6k1/p4ppp/8/8/8/8/5PPP/3QR1K1 w - - 0 1",
+        "d1d3 a7a6 e1e3 a6a5 e3h3 a5a4",
+        None,
+        "attack",
+        {"square": chess.G8, "pieces": {chess.D1, chess.E1}},
+        {"why": "Qd3, Re3 and Rh3 bring your queen and rook against their king"},
+    ),
+    # Not for a side the engine calls worse: there it is a hope, not a plan.
+    (
+        "an attack for the worse side",
+        "6k1/p4ppp/8/8/8/8/5PPP/3QR1K1 w - - 0 1",
+        "d1d3 a7a6 e1e3 a6a5 e3h3 a5a4",
+        0.3,
+        None,
+        {},
+        {},
+    ),
+    # Pawns traded on the queenside are an exchange, not an expansion.
+    (
+        "captures",
+        "6k1/p4ppp/1p6/P7/8/8/1P3PPP/6K1 w - - 0 1",
+        "a5b6 a7b6 b2b4 g8f8",
+        None,
+        None,
+        {},
+        {},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("case", "fen", "ucis", "score", "kind", "fields", "words"), READS, ids=[r[0] for r in READS]
+)
+def test_the_plan_a_best_line_carries_out(
+    case: str,
+    fen: str,
+    ucis: str,
+    score: float | None,
+    kind: str | None,
+    fields: dict[str, object],
+    words: dict[str, str],
+) -> None:
+    board, pv = _line(fen, ucis)
+    plan = plans.read(board, pv) if score is None else plans.read(board, pv, score=score)
+    if kind is None:
+        assert plan is None, case
+        return
+    assert plan is not None and plan.kind == kind, case
+    for name, value in fields.items():
+        got = getattr(plan, name)
+        assert (set(got) if isinstance(value, set) else got) == value, f"{case}: {name}"
+    said = {
+        "pieces": lambda: plans.pieces(plan, board),
+        "target": lambda: plans.target(plan),
+        "why": lambda: plans.why(plan, board),
+    }
+    for name, text in words.items():
+        assert said[name]() == text, f"{case}: {name}"
+
+
+def test_a_push_in_front_of_your_own_king_is_no_storm() -> None:
+    # Both kings behind the kingside pawns: h4 makes room or keeps a piece out.
     board = chess.Board("6k1/p4ppp/8/8/8/8/5PPP/6K1 w - - 0 1")
     assert positional._pawn_storm_side(board, chess.Move.from_uci("h2h4"), chess.WHITE) is None
-    board, pv = _line(board.fen(), "g2g4 a7a6 h2h4 a6a5")
-    assert plans.read(board, pv) is None
-
-
-def test_queenside_pawns_away_from_both_kings_gain_space() -> None:
-    board, pv = _line("6k1/p4ppp/8/8/8/8/PP3PPP/6K1 w - - 0 1", "b2b4 g8f8 a2a4 f8e7")
-    plan = plans.read(board, pv)
-    assert plan is not None and plan.kind == "wing" and plan.where == "queenside"
-
-
-def test_a_break_prepared_by_the_best_move() -> None:
-    board, pv = _line("4k3/8/8/4p3/8/8/3P4/4K1N1 w - - 0 1", "g1f3 e8e7 d2d4 e7e6")
-    plan = plans.read(board, pv)
-    assert plan is not None and plan.kind == "break" and plan.square == chess.D4
-    assert (
-        plans.why(plan, board) == "Nf3 brings a piece to bear on d4, then d4 breaks open the centre"
-    )
-
-
-def test_queen_and_rook_lifted_to_their_king_are_an_attack() -> None:
-    board, pv = _line("6k1/p4ppp/8/8/8/8/5PPP/3QR1K1 w - - 0 1", "d1d3 a7a6 e1e3 a6a5 e3h3 a5a4")
-    plan = plans.read(board, pv)
-    assert plan is not None and plan.kind == "attack" and plan.square == chess.G8
-    assert set(plan.pieces) == {chess.D1, chess.E1}
-    # The lift and the swing both belong to it.
-    assert plans.why(plan, board) == "Qd3, Re3 and Rh3 bring your queen and rook against their king"
-    # Not for a side the engine calls worse: there it is a hope, not a plan.
-    assert plans.read(board, pv, score=0.3) is None
-
-
-def test_captures_make_no_plan() -> None:
-    # Pawns traded on the queenside are an exchange, not an expansion.
-    board, pv = _line("6k1/p4ppp/1p6/P7/8/8/1P3PPP/6K1 w - - 0 1", "a5b6 a7b6 b2b4 g8f8")
-    assert plans.read(board, pv) is None
 
 
 def test_a_move_that_attacks_a_loose_piece_is_a_threat() -> None:

@@ -4,6 +4,7 @@ traced to the harness (dev and test reruns, 2026-09-26), on the position it was 
 from __future__ import annotations
 
 import chess
+import pytest
 
 from sidecoach.coach import situation
 from sidecoach.coach.coach import _great_meaning, in_check_threat
@@ -27,20 +28,29 @@ def _facts(fen: str, **kw: object) -> PositionFacts:
     return PositionFacts(fen=fen, side_to_move="white", phase="middlegame", **kw)  # type: ignore[arg-type]
 
 
-def test_a_king_step_claims_nothing_every_king_move_has():
-    # 27...Kh7: every legal king move lands where nothing attacks it, so "a square nothing of
-    # theirs can reach" read as the reason for Kh7 over Kf7, Kh5 and Kf5.
-    board = chess.Board("2r5/3r2p1/b1N1R1kp/3n4/5B2/5P2/PP3KPP/2R5 b - - 4 27")
-    assert situation.evasion_why(board, board.parse_san("Kh7")) == "Kh7 steps out of check"
-
-
-def test_a_king_step_to_the_one_square_without_a_check_says_so():
-    # Kd2 walks into Nb3+; Kc2 leaves them no check at all.
-    board = chess.Board("8/8/6P1/8/8/8/7k/2nK3r w - - 0 1")
-    assert situation.evasion_why(board, board.parse_san("Kc2")) == (
-        "Kc2 steps out of check to the one square where no check follows"
-    )
-    assert situation.evasion_why(board, board.parse_san("Kd2")) == "Kd2 steps out of check"
+@pytest.mark.parametrize(
+    ("fen", "san", "why"),
+    [
+        # 27...Kh7: every legal king move lands where nothing attacks it, so "a square nothing
+        # of theirs can reach" read as the reason for Kh7 over Kf7, Kh5 and Kf5.
+        (
+            "2r5/3r2p1/b1N1R1kp/3n4/5B2/5P2/PP3KPP/2R5 b - - 4 27",
+            "Kh7",
+            "Kh7 steps out of check",
+        ),
+        # Kd2 walks into Nb3+; Kc2 leaves them no check at all.
+        (
+            "8/8/6P1/8/8/8/7k/2nK3r w - - 0 1",
+            "Kc2",
+            "Kc2 steps out of check to the one square where no check follows",
+        ),
+        ("8/8/6P1/8/8/8/7k/2nK3r w - - 0 1", "Kd2", "Kd2 steps out of check"),
+    ],
+    ids=["every king move is safe", "the one square with no check", "into a check"],
+)
+def test_a_king_step_claims_only_what_sets_it_apart(fen: str, san: str, why: str):
+    board = chess.Board(fen)
+    assert situation.evasion_why(board, board.parse_san(san)) == why
 
 
 def test_a_move_after_a_pass_is_a_threat_only_when_it_threatens():
