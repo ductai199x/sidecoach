@@ -1472,6 +1472,62 @@ def test_a_question_about_a_fine_last_move_says_it_was_fine() -> None:
     assert "do not invent a fault" in directive
 
 
+def test_asked_why_the_answer_says_why_whole_and_a_bare_one_gets_the_line() -> None:
+    """Tai, 2026-09-27: "I want to hear the like why was that bad or why was it good or what
+    was the better move or what was the better idea". In the offline sweep's bot games 61 of
+    95 answers to "why was that bad?" were the better move and nothing else: the answer was
+    trimmed of the reason the lesson after the move had just given. Asked, the reason is said
+    whole; where the coach has no words for the better move, the engine's line from the
+    position the move was played from is the reason (f363ea0)."""
+    from sidecoach.coach.coach import _with_line
+
+    def why_was_that_bad(bare: bool) -> tuple[str, str]:
+        """The Qd1+ puzzle, 1...h5?? played: the lesson after it, and the answer to the
+        question, both from the templates (the model's replies fail)."""
+        coach, provider = _coach(["", ""])
+        board = _puzzle(coach)
+        _analysed(coach, board, 0, QD1_LINE, 1.0, 3)
+        _messages(coach)
+        facts = coach.positions[0].facts
+        assert facts is not None
+        if bare:  # no words for why Qd1+ works
+            coach.positions[0].facts = facts.model_copy(update={"why": None, "theme": None})
+        _played(coach, board, 1, "h6h5", True, 2.0)
+        coach.on_event(
+            MoveAssessment(
+                game_id="g",
+                ply=1,
+                uci="h6h5",
+                expected_loss=0.5,
+                severity=Severity.BLUNDER,
+                best=["c2d1"],
+                label=Label.BLUNDER,
+            ),
+            2.5,
+        )
+        (lesson,) = [m.text for m in _messages(coach)]
+        provider.replies = ["", ""]
+        coach.ask("why was that bad?", 3.0)
+        return lesson, _messages(coach)[-1].text
+
+    reason = "it is a queen sacrifice, and it forces mate: Qd1+ Rxd1 Rxd1+ Qe1 Rxe1#"
+    lesson, answer = why_was_that_bad(bare=False)
+    assert reason in lesson
+    assert answer == f"Qd1+ was better -- {reason}.", "said again, whole: they asked"
+    lesson, answer = why_was_that_bad(bare=True)
+    assert "the line runs" not in lesson, "the line is for the answer to their question"
+    assert answer == "Qd1+ was better -- the line runs Qd1+ Rxd1 Rxd1+ Qe1 Rxe1#."
+    # The line only where the answer names nothing but the better move, and only a line that
+    # starts with it.
+    facts = PositionFacts(
+        fen=QD1, side_to_move="black", phase="middlegame", line=["Qd1+", "Rxd1", "Rxd1+"]
+    )
+    kept = "Qd1+ was better -- it forces mate."
+    assert _with_line(kept, "Qd1+ was better", "Qd1+", facts) == kept
+    assert _with_line("Rd1 was better.", "Rd1 was better", "Rd1", facts) == "Rd1 was better."
+    assert _with_line("Qd1+ was better.", "Qd1+ was better", "Qd1+", None) == "Qd1+ was better."
+
+
 def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> None:
     """ "What about Bc4?" once got only "not among the engine's best moves". With an engine
     the object carries the engine's word on that move: the score after it, how far behind
