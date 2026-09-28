@@ -212,13 +212,16 @@ class Engine:
     def interruptible(self) -> Iterator[None]:
         """Searches that another thread may stop (`interrupt`): each raises `Interrupted`
         once stopped, and so does every search after it here -- a look ahead the game has
-        overtaken is let go at once, not searched to its end first."""
-        self._stopped.clear()
+        overtaken is let go at once, not searched to its end first. Nested, the inner block
+        keeps the outer's stop: one that came before it holds inside it too."""
+        outer = self._interruptible
+        if not outer:
+            self._stopped.clear()
         self._interruptible = True
         try:
             yield
         finally:
-            self._interruptible = False
+            self._interruptible = outer
 
     def interrupt(self) -> None:
         """Stop the search running inside `interruptible`, and the ones after it there."""

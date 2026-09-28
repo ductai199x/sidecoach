@@ -50,17 +50,28 @@ class _SlowEngine(FakeEngine):
     def __init__(self, seconds: float) -> None:
         super().__init__({})
         self.seconds = seconds
+        # `armed` by a test, `watching` from the moment the analyser is told of a takeback
+        # (`Chain`): what it searched before then was the game's to search.
+        self.armed = False
         self.watching = False
         self.asked: list[str] = []
         self._lock = threading.Lock()
 
     def analyse(self, board: chess.Board, **kwargs: object) -> list:
-        # Noted as the search starts: one already under way when a takeback comes is let
-        # finish (its word is not delivered), and is not a search started afterwards.
+        from sidecoach.analysis.engine import Interrupted
+
+        # Stopped as a real engine is (`Engine.interrupt`): none begins once stopped, and one
+        # under way ends within a moment. Noted as the search starts.
+        if self._interruptible and self._stopped.is_set():
+            raise Interrupted
         with self._lock:
             if self.watching:
                 self.asked.append(board.board_fen())
-        time.sleep(self.seconds)
+        end = time.monotonic() + self.seconds
+        while time.monotonic() < end:
+            if self._interruptible and self._stopped.is_set():
+                raise Interrupted
+            time.sleep(0.005)
         return super().analyse(board, **kwargs)
 
 
@@ -77,10 +88,19 @@ class Chain:
         self.assessing.analyser = Analyser(
             GameAnnotator(engine=self.engine, depth=6, with_threats=False)
         )
+        withdraw = self.assessing.analyser.withdraw
+
+        def told(game_id: str, ply: int) -> None:
+            withdraw(game_id, ply)
+            if self.engine.armed:
+                self.engine.watching = True
+
+        self.assessing.analyser.withdraw = told  # type: ignore[method-assign]
         self.assessing.analyser.start()
         self.coach, _ = _coach(["never used"] * 50)
         self.events: list[object] = []
         self.drained: list[object] = []
+        self.told_at = 0  # where `drained` stood when the last takeback was told (`feed`)
 
     def frame(
         self,
@@ -105,6 +125,9 @@ class Chain:
             events = self.pipe.process(frame, self.ts, frame_id=int(self.ts * 10))
             for event in events:
                 self.events.append(event)
+                if isinstance(event, Takeback):
+                    # What the engine said before this was said of the game as it stood.
+                    self.told_at = len(self.drained)
                 if isinstance(event, GameStarted | MovePlayed | Takeback | Resync):
                     self.assessing.submit(event)
                 self.coach.on_event(event, self.ts)
@@ -155,13 +178,15 @@ def _fens(board: chess.Board) -> dict[int, str]:
 
 def _agree(c: Chain, since: int) -> None:
     """The game, the reconciler, the engine glue and the coach count the same plies, and
-    nothing drained since `since` is about a move or a position the game has left."""
+    nothing drained since `since` and the takeback was told is about a move or a position
+    the game has left: what came before it was said of the game as it then stood -- the
+    engine at work on the moves the takeback was to withdraw, as it should be."""
     final = _line(c.board)
     assert _line(c.rec.board) == final, "the reconciler's game"
     assert c.assessing._line == final, "the engine glue's game"
     assert {p: m.uci for p, m in c.coach.moves.items()} == final, "the coach's game"
     fens = _fens(c.board)
-    for said in c.drained[since:]:
+    for said in c.drained[max(since, c.told_at) :]:
         if isinstance(said, MoveAssessment):
             assert final.get(said.ply) == said.uci, f"a verdict on a withdrawn move: {said}"
         elif isinstance(said, Analysis) and said.ply > 0:
@@ -188,7 +213,7 @@ def test_a_takeback_s_withdrawn_moves_are_let_go_and_never_said(tmp_path: Path) 
         # Until a different move is played the board may only be browsing back, and the
         # withdrawn moves still stand: the takeback is known, and let go of, from here.
         since = len(c.drained)
-        c.engine.watching = True
+        c.engine.armed = True  # recorded from when the takeback is told
         move = c.board.push_san("d3")
         began = time.monotonic()
         c.feed(c.frame(highlight=move), 3)
@@ -201,7 +226,7 @@ def test_a_takeback_s_withdrawn_moves_are_let_go_and_never_said(tmp_path: Path) 
         waited = time.monotonic() - began
         c.play("d6")
         c.wait_for_engine()
-        c.engine.watching = False
+        c.engine.armed = c.engine.watching = False
         assert [t.plies for t in c.events if isinstance(t, Takeback)] == [2]
         # The rest of the search under way when the takeback came, then the replacement's
         # own: 0.66 s here, where the withdrawn plies' searches first made it 1.05 s.
@@ -287,7 +312,7 @@ def test_ten_plies_taken_back_quickly(tmp_path: Path, per_position: int, animate
                 c.feed(c.frame(), per_position)
         c.feed(c.frame(), 3)  # the player looks at the position before playing on
         since = len(c.drained)
-        c.engine.watching = True
+        c.engine.armed = True  # recorded from when the takeback is told
         move = c.board.push_san("e5")  # 6.e5 in place of 6.cxd4
         began = time.monotonic()
         c.feed(c.frame(highlight=move), 3)
@@ -299,7 +324,7 @@ def test_ten_plies_taken_back_quickly(tmp_path: Path, per_position: int, animate
         waited = time.monotonic() - began
         c.play("d5")
         c.wait_for_engine()
-        c.engine.watching = False
+        c.engine.armed = c.engine.watching = False
 
         took = [e.plies for e in c.events if isinstance(e, Takeback)]
         assert took == [12], took  # from ply 22 back to ply 10

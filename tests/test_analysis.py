@@ -728,8 +728,8 @@ def test_a_position_looked_at_ahead_is_whole_at_once() -> None:
 
 
 class _YieldOnceEngine(FakeEngine):
-    """A fake engine whose first interruptible search runs until `interrupt` stops it; the
-    ones after answer at once."""
+    """A fake engine whose first search of the candidates (several lines: a whole measure,
+    not a verdict's one line) runs until `interrupt` stops it; the ones after answer at once."""
 
     def __init__(self, answers: dict[str, list[Line]]) -> None:
         super().__init__(answers)
@@ -738,7 +738,8 @@ class _YieldOnceEngine(FakeEngine):
     def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
         from sidecoach.analysis.engine import Interrupted
 
-        if self._interruptible and not self.held:
+        several = int(kwargs.get("multipv") or 1) > 1  # type: ignore[call-overload]
+        if self._interruptible and several and not self.held:
             self.held = True
             self._stopped.wait(5)
             raise Interrupted

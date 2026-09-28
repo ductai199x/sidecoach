@@ -626,6 +626,9 @@ class Analyser:
         if current is not None and current.game_id == game_id and current.ply > ply:
             current.withdrawn = True
             self.withdrawn += 1
+            # Its search under way stops now, and none of its searches starts after it: all
+            # of a request's work runs interruptible (`_run`).
+            self.annotator.engine.interrupt()
 
     def poll(self) -> list[Event]:
         out: list[Event] = []
@@ -664,49 +667,12 @@ class Analyser:
                 return
             self._current = request
             try:
-                if request.move is None:
-                    early = self._early(request, request.board)
-                    deepening = self._deepening(request, request.board, early)
-                    event = self._yielding(request, request.board, deepening)
-                    if event is not None and not request.withdrawn:
-                        self._results.put(event)
-                        self._plan_ahead(request.board, event.lines)
-                else:
-                    # The verdict first, from the best line alone; the position whole after
-                    # -- unless newer moves are waiting: then this ply is history, its
-                    # verdict is all the coach and the review need, and the whole analysis
-                    # (candidates, threats, the decisive-moment call) goes to the position
-                    # the player is actually looking at. The position after the
-                    # opponent's move is the one the player faces: measured early first.
-                    after = request.board.copy()
-                    after.push(request.move)
-                    early = None
-                    if not request.by_user and self._requests.empty():
-                        early = self._early(request, after)
-                    verdict = self.annotator.assess_move(
-                        request.game_id, request.board, request.move, request.ply
-                    )
-                    if request.withdrawn:
-                        continue
-                    self._results.put(verdict)
-                    behind = not self._requests.empty()
-                    if behind:
-                        self.skipped += 1
-                        self._behind_until = time.monotonic() + BEHIND_S
-                    hurry = time.monotonic() < self._behind_until
-                    if behind or hurry:
-                        event = self.annotator.analysis_event(
-                            request.game_id, after, request.ply, thin=behind, hurry=hurry
-                        )
-                    else:
-                        event = self._yielding(
-                            request, after, self._deepening(request, after, early)
-                        )
-                        if event is None:
-                            continue
-                    self._results.put(event)
-                    if not (behind or hurry):
-                        self._plan_ahead(after, event.lines)
+                # A takeback stops any of the request's searches (`withdraw`), a newer
+                # request only its full measure (`_yielding`, `_looking`).
+                with self.annotator.engine.interruptible():
+                    self._serve(request)
+            except Interrupted:
+                pass  # withdrawn by a takeback: nothing about it is delivered
             except Exception as exc:  # noqa: BLE001
                 # A failed analysis must never end a session; the game goes on unassessed.
                 self.failures += 1
@@ -714,6 +680,55 @@ class Analyser:
             finally:
                 self._current = None
                 self._settle()
+
+    def _serve(self, request: _Request) -> None:
+        """One request: a position measured early and then whole; a move judged, and the
+        position after it measured -- early first when the player faces it."""
+        if request.move is None:
+            early = self._early(request, request.board)
+            if request.withdrawn:
+                return
+            deepening = self._deepening(request, request.board, early)
+            event = self._yielding(request, request.board, deepening)
+            if event is not None and not request.withdrawn:
+                self._results.put(event)
+                self._plan_ahead(request.board, event.lines)
+        else:
+            # The verdict first, from the best line alone; the position whole after
+            # -- unless newer moves are waiting: then this ply is history, its
+            # verdict is all the coach and the review need, and the whole analysis
+            # (candidates, threats, the decisive-moment call) goes to the position
+            # the player is actually looking at. The position after the
+            # opponent's move is the one the player faces: measured early first.
+            after = request.board.copy()
+            after.push(request.move)
+            early = None
+            if not request.by_user and self._requests.empty():
+                early = self._early(request, after)
+            if request.withdrawn:
+                return
+            verdict = self.annotator.assess_move(
+                request.game_id, request.board, request.move, request.ply
+            )
+            if request.withdrawn:
+                return
+            self._results.put(verdict)
+            behind = not self._requests.empty()
+            if behind:
+                self.skipped += 1
+                self._behind_until = time.monotonic() + BEHIND_S
+            hurry = time.monotonic() < self._behind_until
+            if behind or hurry:
+                event = self.annotator.analysis_event(
+                    request.game_id, after, request.ply, thin=behind, hurry=hurry
+                )
+            else:
+                event = self._yielding(request, after, self._deepening(request, after, early))
+                if event is None:
+                    return
+            self._results.put(event)
+            if not (behind or hurry):
+                self._plan_ahead(after, event.lines)
 
     def _early(self, request: _Request, board: chess.Board) -> Analysis | None:
         """The position measured at EARLY_DEPTH and delivered, provisional, unless it is
