@@ -2665,7 +2665,7 @@ class Coach:
         n = len(event.puzzles)
         text = (
             f"For practice: {n} {event.motif_words} puzzle{'s' if n != 1 else ''} around "
-            f"{event.level} are on the review card -- {event.reason}."
+            f"{event.level} {'are' if n != 1 else 'is'} on the review card -- {event.reason}."
         )
         with self._lock:
             self.conversation.note(f"Practice recommended: {text}")

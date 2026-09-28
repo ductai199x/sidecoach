@@ -344,7 +344,10 @@ def inventory_lines(board: chess.Board, user_colour: chess.Color) -> list[str]:
 
 
 def inventory_text(board: chess.Board, user_colour: chess.Color) -> str:
-    """The inventory as one block, for a message that is not sectioned."""
+    """The inventory as one block, for a message that is not sectioned. The coach has sent
+    `inventory_lines` as a section of its own since e7c75c2; this stays while the phone's
+    parity fixtures are made from it (sidecoach-android tools/make_coach_fixtures.py,
+    beside Inventory.kt's inventoryText): the two go together."""
     lines = inventory_lines(board, user_colour)
     if len(lines) == 1 and lines[0].startswith("Nothing"):
         return "On the board now: nothing hangs, nothing is pinned, no check or capture is on."
