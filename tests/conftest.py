@@ -165,6 +165,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
         return
     spec = str(metafunc.config.getoption("--seeds") or "")
     if not spec:
+        assert metafunc.module is not None
         seeds = list(metafunc.module.SEEDS)
     elif "-" in spec:  # "251-1000": a range of seeds
         lo, hi = (int(x) for x in spec.split("-", 1))

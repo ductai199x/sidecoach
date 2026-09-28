@@ -14,8 +14,8 @@ from sidecoach.events import DisclosureLevel, Trigger
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "eval"))
 
-import bench  # noqa: E402  # pyright: ignore[reportMissingImports]
-import corpus  # noqa: E402  # pyright: ignore[reportMissingImports]
+import bench  # noqa: E402
+import corpus  # noqa: E402
 
 
 def test_the_split_is_by_game_half_and_half_within_each_level_and_the_same_every_time():

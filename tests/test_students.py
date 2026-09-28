@@ -8,6 +8,7 @@ import random
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import chess
 
@@ -15,8 +16,8 @@ from tests.lines import san_moves
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "eval"))
 
-import habits  # noqa: E402  # pyright: ignore[reportMissingImports]
-import students  # noqa: E402  # pyright: ignore[reportMissingImports]
+import habits  # noqa: E402
+import students  # noqa: E402
 
 
 def _situation(scores: dict[str, float], best: float, **kw):
@@ -113,12 +114,14 @@ def test_a_tactic_position_s_misses_are_the_mistakes():
 
 def test_real_players_miss_less_as_they_get_stronger():
     h = habits.HABITS["threat_blind"]
-    assert abs(h.human(800) - 0.148) < 1e-9  # real 800-1100: 14.8%
-    assert abs(h.human(2500) - 0.030) < 1e-9  # real 2300+: 3.0%
+    low, high = h.human(800), h.human(2500)
+    assert low is not None and abs(low - 0.148) < 1e-9  # real 800-1100: 14.8%
+    assert high is not None and abs(high - 0.030) < 1e-9  # real 2300+: 3.0%
     ratings = (800, 1200, 1600, 2000, 2500)
     for key in habits.HABITS:
         rates = [habits.HABITS[key].human(r) for r in ratings]
-        assert rates == sorted(rates, reverse=True)
+        measured = [rate for rate in rates if rate is not None]
+        assert measured == rates and measured == sorted(measured, reverse=True), key
 
 
 def test_the_student_misses_half_the_time_more_than_nova():
@@ -160,14 +163,17 @@ def test_where_the_habit_bites_the_student_misses_at_its_target_rate(monkeypatch
     h = habits.HABITS["threat_blind"]
     rng = random.Random(1)
     n = 1000
+    # The evaluator's methods `student_move` calls, and no Stockfish.
+    threatened: Any = _Fake(3)
+    quiet: Any = _Fake(0)
     missed = sum(
-        habits.student_move(h, 800, chess.Board(), probs, _Fake(3), rng)[0].uci() == "a2a3"
+        habits.student_move(h, 800, chess.Board(), probs, threatened, rng)[0].uci() == "a2a3"
         for _ in range(n)
     )
     # Nova plays a3 10% of the time; the habit takes the move half the time: 55% (within
     # three standard errors of a thousand draws).
     assert abs(missed / n - h.student(0.1)) < 0.05
-    _, bit, by_habit = habits.student_move(h, 800, chess.Board(), probs, _Fake(0), rng)
+    _, bit, by_habit = habits.student_move(h, 800, chess.Board(), probs, quiet, rng)
     assert not bit and not by_habit  # nothing threatened: Nova's own move
 
 
@@ -378,7 +384,7 @@ def test_the_why_probe_s_truth_is_the_reply_that_wins_or_the_win_missed():
 
 
 def test_code_says_a_text_gives_the_reason_when_it_names_the_move_the_mate_or_the_loss():
-    import student_loop  # pyright: ignore[reportMissingImports]
+    import student_loop
 
     truth = {"kind": "allowed", "text": "", "moves": ["Kxf7"], "piece": "bishop"}
     yes = student_loop.gives_reason

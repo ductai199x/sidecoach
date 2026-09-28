@@ -2027,8 +2027,7 @@ def test_with_the_voice_on_nothing_goes_out_before_the_key_fact_and_not_past_the
     from sidecoach.coach.coach import _FirstCandidate
 
     heard: list[str] = []
-    reader = _FirstCandidate(heard.append or (lambda t: True), lambda t: [], must_name=("e8",))
-    reader.sink = lambda t: heard.append(t) is None
+    reader = _FirstCandidate(lambda t: heard.append(t) is None, lambda t: [], must_name=("e8",))
     reader.feed("Stay calm. Look carefully at the whole board. ")
     assert heard == [], "held: the key fact has not come"
     reader.finish()

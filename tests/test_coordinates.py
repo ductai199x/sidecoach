@@ -103,8 +103,10 @@ def test_the_8_reads_the_side_with_nothing_learned() -> None:
         assert read_bottom_side(board, rendered, solid) is bottom
     assert eights(synthetic_board(coordinates=False), rendered) is None
     puzzle = cv2.imread(str(FIXTURES / "chesscom_puzzle_black_84.png"))
+    assert puzzle is not None
     on_phone = BoardGeometry(Region(0, 0, 672, 672), 84.0)
     assert read_bottom_side(puzzle, on_phone, solid) is Side.BLACK
     start = cv2.imread(str(FIXTURES / "chesscom_start.png"))
+    assert start is not None
     [board, *_] = detect_boards(start)
     assert read_bottom_side(start, BoardGeometry(board.region, board.cell_px), solid) is Side.WHITE

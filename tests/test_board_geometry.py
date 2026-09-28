@@ -127,11 +127,13 @@ def play(seed: int) -> Outcome:
         frames: int,
         g: Geo | None = None,
         cover: tuple[float, float, float, float] | None = None,
+        highlight: chess.Move | None = None,
         **kw: object,
     ) -> None:
         nonlocal ts
         for _ in range(frames):
-            for event in pipe.process(frame_for(g or geo, cover=cover, **kw), ts):
+            frame = frame_for(g or geo, cover=cover, highlight=highlight, **kw)
+            for event in pipe.process(frame, ts):
                 if isinstance(event, MovePlayed):
                     got.append(event.san)
                     log.append(event.san)
@@ -165,7 +167,6 @@ def play(seed: int) -> Outcome:
 
     def event(kind: str, last: chess.Move | None) -> None:
         nonlocal geo
-        lit: dict[str, object] = {"highlight": last} if last is not None else {}
         if kind == "nudge":
             geo = _clamp(
                 Geo(
@@ -215,7 +216,7 @@ def play(seed: int) -> Outcome:
                         geo.cell + (target.cell - geo.cell) * t,
                     )
                 )
-                show(1, mid, **lit)
+                show(1, mid, highlight=last)
             geo = target
         elif kind == "offscreen":
             edge = rng.choice(["left", "right", "top", "bottom"])
@@ -223,11 +224,11 @@ def play(seed: int) -> Outcome:
             size = 8 * geo.cell
             gx = -off if edge == "left" else (W - size + off if edge == "right" else geo.x)
             gy = -off if edge == "top" else (H - size + off if edge == "bottom" else geo.y)
-            show(rng.randint(3, 6), Geo(gx, gy, geo.cell), **lit)
+            show(rng.randint(3, 6), Geo(gx, gy, geo.cell), highlight=last)
             geo = _clamp(Geo(rng.uniform(0, W), rng.uniform(0, H), geo.cell))
         elif kind == "tiny":
             small = Geo(geo.x, geo.y, rng.uniform(14, 22))
-            show(rng.randint(2, 4), small, **lit)
+            show(rng.randint(2, 4), small, highlight=last)
             geo = _clamp(Geo(geo.x, geo.y, max(MIN_CELL, geo.cell * rng.uniform(0.8, 1.2))))
         log.append(f"{kind}->({geo.x:.0f},{geo.y:.0f},{geo.cell:.1f})")
 
@@ -290,7 +291,7 @@ def play(seed: int) -> Outcome:
                     rng.uniform(0.2, 0.5),
                     rng.uniform(0.2, 0.5),
                 )
-                show(rng.randint(3, 8), cover=cover, **({"highlight": last} if last else {}))
+                show(rng.randint(3, 8), cover=cover, highlight=last)
                 log.append("cover")
             else:
                 event(kind, last)
@@ -308,7 +309,7 @@ def play(seed: int) -> Outcome:
             )
         board.push(move)
         last = move
-        extra: dict[str, object] = {"highlight": move, "check": True}
+        extra: dict[str, object] = {"check": True}
         if decoration == "arrow":
             targets = [m for m in board.legal_moves if not board.is_capture(m)]
             if targets:
@@ -317,7 +318,7 @@ def play(seed: int) -> Outcome:
             extra["badge"] = (move.to_square, rng.choice(["best", "good", "blunder", "brilliant"]))
         for _ in range(3):
             i = next(step)
-            show(1, during[i], cover=covered[i], **extra)
+            show(1, during[i], cover=covered[i], highlight=move, **extra)
         if kind != "none" and when == "during":
             if kind == "offscreen":
                 geo = _clamp(Geo(rng.uniform(0, W), rng.uniform(0, H), geo.cell))
@@ -337,7 +338,7 @@ def play(seed: int) -> Outcome:
             show(2, highlight=move)
     # A full re-fit cycle (the tracker re-fits sub-cell drift every 10 frames) before the lock is
     # held to the board.
-    show(12, **({"highlight": last} if last else {}))
+    show(12, highlight=last)
     assert pipe.reconciler is not None
     same = pipe.reconciler.board.board_fen() == board.board_fen()
     b = pipe.board

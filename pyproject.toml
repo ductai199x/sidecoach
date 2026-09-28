@@ -108,6 +108,9 @@ markers = [
 
 [tool.pyright]
 include = ["src", "tests", "scripts"]
+# The tests import the eval and puzzle tools as they run them: scripts, not packages, found on
+# the path the tests put first (tests/test_eval_tools.py, test_story.py, ...).
+extraPaths = ["tools/eval", "tools/puzzles"]
 pythonVersion = "3.12"
 venvPath = "."
 venv = ".venv"

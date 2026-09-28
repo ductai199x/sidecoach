@@ -10,6 +10,7 @@ import json
 import random
 import sys
 from pathlib import Path
+from typing import Any
 
 import chess
 import pytest
@@ -17,15 +18,16 @@ import pytest
 EVAL = Path(__file__).resolve().parents[1] / "tools" / "eval"
 sys.path.insert(0, str(EVAL))
 
-# tools/eval is scripts, not a package: found through the path above, not by pyright.
-import corpus  # noqa: E402  # pyright: ignore[reportMissingImports]
-import estimate  # noqa: E402  # pyright: ignore[reportMissingImports]
-import judge  # noqa: E402  # pyright: ignore[reportMissingImports]
-import parity  # noqa: E402  # pyright: ignore[reportMissingImports]
-import providers  # noqa: E402  # pyright: ignore[reportMissingImports]
-import stamp  # noqa: E402  # pyright: ignore[reportMissingImports]
-import taxonomy  # noqa: E402  # pyright: ignore[reportMissingImports]
-from coach_build import build_coach  # noqa: E402  # pyright: ignore[reportMissingImports]
+# tools/eval is scripts, not a package: found through the path above (and by pyright,
+# through its extraPaths in pyproject.toml).
+import corpus  # noqa: E402
+import estimate  # noqa: E402
+import judge  # noqa: E402
+import parity  # noqa: E402
+import providers  # noqa: E402
+import stamp  # noqa: E402
+import taxonomy  # noqa: E402
+from coach_build import build_coach  # noqa: E402
 
 from sidecoach.coach import coach as coach_module  # noqa: E402
 from sidecoach.coach.disclosure import PositionFacts  # noqa: E402
@@ -276,7 +278,7 @@ def test_a_tie_to_a_lesson_already_given_has_its_evidence_in_the_record():
     assert "it stops axb5 and gets your bishop out of danger" in record
     assert "[the coach's earlier words: evidence only of what the coach said]" in record
     # The same record for the rubric, whose "connection" criterion asks about such a tie.
-    import rubric  # pyright: ignore[reportMissingImports]
+    import rubric
 
     reply = "Move the attacked piece first -- the same lesson as when your bishop left attack."
     rubric_record = rubric.record_of(item, reply)
@@ -561,17 +563,20 @@ def test_quick_followups_owe_nothing_their_template_said():
 
     from sidecoach.events import Trigger
 
-    quick = SimpleNamespace(trigger=Trigger.USER_ASK, fallback="", must_name=())
+    # Requests with only the fields `quick_followup` reads.
+    quick: Any = SimpleNamespace(trigger=Trigger.USER_ASK, fallback="", must_name=())
     assert corpus.quick_followup(quick, "the quick answer they have already been shown")
     assert corpus.quick_followup(quick, "")
-    hint = SimpleNamespace(trigger=Trigger.USER_ASK, fallback="Only one move holds.", must_name=())
+    hint: Any = SimpleNamespace(
+        trigger=Trigger.USER_ASK, fallback="Only one move holds.", must_name=()
+    )
     assert not corpus.quick_followup(hint, "They asked for a hint.")
     assert {"stakes", "key_fact", "trap"} <= corpus.QUICK_NOT_REQUIRED
 
 
 def test_one_seed_draws_a_rounds_moments_in_both_tools():
     assert parity.round_seed(7, 1) == 7001
-    from icr_play import sample_moments  # pyright: ignore[reportMissingImports]
+    from icr_play import sample_moments
 
     items = [
         {"id": f"g{g}/p{p:03d}", "game": f"g{g}", "ply": p, "class": "lesson"}
@@ -618,7 +623,7 @@ def test_the_coachs_own_words_are_evidence_only_of_what_it_said():
     assert "summarised [the coach's and the player's earlier words" in marked
     assert 'PLAYER said: "why?"' in marked
     # Every question put to the judge says what those words are evidence of.
-    import rubric  # pyright: ignore[reportMissingImports]
+    import rubric
 
     for system in (judge.BINARY_SYSTEM, parity.PREFER_SYSTEM, rubric.RUBRIC_SYSTEM):
         assert judge.COACH_WORDS_RULE in system
@@ -645,7 +650,7 @@ def test_the_claims_check_runs_at_the_routine_effort(monkeypatch):
         seen.append(provider)
         return None
 
-    import coach_build  # pyright: ignore[reportMissingImports]
+    import coach_build
 
     monkeypatch.setattr(coach_build.cli, "_claims_check", claims_check)
     ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
@@ -816,7 +821,7 @@ def test_an_answer_that_is_neither_a_nor_b_is_no_preference(tmp_path, monkeypatc
 
 
 def test_the_effort_table_says_when_arms_are_not_comparable():
-    import effort_table  # pyright: ignore[reportMissingImports]
+    import effort_table
 
     def arm(name: str, drawn: list[str], commit: str = "abc") -> dict:
         return {
@@ -847,7 +852,7 @@ def test_the_effort_table_says_when_arms_are_not_comparable():
 
 
 def test_the_rubric_file_reads_as_criteria():
-    import rubric  # pyright: ignore[reportMissingImports]
+    import rubric
 
     criteria = rubric.load_rubric(rating=(1000, 1400))
     keys = [c.key for c in criteria]
@@ -877,7 +882,7 @@ def test_the_rubric_file_reads_as_criteria():
 
 
 def test_a_rubric_file_with_a_repeated_key_or_an_unknown_condition_is_refused(tmp_path):
-    import rubric  # pyright: ignore[reportMissingImports]
+    import rubric
 
     twice = tmp_path / "twice.toml"
     twice.write_text(
@@ -895,7 +900,7 @@ def test_a_rubric_file_with_a_repeated_key_or_an_unknown_condition_is_refused(tm
 
 
 def test_a_rubric_vote_stops_at_two_and_an_unreadable_answer_is_not_scored():
-    import rubric  # pyright: ignore[reportMissingImports]
+    import rubric
 
     ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
     agree = FakeModel("No.")
@@ -905,7 +910,7 @@ def test_a_rubric_vote_stops_at_two_and_an_unreadable_answer_is_not_scored():
 
 
 def test_the_rubric_asks_each_question_once_and_scores_the_replies(tmp_path, monkeypatch):
-    import rubric  # pyright: ignore[reportMissingImports]
+    import rubric
 
     monkeypatch.setattr(judge, "JUDGMENTS", tmp_path / "judgments")
     item = _lesson(_build(tmp_path))
@@ -940,7 +945,7 @@ def test_the_rubric_asks_each_question_once_and_scores_the_replies(tmp_path, mon
 
 
 def test_the_rubric_finds_a_runs_items_and_judges_the_models_own_replies(tmp_path, monkeypatch):
-    import rubric  # pyright: ignore[reportMissingImports]
+    import rubric
 
     path = rubric.items_dir("effort-medium-47138dd-r1")
     assert path.parts[-2:] == ("effort-medium", "items-47138dd-r1")
@@ -1087,7 +1092,7 @@ def test_the_vote_counts_a_plain_inference_as_supported():
 
 
 def test_connection_is_decided_in_code_from_the_requests_earlier_moments():
-    import rubric  # pyright: ignore[reportMissingImports]
+    import rubric
 
     request = (
         "# Position now\n...\n\n# Earlier in this game\n"
@@ -1113,7 +1118,7 @@ def test_connection_is_decided_in_code_from_the_requests_earlier_moments():
 
 
 def test_the_rubric_never_calls_the_judge_for_a_criterion_code_decides(tmp_path, monkeypatch):
-    import rubric  # pyright: ignore[reportMissingImports]
+    import rubric
 
     monkeypatch.setattr(judge, "JUDGMENTS", tmp_path / "judgments")
     item = _lesson(_build(tmp_path))
@@ -1145,8 +1150,8 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 def test_the_judge_is_compared_with_hand_labels(tmp_path, monkeypatch):
-    import gold  # pyright: ignore[reportMissingImports]
-    import report  # pyright: ignore[reportMissingImports]
+    import gold
+    import report
 
     monkeypatch.setattr(judge, "JUDGMENTS", tmp_path)
     monkeypatch.setattr(report, "JUDGMENTS", tmp_path)
@@ -1202,8 +1207,8 @@ def test_the_judge_is_compared_with_hand_labels(tmp_path, monkeypatch):
 
 
 def test_a_rejudge_covers_the_runs_own_moments(tmp_path, monkeypatch):
-    import gold  # pyright: ignore[reportMissingImports]
-    import rubric  # pyright: ignore[reportMissingImports]
+    import gold
+    import rubric
 
     monkeypatch.setattr(judge, "JUDGMENTS", tmp_path / "judgments")
     items = _build(
