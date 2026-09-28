@@ -666,13 +666,9 @@ class Analyser(
             try {
                 if (request.move == null) {
                     val early = early(request, request.board)
-                    val event = annotator.analysisEvent(
-                        request.gameId,
-                        request.board,
-                        request.ply,
-                        onDepth = deepening(request, request.board, early),
-                    )
-                    if (!request.withdrawn) {
+                    val deepening = deepening(request, request.board, early)
+                    val event = yielding(request, request.board, deepening)
+                    if (event != null && !request.withdrawn) {
                         results.add(event)
                         planAhead(request.board, event.lines)
                     }
@@ -695,19 +691,10 @@ class Analyser(
                         behindUntil = System.nanoTime() + TimeUnit.SECONDS.toNanos(BEHIND_S.toLong())
                     }
                     val hurry = System.nanoTime() < behindUntil
-                    val event = if (request.byUser && !(behind || hurry)) {
-                        // The position after the player's own move is left the moment the
-                        // opponent replies, and the reply's position is the one they face.
-                        yielding(request, after) ?: continue
+                    val event = if (behind || hurry) {
+                        annotator.analysisEvent(request.gameId, after, request.ply, thin = behind, hurry = hurry)
                     } else {
-                        annotator.analysisEvent(
-                            request.gameId,
-                            after,
-                            request.ply,
-                            thin = behind,
-                            hurry = hurry,
-                            onDepth = if (behind) null else deepening(request, after, early),
-                        )
+                        yielding(request, after, deepening(request, after, early)) ?: continue
                     }
                     results.add(event)
                     if (!(behind || hurry)) planAhead(after, event.lines)
@@ -771,17 +758,19 @@ class Analyser(
     }
 
     /**
-     * The position measured whole, giving way to any request: interrupted, it waits in
-     * [deferred] for the worker to be free again, still owed ([pending]), and null is returned
-     * (Tai's puzzles, 2026-09-28: the site replies 0.6 s after the player's move, and the
-     * position they then faced waited behind the full measure of the one they had left).
+     * The game's position measured whole, giving way to any newer request: the game has moved
+     * on, and its new position comes first. Interrupted, it waits in [deferred] for the worker
+     * to be free again, still owed ([pending]), and null is returned (Tai's puzzles, 2026-09-28:
+     * the site replies 0.6 s after the player's move and a puzzle's setup move comes 0.6 s
+     * after it appears, and the position the player then faced waited behind the full measure
+     * of the one before it -- up to five seconds to its first answer).
      */
-    private fun yielding(request: Request, board: Board): Analysis? {
+    private fun yielding(request: Request, board: Board, onDepth: ((List<Line>) -> Unit)? = null): Analysis? {
         looking = true
         try {
             return annotator.engine.interruptible {
                 if (requests.isNotEmpty()) throw Interrupted()
-                annotator.analysisEvent(request.gameId, board, request.ply)
+                annotator.analysisEvent(request.gameId, board, request.ply, onDepth = onDepth)
             }
         } catch (exc: Interrupted) {
             synchronized(countLock) {

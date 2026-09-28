@@ -559,12 +559,13 @@ class AnnotatorParityTest {
     }
 
     /**
-     * `_StoppableEngine`: a fake engine whose searches ahead run until `interrupt` stops them
-     * (`_stopped.wait(5)`, then `Interrupted`).
+     * `_StoppableEngine`: a fake engine whose searches of the positions ahead ([ahead]) run
+     * until `interrupt` stops them (`_stopped.wait(5)`, then `Interrupted`); the game's own are
+     * answered at once.
      */
-    private class StoppableEngine(answers: Map<String, List<Line>>) : FakeEngine(answers) {
+    private class StoppableEngine(answers: Map<String, List<Line>>, val ahead: Set<String>) : FakeEngine(answers) {
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
-            if (interruptibleNow) {
+            if (interruptibleNow && board.fen() in ahead) {
                 val until = SystemClock.elapsedRealtime() + 5000
                 while (!stopped && SystemClock.elapsedRealtime() < until) Thread.sleep(1)
                 throw Interrupted()
@@ -580,7 +581,10 @@ class AnnotatorParityTest {
      */
     @Test
     fun aMovePlayedStopsTheLookAheadAtOnce() {
-        val fake = StoppableEngine(mapOf(Board().fen() to listOf(line("e2e4"), line("d2d4"))))
+        val fake = StoppableEngine(
+            mapOf(Board().fen() to listOf(line("e2e4"), line("d2d4"))),
+            setOf(after("e4"), after("d4")),
+        )
         val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
         val analyser = Analyser(annotator, lookAhead = 2)
         analyser.start()
