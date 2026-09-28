@@ -883,13 +883,15 @@ class CoachTest {
             label = Label.GOOD,
         )
         coach.messages += RULE_SPACING // past the decisive question's rule of thumb (desktop 3d9568d)
+        val rulesBefore = coach.rulesSaid()
         val (_, fine) = coach.instruction(
             Trigger.POST_MOVE, position, DisclosureLevel.LINE, null, emptyList(), good, played,
         )
-        // The better move and what it does, and the pattern to keep.
+        // The better move and what it does -- and no rule of thumb: a fine move is not a lesson
+        // (Tai, 2026-09-27: "the coach is a teacher, not a nagging annoying bot"; desktop f983cd0).
         assertTrue(fine, FINE_TIGHTER.any { fine.startsWith(it.replace("{best}", "Qxf7#")) })
         assertTrue(fine, "it is mate" in fine)
-        assertTrue(fine, KEEP_LEADS.any { "${it.replaceFirstChar { c -> c.uppercase() }}:" in fine })
+        assertTrue("${coach.rulesSaid()} $fine", coach.rulesSaid() == rulesBefore && !ANNOUNCED.containsMatchIn(fine))
         // Said once, the lesson is not said again a move later: the verdict and the better move
         // stand alone (Nova bot games, 2026-09-25: 27% of lessons came again within three moves).
         coach.conversation.coachSaid(fine)
@@ -897,8 +899,7 @@ class CoachTest {
             Trigger.POST_MOVE, position, DisclosureLevel.LINE, null, emptyList(), good, played,
         )
         assertTrue(again, FINE_TIGHTER.any { again.startsWith(it.replace("{best}", "Qxf7#")) })
-        assertTrue(again, "it is mate" !in again)
-        assertTrue(again, KEEP_LEADS.none { "${it.replaceFirstChar { c -> c.uppercase() }}:" in again })
+        assertTrue(again, "it is mate" !in again && coach.rulesSaid() == rulesBefore)
         assertTrue(instruction, "Do not open with the move they played" in instruction)
     }
 
@@ -944,7 +945,12 @@ class CoachTest {
             )
         }
 
-        fun hasRule(text: String) = KEEP_LEADS.any { "${it.replaceFirstChar { c -> c.uppercase() }}:" in text }
+        // The rules said from here on, in the order said (the desktop spies on `_rule_said`).
+        val baseline = coach.rulesSaid()
+        fun saidRules(): List<String> =
+            coach.rulesSaid().entries.filter { (rule, at) -> baseline[rule] != at }.sortedBy { it.value }.map { it.key }
+
+        fun hasRule(text: String) = saidRules().any { it.lowercase().trimEnd('.') in text.lowercase() }
 
         // The decisive question's first hint said its principle: no rule for a few messages.
         var (instruction, soon) = lesson()
@@ -952,6 +958,9 @@ class CoachTest {
         coach.messages += RULE_SPACING
         val (firstInstruction, first) = lesson()
         assertTrue(first, hasRule(first) && RULE_HELD !in firstInstruction)
+        // Said as a sentence of its own, never announced (Tai, 2026-09-27: "nagging stuff like
+        // 'Remember this' 'Keep this one'"; desktop f983cd0).
+        assertTrue(first, sentenceOf(saidRules().last()) in first && !ANNOUNCED.containsMatchIn(first))
         assertTrue(firstInstruction, "pattern to remember" in firstInstruction)
         repeat(RULE_COOLDOWN - 1) {
             coach.messages += 1
@@ -1014,13 +1023,16 @@ class CoachTest {
         // A line is about the moves to come, and stands.
         assertFalse(stale("after Qg2, Rdg1, and the queen on g2 is trapped", "g2g3"))
         val said = "That works, though d4 was a touch better -- your bishop on c1 is still shut in behind " +
-            "the pawn on d2. The lesson to keep: the centre is where pieces have the most room."
+            "the pawn on d2."
+        val rule = "The centre is where pieces have the most room."
         val text = "Playable -- d4 was a little more precise -- your bishop on c1 is still shut in behind " +
-            "the pawn on d2. Worth remembering: the centre is where pieces have the most room."
-        assertEquals("Playable -- d4 was a little more precise.", fresh(text, said))
+            "the pawn on d2. $rule"
+        // The reason said lately goes; a rule of thumb is not `fresh`'s to hold -- one said lately
+        // is never written in ([Coach.ruleOk]), so a rule that is here stays (desktop f983cd0).
+        assertEquals("Playable -- d4 was a little more precise. $rule", fresh(text, said))
         assertEquals(text, fresh(text, "Nice."))
         var opener = "Playable -- d4 was a little more precise"
-        assertEquals("$opener.", fresh(text, said, opener))
+        assertEquals("$opener. $rule", fresh(text, said, opener))
         // An opener with its own " -- " and no reason after it: the better move is not a reason,
         // and stays when the same move was just said ("Not that one." -- Nova bot games).
         opener = "Not that one -- Ng3 was better"
@@ -1037,7 +1049,7 @@ class CoachTest {
     @Test
     fun theTemplatesRotateAndNeverRepeatTheLast() {
         val coach = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
-        for ((key, options) in listOf("cost" to COST_YOU, "fine" to FINE_TIGHTER, "keep" to KEEP_LEADS)) {
+        for ((key, options) in listOf("cost" to COST_YOU, "fine" to FINE_TIGHTER)) {
             val said = List(options.size * 8) { coach.bags.draw(key, options) }
             assertTrue("$key: $said", said.zipWithNext().all { (a, b) -> a != b })
             for (start in said.indices step options.size) {
@@ -1147,11 +1159,12 @@ class CoachTest {
     /**
      * Each lesson taught its own moment and a principle of its own, and the threat-blind
      * student's notebook held five unrelated rules (the simulated students, 2026-09-26): the
-     * second mistake of one cause in the session says the pattern, and every second one after
-     * (desktop e7b5915).
+     * third mistake of one cause in the session says the pattern once, with its habit. Said the
+     * second time and then in every game, "this keeps happening -- 5 times now" nagged (Tai's
+     * phone, 2026-09-27); the review sums it up after (desktop f983cd0).
      */
     @Test
-    fun aCauseThatComesBackIsNamedWithTheHabitThatFixesIt() {
+    fun aCauseThatComesBackIsNamedOnceWithTheHabitThatFixesIt() {
         val (coach, _) = coach(emptyList())
         start(coach)
 
@@ -1166,23 +1179,30 @@ class CoachTest {
         assertEquals(emptyList<String>(), placed(9, Causes.MISSED_THREAT))
         assertEquals(emptyList<String>(), placed(13, Causes.POSITIONAL))
         assertEquals(emptyList<String>(), placed(21, Causes.MISSED_THREAT, gameId = "old")) // another game's
-        val second = placed(25, Causes.MISSED_THREAT)
-        assertTrue(second.toString(), second.size == 1 && "twice now" in second[0])
-        assertTrue(second[0], "what their moves threatened" in second[0])
-        assertTrue(second[0], "look at what their last move attacks" in second[0])
-        // Once a game after that: said every second time it came to "10 times now" in a session
-        // (desktop 9e49622).
-        assertEquals(emptyList<String>(), placed(31, Causes.MISSED_THREAT))
+        assertEquals("twice is not a pattern yet", emptyList<String>(), placed(25, Causes.MISSED_THREAT))
+        val third = placed(31, Causes.MISSED_THREAT)
+        assertTrue(third.toString(), third.size == 1 && "three times" in third[0])
+        assertTrue(third[0], "what their moves threatened" in third[0])
+        assertTrue(third[0], "look at what their last move attacks" in third[0])
+        // Once a session: not again in this game, nor in the next.
         assertEquals(emptyList<String>(), placed(37, Causes.MISSED_THREAT))
-        coach.gameId = "g2" // the next game of the session
-        val fifth = placed(9, Causes.MISSED_THREAT, gameId = "g2")
-        assertTrue(fifth.toString(), "5 times now" in fifth[0])
+        coach.gameId = "g2"
+        assertEquals(emptyList<String>(), placed(9, Causes.MISSED_THREAT, gameId = "g2"))
         assertEquals(emptyList<String>(), placed(15, Causes.MISSED_THREAT, gameId = "g2"))
+
         // A player of 1800 and up hears the pattern without the textbook habit.
-        coach.strongPlayer = true
-        coach.gameId = "g3"
-        val strong = placed(9, Causes.MISSED_THREAT, gameId = "g3")[0]
-        assertTrue(strong, "what their moves threatened" in strong && "look at what" !in strong)
+        val (strongCoach, _) = coach(emptyList())
+        start(strongCoach)
+        strongCoach.strongPlayer = true
+        for (ply in listOf(9, 13, 17)) {
+            strongCoach.onEvent(
+                ProfileEvidence(gameId = "g", ply = ply, phase = "middlegame", expectedLoss = 0.2, cause = Causes.MISSED_THREAT),
+                ply.toDouble(),
+            )
+        }
+        val strong = messages(strongCoach).map { it.text }
+        assertTrue(strong.toString(), strong.size == 1 && "what their moves threatened" in strong[0])
+        assertTrue(strong[0], "look at what" !in strong[0])
     }
 
     /**
@@ -1939,5 +1959,14 @@ class CoachTest {
         // The puzzle of Tai's desktop, 2026-09-24: Black to move, 1...Qd1+ 2.Rxd1 Rxd1+ 3.Qe1 Rxe1#.
         private const val QD1 = "2kr2nr/2p5/2p1p1pp/Q3Pp2/3R4/P3P3/1Pq2PPP/R1B3K1 b - - 1 1"
         private val QD1_LINE = listOf("c2d1", "d4d1", "d8d1", "a5e1", "d1e1")
+
+        /** The leads that announced a rule, gone for good (desktop f983cd0). */
+        private val ANNOUNCED = Regex(
+            "(keep this one|the lesson to keep|worth remembering|a rule to take with you|" +
+                "the thing to remember|remember this):",
+            RegexOption.IGNORE_CASE,
+        )
+
+        private fun sentenceOf(rule: String): String = rule[0].uppercaseChar() + rule.substring(1).trimEnd('.') + "."
     }
 }

@@ -479,8 +479,8 @@ class Coach(
      */
     private val causesSeen = LinkedHashMap<String, Int>()
 
-    /** The game each cause's pattern was last said in: once a game after the first. */
-    private val patternTold = HashMap<String, String?>()
+    /** The causes whose pattern has been said: once a session. */
+    private val patternTold = HashSet<String>()
 
     /**
      * The record's question-answerer, set by whoever owns the store; the answers it gave,
@@ -935,46 +935,27 @@ class Coach(
     }
 
     /**
-     * A mistake of the player's placed by the player model. When its cause is behind an earlier
-     * mistake of the session's too, the pattern is said, with the habit that answers it, right
-     * after the lesson on the move -- the second time, and after that at most once in each game:
-     * said every second time it came to "10 times now" in one session (the AI's sessions,
-     * 2026-09-26). Each lesson had taught its own moment and a principle of its own, and the
-     * threat-blind student's notebook held five unrelated rules, none of them the habit. A player
-     * of 1800 and up hears the pattern without the textbook habit. Said from the model's cause,
-     * no model call.
+     * A mistake of the player's placed by the player model. The third time one cause is behind
+     * the session's mistakes, the pattern is said once, with the habit that answers it, right
+     * after the lesson on the move; the game's review sums it up after that. Each lesson had
+     * taught its own moment and a principle of its own, and the threat-blind student's notebook
+     * held five unrelated rules, none of them the habit (the simulated students, 2026-09-26);
+     * said the second time and then in every game, "this keeps happening -- 5 times now" came on
+     * top of a lesson (Tai's phone, 2026-09-27). A player of 1800 and up hears the pattern
+     * without the textbook habit. Said from the model's cause, no model call.
      */
     private fun onEvidence(event: ProfileEvidence, ts: Double) {
         val cause = event.cause
         if (event.gameId != gameId || cause == null || !Causes.HABIT.containsKey(cause)) return
         val n = (causesSeen[cause] ?: 0) + 1
         causesSeen[cause] = n
-        if (n < 2 || (patternTold.containsKey(cause) && patternTold[cause] == gameId)) return
-        patternTold[cause] = gameId
+        if (n < 3 || cause in patternTold) return
+        patternTold.add(cause)
         val (words, habit) = Causes.HABIT.getValue(cause)
-        val times = when (n) {
-            2 -> "twice"
-            3 -> "three times"
-            else -> "$n times"
-        }
-        val text = if (strongPlayer) {
-            bags.draw(
-                "pattern-strong:$cause",
-                listOf(
-                    "That is $times now: $words.",
-                    "Notice the pattern -- $words, $times now.",
-                ),
-            )
-        } else {
-            bags.draw(
-                "pattern:$cause",
-                listOf(
-                    "That is $times now: $words. The habit to build: $habit.",
-                    "This keeps happening -- $words, $times now. The habit that fixes it: $habit.",
-                    "Notice the pattern: $words, $times now. So, $habit.",
-                ),
-            )
-        }
+        var text = "That is three times now: $words."
+        if (!strongPlayer) text += " The habit to build: $habit."
+        if (!ruleOk(null)) return // a rule of thumb just said: the review carries the pattern
+        ruleSaid("habit:$cause")
         synchronized(lock) { conversation.note("The pattern, told to the player: $text") }
         queuePlain(Trigger.POST_MISTAKE, text, ts, recordNow = true)
     }
@@ -1383,23 +1364,16 @@ class Coach(
     }
 
     /**
-     * What the coach has said over the last [RECENT_PLIES] plies, as one text. The entries are
-     * copied under the coach's lock: a summary folds them on its own thread (Python's GIL makes
-     * the desktop's `list(...)` of them whole).
+     * What the coach has said in this game, as one text: a reason is not given twice in a game.
+     * Remembered over six plies, "your pawn on h2 can strike at their pawn on g5" was said at
+     * move 7 and again at 11 (Tai's phone, 2026-09-27); over none, 27% of the lessons came again
+     * within three moves (Nova bot games, 2026-09-25). The entries are copied under the coach's
+     * lock: a summary folds them on its own thread (Python's GIL makes the desktop's iteration of
+     * them whole).
      */
     private fun recentlySaid(): String {
-        val texts = ArrayList<String>()
-        var plies = 0
         val entries = synchronized(lock) { conversation.entries.toList() }
-        for (entry in entries.asReversed()) {
-            if (entry.kind == "ply") {
-                plies += 1
-                if (plies > RECENT_PLIES) break
-            } else if (entry.kind == "coach") {
-                texts.add(entry.text)
-            }
-        }
-        return texts.joinToString(" ")
+        return entries.filter { it.kind == "coach" }.joinToString(" ") { it.text }
     }
 
     /**
@@ -1435,30 +1409,26 @@ class Coach(
     }
 
     /**
-     * [lesson], opening with [opener], written with the next rule-to-keep lead from its bag, less
-     * what was said lately ([fresh]), and whether the rule was held back: said within
-     * [RULE_COOLDOWN] messages, or another within [RULE_SPACING]. The rule is the template's
-     * ([rule], [ruleOf]) or, for the model -- asked for "a pattern to remember" on every lesson,
-     * it stated one every time -- the pattern it teaches ([facts]' theme or plan). A held rule is
-     * left out: the lesson gets no lead, and the model is told ([RULE_HELD]). The lead is taken
-     * from the bag, and the rule counted as said, only when the lesson still says it -- or, with a
-     * model, when the model is asked for it. `Coach._fresh_lesson`.
+     * [lesson], opening with [opener], written with its rule when one may be said, less what was
+     * said lately ([fresh]), and whether the rule was held back: said within [RULE_COOLDOWN]
+     * messages, or another within [RULE_SPACING]. The rule is the template's ([rule], [ruleOf])
+     * or, for the model -- asked for "a pattern to remember" on every lesson, it stated one every
+     * time -- the pattern it teaches ([facts]' theme or plan). A held rule is left out, and the
+     * model is told ([RULE_HELD]). The rule is counted as said only when the lesson still says it
+     * -- or, with a model, when the model is asked for it. `Coach._fresh_lesson`.
      */
     private fun freshLesson(
         opener: String,
         rule: String?,
         facts: PositionFacts? = null,
-        lesson: (String?) -> String,
+        lesson: (Boolean) -> String,
     ): Pair<String, Boolean> {
-        // `rule or (facts.theme or facts.plan if facts is not None else None) or None`
-        val key = rule?.ifEmpty { null }
-            ?: if (facts != null) facts.theme?.ifEmpty { null } ?: facts.plan?.ifEmpty { null } else null
-        val held = !ruleOk(key)
-        val lead = if (held) null else bags.peek("keep", KEEP_LEADS)
-        val text = fresh(lesson(lead), recentlySaid(), opener)
-        if (lead != null && "$lead:" in text.lowercase()) {
-            bags.take("keep", lead)
-            if (rule != null) ruleSaid(rule)
+        // `rule or (facts.theme if facts is not None else None) or None`
+        val key = rule?.ifEmpty { null } ?: facts?.theme?.ifEmpty { null }
+        val held = key == null || !ruleOk(key)
+        val text = fresh(lesson(!held), recentlySaid(), opener)
+        if (!held && rule != null && said(rule, text)) {
+            ruleSaid(rule)
         } else if (!held && key != null && !offline) {
             ruleSaid(key)
         }
@@ -1479,6 +1449,12 @@ class Coach(
         val said = if (rule != null) rules[rule] else null
         return said == null || messages - said >= RULE_COOLDOWN
     }
+
+    /**
+     * The rules of thumb said, with the message each was last said at: for the tests, which on the
+     * desktop spy on `_rule_said`.
+     */
+    internal fun rulesSaid(): Map<String, Int> = HashMap(rules)
 
     private fun ruleSaid(rule: String) {
         rules[rule] = messages
@@ -2247,7 +2223,7 @@ class Coach(
                     opener,
                     ruleOf(facts, best, board = position.board, played = played.uci),
                     facts,
-                ) { lead ->
+                ) { withRule ->
                     lessonTemplate(
                         facts,
                         best,
@@ -2255,7 +2231,7 @@ class Coach(
                         board = position.board,
                         played = played.uci,
                         allowed = allowed,
-                        keepLead = lead,
+                        withRule = withRule,
                         strong = strongPlayer,
                     )
                 }
@@ -2365,16 +2341,15 @@ class Coach(
                 val opener = bags.draw("fine", FINE_TIGHTER).replace("{best}", best)
                 val (lessonText, held) = freshLesson(
                     opener,
-                    ruleOf(facts, best, board = position.board, played = played.uci),
-                    facts,
-                ) { lead ->
+                    null, // a fine move: the better move and what it does, no rule of thumb
+                ) { withRule ->
                     lessonTemplate(
                         facts,
                         best,
                         opener,
                         board = position.board,
                         played = played.uci,
-                        keepLead = lead,
+                        withRule = withRule,
                         strong = strongPlayer,
                     )
                 }
@@ -2628,13 +2603,14 @@ class Coach(
                 // Sound but not the best: said as the word after it said it ("Fine, but a3 was a
                 // little tighter"), never "it cost nothing" (the runtime audit).
                 val opener = bags.draw("fine", FINE_TIGHTER).replace("{best}", best)
-                fallback = freshLesson(opener, ruleOf(facts, best, played = lastOwn.move.uci), facts) { lead ->
+                // A fine move: the better move and what it does, no rule of thumb.
+                fallback = freshLesson(opener, null) { withRule ->
                     lessonTemplate(
                         facts,
                         best,
                         opener,
                         played = lastOwn.move.uci,
-                        keepLead = lead,
+                        withRule = withRule,
                         strong = strongPlayer,
                     )
                 }.first
@@ -2679,7 +2655,7 @@ class Coach(
                             played = lastOwn.move.uci,
                         ),
                         facts,
-                    ) { lead ->
+                    ) { withRule ->
                         lessonTemplate(
                             facts,
                             best,
@@ -2687,7 +2663,7 @@ class Coach(
                             board = if (faced) position.board else null,
                             played = lastOwn.move.uci,
                             allowed = allowed,
-                            keepLead = lead,
+                            withRule = withRule,
                             strong = strongPlayer,
                         )
                     }

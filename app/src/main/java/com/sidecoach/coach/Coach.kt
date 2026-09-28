@@ -149,18 +149,6 @@ val COST_YOU = listOf(
 )
 
 /**
- * How the rule to keep is introduced, rotated like the openers (Tai, 2026-09-25: "there's a lot
- * of 'keep this one' ... it could use some variety"). The first is the templates' own.
- */
-val KEEP_LEADS = listOf(
-    "keep this one",
-    "the lesson to keep",
-    "worth remembering",
-    "a rule to take with you",
-    "the thing to remember",
-)
-
-/**
  * The pattern to keep, said after a mistake that missed it: the rule of thumb, not the
  * position. Keyed by the pattern's name as the fact sheet gives it.
  */
@@ -358,9 +346,11 @@ private fun recapture(board: Board?, best: String, played: String?): String? {
 const val RECAPTURE_RULE = "when two pieces can take, ask which you want to keep where it is"
 
 /**
- * The rule to keep that [lessonTemplate] would add after the move: the recapture's, the
- * pattern's ([PATTERN_LESSONS], a mating attack's for a mate), or the plan's mechanism; null when
- * there is none. The coach holds it back while it is cooling down ([Coach.ruleOk]).
+ * The rule of thumb [lessonTemplate] would add after the move, when there is one that is the
+ * mistake's own: the recapture's, or the pattern of the tactic missed ([PATTERN_LESSONS], a
+ * mating attack's for a mate). A plan's mechanism is not: "pieces still at home take no part in
+ * the game" was said of a move that let Qxg7 in, where the lesson was the threat (Tai's phone,
+ * 2026-09-27). The coach holds a rule back while it is cooling down ([Coach.ruleOk]).
  * `coach.rule_of`.
  */
 fun ruleOf(facts: PositionFacts, best: String, board: Board? = null, played: String? = null): String? {
@@ -368,20 +358,18 @@ fun ruleOf(facts: PositionFacts, best: String, board: Board? = null, played: Str
     val theme = facts.theme ?: ""
     var keep = PATTERN_LESSONS[theme]
     if (keep == null && MATES.any { it in theme }) keep = PATTERN_LESSONS.getValue("a mating attack")
-    if (keep == null && !facts.plan.isNullOrEmpty() && !facts.mechanism.isNullOrEmpty()) {
-        keep = facts.mechanism.split(": ", limit = 2).last()
-    }
-    return keep?.ifEmpty { null } // `keep or None`
+    return keep
 }
 
 /**
  * After a move that cost something: the better move, what it does, what the move made allowed,
- * and the pattern to keep. `opener` is the rotated "That one cost you: {best} was better";
+ * and the rule of thumb. `opener` is the rotated "That one cost you: {best} was better";
  * `board` and `played` (UCI) are the position the player faced and the move made, `allowed`
- * what it let the opponent do ([IdeaWords.allowed]), when known, and `keepLead` how the rule to
- * keep is introduced ([KEEP_LEADS], rotated by the coach), null to leave the rule out (it was
- * said lately: [Coach.ruleOk]). `strong` (a player of 1800 and up) leaves the rule out too: the
- * concrete point is the lesson.
+ * what it let the opponent do ([IdeaWords.allowed]), when known. The rule is said as a sentence of
+ * its own, never announced: "Keep this one:", "Worth remembering:" and three more rotated before
+ * it, and nagged (Tai, 2026-09-27). [withRule] false leaves it out (it was said lately:
+ * [Coach.ruleOk]), and so does `strong` (a player of 1800 and up): the concrete point is the
+ * lesson.
  */
 fun lessonTemplate(
     facts: PositionFacts,
@@ -390,18 +378,18 @@ fun lessonTemplate(
     board: Board? = null,
     played: String? = null,
     allowed: String? = null,
-    keepLead: String? = KEEP_LEADS[0],
+    withRule: Boolean = true,
     strong: Boolean = false,
 ): String {
     var text = opener
     val why = facts.why ?: ""
-    val rule = if (strong || keepLead == null) null else ruleOf(facts, best, board = board, played = played)
+    val rule = if (withRule && !strong) ruleOf(facts, best, board = board, played = played) else null
     val otherPiece = recapture(board, best, played)
     if (otherPiece != null) {
         text += " -- $otherPiece"
         if (!allowed.isNullOrEmpty()) text = templateSentence(text) + " " + allowed
         if (rule == null) return templateSentence(text)
-        return templateSentence(text) + " " + templateSentence("$keepLead: $rule")
+        return templateSentence(text) + " " + templateSentence(rule)
     }
     if (why.startsWith(best)) {
         var rest = why.substring(best.length).trimStart(' ', ',', ':', ';')
@@ -426,7 +414,7 @@ fun lessonTemplate(
     }
     text = templateSentence(text)
     if (!allowed.isNullOrEmpty()) text += " " + templateSentence(allowed)
-    if (rule != null && !said(rule, text)) text += " " + templateSentence("$keepLead: $rule")
+    if (rule != null && !said(rule, text)) text += " " + templateSentence(rule)
     return text
 }
 
@@ -449,21 +437,17 @@ internal fun stale(reason: String, played: String?): Boolean {
 }
 
 /**
- * A lesson the player heard over this many plies (their last three moves) is not said again: in
- * amateur games "fine, but not the best" comes move after move, and the same "keep this one"
- * came with it -- 27% of them within three moves in twenty Nova bot games (2026-09-25).
- */
-const val RECENT_PLIES = 6
-
-/**
  * A rule of thumb -- "a rule to take with you: ...", "rooks belong on open files" -- is not said
  * again for this many of the coach's messages, across games and puzzles alike, and no two rules
  * come within [RULE_SPACING] messages of each other (Tai, 2026-09-27, after a run of puzzles: "it
  * keeps on nagging me ... there has to be a cooldown of some number of messages before it can
- * appear again"). A puzzle is a new game, so a memory per game started over at every one.
+ * appear again"). A puzzle is a new game, so a memory per game started over at every one. Thirty
+ * messages and four apart still nagged -- a rule in one message of ten, on fine moves and
+ * mistakes alike (Tai's phone, 2026-09-27: "the coach is a teacher, not a nagging annoying
+ * bot"): a rule once a session, and one in ten messages at most.
  */
-const val RULE_COOLDOWN = 30
-const val RULE_SPACING = 4
+const val RULE_COOLDOWN = 200
+const val RULE_SPACING = 10
 
 /**
  * The model's word while a rule is cooling down: the concrete point, no rule of thumb. Every held
@@ -471,16 +455,16 @@ const val RULE_SPACING = 4
  * "transfer" is not asked of a reply told to leave the rule out).
  */
 const val RULE_HELD_MARK = "No rule of thumb this time"
-const val RULE_HELD = RULE_HELD_MARK + " -- the player heard one lately: only what this position shows."
+const val RULE_HELD = "$RULE_HELD_MARK: only what this position shows."
 
 /** `fresh`'s own split: `re.split(r"(?<=[.?!])\\s+", ...)`. */
 private val LESSON_SENTENCES = Regex("(?<=[.?!])\\s+")
 
 /**
- * `coach.fresh`: [text] without what the coach said lately ([recent], lower case): the "Keep
- * this one" sentence, and the reason after " -- " in the first sentence. The verdict and the
- * better move always stay: that is news. [opener] is what the first sentence opens with, the
- * verdict and the better move; the reason is what follows it.
+ * `coach.fresh`: [text] without what the coach said lately ([recent], lower case): the reason
+ * after " -- " in the first sentence. The verdict and the better move always stay: that is news.
+ * [opener] is what the first sentence opens with, the verdict and the better move; the reason is
+ * what follows it. (A rule of thumb said lately is [Coach.ruleOk]'s to hold.)
  */
 fun fresh(text: String, recent: String, opener: String? = null): String {
     val said = recent.lowercase()
@@ -505,17 +489,7 @@ fun fresh(text: String, recent: String, opener: String? = null): String {
         reason = first.substringAfterLast(" -- ")
     }
     if (reason.isNotEmpty() && reason.trimEnd('.').lowercase() in said) first = head.trimEnd('.') + "."
-    val kept = rest.filter { s -> val rule = kept(s); rule == null || rule !in said }
-    return (listOf(first) + kept).joinToString(" ")
-}
-
-/** `coach._kept`: the rule a "keep this one" sentence gives, in lower case, whichever lead it has. */
-private fun kept(sentence: String): String? {
-    val low = sentence.lowercase()
-    for (lead in KEEP_LEADS) {
-        if (low.startsWith("$lead:")) return low.substring(lead.length + 1).trim().trimEnd('.')
-    }
-    return null
+    return (listOf(first) + rest).joinToString(" ")
 }
 
 private val WORDS = Regex("[a-z']+")

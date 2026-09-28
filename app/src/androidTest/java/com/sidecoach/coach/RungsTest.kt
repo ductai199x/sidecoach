@@ -133,7 +133,7 @@ class RungsTest {
         )
         assertEquals(
             "That one cost you: Rexd1 was better -- take with the rook on e1, not the one on a1. " +
-                "Keep this one: when two pieces can take, ask which you want to keep where it is.",
+                "When two pieces can take, ask which you want to keep where it is.",
             text,
         )
     }
