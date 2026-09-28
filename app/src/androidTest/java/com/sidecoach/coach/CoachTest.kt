@@ -1893,6 +1893,21 @@ class CoachTest {
     }
 
     /**
+     * A puzzle's last moves come quick -- the line found, played out -- and carried over they
+     * made the next puzzle fast from its first move: a find after two minutes' thought was only
+     * shown (Tai's puzzles, 2026-09-27: "sometimes it's just completely muted"; desktop 8af8695,
+     * `test_the_pace_is_the_games_own`).
+     */
+    @Test
+    fun thePaceIsTheGamesOwn() {
+        val (coach, _) = coach(emptyList())
+        playFromStart(coach, listOf("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"), thinkMs = 1000)
+        assertTrue(coach.fastPace)
+        coach.onEvent(GameStarted(gameId = "h", userSide = Pieces.Side.WHITE, startFen = Board().fen()), 10.0)
+        assertTrue(coach.paceS == null && !coach.fastPace)
+    }
+
+    /**
      * No model at all (llm.provider none): the factory's offline provider; a decisive moment
      * gets the question template, the player's best move the verdict from the board, a typed
      * question the hint template -- and nothing is ever called (`test_offline_coach.py`).

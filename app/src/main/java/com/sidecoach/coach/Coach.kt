@@ -1179,7 +1179,10 @@ fun boardBack(board: Board, fen: String): Board {
  * sentence (three to five) would be talked over the next two. So a fast game gets the
  * coach's templates, written from the board at once, and gets them as text; the voice
  * resumes when the player slows down and for what they ask (Tai, 2026-09-22: "the coach has
- * to be able to keep up with the game").
+ * to be able to keep up with the game"). The pace is the game's own: carried over, the quick
+ * last moves of one puzzle -- a line found and played out -- made the next one fast, and a
+ * find after two minutes' thought was only shown (Tai's puzzles, 2026-09-27: "sometimes it's
+ * just completely muted").
  */
 const val FAST_PACE_S = 6.0
 const val PACE_MOVES = 4

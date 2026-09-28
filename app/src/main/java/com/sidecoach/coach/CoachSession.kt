@@ -883,6 +883,7 @@ class Coach(
         positions = linkedMapOf(0 to CoachPosition(ply = 0, board = board.copy()))
         moves = LinkedHashMap()
         conversation.newGame(event, profile = profileLines())
+        thinkS.clear()
         mistakes = 0
         // The review is the game's own: a new game answered "how did I do overall?" with the
         // last game's sentences when the model failed (the parity audit, 2026-09-26).
@@ -1019,8 +1020,8 @@ class Coach(
     }
 
     /**
-     * The user's recent think time, in seconds: the median of the last few moves, or null
-     * before there are two to go by.
+     * The user's recent think time in this game, in seconds: the median of its last few
+     * moves, or null before there are two to go by.
      */
     val paceS: Double?
         get() {
