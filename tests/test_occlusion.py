@@ -1,4 +1,11 @@
-"""A dialog over part of the board: keep the lock, read only the visible cells."""
+"""A dialog over part of the board: keep the lock, read only the visible cells.
+
+The dialog is mirrored through the board's centre when black is at the bottom, so it covers
+the same squares either way up: the reconciler is given the same squares to read, and its
+cases run with white at the bottom. Reading the board under the dialog the other way up is
+the recogniser's, and runs both ways."""
+
+import functools
 
 import chess
 import cv2
@@ -6,7 +13,7 @@ import numpy as np
 import pytest
 
 from sidecoach.events import GameEnded, MovePlayed, Region, Side
-from sidecoach.state.pipeline import GamePipeline
+from sidecoach.state.pipeline import DIALOG_SECONDS, GamePipeline
 from sidecoach.state.reconcile import Reconciler
 from sidecoach.vision.pieces import ThemeModel
 from sidecoach.vision.squares import BoardGeometry, row_col
@@ -61,6 +68,20 @@ def with_dialog(
     return out
 
 
+@functools.cache
+def _model(bottom: Side) -> ThemeModel:
+    """The recogniser learned from the start position, built once for each side at the
+    bottom and shared: it reads pixels and nothing else. A plain module helper, not a
+    fixture: the phone's fixture maker calls these tests directly."""
+    model = ThemeModel.from_start_position(synthetic_board(bottom=bottom), GEOM, bottom)
+    assert model is not None
+    return model
+
+
+def _played(events) -> list[str]:
+    return [e.san for e in events if isinstance(e, MovePlayed)]
+
+
 @pytest.mark.parametrize("bottom", BOTTOMS)
 def test_tracker_holds_lock_under_a_dialog(bottom: Side) -> None:
     for dark in (False, True):
@@ -79,9 +100,11 @@ def test_tracker_holds_lock_under_a_dialog(bottom: Side) -> None:
 
 @pytest.mark.parametrize("bottom", BOTTOMS)
 def test_covered_cells_read_as_unknown_and_visible_cells_still_read(bottom: Side) -> None:
+    """Under the dialog a cell is unknown; beside it the pieces read as themselves; and
+    nothing reads as hovered, since a dialog edge cutting through a pawn must not pass for
+    a drag in progress (test_nothing_reads_as_hovered_under_a_dialog)."""
     clean = synthetic_board(bottom=bottom)
-    model = ThemeModel.from_start_position(clean, GEOM, bottom)
-    assert model is not None
+    model = _model(bottom)
     for dark in (False, True):
         readings = model.classify_frame(with_dialog(clean, dark=dark, bottom=bottom), GEOM)
         r, c = row_col(chess.C5, bottom)  # under the dialog
@@ -90,33 +113,34 @@ def test_covered_cells_read_as_unknown_and_visible_cells_still_read(bottom: Side
         assert readings[r][c].symbol == "R"
         r, c = row_col(chess.H8, bottom)
         assert readings[r][c].symbol == "r"
+        hovered = [(r, c) for r in range(8) for c in range(8) if readings[r][c].hover]
+        assert hovered == []
 
 
-@pytest.mark.parametrize("bottom", BOTTOMS)
-def test_mating_move_commits_while_the_game_over_dialog_covers_the_board(bottom: Side) -> None:
+def test_mating_move_commits_while_the_game_over_dialog_covers_the_board() -> None:
     """The last move is seen only with the dialog already up, as chess.com does it."""
     pipe = GamePipeline()
     board = chess.Board()
     ts = 0.0
     for _ in range(2):
-        pipe.process(synthetic_board(board=board, bottom=bottom), ts)
+        pipe.process(synthetic_board(board=board), ts)
         ts += 0.1
     events = []
     for san in ("f3", "e5", "g4"):
         move = board.push_san(san)
         for _ in range(2):
-            frame = synthetic_board(board=board, bottom=bottom, highlight=move)
+            frame = synthetic_board(board=board, highlight=move)
             events += pipe.process(frame, ts)
             ts += 0.1
-    assert [e.san for e in events if isinstance(e, MovePlayed)] == ["f3", "e5", "g4"]
+    assert _played(events) == ["f3", "e5", "g4"]
 
     mate = board.push_san("Qh4#")  # d8 and h4 both lie outside the dialog
     events = []
     for _ in range(3):
-        frame = synthetic_board(board=board, bottom=bottom, highlight=mate)
-        events += pipe.process(with_dialog(frame, dark=True, bottom=bottom), ts)
+        frame = synthetic_board(board=board, highlight=mate)
+        events += pipe.process(with_dialog(frame, dark=True), ts)
         ts += 0.1
-    assert [e.san for e in events if isinstance(e, MovePlayed)] == ["Qh4#"]
+    assert _played(events) == ["Qh4#"]
     ended = [e for e in events if isinstance(e, GameEnded)]
     assert ended and ended[0].result == "0-1"
 
@@ -129,8 +153,7 @@ def _reconciler_at(
     fen: str, bottom: Side = Side.WHITE
 ) -> tuple[ThemeModel, Reconciler, chess.Board]:
     start = synthetic_board(bottom=bottom)
-    model = ThemeModel.from_start_position(start, GEOM, bottom)
-    assert model is not None
+    model = _model(bottom)
     rec = Reconciler(bottom=bottom, user_side=bottom, settle_frames=2)
     rec.update(model.classify_frame(start, GEOM), 0.0)
     board = chess.Board(fen)
@@ -142,8 +165,7 @@ def _reconciler_at(
     return model, rec, board
 
 
-@pytest.mark.parametrize("bottom", BOTTOMS)
-def test_mate_in_the_middle_commits_from_two_uncovered_frames(bottom: Side) -> None:
+def test_mate_in_the_middle_commits_from_two_uncovered_frames() -> None:
     """Two frames of the final position, then the dialog over the squares it came from.
 
     The covered cells keep their last stable reading, so the explanation found in the
@@ -151,86 +173,68 @@ def test_mate_in_the_middle_commits_from_two_uncovered_frames(bottom: Side) -> N
     shows the final position for about ten frames before the dialog; two is the minimum,
     since a reading seen once may be the dialog fading in or a piece in flight.
     """
-    model, rec, board = _reconciler_at(MIDDLE_MATE, bottom)
+    model, rec, board = _reconciler_at(MIDDLE_MATE)
     mate = board.push_san("Qa5#")
-    covered = with_dialog(
-        synthetic_board(board=board, bottom=bottom, highlight=mate), dark=True, bottom=bottom
-    )
-    r, c = row_col(chess.E5, bottom)
+    covered = with_dialog(synthetic_board(board=board, highlight=mate), dark=True)
+    r, c = row_col(chess.E5, Side.WHITE)
     assert model.classify_frame(covered, GEOM)[r][c].covered
-    final = model.classify_frame(synthetic_board(board=board, bottom=bottom, highlight=mate), GEOM)
+    final = model.classify_frame(synthetic_board(board=board, highlight=mate), GEOM)
 
     events = rec.update(final, 1.0)
     for i in range(3):
         events += rec.update(model.classify_frame(covered, GEOM), 1.1 + 0.1 * i)
-    assert not [e for e in events if isinstance(e, MovePlayed)], "one frame is not stable"
+    assert not _played(events), "one frame is not stable"
 
-    model, rec, board = _reconciler_at(MIDDLE_MATE, bottom)
+    model, rec, board = _reconciler_at(MIDDLE_MATE)
     board.push_san("Qa5#")
     events = rec.update(final, 1.0) + rec.update(final, 1.1)
     for i in range(3):
         events += rec.update(model.classify_frame(covered, GEOM), 1.2 + 0.1 * i)
-    assert [e.san for e in events if isinstance(e, MovePlayed)] == ["Qa5#"]
+    assert _played(events) == ["Qa5#"]
     ended = [e for e in events if isinstance(e, GameEnded)]
     assert ended and ended[0].result == "1-0"
 
 
-@pytest.mark.parametrize("bottom", BOTTOMS)
-def test_move_out_from_under_a_cover_waits_for_the_memory_to_expire(bottom: Side) -> None:
+def test_move_out_from_under_a_cover_waits_for_the_memory_to_expire() -> None:
     """A remembered cell must not let a piece appear in two places; the memory is short."""
-    model, rec, board = _reconciler_at(MIDDLE_MATE, bottom)
+    model, rec, board = _reconciler_at(MIDDLE_MATE)
     rec.memory_frames = 4
-    covered = with_dialog(synthetic_board(board=board, bottom=bottom), dark=True, bottom=bottom)
+    covered = with_dialog(synthetic_board(board=board), dark=True)
     for i in range(2):
         assert not rec.update(model.classify_frame(covered, GEOM), 1.0 + 0.1 * i)
 
     move = board.push_san("Qh5")  # e5 stays covered, h5 is visible
-    covered = with_dialog(
-        synthetic_board(board=board, bottom=bottom, highlight=move), dark=True, bottom=bottom
-    )
+    covered = with_dialog(synthetic_board(board=board, highlight=move), dark=True)
     events = []
     for i in range(3):
         events += rec.update(model.classify_frame(covered, GEOM), 1.2 + 0.1 * i)
-    assert not [e for e in events if isinstance(e, MovePlayed)], "queen seen on e5 and h5"
+    assert not _played(events), "queen seen on e5 and h5"
     for i in range(4):
         events += rec.update(model.classify_frame(covered, GEOM), 1.5 + 0.1 * i)
-    assert [e.san for e in events if isinstance(e, MovePlayed)] == ["Qh5"]
+    assert _played(events) == ["Qh5"]
 
 
-@pytest.mark.parametrize("bottom", BOTTOMS)
-def test_fading_dialog_reads_as_covered_and_keeps_the_memory_clean(bottom: Side) -> None:
+def test_fading_dialog_reads_as_covered_and_keeps_the_memory_clean() -> None:
     """Half-transparent dialog frames hide the pieces without reading as junk.
 
     Chess.com fades the dialog in over a few frames. Those frames must count as covered,
     or the junk read through the fade becomes the remembered reading under the dialog.
     """
-    model, rec, board = _reconciler_at(MIDDLE_MATE, bottom)
+    model, rec, board = _reconciler_at(MIDDLE_MATE)
     mate = board.push_san("Qa5#")
-    final = synthetic_board(board=board, bottom=bottom, highlight=mate)
-    fading = model.classify_frame(with_dialog(final, dark=True, alpha=0.5, bottom=bottom), GEOM)
-    r, c = row_col(chess.E5, bottom)
+    final = synthetic_board(board=board, highlight=mate)
+    fading = model.classify_frame(with_dialog(final, dark=True, alpha=0.5), GEOM)
+    r, c = row_col(chess.E5, Side.WHITE)
     assert fading[r][c].kind == "unknown" and fading[r][c].covered
-    r, c = row_col(chess.H1, bottom)
+    r, c = row_col(chess.H1, Side.WHITE)
     assert not fading[r][c].covered
 
     events = rec.update(model.classify_frame(final, GEOM), 0.9)
     events += rec.update(model.classify_frame(final, GEOM), 1.0)
     for i, alpha in enumerate((0.3, 0.6, 1.0, 1.0, 1.0)):
-        frame = with_dialog(final, dark=True, alpha=alpha, bottom=bottom)
+        frame = with_dialog(final, dark=True, alpha=alpha)
         events += rec.update(model.classify_frame(frame, GEOM), 1.1 + 0.1 * i)
-    assert [e.san for e in events if isinstance(e, MovePlayed)] == ["Qa5#"]
-
-
-@pytest.mark.parametrize("bottom", BOTTOMS)
-def test_nothing_reads_as_hovered_under_a_dialog(bottom: Side) -> None:
-    """A dialog edge cutting through a pawn must not pass for a drag in progress."""
-    clean = synthetic_board(bottom=bottom)
-    model = ThemeModel.from_start_position(clean, GEOM, bottom)
-    assert model is not None
-    for dark in (False, True):
-        readings = model.classify_frame(with_dialog(clean, dark=dark, bottom=bottom), GEOM)
-        hovered = [(r, c) for r in range(8) for c in range(8) if readings[r][c].hover]
-        assert hovered == []
+    assert _played(events) == ["Qa5#"]
 
 
 def _opaque_cells(frame: np.ndarray, squares: list[chess.Square]) -> np.ndarray:
@@ -245,8 +249,7 @@ def _opaque_cells(frame: np.ndarray, squares: list[chess.Square]) -> np.ndarray:
 def test_junk_next_to_a_strip_is_not_relabelled_but_next_to_a_dialog_it_is() -> None:
     """The relabel of junk cells beside a cover arms on a dialog-sized block, never on a
     strip: an opaque tooltip over one rank must not hide a drag going on next to it."""
-    model = ThemeModel.from_start_position(synthetic_board(), GEOM, Side.WHITE)
-    assert model is not None
+    model = _model(Side.WHITE)
     board = chess.Board()
     drag = (chess.D7, chess.D6, 0.1, 0.1)
     strip = [chess.A5, chess.B5, chess.C5, chess.D5, chess.E5, chess.F5]
@@ -286,10 +289,7 @@ def test_junk_next_to_a_strip_is_not_relabelled_but_next_to_a_dialog_it_is() -> 
     assert readings[r5][c5].covered and not readings[r5][c5].hover, readings[r5][c5]
 
 
-@pytest.mark.parametrize("bottom", BOTTOMS)
-def test_a_dialog_that_stays_over_a_live_board_covers_the_game_but_ends_nothing(
-    bottom: Side,
-) -> None:
+def test_a_dialog_that_stays_over_a_live_board_covers_the_game_but_ends_nothing() -> None:
     """A dialog is not a result: sites put dialogs over the board for many reasons. One
     that stays marks the screen COVERED, the game stays open, and the user's word or the
     next game ends it. One that flashes past counts for nothing."""
@@ -299,21 +299,21 @@ def test_a_dialog_that_stays_over_a_live_board_covers_the_game_but_ends_nothing(
     board = chess.Board()
     ts = 0.0
     for _ in range(2):
-        pipe.process(synthetic_board(board=board, bottom=bottom), ts)
+        pipe.process(synthetic_board(board=board), ts)
         ts += 0.1
     events = []
     for san in ("e4", "e5"):
         move = board.push_san(san)
         for _ in range(2):
-            events += pipe.process(synthetic_board(board=board, bottom=bottom, highlight=move), ts)
+            events += pipe.process(synthetic_board(board=board, highlight=move), ts)
             ts += 0.1
-    assert [e.san for e in events if isinstance(e, MovePlayed)] == ["e4", "e5"]
+    assert _played(events) == ["e4", "e5"]
     assert pipe.reconciler is not None and not pipe.reconciler.finished
 
-    frame = synthetic_board(board=board, bottom=bottom)
+    frame = synthetic_board(board=board)
     events = []
     for _ in range(5):
-        events += pipe.process(with_dialog(frame, dark=True, bottom=bottom), ts)
+        events += pipe.process(with_dialog(frame, dark=True), ts)
         ts += 0.1
     events += pipe.process(frame, ts)
     ts += 0.1
@@ -321,7 +321,7 @@ def test_a_dialog_that_stays_over_a_live_board_covers_the_game_but_ends_nothing(
 
     events = []
     for _ in range(30):
-        events += pipe.process(with_dialog(frame, dark=True, bottom=bottom), ts)
+        events += pipe.process(with_dialog(frame, dark=True), ts)
         ts += 0.1
     states = [e.state for e in events if isinstance(e, ScreenStateChanged)]
     assert states == [ScreenState.COVERED]
@@ -336,34 +336,47 @@ def test_a_dialog_that_stays_over_a_live_board_covers_the_game_but_ends_nothing(
     assert pipe.end_game("0-1", "changed my mind", ts) == []
 
 
-@pytest.mark.parametrize("bottom", BOTTOMS)
-def test_the_dialog_confirms_a_mate_read_once(bottom: Side) -> None:
-    """The mating move is read in one clean frame and the dialog comes before a second:
-    the dialog is the confirmation the settling needed, and the game ends on the board's
-    own result."""
+def test_the_dialog_confirms_a_mate_read_once() -> None:
+    """The opponent's move and the user's premoved mate land in one frame, read once, clean,
+    and the dialog comes up over the opponent's move before a second frame: nothing under
+    it can confirm the story, and what it leaves in sight -- the queen gone from h5 and
+    standing on f7 -- reads as the premove still queued, so the story read once waits. The
+    dialog that stays is the confirmation the settling needed
+    (`GamePipeline._dialog_over_the_board`, after DIALOG_SECONDS), and the game ends on the
+    board's own result. The third live game ended so: five premoved plies in a second and a
+    half, then the dialog.
+
+    The dialog over the mate's own squares confirms nothing: the memory of covered cells
+    brings back every other square as it stood, the frame agrees with the position before
+    the mate, and a story that nothing disagrees with is dropped (`Reconciler.update`). And
+    the mate read twice, or with the opponent's move in sight, settles on its own frames
+    (test_mating_move_commits_while_the_game_over_dialog_covers_the_board)."""
     pipe = GamePipeline()
     board = chess.Board()
     ts = 0.0
     for _ in range(2):
-        pipe.process(synthetic_board(board=board, bottom=bottom), ts)
+        pipe.process(synthetic_board(board=board), ts)
         ts += 0.1
     events = []
-    for san in ("f3", "e5", "g4"):
+    for san in ("e4", "e5", "Qh5", "Nc6", "Bc4"):
         move = board.push_san(san)
         for _ in range(2):
-            events += pipe.process(synthetic_board(board=board, bottom=bottom, highlight=move), ts)
+            events += pipe.process(synthetic_board(board=board, highlight=move), ts)
             ts += 0.1
-    assert [e.san for e in events if isinstance(e, MovePlayed)] == ["f3", "e5", "g4"]
-    mate = board.push_san("Qh4#")
-    frame = synthetic_board(board=board, bottom=bottom, highlight=mate)
+    assert _played(events) == ["e4", "e5", "Qh5", "Nc6", "Bc4"]
+    board.push_san("Nd4")  # c6 and d4 lie under the dialog
+    mate = board.push_san("Qxf7#")  # h5 and f7 do not
+    frame = synthetic_board(board=board, highlight=mate)
     events = pipe.process(frame, ts)  # one clean frame
     ts += 0.1
-    assert not [e for e in events if isinstance(e, MovePlayed)]
-    # The dialog hides d8 and h4 both (it covers the middle; both squares lie under it
-    # for one orientation and the memory of covered cells does the rest for the other).
+    assert not _played(events)
+    up = ts
     for _ in range(30):
-        events += pipe.process(with_dialog(frame, dark=True, bottom=bottom), ts)
+        new = pipe.process(with_dialog(frame, dark=True), ts)
+        if _played(new):
+            assert ts - up >= DIALOG_SECONDS, "settled under the dialog, not confirmed by it"
+        events += new
         ts += 0.1
-    assert [e.san for e in events if isinstance(e, MovePlayed)] == ["Qh4#"]
+    assert _played(events) == ["Nd4", "Qxf7#"]
     ended = [e for e in events if isinstance(e, GameEnded)]
-    assert ended and ended[0].result == "0-1"
+    assert ended and ended[0].result == "1-0"

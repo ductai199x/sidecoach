@@ -7,16 +7,22 @@ and the third live game showed how far that goes: a real move whose settled fram
 capture never caught, then two queens queued at once, then a mate delivered in a second
 and a half under the game-over dialog. Each scenario here renders the frames as the site
 would and checks that the moves committed are the moves played, in order, and nothing else.
+
+The queue is the reconciler's to read, so the frames go to a reconciler through the
+recogniser learned once from the start position; the games that end under the game-over
+dialog go through the whole pipeline, whose dialog they need.
 """
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Iterable
 
 import chess
+import numpy as np
 import pytest
 
-from sidecoach.events import GameEnded, MovePlayed, Region, Resync, Side
+from sidecoach.events import Event, GameEnded, MovePlayed, Region, Resync, Side
 from sidecoach.state.pipeline import GamePipeline
 from sidecoach.state.reconcile import Reconciler
 from sidecoach.vision.pieces import ThemeModel
@@ -28,40 +34,71 @@ pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vi
 
 BOTTOMS = [Side.WHITE, Side.BLACK]
 Queue = tuple[chess.Move, ...]
+GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
+
+
+@functools.cache
+def _model(bottom: Side) -> ThemeModel:
+    """The recogniser learned from the start position, built once for each side at the
+    bottom and shared: it reads pixels and nothing else. A plain module helper, not a
+    fixture: the phone's fixture maker calls these tests directly."""
+    model = ThemeModel.from_start_position(synthetic_board(bottom=bottom), GEOM, bottom)
+    assert model is not None
+    return model
 
 
 class Game:
-    """A pipeline fed synthetic frames; `board` is the truth, `sans` what was committed."""
+    """Synthetic frames fed to a reconciler, or with `pipeline` to the whole pipeline (the
+    game-over dialog is the pipeline's); `board` is the truth, `sans` what was committed."""
 
-    def __init__(self, bottom: Side, fen: str | None = None) -> None:
+    def __init__(self, bottom: Side, fen: str | None = None, pipeline: bool = False) -> None:
         self.bottom = bottom
-        self.pipe = GamePipeline()
+        self.pipe = GamePipeline() if pipeline else None
+        self._rec = (
+            None if pipeline else Reconciler(bottom=bottom, user_side=bottom, settle_frames=2)
+        )
         self.board = chess.Board()
         self.ts = 0.0
         self.sans: list[str] = []
         self.ended: list[GameEnded] = []
         self.show(frames=2)
-        assert self.pipe.reconciler is not None and self.pipe.reconciler.started
+        assert self.rec.started
         if fen is not None:
             # A mid-game position: play the pieces there through a resync-free path is
             # not always possible, so the reconciler adopts it like a cold start would.
             self.board = chess.Board(fen)
-            rec = self.pipe.reconciler
+            rec = self.rec
             rec.board = self.board.copy()
             rec._base_fen = fen
             self.show(frames=2)
 
-    def frame(self, **kw: object):
+    @property
+    def rec(self) -> Reconciler:
+        rec = self.pipe.reconciler if self.pipe is not None else self._rec
+        assert rec is not None
+        return rec
+
+    def frame(self, **kw: object) -> np.ndarray:
         return synthetic_board(board=self.board, bottom=self.bottom, **kw)  # type: ignore[arg-type]
+
+    def process(self, frame: np.ndarray) -> None:
+        """One frame read, its moves and its end noted."""
+        events: list[Event]
+        if self.pipe is not None:
+            events = self.pipe.process(frame, self.ts)
+        else:
+            assert self._rec is not None
+            events = self._rec.update(_model(self.bottom).classify_frame(frame, GEOM), self.ts)
+        for event in events:
+            if isinstance(event, MovePlayed):
+                self.sans.append(event.san)
+            elif isinstance(event, GameEnded):
+                self.ended.append(event)
+        self.ts += 0.1
 
     def show(self, frames: int = 2, **kw: object) -> None:
         for _ in range(frames):
-            for event in self.pipe.process(self.frame(**kw), self.ts):
-                if isinstance(event, MovePlayed):
-                    self.sans.append(event.san)
-                elif isinstance(event, GameEnded):
-                    self.ended.append(event)
-            self.ts += 0.1
+            self.process(self.frame(**kw))
 
     def play(self, *sans: str, frames: int = 2, **kw: object) -> chess.Move:
         """Moves made on the board, each followed by its frames with the last-move
@@ -194,15 +231,18 @@ def test_a_queued_capture_is_drawn_over_its_victim() -> None:
 
 
 def test_a_premove_the_opponents_move_makes_illegal_is_cleared() -> None:
-    """A check clears the queue: the piece snaps back to its square, nothing executes."""
+    """A check clears the queue: the piece snaps back to its square, nothing executes. The
+    site paints the checked king's square red, and with a queue on the board a moment
+    before, the king must not be taken for a queued piece and moved to some red square
+    (test_the_users_king_in_check_on_a_red_square_is_not_a_ghost)."""
     g = Game(Side.WHITE)
     g.play("e4", "e5", "Bc4", "Nc6", "d3")
     g.show(frames=4, premoves=g.queue(_uci("c4b3")))  # Bb3 queued
     assert g.sans == ["e4", "e5", "Bc4", "Nc6", "d3"]
     check = g.board.push_san("Bb4+")  # illegal to answer with Bb3: the queue is cleared
-    g.show(frames=3, highlight=check)
+    g.show(frames=3, highlight=check, red_marks=(chess.E1,))  # the king's square red
     assert g.sans[-1:] == ["Bb4+"], g.sans
-    g.play("c3")
+    g.play("c3", red_marks=())
     assert g.sans[-2:] == ["Bb4+", "c3"], g.sans
 
 
@@ -210,7 +250,7 @@ def test_premoves_that_end_in_mate_under_the_dialog_commit_the_real_line() -> No
     """The third live game's finish, move for move: 65. Qgg3 (seen only in flight) Kc2
     66. Qhh2+ Kd1 67. Qgg1#, both queens premoved, the mate's one clean frame followed
     by the game-over dialog."""
-    g = Game(Side.WHITE, fen="8/8/4K3/6Q1/7Q/8/8/1k6 w - - 0 65")
+    g = Game(Side.WHITE, fen="8/8/4K3/6Q1/7Q/8/8/1k6 w - - 0 65", pipeline=True)
     assert g.sans == []
     real = g.board.push_san("Qgg3")
     g.show(frames=1, highlight=real, dragging=(chess.G3, chess.G3, 0.15, 0.1))
@@ -227,12 +267,7 @@ def test_premoves_that_end_in_mate_under_the_dialog_commit_the_real_line() -> No
     g.show(frames=1, highlight=mate)  # one clean frame...
     assert g.sans == ["Qgg3", "Kc2", "Qhh2+"], g.sans
     for _ in range(30):  # ...then the dialog
-        for event in g.pipe.process(with_dialog(g.frame(highlight=mate), dark=True), g.ts):
-            if isinstance(event, MovePlayed):
-                g.sans.append(event.san)
-            elif isinstance(event, GameEnded):
-                g.ended.append(event)
-        g.ts += 0.1
+        g.process(with_dialog(g.frame(highlight=mate), dark=True))
     assert g.sans == ["Qgg3", "Kc2", "Qhh2+", "Kd1", "Qgg1#"], g.sans
     assert g.ended and g.ended[0].result == "1-0"
 
@@ -281,12 +316,7 @@ def _run_queue(
         if g.board.is_game_over():
             g.show(frames=1, highlight=step)
             for _ in range(30):
-                for event in g.pipe.process(with_dialog(g.frame(highlight=step), dark=True), g.ts):
-                    if isinstance(event, MovePlayed):
-                        g.sans.append(event.san)
-                    elif isinstance(event, GameEnded):
-                        g.ended.append(event)
-                g.ts += 0.1
+                g.process(with_dialog(g.frame(highlight=step), dark=True))
             return
         g.show(frames=frames_per_state, highlight=step, premoves=queues())
     # The board rests once the queue is spent.
@@ -300,7 +330,7 @@ LADDER = "7k/p5pp/8/8/8/8/8/3Q2K1 w - - 0 1"
 
 @pytest.mark.parametrize("frames_per_state", [3, 1])
 def test_a_six_step_queue_of_one_piece_ends_in_mate(frames_per_state: int) -> None:
-    g = Game(Side.WHITE, fen=LADDER)
+    g = Game(Side.WHITE, fen=LADDER, pipeline=True)
     _run_queue(
         g,
         "Qd2",
@@ -319,7 +349,7 @@ def test_a_long_queue_against_a_bot_faster_than_the_capture() -> None:
     The pictures then admit a shorter legal story (a7-a5 in one push, the queen two
     squares at once) and the reconciler takes the shortest, as a person would; what must
     hold is that the position stays right throughout and the mate is seen."""
-    g = Game(Side.WHITE, fen=LADDER)
+    g = Game(Side.WHITE, fen=LADDER, pipeline=True)
     _run_queue(
         g,
         "Qd2",
@@ -328,8 +358,7 @@ def test_a_long_queue_against_a_bot_faster_than_the_capture() -> None:
         frames_per_state=1,
         skip_states=True,
     )
-    assert g.pipe.reconciler is not None
-    final = g.pipe.reconciler.board
+    final = g.rec.board
     assert final.is_checkmate() and final.piece_at(chess.D8) == chess.Piece.from_symbol("Q")
     assert g.sans[0] == "Qd2" and g.sans[-1] == "Qd8#" and 7 <= len(g.sans) <= 11, g.sans
     assert g.ended and g.ended[0].result == "1-0"
@@ -341,7 +370,7 @@ TWO_PIECES = "7k/pp4pp/8/8/8/1Q6/8/K1R5 w - - 0 1"
 
 
 def test_a_seven_step_queue_over_two_pieces_ends_in_mate() -> None:
-    g = Game(Side.WHITE, fen=TWO_PIECES)
+    g = Game(Side.WHITE, fen=TWO_PIECES, pipeline=True)
     _run_queue(
         g,
         "Rc2",
@@ -367,22 +396,44 @@ def test_a_seven_step_queue_over_two_pieces_ends_in_mate() -> None:
     assert g.ended and g.ended[0].result == "1-0"
 
 
-# White: K a1, N b1; Black: K h8, pawns a7 b7 g7 h7. A knight hops a five-step queue
-# b1-c3-e4-f6 ... and the mate needs help: the rook on g1 lands the blow. Kept simple: the
-# knight's five hops end on f7 giving... this is only about a long single-piece queue.
-KNIGHT = "7k/pp4pp/8/8/8/8/8/KN4R1 w - - 0 1"
-
-
-def test_a_five_hop_knight_queue_is_undone_hop_by_hop() -> None:
-    g = Game(Side.WHITE, fen=KNIGHT)
-    _run_queue(
-        g,
+# One piece's queue, undone step by step as the opponent answers each: the position, the
+# real move first, the queue, the opponent's answers, and what is told.
+SINGLE_QUEUES = {
+    # A knight's five hops, the first real and four queued: c3-e4-f6-d5-e7
+    # (test_a_five_hop_knight_queue_is_undone_hop_by_hop).
+    "knight": (
+        "7k/pp4pp/8/8/8/8/8/KN4R1 w - - 0 1",
         "Nc3",
         _uci("c3e4", "e4f6", "f6d5", "d5e7"),
         _uci("a6", "a5", "a4", "a3"),
-        frames_per_state=2,
-    )
-    assert g.sans == ["Nc3", "a6", "Ne4", "a5", "Nf6", "a4", "Nd5", "a3", "Ne7"], g.sans
+        ["Nc3", "a6", "Ne4", "a5", "Nf6", "a4", "Nd5", "a3", "Ne7"],
+    ),
+    # A king can only step, so a five-square queue is five red squares in a row
+    # (test_a_king_walk_queue_of_five_steps).
+    "king": (
+        "7k/pp4pp/8/8/8/8/8/K5R1 w - - 0 1",
+        "Kb2",
+        _uci("b2c3", "c3d4", "d4e5", "e5e6"),
+        _uci("a6", "a5", "a4", "a3"),
+        ["Kb2", "a6", "Kc3", "a5", "Kd4", "a4", "Ke5", "a3", "Ke6"],
+    ),
+    # A pawn's queue up the board (test_a_pawn_queue_up_the_board).
+    "pawn": (
+        "7k/p5pp/8/8/8/8/3P4/K5R1 w - - 0 1",
+        "d4",
+        _uci("d4d5", "d5d6", "d6d7"),
+        _uci("a6", "a5", "a4"),
+        ["d4", "a6", "d5", "a5", "d6", "a4", "d7"],
+    ),
+}
+
+
+@pytest.mark.parametrize("piece", sorted(SINGLE_QUEUES))
+def test_a_single_piece_queue_is_undone_step_by_step(piece: str) -> None:
+    fen, first, queue, replies, told = SINGLE_QUEUES[piece]
+    g = Game(Side.WHITE, fen=fen)
+    _run_queue(g, first, queue, replies, frames_per_state=2)
+    assert g.sans == told, g.sans
 
 
 # --- more shapes -------------------------------------------------------------------------
@@ -426,17 +477,19 @@ def test_the_opponent_captures_the_queued_piece() -> None:
     capture = g.board.push_san("Qxg5")  # ...and Black just takes the knight
     g.show(frames=3, highlight=capture)
     assert g.sans[-2:] == ["Ng5", "Qxg5"], g.sans
-    assert g.pipe.reconciler is not None
-    assert g.pipe.reconciler.board.piece_at(chess.F7) == chess.Piece.from_symbol("p")
+    assert g.rec.board.piece_at(chess.F7) == chess.Piece.from_symbol("p")
 
 
-def test_the_opponent_moves_onto_the_queued_square_and_the_premove_captures_it() -> None:
-    """The queue's destination is empty when queued and holds an enemy piece when the
-    step executes: the premove executes as a capture."""
+def test_a_reply_seen_for_one_frame_under_the_next_queue_is_told_before_its_step() -> None:
+    """One queued step has executed (Ng5) and the next is queued (Ne6); the opponent's
+    reply is caught on a single frame with that queue still drawn over it, and the step
+    executes on the next: the reply seen once is told, then the step, in order -- the story
+    read once extended by the frame after it. (Named once for a capture on the queued
+    square, which it never played.)"""
     g = Game(Side.WHITE)
     g.play("e4", "e5", "Nf3", "Nc6", "Bc4")
     g.show(frames=3, premoves=g.queue(_uci("f3g5")))
-    g.board.push_san("Nf6")  # not onto g5; a plain reply
+    g.board.push_san("Nf6")
     executed = g.board.push_san("Ng5")
     g.show(frames=3, highlight=executed)
     assert g.sans[-2:] == ["Nf6", "Ng5"], g.sans
@@ -448,61 +501,23 @@ def test_the_opponent_moves_onto_the_queued_square_and_the_premove_captures_it()
     assert g.sans[-2:] == ["Be7", "Ne6"], g.sans
 
 
-def test_the_users_king_in_check_on_a_red_square_is_not_a_ghost() -> None:
-    """Chess.com paints the checked king's square red; with a queue on the board too, the
-    king must not be mistaken for a queued piece and moved to some red square."""
-    g = Game(Side.WHITE)
-    g.play("e4", "e5", "f3", "Nc6", "Nc3")
-    g.show(frames=3, premoves=g.queue(_uci("c3d5")))  # Nd5 queued
-    check = g.board.push_san("Qh4+")  # check clears the queue; the king's square is red
-    g.show(frames=3, highlight=check, red_marks=(chess.E1,))
-    assert g.sans[-1:] == ["Qh4+"], g.sans
-    g.play("g3", red_marks=())
-    assert g.sans[-2:] == ["Qh4+", "g3"], g.sans
-
-
-@pytest.mark.parametrize("frames_per_state", [3, 1])
-def test_black_runs_a_long_queue_to_mate(frames_per_state: int) -> None:
+def test_black_runs_a_long_queue_to_mate() -> None:
     """The same ladder from Black's side, black at the bottom: the queen climbs the d-file
-    while White pushes a pawn, and ...Qd1 is mate."""
+    while White pushes a pawn, and ...Qd1 is mate. A frame a picture: three frames a
+    picture are the six-step ladder's, from White's side."""
     fen = "3q2k1/8/8/8/8/8/P5PP/7K b - - 0 1"
-    g = Game(Side.BLACK, fen=fen)
+    g = Game(Side.BLACK, fen=fen, pipeline=True)
     _run_queue(
         g,
         "Qd7",
         _uci("d7d6", "d6d5", "d5d4", "d4d3", "d3d1"),
         _uci("a3", "a4", "a5", "a6", "a7"),
-        frames_per_state=frames_per_state,
+        frames_per_state=1,
     )
     assert g.sans == ["Qd7", "a3", "Qd6", "a4", "Qd5", "a5", "Qd4", "a6", "Qd3", "a7", "Qd1#"], (
         g.sans
     )
     assert g.ended and g.ended[0].result == "0-1"
-
-
-def test_a_king_walk_queue_of_five_steps() -> None:
-    """A king can only step, so a five-square queue is five red squares in a row."""
-    g = Game(Side.WHITE, fen="7k/pp4pp/8/8/8/8/8/K5R1 w - - 0 1")
-    _run_queue(
-        g,
-        "Kb2",
-        _uci("b2c3", "c3d4", "d4e5", "e5e6"),
-        _uci("a6", "a5", "a4", "a3"),
-        frames_per_state=2,
-    )
-    assert g.sans == ["Kb2", "a6", "Kc3", "a5", "Kd4", "a4", "Ke5", "a3", "Ke6"], g.sans
-
-
-def test_a_pawn_queue_up_the_board() -> None:
-    g = Game(Side.WHITE, fen="7k/p5pp/8/8/8/8/3P4/K5R1 w - - 0 1")
-    _run_queue(
-        g,
-        "d4",
-        _uci("d4d5", "d5d6", "d6d7"),
-        _uci("a6", "a5", "a4"),
-        frames_per_state=2,
-    )
-    assert g.sans == ["d4", "a6", "d5", "a5", "d6", "a4", "d7"], g.sans
 
 
 def test_two_queues_of_different_lengths_finish_at_different_times() -> None:
@@ -522,14 +537,12 @@ def test_two_queues_of_different_lengths_finish_at_different_times() -> None:
 # ---- at the reconciler, from a fixed endgame: the promotion and the king cases -------
 
 # After 59...Kf7 in the game of 2026-09-14 20:06: white Kc7, pawns a4 b6 f4 g3 h4, Be5.
-GEOM = BoardGeometry(Region(300, 120, 512, 512), 64.0)
 ENDGAME = "8/2K2k2/1P6/4Bp1p/P4PpP/6P1/8/8 w - - 0 60"
 
 
 def _reconciler_at(fen: str) -> tuple[ThemeModel, Reconciler, chess.Board]:
     start = synthetic_board()
-    model = ThemeModel.from_start_position(start, GEOM, Side.WHITE)
-    assert model is not None
+    model = _model(Side.WHITE)
     rec = Reconciler(bottom=Side.WHITE, user_side=Side.WHITE, settle_frames=2)
     rec.update(model.classify_frame(start, GEOM), 0.0)
     board = chess.Board(fen)
