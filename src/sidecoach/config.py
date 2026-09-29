@@ -648,6 +648,58 @@ class VoiceSettings(BaseModel):
         "mouse_x1 / mouse_x2 (the side buttons). Empty disables it.",
         json_schema_extra=_extra(applies="now", label="Push-to-talk key", section="Hearing you"),
     )
+    # The coach's words in a box over the other windows, the way Live Caption shows speech:
+    # the phone's since 2026-09-23, the desktop's since Tai asked for it in fast games
+    # (2026-09-29: "I think it's really useful in fast games").
+    captions: bool = Field(
+        default=False,
+        description="Shows what the coach says in a small box over your other windows, like "
+        "Live Caption, so you can read it while you play. Drag the box to move it; "
+        "double-click it to see more; click it for its buttons; drag it onto the cross at the "
+        "bottom of the screen to turn captions off.",
+        json_schema_extra=_extra(
+            applies="now", label="Captions over other windows", section="Captions"
+        ),
+    )
+    captions_keep: bool = Field(
+        default=False,
+        description="Keeps the caption box on screen all the time, with the coach's last "
+        "words in it. Off, the box fades a few seconds after the coach stops talking and comes "
+        "back when it speaks again. Either way it steps aside while Sidecoach's own window is "
+        "in front.",
+        json_schema_extra=_extra(
+            applies="now", label="Keep captions on screen", section="Captions"
+        ),
+    )
+    captions_text_color: str = Field(
+        default="#FFFFFF",
+        description="The colour of the captions' words.",
+        json_schema_extra=_extra(
+            applies="now", kind="color", label="Text colour", section="Captions"
+        ),
+    )
+    captions_background: str = Field(
+        default="#1F1F1F",
+        description="The colour of the box behind the words.",
+        json_schema_extra=_extra(
+            applies="now", kind="color", label="Background colour", section="Captions"
+        ),
+    )
+    captions_opacity: int = Field(
+        default=92,
+        ge=20,
+        le=100,
+        description="How solid the box is, in percent: 100 hides what is behind it, lower lets "
+        "it show through.",
+        json_schema_extra=_extra(applies="now", label="Background opacity (%)", section="Captions"),
+    )
+    captions_text_size: int = Field(
+        default=17,
+        ge=12,
+        le=32,
+        description="How big the captions' words are; 17 is the usual size.",
+        json_schema_extra=_extra(applies="now", label="Text size", section="Captions"),
+    )
 
 
 class GpuSettings(BaseModel):

@@ -5,6 +5,7 @@
   // to drag, the terminal that folds, the exclusion rectangle that keeps the vision off
   // our own board when the game shares this monitor.
   import { onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import Board from "$lib/Board.svelte";
   import Coach from "$lib/Coach.svelte";
   import Composer from "$lib/Composer.svelte";
@@ -168,6 +169,13 @@
       clearInterval(rectTimer);
       store.stop();
     };
+  });
+
+  // The captions' windows once captions are on (Settings > Captions): built hidden, they show
+  // and place themselves (routes/captions). Asked when they turn on, not at every poll.
+  const captionsOn = $derived(store.state.captions?.on ?? false);
+  $effect(() => {
+    if (inShell() && captionsOn) invoke("open_captions").catch((e) => console.warn("captions:", e));
   });
 
   $effect(() => {

@@ -449,6 +449,10 @@ def _rooms_for(engine: PanelEngine) -> Any:
     voiced = getattr(engine, "_tts", None) is not None
 
     def speak(text: str) -> None:
+        # The words captioned as the panel's are (the phone's rooms: `Captions.show`).
+        caption = getattr(engine, "caption", None)
+        if caption is not None:
+            caption(text)
         engine._tts.say(text)
 
     def stop() -> None:

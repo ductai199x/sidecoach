@@ -176,6 +176,17 @@ export type Health = {
   coach_pending?: number;
 };
 
+export type Captions = {
+  on: boolean;
+  keep: boolean;
+  text: string;
+  background: string;
+  opacity: number;
+  size: number;
+  /** Raised by one at each change of their look: a sample line shows. */
+  preview: number;
+};
+
 export type PanelState = {
   running?: boolean;
   status?: string;
@@ -208,6 +219,12 @@ export type PanelState = {
   voices?: string[];
   voice?: string;
   clock?: { white_ms: number | null; black_ms: number | null; running: string | null } | null;
+  /** The captions' settings, the words given to the voice (numbered, the last few), whether
+   * it is speaking now, and the board the vision follows, on the screen (routes/captions). */
+  captions?: Captions;
+  caption_lines?: [number, string][];
+  speaking?: boolean;
+  board_screen?: [number, number, number, number] | null;
   [key: string]: unknown;
 };
 

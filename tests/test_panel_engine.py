@@ -498,14 +498,17 @@ def test_an_ask_before_start_is_answered_at_once_not_kept_for_a_later_session(
 ) -> None:
     """A question typed or spoken with no session running used to sit in the command
     queue and be asked of the coach at the next Start -- minutes later, about another
-    game. It gets a plain answer now, and nothing is queued."""
+    game. It gets a plain answer now, and nothing is queued; the captions show it too, where
+    a question asked from their buttons looks for its answer."""
     engine = make_panel(record=False)
     PanelApi(engine).ask("what should I play")
     assert engine._commands.empty()
-    lines = engine.poll(0)["lines"]
+    polled = engine.poll(0)
+    lines = polled["lines"]
     assert any(ln["text"] == "you: what should I play" for ln in lines)
     reply = next(ln for ln in lines if ln["chan"] == "coach" and "Press Start first" in ln["text"])
     assert reply["data"]["full"].startswith("Press Start first")
+    assert polled["state"]["caption_lines"][-1][1] == reply["data"]["full"]
 
 
 def test_the_move_list_badges_follow_takebacks_and_resyncs(

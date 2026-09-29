@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Every window of the app: the panel, the puzzle and settings windows. The menu bar, the tray, always-on-top, the updater and the opener are built from the page.",
+  "description": "Every window of the app: the panel, the puzzle and settings windows, and the captions (which place and size their own windows). The menu bar, the tray, always-on-top, the updater and the opener are built from the page.",
   "windows": [
     "main",
     "splash",
@@ -30,6 +30,8 @@
     "updater:default",
     "process:default",
     "process:allow-restart",
-    "core:window:allow-unminimize"
+    "core:window:allow-unminimize",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size"
   ]
 }

@@ -40,6 +40,8 @@ fn kind(label: &str) -> Option<String> {
     match label {
         "main" => Some("main".into()),
         "splash" => None,
+        // The captions keep their own place (their page), and the cross has none.
+        _ if label.starts_with("w-captions") => None,
         _ if label.starts_with("w-puzzle-") => Some("puzzle".into()),
         _ => label.strip_prefix("w-").map(str::to_string),
     }

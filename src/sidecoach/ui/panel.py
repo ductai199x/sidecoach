@@ -65,6 +65,37 @@ THRESHOLD_FIELDS = frozenset(
 )
 # The voice settings that rebuild the voice or speech recognition when saved (a model reloads).
 VOICE_RELOAD = frozenset(f"voice.{name}" for name in ("lang", "model_dir", "tts_device"))
+# The captions' settings (`caption_settings`); a change to any but `keep` shows a sample line.
+CAPTION_SETTINGS = (
+    "captions",
+    "captions_keep",
+    "captions_text_color",
+    "captions_background",
+    "captions_opacity",
+    "captions_text_size",
+)
+CAPTION_PREVIEWED = frozenset(f"voice.{n}" for n in CAPTION_SETTINGS if n != "captions_keep")
+# The words the captions' window can still catch up on, at a poll every quarter second.
+CAPTIONS_KEPT = 20
+
+
+def caption_settings(settings: Settings, *, preview: int) -> dict[str, Any]:
+    """The captions' settings as their window reads them, and `preview`: when their look last
+    changed (ms since the epoch; 0, never), when the window shows a sample line (the phone's
+    `preview`: Tai, 2026-09-23, "applies instantly on save"). A time, not a count: the window
+    is built when captions are turned on, after the change that turned them on."""
+    voice = settings.voice
+    return {
+        "on": voice.captions,
+        "keep": voice.captions_keep,
+        "text": voice.captions_text_color,
+        "background": voice.captions_background,
+        "opacity": voice.captions_opacity,
+        "size": voice.captions_text_size,
+        "preview": preview,
+    }
+
+
 STT_RELOAD = frozenset(f"voice.{name}" for name in ("stt_device", "mic_device"))
 # The warm-up's stages, in the order they finish, as the splash screen shows them: one
 # square of a rank each, the pieces landing left to right. A stage is pending, loading,
@@ -368,7 +399,14 @@ class PanelEngine:
             # The review of the last game to end, and the player model as it stands.
             "review": None,
             "profile": None,
+            # The captions' window (desktop/src/routes/captions): its settings, the words the
+            # voice was given, numbered, the last CAPTIONS_KEPT of them, and where the board
+            # the vision follows is on the screen, in pixels (none while it follows none).
+            "captions": caption_settings(self.settings, preview=0),
+            "caption_lines": [],
+            "board_screen": None,
         }
+        self._captioned = 0  # the words captioned so far, the last one's number
         self._profiler: Any = None
         self._profile_seen = 0
         logging.getLogger("sidecoach.voice").addHandler(_VoiceLogHandler(self))
@@ -598,21 +636,23 @@ class PanelEngine:
     def command(self, name: str, payload: Any = None) -> None:
         """Queue a control action for the loop thread (ask, flip, analyse). With no
         session running there is no loop to take it: an ask is answered on the spot
-        rather than kept for a Start minutes later, about another game."""
+        rather than kept for a Start minutes later, about another game -- in the captions too,
+        where a question asked from their buttons looks for its answer."""
         with self._lock:
             running = bool(self._state.get("running"))
         if not running and name in ("ask", "ask_spoken"):
             self._emit("user", "info", f"you: {payload}", spoken=name == "ask_spoken")
+            text = "Press Start first: I can only answer about a game I am watching."
             self._emit(
                 "coach",
                 "info",
-                "user_ask · not watching — Press Start first: I can only answer about a "
-                "game I am watching.",
-                full="Press Start first: I can only answer about a game I am watching.",
+                f"user_ask · not watching — {text}",
+                full=text,
                 trigger="user_ask",
                 ply=None,
                 voice="text",
             )
+            self.caption(text)
             return
         self._commands.put((name, payload))
 
@@ -679,6 +719,16 @@ class PanelEngine:
             self._set(ptt_key=new.voice.ptt_key)
 
         attempt(["voice.ptt_key"], rebind_hotkey)
+
+        def restyle_captions() -> None:
+            # Their window reads them at its next poll; a new look shows a sample line.
+            with self._lock:
+                preview = int(self._state["captions"]["preview"])
+            if any(c in CAPTION_PREVIEWED for c in changed):
+                preview = int(time.time() * 1000)
+            self._set(captions=caption_settings(new, preview=preview))
+
+        attempt([f"voice.{name}" for name in CAPTION_SETTINGS], restyle_captions)
         if any(c in VOICE_RELOAD for c in changed):
             self._reload_voice()
             applied.extend(c for c in changed if c in VOICE_RELOAD)
@@ -1048,10 +1098,24 @@ class PanelEngine:
         self._emit("voice", "info", "muted" if muted else "unmuted")
 
     def poll(self, since: int = 0) -> dict[str, Any]:
-        """A snapshot for the page: the current state and every log record after `since`."""
+        """A snapshot for the page: the current state and every log record after `since`;
+        and whether the voice is speaking now, for the captions to fade once it stops."""
         with self._lock:
             state = dict(self._state)
+        state["speaking"] = bool(self._tts.busy)
         return {"state": state, "lines": self._log.since(since), "cursor": self._log.cursor}
+
+    def caption(self, text: str) -> None:
+        """Words given to the voice, for the captions' window, numbered: said or not -- muted,
+        or held back for pace -- they are captioned whole, the moment they come, as the
+        phone's `Captions.show` is (the voice follows when it is made)."""
+        text = text.strip()
+        if not text:
+            return
+        with self._lock:
+            self._captioned += 1
+            lines = [*self._state["caption_lines"], [self._captioned, text]][-CAPTIONS_KEPT:]
+            self._state["caption_lines"] = lines
 
     # ---- internals ------------------------------------------------------------------------
 
@@ -1338,6 +1402,7 @@ class PanelEngine:
                 started.append(action)
                 self._voicing = (name, ply)
                 self._await_audio(name, ply, sentence)
+            self.caption(sentence)  # each sentence as the model writes it; its voice follows
             self._tts.say(sentence)
             self._emit("voice", "debug", f"speaking ({self.voice}): {elide(sentence, 60)}")
             return True
@@ -1345,8 +1410,10 @@ class PanelEngine:
         return sink
 
     def _speak(self, trigger: str, text: str, ply: int | None) -> str:
-        """Apply `voice_action` and speak accordingly; returns what was done, for the log."""
+        """Apply `voice_action` and speak accordingly; returns what was done, for the log. A
+        line the voice will not say is still captioned, whole."""
         if self.muted:
+            self.caption(text)
             return "muted"
         with self._lock:
             ply_now = int(self._state.get("ply") or 0)
@@ -1358,10 +1425,12 @@ class PanelEngine:
         if action in ("speak", "supersede"):
             self._voicing = (trigger, ply)
             self._await_audio(trigger, ply, text)
+            self.caption(text)  # at once; the voice follows when it is made
             self._tts.say(text)
             self._emit("voice", "debug", f"speaking ({self.voice}): {elide(text, 60)}")
         elif action == "text":
             self._held_word = (trigger, text, ply, time.monotonic())
+            self.caption(text)
         return action
 
     def _coach_fast(self) -> bool:
@@ -1506,6 +1575,9 @@ class PanelEngine:
         def ensure_recording() -> None:  # a live capture replaces this below
             return None
 
+        # Where the captured monitor sits on the screen, for the board's place there (the
+        # captions keep off it); a replay has no screen.
+        screen_origin: tuple[int, int] | None = None
         if live:
             from sidecoach.capture.loop import capture_loop
             from sidecoach.capture.wgc_backend import make_capture
@@ -1514,6 +1586,7 @@ class PanelEngine:
 
             cap = make_capture(self.settings.capture.backend)
             monitor, region = _monitor_region(cap, self.monitor)
+            screen_origin = (region.x, region.y)
             self._emit(
                 "sys",
                 "info",
@@ -1656,6 +1729,7 @@ class PanelEngine:
         latest_geom: Any = None
         ts = time.monotonic()  # the last frame's time; the first, before any frame
         locked = False
+        board_screen: list[int] | None = None
         verified = False
         bootstraps = 0
         degraded = False
@@ -1712,6 +1786,19 @@ class PanelEngine:
                 ticks += 1
                 if pipe.board is not None:
                     latest_geom = BoardGeometry(pipe.board.region, pipe.board.cell_px)
+                on_screen = (
+                    [
+                        screen_origin[0] + pipe.board.region.x,
+                        screen_origin[1] + pipe.board.region.y,
+                        pipe.board.region.w,
+                        pipe.board.region.h,
+                    ]
+                    if screen_origin is not None and pipe.board is not None
+                    else None
+                )
+                if on_screen != board_screen:
+                    board_screen = on_screen
+                    self._set(board_screen=board_screen)
 
                 events += self._drain_commands(pipe, coaching, latest, latest_geom, ts)
 
@@ -2031,6 +2118,7 @@ class PanelEngine:
                 ply=None,
                 voice="text",
             )
+            self.caption(text)
         elif isinstance(event, GameEnded):
             text = f"game over {event.result} ({event.reason})"
             if event.result == "*":

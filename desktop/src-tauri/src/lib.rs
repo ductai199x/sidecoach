@@ -24,7 +24,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+};
 
 mod places;
 
@@ -162,7 +164,10 @@ fn sidecar_command(app: &AppHandle, token: &str) -> Result<Command, String> {
         // the uninstaller removes only what the installer wrote, and an AppImage is
         // read-only anyway. As an option, since -I ignores PYTHONPYCACHEPREFIX too.
         if let Some(dir) = data_dir(app) {
-            c.arg(format!("-Xpycache_prefix={}", dir.join("pycache").display()));
+            c.arg(format!(
+                "-Xpycache_prefix={}",
+                dir.join("pycache").display()
+            ));
         }
         c.args(["-m", "sidecoach", "panel"]);
         c.env_remove("PYTHONHOME").env_remove("PYTHONPATH");
@@ -421,6 +426,68 @@ fn set_shell_settings(
     current.clone()
 }
 
+/// Errors from before a page's own code runs (a page that never boots) reach the terminal
+/// through the sidecar; the page installs the same handlers once connected.
+fn page_report(app: &AppHandle) -> String {
+    let state = app.state::<Sidecar>();
+    let port = *state.port.lock().unwrap();
+    match (port, state.token.as_str()) {
+        (Some(port), token) => format!(
+            r#"(() => {{
+  const send = (text) => {{ try {{ fetch("http://127.0.0.1:{port}/api/client_log", {{ method: "POST", keepalive: true,
+    headers: {{ "Content-Type": "application/json", "Authorization": "Bearer {token}" }},
+    body: JSON.stringify({{ text: String(text).slice(0, 2000), page: location.pathname }}) }}).catch(() => {{}}); }} catch (_) {{}} }};
+  window.addEventListener("error", (e) => send((e.message || e) + " @ " + (e.filename || "?") + ":" + (e.lineno || 0)));
+  window.addEventListener("unhandledrejection", (e) => send("unhandled rejection: " + (e.reason && (e.reason.stack || e.reason.message) || e.reason)));
+  if ({trace}) {{
+    send("boot " + location.href);
+    document.addEventListener("DOMContentLoaded", () => send("dom " + document.documentElement.outerHTML.length + " chars: " + document.documentElement.outerHTML.slice(0, 400).replace(/\s+/g, " ")));
+  }}
+}})();"#,
+            trace = std::env::var("SIDECOACH_PAGE_TRACE").is_ok(),
+        ),
+        _ => String::new(),
+    }
+}
+
+/// The captions' two windows, built hidden if they are not there yet: the box with the
+/// coach's words (`captions`) and the cross a box is dropped on to turn them off
+/// (`captions-cross`). Over every other window, without a frame or a taskbar button, and
+/// never focused: a click on the box must not take the keyboard from the game (Tai,
+/// 2026-09-29: "really useful in fast games"). Each page shows and places its own window.
+#[tauri::command]
+async fn open_captions(app: AppHandle) -> Result<(), String> {
+    let report = page_report(&app);
+    for (label, route, width, height) in [
+        ("w-captions", "captions", 560.0, 140.0),
+        ("w-captions-cross", "captions-cross", 96.0, 96.0),
+    ] {
+        if app.get_webview_window(label).is_some() {
+            continue;
+        }
+        let window = WebviewWindowBuilder::new(&app, label, WebviewUrl::App(route.into()))
+            .initialization_script(&report)
+            .title("Sidecoach captions")
+            .inner_size(width, height)
+            .transparent(true)
+            .decorations(false)
+            .shadow(false)
+            .resizable(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .focused(false)
+            .focusable(false)
+            .visible(false)
+            .build()
+            .map_err(|e| e.to_string())?;
+        if label == "w-captions-cross" {
+            // Shown under a box being carried: the pointer passes through it to the box.
+            let _ = window.set_ignore_cursor_events(true);
+        }
+    }
+    Ok(())
+}
+
 /// A page of the app in a window of its own: `settings`, `setup`, or `puzzle/<id>`. A
 /// second request for the same route brings the window it has to the front.
 ///
@@ -454,26 +521,7 @@ async fn open_window(app: AppHandle, route: String) -> Result<(), String> {
     } else {
         ("Sidecoach".to_string(), 900.0, 700.0)
     };
-    // Errors from before the page's own code runs (a page that never boots) reach the
-    // terminal through the sidecar; the page installs the same handlers once connected.
-    let state = app.state::<Sidecar>();
-    let report = match (*state.port.lock().unwrap(), state.token.as_str()) {
-        (Some(port), token) => format!(
-            r#"(() => {{
-  const send = (text) => {{ try {{ fetch("http://127.0.0.1:{port}/api/client_log", {{ method: "POST", keepalive: true,
-    headers: {{ "Content-Type": "application/json", "Authorization": "Bearer {token}" }},
-    body: JSON.stringify({{ text: String(text).slice(0, 2000), page: location.pathname }}) }}).catch(() => {{}}); }} catch (_) {{}} }};
-  window.addEventListener("error", (e) => send((e.message || e) + " @ " + (e.filename || "?") + ":" + (e.lineno || 0)));
-  window.addEventListener("unhandledrejection", (e) => send("unhandled rejection: " + (e.reason && (e.reason.stack || e.reason.message) || e.reason)));
-  if ({trace}) {{
-    send("boot " + location.href);
-    document.addEventListener("DOMContentLoaded", () => send("dom " + document.documentElement.outerHTML.length + " chars: " + document.documentElement.outerHTML.slice(0, 400).replace(/\s+/g, " ")));
-  }}
-}})();"#,
-            trace = std::env::var("SIDECOACH_PAGE_TRACE").is_ok(),
-        ),
-        _ => String::new(),
-    };
+    let report = page_report(&app);
     // SIDECOACH_PAGE_TRACE: every asset the window asks the shell for, and what it got, in
     // <data dir>/shell-trace.log -- the way to see why a window came up blank.
     let trace = std::env::var("SIDECOACH_PAGE_TRACE").is_ok();
@@ -587,7 +635,8 @@ pub fn run() {
             data_dir_command,
             shell_settings,
             set_shell_settings,
-            open_window
+            open_window,
+            open_captions
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -648,6 +697,14 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Sidecoach's own panel in front: the captions step aside, as the phone's do.
+            if let WindowEvent::Focused(focused) = event {
+                if window.label() == "main" {
+                    let _ = window
+                        .app_handle()
+                        .emit_to("w-captions", "panel-front", *focused);
+                }
+            }
             // Where each window is, for the next start (`places`).
             match event {
                 WindowEvent::Moved(_) | WindowEvent::Resized(_) => places::record(window),
@@ -657,8 +714,9 @@ pub fn run() {
                 }
                 _ => {}
             }
-            // The main window closing quits, unless the setting says the tray; the other
-            // windows just close.
+            // The main window closing quits, every other window with it -- the captions',
+            // hidden, would keep the app and its sidecar running with nothing on the screen --
+            // unless the setting says the tray; the other windows just close.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     let close = window
@@ -672,6 +730,8 @@ pub fn run() {
                     if close == "tray" {
                         api.prevent_close();
                         let _ = window.hide();
+                    } else {
+                        window.app_handle().exit(0);
                     }
                 }
             }
