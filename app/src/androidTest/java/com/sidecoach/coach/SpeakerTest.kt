@@ -2,13 +2,18 @@ package com.sidecoach.coach
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.sidecoach.chess.Board
+import com.sidecoach.events.Analysis
 import com.sidecoach.events.DisclosureLevel
+import com.sidecoach.events.GameStarted
+import com.sidecoach.events.Line
+import com.sidecoach.events.MotifTag
 import com.sidecoach.events.Trigger
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.Completion
 import com.sidecoach.llm.LLMProvider
 import com.sidecoach.llm.StreamCallback
 import com.sidecoach.llm.StreamingProvider
+import com.sidecoach.vision.Pieces
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -16,10 +21,12 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * The Speaker on its own: the reply streamed to the voice as it is written, the verbalized
- * candidates parsed whole, a verifier's keep-and-repair, a routine request's model, and an ask
- * overtaking what is still waiting. The desktop's `tests/test_streaming.py`,
- * `tests/test_coach_verbalized.py` and the Speaker cases of `tests/test_coach.py`.
+ * The Speaker on its own: the reply streamed to the voice as it is written, the coach handing
+ * its sink to the request, the verbalized candidates parsed whole, a verifier's keep-and-repair,
+ * a routine request's model, and an ask overtaking what is still waiting. The desktop's
+ * `tests/test_streaming.py`, `tests/test_coach_verbalized.py` and the Speaker cases of
+ * `tests/test_coach.py`. (The Speaker's rounds of engine calls go through the coach, as the
+ * desktop's `tests/test_engine_tools.py` does: CoachTest.)
  */
 @RunWith(AndroidJUnit4::class)
 class SpeakerTest {
@@ -205,11 +212,54 @@ class SpeakerTest {
     }
 
     /**
+     * The coach asks its sink factory for each request it makes, with the trigger and the ply,
+     * and hands the sink it gets to the request, which the Speaker then streams to: the
+     * sentence reaches that sink (`test_the_coach_hands_its_sink_to_the_request` in
+     * tests/test_streaming.py, which reads the queued request's `stream_to`; the phone's queue is
+     * the Speaker's own, so what reaches the sink says it; the parity audit, 2026-09-29).
+     */
+    @Test
+    fun theCoachHandsItsSinkToTheRequest() {
+        val provider = Streaming("[p=1.0] Their king has one square left.")
+        val coach = Coach(provider, policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+        val seen = ArrayList<Pair<Trigger, Int?>>()
+        val heard = ArrayList<String>()
+        coach.streamSink = { trigger, ply ->
+            seen.add(trigger to ply)
+            val sink: (String) -> Boolean = { sentence -> heard.add(sentence); true }
+            sink
+        }
+        coach.onEvent(GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = FEN), 0.0)
+        coach.onEvent(
+            Analysis(
+                gameId = "g",
+                fen = FEN,
+                ply = 0,
+                lines = listOf(
+                    Line(moves = listOf("h5f7"), depth = 12, expectedScore = 1.0, mate = 1),
+                    Line(moves = listOf("c4f7"), depth = 12, expectedScore = 0.55),
+                ),
+                decisive = false,
+                onlyMove = true,
+                tags = listOf(MotifTag(name = "mateIn1", squares = listOf("f7", "e8"), move = "h5f7")),
+            ),
+            1.0,
+        )
+        coach.tick(12.0) // stuck: the idea, unprompted
+        assertEquals(listOf(Trigger.STUCK to 0), seen)
+        coach.speaker.runPending()
+        assertEquals("the reply was streamed to the sink", 1, provider.streamedCalls)
+        assertEquals(listOf("Their king has one square left."), heard)
+    }
+
+    /**
      * The verbalized replies parse into weighted candidates, whole: a wrapped reply kept whole, a
      * plain model's reply one candidate, a think block stripped; a reply the token budget cut
      * mid-marker leaks no marker fragment ("...move?\n\n[p=0.2"), one cut mid-sentence is
      * trimmed to its last full sentence, and a stump ("Given", "The key was using") is no
-     * candidate. `test_coach.py`'s parsing and `test_coach_verbalized.py`'s two cut-off cases.
+     * candidate. `test_a_reply_parses_into_weighted_candidates_and_never_a_fragment` and
+     * `test_a_reply_cut_off_mid_sentence_keeps_its_last_full_sentence` in
+     * tests/test_coach_verbalized.py.
      */
     @Test
     fun verbalizedRepliesParseIntoWholeWeightedCandidates() {

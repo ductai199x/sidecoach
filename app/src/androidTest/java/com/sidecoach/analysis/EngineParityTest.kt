@@ -97,7 +97,14 @@ class EngineParityTest {
                 val moves = scenario.getJSONArray("moves")
                 for (m in 0 until moves.length()) board.push(Move.fromUci(moves.getString(m)))
                 val given = if (scenario.getBoolean("stack")) board else board.copy(withStack = false)
-                val lines = engine.analyse(given, depth = scenario.getInt("depth"), multipv = scenario.getInt("multipv"))
+                // A best line carried on to MIN_BEST_PLIES (`carry_best`: the parity audit,
+                // 2026-09-29) is searched on from its end, and those searches are compared too.
+                val lines = engine.analyse(
+                    given,
+                    depth = scenario.getInt("depth"),
+                    multipv = scenario.getInt("multipv"),
+                    carryBest = scenario.optBoolean("carry_best"),
+                )
                 val want = lines(scenario.getJSONArray("lines"))
                 if (!same(lines, want)) failures.add("$name, ${scenario.getString("name")}: $lines, desktop $want")
             }

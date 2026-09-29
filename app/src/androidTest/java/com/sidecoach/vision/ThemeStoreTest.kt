@@ -5,6 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
 import org.junit.Test
@@ -68,6 +69,16 @@ class ThemeStoreTest {
             val readings = back.classifyFrame(frame, geometry, embedder)
             frame.release()
             assertEquals(italian.symbols, readings.map { it.symbol ?: "" })
+
+            // A shade of rendering noise still matches (the nearest palette within tolerance),
+            // and an unseen palette is a miss (`test_theme_cache_round_trips_a_learned_model`;
+            // the parity audit, 2026-09-29).
+            val shade = store.get(DoubleArray(3) { model.lightBg[it] + 4 }, DoubleArray(3) { model.darkBg[it] - 3 })
+            assertNotNull("a palette a few levels off is the same theme", shade)
+            assertNull(
+                "an unseen palette is a miss",
+                store.get(doubleArrayOf(10.0, 10.0, 10.0), doubleArrayOf(250.0, 250.0, 250.0)),
+            )
 
             // The same file stamped with an older version: not read, so the set is learned again.
             val file = File(directory, "theme-$key.bin")

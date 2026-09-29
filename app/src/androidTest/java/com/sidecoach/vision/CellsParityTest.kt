@@ -17,7 +17,9 @@ import kotlin.math.abs
  * The recogniser held to the desktop's, over every piece set it knows: `tools/make_cell_fixtures.py`
  * learns each set from its start position on the desktop and records the model -- the square
  * colours, the set's fills and outlines, the k-means palette, the exemplars -- and every field of
- * every cell it reads on a middlegame dressed with a highlight, a check, a drag and arrows, and on
+ * every cell it reads on a middlegame dressed with a highlight, a check, a drag and arrows (and,
+ * since the parity audit of 2026-09-29, the move's badge over its piece, a green or teal tint, a
+ * hover outline a pixel thin, and one set on a 641 px board: a fractional pitch), and on
  * a few boards under the game-over dialog with legal-move dots; with them the theme cache's key and
  * sampled colours, and the rank labels and the side they read at the bottom. The phone learns each
  * set from the same frame, its OpenCV generator seeded as the desktop's was for the k-means, and
@@ -48,11 +50,23 @@ class CellsParityTest {
             val cases = index.getJSONArray("cases")
             for (k in 0 until cases.length()) {
                 val case = cases.getJSONObject(k)
-                val name = "${case.getString("style")}/${case.getString("theme")}"
+                // A case on a board of its own size (a fractional pitch, 641 px: the parity
+                // audit, 2026-09-29) carries its geometry.
+                val region = case.optJSONArray("region")
+                val here = if (region == null) {
+                    geometry
+                } else {
+                    BoardGeometry(
+                        Region(region.getInt(0), region.getInt(1), region.getInt(2), region.getInt(3)),
+                        case.getDouble("cell_px"),
+                    )
+                }
+                val name = "${case.getString("style")}/${case.getString("theme")}" +
+                    (if (region == null) "" else " at ${region.getInt(2)} px")
                 val start = Fixtures.asset("cells/${case.getString("start")}")
                 Core.setRNGSeed(seed)
                 var began = System.nanoTime()
-                val model = ThemeModel.fromStartPosition(start, geometry, true, embedder)
+                val model = ThemeModel.fromStartPosition(start, here, true, embedder)
                 learnMs += (System.nanoTime() - began) / 1_000_000
                 start.release()
                 if (model == null) {
@@ -60,13 +74,13 @@ class CellsParityTest {
                     continue
                 }
                 compareModel(name, model, case.getJSONObject("model"), failures)
-                compareCacheAndLabels(name, model, geometry, case, failures)
+                compareCacheAndLabels(name, model, here, case, failures)
                 val boards = case.getJSONArray("boards")
                 for (b in 0 until boards.length()) {
                     val board = boards.getJSONObject(b)
                     val frame = Fixtures.asset("cells/${board.getString("file")}")
                     began = System.nanoTime()
-                    val readings = model.classifyFrame(frame, geometry, embedder)
+                    val readings = model.classifyFrame(frame, here, embedder)
                     readMs += (System.nanoTime() - began) / 1_000_000
                     val cells = board.getJSONArray("cells")
                     for (i in 0 until 64) {

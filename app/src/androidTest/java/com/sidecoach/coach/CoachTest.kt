@@ -10,6 +10,7 @@ import com.sidecoach.chess.Piece
 import com.sidecoach.chess.QUEEN
 import com.sidecoach.chess.parseSquare
 import com.sidecoach.events.Analysis
+import com.sidecoach.events.ClockObservation
 import com.sidecoach.events.CoachMessage
 import com.sidecoach.events.DisclosureLevel
 import com.sidecoach.events.GameEnded
@@ -21,6 +22,9 @@ import com.sidecoach.events.MotifTag
 import com.sidecoach.events.MoveAssessment
 import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.ProfileEvidence
+import com.sidecoach.events.PuzzleOutcome
+import com.sidecoach.events.PuzzleRef
+import com.sidecoach.events.Recommendation
 import com.sidecoach.events.Resync
 import com.sidecoach.events.Severity
 import com.sidecoach.events.Takeback
@@ -30,8 +34,10 @@ import com.sidecoach.llm.Completion
 import com.sidecoach.llm.LLMProvider
 import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.llm.StreamCallback
+import com.sidecoach.llm.ToolCall
 import com.sidecoach.llm.ToolsProvider
 import org.json.JSONArray
+import org.json.JSONObject
 import com.sidecoach.profile.Causes
 import com.sidecoach.vision.Pieces
 import org.junit.Assert.assertEquals
@@ -128,10 +134,10 @@ class CoachTest {
     }
 
     /**
-     * `test_an_early_analysis_answers_a_question_waiting_on_it` (desktop 316026b). Tai,
-     * 2026-09-28: "first usable answer is depth 12 ... the computation continues until max depth
-     * of 18". A question asked before the engine has looked is answered from the early
-     * analysis, the full depth still to come.
+     * `test_asking_before_the_engine_has_looked_is_answered_when_it_has_even_early` (desktop
+     * 316026b; the early half of it). Tai, 2026-09-28: "first usable answer is depth 12 ... the
+     * computation continues until max depth of 18". A question asked before the engine has
+     * looked is answered from the early analysis, the full depth still to come.
      */
     @Test
     fun anEarlyAnalysisAnswersAQuestionWaitingOnIt() {
@@ -471,14 +477,13 @@ class CoachTest {
         // The better move the reply must name is the directive's -- not the template's lesson as
         // the least the reply says, which came back word for word (the prompt audit, 2026-09-28).
         assertTrue("The better move was Qxf7#" in directiveOf(messages))
-        assertTrue("says at least this" !in directiveOf(messages))
         assertEquals(emptyList<String>(), coach.spoken.last().problems)
-        // The hints' questions are for the side to move: never on the opponent's sheet, where
-        // labelled "to the player" they were the opponent's; nor on the faced sheet, a position
-        // already moved from (parity pass 2; desktop 2219e11).
+        // The first hint is for the side to move: never on the opponent's sheet, where labelled
+        // "to the player" it was the opponent's (parity pass 2; desktop 2219e11); on the faced
+        // sheet, a position already moved from, it is what a hint rested on there, as it stood.
         val now = currentMoveMessage(messages).substringBefore("# The position they faced")
         assertTrue(now, "(to the player, as it stands)" !in now.substringAfter("## Facts"))
-        assertTrue(faced, "a question that sets them looking" !in faced)
+        assertTrue(faced, "(to the player, as it stood)" in faced && "(to the player, as it stands)" !in faced)
     }
 
     /**
@@ -922,7 +927,9 @@ class CoachTest {
         var directive = directive(provider)
         assertTrue(directive, "do not say it again in other words" in directive)
         assertTrue(directive, "They ask nothing: reply in one short sentence" in directive)
-        assertTrue(directive, "then one question" !in directive)
+        // A nod is offered no question: the generic answer's "-- with a question, if that serves"
+        // is left out (the parity audit, 2026-09-29).
+        assertTrue(directive, "with a question, if that serves" !in directive)
         synchronized(provider.replies) {
             provider.replies.clear()
             provider.replies.addAll(listOf("", ""))
@@ -933,12 +940,14 @@ class CoachTest {
         assertTrue(request, "# The position they faced, before Bxf7+" in request)
         directive = directive(provider)
         assertTrue(directive, "Answer them directly" in directive && "do not say it again" in directive)
+        assertTrue("a question may be offered on top of an answer", "with a question, if that serves" in directive)
     }
 
     /**
      * The follow-up's directive says not to repeat the better move, and the check that a reply
      * names it refused every reply that obeyed; after two, the template said the verdict again
-     * (the prompt audit, 2026-09-28; desktop test of the same name). The floor, the lesson again,
+     * (the prompt audit, 2026-09-28; the desktop folded its test of it into
+     * `test_a_follow_up_gets_what_it_asks_and_a_nod_one_sentence`). The floor, the lesson again,
      * goes with it.
      */
     @Test
@@ -955,8 +964,6 @@ class CoachTest {
         }
         coach.ask("Why does the bishop check not work?", 13.0)
         val out = messages(coach)
-        val directive = directive(provider)
-        assertTrue(directive, "says at least this" !in directive)
         assertTrue(out.isNotEmpty())
         assertEquals(reply, out.last().text)
     }
@@ -1208,9 +1215,12 @@ class CoachTest {
     }
 
     /**
-     * `test_offline_coach.py`: four decisive moments in one game got the same sentence four times
-     * (a master-game pass, 2026-09-21): each list is a bag, every wording once before any comes
-     * again (Tai, 2026-09-25), and never the last one said.
+     * Four decisive moments in one game got the same sentence four times (a master-game pass,
+     * 2026-09-21): each list is a bag, every wording once before any comes again (Tai,
+     * 2026-09-25), and never the last one said. The desktop's rotation test went in bb9756b:
+     * `test_every_wording_once_before_any_comes_again_and_never_twice_running`
+     * (tests/test_bag.py) pins the bags, and the praise's bag is
+     * `test_in_blitz_a_good_move_earns_two_words_without_the_model` (tests/test_coach.py).
      */
     @Test
     fun theTemplatesRotateAndNeverRepeatTheLast() {
@@ -1550,8 +1560,10 @@ class CoachTest {
      * the model, which names the better one; a great or brilliant move to the MAIN model at its
      * full effort, told to show some delight, the board's line standing in when the reply fails.
      * The routine model is a separate one here, so a delight asked of it would show.
-     * `test_verdicts.py`: the coach writes a sound move's word itself; a good move goes to the
-     * model; a great or brilliant move gets the model's delight.
+     * `test_a_good_move_goes_to_the_model_which_names_the_better_one` and
+     * `test_a_great_or_brilliant_move_gets_the_models_delight` (tests/test_verdicts.py), and the
+     * routine model's word with the local verdicts off
+     * (`test_a_good_move_gets_one_sentence_from_the_model_with_the_template_to_fall_back_on`).
      */
     @Test
     fun aSoundMovesWordIsRoutedByItsLabel() {
@@ -1656,7 +1668,8 @@ class CoachTest {
     /**
      * The model offers a leaky reply and a clean one in one distribution: the checked one is kept
      * at the first attempt; and a stump ("Given"), clean by default, never wins -- both calls are
-     * kept for the log (`test_coach.py`, `test_coach_verbalized.py`).
+     * kept for the log (`test_the_clean_candidate_is_kept_at_once_and_a_stump_never_reaches_the_user`
+     * in tests/test_coach_verbalized.py).
      */
     @Test
     fun theCheckedCandidateIsKeptAndAStumpNeverWins() {
@@ -1825,7 +1838,11 @@ class CoachTest {
 
     /**
      * The model gives nothing usable, twice: the template for the rung speaks in its place, once,
-     * and the failed calls are in the log (`test_coach.py`, desktop 3ff672b).
+     * and the failed calls are in the log. The second try carries the complaint inside the
+     * directive, as many messages as the first: appending the failed attempt as two more
+     * messages doubled the prompt on a long game, past the model's context
+     * (`test_a_bare_hint_is_asked_as_a_hint_and_one_the_model_fails_twice_is_the_template`,
+     * desktop 3ff672b; the retry's shape, the parity audit, 2026-09-29).
      */
     @Test
     fun aHintTheModelFailsTwiceIsTheTemplates() {
@@ -1842,6 +1859,10 @@ class CoachTest {
         assertEquals("    PLAYER said: \"hint\"", said.last())
         val directive = directiveOf(first)
         assertTrue(directive, "They asked for a hint." in directive)
+        val retry = given(provider, 1)
+        assertEquals("the retry adds no message", first.size, retry.size)
+        assertTrue(retry.last().content, "Those replies are not allowed" in retry.last().content)
+        assertTrue(retry.last().content, "Your first attempt was" in retry.last().content)
         val spoken = coach.spoken.last()
         assertTrue(spoken.attempts == 2 && spoken.problems.isNotEmpty() && coach.speaker.fallbacks == 1)
         assertEquals(listOf(out[0].text), coach.conversation.entries.filter { it.role == "assistant" }.map { it.text })
@@ -1860,22 +1881,6 @@ class CoachTest {
         messages(coach)
         val directive = directiveOf(given(provider))
         assertTrue(directive, "its verdict was best, and it cost nothing" in directive && "invent no fault" in directive)
-    }
-
-    /**
-     * Asked why the opponent played their last move, the coach names it: a move already played
-     * may be discussed in full, never a leak (`test_coach.py`).
-     */
-    @Test
-    fun aMoveOfTheGameSoFarIsNeverALeak() {
-        val (coach, _) = coach(listOf("[p=1.0] Nf6 develops with a threat; what does it leave behind?"))
-        playToScholar(coach)
-        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
-        messages(coach)
-        coach.ask("why did he play that?", 8.0)
-        val out = messages(coach)
-        assertTrue(out.isNotEmpty() && out.last().text.startsWith("Nf6 develops"))
-        assertEquals(DisclosureLevel.IDEA, out.last().level)
     }
 
     /**
@@ -2031,7 +2036,7 @@ class CoachTest {
      * A puzzle's last moves come quick -- the line found, played out -- and carried over they
      * made the next puzzle fast from its first move: a find after two minutes' thought was only
      * shown (Tai's puzzles, 2026-09-27: "sometimes it's just completely muted"; desktop 8af8695,
-     * `test_the_pace_is_the_games_own`).
+     * now `test_the_pace_is_the_last_think_times_and_the_games_own`).
      */
     @Test
     fun thePaceIsTheGamesOwn() {
@@ -2049,8 +2054,8 @@ class CoachTest {
      */
     @Test
     fun offlineTheTemplatesSpeakAndNothingIsCalled() {
-        // The factory gives the offline provider, and it reports itself (the desktop's usage
-        // ledger has no phone counterpart: nothing is priced).
+        // The factory gives the offline provider, and it reports itself; its ledger, empty, is
+        // LlmTest's (`test_the_factory_gives_the_offline_provider_and_it_reports_itself`).
         val none = com.sidecoach.llm.makeProvider(com.sidecoach.llm.LLMSettings(provider = "none"))
         assertTrue(none is OfflineProvider && none.offline)
         val (ok, detail) = none.healthcheck()
@@ -2210,6 +2215,222 @@ class CoachTest {
             assertEquals(error, answered, "The pawn on f7 is defended only by the King." in said)
             assertEquals(error, answered, synchronized(provider.seen) { false in provider.seen })
         }
+    }
+
+    /**
+     * `test_engine_tools.ToolModel`: a model that takes tools. It makes the calls of each round
+     * of [rounds] in turn, then answers with [answer]; every call is kept, with the tools, the
+     * turns and the tool choice it was given (a plain call with none).
+     */
+    private class ToolModel(rounds: List<List<ToolCall>>, private val answer: String) : ToolsProvider {
+        class Call(val tools: JSONArray?, val turns: JSONArray?, val toolChoice: String?)
+
+        override val name = "tool-model"
+        private val script = ArrayDeque(rounds)
+        val seen = ArrayList<Call>()
+
+        override fun healthcheck(): Pair<Boolean, String> = true to "tools"
+
+        override fun chat(
+            system: String,
+            messages: List<ChatMessage>,
+            maxTokens: Int,
+            temperature: Double,
+            thinking: Boolean,
+        ): Completion {
+            synchronized(seen) { seen.add(Call(null, null, null)) }
+            return Completion(text = answer)
+        }
+
+        override fun chatTools(
+            system: String,
+            messages: List<ChatMessage>,
+            tools: JSONArray,
+            turns: JSONArray,
+            maxTokens: Int,
+            temperature: Double,
+            toolChoice: String?,
+            onDelta: StreamCallback?,
+        ): Completion {
+            synchronized(seen) { seen.add(Call(tools, turns, toolChoice)) }
+            if (script.isNotEmpty() && toolChoice != "none") return Completion(text = "", toolCalls = script.removeFirst())
+            return Completion(text = answer)
+        }
+    }
+
+    /** `test_engine_tools._at_scholar`: the coach with [model] and the engine, the player to move at SCHOLAR, analysed. */
+    private fun atScholar(model: LLMProvider): Coach {
+        val coach = Coach(model, policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+        coach.engine = firstLegal
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        return coach
+    }
+
+    /**
+     * The Speaker's rounds of engine calls: the first call carries the tools and no turns; the
+     * second, the model's call and the engine's answer to it as the call's result; the Task
+     * says what the tools are for, and the calls are on the record for the log
+     * (`test_the_model_asks_the_engine_and_answers_from_what_it_returns` in
+     * tests/test_engine_tools.py; the parity audit, 2026-09-29).
+     */
+    @Test
+    fun theModelAsksTheEngineAndAnswersFromWhatItReturns() {
+        val model = ToolModel(
+            listOf(listOf(ToolCall(id = "c1", name = "analyse", arguments = JSONObject().put("moves", JSONArray(listOf("Qxf7#")))))),
+            "Qxf7# is mate: the queen takes on f7 and the king has no square.",
+        )
+        val coach = atScholar(model)
+        synchronized(model.seen) { model.seen.clear() }
+        coach.ask("what happens if I take on f7 with the queen?", 8.0)
+        val out = messages(coach)
+        assertTrue(out.map { it.text }.toString(), out.isNotEmpty() && out.last().text.startsWith("Qxf7# is mate"))
+        val first = model.seen[0]
+        val second = model.seen[1]
+        assertTrue("the first call carries the tools and no turns", first.tools!!.length() > 0 && first.turns!!.length() == 0)
+        // The engine's answer went back to the model as the call's result.
+        val turns = second.turns!!
+        assertEquals(turns.toString(), 2, turns.length())
+        val call = turns.getJSONObject(0)
+        val result = turns.getJSONObject(1)
+        assertEquals("assistant", call.getString("role"))
+        assertEquals("analyse", call.getJSONArray("tool_calls").getJSONObject(0).getJSONObject("function").getString("name"))
+        assertEquals("tool", result.getString("role"))
+        assertEquals("c1", result.getString("tool_call_id"))
+        assertTrue(result.getString("content"), "The game is over there: checkmate, White wins." in result.getString("content"))
+        // The Task says what the tools are for; the call is on the record for the log.
+        val logged = coach.spoken.last().calls.last()
+        assertTrue(logged.prompt, TOOL_WORDS in logged.prompt)
+        assertEquals(listOf("analyse(Qxf7#)"), logged.stats["tools"])
+    }
+
+    /**
+     * A model that keeps asking is asked [TOOL_ROUNDS] + 1 times, the last with the tools
+     * closed ("none"), and its answer then stands
+     * (`test_a_model_that_keeps_asking_answers_after_the_last_round` in
+     * tests/test_engine_tools.py; the parity audit, 2026-09-29).
+     */
+    @Test
+    fun aModelThatKeepsAskingAnswersAfterTheLastRound() {
+        val calls = (0 until 9).map { ToolCall(id = "c$it", name = "square", arguments = JSONObject().put("square", "f7")) }
+        val model = ToolModel(calls.map { listOf(it) }, "The pawn on f7 is defended only by the king.")
+        val coach = atScholar(model)
+        synchronized(model.seen) { model.seen.clear() }
+        coach.ask("is f7 weak?", 8.0)
+        val out = messages(coach)
+        assertTrue(out.map { it.text }.toString(), out.isNotEmpty() && out.last().text == "The pawn on f7 is defended only by the king.")
+        assertEquals(TOOL_ROUNDS + 1, model.seen.size)
+        assertEquals("none", model.seen.last().toolChoice)
+    }
+
+    /**
+     * The practice the profile picked, in one line naming the count and the motif, the level and
+     * why; a word on a failed puzzle, naming its motif; nothing on a solve (the site says so),
+     * and nothing when the coach is kept quiet (the panel's own board, whose bar says it). No
+     * model is called (`test_the_coach_says_one_line_on_the_practice_and_a_word_on_a_fail` in
+     * tests/test_puzzles.py; the parity audit, 2026-09-29).
+     */
+    @Test
+    fun theCoachSaysOneLineOnThePracticeAndAWordOnAFail() {
+        val (coach, provider) = coach(emptyList())
+        start(coach)
+        coach.onEvent(
+            Recommendation(
+                gameId = "g",
+                motif = "fork",
+                motifWords = "fork",
+                reason = "fork: 3 of 5 chances missed over your games",
+                level = 1100,
+                puzzles = listOf(PuzzleRef(id = "fork1", url = "https://lichess.org/training/fork1", rating = 1000)),
+            ),
+            1.0,
+        )
+        val practice = messages(coach).map { it.text }
+        assertEquals(practice.toString(), 1, practice.size)
+        assertTrue(practice[0], "1 fork puzzle " in practice[0] && "1100" in practice[0])
+        assertTrue(practice[0], "fork: 3 of 5 chances missed over your games" in practice[0])
+        coach.onEvent(PuzzleOutcome(gameId = "p", puzzleId = "fork1", motif = "fork", solved = true, level = 1125), 2.0)
+        assertEquals("a solve: the site says so", emptyList<CoachMessage>(), messages(coach))
+        val failed = PuzzleOutcome(gameId = "p", puzzleId = "fork1", motif = "fork", solved = false, level = 1100)
+        coach.onEvent(failed, 3.0)
+        val word = messages(coach).map { it.text }
+        assertTrue("a word on the fail, naming the motif: $word", word.size == 1 && "fork puzzle" in word[0])
+        assertTrue("no model call", provider.prompts.isEmpty())
+        assertTrue("Practice recommended" in coach.conversation.render())
+        coach.quiet = true
+        coach.onEvent(failed, 4.0)
+        assertEquals(emptyList<CoachMessage>(), messages(coach))
+    }
+
+    /**
+     * A clock on the screen scales the policy: its peak bands the time control, and the user's
+     * own clock -- Black's for a player of Black -- sets the stuck threshold and the scramble; a
+     * new game clears all three until a clock is seen again
+     * (`test_clock_scales_the_policy_and_a_new_game_resets_it` in tests/test_coach.py, the
+     * remaining time read here through the threshold and the scramble it sets; the parity
+     * audit, 2026-09-29).
+     */
+    @Test
+    fun theClockScalesThePolicyAndANewGameResetsIt() {
+        val (coach, _) = coach(emptyList())
+        start(coach)
+        assertEquals("before any clock, untimed", TimeControl.UNTIMED, coach.policy.timeControl)
+        coach.onEvent(ClockObservation(whiteMs = 600_000, blackMs = 600_000, running = Pieces.Side.WHITE), 1.0)
+        assertEquals(TimeControl.RAPID, coach.policy.timeControl)
+        coach.policy.settings = PolicySettings(stuckSeconds = 45.0)
+        // White's 50 s, not Black's 300 (which would give 24 s): the floor, under the setting.
+        coach.onEvent(ClockObservation(whiteMs = 50_000, blackMs = 300_000, running = Pieces.Side.WHITE), 2.0)
+        assertEquals(20.0, coach.policy.stuckThreshold(), 1e-9)
+        assertFalse(coach.policy.inScramble)
+        // A new game: untimed, the remaining time gone, the setting's threshold again.
+        coach.onEvent(GameStarted(gameId = "g2", userSide = Pieces.Side.BLACK, startFen = Board().fen()), 3.0)
+        assertEquals(TimeControl.UNTIMED, coach.policy.timeControl)
+        assertEquals(45.0, coach.policy.stuckThreshold(), 1e-9)
+        // The user plays Black: Black's 25 s is a scramble; about three minutes at most is
+        // blitz, not the last game's peak of ten.
+        coach.onEvent(ClockObservation(whiteMs = 185_000, blackMs = 25_000, running = Pieces.Side.BLACK), 4.0)
+        assertTrue("Black's clock is the player's", coach.policy.inScramble)
+        assertEquals(TimeControl.BLITZ, coach.policy.timeControl)
+        coach.onEvent(ClockObservation(whiteMs = 25_000, blackMs = 180_000, running = Pieces.Side.BLACK), 5.0)
+        assertFalse("White's clock is not the player's", coach.policy.inScramble)
+    }
+
+    /**
+     * With the local verdicts off, the word on the engine's own move is the model's; when the
+     * reply fails, the praise template stands in after one call and one retry
+     * (`test_a_good_move_gets_one_sentence_from_the_model_with_the_template_to_fall_back_on` in
+     * tests/test_coach.py; the parity audit, 2026-09-29).
+     */
+    @Test
+    fun aSoundMovesWordFallsBackToThePraiseWhenTheModelFails() {
+        val (coach, provider) = coach(listOf("", ""))
+        coach.localVerdicts = false
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        mateInOnePlayed(coach)
+        val out = messages(coach)
+        assertTrue(out.map { it.text }.toString(), out.size == 1 && out[0].text in OPENERS.getValue("best").map { "$it." })
+        assertEquals("one call, one retry, then the template", 2, provider.prompts.size)
+    }
+
+    /**
+     * In blitz a sound move gets its two words from the board, with the local verdicts off as
+     * well: no model call (`test_in_blitz_a_good_move_earns_two_words_without_the_model` in
+     * tests/test_coach.py; the parity audit, 2026-09-29).
+     */
+    @Test
+    fun inBlitzAGoodMoveEarnsTwoWordsWithoutTheModel() {
+        val (coach, provider) = coach(listOf("never used"))
+        coach.localVerdicts = false
+        playToScholar(coach)
+        coach.policy.timeControl = TimeControl.BLITZ
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        mateInOnePlayed(coach)
+        val out = messages(coach)
+        assertTrue(out.map { it.text }.toString(), out.size == 1 && out[0].text in OPENERS.getValue("best").map { "$it." })
+        assertTrue("no model call for a good move in blitz", provider.prompts.isEmpty())
+        assertTrue(coach.verdictWord("book") in OPENERS.getValue("book").map { "$it." })
     }
 
     companion object {

@@ -29,8 +29,10 @@ import org.junit.runner.RunWith
  * The desktop's own tests of the reconciler, done to the port op for op.
  *
  * `tools/make_reconcile_fixtures.py` runs `tests/test_reconcile.py`, `test_premoves.py`, the
- * premove sweep's seeds (`test_premove_sweep.py`) and the pipeline tests whose games go through
- * a reconciler, as they stand, with every
+ * premove sweep's seeds (`test_premove_sweep.py`, two more that put a user's piece on a red
+ * square), a few seeds of the stress sweep (`test_stress.py`: an arrow over a square a move
+ * touches, a king under its own decoration; the parity audit, 2026-09-29) and the pipeline
+ * tests whose games go through a reconciler, as they stand, with every
  * reconciler they build writing down what is done to it: built with which tunables, each frame
  * of readings and the events it answered, every call from outside, every field a test set on
  * it -- and after each, what it said of itself. Here each op is done to the ported reconciler

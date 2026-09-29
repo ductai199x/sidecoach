@@ -80,7 +80,7 @@ class PanelEngineTest {
                 for (bitmap in bitmaps.values) bitmap.recycle()
             }
         }
-        // As the page gets it: the poll over HTTP (`test_poll_reports_a_game`).
+        // As the page gets it: the poll over HTTP (`test_engine_follows_a_game_and_reports_it`).
         val server = PanelServerTest.serve(app)
         val polled = try {
             JSONObject(PanelServerTest.request(server.start(), "GET", "/api/poll?since=$cursor").second)
@@ -103,15 +103,19 @@ class PanelEngineTest {
         assertEquals("white", state.getString("bottom"))
         assertTrue(state.getBoolean("following") && state.getBoolean("locked"))
         assertEquals("ptt", state.getString("listen"))
-        // The game reaches the profile, kept in memory for this session as a replay's is: its
-        // review (no engine, so no verdicts) on the page and in the coach's stream, and the
-        // session summed up (`test_the_profile_records_the_game_and_the_review_reaches_the_page`).
+        // The mate is seen, and the game reaches the profile, kept in memory for this session as a
+        // replay's is: its review (no engine, so no verdicts) on the page and in the coach's
+        // stream, and the session summed up -- every time, not only when the end was seen
+        // (`test_engine_follows_a_game_and_reports_it`, which the desktop's profile test folded
+        // into in 3deedfd: its "game over" branch had never run; the parity audit, 2026-09-29).
+        assertTrue(texts.toString(), texts.any { it.startsWith("game over 1-0") })
         assertTrue(!state.isNull("profile"))
-        if (texts.any { "game over" in it }) {
-            assertEquals(0, state.getJSONObject("review").getInt("moves"))
-            assertTrue(lines.any { it.getString("chan") == "coach" && it.getJSONObject("data").has("review") })
-            assertTrue(texts.toString(), texts.any { it.startsWith("session:") })
-        }
+        assertEquals(1, state.getJSONObject("profile").getInt("games"))
+        val review = state.getJSONObject("review")
+        assertEquals(review.toString(), "1-0" to "checkmate", review.getString("result") to review.getString("reason"))
+        assertEquals("no engine: no move judged", 0, review.getInt("moves"))
+        assertTrue(lines.any { it.getString("chan") == "coach" && it.getJSONObject("data").has("review") })
+        assertTrue(texts.toString(), texts.any { it.startsWith("session:") })
         val health = state.getJSONObject("health")
         assertEquals("following", health.getString("stage"))
         assertTrue(health.toString(), health.getString("lock").startsWith("locked, fit "))
@@ -119,7 +123,11 @@ class PanelEngineTest {
         assertTrue(health.toString(), health.has("lag_ms") && !health.isNull("lag_ms") && health.isNull("llm"))
     }
 
-    /** `test_api_poll_is_incremental_and_serialisable`, with the ring of `test_debug_log`. */
+    /**
+     * The poll's keys (`test_controls_and_static_page` in tests/test_panel_server.py), its
+     * records and cursor (`test_records_are_structured_and_polled_incrementally`) and the ring
+     * (`test_ring_keeps_only_the_most_recent`, both in tests/test_debug_log.py).
+     */
     @Test
     fun thePollIsIncrementalAndTheRingKeepsTheLast3000() {
         val first = PanelEngine.poll(0)
@@ -144,7 +152,9 @@ class PanelEngineTest {
 
     /**
      * With no session running, Flip, Re-read and End game wait for the next Start (the
-     * desktop's command queue), an ask is answered at once, and the voice's controls take.
+     * desktop's command queue: `test_with_no_session_flip_re_read_and_end_wait_for_the_next_start`),
+     * an ask is answered at once, and the voice's controls take (`test_controls_and_static_page`
+     * in tests/test_panel_server.py).
      */
     @Test
     fun controlsWithoutASessionWaitForTheNextStart() {
@@ -258,9 +268,10 @@ class PanelEngineTest {
     }
 
     /**
-     * The engine and the coach are built once and kept (`test_the_engine_and_coach_outlive_a_
-     * session`, `..._a_start_without_a_warm_up_builds_the_stages_once`): a second Start, or a
-     * session come and gone on them, finds the same ones, announced once.
+     * The engine and the coach are built once and kept
+     * (`test_the_engine_coach_and_listening_outlive_a_session`,
+     * `test_a_start_without_a_warm_up_builds_the_stages_once`): a second Start, or a session come
+     * and gone on them, finds the same ones, announced once.
      */
     @Test
     fun theStagesAreBuiltOnceAndOutliveASession() {
@@ -371,9 +382,10 @@ class PanelEngineTest {
     /**
      * The warm-up opens listening, and a session only reads the screen: one that ends -- its
      * loop closed, its service's hold on the microphone let go -- leaves listening as it was
-     * (`test_listening_outlives_a_session`: after a Stop, push-to-talk did nothing while the
-     * page still showed it on, 2026-09-23), and closing turns it off. The phone's own rule rides
-     * on it: the microphone is open while the panel is in front or a session holds it.
+     * (`test_the_engine_coach_and_listening_outlive_a_session`: after a Stop, push-to-talk did
+     * nothing while the page still showed it on, 2026-09-23), and closing turns it off. The
+     * phone's own rule rides on it: the microphone is open while the panel is in front or a
+     * session holds it.
      */
     @Test
     fun listeningOutlivesASession() {
@@ -424,10 +436,11 @@ class PanelEngineTest {
     }
 
     /**
-     * `test_flip_and_voice_controls_do_not_raise_without_a_game` and
-     * `test_the_panel_starts_with_the_settings_voice`: the saved voice is the one the panel
-     * speaks with from the start (the field's old default always won, 2026-09-21); the voice
-     * and mute controls take effect and are shown.
+     * `test_the_panel_starts_with_the_settings_voice`, and the voice and mute controls of
+     * `test_controls_and_static_page` (tests/test_panel_server.py, where the desktop's
+     * flip-and-voice test went in 3deedfd): the saved voice is the one the panel speaks with from
+     * the start (the field's old default always won, 2026-09-21); the voice and mute controls
+     * take effect and are shown.
      */
     @Test
     fun thePanelStartsWithTheSettingsVoiceAndItsControlsTakeEffect() {

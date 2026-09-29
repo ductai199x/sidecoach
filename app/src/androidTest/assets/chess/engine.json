@@ -54,6 +54,15 @@
    "setoption name MultiPV value 3",
    "position fen r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 b - - 0 40 moves c6d4 f3d4",
    "go depth 14 movetime 5000",
+   "position startpos moves e2e4 e7e5",
+   "go depth 10 movetime 5000",
+   "setoption name MultiPV value 1",
+   "position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2",
+   "go depth 14 movetime 500",
+   "position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5",
+   "go depth 14 movetime 500",
+   "position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5 a1a2 a5a6 a2a1",
+   "go depth 14 movetime 500",
    "quit"
   ],
   "replies": {
@@ -146,6 +155,37 @@
     "info depth 13 seldepth 14 multipv 3 score cp -92 nodes 1500 nps 100000 time 15 pv a8b8",
     "info depth 15 currmove a7a5 currmovenumber 1",
     "bestmove a7a5"
+   ],
+   "3|position startpos moves e2e4 e7e5": [
+    "info string NNUE evaluation using nn-1a298aa575a0.nnue",
+    "info depth 9 seldepth 10 multipv 1 score cp -76 lowerbound nodes 500 nps 100000 time 5 pv h2h4",
+    "info depth 10 seldepth 12 multipv 1 score cp -83 wdl 217 400 383 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a3 a7a5 a1a2",
+    "info depth 10 seldepth 12 multipv 2 score cp -103 wdl 197 400 403 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a4 a7a5 a1a2",
+    "info depth 10 seldepth 12 multipv 3 score cp -123 wdl 177 400 423 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv b1a3 a7a5 a1b1",
+    "info depth 9 seldepth 10 multipv 3 score cp -148 nodes 1500 nps 100000 time 15 pv b1a3",
+    "info depth 11 currmove a2a3 currmovenumber 1",
+    "bestmove a2a3"
+   ],
+   "1|position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2": [
+    "info string NNUE evaluation using nn-1a298aa575a0.nnue",
+    "info depth 13 seldepth 14 multipv 1 score cp 128 lowerbound nodes 500 nps 100000 time 5 pv h7h6",
+    "info depth 14 seldepth 16 multipv 1 score cp 121 wdl 421 400 179 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a5a4 a2a1 a8a5",
+    "info depth 15 currmove a5a4 currmovenumber 1",
+    "bestmove a5a4"
+   ],
+   "1|position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5": [
+    "info string NNUE evaluation using nn-1a298aa575a0.nnue",
+    "info depth 13 seldepth 14 multipv 1 score cp -85 lowerbound nodes 500 nps 100000 time 5 pv h2h4",
+    "info depth 14 seldepth 16 multipv 1 score cp -92 wdl 208 400 392 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a1a2 a5a6 a2a1",
+    "info depth 15 currmove a1a2 currmovenumber 1",
+    "bestmove a1a2"
+   ],
+   "1|position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5 a1a2 a5a6 a2a1": [
+    "info string NNUE evaluation using nn-1a298aa575a0.nnue",
+    "info depth 13 seldepth 14 multipv 1 score cp -5 lowerbound nodes 500 nps 100000 time 5 pv h7h6",
+    "info depth 14 seldepth 16 multipv 1 score cp -12 wdl 288 400 312 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a6a5 a1a2 a5a6",
+    "info depth 15 currmove a6a5 currmovenumber 1",
+    "bestmove a6a5"
    ]
   },
   "scenarios": [
@@ -156,6 +196,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -218,6 +259,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -279,6 +321,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -343,6 +386,7 @@
     "stack": true,
     "multipv": 1,
     "depth": 12,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -369,6 +413,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -425,6 +470,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -483,6 +529,7 @@
     "stack": false,
     "multipv": 2,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -526,6 +573,7 @@
     "stack": true,
     "multipv": 1,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -561,6 +609,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": []
    },
    {
@@ -570,6 +619,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": []
    },
    {
@@ -579,6 +629,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -608,6 +659,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 14,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -653,6 +705,75 @@
        233,
        400,
        367
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a best line carried on",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [
+     "e2e4",
+     "e7e5"
+    ],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "carry_best": true,
+    "lines": [
+     {
+      "moves": [
+       "a2a3",
+       "a7a5",
+       "a1a2",
+       "a5a4",
+       "a2a1",
+       "a8a5",
+       "a1a2",
+       "a5a6",
+       "a2a1",
+       "a6a5",
+       "a1a2",
+       "a5a6"
+      ],
+      "depth": 11,
+      "expected_score": 0.4241860033205554,
+      "score_cp": -83,
+      "mate": null,
+      "wdl": [
+       217,
+       400,
+       383
+      ]
+     },
+     {
+      "moves": [
+       "a2a4",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.4063067778943678,
+      "score_cp": -103,
+      "mate": null,
+      "wdl": [
+       197,
+       400,
+       403
+      ]
+     },
+     {
+      "moves": [
+       "b1a3"
+      ],
+      "depth": 9,
+      "expected_score": 0.36703734109527436,
+      "score_cp": -148,
+      "mate": null,
+      "wdl": [
+       177,
+       400,
+       423
       ]
      }
     ]
@@ -712,6 +833,15 @@
    "setoption name MultiPV value 3",
    "position fen r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 b - - 0 40 moves c6d4 f3d4",
    "go depth 14 movetime 5000",
+   "position startpos moves e2e4 e7e5",
+   "go depth 10 movetime 5000",
+   "setoption name MultiPV value 1",
+   "position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2",
+   "go depth 14 movetime 500",
+   "position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5",
+   "go depth 14 movetime 500",
+   "position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5 a1a2 a5a6 a2a1",
+   "go depth 14 movetime 500",
    "quit"
   ],
   "replies": {
@@ -804,6 +934,37 @@
     "info depth 13 seldepth 14 multipv 3 score cp -92 nodes 1500 nps 100000 time 15 pv a8b8",
     "info depth 15 currmove a7a5 currmovenumber 1",
     "bestmove a7a5"
+   ],
+   "3|position startpos moves e2e4 e7e5": [
+    "info string NNUE evaluation using nn-1a298aa575a0.nnue",
+    "info depth 9 seldepth 10 multipv 1 score cp -76 lowerbound nodes 500 nps 100000 time 5 pv h2h4",
+    "info depth 10 seldepth 12 multipv 1 score cp -83 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a3 a7a5 a1a2",
+    "info depth 10 seldepth 12 multipv 2 score cp -103 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a2a4 a7a5 a1a2",
+    "info depth 10 seldepth 12 multipv 3 score cp -123 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv b1a3 a7a5 a1b1",
+    "info depth 9 seldepth 10 multipv 3 score cp -148 nodes 1500 nps 100000 time 15 pv b1a3",
+    "info depth 11 currmove a2a3 currmovenumber 1",
+    "bestmove a2a3"
+   ],
+   "1|position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2": [
+    "info string NNUE evaluation using nn-1a298aa575a0.nnue",
+    "info depth 13 seldepth 14 multipv 1 score cp 128 lowerbound nodes 500 nps 100000 time 5 pv h7h6",
+    "info depth 14 seldepth 16 multipv 1 score cp 121 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a5a4 a2a1 a8a5",
+    "info depth 15 currmove a5a4 currmovenumber 1",
+    "bestmove a5a4"
+   ],
+   "1|position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5": [
+    "info string NNUE evaluation using nn-1a298aa575a0.nnue",
+    "info depth 13 seldepth 14 multipv 1 score cp -85 lowerbound nodes 500 nps 100000 time 5 pv h2h4",
+    "info depth 14 seldepth 16 multipv 1 score cp -92 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a1a2 a5a6 a2a1",
+    "info depth 15 currmove a1a2 currmovenumber 1",
+    "bestmove a1a2"
+   ],
+   "1|position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5 a1a2 a5a6 a2a1": [
+    "info string NNUE evaluation using nn-1a298aa575a0.nnue",
+    "info depth 13 seldepth 14 multipv 1 score cp -5 lowerbound nodes 500 nps 100000 time 5 pv h7h6",
+    "info depth 14 seldepth 16 multipv 1 score cp -12 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a6a5 a1a2 a5a6",
+    "info depth 15 currmove a6a5 currmovenumber 1",
+    "bestmove a6a5"
    ]
   },
   "scenarios": [
@@ -814,6 +975,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -876,6 +1038,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -937,6 +1100,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -1001,6 +1165,7 @@
     "stack": true,
     "multipv": 1,
     "depth": 12,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -1027,6 +1192,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -1083,6 +1249,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -1141,6 +1308,7 @@
     "stack": false,
     "multipv": 2,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -1184,6 +1352,7 @@
     "stack": true,
     "multipv": 1,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -1219,6 +1388,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": []
    },
    {
@@ -1228,6 +1398,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": []
    },
    {
@@ -1237,6 +1408,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 10,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -1266,6 +1438,7 @@
     "stack": true,
     "multipv": 3,
     "depth": 14,
+    "carry_best": false,
     "lines": [
      {
       "moves": [
@@ -1311,6 +1484,75 @@
        0,
        631,
        369
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a best line carried on",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "moves": [
+     "e2e4",
+     "e7e5"
+    ],
+    "stack": true,
+    "multipv": 3,
+    "depth": 10,
+    "carry_best": true,
+    "lines": [
+     {
+      "moves": [
+       "a2a3",
+       "a7a5",
+       "a1a2",
+       "a5a4",
+       "a2a1",
+       "a8a5",
+       "a1a2",
+       "a5a6",
+       "a2a1",
+       "a6a5",
+       "a1a2",
+       "a5a6"
+      ],
+      "depth": 11,
+      "expected_score": 0.4241860033205554,
+      "score_cp": -83,
+      "mate": null,
+      "wdl": [
+       2,
+       626,
+       372
+      ]
+     },
+     {
+      "moves": [
+       "a2a4",
+       "a7a5",
+       "a1a2"
+      ],
+      "depth": 10,
+      "expected_score": 0.4063067778943678,
+      "score_cp": -103,
+      "mate": null,
+      "wdl": [
+       1,
+       457,
+       542
+      ]
+     },
+     {
+      "moves": [
+       "b1a3"
+      ],
+      "depth": 9,
+      "expected_score": 0.36703734109527436,
+      "score_cp": -148,
+      "mate": null,
+      "wdl": [
+       0,
+       151,
+       849
       ]
      }
     ]

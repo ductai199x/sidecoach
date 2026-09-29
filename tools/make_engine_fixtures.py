@@ -69,7 +69,8 @@ PERSONAS = {
 START = chess.STARTING_FEN
 SCHOLAR = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
 # Each board: where it starts, the moves pushed on it ("0000" the null move), whether the moves
-# stay on its stack, and the analyse call's number of lines and depth.
+# stay on its stack, and the analyse call's number of lines and depth; and, when given, its
+# `carry_best`.
 SCENARIOS = [
     ("the start", START, [], True, 3, 10),
     ("a game's moves", START, ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4"], True, 3, 10),
@@ -88,6 +89,10 @@ SCENARIOS = [
     ("one legal move", "7k/8/8/8/8/8/6q1/7K w - - 0 1", [], True, 3, 10),
     ("black to move, deep in a game", "r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 b - - 0 40",
      ["c6d4", "f3d4"], True, 3, 14),
+    # The best line carried on (`carry_best`, the parity audit, 2026-09-29): three plies a
+    # search here, short of MIN_BEST_PLIES, so it is searched on from its end, one line at
+    # the extension's depth, EXTEND_TRIES times -- sent from the position the line reaches.
+    ("a best line carried on", START, ["e2e4", "e7e5"], True, 3, 10, True),
 ]
 
 
@@ -234,9 +239,12 @@ def record(persona: str, folder: Path) -> dict:
     try:
         engine = Engine(path=Path("scripted"), threads=2, hash_mb=64, multipv=3, pv_plies=12, max_seconds=5.0)
         results = []
-        for name, fen, moves, stack, multipv, depth in SCENARIOS:
+        for name, fen, moves, stack, multipv, depth, *carry in SCENARIOS:
             board = board_of(fen, moves, stack)
-            lines = engine.analyse(board, depth=depth, multipv=multipv)
+            carry_best = bool(carry and carry[0])
+            lines = engine.analyse(board, depth=depth, multipv=multipv, carry_best=carry_best)
+            if carry_best and (not lines or len(lines[0].moves) <= 3):
+                raise SystemExit(f"{name}: the best line was not carried on: {lines}")
             results.append({
                 "name": name,
                 "fen": fen,
@@ -244,6 +252,7 @@ def record(persona: str, folder: Path) -> dict:
                 "stack": stack,
                 "multipv": multipv,
                 "depth": depth,
+                "carry_best": carry_best,
                 "lines": [line_json(line) for line in lines],
             })
         engine.close()

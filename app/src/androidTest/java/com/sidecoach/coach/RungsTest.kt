@@ -19,12 +19,13 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * `tests/test_rungs.py` (desktop 268990e), case for case: the rungs say only what is so (the
- * master games' notes read beside the three rungs, and Tai's own games read move by move,
+ * The cases of `tests/test_rungs.py` as desktop 268990e wrote them: the rungs say only what is so
+ * (the master games' notes read beside the three rungs, and Tai's own games read move by move,
  * 2026-09-24): two knights are "your knights", a threat to meet keeps its own reason, a pawn
  * attacked gives way to the move's own idea, the focus rung points at the plan, a win that
  * comes a move later is read as one, the right capture with the other piece is taught as that,
- * and a long mate is read only as far as an ear can follow.
+ * and a long mate is read only as far as an ear can follow. The desktop's consolidations of
+ * 2026-09-28/29 moved some of them to other files: each test names its twin as it stands now.
  */
 @RunWith(AndroidJUnit4::class)
 class RungsTest {
@@ -56,6 +57,7 @@ class RungsTest {
 
     private val describe = IdeaWords.Describe(::describeTactic)
 
+    /** `test_two_knights_are_your_knights`. */
     @Test
     fun twoKnightsAreYourKnights() {
         val plan = LinePlan(
@@ -68,6 +70,10 @@ class RungsTest {
         assertEquals("Ne4 and Ng5 bring your knights against their king", Plans.why(plan, board))
     }
 
+    /**
+     * Now `test_a_quiet_move_that_prepares_to_win_the_queen_is_a_threat_to_meet` in
+     * tests/test_threats_to_meet.py.
+     */
     @Test
     fun aThreatToMeetKeepsItsOwnReason() {
         // Short-Timman: Nd4 meets Rd1-Rxd8; that it also puts a knight in the centre is not why.
@@ -78,6 +84,7 @@ class RungsTest {
         assertNull(facts.plan)
     }
 
+    /** The first half of `test_the_move_s_own_idea_leads_and_the_focus_rung_names_no_stray_feature`. */
     @Test
     fun aPawnAttackedGivesWayToTheMovesOwnIdea() {
         // d4 strikes at the pawn on e5; the pawn ending's point is the passed pawn it makes.
@@ -87,6 +94,7 @@ class RungsTest {
         assertNotNull(facts.plan)
     }
 
+    /** The second half of `test_the_move_s_own_idea_leads_and_the_focus_rung_names_no_stray_feature`. */
     @Test
     fun theFocusRungPointsAtThePlanNotAtAStrayFeature() {
         val fen = "4k3/8/8/4p3/8/8/3P4/4K3 w - - 0 1"
@@ -95,6 +103,7 @@ class RungsTest {
         assertFalse("stray" in focusTemplate(facts))
     }
 
+    /** Now `test_a_capture_away_from_the_centre_is_not_the_fight_for_it` in tests/test_positional.py. */
     @Test
     fun aCaptureAwayFromTheCentreIsNotTheFightForIt() {
         var board = Board("rnbqkbnr/ppppp1pp/8/5p2/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2")
@@ -103,6 +112,7 @@ class RungsTest {
         assertTrue(isCentralBreak(board, Move.fromUci("f4e5")))
     }
 
+    /** Now the "a promotion" case of `test_the_best_move_s_idea` in tests/test_positional.py. */
     @Test
     fun aPromotionIsPraisedPlainly() {
         // c8=Q was "prophylaxis: stop their plan before pushing your own" (Tai's game g02).
@@ -110,6 +120,7 @@ class RungsTest {
         assertNull(bestMoveIdea(board, Move.fromUci("c7c8q"), WHITE, phase = "endgame"))
     }
 
+    /** The "a win a move later" case of `test_a_line_is_read_as_far_as_an_ear_can_follow`. */
     @Test
     fun aWinThatComesAMoveLaterIsReadAsOne() {
         // Tai's game g04, 12.Nxd4 for 12.O-O: castling first, and the pawn falls after it.
@@ -122,6 +133,7 @@ class RungsTest {
         assertEquals("What has to happen first, before you can take it?", IdeaWords.nudge(idea))
     }
 
+    /** `test_the_right_capture_with_the_other_piece_is_taught_as_that`. */
     @Test
     fun theRightCaptureWithTheOtherPieceIsTaughtAsThat() {
         // Tai's game g03, 13.Raxd1 for 13.Rexd1: he took the queen back, with the other rook.
@@ -138,6 +150,7 @@ class RungsTest {
         )
     }
 
+    /** Now `test_the_lesson_says_what_the_move_allowed` in tests/test_allowed.py. */
     @Test
     fun aLessonSaysItOfTheBetterMove() {
         // Tai's game g03, 12.Be3 for 12.Qg4: "Qg4 was better -- goes after..." lacked its "it".
@@ -148,6 +161,7 @@ class RungsTest {
         assertTrue(text, text.startsWith("That one cost you: Qg4 was better -- it goes after their pawn on g7"))
     }
 
+    /** The "a long mate" case of `test_a_line_is_read_as_far_as_an_ear_can_follow`. */
     @Test
     fun aLongMateIsReadAsFarAsAnEarCanFollow() {
         // Tai's game g02, 53.Kc5 for 53.b5: a mate in twelve, sixteen plies of it.
@@ -158,6 +172,7 @@ class RungsTest {
         assertEquals("b5 forces mate: b5 Ka8 Ne5 Nf8 b6, and mate follows", IdeaWords.why(idea, board, describe))
     }
 
+    /** `test_a_forcing_capture_points_at_what_it_takes`. */
     @Test
     fun aForcingCapturePointsAtWhatItTakes() {
         // Tai's game g04, 8.d5 for 8.dxe5: the focus was "your king is still in the centre".

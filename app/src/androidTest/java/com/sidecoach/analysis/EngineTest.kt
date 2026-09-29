@@ -95,7 +95,7 @@ class EngineTest {
                 }
                 assertTrue("$what: the depth was not reported", top.depth > 0)
                 if (best == "a1a8") {
-                    // `test_mate_is_reported_as_a_distance_and_a_certain_score`.
+                    // A mate is a distance and a certain score (`test_a_real_game_is_assessed_end_to_end`).
                     assertEquals("$what: the mate distance", 1, top.mate)
                     assertEquals("$what: a mate is a certain score", 1.0, top.expectedScore, 0.0)
                 }
@@ -150,7 +150,10 @@ class EngineTest {
         }
     }
 
-    /** `test_the_engine_model_can_be_asked_for_instead`: the engine's own numbers, (W + D/2) / 1000. */
+    /**
+     * The engine's own numbers when asked, (W + D/2) / 1000, above the human curve's
+     * (`test_lines_come_back_from_the_movers_point_of_view_on_the_curve_asked_for`).
+     */
     @Test
     fun theEngineModelCanBeAskedForInstead() {
         val engine = engine()
@@ -338,8 +341,9 @@ class EngineTest {
             )
             assertTrue("white is not winning", white[0].expectedScore > 0.7)
             assertTrue("black is not losing", black[0].expectedScore < 0.3)
-            // `test_lines_come_back_from_the_movers_point_of_view`: the engine's own numbers,
-            // and the centipawns from the mover's side too, at the depth asked for.
+            // `test_lines_come_back_from_the_movers_point_of_view_on_the_curve_asked_for`: the
+            // engine's own numbers, and the centipawns from the mover's side too, at the depth
+            // asked for.
             for ((lines, sign) in listOf(white to 1, black to -1)) {
                 val top = lines[0]
                 assertEquals("the win-draw-loss numbers", 1000, top.wdl!!.toList().sum())

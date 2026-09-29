@@ -241,8 +241,9 @@ def desktop_tests() -> dict:
     """Every call `tests/test_named.py` and `tests/test_inventory.py` make to the named and
     inventory functions (and to check_draft), with what the desktop answered: their positions
     -- a pinned piece attacking and defending, a king in check, a pinned controller, hanging
-    and undefended, a line recited from the examined one, the inventory's hanging pieces, pins,
-    batteries and forks -- replayed on the phone (TG-04, TG-05)."""
+    and undefended, a line recited from the examined one, the inventory's lines (hanging
+    pieces, pins, forks, checks, captures, the check in force), its pins, batteries and forks
+    -- replayed on the phone (TG-04, TG-05)."""
     import importlib
 
     from desktop_tests import desktop_tests
@@ -346,6 +347,11 @@ def desktop_tests() -> dict:
         "skewer_target": lambda board, sq: {"fen": board_arg(board), "square": chess.square_name(sq)},
         "batteries": lambda board, colour: {"fen": board_arg(board), "white": colour == chess.WHITE},
         "forks_in_place": lambda board, colour: {"fen": board_arg(board), "white": colour == chess.WHITE},
+        # The inventory's lines, the harness's "On the board (complete lists)": test_inventory's
+        # own calls were dropped until the parity audit of 2026-09-29.
+        "inventory_lines": lambda board, user_colour: {
+            "fen": board_arg(board), "white": user_colour == chess.WHITE
+        },
     }
     for module_name in ("tests.test_named", "tests.test_inventory"):
         tests = importlib.import_module(module_name)

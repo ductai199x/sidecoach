@@ -11,8 +11,12 @@ green or the brown board in turn, learned from its start position and read on
 - a middlegame dressed the way a game dresses it: the last move highlighted, the king in
   check with its glow, a piece dragged under the hover outline, a piece selected with its
   legal-move dots, and arrows over squares and pieces, in one of the four arrow colours (the
-  colour turns with the set, so each colour meets eleven sets);
-- for a few sets, the game-over dialog over the middle of the board, faded in or opaque.
+  colour turns with the set, so each colour meets eleven sets); and since the parity audit
+  (2026-09-29) the move's badge over its piece, a green or a teal tint over a pawn (the tint
+  turns with every other set), and a hover outline a pixel thin;
+- for a few sets, the game-over dialog over the middle of the board, faded in or opaque;
+- and one set on a board of 641 px, a fractional pitch (80.125 a square), learned and read at
+  it: the case carries its own `region` and `cell_px`.
 
 For each model: the square colours, the set's fills and outlines, the palette (k-means,
 seeded: `cv2.setRNGSeed(SEED)` just before the start position is learned, as the Kotlin
@@ -57,8 +61,14 @@ from sidecoach.vision import pieces  # noqa: E402
 from sidecoach.vision.coordinates import learn_rank_labels, read_bottom_side  # noqa: E402
 from sidecoach.vision.theme_cache import palette_key, sample_palette  # noqa: E402
 from sidecoach.vision.pieces import CELL, ThemeModel, silhouette  # noqa: E402
-from sidecoach.vision.squares import BoardGeometry, square_at  # noqa: E402
-from tests.synth import ARROWS, PIECE_STYLES, synthetic_board  # noqa: E402
+from sidecoach.vision.squares import BoardGeometry, row_col, square_at  # noqa: E402
+from tests.synth import (  # noqa: E402
+    ARROWS,
+    PIECE_STYLES,
+    blend_outline,
+    blend_rect,
+    synthetic_board,
+)
 
 OUT = Path(__file__).resolve().parents[1] / "app" / "src" / "androidTest" / "assets" / "cells"
 SEED = 20260926
@@ -72,7 +82,9 @@ DIALOG = {"anarcandy": 0.6, "cburnett": 0.6, "merida": 1.0, "pixel": 1.0}
 
 def dressed() -> tuple[chess.Board, dict]:
     """The middlegame and what is drawn over it: 1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6 4.Ng5 d5
-    5.exd5 Na5 6.Bb5+ -- Black in check, the bishop's move highlighted."""
+    5.exd5 Na5 6.Bb5+ -- Black in check, the bishop's move highlighted, and the move's badge
+    over the bishop (the parity audit, 2026-09-29). `overdraw` adds what `synthetic_board`
+    does not draw."""
     board = chess.Board()
     for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "Ng5", "d5", "exd5", "Na5"):
         board.push_san(san)
@@ -84,7 +96,48 @@ def dressed() -> tuple[chess.Board, dict]:
         # Black's queen dragged from d8 over d6 (empty), a little off the square's middle.
         "dragging": (chess.D8, chess.D6, 0.12, 0.06),
         "arrows": (chess.Move.from_uci("g5f7"), chess.Move.from_uci("a5c4"), chess.Move.from_uci("h2h4")),
+        # The move's classification badge over the piece that made it.
+        "badge": (chess.B5, "best"),
     }
+
+
+# Desktop test_pieces.py's TINTS that are neither yellow nor red: read through, named "other".
+TINTS = {"green": (76, 182, 129), "teal": (128, 128, 0)}
+
+
+def overdraw(frame: np.ndarray, x0: int, y0: int, cell: int, tint: str) -> None:
+    """What the parity audit (2026-09-29) found no cell fixture drew, from desktop test_pieces.py:
+    a green or teal tint over the pawn on c2, at half strength
+    (`test_tints_of_any_hue_read_through_and_outlines_read_foreign`), and a hover outline a
+    pixel thin round the empty g3, away from the drag's own
+    (`test_a_hover_outline_of_any_thickness_is_seen_and_a_lock_off_by_a_pixel_sees_none`)."""
+    for square, draw in (
+        (chess.C2, lambda a, b, c, d: blend_rect(frame, a, b, c, d, TINTS[tint], 0.5)),
+        (chess.G3, lambda a, b, c, d: blend_outline(frame, a, b, c, d, (255, 255, 255), 1.0, 1, 1)),
+    ):
+        r, c = row_col(square, Side.WHITE)
+        draw(x0 + c * cell, y0 + r * cell, x0 + (c + 1) * cell, y0 + (r + 1) * cell)
+
+
+# One board at a fractional pitch (desktop test_pieces.py's
+# `test_a_fractional_cell_never_wears_a_phantom_hover_outline`, test_board_sizes.py): 641 px for
+# eight squares, 80.125 a square, drawn at 81 and shrunk as a screen scales it.
+FRACTIONAL = ("cburnett", "brown", 641)
+
+
+def fractional_frame(style: str, theme: str, board: chess.Board, tint: str | None = None, **drawn) -> np.ndarray:
+    side = FRACTIONAL[2]
+    exact = synthetic_board(
+        width=648, height=648, x0=0, y0=0, cell=81, theme=theme, style=style, board=board,
+        coordinates=True, seed=7, **drawn,
+    )  # fmt: skip
+    if tint is not None:
+        overdraw(exact, 0, 0, 81, tint)
+    frame = np.full((side + 2 * MARGIN, side + 2 * MARGIN, 3), 40, dtype=np.uint8)
+    frame[MARGIN : MARGIN + side, MARGIN : MARGIN + side] = cv2.resize(
+        exact, (side, side), interpolation=cv2.INTER_AREA
+    )
+    return frame
 
 
 def dialog_board() -> chess.Board:
@@ -174,29 +227,40 @@ def main() -> None:
         old.unlink()
     geometry = BoardGeometry(Region(MARGIN, MARGIN, 8 * CELL_PX, 8 * CELL_PX), float(CELL_PX))
     middlegame, drawn = dressed()
+    # The board as drawn: the dragged queen has left d8 and hangs over d6.
+    shown = middlegame.copy(stack=False)
+    queen = shown.remove_piece_at(chess.D8)
+    shown.set_piece_at(chess.D6, queen)
     cases = []
-    for i, style in enumerate(sorted(PIECE_STYLES)):
-        theme = THEMES[i % 2]
+    runs = [(i, style, THEMES[i % 2], False) for i, style in enumerate(sorted(PIECE_STYLES))]
+    style, theme, _ = FRACTIONAL
+    runs.append((len(runs), style, theme, True))
+    for i, style, theme, fractional in runs:
         colour = COLOURS[i % len(COLOURS)]
-        start_board = chess.Board()
-        start = frame_of(style, theme, start_board)
+        tint = tuple(TINTS)[(i // 2) % len(TINTS)]
+        name = f"{style}-{FRACTIONAL[2]}" if fractional else style
+        if fractional:
+            side = FRACTIONAL[2]
+            here = BoardGeometry(Region(MARGIN, MARGIN, side, side), side / 8)
+            start = fractional_frame(style, theme, chess.Board())
+            dressed_frame = fractional_frame(style, theme, middlegame, tint, arrow_colour=colour, **drawn)
+        else:
+            here = geometry
+            start = frame_of(style, theme, chess.Board())
+            dressed_frame = frame_of(style, theme, middlegame, arrow_colour=colour, **drawn)
+            overdraw(dressed_frame, MARGIN, MARGIN, CELL_PX, tint)
         cv2.setRNGSeed(SEED)
-        model = ThemeModel.from_start_position(start, geometry, Side.WHITE)
-        assert model is not None, f"{style}/{theme}: no model"
-        write(f"{style}-start.png", start)
-        dressed_frame = frame_of(style, theme, middlegame, arrow_colour=colour, **drawn)
-        # The board as drawn: the dragged queen has left d8 and hangs over d6.
-        shown = middlegame.copy(stack=False)
-        queen = shown.remove_piece_at(chess.D8)
-        shown.set_piece_at(chess.D6, queen)
+        model = ThemeModel.from_start_position(start, here, Side.WHITE)
+        assert model is not None, f"{name}/{theme}: no model"
+        write(f"{name}-start.png", start)
         boards = [
             {
-                "file": write(f"{style}-dressed.png", dressed_frame),
-                "what": f"highlight, check, drag, {colour} arrows",
-                "cells": cells_of(model, dressed_frame, geometry, shown),
+                "file": write(f"{name}-dressed.png", dressed_frame),
+                "what": f"highlight, check, drag, {colour} arrows, a badge, a {tint} tint, a thin hover",
+                "cells": cells_of(model, dressed_frame, here, shown),
             }
         ]
-        if style in DIALOG:
+        if style in DIALOG and not fractional:
             under = dialog_board()
             alpha = DIALOG[style]
             covered = frame_of(style, theme, under, dialog=alpha, selected=chess.F3)
@@ -204,17 +268,22 @@ def main() -> None:
                 {
                     "file": write(f"{style}-dialog.png", covered),
                     "what": f"dialog at {alpha}, knight selected",
-                    "cells": cells_of(model, covered, geometry, under),
+                    "cells": cells_of(model, covered, here, under),
                 }
             )
-        labels = learn_rank_labels(start, geometry, Side.WHITE)
-        bottom = read_bottom_side(dressed_frame, geometry, labels)
-        sampled = sample_palette(dressed_frame, geometry)
+        labels = learn_rank_labels(start, here, Side.WHITE)
+        bottom = read_bottom_side(dressed_frame, here, labels)
+        sampled = sample_palette(dressed_frame, here)
+        extra = {}
+        if fractional:
+            # Its own geometry: the board and the pitch, a fraction of a pixel.
+            extra = {"region": [MARGIN, MARGIN, FRACTIONAL[2], FRACTIONAL[2]], "cell_px": FRACTIONAL[2] / 8}
         cases.append(
             {
                 "style": style,
                 "theme": theme,
-                "start": f"{style}-start.png",
+                **extra,
+                "start": f"{name}-start.png",
                 "dressed": boards[0]["file"],
                 "palette_key": palette_key(model.light_bg, model.dark_bg),
                 "sampled": None if sampled is None else [[r6(v) for v in c] for c in sampled],
@@ -240,7 +309,13 @@ def main() -> None:
             }
         )
         drawn_cells = sum(1 for b in boards for cell in b["cells"] if cell[15])
-        print(f"{style:15s} {theme:5s} {colour:6s} palette {len(model.palette):2d}, drawn {drawn_cells}")
+        cells = boards[0]["cells"]
+        # c2 (row 6, column 2) under its tint, g3 (row 5, column 6) in its thin outline.
+        c2, g3 = cells[6 * 8 + 2], cells[5 * 8 + 6]
+        print(
+            f"{name:15s} {theme:5s} {colour:6s} palette {len(model.palette):2d}, drawn {drawn_cells}; "
+            f"{tint} c2 {c2[0]} {c2[1]} tint {c2[14]} settled {c2[9]}; g3 {g3[0]} hover {g3[10]}"
+        )
     index = {
         "seed": SEED,
         "cell": CELL_PX,

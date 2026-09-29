@@ -47,9 +47,9 @@ import java.util.concurrent.TimeUnit
  *
  * The analyser lets go of the withdrawn plies; the engine glue passes on nothing about a move
  * or position the game has left; and the recorded scenarios -- a takeback of two plies, ten
- * taken back quickly with the pieces sliding, all at once, and a board left unexplained for
- * long before eleven are taken back -- run through the ported pipeline, the glue and the
- * coach, which must count the same plies as the reconciler throughout.
+ * taken back quickly with the pieces sliding, a frame each, all at once, and a board left
+ * unexplained for long before eleven are taken back -- run through the ported pipeline, the
+ * glue and the coach, which must count the same plies as the reconciler throughout.
  */
 @RunWith(AndroidJUnit4::class)
 class TakebackTest {
@@ -78,10 +78,16 @@ class TakebackTest {
     /**
      * A moment per search, as a real engine takes, and stopped as a real one is
      * ([Engine.interrupt]): none begins once stopped, and one under way ends within a moment.
+     * While [watching] -- from the moment the glue is told of a takeback -- it notes the
+     * position each search begins on (`_SlowEngine.asked`).
      */
-    private class SlowEngine(private val ms: Long) : QuietEngine() {
+    private class SlowEngine(@Volatile var ms: Long) : QuietEngine() {
+        @Volatile var watching = false
+        val asked: MutableList<String> = java.util.Collections.synchronizedList(ArrayList<String>())
+
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
             if (interruptibleNow && stopped) throw Interrupted()
+            if (watching) asked.add(board.boardFen())
             val end = SystemClock.elapsedRealtime() + ms
             while (SystemClock.elapsedRealtime() < end) {
                 if (interruptibleNow && stopped) throw Interrupted()
@@ -173,13 +179,23 @@ class TakebackTest {
      * The recorded scenarios through the ported pipeline, the glue and the coach, the engine
      * a phone's speed behind: the reconciler, the glue and the coach count the same plies, and
      * nothing drained once a takeback is known is about a withdrawn move or position.
+     *
+     * The three of `test_ten_plies_taken_back_quickly` (stepwise-sliding, a-frame-each,
+     * one-jump) as the desktop plays them: searches of [FAST_MS] through the game, the engine
+     * waited for, then [SEARCH_MS] a search for the last two plies and the takebacks; the
+     * replacement's verdict must come within 2.2 searches of the takeback being told (the rest
+     * of the search under way, then its own), and the withdrawn position is never searched
+     * after it (the parity audit, 2026-09-29: neither was checked here). The desktop times it
+     * from the frame the replacement is first shown on; here from the takeback being told, so
+     * the phone's time to read a frame is not counted against the engine.
      */
     @Test
     fun theScenariosLeaveTheGameTheGlueAndTheCoachAgreeing() {
         val context = InstrumentationRegistry.getInstrumentation().context
         val runs = JSONObject(context.assets.open("pipeline/index.json").bufferedReader().use { it.readText() })
             .getJSONArray("runs")
-        val wanted = setOf("takeback-brown", "quick-takebacks-green", "takeback-jump-green", "unexplained-green")
+        val quickly = setOf("quick-takebacks-green", "takebacks-a-frame-each-green", "takeback-jump-green")
+        val wanted = setOf("takeback-brown", "unexplained-green") + quickly
         val failures = ArrayList<String>()
         var ran = 0
         CellEmbedder.load(InstrumentationRegistry.getInstrumentation().targetContext).use { net ->
@@ -188,7 +204,8 @@ class TakebackTest {
                 val name = run.getString("name")
                 if (name !in wanted) continue
                 ran += 1
-                val engine = SlowEngine(250)
+                val quick = name in quickly
+                val engine = SlowEngine(if (quick) FAST_MS else 250L)
                 val analyser = Analyser(GameAnnotator(engine, depth = 6, withThreats = false))
                 analyser.start()
                 val assessing = Assessing(analyser)
@@ -206,21 +223,57 @@ class TakebackTest {
                         coach.onEvent(said, ts)
                     }
                 }
+                // The frame Qb5+ is first shown on, the 21st ply (the desktop's `c.play("Qb5+",
+                // "c6")` after `c.wait_for_engine()`): the state the python first told it on.
+                val slowFrom = if (quick) firstShown(frames, "MovePlayed 21 ") else -1
+                var withdrawn: String? = null // the position after ply 22, which the takeback withdraws
+                var told = -1L // when the glue was told of the takeback
+                var waited: Double? = null
                 for (f in 0 until frames.length()) {
                     val frame = frames.getJSONObject(f)
                     val file = frame.getString("file")
                     val mat = decoded.getOrPut(file) { load(file) }
                     val ts = frame.getDouble("ts")
+                    if (f == slowFrom) {
+                        // `c.wait_for_engine()`, then a phone's speed from here on.
+                        val until = System.currentTimeMillis() + 30_000
+                        while (analyser.pending != 0 && System.currentTimeMillis() < until) {
+                            drain(ts)
+                            Thread.sleep(10)
+                        }
+                        engine.ms = SEARCH_MS
+                    }
                     val pixels = FramePixels.of(mat)
                     gate.region = ChangeGate.boardGate(pipeline.board, pixels.width, pixels.height)
                     val changed = gate.changed(pixels, ts)
+                    var replaced = false
                     for (event in pipeline.process(mat, ts, changed, f, pixels)) {
                         events += event
                         assessing.submit(event)
                         coach.onEvent(event, ts)
-                        if (event is Takeback) knownAt = drained.size
+                        if (event is Takeback) {
+                            knownAt = drained.size
+                            if (quick) {
+                                // Recorded from the moment the analyser is told (`armed`, `watching`).
+                                engine.watching = true
+                                told = SystemClock.elapsedRealtime()
+                            }
+                        }
+                        if (event is MovePlayed && event.ply == 22) withdrawn = event.fenAfter.split(" ")[0]
+                        if (event is MovePlayed && event.ply == 11 && event.uci == "e4e5" && told >= 0) replaced = true
                     }
                     drain(ts)
+                    if (replaced && waited == null) {
+                        // 6.e5 in place of 6.cxd4: its verdict, waited for as the desktop's test waits.
+                        val deadline = told + 10_000
+                        while (drained.none { it is MoveAssessment && it.ply == 11 && it.uci == "e4e5" } &&
+                            SystemClock.elapsedRealtime() < deadline
+                        ) {
+                            drain(ts)
+                            Thread.sleep(5)
+                        }
+                        waited = (SystemClock.elapsedRealtime() - told) / 1000.0
+                    }
                     // The frames come at the capture's own pace, not all at once.
                     Thread.sleep(15)
                 }
@@ -260,22 +313,50 @@ class TakebackTest {
                     }
                 }
                 val takebacks = events.filterIsInstance<Takeback>().map { it.plies }
+                if (quick) {
+                    val took = waited
+                    if (took == null || took >= 2.2 * SEARCH_MS / 1000.0) {
+                        failures += "$name: the replacement's verdict took ${took ?: "forever"} s " +
+                            "(searches of $SEARCH_MS ms, the takebacks $takebacks)"
+                    }
+                    if (withdrawn == null) {
+                        failures += "$name: no 22nd ply to withdraw"
+                    } else if (withdrawn in synchronized(engine.asked) { engine.asked.toList() }) {
+                        failures += "$name: the withdrawn position $withdrawn was searched after the takeback"
+                    }
+                }
                 val notes = events.count { it is Unexplained }
                 Log.i(
                     "sidecoach.state",
                     "$name: takebacks $takebacks, $notes unexplained, ${game.size} plies agreed, " +
-                        "${drained.size} drained, ${analyser.withdrawn} withdrawn",
+                        "${drained.size} drained, ${analyser.withdrawn} withdrawn" +
+                        (waited?.let { ", the replacement's verdict in ${"%.2f".format(it)} s" } ?: ""),
                 )
             }
         }
-        assertEquals("the takeback scenarios in the fixtures", 4, ran)
+        assertEquals("the takeback scenarios in the fixtures", 5, ran)
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /**
+     * The first frame of the state the python first told [prefix] on: the frame it was told on,
+     * and back while the frames before it show the same file.
+     */
+    private fun firstShown(frames: org.json.JSONArray, prefix: String): Int {
+        var at = (0 until frames.length()).firstOrNull { f ->
+            val told = frames.getJSONObject(f).optJSONArray("events") ?: return@firstOrNull false
+            (0 until told.length()).any { told.getString(it).startsWith(prefix) }
+        } ?: return -1
+        val file = frames.getJSONObject(at).optString("file")
+        while (at > 0 && frames.getJSONObject(at - 1).optString("file") == file) at -= 1
+        return at
     }
 
     /**
      * The move list's badges follow the game: a takeback's withdrawn moves take theirs with
      * them -- a replacement at the same ply showed the withdrawn move's -- and a resync, which
-     * numbers the plies again, clears them all (`test_the_move_list_badges_follow_...`).
+     * numbers the plies again, clears them all
+     * (`test_the_move_list_badges_follow_takebacks_and_resyncs`).
      */
     @Test
     fun theMoveListBadgesFollowTakebacksAndResyncs() {
@@ -326,6 +407,12 @@ class TakebackTest {
     }
 
     companion object {
+        /** A search through the game, as the desktop's `Chain` gives it (0.03 s). */
+        private const val FAST_MS = 30L
+
+        /** A search from the last two plies on, a phone's (`test_ten_plies_taken_back_quickly`'s 0.4 s). */
+        private const val SEARCH_MS = 400L
+
         @JvmStatic
         @BeforeClass
         fun loadOpenCv() {

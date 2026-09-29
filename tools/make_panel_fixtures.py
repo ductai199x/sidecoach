@@ -6,7 +6,9 @@ page's state from them. That part is pure: the events go in through `_dispatch_g
 `_dispatch_engine` and the records come out. So a scripted game is fed through the real
 engine here and every record it wrote, and the state it kept, goes into the fixture; the
 phone feeds the same events to `PanelEngine.onGameEvent` / `onEngineEvents` and must write
-the same lines.
+the same lines. The coach's messages too (`_coach_meta`): each put in an offline coach's
+record, with the board's ply and the voice as the case sets them, and the lines written for
+it; the phone puts them in its `CoachRunner`'s coach and drains it.
 
 With them: `log.elide` over awkward whitespace, `outcome_result` and `end_game`'s refusal,
 what `Settings.model_validate` says of a save that does not fit (the settings page shows
@@ -197,6 +199,18 @@ def moves_game() -> list[Any]:
             threats=[],
             opening="C60 Ruy Lopez",
         ),
+        # Measured early, the full depth to follow: its "early ply" line, at debug, whatever
+        # its signals (the parity audit, 2026-09-29).
+        Analysis(
+            game_id=GAME,
+            fen=after_five.fen(),
+            ply=5,
+            lines=[Line(moves=["a7a6", "b5a4"], depth=12, expected_score=0.4625)],
+            decisive=True,
+            only_move=True,
+            threats=["b5c6"],
+            provisional=True,
+        ),
     ]
     steps += [
         Takeback(game_id=GAME, plies=2, fen=befores[6]),
@@ -256,6 +270,191 @@ def dispatch_fixture() -> list[dict[str, Any]]:
                         k: state.get(k)
                         for k in ("labels", "game_id", "user_side", "kind", "clock")
                     },
+                }
+            )
+        return json.loads(json.dumps(out))
+
+
+class _Voice:
+    """A voice that writes down what it is asked to do (test_panel_voice_policy's FakeTTS)."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.busy = False
+
+    def healthcheck(self) -> tuple[bool, str]:
+        return True, "fake"
+
+    def say(self, text: str) -> None:
+        self.calls.append("say:" + text)
+
+    def stop(self) -> None:
+        self.calls.append("stop")
+
+
+LONG = "Your knight on f5 is loose; the queen check on g6 wins it. What defends it?"
+
+# The coach's messages as the panel logs them (`_coach_meta`): each with the board's ply, the
+# voice busy or not and what it is saying, a model failure to report, and the message itself
+# with what it was checked against and the calls behind it. What the voice then does decides
+# the line's tail: spoken, streamed, "not spoken: board moved on", "not spoken: voice busy",
+# "cut in".
+COACH_CASES: list[dict[str, Any]] = [
+    {
+        "label": "the model's reply rejected, the quick answer standing",
+        "ply_now": 6, "busy": False, "voicing": None, "failed": None,
+        "spoken": {
+            "text": "", "trigger": "user_ask", "level": 1, "ply": 6, "fen": None,
+            "problems": ["empty reply"], "attempts": 2, "streamed": False, "leaks": [], "notes": [],
+            "calls": [
+                {"raw": "", "stats": {"finish_reason": "stop", "completion_tokens": 0, "elapsed_s": 1.25},
+                 "candidates": 0, "passed": 0, "prompt": "# Task\nThey asked for a hint."},
+                {"raw": "[p=1.0] Given", "stats": {"finish_reason": "length", "completion_tokens": 400,
+                                                   "elapsed_s": 3.456, "first_token_s": 0.75},
+                 "candidates": 0, "passed": 0, "prompt": "x" * 7000},
+            ],
+        },
+    },
+    {
+        "label": "a draft rejected, the template said",
+        "ply_now": 7, "busy": False, "voicing": None, "failed": None,
+        "spoken": {
+            "text": "Qxf7# was better -- it is mate, the king has no square.", "trigger": "post_mistake",
+            "level": 4, "ply": 6, "fen": "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+            "problems": ["Qxf7: not on the board"], "attempts": 2, "streamed": False, "leaks": [], "notes": [],
+            "calls": [
+                {"raw": "[p=1.0] Qxf7 wins.", "stats": {"finish_reason": "stop", "completion_tokens": 12},
+                 "candidates": 1, "passed": 0, "prompt": ""},
+            ],
+        },
+    },
+    {
+        "label": "a stream cut short",
+        "ply_now": 7, "busy": False, "voicing": None, "failed": None,
+        "spoken": {
+            "text": "A fine move.", "trigger": "post_move", "level": 4, "ply": 7, "fen": None,
+            "problems": ["the rook on f7 is not there"], "attempts": 1, "streamed": True,
+            "leaks": [], "notes": [],
+            "calls": [
+                {"raw": "[p=0.5] A fine move. Your rook on f7 is strong.",
+                 "stats": {"finish_reason": "stopped", "first_token_s": 0.4,
+                           "stream_problems": ["the rook on f7 is not there"]},
+                 "candidates": 1, "passed": 0, "prompt": ""},
+            ],
+        },
+    },
+    {
+        "label": "a hint the board has left",
+        "ply_now": 6, "busy": False, "voicing": None, "failed": None,
+        "spoken": {
+            "text": "Look at the long diagonal.", "trigger": "stuck", "level": 1, "ply": 4, "fen": None,
+            "problems": [], "attempts": 1, "streamed": False, "leaks": [], "notes": [], "calls": [],
+        },
+    },
+    {
+        "label": "a short word while the voice is busy",
+        "ply_now": 8, "busy": True, "voicing": ["post_move", 7], "failed": None,
+        "spoken": {
+            "text": "Good.", "trigger": "post_move", "level": 4, "ply": 8, "fen": None,
+            "problems": [], "attempts": 0, "streamed": False, "leaks": [], "notes": [], "calls": [],
+        },
+    },
+    {
+        "label": "a lesson cutting in over a stale word, its leak and its form noted",
+        "ply_now": 8, "busy": True, "voicing": ["post_move", 5], "failed": None,
+        "spoken": {
+            "text": LONG, "trigger": "post_mistake", "level": 4, "ply": 8, "fen": None,
+            "problems": [], "attempts": 1, "streamed": False,
+            "leaks": ["withheld square f7"], "notes": ["too long: 5 sentences, 3 asked for"],
+            "calls": [],
+        },
+    },
+    {
+        "label": "a question spoken, and a model call that failed",
+        "ply_now": 8, "busy": False, "voicing": None, "failed": "RuntimeError: 503: down",
+        "spoken": {
+            "text": "Their king has one square left. Which check takes it?", "trigger": "decisive_question",
+            "level": 1, "ply": 8, "fen": None, "problems": [], "attempts": 1, "streamed": False,
+            "leaks": [], "notes": [], "calls": [],
+        },
+    },
+    {
+        "label": "the review, with no ply",
+        "ply_now": 9, "busy": False, "voicing": None, "failed": None,
+        "spoken": {
+            "text": "You won in 4 moves.", "trigger": "review", "level": 4, "ply": None, "fen": None,
+            "problems": [], "attempts": 1, "streamed": False, "leaks": [], "notes": [], "calls": [],
+        },
+    },
+]
+
+
+def coach_meta_fixture() -> list[dict[str, Any]]:
+    """The coach's per-message lines (`_coach_meta`, the phone's `CoachRunner.drain`): each
+    case's message put in an offline coach's record, with the panel's ply and voice as the case
+    sets them, and the "coach" records it wrote -- "model reply rejected", "draft rejected ->
+    template", "cut short", "not spoken: ...", "cut in", the notes, each model reply's figures,
+    "LLM call failed" (the parity audit, 2026-09-29)."""
+    from types import SimpleNamespace
+
+    from sidecoach.coach.coach import Coach, ModelCall, Spoken
+    from sidecoach.events import CoachMessage, DisclosureLevel, Trigger
+    from sidecoach.llm.offline import OfflineProvider
+
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = PanelEngine(
+            Settings(data_dir=Path(tmp), voice=VoiceSettings()),
+            analysis=False,
+            coach=False,
+            frame_source=iter(()),
+        )
+        voice = _Voice()
+        engine._tts = voice  # type: ignore[assignment]
+        coach = Coach(OfflineProvider())
+        coaching = SimpleNamespace(coach=coach)
+        engine._coaching = coaching  # type: ignore[assignment]
+        seen, failures = 0, 0
+        out = []
+        for case in COACH_CASES:
+            engine._state["ply"] = case["ply_now"]
+            voice.busy = case["busy"]
+            engine._voicing = tuple(case["voicing"]) if case["voicing"] else None  # type: ignore[assignment]
+            s = case["spoken"]
+            message = CoachMessage(
+                text=s["text"],
+                level=DisclosureLevel(s["level"]),
+                trigger=Trigger(s["trigger"]),
+                game_id=GAME,
+                ply=s["ply"],
+                fen=s["fen"],
+            )
+            coach.spoken.append(
+                Spoken(
+                    message=message,
+                    level=DisclosureLevel(s["level"]),
+                    problems=list(s["problems"]),
+                    attempts=s["attempts"],
+                    calls=[
+                        ModelCall(c["raw"], dict(c["stats"]), c["candidates"], c["passed"], c["prompt"])
+                        for c in s["calls"]
+                    ],
+                    streamed=s["streamed"],
+                    leaks=list(s["leaks"]),
+                    notes=list(s["notes"]),
+                )
+            )
+            if case["failed"]:
+                coach.speaker.failures += 1
+                coach.speaker.last_error = case["failed"]
+            before = engine._log.cursor
+            seen, failures = engine._coach_meta(coaching, seen, failures)
+            records = [r for r in engine._log.since(before) if r["chan"] == "coach"]
+            out.append(
+                {
+                    **case,
+                    "records": [{k: r[k] for k in ("chan", "level", "text", "data")} for r in records],
                 }
             )
         return json.loads(json.dumps(out))
@@ -488,6 +687,7 @@ def routes_fixture() -> list[dict[str, Any]]:
 def main() -> None:
     payload = {
         "dispatch": dispatch_fixture(),
+        "coach_meta": coach_meta_fixture(),
         "elide": [{"text": t, "limit": n, "out": elide(t, n)} for t, n in ELIDES],
         "outcomes": outcome_fixture(),
         "settings": settings_fixture(),

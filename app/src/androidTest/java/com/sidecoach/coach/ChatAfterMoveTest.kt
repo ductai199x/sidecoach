@@ -245,7 +245,10 @@ class ChatAfterMoveTest {
         messages(coach)
         val directive = directive(provider)
         assertTrue(directive, "They are answering the question you just asked" in directive)
-        assertTrue(directive, "then one question" !in directive)
+        // No question offered on top of the answer: "Ask nothing more", and not the generic
+        // answer's "-- with a question, if that serves" (the parity audit, 2026-09-29).
+        assertTrue(directive, "Ask nothing more" in directive)
+        assertTrue(directive, "with a question, if that serves" !in directive)
         // Once answered, the thread is closed: words after the coach's reply answer nothing.
         assertTrue(!coach.answeringOurQuestion("ok"))
     }

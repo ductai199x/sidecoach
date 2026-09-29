@@ -45,10 +45,9 @@ class ThreatsTest {
     }
 
     /**
-     * `test_the_engine_sees_the_position_with_the_move_handed_over` and
-     * `test_threat_moves_are_the_first_move_of_each_line`: one call, on the position with the
-     * opponent to move and no null move in its history, depth and lines passed through, the
-     * caller's board untouched.
+     * `test_the_engine_sees_the_position_with_the_move_handed_over`: one call, on the position
+     * with the opponent to move and no null move in its history, depth and lines passed
+     * through, the caller's board untouched, and the threats the first move of each line.
      */
     @Test
     fun theEngineSeesThePositionWithTheMoveHandedOver() {
@@ -64,19 +63,21 @@ class ThreatsTest {
     }
 
     /**
-     * `test_no_threat_and_no_engine_call_when_in_check` and `..._when_the_game_is_over`: you
-     * cannot pass out of check, and a finished game carries no threat to ask about.
+     * `test_no_threat_and_no_engine_call_in_check_or_when_the_game_is_over`: you cannot pass
+     * out of check, and a finished game carries no threat to ask about. The finished game is
+     * the desktop's stalemate, not in check: a checkmate is caught by the in-check guard
+     * first, so the game-over guard was never reached (the parity audit, 2026-09-29).
      */
     @Test
     fun noThreatAndNoEngineCallInCheckOrWhenTheGameIsOver() {
-        for (fen in listOf(
-            "4k3/8/8/8/8/8/4q3/4K3 w - - 0 1",
-            // Fool's mate: 1. f3 e5 2. g4 Qh4#. White is to move and mated.
-            "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3",
-        )) {
+        val inCheck = Board("4k3/8/8/8/8/8/4q3/4K3 w - - 0 1")
+        assertTrue("in check, the game not over", inCheck.isCheck() && !inCheck.isGameOver())
+        val stalemate = Board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
+        assertTrue("stalemate, not in check", stalemate.isStalemate() && !stalemate.isCheck())
+        for (board in listOf(inCheck, stalemate)) {
             val engine = RecordingEngine(CANNED)
-            assertEquals(fen, emptyList<Line>(), threatLines(engine, Board(fen), depth = 8))
-            assertEquals("the engine is never asked: $fen", 0, engine.seen.size)
+            assertEquals(board.fen(), emptyList<Line>(), threatLines(engine, board, depth = 8))
+            assertEquals("the engine is never asked: ${board.fen()}", 0, engine.seen.size)
         }
     }
 

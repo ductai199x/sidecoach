@@ -13,10 +13,12 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * `tests/test_allowed.py` (desktop 25a3333), case for case: what a mistake allowed (Tai's own
- * games, 2026-09-24) -- the lesson after a mistake says what the move let the opponent do, their
- * best line in the position it left, read by the same idea reader -- and a win far down a line
- * is not read out move by move.
+ * The cases of `tests/test_allowed.py` as desktop 25a3333 wrote them: what a mistake allowed
+ * (Tai's own games, 2026-09-24) -- the lesson after a mistake says what the move let the opponent
+ * do, their best line in the position it left, read by the same idea reader (the first three are
+ * rows of `test_the_lesson_says_what_a_mistake_allowed`) -- and a win far down a line is not read
+ * out move by move. The last two are `tests/test_rungs.py`'s since the consolidations of
+ * 2026-09-28/29: each names its twin.
  */
 @RunWith(AndroidJUnit4::class)
 class AllowedTest {
@@ -64,6 +66,7 @@ class AllowedTest {
         assertNull(IdeaWords.allowed(Board(fen), analysis(fen, "Kd7 Kd2 Kd6 Kd3", score = 0.5), "e2"))
     }
 
+    /** `test_the_lesson_says_what_the_move_allowed`. */
     @Test
     fun theLessonSaysWhatTheMoveAllowed() {
         val fen = "r2qk2r/p1p1bppp/2p5/4p3/2b1P3/2N4P/PPP2PP1/R1BQR1K1 w kq - 0 12"
@@ -78,6 +81,7 @@ class AllowedTest {
         assertTrue(text, "After Be3, Qxd1 wins your queen." in text)
     }
 
+    /** The "a win far down the line" case of `test_a_line_is_read_as_far_as_an_ear_can_follow` in tests/test_rungs.py. */
     @Test
     fun aWinFarDownTheLineIsNotReadOutMoveByMove() {
         // g01, 7.Be3 for 7.h4: the knight falls on the seventh move of the line.
@@ -93,6 +97,10 @@ class AllowedTest {
         )
     }
 
+    /**
+     * The g06 half of `test_the_move_s_own_idea_leads_and_the_focus_rung_names_no_stray_feature`
+     * in tests/test_rungs.py.
+     */
     @Test
     fun theFocusRungNamesNoStrayFeature() {
         // g06, before 9.O-O: "your king is still in the centre and can still castle" when a3 was

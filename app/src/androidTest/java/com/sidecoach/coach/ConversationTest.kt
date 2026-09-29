@@ -16,6 +16,9 @@ import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.Resync
 import com.sidecoach.events.Severity
 import com.sidecoach.events.Takeback
+import com.sidecoach.llm.ChatMessage
+import com.sidecoach.llm.Completion
+import com.sidecoach.llm.LLMProvider
 import com.sidecoach.vision.Pieces
 import org.json.JSONArray
 import org.json.JSONObject
@@ -457,6 +460,75 @@ class ConversationTest {
         )
         val found = Conversation().expectedRecapture(record, before, after)
         assertTrue("$found", found != null && found.first == "Rxe5")
+    }
+
+    /** `tests.fakes.ScriptedProvider(then=...)`: answers [then], and keeps every call's messages. */
+    private class Summariser(private val then: String) : LLMProvider {
+        override val name = "scripted"
+        val prompts = ArrayList<List<ChatMessage>>()
+
+        override fun healthcheck(): Pair<Boolean, String> = true to "scripted"
+
+        override fun chat(
+            system: String,
+            messages: List<ChatMessage>,
+            maxTokens: Int,
+            temperature: Double,
+            thinking: Boolean,
+        ): Completion {
+            prompts.add(messages.toList())
+            return Completion(text = then)
+        }
+    }
+
+    /**
+     * Dialogue compaction: what was said earlier than the last `keep` plies is folded into one
+     * summary at the top of the record; the summariser is called once and sees only the dialogue,
+     * each line with the move it followed; the last plies keep their words; with nothing older to
+     * fold, no call is made. The summary is the game's own: the next game starts without it, and
+     * one written for entries of the game before is dropped -- it opened the next game's record
+     * (`test_the_earlier_dialogue_folds_into_a_summary_and_the_last_plies_stay_verbatim` in
+     * tests/test_conversation.py; the parity audit, 2026-09-29).
+     */
+    @Test
+    fun theEarlierDialogueFoldsIntoASummaryAndTheLastPliesStayVerbatim() {
+        val convo = Conversation()
+        convo.newGame(GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = Board().fen()))
+        val board = Board()
+        for ((i, san) in listOf("e4", "e5", "Nf3", "Nc6", "Bb5", "a6").withIndex()) {
+            val ply = i + 1
+            val move = board.parseSan(san)!!
+            val before = board.fen()
+            board.push(move)
+            convo.move(
+                MovePlayed(gameId = "g", ply = ply, san = san, uci = move.uci(), fenBefore = before, fenAfter = board.fen(), byUser = ply % 2 == 1),
+            )
+            if (ply == 1) convo.coachSaid("A fine first move.")
+            if (ply == 2) {
+                convo.userSaid("what now?")
+                convo.coachSaid("Develop a piece.")
+            }
+            if (ply == 5) convo.coachSaid("The Ruy Lopez.")
+        }
+        val summariser = Summariser("The coach praised 1. e4 and told the player to develop.")
+        assertTrue(summarise(convo, summariser, keep = 2))
+        val prompt = summariser.prompts.last().last().content
+        assertTrue(prompt, "after 1. e4, COACH: A fine first move." in prompt)
+        assertTrue(prompt, "after 1... e5, PLAYER: \"what now?\"" in prompt)
+        assertTrue("within the last two plies: kept verbatim", "The Ruy Lopez" !in prompt)
+        val text = convo.render()
+        assertTrue(text, "Earlier dialogue, summarised: The coach praised 1. e4" in text)
+        assertTrue(text, "A fine first move." !in text && "Develop a piece." !in text)
+        assertTrue(text, "YOU (the coach) said: \"The Ruy Lopez.\"" in text)
+        // Nothing older to fold the second time: no call is made.
+        assertTrue(!summarise(convo, summariser, keep = 2))
+        assertEquals(1, summariser.prompts.size)
+        // The summary is the game's own.
+        val pending = convo.foldable(1).map { it.second }
+        assertTrue(pending.isNotEmpty())
+        convo.newGame(GameStarted(gameId = "g2", userSide = Pieces.Side.WHITE, startFen = Board().fen()))
+        assertTrue("Earlier dialogue" !in convo.render())
+        assertTrue(!convo.fold(pending, "The last game's dialogue.") && convo.summary == "")
     }
 
     private fun nullable(o: JSONObject, key: String): String? =

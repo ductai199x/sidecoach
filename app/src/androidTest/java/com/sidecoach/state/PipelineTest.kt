@@ -47,10 +47,12 @@ import org.opencv.imgproc.Imgproc
  * A frame may carry the player's "Re-read the screen" (`asked`): the cold read they asked for,
  * taken from the tracker's lock as the panel takes it, and held to the desktop's the same way.
  * Between frames a scenario may do what the desktop's pipeline tests do to a pipeline (`call`:
- * a reset, Flip, the End game menu, a side forced, a clock as a reader left it), and a frame may
- * count as changed by hand (`forced`) where the desktop's test passes it; every event must
- * carry its tick's time and frame id. A frame may carry where the tracker's lock stood after it
- * (`lock`), as the desktop's test of a moved board asserts it.
+ * a reset, Flip, the End game menu, a side forced, a clock as a reader left it, a reconciler's
+ * tunable), and a frame may count as changed by hand (`forced`) where the desktop's test passes
+ * it; every event must carry its tick's time and frame id. A frame may carry where the tracker's
+ * lock stood after it (`lock`), as the desktop's test of a moved board asserts it; and a scenario
+ * how often its last session read the theme cache (`reads`), as
+ * `test_a_puzzle_left_still_is_read_once` counts it.
  */
 @RunWith(AndroidJUnit4::class)
 class PipelineTest {
@@ -88,7 +90,10 @@ class PipelineTest {
                 } else {
                     null
                 }
-                val store = themes?.let { ThemeStore(it) }
+                // Its listings counted: each read from the cache (`ThemeStore.candidates`) lists
+                // the directory once, and a scenario may say how often its last session read it.
+                val counted = themes?.let { CountedDir(it.path) }
+                val store = counted?.let { ThemeStore(it) }
                 var pipeline = GamePipeline(net, store)
                 var gate = ChangeGate()
                 val frames = run.getJSONArray("frames")
@@ -119,6 +124,7 @@ class PipelineTest {
                         gate = ChangeGate()
                         lastFile = null
                         lastPixels = null
+                        counted?.listings = 0
                     }
                     val file = frame.getString("file")
                     val mat = decoded.getOrPut(file) { load(file) }
@@ -218,6 +224,11 @@ class PipelineTest {
                             "python had ${run.getInt("bootstraps")}",
                     )
                 }
+                if (run.has("reads") && counted?.listings != run.getInt("reads")) {
+                    // `test_a_puzzle_left_still_is_read_once`: a still board read from the cache
+                    // once, not every tick (the parity audit, 2026-09-29).
+                    failures.add("$name: read from the cache ${counted?.listings} times, python ${run.getInt("reads")}")
+                }
                 if (themes != null) {
                     val learned = themes.listFiles { f -> f.name.startsWith("theme-") }?.size ?: 0
                     if (learned != run.getInt("themes")) {
@@ -235,7 +246,7 @@ class PipelineTest {
      * What a desktop test does to a pipeline between frames (`_call` in the generator): a reset,
      * the panel's Flip re-reading the last frame from the lock (told, or a resync's), the End
      * game menu, a side forced, a clock as a reader would have left it, a set's labels cached
-     * as solid blocks.
+     * as solid blocks, a reconciler's tunable.
      */
     private fun call(pipeline: GamePipeline, call: JSONObject, last: Mat?, ts: Double): List<Event> {
         fun side(name: String) = if (name == "white") Pieces.Side.WHITE else Pieces.Side.BLACK
@@ -270,7 +281,29 @@ class PipelineTest {
                 pipeline.lastClockTs = if (call.isNull("last_clock_ts")) null else call.getDouble("last_clock_ts")
                 emptyList()
             }
+            call.has("reconciler") -> {
+                // A reconciler's tunable, as the desktop's test sets it (`resync_hold_frames`).
+                val rec = checkNotNull(pipeline.reconciler) { "no reconciler to tune" }
+                val given = call.getJSONObject("reconciler")
+                for (key in given.keys()) {
+                    when (key) {
+                        "resync_hold_frames" -> rec.resyncHoldFrames = given.getInt(key)
+                        else -> throw IllegalArgumentException("a tunable this test does not set: $key")
+                    }
+                }
+                emptyList()
+            }
             else -> throw IllegalArgumentException("a call this test does not know: $call")
+        }
+    }
+
+    /** A theme directory that counts its listings (`ThemeStore.candidates` lists it once a read). */
+    private class CountedDir(path: String) : java.io.File(path) {
+        var listings = 0
+
+        override fun listFiles(filter: java.io.FileFilter?): Array<java.io.File>? {
+            listings += 1
+            return super.listFiles(filter)
         }
     }
 

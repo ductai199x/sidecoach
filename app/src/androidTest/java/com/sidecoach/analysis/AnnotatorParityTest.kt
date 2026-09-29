@@ -11,6 +11,7 @@ import com.sidecoach.events.Label
 import com.sidecoach.events.Line
 import com.sidecoach.events.MotifTag
 import com.sidecoach.events.MoveAssessment
+import com.sidecoach.events.Severity
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -187,7 +188,9 @@ class AnnotatorParityTest {
 
     /**
      * `test_each_position_is_measured_once`: whole once each; the verdict on a move searches the
-     * position it led to for its best line alone first, then the whole; a new game measures again.
+     * position it led to for its best line alone first (a call of its own, one line), then the
+     * whole; a new game measures again. The order of the first move's calls is new here (the
+     * parity audit, 2026-09-29): the counts alone held with the whole search first.
      */
     @Test
     fun eachPositionIsMeasuredOnce() {
@@ -195,31 +198,21 @@ class AnnotatorParityTest {
         val fake = FakeEngine()
         val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
         val e2e4 = Move.fromUci("e2e4")
-        annotator.assess("g", board, e2e4, 1)
+        val (assessment, _) = annotator.assess("g", board, e2e4, 1)
         val after = board.copy(withStack = false)
         after.push(e2e4)
+        assertEquals("e2e4", assessment.uci)
+        assertEquals(
+            "the verdict from one line of the position after the move, before it is measured whole",
+            listOf(board.fen() to 1, after.fen() to 1, after.fen() to 6),
+            calls(fake).zip(synchronized(fake.multipvs) { fake.multipvs.toList() }),
+        )
         annotator.assess("g", after, Move.fromUci("e7e5"), 2)
         assertEquals("after e4, after e5: each measured whole once", 2, fake.multipvs.count { it != 1 })
         assertEquals("one verdict search per position", 3, fake.multipvs.count { it == 1 })
         annotator.reset()
         annotator.assess("g", board, e2e4, 1)
         assertEquals("a new game measures again", 3, fake.multipvs.count { it != 1 })
-    }
-
-    /** `test_the_assessment_says_how_deep_the_search_got`: the shallower of the two searches. */
-    @Test
-    fun theAssessmentSaysHowDeepTheSearchGot() {
-        val board = Board()
-        val after = board.copy()
-        after.push(Move.fromUci("e2e4"))
-        val fake = FakeEngine(
-            mapOf(
-                board.fen() to listOf(Line(moves = listOf("e2e4"), depth = 18, expectedScore = 0.55)),
-                after.fen() to listOf(Line(moves = listOf("e7e5"), depth = 11, expectedScore = 0.45)),
-            ),
-        )
-        val (assessment, _) = GameAnnotator(fake, depth = 18, withThreats = false).assess("g", board, Move.fromUci("e2e4"), 1)
-        assertEquals(11, assessment.depth)
     }
 
     /**
@@ -242,9 +235,10 @@ class AnnotatorParityTest {
     }
 
     /**
-     * The worker: it answers off the caller's thread, a failing analysis does not end the
-     * session, and a queue it cannot keep up with drops the oldest work
-     * (`test_the_analyser_answers_off_the_caller_s_thread`, `test_a_failing_analysis_does_not_end_the_session`,
+     * The worker: it answers off the caller's thread (the sequence and `failures == 0` are in
+     * `test_the_position_the_player_faces_is_told_early_and_then_whole` on the desktop now), a
+     * failing analysis does not end the session, and a queue it cannot keep up with drops the
+     * oldest work (`test_a_failing_analysis_does_not_end_the_session`,
      * `test_the_queue_drops_the_oldest_work_when_it_cannot_keep_up`).
      */
     @Test
@@ -459,6 +453,7 @@ class AnnotatorParityTest {
         }
         assertEquals(listOf("Analysis(early)", "Analysis"), kinds(started))
         assertEquals(listOf("MoveAssessment", "Analysis"), kinds(own))
+        assertEquals(0, analyser.failures)
         assertEquals(listOf("Analysis(early)", "MoveAssessment", "Analysis"), kinds(reply))
         val early = reply[0] as Analysis
         val full = reply[2] as Analysis
@@ -481,8 +476,10 @@ class AnnotatorParityTest {
     }
 
     /**
-     * `test_a_position_looked_at_ahead_is_whole_at_once` (desktop 316026b): the position the
-     * player faces measured ahead of the move: no early word, the whole one at once.
+     * The position the player faces measured ahead of the move: no early word, the whole one at
+     * once (desktop 316026b; the second half of
+     * `test_while_no_move_waits_the_engine_looks_ahead_and_a_move_there_is_answered_at_once`
+     * since the desktop folded it in).
      */
     @Test
     fun aPositionLookedAtAheadIsWholeAtOnce() {
@@ -666,12 +663,16 @@ class AnnotatorParityTest {
     }
 
     /**
-     * `test_assessment_carries_the_loss_the_best_line_and_the_tags`: the loss, the best line,
-     * and the move's tags as the tagger gave them, less a targeted tactic the line after the
-     * move never cashes in (`motifs.pays_off`, desktop 5e80cdf).
+     * `test_assessment_carries_the_loss_the_best_line_the_tags_and_the_depth`: the loss and its
+     * severity, the best line, the depth (the shallower of the two searches: the position after
+     * the move hit the engine's time cap), and the move's tags as the tagger gave them, less a
+     * targeted tactic the line after the move never cashes in (`motifs.pays_off`, desktop
+     * 5e80cdf); the analysis of the position after it, decisive and an only move. The severity,
+     * the analysis's ply and position, and the decisive and only-move calls are new here (the
+     * parity audit, 2026-09-29); the depth was a test of its own until the desktop folded it in.
      */
     @Test
-    fun anAssessmentKeepsOnlyTheTacticsTheLineCashesIn() {
+    fun assessmentCarriesTheLossTheBestLineTheTagsAndTheDepth() {
         val board = Board()
         val after = board.copy(withStack = false)
         after.push(Move.fromUci("a2a3"))
@@ -682,8 +683,8 @@ class AnnotatorParityTest {
                     Line(moves = listOf("d2d4"), depth = 6, expectedScore = 0.45),
                 ),
                 after.fen() to listOf(
-                    Line(moves = listOf("e7e5"), depth = 6, expectedScore = 0.55, mate = -3),
-                    Line(moves = listOf("d7d5"), depth = 6, expectedScore = 0.20),
+                    Line(moves = listOf("e7e5"), depth = 4, expectedScore = 0.55, mate = -3),
+                    Line(moves = listOf("d7d5"), depth = 4, expectedScore = 0.20),
                 ),
             ),
         )
@@ -691,10 +692,15 @@ class AnnotatorParityTest {
         val annotator = GameAnnotator(fake, depth = 6, tagger = tagger, withThreats = false)
         val (assessment, analysis) = annotator.assess("game1", board, Move.fromUci("a2a3"), 1)
         assertEquals(0.15, assessment.expectedLoss, 1e-9)
+        assertEquals(Severity.MISTAKE, assessment.severity)
         assertEquals(listOf("e2e4", "e7e5"), assessment.best)
+        assertEquals("the shallower of the two searches", 4, assessment.depth)
         assertEquals("the unpaid fork is dropped", listOf("sacrifice"), assessment.tags.map { it.name })
         assertEquals("mated in three more moves, four counting this", listOf("a2a3" to 4), tagger.moveCalls)
+        assertEquals(1, analysis.ply)
+        assertEquals(after.fen(), analysis.fen)
         assertEquals(listOf("hangingPiece"), analysis.tags.map { it.name })
+        assertTrue("the replies differ by 0.35", analysis.decisive && analysis.onlyMove)
     }
 
     private companion object {

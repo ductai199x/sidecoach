@@ -575,6 +575,69 @@ def causes_tables() -> dict:
     }
 
 
+def insight_cases() -> list[dict]:
+    """`insights` over cells as the store keeps them: tests/test_profile.py's (nothing while the
+    counts are small; the biggest cost a gap, the motif missed most often and the phase that
+    costs most per move; a cost spread across kinds of position a habit) and a few beside them
+    -- lines no game of the fixture adds up to (the parity audit, 2026-09-29)."""
+    from sidecoach.profile.insights import insights
+    from sidecoach.profile.store import CellRow
+
+    def cell(cause: str | None, motif: str | None, phase: str | None, errors: int = 0,
+             chances: int = 0, loss: float = 0.0) -> CellRow:
+        return CellRow(cause=cause, motif=motif, phase=phase, errors=errors, chances=chances,
+                       expected_loss=loss)
+
+    cases: list[tuple[list[CellRow], int]] = [
+        ([cell(causes.POSITIONAL, None, "middlegame", errors=2, loss=0.3)], 1),
+        (
+            [
+                cell(causes.MISSED_THREAT, "fork", "middlegame", errors=3, loss=0.6),
+                cell(causes.MISSED_THREAT, "pin", "endgame", errors=1, loss=0.1),
+                cell(causes.POSITIONAL, None, "middlegame", errors=1, loss=0.1),
+                cell(None, "fork", "middlegame", chances=6),
+                cell(None, None, "middlegame", chances=30),
+                cell(None, None, "endgame", chances=12, loss=0.0),
+            ],
+            3,
+        ),
+        (
+            [
+                cell(causes.POSITIONAL, None, "opening", errors=1, loss=0.2),
+                cell(causes.POSITIONAL, None, "middlegame", errors=1, loss=0.2),
+                cell(causes.POSITIONAL, None, "endgame", errors=1, loss=0.2),
+            ],
+            1,
+        ),
+        # A habit, and the phase that costs most per move among two with enough moves.
+        (
+            [
+                cell(causes.POSITIONAL, None, "opening", errors=2, loss=0.25),
+                cell(causes.POSITIONAL, "pin", "middlegame", errors=1, loss=0.2),
+                cell(causes.MISSED_THREAT, "fork", "endgame", errors=1, loss=0.1),
+                cell(None, "pin", "middlegame", chances=5),
+                cell(None, None, "opening", chances=14),
+                cell(None, None, "middlegame", chances=11),
+                cell(None, None, "endgame", chances=3),
+            ],
+            2,
+        ),
+        # Two busy phases that cost nothing: no line on the cost per move.
+        (
+            [
+                cell(causes.TIME_PRESSURE, None, "endgame", errors=3, loss=0.3),
+                cell(None, None, "opening", chances=10),
+                cell(None, None, "middlegame", chances=10),
+            ],
+            4,
+        ),
+    ]
+    return [
+        {"rows": [dict(r.__dict__) for r in rows], "games": games, "lines": insights(rows, games)}
+        for rows, games in cases
+    ]
+
+
 def csv_import() -> dict:
     """What `import_csv` keeps of CSV_IMPORT, row by row."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -753,6 +816,7 @@ def main() -> None:
         "conversations": conversations,
         "cells": [c.__dict__ for c in store.cells()],
         "causes": causes_cases(sample),
+        "insights": insight_cases(),
     }
     (OUT / "profile.json").write_text(json.dumps(fixture), encoding="utf-8")
     emitted = [e["type"] for s in run.steps for e in s["out"]]

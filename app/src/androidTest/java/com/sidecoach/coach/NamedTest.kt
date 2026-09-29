@@ -3,15 +3,12 @@ package com.sidecoach.coach
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.sidecoach.chess.Board
-import com.sidecoach.chess.Move
-import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.parseSquare
 import com.sidecoach.chess.squareName
 import com.sidecoach.events.DisclosureLevel
 import com.sidecoach.events.Line
 import org.json.JSONArray
 import org.json.JSONObject
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -189,12 +186,12 @@ class NamedTest {
      * Every call the desktop's `tests/test_named.py` and `tests/test_inventory.py` make, replayed
      * with the desktop's answers (TG-04, TG-05): a pinned piece attacking and defending, a king in
      * check, a pinned controller, hanging and undefended, a move recited from the examined line,
-     * the inventory's hanging pieces, pins, batteries, skewers and forks, a piece named with its
-     * square. And the planner (TG-06): each reply read as Python reads it -- a null label is no
-     * label, a null move "None", a reply Python cannot iterate raises -- and the request it is sent.
+     * the inventory's lines -- hanging pieces, pins, forks, checks and captures, the check in
+     * force -- its pins, batteries, skewers and forks, a piece named with its square. (The
+     * planner these calls were once replayed with is gone on both sides.)
      */
     @Test
-    fun theDesktopsNamedTestsAndThePlannerMatch() {
+    fun theDesktopsNamedAndInventoryTestsMatch() {
         val root = fixture("chess/named.json")
         val tests = root.getJSONObject("tests")
         assertTrue("the desktop's named tests ran", tests.getJSONArray("ran").length() >= 17)
@@ -249,6 +246,9 @@ class NamedTest {
                             all.getJSONArray(k).let { listOf(it.getString(0), strings(it.getJSONArray(1))) }
                         }
                     }
+                // The harness's "On the board (complete lists)", one line each (the parity audit,
+                // 2026-09-29: the inventory tests' own calls were not recorded).
+                "inventory_lines" -> inventoryLines(board, a.getBoolean("white")) to strings(out as JSONArray)
                 else -> throw IllegalArgumentException("no replay for $fn")
             }
             check("${call.getString("test")} $fn ${a.toString().take(120)}", mine, theirs)
@@ -313,6 +313,5 @@ class NamedTest {
 
     companion object {
         private const val TAG = "sidecoach.coach"
-        private const val ITALIAN_START = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"
     }
 }

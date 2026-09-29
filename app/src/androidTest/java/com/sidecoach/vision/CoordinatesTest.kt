@@ -26,6 +26,39 @@ import org.opencv.imgproc.Imgproc
 class CoordinatesTest {
 
     /**
+     * `test_orientation_is_read_from_the_rank_labels`: the labels learned from a start with White
+     * at the bottom read either orientation from the edge digits alone -- Black at the bottom
+     * included (the parity audit, 2026-09-29: no phone test read a board the other way up from
+     * the side its labels were learned on).
+     */
+    @Test
+    fun theOrientationIsReadFromTheRankLabels() {
+        val white = makeBoard(Pieces.Side.WHITE)
+        val black = makeBoard(Pieces.Side.BLACK)
+        val labels = Coordinates.learnRankLabels(white, GEOM, Pieces.Side.WHITE)
+        assertEquals((1..8).toList(), labels.keys.sorted())
+        assertEquals(Pieces.Side.WHITE, Coordinates.readLabels(white, GEOM, labels))
+        assertEquals(Pieces.Side.BLACK, Coordinates.readLabels(black, GEOM, labels))
+        white.release(); black.release()
+    }
+
+    /**
+     * `test_no_coordinates_read_no_side_so_the_caller_can_ask`: a board with its coordinates
+     * turned off has nothing to read, labels learned or not, and no labels learned read nothing
+     * themselves (the parity audit, 2026-09-29).
+     */
+    @Test
+    fun noCoordinatesReadNoSideSoTheCallerCanAsk() {
+        val white = makeBoard(Pieces.Side.WHITE)
+        val bare = makeBoard(null)
+        val labels = Coordinates.learnRankLabels(white, GEOM, Pieces.Side.WHITE)
+        assertEquals(null, Coordinates.readBottomSide(bare, GEOM, labels))
+        assertEquals(null, Coordinates.readBottomSide(bare, GEOM, emptyMap()))
+        assertEquals(null, Coordinates.readLabels(white, GEOM, emptyMap()))
+        white.release(); bare.release()
+    }
+
+    /**
      * `test_a_start_seen_through_a_lock_off_its_board_learns_no_labels` (desktop 3d0a201): a
      * lock a fifth of a cell out cuts each edge cell partly from its neighbour: the square's
      * colour is taken from the neighbour and the whole corner reads as ink. Kept, those solid
@@ -48,8 +81,9 @@ class CoordinatesTest {
      * where the 8 is, at the top of the left edge or at its foot, says which side is at the
      * bottom with nothing learned -- read through labels cached as solid blocks, as Tai's
      * were: the board of his puzzle on the Pixel (84 px, Black at the bottom) and a chess.com
-     * start (80 px, White). The desktop's rendered boards are read on the phone by the
-     * pipeline fixture `labels-read-past-by-8`.
+     * start (80 px, White), its board found by the detector as the desktop's test finds it (the
+     * parity audit, 2026-09-29: the geometry was written in here by hand). The desktop's
+     * rendered boards are read on the phone by the pipeline fixture `labels-read-past-by-8`.
      */
     @Test
     fun the8ReadsTheSideWithNothingLearned() {
@@ -59,7 +93,9 @@ class CoordinatesTest {
         assertEquals(Pieces.Side.BLACK, Coordinates.eights(puzzle, onPhone))
         assertEquals(Pieces.Side.BLACK, Coordinates.readBottomSide(puzzle, onPhone, solid))
         val start = load("chesscom_start.png")
-        val board = BoardGeometry(Region(24, 24, 641, 641), 80.1176513566025)
+        val found = BoardDetect.detect(BoardDetect.toGray(start)).firstOrNull()
+        assertTrue("no board found on the chess.com start", found != null)
+        val board = BoardGeometry(found!!.region, found.cellPx)
         assertEquals(Pieces.Side.WHITE, Coordinates.readBottomSide(start, board, solid))
         puzzle.release(); start.release()
     }

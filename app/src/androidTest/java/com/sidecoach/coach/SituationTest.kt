@@ -28,9 +28,12 @@ import org.junit.runner.RunWith
  * `tests/test_situation.py` (desktop fc30fa7), case for case: the first hint's parts
  * ([Situation], [Traps]), held to the moments of the master games it was read against
  * (Capablanca-Marshall, Johner-Nimzowitsch) and to the Lichess puzzles that caught its first
- * slips. Then the verdict changes of `tests/test_verdicts.py` (a centre pawn's lesson only with
- * what it opens) and desktop 3895242's Lichess vgdbX (their threat to the square the best move
- * takes, said by their piece), read from the coach fixture's engine analysis.
+ * slips (one of them, the material given for their attack, is `tests/test_idea.py`'s now).
+ * Then the verdict changes of `tests/test_verdicts.py` (a centre pawn's lesson only with what it
+ * opens: `test_the_lesson_is_what_the_board_teaches_not_what_the_move_did`) and desktop
+ * 3895242's Lichess vgdbX (their threat to the square the best move takes, said by their piece:
+ * `test_their_threat_to_the_square_the_best_move_takes_is_said_by_their_piece`), read from the
+ * coach fixture's engine analysis.
  */
 @RunWith(AndroidJUnit4::class)
 class SituationTest {
@@ -83,6 +86,7 @@ class SituationTest {
         )
     }
 
+    /** `test_material_given_for_their_attack_is_not_won`, in tests/test_idea.py since the consolidations of 2026-09-28/29. */
     @Test
     fun materialGivenForTheirAttackIsNotWon() {
         // 29.exf4 in a lost game: the knight Black gives with ...Ng4+ is not "won back".

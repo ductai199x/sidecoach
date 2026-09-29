@@ -41,9 +41,17 @@ PUZZLES = DESKTOP / "data" / "puzzles" / "sample.csv"
 # The textbook endings a random game does not reach, so every detector is exercised.
 BUILT = [
     "8/8/8/8/8/1k6/1P6/1K6 w - - 0 1",            # opposition, key squares
-    "8/8/8/3k4/8/3K4/3P4/8 w - - 0 1",            # key squares, distant opposition
+    # Key squares, distant opposition: three squares between the kings. (The position here
+    # before the parity audit, 2026-09-29, had the kings two squares apart: plain opposition.)
+    "8/3k4/8/8/8/3K4/3P4/8 w - - 0 1",
     "1K6/1P6/8/8/8/8/r7/2k4R w - - 0 1",          # Lucena
     "8/4k3/r7/4P3/4K3/8/8/7R b - - 0 1",          # Philidor: rook on the third rank
+    # The detectors' negatives (the parity audit, 2026-09-29): the rook off the third rank, so
+    # the Philidor is not set up; a rook pawn, which has no key squares; the defending king
+    # beside the pawn, not cut off, so no Lucena.
+    "8/4k3/8/4P3/4K3/8/8/r6R b - - 0 1",
+    "4k3/8/2K5/8/P7/8/8/8 w - - 0 1",
+    "3K4/3Pk3/8/8/8/8/8/R6r w - - 0 1",
     "8/8/3K4/8/3P4/8/8/7k w - - 0 1",             # the king on a key square
     "8/8/8/8/1k6/8/1p6/1K1R4 b - - 0 1",          # rook and pawn v rook
     "8/8/1R6/8/8/1k6/3r4/1K6 w - - 0 1",
@@ -65,10 +73,9 @@ BUILT = [
     "8/3k4/3p4/3P4/3K4/8/8/8 w - - 0 40",         # closed, pawn pointing shapes
     "rnbqk2r/pp2ppbp/3p1np1/2pP4/4P3/2N2N2/PP2BPPP/R1BQK2R b KQkq - 0 7",  # King's Indian
     "rnbqkbnr/pp3ppp/4p3/2ppP3/3P4/8/PPP2PPP/RNBQKBNR w KQkq - 0 4",       # French advance
-    # The desktop's rescue tests: a knight guarded beside the enemy king, one attacked only by
-    # a pinned knight, one a pawn attacks with a pawn-guarded square to run to.
-    "8/8/5k2/4N3/3P4/8/8/4K3 w - - 0 1",
-    "4k3/8/2n5/1B6/3N4/8/8/4K3 w - - 0 1",
+    # The desktop's rescue test: a knight a pawn attacks with a pawn-guarded square to run to.
+    # (Its knight guarded beside the enemy king and its knight attacked only by a pinned knight
+    # are in BUILT_THREATS, with the threat each is about.)
     "4k3/p7/8/3p4/2N5/8/8/4K3 w - - 0 1",
     # Desktop 3d9568d's gates: a bare king before a queen and a knight (no king's march), a
     # king that captures, a king in check, h4 with a queen against a bishop (no storm in an
@@ -92,6 +99,11 @@ BUILT_THREATS = [
     ("rnbqkbnr/1ppp1ppp/p7/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 3", "d8h4"),
     ("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1", "d5e4"),
     ("4k3/p7/8/3p4/2N5/8/8/4K3 w - - 0 1", "d5c4"),
+    # Moved here from BUILT with their threats (the parity audit, 2026-09-29): a knight guarded
+    # beside the enemy king, which the king cannot take, and a knight attacked only by a
+    # knight pinned to its king -- neither is in danger, so moving it is no rescue.
+    ("8/8/5k2/4N3/3P4/8/8/4K3 w - - 0 1", "f6e5"),
+    ("4k3/8/2n5/1B6/3N4/8/8/4K3 w - - 0 1", "c6d4"),
 ]
 
 
@@ -175,12 +187,15 @@ def kinds_of(case: dict) -> set[str]:
     return out or {"(none)"}
 
 
-def choose(cases: list[dict]) -> list[dict]:
+def choose(cases: list[dict], keep: int = 0) -> list[dict]:
+    """The cases that bring a kind still under its quota; the first `keep` (the built ones,
+    each there for a detector or a negative of its own) whatever their kinds -- the quota
+    dropped one phase of a built position once."""
     counts: dict[str, int] = {}
     kept: list[dict] = []
-    for case in cases:
+    for index, case in enumerate(cases):
         kinds = kinds_of(case)
-        if any(counts.get(kind, 0) < QUOTA for kind in kinds):
+        if index < keep or any(counts.get(kind, 0) < QUOTA for kind in kinds):
             kept.append(case)
             for kind in kinds:
                 counts[kind] = counts.get(kind, 0) + 1
@@ -199,6 +214,7 @@ def main() -> None:
         board = chess.Board(fen)
         for phase in ("opening", "middlegame", "endgame"):
             cases.append(case_for(board, phase, threat))
+    built = len(cases)
 
     # Random games: openings and middlegames, where development and the king's safety live.
     for _ in range(80):
@@ -225,7 +241,7 @@ def main() -> None:
                     board.push(move)
 
     seen_all = len(cases)
-    cases = choose(cases)
+    cases = choose(cases, keep=built)
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "positional.json").write_text(json.dumps({"cases": cases}), encoding="utf-8")
     counts: dict[str, int] = {}

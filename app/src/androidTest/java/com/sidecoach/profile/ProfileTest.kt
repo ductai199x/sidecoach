@@ -459,15 +459,6 @@ class ProfileTest {
     }
 
     /**
-     * `causes.wins_material` for every capture of the puzzle sample's first positions and the
-     * desktop test's own -- taking back read by the rules (`exchange.can_retake`), so a guard
-     * pinned to its own king takes nothing back -- and `causes.classify` on the pinned-guard
-     * blunder of the desktop test; and `tests/test_profile.py`'s cause cases (time pressure
-     * first, a tactic allowed, a chance let go, a line miscalculated, a piece left to be taken,
-     * a tactic never considered, the phase naming the rest), what counts as a tactic, the
-     * causes read from the player's words, and the motifs in words (f2/f7, x-ray).
-     */
-    /**
      * Floats added as Python 3.12's sum() adds them, compensated: a session of 64.7, 97.4 and
      * 55.4 had its mean accuracy said 72 on the desktop and 73 on the phone (the parity audit,
      * 2026-09-29).
@@ -481,6 +472,54 @@ class ProfileTest {
         assertEquals(0.0, com.sidecoach.voice.Py.sum(emptyList()), 0.0)
     }
 
+    /**
+     * What the cells add up to in words, cell rows in and lines out as the desktop wrote them:
+     * nothing while the counts are small; the biggest cost a gap, and a cost spread across kinds
+     * of position a habit; the motif missed most often; the phase that costs most per move, and
+     * none when the busy phases cost nothing (`test_insights_need_evidence_before_they_speak`,
+     * `test_insights_name_the_biggest_cost_and_whether_it_is_a_gap` and
+     * `test_a_cost_spread_across_positions_is_a_habit` in tests/test_profile.py, and cases beside
+     * them: the habit and the cost per move were in no line the games of the fixture made; the
+     * parity audit, 2026-09-29).
+     */
+    @Test
+    fun theInsightsMatchThePython() {
+        val cases = fixture().getJSONArray("insights")
+        val said = ArrayList<String>()
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val rows = case.getJSONArray("rows").let { a ->
+                (0 until a.length()).map { k ->
+                    val r = a.getJSONObject(k)
+                    CellRow(
+                        cause = if (r.isNull("cause")) null else r.getString("cause"),
+                        motif = if (r.isNull("motif")) null else r.getString("motif"),
+                        phase = if (r.isNull("phase")) null else r.getString("phase"),
+                        errors = r.getInt("errors"),
+                        chances = r.getInt("chances"),
+                        expectedLoss = r.getDouble("expected_loss"),
+                    )
+                }
+            }
+            val lines = Insights.insights(rows, case.getInt("games"))
+            assertEquals("insights #$i", strings(case.getJSONArray("lines")), lines)
+            said.addAll(lines)
+        }
+        // The lines the fixture is there for.
+        assertTrue(said.toString(), said.any { it.startsWith("That looks like a habit: ") })
+        assertTrue(said.toString(), said.any { it.startsWith("That looks like a gap: ") })
+        assertTrue(said.toString(), said.any { " costs you most per move (" in it })
+    }
+
+    /**
+     * `causes.wins_material` for every capture of the puzzle sample's first positions and the
+     * desktop test's own -- taking back read by the rules (`exchange.can_retake`), so a guard
+     * pinned to its own king takes nothing back -- and `causes.classify` on the pinned-guard
+     * blunder of the desktop test; and `tests/test_profile.py`'s cause cases (time pressure
+     * first, a tactic allowed, a chance let go, a line miscalculated, a piece left to be taken,
+     * a tactic never considered, the phase naming the rest), what counts as a tactic, the
+     * causes read from the player's words, and the motifs in words (f2/f7, x-ray).
+     */
     @Test
     fun winsMaterialAndTheCauseMatchThePython() {
         val causes = fixture().getJSONObject("causes")

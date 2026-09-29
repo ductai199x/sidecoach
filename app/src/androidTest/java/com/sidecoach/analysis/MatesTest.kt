@@ -61,6 +61,21 @@ class MatesTest {
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
     }
 
+    /**
+     * `test_a_check_that_is_not_mate_names_nothing`: Nd6+ gives check but the king walks out,
+     * so no pattern is named -- the fixture's positions are all mates, so the guard that a
+     * position that is not checkmate names nothing was never reached (the parity audit,
+     * 2026-09-29).
+     */
+    @Test
+    fun aCheckThatIsNotMateNamesNothing() {
+        val board = Board("4k3/8/8/8/4N3/8/8/4R1K1 w - - 0 1")
+        val move = Move.fromUci("e4d6")
+        board.push(move)
+        assertTrue("check, not mate", board.isCheck() && !board.isCheckmate())
+        assertTrue(Mates.matingPatternTags(board, move).isEmpty())
+    }
+
     @Test
     fun theTagOrderEndsWithTheMatePatterns() {
         // `motifs.TAG_ORDER` ends with `mates.MATE_PATTERNS`, in that order.

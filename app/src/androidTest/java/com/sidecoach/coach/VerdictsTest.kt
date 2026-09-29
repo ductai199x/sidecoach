@@ -5,19 +5,97 @@ import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.events.MotifTag
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * The word on a sound move, pitched to the player: the cases the desktop's
- * `tests/test_verdicts.py` gained from cf1e2a0 on. The desktop's tests replace `lesson` with one
- * that returns the principle; here the boards are real ones whose lesson is that principle, as
- * the coach fixture (`coach.json`) records it and CoachPrimitivesTest holds the Kotlin to.
+ * The word on a sound move, pitched to the player: `tests/test_verdicts.py`'s board cases -- the
+ * lesson the board teaches and the praise before it (ported by the parity audit, 2026-09-29) --
+ * and the cases it gained from cf1e2a0 on. The desktop's tests of the player's level replace
+ * `lesson` with one that returns the principle; here the boards are real ones whose lesson is
+ * that principle, as the coach fixture (`coach.json`) records it and CoachPrimitivesTest holds
+ * the Kotlin to.
  */
 @RunWith(AndroidJUnit4::class)
 class VerdictsTest {
+
+    /**
+     * The lesson is what the board teaches, not what the move did: the mate; nothing for a check
+     * or a push the board names no idea for; the principle a castle or a rook to the open file
+     * follows; a pawn to the centre only with what it opens ("that lets your bishop out"); a
+     * tag's tactic described only when its squares bear it out after the move (a stale tag is
+     * not said); and a lesson taught in one of the last few words waits its turn
+     * (`test_the_lesson_is_what_the_board_teaches_not_what_the_move_did` in
+     * tests/test_verdicts.py; the parity audit, 2026-09-29).
+     */
+    @Test
+    fun theLessonIsWhatTheBoardTeachesNotWhatTheMoveDid() {
+        assertEquals("mate" to listOf("checkmate"), lesson(Board(SCHOLAR), Move.fromUci("h5f7")))
+        // A capture, a check, a promotion: said by the board, not by the coach.
+        assertNull(
+            lesson(Board("rnbqkbnr/pppp2pp/8/4pp2/4P3/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3"), Move.fromUci("d1h5"), phase = "opening"),
+        )
+        assertNull(
+            "no idea the board can name",
+            lesson(Board(AFTER_NF3), Move.fromUci("d7d6"), phase = "opening"),
+        )
+        // The idea behind the move, as the principle it follows.
+        assertEquals(
+            "castle" to PRINCIPLES.getValue("castle"),
+            lesson(Board("rnbqk2r/pppp1ppp/5n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"), Move.fromUci("e1g1"), phase = "opening"),
+        )
+        assertEquals("takeFile" to PRINCIPLES.getValue("takeFile"), lesson(Board(OPEN_FILE), Move.fromUci("a1d1"), phase = "endgame"))
+        // A pawn to the centre is a lesson only with what it opens (Tai, 2026-09-24).
+        val e4 = Move.fromUci("e2e4")
+        assertEquals("centre" to listOf("that lets your bishop out"), lesson(Board(), e4, phase = "opening"))
+        val c4 = lesson(Board("rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2"), Move.fromUci("c2c4"), phase = "opening")
+        assertTrue(c4.toString(), c4 == null || c4.first != "centre")
+        // A tag's tactic, described only when the squares bear it out after the move.
+        val board = Board("6k1/5ppp/8/r7/3r4/8/5PPP/2N3K1 w - - 0 1")
+        val fork = Move.fromUci("c1b3")
+        val tag = MotifTag(name = "fork", squares = listOf("b3", "a5", "d4"))
+        val described = lesson(board, fork, listOf(tag))
+        assertEquals("fork" to listOf("the knight on b3 forks the rook on a5 and the rook on d4"), described)
+        val stale = MotifTag(name = "fork", squares = listOf("b3", "a2", "d4")) // nothing on a2: not said
+        assertNotEquals(described, lesson(board, fork, listOf(stale)))
+        // A lesson taught in one of the last few words waits its turn.
+        assertNotEquals(described, lesson(board, fork, listOf(tag), taught = listOf("fork")))
+        assertNull(lesson(Board(), e4, phase = "opening", taught = listOf("centre")))
+    }
+
+    /**
+     * The verdict is the praise, then the lesson: the mate's own words; the praise and a
+     * principle's wording; the praise alone, every wording of the label's, when there is nothing
+     * to teach; never the same praise twice running when told the [last] one -- here with a draw
+     * that would always take the first, so only `last` keeps them apart
+     * (`test_the_verdict_is_praise_then_the_lesson_and_varies` in tests/test_verdicts.py; the
+     * parity audit, 2026-09-29).
+     */
+    @Test
+    fun theVerdictIsPraiseThenTheLessonAndVaries() {
+        val (mate, mateKind) = verdict(Board(SCHOLAR), Move.fromUci("h5f7"), "best", pick = { it[0] })
+        assertTrue(mate, mate in MATE && mateKind == "mate")
+        val (text, kind) = verdict(Board(OPEN_FILE), Move.fromUci("a1d1"), "best", phase = "endgame", pick = { it[1 % it.size] })
+        val (praise, clause) = text.split(" -- ").let { it[0] to it[1] }
+        assertTrue(text, praise in OPENERS.getValue("best") && clause.trimEnd('.') in PRINCIPLES.getValue("takeFile"))
+        assertEquals("takeFile", kind)
+        // Nothing to teach: the praise alone, every wording of it.
+        val board = Board(AFTER_NF3)
+        val d6 = Move.fromUci("d7d6")
+        val seen = (0 until 40).map { i -> verdict(board, d6, "good", phase = "opening", pick = { it[i % it.size] }).first }.toSet()
+        assertEquals(OPENERS.getValue("good").map { "$it." }.toSet(), seen)
+        var previous: String? = null
+        repeat(40) {
+            val current = verdict(board, d6, "good", phase = "opening", last = previous, pick = { it[0] }).first
+            assertNotEquals(current, previous)
+            previous = current
+        }
+        val book = verdict(board, d6, "book", phase = "opening", pick = { it[0] }).first
+        assertTrue(book, book in OPENERS.getValue("book").map { "$it." })
+    }
 
     /**
      * The simulated 800-rated student listed "prophylaxis: stop their plan before pushing your
@@ -117,5 +195,11 @@ class VerdictsTest {
 
         /** A rook to the open d-file, the king with a square to go to: the file is the point. */
         const val OPEN_FILE = "6k1/5pp1/7p/8/8/8/5PPP/R5K1 w - - 0 1"
+
+        /** 1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6??: White to move, Qxf7 mates (`tests.coaching.SCHOLAR`). */
+        const val SCHOLAR = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
+
+        /** 1. e4 e5 2. Nf3, Black to move: ...d6 is a push the board names no idea for. */
+        const val AFTER_NF3 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2"
     }
 }

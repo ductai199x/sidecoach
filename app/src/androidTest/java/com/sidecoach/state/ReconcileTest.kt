@@ -114,7 +114,7 @@ class ReconcileTest {
         is PositionChanged -> "PositionChanged ${event.ply} ${event.fen}"
         is MovePlayed ->
             "MovePlayed ${event.ply} ${event.san} ${event.uci} " +
-                "${if (event.byUser) "user" else "them"} ${event.thinkMs}"
+                "${if (event.byUser) "user" else "them"} ${event.thinkMs ?: "None"}"
         is Takeback -> "Takeback ${event.plies} ${event.fen}"
         is Resync -> "Resync ${event.reason} | ${event.fen}"
         is Unexplained -> "Unexplained ${event.reason} | ${event.fen}"

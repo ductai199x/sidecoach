@@ -1,6 +1,7 @@
 package com.sidecoach.ui
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.chess.Board
 import com.sidecoach.coach.Coach
 import com.sidecoach.events.GameStarted
@@ -17,14 +18,17 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
 import java.util.Collections
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 /**
  * The voice never talks about a position the board has left behind: `PanelVoice.voiceAction`
  * against `tests/test_panel_voice_policy.py`'s cases and `test_coach.py`'s fast-game one; what
  * speaking does to the voice (a cut-in stops it first), the way from a move to its first sound,
  * a word held back in a fast game and said once the player slows, and the settings page's
- * preview line (`test_voices_personas.py`).
+ * preview line and voice list (`test_voices_personas.py`).
  */
 @RunWith(AndroidJUnit4::class)
 class PanelVoicePolicyTest {
@@ -176,7 +180,8 @@ class PanelVoicePolicyTest {
     /**
      * A word the fast game kept on the page is said once the player has been thinking in that
      * position as long as the pace allows (`_say_held_word`); one about a position the board
-     * has left, or after the game is over, is dropped.
+     * has left, or after the game is over, is dropped
+     * (`test_a_word_held_in_a_fast_game_is_said_once_the_player_slows`).
      */
     @Test
     fun aWordHeldInAFastGameIsSaidWhenThePlayerSlows() {
@@ -248,5 +253,36 @@ class PanelVoicePolicyTest {
         assertFalse(Voices.isEnglish("jf_alpha"))
         assertTrue(Voices.ENGLISH_VOICES.all { Voices.isEnglish(it) })
         assertEquals(setOf("af", "am", "bf", "bm"), Voices.ENGLISH_VOICES.map { it.take(2) }.toSet())
+    }
+
+    /**
+     * With no voices file, a missing one, or one that will not open, the picker offers the known
+     * names; a voices file that opens offers its own English voices, in the picker's order
+     * (`test_the_voice_list_falls_back_to_the_known_names` in tests/test_voices_personas.py; the
+     * file that opens is the phone's own case, so the fallback is seen to be one; the parity
+     * audit, 2026-09-29).
+     */
+    @Test
+    fun theVoiceListFallsBackToTheKnownNames() {
+        assertEquals(Voices.ENGLISH_VOICES, Voices.english(null))
+        val dir = File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "voices-fallback")
+        dir.deleteRecursively()
+        dir.mkdirs()
+        try {
+            assertEquals("a file that is not there", Voices.ENGLISH_VOICES, Voices.english(File(dir, "missing.bin")))
+            val unreadable = File(dir, "voices-v1.0.bin").apply { writeBytes("not a voices bundle".toByteArray()) }
+            assertEquals("a file that will not open", Voices.ENGLISH_VOICES, Voices.english(unreadable))
+            val bundle = File(dir, "voices-real.bin")
+            ZipOutputStream(bundle.outputStream()).use { zip ->
+                for (name in listOf("bm_george.npy", "jf_alpha.npy", "af_sarah.npy")) {
+                    zip.putNextEntry(ZipEntry(name))
+                    zip.write(byteArrayOf(0))
+                    zip.closeEntry()
+                }
+            }
+            assertEquals(listOf("af_sarah", "bm_george"), Voices.english(bundle))
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 }

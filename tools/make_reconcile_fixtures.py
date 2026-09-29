@@ -15,7 +15,8 @@ ported reconciler and must produce the same events in the same order.
 
 The second half (`reconcile_ops.json`) runs the desktop's own tests of the reconciler --
 `tests/test_reconcile.py`, `test_premoves.py`, the premove sweep's seeds
-(`test_premove_sweep.py`), and the pipeline tests whose games go through one (`RECORDED`) --
+(`test_premove_sweep.py`), a few seeds of the stress sweep (`test_stress.py`, `RECORDED_SEEDS`),
+and the pipeline tests whose games go through one (`RECORDED`) --
 as they stand, with every reconciler they build swapped for one that writes
 down what is done to it: built with which tunables, each frame of readings it is given and the
 events it answers, every call from outside (`start_from`, `turn_from_clock`, `end`,
@@ -363,6 +364,27 @@ RECORDED: dict[str, list[str] | None] = {
         "test_a_new_position_on_a_slow_stream_is_taken_after_a_moment_not_ten_frames",
     ],
     "tests.test_slides": ["test_a_move_seen_sliding_across_squares_is_one_move"],
+    # A few seeds of the stress sweep (`RECORDED_SEEDS`): the reconciler's rules no other
+    # recorded test runs (the parity audit, 2026-09-29).
+    "tests.test_stress": [
+        "test_a_random_game_is_followed_to_its_position",
+        "test_a_random_game_ends_on_screen",
+    ],
+}
+
+# The seeds a seeded test is recorded with, in place of its module's SEEDS, where they are not
+# those. Chosen by the lines of `reconcile.py` they run that no other recorded test does
+# (measured with the line monitor, 2026-09-29): the followed game of stress 73 has a move refused
+# through a square an arrow is drawn over (`_complete`'s `self._drawn`), stress 1's the
+# opponent's part of a story not yet clean during a drag; the ending of stress 1 has the mate
+# land on a king under its own decoration (`_king_lands`, `_checked_kings`), stress 8's a piece
+# of the user's on a red square that is really there; premove 47 and 90 have a piece of the
+# user's on a red square that is a queue's ghost, never a move played (90 is the seed that
+# found it).
+RECORDED_SEEDS: dict[tuple[str, str], tuple[int, ...]] = {
+    ("tests.test_stress", "test_a_random_game_is_followed_to_its_position"): (1, 73),
+    ("tests.test_stress", "test_a_random_game_ends_on_screen"): (1, 8),
+    ("tests.test_premove_sweep", "test_premove_queues_are_followed"): (*range(1, 9), 47, 90),
 }
 
 
@@ -659,13 +681,14 @@ for _name in CALLS:
     _wrap(_name)
 
 
-def _cases(func, module=None) -> list[tuple[str, dict]]:
+def _cases(func, module=None, seeds=None) -> list[tuple[str, dict]]:  # noqa: ANN001
     """The parameter sets pytest would run `func` with: every `parametrize` crossed, and a
     test taking `seed` once for each of its module's `SEEDS`, as the desktop's conftest
-    parametrises it without `--seeds`."""
+    parametrises it without `--seeds` -- or for each of `seeds`, when given."""
     grids: list[list[tuple[str, dict]]] = []
     if "seed" in inspect.signature(func).parameters:
-        grids.append([(str(seed), {"seed": seed}) for seed in module.SEEDS])
+        chosen = module.SEEDS if seeds is None else seeds
+        grids.append([(str(seed), {"seed": seed}) for seed in chosen])
     for mark in reversed(getattr(func, "pytestmark", [])):
         if mark.name != "parametrize":
             continue
@@ -737,7 +760,8 @@ def record_tests() -> dict:
         names = wanted or sorted({n for n in dir(module) if n.startswith("test_")} | set(kept))
         for test_name in names:
             func = kept.get(test_name) or getattr(module, test_name)
-            for label, params in _cases(func, module):
+            seeds = RECORDED_SEEDS.get((module_name, test_name))
+            for label, params in _cases(func, module, seeds):
                 _record_case(f"{short}::{test_name}" + (f"[{label}]" if label else ""), func, params)
         for test_name, func, params in FOLDED.get(module_name, []):
             _record_case(f"{short}::{test_name}", func, params)

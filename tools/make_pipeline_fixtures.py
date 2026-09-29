@@ -22,7 +22,12 @@ A scenario may also do what the desktop's pipeline tests do to a pipeline betwee
 (`_call`: a reset, the panel's Flip re-reading the board, the End game menu, a side forced, a
 clock as a reader would have left it, a reconciler's tunable), and may say whether a frame
 counts as changed (`_changed`) where the desktop's test passes it by hand; the phone does the
-same at the same point (the parity audit's st-T04..st-T08).
+same at the same point (the parity audit's st-T04..st-T08). The parity audit of 2026-09-29
+added the desktop's pipeline tests of a game's end (the dialog's and the badges' commit of a
+pending mate), of decisions the phone had replayed only as reconciler ops, and of a cold
+start's notice and reads, drawn as those tests draw them (`_desk`): a state may name its first
+frame (`_mark`) for its EXPECT, and a scenario may count its last session's reads of the theme
+cache (`COUNT_READS`, `reads`), which the phone counts too.
 """
 
 from __future__ import annotations
@@ -55,7 +60,7 @@ from sidecoach.events import (  # noqa: E402
     Unexplained,
 )
 from sidecoach.replay.recording import ChangeGate, board_gate  # noqa: E402
-from sidecoach.state.pipeline import GamePipeline  # noqa: E402
+from sidecoach.state.pipeline import COLD_NOTICE_S, DIALOG_SECONDS, GamePipeline  # noqa: E402
 from sidecoach.vision.squares import BoardGeometry  # noqa: E402
 from sidecoach.vision.theme_cache import ThemeCache  # noqa: E402
 from tests import synth  # noqa: E402
@@ -797,6 +802,193 @@ MOVED = {
 }
 
 
+# ---- The desktop's pipeline tests drawn as they draw them (the parity audit, 2026-09-29) ------
+#
+# `tests/games.py`'s `Game(pipeline=True)` and `tests/test_pipeline.py` draw with
+# `synthetic_board`'s defaults -- 64 px cells at (300, 120) on 1280 by 800, no coordinates, the
+# classic set on green -- and read every frame (`process` changed by default), a tenth of a
+# second apart from 0.0: the frame ids here, at FPS. These scenarios are those tests' frames.
+DESK_WHERE = (300, 120, 64)
+# `tests/test_pipeline.py`'s other board colours.
+BROWN_LIGHT = (181, 217, 240)
+BROWN_DARK = (99, 136, 181)
+
+
+def _desk(board: chess.Board, repeat: int, **extra) -> dict:
+    """`board` as the desktop's pipeline tests draw it, held for `repeat` frames, each read."""
+    return dict(board=board.copy(), **extra, _repeat=repeat, _where=DESK_WHERE, _changed=True)
+
+
+def _desk_image(image: np.ndarray, repeat: int, **extra) -> dict:
+    """A frame the desktop's test composed itself (a dialog over the board), each read."""
+    return dict(_image=image, _repeat=repeat, _where=DESK_WHERE, _changed=True, **extra)
+
+
+def _desk_played(sans: tuple[str, ...], start: int = 2) -> tuple[chess.Board, list[dict]]:
+    """`Game(pipeline=True).play(*sans)`: the start for `start` frames, then each move for
+    two, highlighted."""
+    board = chess.Board()
+    states = [_desk(board, start)]
+    for san in sans:
+        move = board.push_san(san)
+        states.append(_desk(board, 2, highlight=move))
+    return board, states
+
+
+def mate_read_once_then_the_dialog() -> list[dict]:
+    """`test_the_dialog_confirms_a_mate_read_once`: the opponent's move and the user's
+    premoved mate land in one frame, read once, and the dialog comes up before a second: what
+    it leaves in sight reads as the premove still queued, and the story waits; the dialog that
+    stays is the confirmation (`GamePipeline._dialog_over_the_board`, `commit_pending_terminal`
+    after DIALOG_SECONDS). The parity audit (2026-09-29): no phone fixture ran that commit."""
+    board, states = _desk_played(("e4", "e5", "Qh5", "Nc6", "Bc4"))
+    board.push_san("Nd4")  # c6 and d4 lie under the dialog
+    mate = board.push_san("Qxf7#")  # h5 and f7 do not
+    states.append(_desk(board, 1, highlight=mate))  # one clean frame
+    covered = synth.with_dialog(synth.synthetic_board(board=board, highlight=mate), dark=True)
+    states.append(_desk_image(covered, 30, _mark="dialog"))
+    return states
+
+
+def premoved_mate_with_the_badges() -> list[dict]:
+    """`test_the_badges_commit_a_premoved_mate_still_settling`: the mate queued as a premove
+    lands in the frame of the opponent's move before it, the site's badges stamped at once: a
+    story of two plies the board alone settles on its third frame. The badges, read on
+    BADGE_FRAMES frames, commit the pending mate they agree with (`_end_on_badges`,
+    `commit_pending_terminal`): the game ends on their second frame, both moves in its record,
+    and once. The parity audit (2026-09-29): no phone fixture ran that commit."""
+    board, states = _desk_played(("e4", "e5", "Bc4", "Nc6", "Qh5"))
+    # White queues Qxf7 while Black thinks.
+    states.append(_desk(board, 2, premoves=((chess.Move.from_uci("h5f7"),),)))
+    board.push_san("Nf6")
+    mate = board.push_san("Qxf7#")
+    states.append(_desk(board, 2, highlight=mate, check=True, result="1-0", _mark="badges"))
+    # The badges stay; the game does not end twice.
+    states.append(_desk(board, 2, highlight=mate, check=True, result="1-0"))
+    return states
+
+
+def mate_and_badges_together() -> list[dict]:
+    """`test_a_mate_on_the_board_ends_the_game_once_whatever_the_badges_say`: the mating move
+    and the badges arrive together and stay; the game ends once, the mate in its record."""
+    board, states = _desk_played(("f3", "e5", "g4"))
+    move = board.push_san("Qh4#")
+    states.append(_desk(board, 4, highlight=move, result="0-1"))
+    return states
+
+
+def the_mated_king_steps_then_the_mate() -> list[dict]:
+    """The mate lands with the mated king's own move: 1.e4 e5 2.Qh5, White queues Qxe5, Black
+    plays Ke7 and the premove mates in the same frame, the badges and the check glow stamped
+    on the king where it now stands, beside the square the record has it on. The badges are
+    looked for on the kings' neighbours while the story is pending (`_badged_kings`, `wide`),
+    and a badge there names the king's square. No desktop test plays it; it is the stress
+    sweep's `together` ending (`test_a_random_game_ends_on_screen`) with the king's step for
+    the premoved move. The parity audit (2026-09-29): no phone fixture found a badge on a
+    neighbour. Here the story settles on the board's own frames with the search or without it
+    (tried on five sets): the scenario runs the phone's neighbour search and holds its events
+    to the desktop's, but a search that found nothing would end this game the same."""
+    board, states = _desk_played(("e4", "e5", "Qh5"))
+    states.append(_desk(board, 2, premoves=((chess.Move.from_uci("h5e5"),),)))
+    board.push_san("Ke7")
+    mate = board.push_san("Qxe5#")
+    states.append(_desk(board, 2, highlight=mate, check=True, result="1-0", _mark="badges"))
+    states.append(_desk(board, 2, highlight=mate, check=True, result="1-0"))
+    return states
+
+
+def the_next_game_on_the_same_board() -> list[dict]:
+    """`test_next_game_on_the_same_board_is_begun_by_the_reconciler`: a game mated on the
+    board, then the next game's start on the same theme, the same way up: no bootstrap runs;
+    the reconciler, its game finished, begins the next one, and the pipeline learns the
+    recogniser again from that frame (`process`, `_rebuild_model` after the reconciler's own
+    GameStarted) -- a second bootstrap counted. The mate's game is not ended again, and the
+    next game's moves follow in a record of their own."""
+    _, states = _desk_played(("f3", "e5", "g4", "Qh4#"))
+    states.append(_desk(chess.Board(), 2))
+    second = chess.Board()
+    move = second.push_san("d4")
+    states.append(_desk(second, 2, highlight=move))
+    return states
+
+
+def browsed_to_the_start() -> list[dict]:
+    """`test_browsing_to_the_start_position_keeps_the_game`: the move list's first entry shows
+    the start position on the same theme for a while -- no new game, no bootstrap -- and the
+    game goes on from where it was."""
+    board, states = _desk_played(("e4", "e5"))
+    states.append(_desk(chess.Board(), 5))
+    move = board.push_san("Nf3")
+    states.append(_desk(board, 2, highlight=move))
+    return states
+
+
+def a_new_game_right_after_a_resync() -> list[dict]:
+    """`test_new_game_right_after_a_position_resync_is_a_new_game`: a position ten plies on,
+    adopted by a resync (`resync_hold_frames` 3, as the test sets it), then the next game's
+    start on another theme the other way up: a new game on a new recogniser, Black at the
+    bottom, even straight after the resync."""
+    _, states = _desk_played(("e4", "e5"))
+    states.append({"_call": {"reconciler": {"resync_hold_frames": 3}}})
+    states.append(_desk(chess.Board(LATER), 6))
+    states.append(
+        _desk(chess.Board(), 4, bottom=Side.BLACK, light=BROWN_LIGHT, dark=BROWN_DARK)
+    )
+    return states
+
+
+def rethemed_before_the_first_move() -> list[dict]:
+    """`test_board_flipped_or_rethemed_before_the_first_move_keeps_the_game`, rethemed: the
+    start position seen on other colours before any move -- a new recogniser, the same game
+    announced again, and its move follows. (Flipped is `flipped-before-a-move`.)"""
+    brown = dict(light=BROWN_LIGHT, dark=BROWN_DARK)
+    states = [_desk(chess.Board(), 2), _desk(chess.Board(), 4, **brown)]
+    board = chess.Board()
+    move = board.push_san("d4")
+    states.append(_desk(board, 2, highlight=move, **brown))
+    return states
+
+
+# `tests/test_cold_start.py`: a board left unread is explained after COLD_NOTICE_S.
+EXPLAINED_BY = COLD_NOTICE_S + 2.0
+
+
+def _watched(state: dict, seconds: float, start: float, **extra) -> dict:
+    """`_watch`: `state` held on screen for `seconds`, a tick every 0.3 s from `start`, its
+    pixels new only on the first: a puzzle sitting there while the person thinks."""
+    ticks = len(np.arange(start, start + seconds, 0.3))
+    return dict(state, _repeat=ticks, _ts=start, _dt=0.3, _changed=[True] + [False] * (ticks - 1), **extra)
+
+
+def _puzzle_in(style: str) -> dict:
+    """`_puzzle`: Tai's Pixel puzzle in `style` on chess.com's green, with coordinates."""
+    return board_kwargs(board=chess.Board(PUZZLE), theme="green", style=style, highlight=PUZZLE_LAST)
+
+
+def unlearned_away_and_back() -> list[dict]:
+    """`test_a_set_not_learned_is_explained_once_then_learned_from_a_start_position`, its
+    middle: a puzzle in a set not learned is explained once ("unlearned"); the board gone a
+    moment and back, it is explained again (the parity audit, 2026-09-29: the phone's
+    `piece-sets-green` explains it once and never takes the board away)."""
+    return [
+        dict(board_kwargs(board=chess.Board(), theme="green", style="cburnett"), _repeat=3, _session=True),
+        _watched(_puzzle_in("staunty"), EXPLAINED_BY, 0.0, _session=True),
+        _watched({"_image": synth.busy_background(WIDTH, HEIGHT, 0)}, 1.0, EXPLAINED_BY + 10.0),
+        _watched(_puzzle_in("staunty"), EXPLAINED_BY, EXPLAINED_BY + 20.0),
+    ]
+
+
+def a_puzzle_left_still() -> list[dict]:
+    """`test_a_puzzle_left_still_is_read_once`: a still puzzle is adopted after the three
+    reads a cold start waits for, within two seconds, and read from the cache once, not every
+    tick: pixels that did not change read the same (`reads`: the theme cache's `candidates`
+    asked in the last session, counted on both sides; the parity audit, 2026-09-29)."""
+    return [
+        dict(board_kwargs(board=chess.Board(), theme="green", style="staunty"), _repeat=3, _session=True),
+        _watched(_puzzle_in("staunty"), 3.0, 0.0, _session=True),
+    ]
+
+
 RESIZED_FIRST = ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5")
 RESIZED_AFTER = ("c3", "Nf6", "d4", "exd4", "cxd4", "Bb4+", "Bd2", "Bxd2+")
 
@@ -834,6 +1026,9 @@ SCENARIOS = {
     "takeback-brown": lambda: a_game_and_a_takeback("brown", "cburnett"),
     "quick-takebacks-green": lambda: quick_takebacks("green", "cburnett", 2, True),
     "takeback-jump-green": lambda: quick_takebacks("green", "cburnett", 0, False),
+    # `test_ten_plies_taken_back_quickly[a-frame-each]`: each earlier position up a frame, no
+    # slide (the parity audit, 2026-09-29: the desktop's third case, missing here).
+    "takebacks-a-frame-each-green": lambda: quick_takebacks("green", "cburnett", 1, False),
     "unexplained-green": lambda: an_unexplained_stretch("green", "cburnett"),
     "piece-sets-green": lambda: piece_sets("green"),
     "puzzle-flip-green": lambda: puzzle_flip("green"),
@@ -875,7 +1070,23 @@ SCENARIOS = {
     "labels-read-past-by-8": labels_read_past_by_the_8,
     **{name: (lambda args=args: moved_any_fraction(*args)) for name, args in MOVED.items()},
     "resized-fantasy-32-48": lambda: resized_half_again("fantasy", 32, 48),
+    # The parity audit (2026-09-29): the desktop's pipeline tests of the game's end, of its
+    # decisions replayed only as reconciler ops, and of a cold start's notice and reads.
+    "dialog-confirms-mate": mate_read_once_then_the_dialog,
+    "badges-commit-premoved-mate": premoved_mate_with_the_badges,
+    "mate-and-badges": mate_and_badges_together,
+    "king-steps-into-mate-badges": the_mated_king_steps_then_the_mate,
+    "next-game-same-board": the_next_game_on_the_same_board,
+    "browsed-to-start": browsed_to_the_start,
+    "new-game-after-resync": a_new_game_right_after_a_resync,
+    "rethemed-before-a-move": rethemed_before_the_first_move,
+    "unlearned-away-and-back": unlearned_away_and_back,
+    "puzzle-read-once": a_puzzle_left_still,
 }
+
+# Scenarios whose last session counts the theme cache's reads (`candidates`), as the
+# desktop's test counts them: `reads` in the fixture, held to the phone's count.
+COUNT_READS = {"puzzle-read-once"}
 
 # Scenarios the phone replays once, not again as a still screen read from its last pixels
 # (`PipelineTest.aStillScreenReadAgain...`): each pins a behaviour of the pipeline's, which
@@ -896,6 +1107,16 @@ READ_ONCE = {
     "labels-read-past-by-8",
     *MOVED,
     "resized-fantasy-32-48",
+    "dialog-confirms-mate",
+    "badges-commit-premoved-mate",
+    "mate-and-badges",
+    "king-steps-into-mate-badges",
+    "next-game-same-board",
+    "browsed-to-start",
+    "new-game-after-resync",
+    "rethemed-before-a-move",
+    "unlearned-away-and-back",
+    "puzzle-read-once",
 }
 
 # What each of those scenarios must show on the desktop, as its test asserts: a fixture that
@@ -973,7 +1194,93 @@ EXPECT = {
         for name, args in MOVED.items()
     },
     "resized-fantasy-32-48": lambda lines, data: _sans(lines) == [*RESIZED_FIRST, *RESIZED_AFTER],
+    "dialog-confirms-mate": lambda lines, data: (
+        _sans(lines) == ["e4", "e5", "Qh5", "Nc6", "Bc4", "Nd4", "Qxf7#"]
+        and [line.split()[1] for line in _ends(lines)] == ["1-0"]
+        # Settled under the dialog, not before it: DIALOG_SECONDS after it came up.
+        and _ts_of(data, "MovePlayed 7 ") - _mark_ts(data, "dialog") >= DIALOG_SECONDS
+    ),
+    "badges-commit-premoved-mate": lambda lines, data: (
+        _ends(lines) == ["GameEnded 1-0 game over on board"]
+        and _sans(lines)[-2:] == ["Nf6", "Qxf7#"]
+        and all(
+            _mark_at(data, "badges") <= _at(data, line) <= _mark_at(data, "badges") + 1
+            for line in ("MovePlayed 6 ", "MovePlayed 7 ", "GameEnded ")
+        )
+        and any("3. Qh5 Nf6 4. Qxf7#" in line for line in lines if line.startswith("GameEnded"))
+    ),
+    "mate-and-badges": lambda lines, data: (
+        [line.split()[1] for line in _ends(lines)] == ["0-1"] and "Qh4#" in _sans(lines)
+    ),
+    "king-steps-into-mate-badges": lambda lines, data: (
+        _sans(lines) == ["e4", "e5", "Qh5", "Ke7", "Qxe5#"]
+        and [line.split()[1] for line in _ends(lines)] == ["1-0"]
+    ),
+    "next-game-same-board": lambda lines, data: (
+        _sans(lines) == ["f3", "e5", "g4", "Qh4#", "d4"]
+        and sum(line.startswith("GameStarted") for line in lines) == 2
+        and [line.split()[1] for line in _ends(lines)] == ["0-1"]
+        and data["bootstraps"] == 2
+        and data["pgn"] == "1. d4"
+    ),
+    "browsed-to-start": lambda lines, data: (
+        _sans(lines) == ["e4", "e5", "Nf3"]
+        and sum(line.startswith("GameStarted") for line in lines) == 1
+        and not _ends(lines)
+        and data["bootstraps"] == 1
+        and data["pgn"] == "1. e4 e5 2. Nf3"
+    ),
+    "new-game-after-resync": lambda lines, data: (
+        [line.split(" | ")[1].split()[0] for line in lines if line.startswith("Resync position adopted")]
+        == [chess.Board(LATER).board_fen()]
+        and [" ".join(line.split()[:3]) for line in lines if line.startswith(("Resync", "GameStarted"))][-2:]
+        == ["Resync position adopted", "GameStarted game black"]
+        and data["bootstraps"] == 2
+    ),
+    "rethemed-before-a-move": lambda lines, data: (
+        _sans(lines) == ["d4"]
+        and [" ".join(line.split()[:3]) for line in lines if line.startswith("GameStarted")]
+        == ["GameStarted game white", "GameStarted game white"]
+        and not _ends(lines)
+        and data["bootstraps"] == 2
+    ),
+    "unlearned-away-and-back": lambda lines, data: (
+        [line for line in lines if line.startswith("BoardUnread")] == ["BoardUnread unlearned"] * 2
+        and not any(line.startswith("GameStarted position") for line in lines)
+    ),
+    "puzzle-read-once": lambda lines, data: (
+        sum(line.startswith("GameStarted position") for line in lines) == 1
+        and 1.0 <= _ts_of(data, "GameStarted position") <= 2.0
+        and data["reads"] == 1
+    ),
 }
+
+
+def _ends(lines: list[str]) -> list[str]:
+    """The GameEnded lines, their record left out."""
+    return [line.split(" |")[0] for line in lines if line.startswith("GameEnded")]
+
+
+def _at(data: dict, prefix: str) -> int:
+    """The index of the first frame with an event starting with `prefix`, or -1."""
+    for index, frame in enumerate(data["frames"]):
+        if any(line.startswith(prefix) for line in frame["events"]):
+            return index
+    return -1
+
+
+def _ts_of(data: dict, prefix: str) -> float:
+    at = _at(data, prefix)
+    return data["frames"][at]["ts"] if at >= 0 else float("nan")
+
+
+def _mark_at(data: dict, mark: str) -> int:
+    """The index of the first frame of the state marked `mark` (`_mark`)."""
+    return next(i for i, frame in enumerate(data["frames"]) if frame.get("mark") == mark)
+
+
+def _mark_ts(data: dict, mark: str) -> float:
+    return data["frames"][_mark_at(data, mark)]["ts"]
 
 
 def _lock_near(data: dict, cell: int, dx: float, dy: float) -> bool:
@@ -1022,7 +1329,37 @@ def _call(pipeline: GamePipeline, call: dict, image, ts: float) -> list:
         pipeline._last_clock = (white, black, None if running is None else Side(running))
         pipeline._last_clock_ts = call["last_clock_ts"]
         return []
+    if "reconciler" in call:
+        # A reconciler's tunable, as a desktop test sets it (`resync_hold_frames`).
+        assert pipeline.reconciler is not None, "no reconciler to tune"
+        for name, value in call["reconciler"].items():
+            if name not in RECONCILER_TUNABLES:
+                raise SystemExit(f"a tunable the phone's test does not set: {name}")
+            setattr(pipeline.reconciler, name, value)
+        return []
     raise SystemExit(f"a call the fixtures do not know: {call}")
+
+
+# The reconciler's tunables a scenario may set (`_call`), as `PipelineTest.call` sets them.
+RECONCILER_TUNABLES = {"resync_hold_frames"}
+
+
+class _Reads:
+    """The theme cache's `candidates`, counted since the last session began: how often a
+    board was read from the cache (`COUNT_READS`)."""
+
+    count = 0
+
+
+_CANDIDATES = ThemeCache.candidates
+
+
+def _counted_candidates(self, *args):  # noqa: ANN001, ANN002, ANN202
+    _Reads.count += 1
+    return _CANDIDATES(self, *args)
+
+
+ThemeCache.candidates = _counted_candidates  # type: ignore[method-assign]
 
 
 def run(name: str, states: list[dict]) -> dict:
@@ -1057,9 +1394,12 @@ def run(name: str, states: list[dict]) -> dict:
         forced = state.pop("_changed", None)
         where = state.pop("_where", (X0, Y0, CELL))
         lock = state.pop("_lock", False)
+        # A name for the state's first frame, for the scenario's EXPECT to find it by.
+        mark = state.pop("_mark", None)
         if session:
             pipeline = GamePipeline(cache=cache)
             gate = ChangeGate()
+            _Reads.count = 0
         # A state held for several frames is one file, named several times: what the
         # pipeline sees is the same pixels again, which is what a still board is; and a
         # board seen before is the file it was written to then.
@@ -1099,6 +1439,8 @@ def run(name: str, states: list[dict]) -> dict:
                 frame["forced"] = True
             if session and i == 0:
                 frame["session"] = True
+            if mark is not None and i == 0:
+                frame["mark"] = mark
             if lock and i == repeat - 1:
                 # Where the tracker's lock stands after the state's last frame.
                 held = pipeline.board
@@ -1127,6 +1469,8 @@ def run(name: str, states: list[dict]) -> dict:
     }
     if name in READ_ONCE:
         data["read_once"] = True
+    if name in COUNT_READS:
+        data["reads"] = _Reads.count
     if themes is not None:
         data["cache"] = True
         data["themes"] = len(list(themes.glob("theme-*.pkl")))

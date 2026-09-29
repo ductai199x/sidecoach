@@ -86,9 +86,16 @@ class PuzzlesTest {
         val b = Attempt(puzzle, "fork")
         assertEquals("failed", b.move("d4c2", byUser = true))
         assertNull("decided once", b.move("d4e2", byUser = true))
-        // Any mate counts where the line mates.
-        val mate = Puzzle("m", "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1", listOf("g1h1", "a1a8"), 900, 1, 1, listOf("mateIn1"))
+        // Any mate counts where the line mates: Black's king steps to the corner and White mates
+        // on the back rank (desktop 4e37a6f: the line had White moving twice, g1h1 a1a8).
+        val mate = Puzzle("m", "6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1", listOf("g8h8", "a1a8"), 900, 1, 1, listOf("mateIn1"))
         assertEquals("solved", Attempt(mate, "mate").move("a1a8", byUser = true))
+        // Another mating move than the line's is played through the line and read on the board
+        // (`alsoMates`, which the line's own move never reaches); a move that does not mate fails
+        // (the parity audit, 2026-09-29).
+        val two = Puzzle("m2", "6k1/5ppp/8/8/8/8/5PPP/RR4K1 b - - 0 1", listOf("g8h8", "a1a8"), 900, 1, 1, listOf("mateIn1"))
+        assertEquals("solved", Attempt(two, "mate").move("b1b8", byUser = true))
+        assertEquals("failed", Attempt(two, "mate").move("b1b7", byUser = true))
     }
 
     @Test
@@ -190,9 +197,10 @@ class PuzzlesTest {
                 "1000,80,90,500,fork opening short,https://lichess.org/x#3,",
             "pin01,rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2,d7d6 f1b5 c7c6," +
                 "1200,80,90,400,pin opening short,https://lichess.org/y#3,",
-            "mate1,6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1,g1h1 a1a8,900,70,95,900," +
+            // Black's king steps to the corner; White mates on the back rank (desktop 4e37a6f).
+            "mate1,6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1,g8h8 a1a8,900,70,95,900," +
                 "mateIn1 backRankMate endgame oneMove,https://lichess.org/z#1,",
-            "hi999,6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1,g1h1 a1a8,1900,70,95,900,fork," +
+            "hi999,6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1,g8h8 a1a8,1900,70,95,900,fork," +
                 "https://lichess.org/w#1,",
         )
     }

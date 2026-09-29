@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.BeforeClass
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -13,13 +14,23 @@ import org.opencv.core.Mat
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
 
-/** Where the time goes when a board is embedded: the crops, the scaling, the shuffle into
- * planes, and the net itself. A read that costs seconds is not a coach. */
+/**
+ * Where the time goes when a board is embedded: the crops, the scaling, the shuffle into
+ * planes, and the net itself. A read that costs seconds is not a coach.
+ *
+ * A benchmark, not a test: it logs its times and asserts nothing, so it runs only when asked
+ * (`-e bench true`), as `TrapCostTest` does -- in the suite it passed whatever it measured (the
+ * parity audit, 2026-09-29).
+ */
 @RunWith(AndroidJUnit4::class)
 class EmbedStagesTest {
 
     @Test
     fun theStagesOfAnEmbedAreTimed() {
+        assumeTrue(
+            "a benchmark: run with -e bench true",
+            InstrumentationRegistry.getArguments().getString("bench") == "true",
+        )
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val fixture = Fixtures.all().first { it.name == "italian-green" }
         val frame = Fixtures.mat(fixture)

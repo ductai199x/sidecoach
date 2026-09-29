@@ -189,6 +189,42 @@ class VisionParityTest {
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
     }
 
+    /**
+     * More of the desktop's detector and tracker tests on their own pages (the parity audit,
+     * 2026-09-29; `tools/make_vision_fixtures.py`'s `desk`): two boards half a cell or more apart
+     * both found and closer ones refused (`test_boards_half_a_cell_or_more_apart_are_both_found`,
+     * `test_boards_closer_than_half_a_cell_read_as_one_pattern`), the real chess.com page
+     * (`test_a_real_chesscom_page_yields_its_board`), a 37 px cell at (17, 333)
+     * (`test_detects_odd_cell_size_and_position`); a re-fit adopted on its boundary against a
+     * better fit (`test_refit_wins_on_boundary_strength_not_on_the_fit_score`), an inverted
+     * theme's palette kept through a nudge (`test_locked_fit_keeps_polarity_on_an_inverted_theme`),
+     * a dialog beside a page edge (`test_tracker_does_not_slide_under_a_dialog_beside_a_page_edge`)
+     * and a cover near one square colour over half the board, the lock's colours held
+     * (`test_fresh_palette_does_not_relock_from_a_half_covered_board`). A page is let go after
+     * its case, as the edge pages are.
+     */
+    @Test
+    fun theDesktopsDetectorAndTrackerTestsGoTheSameWay() {
+        val desk = index.getJSONObject("desk")
+        val failures = ArrayList<String>()
+        val grays = HashMap<String, Plane>()
+        fun gray(file: String): Plane = grays.getOrPut(file) {
+            val mat = Fixtures.asset("vision/$file")
+            BoardDetect.toGray(mat).also { mat.release() }
+        }
+        val detections = desk.getJSONArray("detections")
+        for (d in 0 until detections.length()) {
+            checkDetection(detections.getJSONObject(d), ::gray, failures)
+            grays.clear()
+        }
+        val runs = desk.getJSONArray("runs")
+        for (r in 0 until runs.length()) {
+            checkRun(runs.getJSONObject(r), ::gray, failures)
+            grays.clear()
+        }
+        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
     /** What the detector finds on a page, and the fit at the regions the desktop read. */
     private fun checkDetection(case: JSONObject, gray: (String) -> Plane, failures: MutableList<String>) {
         val file = case.getString("file")
@@ -208,7 +244,10 @@ class VisionParityTest {
         }
     }
 
-    /** A tracker fed the run's frames: its lock after every update, as the desktop's. */
+    /**
+     * A tracker fed the run's frames: its lock after every update, as the desktop's -- and, in a
+     * run that records them (`colours`), the square colours it holds.
+     */
     private fun checkRun(run: JSONObject, gray: (String) -> Plane, failures: MutableList<String>) {
         val settings = run.getJSONObject("settings")
         val tracker = BoardTracker(
@@ -216,15 +255,24 @@ class VisionParityTest {
             maxMisses = settings.optInt("max_misses", 3),
             refineEvery = settings.optInt("refine_every", 10),
         )
+        val colours = run.optBoolean("colours")
         val frames = run.getJSONArray("frames")
         val states = run.getJSONArray("states")
         for (i in 0 until frames.length()) {
             val board = tracker.update(gray(frames.getString(i)))
             val state = states.getJSONArray(i)
-            val got = "locked=${tracker.locked} verified=${tracker.verified} detections=${tracker.detections} " +
+            var got = "locked=${tracker.locked} verified=${tracker.verified} detections=${tracker.detections} " +
                 "probes=${tracker.probes} " + (board?.let { show(it) } ?: "none")
-            val want = "locked=${state.getBoolean(0)} verified=${state.getBoolean(1)} detections=${state.getInt(2)} " +
+            var want = "locked=${state.getBoolean(0)} verified=${state.getBoolean(1)} detections=${state.getInt(2)} " +
                 "probes=${state.getInt(4)} " + (if (state.isNull(3)) "none" else show(state.getJSONArray(3)))
+            if (colours) {
+                got += " colours " + (tracker.colours?.let { "%.6f %.6f %.6f".format(it.light, it.dark, it.tolerance) } ?: "none")
+                want += " colours " + if (state.isNull(5)) {
+                    "none"
+                } else {
+                    state.getJSONArray(5).let { "%.6f %.6f %.6f".format(it.getDouble(0), it.getDouble(1), it.getDouble(2)) }
+                }
+            }
             if (got != want) {
                 failures.add("${run.getString("what")}, update ${i + 1} (${frames.getString(i)}): phone $got, desktop $want")
                 return

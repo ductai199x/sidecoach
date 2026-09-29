@@ -33,6 +33,12 @@ odd. This records, compactly, one table per part:
   wood board near the bottom nudged an eighth of a cell, re-fitted before its colours are read
   again, and a game board moved past a re-fit's reach with an empty board beside it. Each
   passes the desktop's own assertions here, or the generator stops.
+- desk (the parity audit, 2026-09-29): more of the desktop's detector and tracker tests on
+  their own pages -- two boards half a cell or more apart found and closer refused, the real
+  chess.com page, a 37 px cell at (17, 333); a re-fit adopted on its boundary against a better
+  fit, an inverted theme's palette kept through a nudge, a dialog beside a page edge, and a
+  cover near one square colour over half the board, the lock's colours recorded with the lock.
+  And under badges, the board's own decorations and a lone badge, none a result.
 
     cd D:/chess-coaching-companion
     uv run --no-sync python <worktree>/tools/make_vision_fixtures.py
@@ -77,9 +83,11 @@ from sidecoach.vision.squares import BoardGeometry  # noqa: E402
 from sidecoach.vision.tracker import BoardTracker  # noqa: E402
 from tests.synth import (  # noqa: E402
     DARK,
+    LIGHT,
     bulky_pieces,
     busy_background,
     draw_dialog,
+    draw_result_badge,
     render_board,
     synthetic_board,
 )
@@ -250,7 +258,69 @@ def badge_cases() -> dict:
                 )),
             }
         )
+    boards += not_badges(margin)
     return {"crops": crops, "boards": boards}
+
+
+def not_badges(margin: int) -> list[dict]:
+    """Desktop test_result_badges's `test_the_boards_own_decorations_are_not_badges` and
+    `test_one_badge_alone_or_two_that_disagree_is_no_result` (the parity audit, 2026-09-29):
+    a check's glow under the king, a highlight on its square, a red mark, a green and a red
+    arrow into it, a move's badge on it, the hover outline, a premove, a selected king -- none
+    is a result; nor one badge alone, nor the same badge on both kings. Their boards at 64 px,
+    as the tests draw them, each checked to read no result here, as they assert."""
+    board = chess.Board(LOST)  # white to move, in check from the queen on g2
+    king, black_king = board.king(chess.WHITE), board.king(chess.BLACK)
+    assert king is not None and black_king is not None and board.is_check()
+    cell = 64
+    side = 8 * cell + 2 * margin
+
+    def drawn(**kw) -> np.ndarray:  # noqa: ANN003
+        return synthetic_board(
+            board=board, cell=cell, x0=margin, y0=margin, width=side, height=side, seed=3, **kw
+        )
+
+    frames = {
+        "check": drawn(check=True),
+        "highlight": drawn(highlight=chess.Move.from_uci("h1g1")),
+        "red-mark": drawn(red_marks=(king,)),
+        "green-arrow": drawn(arrows=(chess.Move.from_uci("h4g1"),), arrow_colour="green"),
+        "red-arrow": drawn(arrows=(chess.Move.from_uci("h4g1"),), arrow_colour="red"),
+        "best-badge": drawn(badge=(king, "best")),
+        "blunder-badge": drawn(badge=(king, "blunder")),
+        "hover": drawn(dragging=(king, king, 0.0, 0.0)),
+        "premove": drawn(premoves=((chess.Move.from_uci("g1h2"),),)),
+        "selected": drawn(selected=king),
+    }
+    alone = drawn()
+    draw_result_badge(alone, margin, margin, cell, Side.WHITE, king, "win")
+    frames["one-badge-alone"] = alone
+    both = alone.copy()
+    draw_result_badge(both, margin, margin, cell, Side.WHITE, black_king, "win")
+    frames["the-same-badge-on-both"] = both
+    geometry = BoardGeometry(Region(margin, margin, 8 * cell, 8 * cell), float(cell))
+    out = []
+    for name, frame in frames.items():
+        kings = {}
+        for square, key in ((king, "white"), (black_king, "black")):
+            found = badge_on(frame, geometry, square, Side.WHITE)
+            kings[key] = None if found is None else found.value
+        result = result_of(*(None if kings[k] is None else Badge(kings[k]) for k in ("white", "black")))
+        # No result; and the lone badge is read, alone, as the winner's.
+        if result is not None or (name == "one-badge-alone" and kings["white"] != "win"):
+            raise SystemExit(f"not-a-badge {name}: the desktop read {kings}, {result}")
+        out.append(
+            {
+                "file": png(f"badge-not-{name}.png", frame),
+                "fen": LOST,
+                "cell": cell,
+                "margin": margin,
+                "bottom": "white",
+                "kings": kings,
+                "result": result,
+            }
+        )
+    return out
 
 
 # ---- the boards ----------------------------------------------------------------------------
@@ -386,17 +456,180 @@ def board_cases() -> dict:
     return {"detections": detections, "runs": runs, "readable": readable}
 
 
-def track(what: str, settings: dict, sequence: list[str], frames: dict, files: dict) -> dict:
+def track(
+    what: str, settings: dict, sequence: list[str], frames: dict, files: dict, colours: bool = False
+) -> dict:
     """The tracker's lock after each update of a run: locked, verified, its detections, the
-    board, its probes."""
+    board, its probes -- and with `colours`, the square colours it holds (light, dark, the
+    tolerance)."""
     tracker = BoardTracker(**settings)
     states = []
     for name in sequence:
         board = tracker.update(frames[name])
-        states.append(
-            [tracker.locked, tracker.verified, tracker.detections, candidate_of(board), tracker.probes]
-        )
-    return {"what": what, "settings": settings, "frames": [files[n] for n in sequence], "states": states}
+        state = [tracker.locked, tracker.verified, tracker.detections, candidate_of(board), tracker.probes]
+        if colours:
+            state.append(None if tracker.colours is None else [r6(v) for v in tracker.colours])
+        states.append(state)
+    run = {"what": what, "settings": settings, "frames": [files[n] for n in sequence], "states": states}
+    if colours:
+        run["colours"] = True
+    return run
+
+
+# ---- the desktop's detector and tracker tests on their own pages (the parity audit, 2026-09-29)
+#
+# tests/test_board_detect.py and tests/test_tracker.py draw on 1280 by 800 (`synthetic_board`'s
+# defaults, the board of 64 px cells at (300, 120)) or on flat pages of their own; the busy
+# background well away from the board is flattened, as the edge pages are, and each case must
+# pass the desktop's own assertions on the page as written, or the generator stops.
+
+
+def _two_boards(gap: float) -> tuple[np.ndarray, int]:
+    """`_two_boards`: a game board and an empty board of the same cell size, `gap` cells apart."""
+    frame = np.full((700, 1400, 3), 90, dtype=np.uint8)
+    render_board(frame, 60, 100, 48, chess.Board())
+    second_x = 60 + 8 * 48 + int(round(gap * 48))
+    render_board(frame, second_x, 100, 48, chess.Board(None))
+    return frame, second_x
+
+
+def desktop_detections() -> dict[str, np.ndarray]:
+    """test_board_detect's boards half a cell or more apart (both found) and closer (read as one
+    pattern: none), the real chess.com page, and an odd cell at an odd place."""
+    frames: dict[str, np.ndarray] = {}
+    for gap in (0.0, 0.25, 0.5, 1.0):
+        frame, second_x = _two_boards(gap)
+        found = detect_boards(frame)
+        apart = gap >= 0.5
+        if apart and not (
+            len(found) == 2 and abs(found[0].region.x - 60) <= 2 and abs(found[1].region.x - second_x) <= 2
+        ):
+            raise SystemExit(f"two boards {gap} apart: the desktop found {found}")
+        if not apart and found:
+            raise SystemExit(f"two boards {gap} apart: the desktop found {found}")
+        frames[f"two-boards-{gap}-apart"] = frame
+    page = cv2.imread(str(DESKTOP / "tests" / "fixtures" / "chesscom_page.png"))
+    found = detect_boards(page)
+    if not (found and found[0].fit >= 0.85 and abs(found[0].cell_px - 86) <= 1
+            and abs(found[0].region.x - 290) <= 2 and abs(found[0].region.y - 65) <= 2):  # fmt: skip
+        raise SystemExit(f"the chess.com page: the desktop found {found[:1]}")
+    frames["chesscom-page"] = page
+    odd = flatten_around(synthetic_board(x0=17, y0=333, cell=37, seed=3), [(17, 333, 37)])
+    found = detect_boards(odd)
+    if not (found and abs(found[0].region.x - 17) <= 2 and abs(found[0].region.y - 333) <= 2
+            and abs(found[0].cell_px - 37) <= 0.5):  # fmt: skip
+        raise SystemExit(f"an odd cell at an odd place: the desktop found {found[:1]}")
+    frames["odd-37-at-17-333"] = odd
+    return frames
+
+
+def _dialog_and_page_edge(frame: np.ndarray) -> np.ndarray:
+    """test_tracker's: a dialog over columns a to c of rows 1 to 6, spilling left, and a page
+    edge a cell right."""
+    out = frame.copy()
+    cv2.rectangle(out, (300 - 40, 120 + 128), (300 + 192, 120 + 512), (40, 40, 40), -1)
+    out[:, 876:] = (30, 30, 30)
+    return out
+
+
+# The frames of the tracker tests: test_refit_wins_on_boundary_strength_not_on_the_fit_score
+# (43 px, empty), test_locked_fit_keeps_polarity_on_an_inverted_theme,
+# test_tracker_does_not_slide_under_a_dialog_beside_a_page_edge and
+# test_fresh_palette_does_not_relock_from_a_half_covered_board.
+INVERTED = {"light": (60, 60, 200), "dark": (200, 200, 60)}
+HALF_COVERS = [(rows, near, name) for rows in (4, 5) for near, name in ((LIGHT, "light"), (DARK, "dark"))]
+
+
+def desktop_tracker_frames() -> dict[str, np.ndarray]:
+    frames: dict[str, np.ndarray] = {}
+    cell = 43
+    frames["refit-43"] = flatten_around(
+        synthetic_board(x0=300, y0=120, cell=cell, pieces=False), [(300, 120, cell)]
+    )
+    nudged = synthetic_board(x0=313, y0=120, cell=cell, pieces=False)
+    band = int(round(cell * 0.12))
+    x0, y0 = 313 + 2 * cell, 120 + 2 * cell
+    x1, y1 = x0 + cell, y0 + cell
+    nudged[y0:y1, x0 : x0 + band] = DARK
+    nudged[y0:y1, 300 + 3 * cell : x1] = DARK
+    nudged[120 + 5 * cell : 120 + 6 * cell, 300 + 5 * cell : 313 + 6 * cell] = DARK
+    frames["refit-43-nudged"] = flatten_around(nudged, [(300, 120, cell)])
+    frames["inverted-64"] = flatten_around(synthetic_board(**INVERTED), [(300, 120, 64)])
+    frames["inverted-64-nudged"] = flatten_around(synthetic_board(x0=316, y0=120, **INVERTED), [(300, 120, 64)])
+    clean = flatten_around(synthetic_board(x0=300, y0=120, cell=64), [(300, 120, 64)])
+    frames["clean-64"] = clean
+    frames["dialog-and-page-edge"] = _dialog_and_page_edge(clean)
+    for rows, near, name in HALF_COVERS:
+        covered = clean.copy()
+        covered[120 : 120 + rows * 64, 300 : 300 + 512] = tuple(min(255, c + 4) for c in near)
+        frames[f"half-covered-{rows}-near-{name}"] = covered
+    return frames
+
+
+def desk_cases() -> dict:
+    """The detections and tracker runs of `desktop_detections` and `desktop_tracker_frames`,
+    in the fixture's `desk` table: every candidate a page gives, and the tracker's state after
+    every update, colours included where the test holds them."""
+    frames = {**desktop_detections(), **desktop_tracker_frames()}
+    files = {name: png(f"desk-{name}.png", frame) for name, frame in frames.items()}
+    detections = [
+        {"file": files[name], "boards": [candidate_of(b) for b in detect_boards(frames[name])], "fits": []}
+        for name in frames
+        if not name.startswith(("refit-", "inverted-", "clean-", "dialog-", "half-"))
+    ]
+    return {"detections": detections, "runs": desktop_tracker_runs(frames, files)}
+
+
+def desktop_tracker_runs(frames: dict, files: dict) -> list[dict]:
+    runs = []
+    # The re-fit adopted on its boundary comb though its fit is below the drifted lock's.
+    run = track(
+        "a 13 px nudge at 43 px: the re-fit wins on its boundary, not its fit", {},
+        ["refit-43"] + ["refit-43-nudged"] * 12, frames, files,
+    )  # fmt: skip
+    tracker = BoardTracker()
+    locked = tracker.update(frames["refit-43"])
+    gray = to_gray(frames["refit-43-nudged"])
+    old_fit = fit_score(gray, locked.region, locked.cell_px, tracker.colours)[0]
+    new_fit = fit_score(gray, Region(313, 120, 8 * 43, 8 * 43), 43.0, tracker.colours)[0]
+    last = run["states"][-1]
+    if not (tracker.min_fit <= new_fit < old_fit < 1.0 and all(s[1] and s[3] for s in run["states"][1:])
+            and abs(last[3][0] - 313) <= 2 and abs(last[3][1] - 120) <= 2 and abs(last[3][4] - 43) <= 0.5
+            and last[2] == 1):  # fmt: skip
+        raise SystemExit(f"refit at 43: fits {old_fit} {new_fit}, the desktop's tracker ended at {last}")
+    runs.append(run)
+    # The locked palette keeps its polarity on a theme whose light squares are the darker.
+    refine_every = BoardTracker().refine_every
+    run = track(
+        "an inverted theme nudged: the locked palette keeps its polarity", {},
+        ["inverted-64"] + ["inverted-64-nudged"] * refine_every, frames, files,
+    )  # fmt: skip
+    last = run["states"][-1]
+    if not (last[3] and abs(last[3][0] - 316) <= 2 and last[2] == 1):
+        raise SystemExit(f"inverted: the desktop's tracker ended at {last}")
+    runs.append(run)
+    # A dialog beside a page edge does not slide the lock.
+    run = track(
+        "a dialog beside a page edge: the lock does not slide", {"refine_every": 3},
+        ["clean-64"] + ["dialog-and-page-edge"] * 8, frames, files,
+    )  # fmt: skip
+    if not all(s[3] and abs(s[3][0] - 300) <= 2 for s in run["states"]) or run["states"][-1][2] != 1:
+        raise SystemExit(f"dialog and page edge: the desktop's tracker {run['states']}")
+    runs.append(run)
+    # A cover close to one square colour over half the board: the lock's palette is kept.
+    for rows, _near, name in HALF_COVERS:
+        covered = f"half-covered-{rows}-near-{name}"
+        run = track(
+            f"{rows * 8} cells covered near the {name} squares: the palette is not the cover's",
+            {"max_misses": 4}, ["clean-64"] + [covered] * 3 + ["clean-64"], frames, files, colours=True,
+        )  # fmt: skip
+        states = run["states"]
+        held = states[1:4]
+        if not (all(s[3] is not None and not s[1] and s[5] == states[0][5] for s in held)
+                and states[-1][1] and states[-1][5] == states[0][5] and states[-1][2] == 1):  # fmt: skip
+            raise SystemExit(f"{covered}: the desktop's tracker {states}")
+        runs.append(run)
+    return runs
 
 
 # ---- boards at the frame's edge: the desktop's tests of cfa8544's vision work ----------------
@@ -589,7 +822,13 @@ def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     for old in OUT.glob("*.png"):
         old.unlink()
-    out = {"gate": gate_cases(), "badges": badge_cases(), "boards": board_cases(), "edges": edge_cases()}
+    out = {
+        "gate": gate_cases(),
+        "badges": badge_cases(),
+        "boards": board_cases(),
+        "edges": edge_cases(),
+        "desk": desk_cases(),
+    }
     (OUT / "index.json").write_text(json.dumps(out, separators=(",", ":")) + "\n", encoding="utf-8")
     size = sum(p.stat().st_size for p in OUT.iterdir())
     gate = out["gate"]
@@ -608,6 +847,11 @@ def main() -> None:
     for run in out["edges"]["runs"]:
         last = run["states"][-1]
         print("edge track", run["what"], last[3][:5] if last[3] else None, "detections", last[2])
+    for d in out["desk"]["detections"]:
+        print("desk detect", d["file"], [b[:5] for b in d["boards"]])
+    for run in out["desk"]["runs"]:
+        last = run["states"][-1]
+        print("desk track", run["what"], last[3][:5] if last[3] else None, "detections", last[2])
     edge_bytes = sum(p.stat().st_size for p in OUT.glob("edge-*.png"))
     print(f"edge pages: {edge_bytes / 1e6:.1f} MB")
     print(f"{size / 1e6:.1f} MB -> {OUT}")

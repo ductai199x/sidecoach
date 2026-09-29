@@ -1,10 +1,16 @@
 package com.sidecoach.ui
 
+import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.coach.CoachRunner
+import com.sidecoach.coach.ModelCall
+import com.sidecoach.coach.Spoken
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.BoardUnread
 import com.sidecoach.events.ClockObservation
+import com.sidecoach.events.CoachMessage
+import com.sidecoach.events.DisclosureLevel
 import com.sidecoach.events.Event
 import com.sidecoach.events.GameEnded
 import com.sidecoach.events.GameStarted
@@ -18,8 +24,10 @@ import com.sidecoach.events.ScreenState
 import com.sidecoach.events.ScreenStateChanged
 import com.sidecoach.events.Severity
 import com.sidecoach.events.Takeback
+import com.sidecoach.events.Trigger
 import com.sidecoach.events.Unexplained
 import com.sidecoach.vision.Pieces
+import com.sidecoach.voice.TtsProvider
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -33,7 +41,8 @@ import java.net.URL
 /**
  * The panel held to the desktop's answers, scenario by scenario: `tools/make_panel_fixtures.py`
  * feeds a scripted game through the desktop's `PanelEngine` and records every line it wrote and
- * the state it kept, `log.elide` over awkward whitespace, `outcome_result` and `end_game`'s
+ * the state it kept, the lines it writes for the coach's messages, `log.elide` over awkward
+ * whitespace, `outcome_result` and `end_game`'s
  * refusal, what `Settings.model_validate` says of saves that do not fit, and what the server
  * answers a route it does not serve. The phone is given the same inputs and must answer the same.
  */
@@ -83,6 +92,125 @@ class PanelParityTest {
             for (key in kept.keys()) check("$label: state $key", state.opt(key), kept.opt(key))
         }
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /** A voice that is busy or not as a case says, and says nothing (`FakeTTS`). */
+    private class FakeTts : TtsProvider {
+        override val name = "fake"
+        @Volatile override var busy = false
+        override fun healthcheck(): Pair<Boolean, String> = true to "fake"
+        override fun say(text: String, voice: String?) = Unit
+        override fun stop() = Unit
+    }
+
+    /**
+     * The coach's messages as the panel logs them, each with what it was checked against: "model
+     * reply rejected; the quick answer stands", "draft rejected → template", "cut short", "not
+     * spoken: board moved on", "not spoken: voice busy", "cut in", the leak and the form noted,
+     * each model reply's figures, "LLM call failed" (`panel._coach_meta`, the phone's
+     * `CoachRunner.drain`; the parity audit, 2026-09-29). Each message goes into an offline
+     * coach's record, with the board's ply and the voice as the case sets them.
+     */
+    @Test
+    fun theCoachsLinesAreWrittenAsTheDesktopWritesThem() {
+        val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        val saved = prefs.getString("json", null)
+        val speaker = PanelVoice.speaker
+        val voicing = PanelVoice.voicing
+        val paced = PanelVoice.coach
+        val profiler = PanelEngine.profiler
+        var runner: CoachRunner? = null
+        try {
+            // An offline coach: no model to reach from a test.
+            val settings = SettingsStore(app)
+            val values = settings.values()
+            values.getJSONObject("llm").put("provider", "none")
+            settings.save(values)
+            val built = CoachRunner(SettingsStore(app))
+            runner = built
+            val coach = built.coach!!
+            val voice = FakeTts()
+            PanelVoice.speaker = voice
+            PanelVoice.coach = null // the pace: not a fast game, as the desktop's fresh coach
+            PanelEngine.profiler = null
+            if (PanelVoice.muted) PanelVoice.setMuted(false)
+            val cases = fixture.getJSONArray("coach_meta")
+            for (i in 0 until cases.length()) {
+                val case = cases.getJSONObject(i)
+                val label = case.getString("label")
+                PanelEngine.set("ply" to case.getInt("ply_now"))
+                voice.busy = case.getBoolean("busy")
+                PanelVoice.voicing = case.optJSONArray("voicing")?.let { it.getString(0) to (if (it.isNull(1)) null else it.getInt(1)) }
+                coach.spoken.add(spokenOf(case.getJSONObject("spoken")))
+                if (!case.isNull("failed")) {
+                    coach.speaker.failures += 1
+                    coach.speaker.lastError = case.getString("failed")
+                }
+                val cursor = PanelEngine.poll(Int.MAX_VALUE).getInt("cursor")
+                built.drain()
+                val lines = PanelEngine.poll(cursor).getJSONArray("lines").let { a ->
+                    (0 until a.length()).map { a.getJSONObject(it) }.filter { it.getString("chan") == "coach" }
+                }
+                val want = case.getJSONArray("records")
+                check("$label: records ${lines.map { it.getString("text") }}", lines.size, want.length())
+                for (k in 0 until minOf(lines.size, want.length())) {
+                    for (key in listOf("chan", "level", "text", "data")) {
+                        check("$label #$k $key", lines[k].opt(key), want.getJSONObject(k).opt(key))
+                    }
+                }
+            }
+        } finally {
+            runner?.close()
+            PanelVoice.speaker = speaker
+            PanelVoice.voicing = voicing
+            PanelVoice.coach = paced
+            PanelEngine.profiler = profiler
+            if (saved == null) prefs.edit().remove("json").commit() else prefs.edit().putString("json", saved).commit()
+        }
+        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /** A coach message and what it was checked against, from the desktop's case. */
+    private fun spokenOf(o: JSONObject): Spoken {
+        val level = DisclosureLevel.of(o.getInt("level"))
+        val message = CoachMessage(
+            text = o.getString("text"),
+            level = level,
+            trigger = Trigger.entries.first { it.slug == o.getString("trigger") },
+            gameId = "g1",
+            ply = if (o.isNull("ply")) null else o.getInt("ply"),
+            fen = if (o.isNull("fen")) null else o.getString("fen"),
+        )
+        val calls = o.getJSONArray("calls").let { a ->
+            (0 until a.length()).map { k ->
+                val c = a.getJSONObject(k)
+                ModelCall(c.getString("raw"), statsOf(c.getJSONObject("stats")), c.getInt("candidates"), c.getInt("passed"), c.getString("prompt"))
+            }
+        }
+        return Spoken(
+            message = message,
+            level = level,
+            problems = strings(o.getJSONArray("problems")),
+            attempts = o.getInt("attempts"),
+            calls = calls,
+            streamed = o.getBoolean("streamed"),
+            leaks = strings(o.getJSONArray("leaks")),
+            notes = strings(o.getJSONArray("notes")),
+        )
+    }
+
+    /** A call's stats as the provider gives them: numbers, text, and a list of text. */
+    private fun statsOf(o: JSONObject): Map<String, Any?> {
+        val out = LinkedHashMap<String, Any?>()
+        for (key in o.keys()) {
+            val value = o.get(key)
+            out[key] = when (value) {
+                JSONObject.NULL -> null
+                is JSONArray -> strings(value)
+                else -> value
+            }
+        }
+        return out
     }
 
     /** `log.elide`: Python's whitespace run together, the cut counted in code points. */

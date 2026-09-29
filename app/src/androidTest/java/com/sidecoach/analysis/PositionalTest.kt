@@ -98,13 +98,12 @@ class PositionalTest {
     }
 
     /**
-     * `test_a_rescue_is_of_the_piece_their_threat_goes_after` (desktop 3d9568d): a piece that
-     * could be taken is in danger only when taking it is their threat (the engine's best move for
-     * them, were it theirs): "a piece in danger comes first" was said of a rook check that led to
-     * mate, and of moves whose threat was elsewhere (the lesson audit, 2026-09-27). A pawn that
-     * steps on from an attack is a push, not a rescue. With the threat, the rescues of
-     * `test_best_move_idea_rescues_a_piece_in_danger` and
-     * `test_a_rescue_needs_a_piece_that_can_be_won_and_a_safe_square` still hold.
+     * The rescue rows of `test_the_best_move_s_idea` (desktop 3d9568d, one table since
+     * ae6c91d): a piece that could be taken is in danger only when taking it is their threat
+     * (the engine's best move for them, were it theirs): "a piece in danger comes first" was
+     * said of a rook check that led to mate, and of moves whose threat was elsewhere (the lesson
+     * audit, 2026-09-27). A pawn that steps on from an attack is a push, not a rescue. With the
+     * threat, a piece that can be won with a safe square to go to is rescued.
      */
     @Test
     fun aRescueIsOfThePieceTheirThreatGoesAfter() {

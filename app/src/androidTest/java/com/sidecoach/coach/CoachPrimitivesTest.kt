@@ -291,12 +291,12 @@ class CoachPrimitivesTest {
      * (ck-05, ck-06, ck-07, TG-08): `test_effects_legal.py` (a pinned piece or a king that
      * cannot take attacks nothing, attacked and defended by legal captures, a defence that
      * saves, a fork that wins from a square it keeps, a pin broken at a profit, a check
-     * answered), `test_facts.py` (the threat that becomes prophylaxis, a move and a tactic in
-     * words, a fork the best move creates, only enemy targets, forcing or quiet, a quiet move
-     * whose line wins), `test_coach_policy.py`'s facts (theme, region, piece and candidates, a
-     * line the board cannot play, near-equal candidates, a demoted tactic, a decisive one, the
-     * theme's ranking, regions, phase and material) and `test_coach_annotations.py` (the marks
-     * by level, a played move's colour, the mentions).
+     * answered), `test_facts.py` (the theme, region, piece and candidates, a line the board
+     * cannot play, near-equal candidates, a quiet developing move, regions, phase and material
+     * -- once `test_coach_policy.py`'s -- the threat that becomes prophylaxis, a move and a
+     * tactic in words, a fork the best move creates, only enemy targets, forcing or quiet, a
+     * quiet move whose line wins) and `test_coach_annotations.py` (the marks by level, a played
+     * move's colour, the mentions).
      */
     @Test
     fun theDesktopsKnowledgeTestsMatch() {
@@ -634,6 +634,28 @@ class CoachPrimitivesTest {
             note("blunder", policy.onUserMoveAssessed(assessment(Severity.BLUNDER, Label.BLUNDER)))
             note("fine move", policy.onUserMoveAssessed(assessment(Severity.NONE, Label.BEST)))
             note("miss", policy.onUserMoveAssessed(assessment(Severity.NONE, Label.MISS)))
+            // The branches the script had never run (the parity audit, 2026-09-29): an analysis
+            // of a ply the board has left; the clock's share between the floor and the setting
+            // (five minutes gives 24 s, 100 s still hints at the floor); a quiet position
+            // between two decisive ones, which lets the question come again within
+            // DECISIVE_EVERY plies.
+            policy.newPosition(20, 800.0, userToMove = true)
+            note("analysed another ply", policy.onPositionAnalysed(18, decisive = true))
+            policy.newPosition(22, 900.0, userToMove = true)
+            policy.setRemaining(300_000)
+            note("five minutes, before the share", policy.tick(920.0))
+            note("five minutes, past the share", policy.tick(925.0))
+            policy.setRemaining(100_000)
+            policy.newPosition(24, 1000.0, userToMove = true)
+            note("100 s, at the floor", policy.tick(1021.0))
+            policy.newPosition(30, 1100.0, userToMove = true)
+            note("decisive at 30", policy.onPositionAnalysed(30, decisive = true))
+            policy.newPosition(32, 1110.0, userToMove = true)
+            note("decisive at 32, in the stretch", policy.onPositionAnalysed(32, decisive = true))
+            policy.newPosition(34, 1120.0, userToMove = true)
+            note("quiet at 34", policy.onPositionAnalysed(34, decisive = false))
+            policy.newPosition(36, 1130.0, userToMove = true)
+            note("decisive at 36, after the quiet one", policy.onPositionAnalysed(36, decisive = true))
 
             check("${run.getString("control")} steps", seen.size, steps.length())
             for (k in 0 until minOf(steps.length(), seen.size)) {

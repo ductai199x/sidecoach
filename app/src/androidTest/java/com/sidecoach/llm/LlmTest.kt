@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -298,6 +299,69 @@ class LlmTest {
         Log.i(TAG, "${built.length()} wires, ${bodies.length()} bodies, ${chats.length()} chats, " +
             "${streams.length()} streams, ${settings.length()} settings, $took ms")
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /**
+     * The effort is the provider's: another effort is another provider of the same model and
+     * endpoint, sharing the ledger, and the same effort is the provider itself; one that is no
+     * "effort" provider is itself at any effort. The key goes out as `Authorization: Bearer`. The
+     * offline provider's ledger is there and empty (`test_the_default_is_luna_an_effort_provider_and_local_is_a_preset`
+     * and `test_the_factory_gives_the_offline_provider_and_it_reports_itself` in
+     * tests/test_llm_factory.py, `test_usage_adds_up_over_calls_and_effort_copies` in
+     * tests/test_llm_usage.py, `test_chat_parses_content_reasoning_and_usage` in
+     * tests/test_llm_openai_compat.py; the parity audit, 2026-09-29).
+     */
+    @Test
+    fun anEffortCopySharesTheLedgerAndTheKeyGoesAsABearer() {
+        val seen = java.util.Collections.synchronizedList(ArrayList<Map<String, String>>())
+        val reply = "{\"choices\": [{\"message\": {\"content\": \"Fine.\"}, \"finish_reason\": \"stop\"}], " +
+            "\"usage\": {\"prompt_tokens\": 1000, \"prompt_tokens_details\": {\"cached_tokens\": 800}, " +
+            "\"completion_tokens\": 50, \"completion_tokens_details\": {\"reasoning_tokens\": 30}}}"
+        val transport = object : Transport {
+            override fun get(url: String, headers: Map<String, String>, timeoutMs: Int): HttpReply {
+                seen.add(headers)
+                return HttpReply(200, "{\"data\": []}")
+            }
+
+            override fun post(url: String, headers: Map<String, String>, body: String, timeoutMs: Int): HttpReply {
+                seen.add(headers)
+                return HttpReply(200, reply)
+            }
+
+            override fun postLines(
+                url: String,
+                headers: Map<String, String>,
+                body: String,
+                timeoutMs: Int,
+                onLine: (String) -> Boolean,
+            ): HttpReply {
+                seen.add(headers)
+                return HttpReply(200, "")
+            }
+        }
+        val provider = OpenAICompatProvider(
+            "x", "http://h/v1", "m", apiKey = "secret",
+            thinkingControl = ThinkingControl.EFFORT, reasoningEffort = "medium", transport = transport,
+        )
+        assertTrue("the same effort: the provider itself", provider.withEffort("medium") === provider)
+        val routine = provider.withEffort("none")
+        assertTrue(routine !== provider && routine.usage === provider.usage)
+        assertEquals("none", routine.reasoningEffort)
+        assertEquals(provider.model to provider.baseUrl, routine.model to routine.baseUrl)
+        provider.chat("s", listOf(ChatMessage("user", "hi")))
+        routine.chat("s", listOf(ChatMessage("user", "hi")))
+        val u = provider.usage
+        assertEquals(listOf(2, 2000, 1600, 100, 60), listOf(u.calls, u.prompt, u.cached, u.completion, u.reasoning))
+        assertEquals(0, u.estimated)
+        assertEquals(listOf("Bearer secret", "Bearer secret"), seen.map { it["Authorization"] })
+        // Not an "effort" provider: itself at any effort.
+        val local = OpenAICompatProvider("local", "http://h/v1", "m", thinkingControl = ThinkingControl.PREFILL, transport = transport)
+        assertTrue(local.withEffort("none") === local)
+        // No model at all: its ledger is there, and empty.
+        val none = makeProvider(LLMSettings(provider = "none"))
+        assertTrue(none is OfflineProvider)
+        assertEquals(0, (none as OfflineProvider).usage.calls)
+        assertTrue(none.withEffort("low") === none)
     }
 
     private fun checkSummary(label: String, mine: Map<String, Any?>, theirs: JSONObject) {
