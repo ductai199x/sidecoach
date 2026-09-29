@@ -342,7 +342,6 @@ def desktop_tests() -> dict:
         "check_draft": lambda text, board, *, after=(), us=None: {
             "text": text, "fen": board_arg(board), "after": [b.fen() for b in after], "us": us
         },
-        "inventory_text": lambda board, colour: {"fen": board_arg(board), "white": colour == chess.WHITE},
         "pin_target": lambda board, sq: {"fen": board_arg(board), "square": chess.square_name(sq)},
         "skewer_target": lambda board, sq: {"fen": board_arg(board), "square": chess.square_name(sq)},
         "batteries": lambda board, colour: {"fen": board_arg(board), "white": colour == chess.WHITE},

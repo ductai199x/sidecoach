@@ -832,10 +832,6 @@ class Coach(
 
     fun hint(ts: Double) = ask("hint", ts)
 
-    fun askMove(ts: Double) = ask("what should I play", ts)
-
-    fun askLine(ts: Double) = ask("show me the line", ts)
-
     fun poll(): List<CoachMessage> {
         val out = ArrayList<CoachMessage>()
         for (one in speaker.poll()) {

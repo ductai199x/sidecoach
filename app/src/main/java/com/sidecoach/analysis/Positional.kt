@@ -1347,5 +1347,3 @@ fun worstPieceSquare(board: Board, us: Boolean): Int? {
     if (facts.isEmpty() || facts[0].squares.isEmpty()) return null
     return com.sidecoach.chess.parseSquare(facts[0].squares[0])
 }
-
-fun factsText(facts: List<PositionalFact>): List<String> = facts.map { it.text }

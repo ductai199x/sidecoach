@@ -63,8 +63,6 @@ val PERSONAS: Map<String, Pair<String, String>> = linkedMapOf(
 
 const val DEFAULT_PERSONA = "warm_direct"
 
-val PERSONA = COACH + PERSONAS[DEFAULT_PERSONA]!!.second + AIM
-
 const val CONTRACT =
     "How the game reaches you.\n" +
         "Each time you are called you get one message describing the game as it stands, in " +

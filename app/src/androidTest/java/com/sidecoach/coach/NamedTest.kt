@@ -236,7 +236,6 @@ class NamedTest {
                 ).map { "${it.text}|${it.reason}" } to (out as JSONArray).let { all ->
                     (0 until all.length()).map { all.getJSONObject(it).let { p -> "${p.getString("text")}|${p.getString("reason")}" } }
                 }
-                "inventory_text" -> inventoryText(board, a.getBoolean("white")) to out
                 "pin_target" -> squares(pinTarget(board, parseSquare(a.getString("square")))) to
                     (if (out == JSONObject.NULL) null else strings(out as JSONArray))
                 "skewer_target" -> squares(skewerTarget(board, parseSquare(a.getString("square")))) to

@@ -37,12 +37,10 @@ from sidecoach.coach.conversation import Conversation  # noqa: E402
 from sidecoach.coach.facts import facts_from_analysis  # noqa: E402
 from sidecoach.config import Settings, find_stockfish  # noqa: E402
 from sidecoach.events import (  # noqa: E402
-    Analysis,
     DisclosureLevel,
     GameEnded,
     GameStarted,
     Line,
-    MoveAssessment,
     MovePlayed,
     Resync,
     Side,
@@ -367,7 +365,6 @@ def prompts() -> dict[str, Any]:
     """The system message, every persona and both with and without C."""
     out: dict[str, Any] = {
         "corrections": PROMPT.corrections(),
-        "persona_default": PROMPT.PERSONA,
         "contract": PROMPT.CONTRACT,
         "rules": PROMPT.RULES,
         "default_persona": PROMPT.DEFAULT_PERSONA,

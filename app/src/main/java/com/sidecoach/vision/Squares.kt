@@ -20,9 +20,6 @@ object Squares {
 
     const val CELL = 48
 
-    /** The crop the embedder reads, twice the working cell, as the desktop cuts it. */
-    const val EMBED_CROP = 2 * CELL
-
     /**
      * An edge this close to a pixel boundary is taken as on it: a lock measured a hair off
      * must not drop a whole pixel of every cell.

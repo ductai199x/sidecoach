@@ -115,7 +115,6 @@ data class PositionFacts(
     val candidates: List<String> = emptyList(),
     val threats: List<String> = emptyList(),
     val line: List<String> = emptyList(),
-    val userClaims: List<Map<String, Any?>> = emptyList(),
     /**
      * The first hint's parts ([Situation]), named on the board: what is at stake ("only one
      * move holds here: even the next best move loses a knight"), the key fact ("they threaten
@@ -164,7 +163,6 @@ data class PositionFacts(
         out["candidates"] = candidates
         out["threats"] = threats
         out["line"] = line
-        out["user_claims"] = userClaims
         out["stakes"] = stakes
         out["key"] = key
         out["trap"] = trap
@@ -177,7 +175,7 @@ data class PositionFacts(
 
 private val ALWAYS = listOf(
     "fen", "side_to_move", "user_side", "phase", "material", "last_move", "decisive",
-    "only_move", "user_claims",
+    "only_move",
 )
 
 private val IDEA_KEYS = listOf(

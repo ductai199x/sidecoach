@@ -180,10 +180,6 @@ class MoveAssessment(
  * third giving the answer with a good and correct explanation"). IDEA: the goal and the
  * pattern, and why it works. FOCUS: the target on the board and the piece that does it.
  * MOVE: the move, explained. LINE: the whole line.
- *
- * The desktop keeps the old seven-rung names as aliases (QUESTION = THEME = IDEA, REGION =
- * PIECE = FOCUS, CANDIDATE = MOVE) for its evaluation tools, which the phone does not have; a
- * Kotlin enum has no aliases, so only the five names are here.
  */
 enum class DisclosureLevel(val value: Int) {
     SILENT(0),

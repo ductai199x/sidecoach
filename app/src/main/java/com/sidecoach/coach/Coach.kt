@@ -121,13 +121,6 @@ internal fun greatMeaning(facts: PositionFacts): String {
  */
 const val TAUGHT_MEMORY = 3
 
-/**
- * The praise, by the move's label, in the vocabulary chess.com uses ([OPENERS], with the
- * lesson the board gives): said alone when there is no lesson to add.
- */
-val VERDICTS: Map<String, List<String>> =
-    OPENERS.mapValues { (_, openers) -> openers.map { "$it." } }
-
 /*
  * The templates said without a model are the coach on a phone with no model, and the floor the
  * model must rise above (Tai, 2026-09-23: "the template coach must be good already"). Each rung

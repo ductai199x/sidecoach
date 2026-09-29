@@ -86,19 +86,6 @@ class CoachPrimitivesTest {
                 o.getString("control"),
             )
         }
-        val priorities = data.getJSONArray("priorities")
-        for (i in 0 until priorities.length()) {
-            val o = priorities.getJSONObject(i)
-            val input = o.getJSONArray("in").let { a ->
-                List(a.length()) { k -> Trigger.entries.first { it.slug == a.getString(k) } }
-            }
-            check(
-                "inPriority",
-                inPriority(input).map { it.slug },
-                o.getJSONArray("out").let { a -> List(a.length()) { a.getString(it) } },
-            )
-        }
-
         checkPolicy(data.getJSONArray("policy"))
 
         // The standing in words, at the bands' edges.
@@ -160,7 +147,6 @@ class CoachPrimitivesTest {
             check("position text", positionText(board), case.getString("position_text"))
             check("ascii", asciiBoard(board), case.getString("ascii"))
             check("inventory lines", inventoryLines(board, us), strings(case.getJSONArray("inventory_lines")))
-            check("inventory text", inventoryText(board, us), case.getString("inventory_text"))
             check(
                 "line outcome",
                 if (analysis.lines.isNotEmpty()) lineOutcome(board, analysis.lines[0].moves, us) else null,
@@ -347,10 +333,6 @@ class CoachPrimitivesTest {
                 ) to strings(out as JSONArray)
                 "line_notes" -> lineNotes(board, strings(a.getJSONArray("moves")), limit = a.getInt("limit"), player = colour("player")) to out
                 "line_spoken" -> lineSpoken(board, strings(a.getJSONArray("moves")), limit = a.getInt("limit")) to out
-                "theme_of" -> themeOf(tagsFrom(a.getJSONArray("tags")))?.let { showTag(it.name, it.squares, it.move) } to
-                    (if (out == JSONObject.NULL) null else (out as JSONObject).let { t ->
-                        showTag(t.getString("name"), strings(t.getJSONArray("squares")), if (t.isNull("move")) null else t.getString("move"))
-                    })
                 "region_of" -> regionOf(strings(a.getJSONArray("squares"))) to (if (out == JSONObject.NULL) null else out)
                 "phase_of" -> phaseOf(board, a.getBoolean("in_book")) to out
                 "material_text" -> materialText(board, colour("perspective")) to out
@@ -416,12 +398,6 @@ class CoachPrimitivesTest {
         candidates = strings(o.getJSONArray("candidates")),
         threats = strings(o.getJSONArray("threats")),
         line = strings(o.getJSONArray("line")),
-        userClaims = o.getJSONArray("user_claims").let { all ->
-            (0 until all.length()).map { k ->
-                val entry = all.getJSONObject(k)
-                entry.keys().asSequence().associateWith { key -> if (entry.isNull(key)) null else entry.opt(key) }
-            }
-        },
         stakes = nullable(o, "stakes"),
         key = nullable(o, "key"),
         trap = nullable(o, "trap"),

@@ -1068,7 +1068,6 @@ def case_for(
         "position_text": F.position_text(board),
         "ascii": F.ascii_board(board),
         "inventory_lines": I.inventory_lines(board, us),
-        "inventory_text": I.inventory_text(board, us),
         "line_outcome": O.line_outcome(board, list(analysis.lines[0].moves), us)
         if analysis.lines
         else None,
@@ -1390,9 +1389,6 @@ def desktop_tests() -> dict:
     out: dict[str, list] = {"calls": [], "ran": []}
     current = {"test": ""}
 
-    def tags_arg(tags) -> list[dict]:  # noqa: ANN001
-        return [{"name": t.name, "squares": list(t.squares), "move": t.move} for t in tags]
-
     def colour(c) -> bool | None:  # noqa: ANN001
         return None if c is None else c == chess.WHITE
 
@@ -1417,7 +1413,6 @@ def desktop_tests() -> dict:
             "fen": board.fen(), "moves": list(moves), "limit": limit, "player": colour(player)
         },
         "line_spoken": lambda board, moves, *, limit=6: {"fen": board.fen(), "moves": list(moves), "limit": limit},
-        "theme_of": lambda tags: {"tags": tags_arg(tags)},
         "region_of": lambda squares: {"squares": list(squares)},
         "phase_of": lambda board, in_book=False: {"fen": board.fen(), "in_book": in_book},
         "material_text": lambda board, perspective=None: {"fen": board.fen(), "perspective": colour(perspective)},
@@ -1433,8 +1428,6 @@ def desktop_tests() -> dict:
             return facts_json(result)
         if fn == "visible_facts":
             return {k: (list(v) if isinstance(v, (list, tuple)) else v) for k, v in result.items()}
-        if fn == "theme_of":
-            return tag_json(result)
         if fn in ("annotations_for", "mentions_in"):
             return [annotation_json(mark) for mark in result]
         return result
@@ -1469,7 +1462,6 @@ def desktop_tests() -> dict:
         "describe_effects": [E],
         "line_notes": [E],
         "line_spoken": [E],
-        "theme_of": [F],
         "region_of": [F],
         "phase_of": [F, PH],
         "material_text": [F],
@@ -1810,18 +1802,6 @@ def main() -> None:
             (60_000, 0), (180_000, 2_000), (900_000, 10_000), (0, 0),
         ]
     ]
-    priorities = [
-        {
-            "in": [t.value for t in order],
-            "out": [t.value for t in P.in_priority(list(order))],
-        }
-        for order in [
-            [Trigger.STUCK, Trigger.USER_ASK],
-            [Trigger.REVIEW, Trigger.POST_MOVE, Trigger.POST_MISTAKE],
-            [Trigger.POST_MOVE, Trigger.POST_MOVE, Trigger.DECISIVE_QUESTION],
-            list(Trigger),
-        ]
-    ]
     standings = [
         {"score": score, "you": F.standing_words(score), "third": F.standing_words(score, third_person=True)}
         for score in (0.0, 0.1, 0.15, 0.2, 0.2000001, 0.3, 0.38, 0.3800001, 0.5, 0.62, 0.7, 0.79,
@@ -1840,7 +1820,6 @@ def main() -> None:
                 "persons": persons,
                 "unlocks": unlocks,
                 "controls": controls,
-                "priorities": priorities,
                 "standings": standings,
                 "policy": policy_cases(),
                 "stories": stories,

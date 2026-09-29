@@ -371,18 +371,6 @@ class GlyphTemplates(
 ) {
     private val unit: List<FloatArray> = canvases.map { normalised(it) }
 
-    /**
-     * A template canvas and its advance for [label]; the first stored variant of the wanted
-     * polarity when the file holds both, else any variant.
-     */
-    fun canvasFor(label: String, light: Boolean): Pair<FloatArray, Double> {
-        val indices = labels.indices.filter { labels[it] == label }
-        if (indices.isEmpty()) throw NoSuchElementException(label)
-        val half = indices.size / 2
-        val pick = if (light || half == 0) indices[0] else indices[half]
-        return canvases[pick] to advances[pick].toDouble()
-    }
-
     /** (label, correlation with the best template, margin over the best other label). */
     fun classify(canvas: FloatArray): Triple<String, Double, Double> {
         val flat = normalised(canvas)

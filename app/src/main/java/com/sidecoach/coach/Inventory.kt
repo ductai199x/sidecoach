@@ -362,12 +362,3 @@ fun inventoryLines(board: Board, userColour: Boolean): List<String> {
     val lines = mine + theirs + toMoveLines(board, mover)
     return lines.ifEmpty { listOf("Nothing hangs, nothing is pinned, and the side to move has no check or capture.") }
 }
-
-/** The inventory as one block, for a message that is not sectioned. */
-fun inventoryText(board: Board, userColour: Boolean): String {
-    val lines = inventoryLines(board, userColour)
-    if (lines.size == 1 && lines[0].startsWith("Nothing")) {
-        return "On the board now: nothing hangs, nothing is pinned, and the side to move has no check or capture."
-    }
-    return "On the board now (complete lists): " + lines.joinToString(" | ") + "."
-}

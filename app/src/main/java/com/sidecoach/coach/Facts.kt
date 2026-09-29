@@ -135,8 +135,6 @@ val THEMES: List<Pair<String, String>> = listOf(
     "clearance" to "a square that can be cleared",
 )
 
-private val THEME_RANK = THEMES.withIndex().associate { (i, pair) -> pair.first to i }
-
 val COACH_PIECE_NAMES = arrayOf("", "pawn", "knight", "bishop", "rook", "queen", "king")
 
 private val FACT_VALUES = intArrayOf(0, 1, 3, 3, 5, 9, 0)
@@ -228,19 +226,6 @@ fun materialText(board: Board, perspective: Boolean? = null): String {
     }
     return "you are ${if (ours.isNotEmpty()) "up" else "down"} " +
         piecesWords(ours.ifEmpty { theirs })
-}
-
-/**
- * Tags that never headline: they hold on most quiet moves, and as the theme they sent the
- * stuck hint asking "which line could be cut?" in positions about nothing.
- */
-private val NOT_A_THEME = setOf("interference", "clearance", "attackingF2F7", "quietMove")
-
-/** The tag a coach would name as the idea, most specific first. */
-fun themeOf(tags: List<MotifTag>): MotifTag? {
-    val ranked = tags.filter { it.name in THEME_RANK && it.name !in NOT_A_THEME }
-    if (ranked.isEmpty()) return null
-    return ranked.minByOrNull { THEME_RANK.getValue(it.name) }
 }
 
 /** A part of the board with one anchor: "the kingside, around f7". */

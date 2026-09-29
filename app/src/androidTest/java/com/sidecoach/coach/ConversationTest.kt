@@ -332,7 +332,6 @@ class ConversationTest {
         val app = InstrumentationRegistry.getInstrumentation().targetContext
         check("shipped corrections", Corrections.load(app.assets), prompt.getString("corrections"))
         Corrections.set(prompt.getString("corrections"))
-        check("PERSONA", PERSONA, prompt.getString("persona_default"))
         check("CONTRACT", CONTRACT, prompt.getString("contract"))
         check("RULES", RULES, prompt.getString("rules"))
         check("DEFAULT_PERSONA", DEFAULT_PERSONA, prompt.getString("default_persona"))
@@ -415,14 +414,6 @@ class ConversationTest {
         candidates = strings(o.getJSONArray("candidates")),
         threats = strings(o.getJSONArray("threats")),
         line = strings(o.getJSONArray("line")),
-        userClaims = o.getJSONArray("user_claims").let { all ->
-            (0 until all.length()).map { k ->
-                val entry = all.getJSONObject(k)
-                entry.keys().asSequence().associateWith { key ->
-                    if (entry.isNull(key)) null else entry.opt(key)
-                }
-            }
-        },
         // The first hint and its parts: the sheet carries the whole of it (desktop 717cc9c).
         stakes = nullable(o, "stakes"),
         key = nullable(o, "key"),

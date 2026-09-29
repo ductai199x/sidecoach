@@ -236,18 +236,3 @@ class InterjectionPolicy(
     }
 }
 
-/**
- * Lower is more important; when two triggers want the same moment, the coach speaks to the
- * lower one and folds the other in or drops it.
- */
-val PRIORITY: Map<Trigger, Int> = mapOf(
-    Trigger.USER_ASK to 1,
-    Trigger.POST_MISTAKE to 2,
-    Trigger.POST_MOVE to 3,
-    Trigger.DECISIVE_QUESTION to 4,
-    Trigger.STUCK to 5,
-    Trigger.REVIEW to 6,
-)
-
-fun inPriority(triggers: List<Trigger>): List<Trigger> =
-    triggers.distinct().sortedBy { PRIORITY.getValue(it) }

@@ -687,7 +687,7 @@ class CoachTest {
         val (coach, provider) = coach(listOf("Qxf7# ends it: the queen takes with check and mate."))
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
-        coach.askMove(8.0)
+        coach.ask("what should I play", 8.0)
         assertEquals("nothing before the model's answer", emptyList<CoachMessage>(), coach.poll())
         val out = messages(coach)
         assertEquals(listOf("Qxf7# ends it: the queen takes with check and mate."), out.map { it.text })
@@ -698,7 +698,7 @@ class CoachTest {
         val offline = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
         playToScholar(offline)
         offline.onEvent(mateAnalysis(6, decisive = false), 7.0)
-        offline.askMove(8.0)
+        offline.ask("what should I play", 8.0)
         val quick = offline.poll() // at once
         assertEquals(listOf("Qxf7# is mate."), quick.map { it.text })
         assertEquals(DisclosureLevel.MOVE, quick[0].level)

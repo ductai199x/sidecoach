@@ -402,11 +402,6 @@ class Store(val path: File?) {
         }
     }
 
-    /** The puzzles recommended lately, latest first. */
-    fun recommendedIds(limit: Int = 20): List<String> = lock.withLock {
-        rows("SELECT puzzle_ids FROM recommendations ORDER BY ts DESC LIMIT $limit") { it.getString(0) }
-    }.flatMap { ids -> ids.split(Regex("\\s+")).filter { it.isNotEmpty() } }
-
     fun addAttempt(puzzleId: String, ts: Double, motif: String?, solved: Boolean, moves: List<String>) {
         lock.withLock {
             exec(
