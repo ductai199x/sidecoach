@@ -192,9 +192,14 @@ object Captions {
         main.post { box?.showMuted(on) }
     }
 
-    /** A line of the coach's, shown whole the moment it comes: its voice follows. */
+    /**
+     * A line of the coach's, shown whole the moment it comes: its voice follows. While the panel
+     * is in front, which shows it already, it is kept for when the panel is not: a box kept on
+     * screen comes back with it (Tai, 2026-09-29: "I don't see shit on my screen" -- an answer
+     * asked for on the panel, the panel left, and the kept box had nothing to show).
+     */
     fun show(text: String) {
-        if (!on || front) return
+        if (!on) return
         main.post { begin(text, 0) }
     }
 
@@ -217,14 +222,22 @@ object Captions {
     // ---- the words ---------------------------------------------------------------------------
 
     private fun begin(text: String, speechMs: Long, force: Boolean = false) {
-        if (!on || (front && !force)) return
+        if (!on) return
+        if (front && !force) {
+            if (!previewing) {
+                finish()
+                if (said.isNotEmpty()) said.append(if (box == null) "\n" else " ")
+                said.append(line(text))
+                trim()
+            }
+            return
+        }
         previewing = force
         val fresh = box == null
         finish()
         if (said.isNotEmpty()) said.append(if (fresh) "\n" else " ")
         trim()
-        // The coach writes a dash as two hyphens; read, it is a dash.
-        saying = text.trim().replace(" -- ", " — ")
+        saying = line(text)
         sayingFrom = SystemClock.uptimeMillis()
         sayingMs = speechMs
         // A preview over Sidecoach's own page lets every tap through, Save included.
@@ -237,6 +250,9 @@ object Captions {
         box?.let { if (it.movesShown) it.showMoves() }
         tick.run()
     }
+
+    /** The coach writes a dash as two hyphens; read, it is a dash. */
+    private fun line(text: String): String = text.trim().replace(" -- ", " — ")
 
     /** The line being said, all of it, into what has been said. */
     private fun finish() {
@@ -328,6 +344,9 @@ object Captions {
 
     /** Whether the game's moves are up under the words, for the tests. */
     internal fun movesUp(): Boolean = box?.movesShown ?: false
+
+    /** The words the box shows, for the tests; null when it is not shown. */
+    internal fun wordsShown(): String? = box?.shownText()
 
     /** Whether captions are on. */
     internal val enabled: Boolean get() = on
@@ -695,6 +714,8 @@ object Captions {
         fun fadeOut(then: () -> Unit) {
             animate().alpha(0f).setDuration(350).withEndAction(then).start()
         }
+
+        fun shownText(): String = words.text.toString()
 
         fun setText(text: String) {
             words.text = text
