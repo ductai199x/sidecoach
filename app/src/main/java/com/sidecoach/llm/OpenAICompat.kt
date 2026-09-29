@@ -115,7 +115,7 @@ class OpenAICompatProvider(
     extraBody: Map<String, Any?> = emptyMap(),
     private val transport: Transport = UrlTransport(),
     usage: Usage? = null,
-) : StreamingProvider {
+) : StreamingProvider, ToolsProvider {
 
     val baseUrl: String = baseUrl.trimEnd('/')
     val extraBody: Map<String, Any?> = LinkedHashMap(extraBody)
@@ -173,15 +173,31 @@ class OpenAICompatProvider(
         maxTokens: Int,
         temperature: Double,
         thinking: Boolean,
+        tools: JSONArray? = null,
+        turns: JSONArray? = null,
+        toolChoice: String? = null,
     ): JSONObject {
         val body = JSONObject()
         body.put("model", model)
         val wire = JSONArray()
-        for (message in buildMessages(system, messages, thinking, thinkingControl)) {
+        val listed = buildMessages(system, messages, thinking, thinkingControl)
+        // The tool calls and their results follow the conversation; the no-think prefill, when
+        // used, stays last (`build_messages(turns=)`).
+        val prefilled = !thinking && thinkingControl == ThinkingControl.PREFILL
+        for (message in if (prefilled) listed.dropLast(1) else listed) {
             wire.put(JSONObject().put("role", message.role).put("content", message.content))
+        }
+        if (turns != null) for (index in 0 until turns.length()) wire.put(turns.get(index))
+        if (prefilled) {
+            val prefill = listed.last()
+            wire.put(JSONObject().put("role", prefill.role).put("content", prefill.content))
         }
         body.put("messages", wire)
         for ((key, value) in extraBody) body.put(key, wrap(value))
+        if (tools != null && tools.length() > 0) {
+            body.put("tools", tools)
+            if (toolChoice != null) body.put("tool_choice", toolChoice)
+        }
         if (thinkingControl == ThinkingControl.EFFORT) {
             body.put(
                 "max_completion_tokens",
@@ -202,8 +218,50 @@ class OpenAICompatProvider(
         maxTokens: Int,
         temperature: Double,
         thinking: Boolean,
+    ): Completion = send(requestBody(system, messages, maxTokens, temperature, thinking))
+
+    /**
+     * The reply streamed: every visible delta to [onDelta] as it arrives, the first one's
+     * latency and the stream's usage in the stats. A callback returning false closes the
+     * stream; the usage is then whatever the server had sent, usually nothing, and
+     * finish_reason is "stopped".
+     */
+    override fun chatStream(
+        system: String,
+        messages: List<ChatMessage>,
+        maxTokens: Int,
+        temperature: Double,
+        thinking: Boolean,
+        onDelta: StreamCallback,
+    ): Completion = stream(requestBody(system, messages, maxTokens, temperature, thinking), onDelta)
+
+    /**
+     * With tools: read whole, or streamed when [onDelta] is given. With tools LM Studio does not
+     * continue the prefilled message: the model thinks again, and its thinking comes back as the
+     * reply's first words, up to a closing </think> (Tai's puzzle replayed, 2026-09-28). Nothing
+     * of it may reach the voice, so under "prefill" a reply with tools is read whole, its thinking
+     * split off, and handed on at once.
+     */
+    override fun chatTools(
+        system: String,
+        messages: List<ChatMessage>,
+        tools: JSONArray,
+        turns: JSONArray,
+        maxTokens: Int,
+        temperature: Double,
+        toolChoice: String?,
+        onDelta: StreamCallback?,
     ): Completion {
-        val body = requestBody(system, messages, maxTokens, temperature, thinking)
+        val body = requestBody(system, messages, maxTokens, temperature, false, tools, turns, toolChoice)
+        if (onDelta == null || thinkingControl == ThinkingControl.PREFILL) {
+            val completion = send(body)
+            if (onDelta != null && completion.text.isNotEmpty()) onDelta(completion.text)
+            return completion
+        }
+        return stream(body, onDelta)
+    }
+
+    private fun send(body: JSONObject): Completion {
         val started = System.nanoTime()
         val reply = transport.post("$baseUrl/chat/completions", headers, body.toString(), timeoutMs)
         if (reply.status != 200) {
@@ -227,37 +285,33 @@ class OpenAICompatProvider(
             "reasoning_tokens" to number(completionDetails, "reasoning_tokens"),
             "finish_reason" to text(choice, "finish_reason"),
         )
-        val answer = (text(message, "content") ?: "").trim()
-        val reasoning = (text(message, "reasoning_content") ?: "").trim()
+        val (thought, answer) = unthought((text(message, "content") ?: "").trim())
+        val reasoning = listOf((text(message, "reasoning_content") ?: "").trim(), thought)
+            .filter { it.isNotEmpty() }
+            .joinToString("\n")
         usage.record(
             stats,
             promptChars = chars(body),
             completionChars = answer.length + reasoning.length,
         )
-        return Completion(text = answer, reasoning = reasoning, stats = stats)
+        return Completion(
+            text = answer,
+            reasoning = reasoning,
+            stats = stats,
+            toolCalls = toolCalls(message.optJSONArray("tool_calls") ?: JSONArray()),
+        )
     }
 
-    /**
-     * The reply streamed: every visible delta to [onDelta] as it arrives, the first one's
-     * latency and the stream's usage in the stats. A callback returning false closes the
-     * stream; the usage is then whatever the server had sent, usually nothing, and
-     * finish_reason is "stopped".
-     */
-    override fun chatStream(
-        system: String,
-        messages: List<ChatMessage>,
-        maxTokens: Int,
-        temperature: Double,
-        thinking: Boolean,
-        onDelta: StreamCallback,
-    ): Completion {
-        val body = requestBody(system, messages, maxTokens, temperature, thinking)
+    /** [chatStream]'s body; tool calls arrive in pieces, by index, and are put together. */
+    private fun stream(request: JSONObject, onDelta: StreamCallback): Completion {
+        val body = request
         body.put("stream", true)
         body.put("stream_options", JSONObject().put("include_usage", true))
         val started = System.nanoTime()
         var first: Double? = null
         val parts = StringBuilder()
         val reasoning = StringBuilder()
+        val calls = sortedMapOf<Int, JSONObject>()
         var usageJson = JSONObject()
         var finish: String? = null
         var stopped = false
@@ -284,6 +338,21 @@ class OpenAICompatProvider(
                 if (!thought.isNullOrEmpty()) reasoning.append(thought)
                 val reason = text(choice, "finish_reason")
                 if (!reason.isNullOrEmpty()) finish = reason
+                val pieces = delta.optJSONArray("tool_calls") ?: JSONArray()
+                for (p in 0 until pieces.length()) {
+                    val piece = pieces.optJSONObject(p) ?: continue
+                    val call = calls.getOrPut(piece.optInt("index", 0)) {
+                        JSONObject().put("id", "").put(
+                            "function",
+                            JSONObject().put("name", "").put("arguments", ""),
+                        )
+                    }
+                    text(piece, "id")?.takeIf { it.isNotEmpty() }?.let { call.put("id", it) }
+                    val function = piece.optJSONObject("function") ?: JSONObject()
+                    val into = call.getJSONObject("function")
+                    into.put("name", into.getString("name") + (text(function, "name") ?: ""))
+                    into.put("arguments", into.getString("arguments") + (text(function, "arguments") ?: ""))
+                }
                 val piece = text(delta, "content")
                 if (piece.isNullOrEmpty()) continue
                 if (first == null) first = (System.nanoTime() - started) / 1e9
@@ -320,7 +389,12 @@ class OpenAICompatProvider(
             promptChars = chars(body),
             completionChars = answer.length + thought.length,
         )
-        return Completion(text = answer, reasoning = thought, stats = stats)
+        return Completion(
+            text = answer,
+            reasoning = thought,
+            stats = stats,
+            toolCalls = toolCalls(JSONArray(calls.values.toList())),
+        )
     }
 
     /** Single-turn convenience over [chat]. */
@@ -334,6 +408,42 @@ class OpenAICompatProvider(
         chat(system, listOf(ChatMessage("user", user)), maxTokens, temperature, thinking)
 
     companion object {
+        /**
+         * (the thinking, the reply) of a reply that carries the model's thinking before a closing
+         * </think>, as a server that did not parse it hands it back; ("", text) otherwise.
+         * `openai_compat._unthought`.
+         */
+        fun unthought(text: String): Pair<String, String> {
+            val at = text.lastIndexOf("</think>")
+            if (at < 0) return "" to text
+            return text.substring(0, at).replace("<think>", "").trim() to
+                text.substring(at + "</think>".length).trim()
+        }
+
+        /**
+         * The model's calls as the wire gives them; arguments that are no JSON object come through
+         * under "_raw", for the tool to say so. `openai_compat._tool_calls`.
+         */
+        fun toolCalls(raw: JSONArray): List<ToolCall> = (0 until raw.length()).mapNotNull { i ->
+            val call = raw.optJSONObject(i) ?: return@mapNotNull null
+            val function = call.optJSONObject("function") ?: JSONObject()
+            val arguments = function.opt("arguments")
+            val parsed = when (arguments) {
+                is JSONObject -> arguments
+                null -> JSONObject()
+                else -> try {
+                    JSONObject(arguments.toString().ifEmpty { "{}" })
+                } catch (_: JSONException) {
+                    JSONObject().put("_raw", arguments.toString())
+                }
+            }
+            ToolCall(
+                id = text(call, "id")?.ifEmpty { null } ?: "call_$i",
+                name = text(function, "name") ?: "",
+                arguments = parsed,
+            )
+        }
+
         /** The prompt's size in characters, for the estimate when no usage comes back. */
         fun chars(body: JSONObject): Int {
             val messages = body.optJSONArray("messages") ?: return 0

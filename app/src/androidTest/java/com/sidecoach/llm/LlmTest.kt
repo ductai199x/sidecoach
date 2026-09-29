@@ -155,6 +155,59 @@ class LlmTest {
             check("$label usage", usageOf(provider.usage), one.getJSONObject("usage").toMap())
         }
 
+        // 4c. With tools (desktop c80b64b): the request with the engine tools' specs, the calls
+        // and their results, and tool_choice; the calls read whole and streamed in pieces; the
+        // thinking before </think> split off; under "prefill" a reply with tools read whole.
+        val tools = root.getJSONObject("tools")
+        val toolSpecs = com.sidecoach.coach.engineToolSpecs()
+        check("tool specs", canon(toolSpecs), tools.getString("specs"))
+        val turns = JSONArray(tools.getString("turns"))
+        val toolBodies = tools.getJSONArray("bodies")
+        for (i in 0 until toolBodies.length()) {
+            val one = toolBodies.getJSONObject(i)
+            val choice = if (one.isNull("tool_choice")) null else one.getString("tool_choice")
+            val provider = providerOf(
+                spec,
+                one.getString("control"),
+                if (one.isNull("effort")) null else one.getString("effort"),
+                emptyMap(),
+                transportOf(200, "{}"),
+            )
+            val body = provider.requestBody(
+                "SYSTEM", conversations[1], 100, 0.1, false, toolSpecs, turns, choice,
+            )
+            check("tool body ${one.getString("control")} choice=$choice", canon(body), one.getString("body"))
+        }
+        fun calls(completion: Completion): List<List<String>> =
+            completion.toolCalls.map { listOf(it.id, it.name, canon(it.arguments)) }
+        fun expected(array: JSONArray): List<List<String>> = (0 until array.length()).map { k ->
+            array.getJSONArray(k).let { listOf(it.getString(0), it.getString(1), it.getString(2)) }
+        }
+        val toolChats = tools.getJSONArray("chats")
+        for (i in 0 until toolChats.length()) {
+            val one = toolChats.getJSONObject(i)
+            val label = "tool chat ${one.getString("label")}"
+            val provider = providerOf(spec, "none", null, emptyMap(), transportOf(200, one.getString("reply")))
+            val completion = provider.chatTools("SYSTEM", conversations[1], toolSpecs, JSONArray())
+            check("$label text", completion.text, one.getString("text"))
+            check("$label reasoning", completion.reasoning, one.getString("reasoning"))
+            check("$label calls", calls(completion), expected(one.getJSONArray("calls")))
+        }
+        val toolStreams = tools.getJSONArray("streams")
+        for (i in 0 until toolStreams.length()) {
+            val one = toolStreams.getJSONObject(i)
+            val label = "tool stream ${one.getString("control")}"
+            val provider = providerOf(spec, one.getString("control"), null, emptyMap(), transportOf(200, one.getString("reply")))
+            val heard = ArrayList<String>()
+            val completion = provider.chatTools("SYSTEM", conversations[1], toolSpecs, JSONArray()) { piece ->
+                heard.add(piece)
+                true
+            }
+            check("$label text", completion.text, one.getString("text"))
+            check("$label deltas", heard, (0 until one.getJSONArray("deltas").length()).map { one.getJSONArray("deltas").getString(it) })
+            check("$label calls", calls(completion), expected(one.getJSONArray("calls")))
+        }
+
         // 4b. What the healthcheck says of each answer to `GET /models`.
         val healths = root.getJSONArray("healthchecks")
         for (i in 0 until healths.length()) {

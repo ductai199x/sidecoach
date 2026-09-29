@@ -423,7 +423,7 @@ class LinksTest {
             directive,
             "What Qxd5 allowed, from the engine's line: after Qxd5, Rxa1+ wins a rook for a pawn." in directive,
         )
-        assertTrue(directive, "say why, concretely: what Rxa8+ does, and what Qxd5 missed or allowed" in directive)
+        assertTrue(directive, "why, concretely: what Rxa8+ does, and what Qxd5 missed or allowed" in directive)
         assertTrue(directive, "Name moves bare" in directive)
     }
 
@@ -443,7 +443,7 @@ class LinksTest {
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
         coach.ask("give me a hint", 8.0)
         val out = messages(coach)
-        assertTrue("Quote no figure" in directive(given(provider, 0)))
+        assertTrue(NO_FIGURES in directive(given(provider, 0)))
         assertTrue(out.map { it.text }.toString(), out.map { it.text } == listOf(reply) && provider.prompts.size == 1)
         val notes = coach.spoken.last().notes
         assertTrue(notes.toString(), "a figure in a remark nobody asked for: say it in words" in notes)

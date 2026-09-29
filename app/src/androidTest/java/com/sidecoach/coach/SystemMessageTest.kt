@@ -38,7 +38,7 @@ class SystemMessageTest {
             assertEquals(shipped, Corrections.text())
             val system = Coach(OfflineProvider()).system
             assertTrue(system, system.endsWith("in front of you.\n$shipped"))
-            assertTrue(system.indexOf(REPLY_FORMAT) < system.indexOf("Lessons from earlier games"))
+            assertTrue(system.indexOf(RULES) < system.indexOf("Lessons from earlier games"))
 
             // Empty, C adds nothing; with content, it is the message's last part.
             Corrections.set("")

@@ -29,6 +29,9 @@ import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.Completion
 import com.sidecoach.llm.LLMProvider
 import com.sidecoach.llm.OfflineProvider
+import com.sidecoach.llm.StreamCallback
+import com.sidecoach.llm.ToolsProvider
+import org.json.JSONArray
 import com.sidecoach.profile.Causes
 import com.sidecoach.vision.Pieces
 import org.junit.Assert.assertEquals
@@ -373,20 +376,24 @@ class CoachTest {
         // Everything, the answer included (Tai, 2026-09-26: the model sees engine lines at hints;
         // the reply is checked; desktop 9e2e8e2).
         assertTrue("the model sees every move", "Legal moves" in current && "Qxf7#" in current)
-        assertTrue(current, "the best first move is the answer they are finding" in current)
+        assertTrue(current, "line 1's first move is the answer to the position they face" in current)
         assertTrue(current, "On the board (complete lists)" in current)
         // The rung's facts -- the goal and the pattern -- stand apart from those past it.
-        val facts = current.substringAfter("## Facts (the player to move)").substringBefore("## Past this level")
+        val facts = current.substringAfter("## Facts (the player to move)").substringBefore("## Beyond this level")
         assertTrue(facts, "goal: the player can mate in one move" in facts)
         assertTrue(facts, "pattern: a mating attack" in facts)
         for (secret in listOf("Qxf7", "queen", "h5f7", "candidates")) assertTrue(secret, secret !in facts)
-        val beyond = current.substringAfter("## Past this level").substringBefore("## Disclosure")
+        val beyond = current.substringAfter("## Beyond this level").substringBefore("## On the board")
         assertTrue(beyond, "piece: the player's queen on h5" in beyond && "Qxf7" in beyond)
-        assertTrue(current, "You see everything, the answer included" in current)
-        assertTrue(current, "the first hint in the board's own words" in current)
-        assertTrue(current, "Their king on e8 has one free square" in current)
+        // What the level keeps back is said once, in the Task, with why the model sees it all.
+        assertTrue(current, "## Disclosure" !in current)
         val directive = directiveOf(messages)
-        assertTrue(directive, "the idea: what is at stake and the key fact on the board" in directive)
+        assertTrue(directive, "You see the answer so that the hint can be precise" in directive)
+        // The first hint's facts are on the sheet to teach from (parity, 2026-09-25; the prompt
+        // audit, 2026-09-28), and the idea level names the key fact on the board.
+        assertTrue(current, "what a first hint rests on" in current)
+        assertTrue(current, "Their king on e8 has one free square" in current)
+        assertTrue(directive, "the idea: what is at stake and the key fact" in directive)
         assertTrue(directive, "no square" !in directive)
         assertTrue("named the key square: it stands", out[0].text.startsWith("You can mate right now"))
     }
@@ -431,7 +438,10 @@ class CoachTest {
         val faced = content.substringAfter("# The position they faced, before Bxf7+").substringBefore("# Task")
         assertTrue(content, "# The position they faced, before Bxf7+" in content)
         assertTrue(faced, "goal: the player can mate in one move" in faced)
-        assertTrue("The lesson in the board's own words" in directiveOf(messages))
+        // The better move the reply must name is the directive's -- not the template's lesson as
+        // the least the reply says, which came back word for word (the prompt audit, 2026-09-28).
+        assertTrue("The better move was Qxf7#" in directiveOf(messages))
+        assertTrue("says at least this" !in directiveOf(messages))
         assertEquals(emptyList<String>(), coach.spoken.last().problems)
         // The hints' questions are for the side to move: never on the opponent's sheet, where
         // labelled "to the player" they were the opponent's; nor on the faced sheet, a position
@@ -853,8 +863,8 @@ class CoachTest {
         val directive = directive(provider)
         assertTrue(directive, "They ask about the move they already played, Bxf7+" in directive)
         assertTrue(directive, "Qxf7# was better" in directive)
-        assertTrue(directive, "nothing about it is withheld" in directive)
-        assertTrue(directive, "45%" !in directive && "no figures" in directive)
+        assertTrue(directive, "from a position that is past, so all of it may be said" in directive)
+        assertTrue(directive, "45%" !in directive && "No figures" in directive)
         // Spoken from the position the move was played from, with everything shown.
         assertTrue(out.isNotEmpty() && out.last().level == DisclosureLevel.LINE)
         assertEquals(SCHOLAR, out.last().fen)
@@ -865,8 +875,8 @@ class CoachTest {
     /**
      * The verdict and the better move came back in every reply, and "I understand: I should play
      * Nxc3" got the lesson again and "Which White piece is still at home on g1?" (the AI's
-     * sessions, 2026-09-26; desktop 9e49622), in the desktop's words, which reach the answer about
-     * the last move through askedOwnMove (desktop f733318).
+     * sessions, 2026-09-26; desktop 9e49622). With a model the words are the model's to read, with
+     * the sheet of the position the move was played from beside them (Tai's puzzle, 2026-09-28).
      */
     @Test
     fun aFollowUpGetsWhatItAsksAndANodOneSentence() {
@@ -882,7 +892,7 @@ class CoachTest {
         coach.ask("I see, I should have seen the mate.", 12.0)
         messages(coach)
         var directive = directive(provider)
-        assertTrue(directive, "do not repeat either" in directive)
+        assertTrue(directive, "do not say it again in other words" in directive)
         assertTrue(directive, "They ask nothing: reply in one short sentence" in directive)
         assertTrue(directive, "then one question" !in directive)
         synchronized(provider.replies) {
@@ -891,8 +901,10 @@ class CoachTest {
         }
         coach.ask("Why does the bishop check not work?", 13.0)
         messages(coach)
+        val request = synchronized(provider.prompts) { provider.prompts.last().second[0].content }
+        assertTrue(request, "# The position they faced, before Bxf7+" in request)
         directive = directive(provider)
-        assertTrue(directive, "Answer only what they ask now" in directive && "do not repeat either" in directive)
+        assertTrue(directive, "Answer them directly" in directive && "do not say it again" in directive)
     }
 
     /**
@@ -936,7 +948,7 @@ class CoachTest {
         coach.ask("how much did that cost me?", 12.0)
         val out = messages(coach)
         val directive = directive(provider)
-        assertTrue(directive, "cost 45% of the game -- they asked" in directive)
+        assertTrue(directive, "it cost 45% of the game: they asked" in directive)
         assertTrue(out.isNotEmpty())
         assertTrue(out.last().text, out.last().text.startsWith("It cost you 45% of the game. Qxf7# was better"))
     }
@@ -1005,7 +1017,7 @@ class CoachTest {
         )
         assertTrue(again, FINE_TIGHTER.any { again.startsWith(it.replace("{best}", "Qxf7#")) })
         assertTrue(again, "it is mate" !in again && coach.rulesSaid() == rulesBefore)
-        assertTrue(instruction, "Do not open with the move they played" in instruction)
+        assertTrue(instruction, "tells them nothing: do not open with it" in instruction)
     }
 
     /**
@@ -1265,14 +1277,13 @@ class CoachTest {
                 listOf(Line(moves = listOf("f8c5", "d2d3"), depth = 14, expectedScore = 0.48))
             }
         }
-        // The planner reads their words into a probe (first call); the model answers (second).
-        val (coach, provider) = coach(listOf("{\"probes\": [{\"label\": \"your Bc4\", \"moves\": [\"Bc4\"]}]}", "[p=1.0] Fine."))
+        val (coach, provider) = coach(listOf("[p=1.0] Fine."))
         coach.engine = engine
         italian(coach)
         coach.ask("I'll play Bc4 and aim at f7.", 6.0)
         assertEquals(listOf("Fine."), messages(coach).map { it.text })
         val directive = directiveOf(given(provider))
-        assertTrue(directive, "Engine on your Bc4, which the player asked about" in directive)
+        assertTrue(directive, "Engine on 3. Bc4, which the player asked about" in directive)
         // Offline, a statement naming no move gets the template once, and not again.
         val offline = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
         italian(offline)
@@ -1415,7 +1426,8 @@ class CoachTest {
     /**
      * The owner's rules after a move, checked in code (the eval audit, 2026-09-25): never open
      * with the move just played, never say what it plainly did unless the better move does the
-     * same, and no figure in a remark nobody asked for (desktop f25217c).
+     * same, and no figure in a remark nobody asked for -- the last [NO_FIGURES]' note, where the
+     * directive carries it ([Speaker.notes]) (desktop f25217c).
      */
     @Test
     fun aWordAfterTheMoveNeverRestatesItNorQuotesAFigure() {
@@ -1425,10 +1437,6 @@ class CoachTest {
         assertEquals(
             listOf("says what Bxc6 plainly did: the capture on c6"),
             restated("Taking the knight on c6 gives up the bishop pair.", trade),
-        )
-        assertEquals(
-            listOf("a figure in a remark nobody asked for: say it in words"),
-            restated("It cost you 15% of the game.", trade),
         )
         // The better move castles: saying so is the lesson, not a restatement.
         assertEquals(
@@ -1450,20 +1458,13 @@ class CoachTest {
     }
 
     /**
-     * "Say at least this" and "two or three sentences" asked for both: a first hint that runs
-     * longer sets the length (the eval audit, 2026-09-25; desktop f25217c).
+     * The first hint on the sheet is facts to teach from, not the least a reply says, so the
+     * length is the directive's own: one more for the question it offers on top ("then, if you
+     * like, one question"), which it does not require (the prompt audit, 2026-09-28).
      */
     @Test
-    fun theFirstHintSetsTheLengthOfTheHint() {
-        val short = PositionFacts(fen = SCHOLAR, sideToMove = "white", phase = "opening", situation = "A. B.")
-        assertEquals(IDEA_DIRECTIVE, ideaDirective(short))
-        val long = short.copy(situation = "One. Two. Three. Four. Five.")
-        assertTrue("Five sentences at most." in ideaDirective(long))
-        // One more for the question the directive offers on top ("then, if you like, one
-        // question"), which it does not require (desktop 134b2ea).
-        assertEquals(6 to null, directiveLimits(ideaDirective(long)))
-        val longest = short.copy(situation = List(9) { "Yes." }.joinToString(" "))
-        assertEquals(7 to null, directiveLimits(ideaDirective(longest)))
+    fun theFirstHintAsksTwoOrThreeSentencesAndOffersAQuestion() {
+        assertEquals(4 to null, directiveLimits(IDEA_DIRECTIVE))
     }
 
     /**
@@ -1560,8 +1561,8 @@ class CoachTest {
             assertEquals(listOf("Fine, but Qxf7# was there: the mate."), soundMove(coach, "Nc3", Label.GOOD, loss = 0.03))
             assertTrue(main.prompts.size == 1 && routine.prompts.isEmpty())
             val task = directive(main)
-            assertTrue(task, "which was good: playable, not the strongest" in task && "Qxf7#" in task)
-            assertTrue(task, "Do not open with the move they played" in task)
+            assertTrue(task, "which was good: sound, a little behind Qxf7#" in task)
+            assertTrue(task, "tells them nothing: do not open with it" in task)
         }
         // Great and brilliant: the main model, with delight; the board's line if it fails.
         for (label in listOf(Label.GREAT, Label.BRILLIANT)) {
@@ -1570,7 +1571,7 @@ class CoachTest {
             assertTrue("$label: the main model", main.prompts.size == 1 && routine.prompts.isEmpty())
             val task = directive(main)
             assertTrue(task, "Show some delight" in task && label.name.lowercase() in task)
-            assertTrue(task, "Do not open with the move they played" in task)
+            assertTrue(task, "tells them nothing: do not open with it" in task)
             val (failing, _, _) = routed(listOf("", ""))
             val fallback = soundMove(failing, "Qxf7#", label, loss = 0.0)
             assertTrue("$label: $fallback", fallback.size == 1 && fallback[0] in MATE)
@@ -1830,7 +1831,7 @@ class CoachTest {
         coach.ask("was that a mistake?", 12.0)
         messages(coach)
         val directive = directiveOf(given(provider))
-        assertTrue(directive, "It was not bad: the verdict was best" in directive && "do not invent a fault" in directive)
+        assertTrue(directive, "its verdict was best, and it cost nothing" in directive && "invent no fault" in directive)
     }
 
     /**
@@ -2092,6 +2093,95 @@ class CoachTest {
         coach.reword(null, 2000 to 2300)
         assertTrue(!coach.plainWords && coach.strongPlayer)
         assertTrue("2000" in coach.system)
+    }
+
+    /** `test_engine_tools.FirstLegal`: the first legal moves by UCI, a line of four, a little ahead. */
+    private val firstLegal = EngineLike { board, depth ->
+        val replay = board.copy(withStack = false)
+        val moves = ArrayList<String>()
+        repeat(4) {
+            val legal = replay.legalMoves().sortedBy { it.uci() }
+            if (legal.isEmpty()) return@repeat
+            moves.add(legal[0].uci())
+            replay.push(legal[0])
+        }
+        if (moves.isEmpty()) emptyList() else listOf(Line(moves = moves, depth = depth ?: 14, expectedScore = 0.6))
+    }
+
+    /**
+     * Asked "ok and after that?" with the line already given, the engine is asked about the
+     * line's end before the model answers (Luna at no effort gave the same line back, Tai's
+     * puzzle; `test_engine_tools.py`).
+     */
+    @Test
+    fun theLineAskedForAgainBringsTheEngineOnItsEnd() {
+        val (coach, provider) = coach(listOf("Qxf7# -- it is mate at once.", "Qxf7# -- it is mate at once."))
+        coach.engine = firstLegal
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        coach.ask("show me the line", 8.0)
+        messages(coach)
+        assertFalse(LINE_GIVEN in directive(provider))
+        coach.ask("ok and after that?", 9.0)
+        messages(coach)
+        val task = directive(provider)
+        assertTrue(task, LINE_GIVEN in task)
+        assertTrue(task, "The engine, asked about the line's end:" in task)
+        assertTrue(task, "The game is over there: checkmate, White wins." in task)
+    }
+
+    /**
+     * Luna with a reasoning effort takes no tools on chat completions: the 400 left the coach
+     * silent on every question. A refused request is asked again without the tools; a server
+     * that is down is not (`test_engine_tools.py`).
+     */
+    @Test
+    fun aServerThatRefusesTheToolsIsAskedWithoutThem() {
+        class Refusing(val error: String) : ToolsProvider {
+            override val name = "refusing"
+            val seen = ArrayList<Boolean>() // whether each call carried the tools
+
+            override fun healthcheck(): Pair<Boolean, String> = true to "refusing"
+
+            override fun chat(
+                system: String,
+                messages: List<ChatMessage>,
+                maxTokens: Int,
+                temperature: Double,
+                thinking: Boolean,
+            ): Completion {
+                synchronized(seen) { seen.add(false) }
+                return Completion(text = "The pawn on f7 is defended only by the King.")
+            }
+
+            override fun chatTools(
+                system: String,
+                messages: List<ChatMessage>,
+                tools: JSONArray,
+                turns: JSONArray,
+                maxTokens: Int,
+                temperature: Double,
+                toolChoice: String?,
+                onDelta: StreamCallback?,
+            ): Completion {
+                synchronized(seen) { seen.add(true) }
+                throw RuntimeException(error)
+            }
+        }
+        for ((error, answered) in listOf("400: tools not supported" to true, "503: down" to false)) {
+            val provider = Refusing(error)
+            val coach = Coach(provider, policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+            coach.engine = firstLegal
+            playToScholar(coach)
+            coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+            messages(coach)
+            synchronized(provider.seen) { provider.seen.clear() }
+            coach.ask("is f7 weak?", 8.0)
+            val said = messages(coach).map { it.text }
+            assertEquals(error, answered, "The pawn on f7 is defended only by the King." in said)
+            assertEquals(error, answered, synchronized(provider.seen) { false in provider.seen })
+        }
     }
 
     companion object {

@@ -30,9 +30,13 @@ import com.sidecoach.events.Severity
 import com.sidecoach.events.Takeback
 import com.sidecoach.events.Trigger
 import com.sidecoach.llm.ChatMessage
+import com.sidecoach.llm.Completion
 import com.sidecoach.llm.LLMProvider
 import com.sidecoach.llm.OfflineProvider
+import com.sidecoach.llm.StreamCallback
 import com.sidecoach.llm.StreamingProvider
+import com.sidecoach.llm.ToolsProvider
+import com.sidecoach.llm.refusedForGood
 import com.sidecoach.vision.Pieces
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -41,6 +45,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * The coach: what to say, when, from which facts, checked before it is shown.
@@ -538,13 +544,14 @@ const val VS_TEMPERATURE = 0.1
 private val NUMBER_WORDS = mapOf(2 to "TWO", 3 to "THREE", 4 to "FOUR", 5 to "FIVE")
 
 /**
- * The unprompted remarks carry no figures: the record says what a move cost in expected
- * score and the model was quoting it in every note ("costing 0.03"); a player who wants the
- * number asks for it (Tai, 2026-09-19).
+ * No figures unless the player asks: the record says what a move cost in expected score and
+ * the model quoted it in every note ("costing 0.03"; Tai, 2026-09-19), and a hint said "ahead
+ * by about 1.2 pawns". The code notes a figure where a directive carries this
+ * ([Speaker.notes]), so every directive that forbids one says so in these words.
  */
-const val NO_NUMBERS =
-    "Do not quote the cost or any number: say how the move rates in words, and keep the " +
-        "figures for when the player asks. Name moves bare, never with a move number in front."
+const val NO_FIGURES =
+    "No figures -- no percentage, no score, no move number: say how a move rates, and what it " +
+        "cost, in words; the numbers are for when the player asks. Name moves bare."
 
 /**
  * The player has just played the move and sees it on the board: naming it, or saying what it
@@ -553,9 +560,9 @@ const val NO_NUMBERS =
  * not just a dumb bot").
  */
 const val NOT_THE_MOVE =
-    "Do not open with the move they played, and do not say what it plainly did on the board " +
-        "-- what it took, the check, the castling, the promotion: they just played it and see it. " +
-        "Say what it means instead: the idea behind it and the pattern to keep -- and, when there " +
+    "They see their own move on the board, so naming it or saying what it plainly did -- the " +
+        "capture, the check, the castling, the promotion -- tells them nothing: do not open with " +
+        "it. Say what it means instead: the idea behind it and the pattern to keep and, when there " +
         "was a better move, that move and why."
 
 /**
@@ -570,6 +577,7 @@ internal fun holdRule(directive: String): String {
     var out = directive
     for ((asked, held) in listOf(
         NOT_THE_MOVE to NOT_THE_MOVE_HELD,
+        " -- as a pattern to remember." to ".",
         "as a pattern to remember, in" to "in",
         " as a lesson to keep" to "",
     )) {
@@ -579,33 +587,51 @@ internal fun holdRule(directive: String): String {
 }
 
 /**
- * A hint, and an answer that is not about a figure: the code faults one ([Speaker.problemsOf]),
- * so the directive says so -- the stuck hint was faulted for "ahead by about 1.2 pawns" and
- * never told.
+ * What a lesson's template says that the sheet does not, as facts for the model: which piece
+ * should have taken, and the rule of thumb that fits the mistake, when one may be said. The
+ * template's finished lesson, handed over as the least a reply says, came back word for word in
+ * two lessons of three (the prompt audit, 2026-09-28). `coach._lesson_data`.
  */
-const val NO_FIGURES = "Quote no figure -- no percentage, no score, no move number -- and name moves bare."
+internal fun lessonData(board: Board?, best: String, played: String?, rule: String?): String {
+    var out = ""
+    val other = recapture(board, best, played)
+    if (other != null) out += " The right capture: $other."
+    if (rule != null) out += " A rule of thumb that fits, if you give one: $rule."
+    return out
+}
+
+/**
+ * What the first hint may say, as the Task's level line states it: the key fact is named on the
+ * board (Tai, 2026-09-24), and only the answer is kept back (Tai, 2026-09-26: a vague coach is
+ * worse than one that says a little too much).
+ */
+const val IDEA_LEVEL_WORDS =
+    "the idea: what is at stake and the key fact, with every piece, square and move of " +
+        "theirs the sheet names, the target's square included. Keep back only the answer: the " +
+        "player's move, the square it goes to (unless the target stands there), and which of " +
+        "their pieces makes it"
+const val SEE_ALL_WORDS =
+    "You see the answer so that the hint can be precise and true; a hint that gives a little " +
+        "too much is a lesser fault than a vague one."
 
 /*
- * What the model is asked to do on each rung before the player moves. The template for the
- * rung is the floor; the model is there to rise above it (Tai, 2026-09-23: "AI is supposed to
- * elevate good to great"): the same facts, in its own words, sharper for this position, and
- * tied to the player's game where that helps.
+ * What the model is asked to do on each rung before the player moves: the facts the rung's
+ * template is built from, said the model's own way, sharper for this position (Tai, 2026-09-23:
+ * "AI is supposed to elevate good to great"). What the rung may give away is the level line's
+ * to say (the coach's levelLine), once. The parts it names are not to be said back: "The key
+ * fact is that ...; the principle here is ..." was in 41% of the local model's hints (the
+ * prompt audit's baseline, 2026-09-28).
  */
 const val IDEA_DIRECTIVE =
-    "Give the first hint as a short lesson on this position, from the fact sheet: what is at " +
-        "stake (its stakes: how many moves hold, and what even the next best one costs -- or its " +
-        "goal, where the sheet gives no stakes, or its nature -- whether there is a tactic to find " +
-        "-- where it gives neither), then the key fact on the board, named as the " +
-        "sheet names it -- the pieces, the squares, their threat, the target, the plan, the " +
-        "pattern -- and what it does, threatens or allows, with the principle behind it in a " +
-        "clause, and the trap if the sheet gives one, so they know what to look for; then, if " +
-        "you like, one question that sets them looking. Precise, never a principle on its own: " +
-        "every sentence says " +
-        "something about this board. Never name the player's move, and not which of their own " +
-        "pieces makes it -- that is the next hint -- unless the key fact names that piece on its " +
-        "square; the target's square, as the sheet names it, " +
-        "may be said even where the move goes, and the moves the sheet lists as all as good, " +
-        "when several are, may be named. Two or three sentences."
+    "Give the first hint as a short lesson on this position, from what the sheet says a first " +
+        "hint rests on: what is at stake (how many moves hold and what the next best costs; or the " +
+        "goal, or the nature, where it gives no stakes), then the key fact on the board, named as " +
+        "the sheet names it -- the target, their threat, the plan or the pattern -- and what it " +
+        "threatens or allows, with the principle behind it, so they know what to look for; and the " +
+        "trap when the sheet has one. Those are what the lesson covers, not words to say: give the " +
+        "fact itself, never its name. The sheet's words are facts to teach from, not a script: " +
+        "every sentence yours, and true only of this board. Two or three sentences, then, if you " +
+        "like, one question."
 
 /**
  * The game so far, used: an earlier moment of the same idea is the coach's best material, and the
@@ -624,20 +650,10 @@ const val TIE_LISTED =
         "earlier moment."
 const val NO_EARLIER = "Speak of no earlier moment of the game: none had the same idea."
 
-private val LENGTH_WORDS = mapOf(4 to "Four", 5 to "Five", 6 to "Six")
-
-/**
- * [IDEA_DIRECTIVE], its length the first hint's own when that runs past three sentences (to six
- * at most): "say at least this" and "two or three sentences" asked for both, and a faithful reply
- * was cut or sent back as too long (the eval audit, 2026-09-25). `coach.idea_directive`.
- */
-fun ideaDirective(facts: PositionFacts?): String {
-    val n = if (facts != null && !facts.situation.isNullOrEmpty()) sentenceTotal(facts.situation) else 0
-    if (n <= 3) return IDEA_DIRECTIVE
-    return IDEA_DIRECTIVE.replace(
-        "Two or three sentences.", "${LENGTH_WORDS[n] ?: "Six"} sentences at most."
-    )
-}
+/** A line asked for once it was given: what they want is what comes after it. */
+const val LINE_GIVEN =
+    "You have given them this line already, in your turns above: they want what comes after " +
+        "its end -- the next moves and the idea behind them."
 
 const val FOCUS_DIRECTIVE =
     "Name the piece to use and what it goes after -- the target -- as the fact sheet names " +
@@ -1255,6 +1271,11 @@ class CoachRequest(
      * when the directive has no place for a link.
      */
     val unlisted: Set<String>? = null,
+    /**
+     * The engine at the model's call while it answers (a question of the player's), when the
+     * coach has an engine and the model takes tools.
+     */
+    val tools: EngineTools? = null,
 )
 
 /**
@@ -1275,11 +1296,12 @@ internal fun afterBest(request: CoachRequest): List<Board> {
         board.push(move)
         frames.add(board)
     }
-    // And along what the directive disclosed: the line the player asked about, examined.
+    // And along what the directive disclosed: the line the player asked about, examined; and
+    // the boards the model's own calls to the engine went through.
     if (request.disclosed.isNotEmpty()) {
         frames.addAll(disclosedFrames(request.board, request.disclosed.split("\n")))
     }
-    return frames + request.frames
+    return frames + request.frames + (request.tools?.frames ?: emptyList())
 }
 
 private val SQUARE_ITEM = Regex("[a-h][1-8]")
@@ -1324,11 +1346,11 @@ private val SAYS_CHECK = Regex("\\b(?:with|gives?|gave|giving) (?:a )?check\\b",
 private val YOU_GAVE = Regex("^\\W*you (?:just )?(?:gave|give|played|put)\\b", RegexOption.IGNORE_CASE)
 
 /**
- * What a word after the player's move says that they see on the board or did not ask for (Tai,
- * 2026-09-23 and 2026-09-19): opening with the move just played, what it plainly did -- the
- * capture, the check, the castling, the promotion -- unless the better move does the same, and a
- * figure in an unprompted remark. The templates never do; the model could, and nothing checked
- * it (the eval audit, 2026-09-25). `coach.restated`.
+ * What a word after the player's move says that they see on the board (Tai, 2026-09-23):
+ * opening with the move just played, what it plainly did -- the capture, the check, the
+ * castling, the promotion -- unless the better move does the same. The templates never do; the
+ * model could, and nothing checked it (the eval audit, 2026-09-25). A figure in it is
+ * [NO_FIGURES]' note ([Speaker.notes]). `coach.restated`.
  */
 internal fun restated(text: String, request: CoachRequest): List<String> {
     val playedSan = request.playedSan
@@ -1341,9 +1363,6 @@ internal fun restated(text: String, request: CoachRequest): List<String> {
     val faults = ArrayList<String>()
     if (Regex("^\\W*" + Regex.escape(played) + "(?![A-Za-z0-9])").containsMatchIn(text)) {
         faults.add("opens with $played, the move just played")
-    }
-    if (figureSaid(text)) {
-        faults.add("a figure in a remark nobody asked for: say it in words")
     }
     val board = request.board
     val move = board.parseSan(playedSan) ?: return faults
@@ -1638,22 +1657,7 @@ class Speaker(
             }
             var raw: String
             try {
-                val completion = if (reader != null && streaming != null) {
-                    streaming.chatStream(
-                        request.system,
-                        messages,
-                        maxTokens = VS_MAX_TOKENS,
-                        temperature = VS_TEMPERATURE,
-                        onDelta = reader::feed,
-                    )
-                } else {
-                    provider.chat(
-                        request.system,
-                        messages,
-                        maxTokens = VS_MAX_TOKENS,
-                        temperature = VS_TEMPERATURE,
-                    )
-                }
+                val completion = complete(provider, request, messages, reader?.let { it::feed })
                 raw = completion.text
                 stats = LinkedHashMap(completion.stats)
             } catch (exc: Exception) {
@@ -1761,6 +1765,101 @@ class Speaker(
             leaks = leaks,
             notes = notes,
         )
+    }
+
+    /**
+     * The model's reply, streamed to [onDelta] when given. With engine tools on the request and
+     * a model that takes them, the engine calls it makes are answered and it is asked again,
+     * [TOOL_ROUNDS] times at most, the last time to answer with what it has; the calls go in the
+     * stats, for the log. A server that refuses the tools is asked again without them: Luna with
+     * a reasoning effort takes no tools on chat completions, and the coach said nothing at all.
+     * `Speaker._complete`.
+     */
+    private fun complete(
+        provider: LLMProvider,
+        request: CoachRequest,
+        messages: List<ChatMessage>,
+        onDelta: StreamCallback?,
+    ): Completion {
+        val tools = request.tools
+        val completion = if (tools != null && provider is ToolsProvider) {
+            try {
+                withTools(provider, tools, request, messages, onDelta)
+            } catch (e: Exception) {
+                if (!refusedForGood(e)) throw e
+                plainly(provider, request, messages, onDelta)
+            }
+        } else {
+            plainly(provider, request, messages, onDelta)
+        }
+        if (tools == null || tools.log.isEmpty()) return completion
+        return completion.copy(stats = completion.stats + ("tools" to tools.log.toList()))
+    }
+
+    private fun plainly(
+        provider: LLMProvider,
+        request: CoachRequest,
+        messages: List<ChatMessage>,
+        onDelta: StreamCallback?,
+    ): Completion =
+        if (onDelta != null && provider is StreamingProvider) {
+            provider.chatStream(
+                request.system,
+                messages,
+                maxTokens = VS_MAX_TOKENS,
+                temperature = VS_TEMPERATURE,
+                onDelta = onDelta,
+            )
+        } else {
+            provider.chat(request.system, messages, maxTokens = VS_MAX_TOKENS, temperature = VS_TEMPERATURE)
+        }
+
+    private fun withTools(
+        provider: ToolsProvider,
+        tools: EngineTools,
+        request: CoachRequest,
+        messages: List<ChatMessage>,
+        onDelta: StreamCallback?,
+    ): Completion {
+        val turns = JSONArray()
+        var round = 0
+        while (true) {
+            val completion = provider.chatTools(
+                request.system,
+                messages,
+                tools = tools.specs,
+                turns = JSONArray(turns.toString()),
+                maxTokens = VS_MAX_TOKENS,
+                temperature = VS_TEMPERATURE,
+                toolChoice = if (round == TOOL_ROUNDS) "none" else null,
+                onDelta = onDelta,
+            )
+            if (completion.toolCalls.isEmpty() || round == TOOL_ROUNDS) return completion
+            val calls = JSONArray()
+            for (call in completion.toolCalls) {
+                calls.put(
+                    JSONObject()
+                        .put("id", call.id)
+                        .put("type", "function")
+                        .put("function", JSONObject().put("name", call.name).put("arguments", call.arguments.toString())),
+                )
+            }
+            turns.put(
+                JSONObject()
+                    .put("role", "assistant")
+                    .put("content", completion.text.ifEmpty { JSONObject.NULL })
+                    .put("tool_calls", calls),
+            )
+            for (call in completion.toolCalls) {
+                turns.put(
+                    JSONObject()
+                        .put("role", "tool")
+                        .put("tool_call_id", call.id)
+                        .put("content", tools.run(call.name, call.arguments)),
+                )
+            }
+            round += 1
+        }
     }
 
     /**
@@ -1912,13 +2011,9 @@ class Speaker(
         if (request.unlisted != null && MOVE_NUMBER.containsMatchIn(text)) {
             found.add("a move with its number: name moves bare")
         }
-        // A figure where none was asked for: an unprompted remark, and an answer whose directive
-        // keeps the figures for when the player asks -- "46...Rh5 was excellent, costing only
-        // 0.01" (quality round 3, 2026-09-25).
-        val unasked = request.trigger == Trigger.DECISIVE_QUESTION || request.trigger == Trigger.STUCK || (
-            request.trigger == Trigger.USER_ASK && (NO_NUMBERS in directive || NO_FIGURES in directive)
-            )
-        if (unasked && figureSaid(text)) {
+        // A figure where the directive keeps the figures for when the player asks -- "46...Rh5
+        // was excellent, costing only 0.01" (quality round 3, 2026-09-25).
+        if (NO_FIGURES in directive && figureSaid(text)) {
             found.add("a figure in a remark nobody asked for: say it in words")
         }
         // RULES 7: the coach speaks as the one who saw the game -- "Stockfish gives White about

@@ -19,6 +19,7 @@ import com.sidecoach.events.Takeback
 import com.sidecoach.vision.Pieces
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -127,6 +128,32 @@ class ConversationTest {
         assertTrue("the engine preferred 10... Nxe4 11. Qxd4 Nf6 12. O-O" in convo.renderPly(record))
         convo.assess(MoveAssessment(gameId = "g", ply = 20, uci = uci, expectedLoss = 0.01, severity = Severity.NONE, best = listOf(uci, "a2a4"), label = Label.GOOD))
         assertTrue("the engine preferred" !in convo.renderPly(record))
+    }
+
+    /**
+     * Playing Black, "he will just move away to the right" (Kh1-g2) was answered "their King
+     * cannot move to the right" (Tai's puzzle, 2026-09-28): the Setting says which file is on
+     * which hand, a question that says left or right carries it, and the moves in question are
+     * given their way (`test_conversation.py`).
+     */
+    @Test
+    fun leftAndRightAreSaidAsThePlayerSeesThem() {
+        for ((side, right) in listOf(Pieces.Side.WHITE to "h", Pieces.Side.BLACK to "a")) {
+            assertTrue(side.name, "'to the right' means toward the $right-file" in hands(side))
+        }
+        for (said in listOf("he will just move away to the right, no?", "on my left side", "rightwards")) {
+            assertTrue(said, SIDEWAYS.containsMatchIn(said))
+        }
+        for (said in listOf("is that right?", "right, so what now?", "what's left to do?")) {
+            assertTrue(said, !SIDEWAYS.containsMatchIn(said))
+        }
+        val board = Board("6k1/b1p2pp1/p7/1p6/1P6/P5pP/3R4/3N1r1K w - - 0 4")
+        assertEquals(
+            "Kg2 (h1 to g2) goes to their right; Rg1+ (f1 to g1) goes to their left",
+            ways(board, listOf("Kg2", "Rg1+"), Pieces.Side.BLACK),
+        )
+        assertEquals("e4 (e2 to e4) goes along the file", ways(Board(), listOf("e4"), Pieces.Side.WHITE))
+        assertEquals("", ways(board, listOf("Rxf1+"), Pieces.Side.BLACK))
     }
 
     /**
@@ -308,7 +335,6 @@ class ConversationTest {
         check("PERSONA", PERSONA, prompt.getString("persona_default"))
         check("CONTRACT", CONTRACT, prompt.getString("contract"))
         check("RULES", RULES, prompt.getString("rules"))
-        check("REPLY_FORMAT", REPLY_FORMAT, prompt.getString("reply_format"))
         check("DEFAULT_PERSONA", DEFAULT_PERSONA, prompt.getString("default_persona"))
         val personas = prompt.getJSONObject("personas")
         // The order as an array: a JSON object's keys come back in the parser's order, which

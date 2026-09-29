@@ -370,7 +370,6 @@ def prompts() -> dict[str, Any]:
         "persona_default": PROMPT.PERSONA,
         "contract": PROMPT.CONTRACT,
         "rules": PROMPT.RULES,
-        "reply_format": PROMPT.REPLY_FORMAT,
         "default_persona": PROMPT.DEFAULT_PERSONA,
         "personas": {k: list(v) for k, v in PROMPT.PERSONAS.items()},
         # The order too, as an array: a JSON object's key order is the parser's to keep.

@@ -14,9 +14,12 @@ import com.sidecoach.chess.WHITE
 
 private val PHASE_VALUES = intArrayOf(0, 1, 3, 3, 5, 9, 0)
 
-/** Opening, middlegame or endgame, from the book and what is left on the board. */
+/**
+ * Opening, middlegame or endgame, from the book and what is left on the board. What is left
+ * decides first: a puzzle's position starts at move 1, and a rook and a minor piece each were
+ * read as the opening (Tai's puzzle, 2026-09-28).
+ */
 fun phaseOf(board: Board, inBook: Boolean = false): String {
-    if (inBook || board.fullmoveNumber <= 8) return "opening"
     var material = 0
     for (piece in board.pieceMap().values) {
         if (piece.pieceType == PAWN || piece.pieceType == KING) continue
@@ -24,5 +27,6 @@ fun phaseOf(board: Board, inBook: Boolean = false): String {
     }
     val queens = board.pieces(QUEEN, WHITE).size + board.pieces(QUEEN, BLACK).size
     if (material <= 13 || (queens == 0 && material <= 20)) return "endgame"
+    if (inBook || board.fullmoveNumber <= 8) return "opening"
     return "middlegame"
 }

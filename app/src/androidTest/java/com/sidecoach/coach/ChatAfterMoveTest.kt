@@ -24,8 +24,6 @@ import org.junit.runner.RunWith
 /**
  * What the player says about the game in their own words: the desktop's
  * `tests/test_chat_after_move.py`, the cases of the commits ported (desktop 797094c onwards).
- * The file's first case, `_asked_own_move` (desktop f733318), is not on the phone: it builds on
- * desktop commits not ported (the runtime audit's `_last_own_move(mine=)`, `_ASK_THREAT`).
  */
 @RunWith(AndroidJUnit4::class)
 class ChatAfterMoveTest {
@@ -182,31 +180,42 @@ class ChatAfterMoveTest {
     }
 
     /**
-     * What the player says while the opponent is to move is about the move they just played: "I
-     * didn't even notice they were aiming for my rook" after 9.Nf3? was answered for the side to
-     * move -- the student's own knight (a simulated student's session, 2026-09-26; desktop
-     * f733318).
+     * Offline, what the player says while the opponent is to move is about the move they just
+     * played: "I didn't even notice they were aiming for my rook" after 9.Nf3? was answered for
+     * the side to move -- the student's own knight (a simulated student's session, 2026-09-26;
+     * desktop f733318). With a model only a question about the move in so many words is: the
+     * model reads the rest from the record, and the guess made for it answered "how would this
+     * position continues?" four times as a question about the move just made (Tai's puzzle,
+     * 2026-09-28).
      */
     @Test
     fun chatOnTheOpponentsTurnIsAboutThePlayersMove() {
-        val (coach, _) = coach(emptyList())
-        played(coach, listOf("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "f3g5"), mistakeAt = 7)
-        assertTrue(!coach.userToMove) // the player's 4.Ng5 is the last move
-        val own = coach.askedOwnMove("I didn't even notice they were aiming for my rook")
-        assertTrue(own != null && own.move.ply == 7)
-        // About the opponent's side of the board: not the player's move.
-        assertEquals(null, coach.askedOwnMove("what are they threatening?"))
-        assertEquals(null, coach.askedOwnMove("how did I do this game?"))
+        val moves = listOf("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "f3g5")
+        for (withModel in listOf(false, true)) {
+            val coach = if (withModel) coach(emptyList()).first else offline()
+            played(coach, moves, mistakeAt = 7)
+            assertTrue(!coach.userToMove) // the player's 4.Ng5 is the last move
+            val own = coach.askedOwnMove("I didn't even notice they were aiming for my rook")
+            assertEquals(if (withModel) null else 7, own?.move?.ply)
+            // About the opponent's side of the board, the game or how it goes on: not the move.
+            assertEquals(null, coach.askedOwnMove("what are they threatening?"))
+            assertEquals(null, coach.askedOwnMove("how did I do this game?"))
+            assertEquals(null, coach.askedOwnMove("how would this position continue?"))
+            // About the move in so many words.
+            assertEquals(7, coach.askedOwnMove("why was my last move bad?")?.move?.ply)
+        }
     }
 
     @Test
     fun chatOnThePlayersOwnTurnIsAboutThePosition() {
-        val (coach, _) = coach(emptyList())
-        played(coach, listOf("e2e4", "e7e5", "g1f3", "b8c6"), mistakeAt = 3)
-        assertTrue(coach.userToMove)
-        assertEquals(null, coach.askedOwnMove("I didn't even notice they were aiming for my rook"))
-        // Asked in so many words, it is still about the player's move.
-        assertTrue(coach.askedOwnMove("why was my last move bad?") != null)
+        for (withModel in listOf(false, true)) {
+            val coach = if (withModel) coach(emptyList()).first else offline()
+            played(coach, listOf("e2e4", "e7e5", "g1f3", "b8c6"), mistakeAt = 3)
+            assertTrue(coach.userToMove)
+            assertEquals(null, coach.askedOwnMove("I didn't even notice they were aiming for my rook"))
+            // Asked in so many words, it is still about the player's move.
+            assertTrue(coach.askedOwnMove("why was my last move bad?") != null)
+        }
     }
 
     /** The directive of the last model call: the harness after its "# Task" line. */
@@ -219,9 +228,8 @@ class ChatAfterMoveTest {
     /**
      * Every answer to the coach's question had earned a new question and none was resolved (the
      * simulated students: "what Nc4 was expected to do was asked but not answered"; desktop
-     * cf1e2a0). On the desktop the player's words on the opponent's turn go to the own-move
-     * directive (`_asked_own_move`, f733318, not ported); here they go to the generic one, which
-     * closes the question the same way.
+     * cf1e2a0). With a model the player's words on the opponent's turn go to the generic
+     * directive, which closes the question the same way.
      */
     @Test
     fun anAnswerToTheCoachsQuestionClosesItWithoutAnother() {

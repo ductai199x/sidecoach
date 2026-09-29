@@ -353,7 +353,12 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true) {
         // Reasoning off: a local model spends the whole budget thinking otherwise, and the
         // claims come out the same in a fifth of the time.
         val found = extractClaims(text, board, provider, thinking = false)
-        verifyClaims(found, board, facts = facts).map { claimLine(it) }
+        // What the board cannot decide tells the model nothing: "whose bishop? mine?" came to
+        // it as "unclear, I cannot check that against the board; what do you expect to happen,
+        // concretely?" (Tai's puzzle, 2026-09-28).
+        verifyClaims(found, board, facts = facts)
+            .filter { it.result != ClaimResult.UNCLEAR }
+            .map { claimLine(it) }
     }
 
     /**

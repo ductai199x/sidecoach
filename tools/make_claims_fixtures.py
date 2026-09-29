@@ -495,7 +495,8 @@ def desktop_tests() -> dict:
     the one that needs the local model is left out, as `-m 'not slow'` and its skip leave it.
     """
     import importlib
-    import inspect
+
+    from desktop_tests import desktop_tests
 
     tests = importlib.import_module("tests.test_claims")
     real_verify, real_draft, real_extract = (
@@ -592,11 +593,7 @@ def desktop_tests() -> dict:
     tests.verify_claims, tests.check_draft, tests.extract_claims = verify, draft, extract
     ran = []
     try:
-        for name, fn in inspect.getmembers(tests, inspect.isfunction):
-            if not name.startswith("test_") or fn.__module__ != tests.__name__:
-                continue
-            if inspect.signature(fn).parameters or name == "test_extract_with_the_local_provider":
-                continue
+        for name, fn in desktop_tests(tests, frozenset({"test_extract_with_the_local_provider"})):
             current["test"] = name
             fn()  # the desktop's own assertions hold as the calls are recorded
             ran.append(name)

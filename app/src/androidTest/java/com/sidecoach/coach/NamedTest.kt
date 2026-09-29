@@ -255,26 +255,6 @@ class NamedTest {
             check("${call.getString("test")} $fn ${a.toString().take(120)}", mine, theirs)
         }
 
-        val planner = root.getJSONArray("planner")
-        for (i in 0 until planner.length()) {
-            val one = planner.getJSONObject(i)
-            val board = Board(one.getString("fen"))
-            val text = one.getString("text")
-            val request = one.getJSONObject("request")
-            val label = "planner on ${one.getString("reply").take(60)}"
-            check("$label: system", PLAN_SYSTEM, request.getString("system"))
-            check("$label: request", planRequest(text, board, one.getBoolean("user_white")), request.getString("content"))
-            val probes = try {
-                probesFromPlan(one.getString("reply"), text, board).map { showProbe(it) }
-            } catch (_: IllegalArgumentException) {
-                null // Python's TypeError: the named analysis is dropped by the coach's catch
-            }
-            if (one.isNull("raises")) {
-                check("$label: probes", probes, probeStrings(one.getJSONArray("probes")))
-            } else {
-                check("$label: raises", probes, null)
-            }
-        }
         assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
     }
 

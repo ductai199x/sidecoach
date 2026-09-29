@@ -13,34 +13,21 @@ import com.sidecoach.events.DisclosureLevel
 import com.sidecoach.events.Line
 
 /**
- * The engine on what the player asks about, so the coach analyses it rather than guesses.
- * A port of `sidecoach/coach/named.py`.
+ * The engine on what the player names, so the coach analyses it rather than guesses. A port of
+ * `sidecoach/coach/named.py`.
  *
  * "What about Nf3?" once got "not among the engine's best moves; it prefers Bb5" -- true, and
- * all the object had. The player may name one move, a whole line, several alternatives, a
- * move of the opponent's, or an idea in words. So the examination is agentic: the model
- * decides what to examine (a list of probes), the engine examines each, and the results go
- * into the object before the coach answers. Every number is the engine's; every effect is
- * computed on the board. Below LINE the engine's own preferred move is not named.
+ * all the object had. The moves named in the words are examined as one line, and the pieces and
+ * squares named each on their own, and the results go into the object before the coach answers.
+ * Every number is the engine's; every effect is computed on the board. Below LINE the engine's
+ * own preferred move is not named.
+ *
+ * What the words mean beyond what they name -- an idea ("can I trade queens?"), a move of the
+ * opponent's, "whose bishop?" -- is the coach model's to work out, and to ask the engine about
+ * itself ([EngineTools]): a model call that read the words into probes beforehand read "whose
+ * bishop? mine (black's)?" as "is my bishop safe?" and had the engine look at b7 (Tai's
+ * puzzle, 2026-09-28).
  */
-
-const val PLAN_SYSTEM =
-    "A chess player, in the middle of a game, asks their coach about a move, a line, or an " +
-        "idea. You turn their words into what the engine should examine: a list of probes, each a " +
-        "sequence of moves in standard notation from the position given, played in order, " +
-        "starting with the side to move. If they ask what the opponent might do, the probe " +
-        "starts with the word 'pass' (the player waits) and then the opponent's move; if they " +
-        "say their own move first and then the opponent's ('after I castle, he plays d5'), the " +
-        "probe is their move and then the opponent's, in that order. An idea in " +
-        "words ('trade queens', 'take on f7', 'castle') becomes the moves that do it. Several " +
-        "alternatives are several probes, at most four. Label each probe in the player's own " +
-        "terms ('your Nf3', 'the line Bb5 a6 Ba4', 'if they take on e5'). A question about a " +
-        "piece or a square rather than a move ('is my knight safe?', 'what does the bishop on " +
-        "d3 do?', 'what about e5?') is a probe with a square instead of moves. If their words " +
-        "name nothing to examine, return an empty list. Answer in JSON only: " +
-        "{\"probes\": [{\"label\": str, \"moves\": [str]} | {\"label\": str, \"square\": str}]}"
-
-private val JSON_BLOCK = Regex("\\{.*\\}", RegexOption.DOT_MATCHES_ALL)
 
 /** A move as a player types it, with or without a move number; "pass" is the player waiting. */
 private val TOKEN = Regex(
@@ -111,15 +98,16 @@ fun parseProbe(label: String, moves: List<String>, board: Board): Probe {
 }
 
 /**
- * Without a planner: the moves named in the words, as one line, as far as legal; or the pieces
- * and squares named, one probe each.
+ * The moves named in the words, as one line, as far as legal, and the pieces and squares named,
+ * one probe each: "I'll play Bc4 and aim at f7" is both. A square named with its piece ("the
+ * knight on f3") or asked about ("what about e5?") is never read as a pawn's move.
  */
 fun probesByWords(text: String, board: Board): List<Probe> {
     val pieces = piecesByWords(text, board)
-    if (pieces.isNotEmpty()) return pieces
+    val rest = SQUARE_ASKED.replace(PIECE_ON.replace(text, " "), " ")
     val moves = ArrayList<String>()
     val replay = board.copy(withStack = false)
-    for (match in TOKEN.findAll(text)) {
+    for (match in TOKEN.findAll(rest)) {
         val token = match.groupValues[1].replace("0-0-0", "O-O-O").replace("0-0", "O-O")
         val move = parseToken(replay, token)
         if (move == null) {
@@ -129,9 +117,12 @@ fun probesByWords(text: String, board: Board): List<Probe> {
         moves.add(replay.san(move))
         replay.push(move)
     }
-    if (moves.isEmpty()) return emptyList()
-    val label = sanLine(board, replayMoves(board, moves).map { it.uci() })
-    return listOf(parseProbe(label, moves, board))
+    val line = if (moves.isEmpty()) {
+        emptyList()
+    } else {
+        listOf(parseProbe(sanLine(board, replayMoves(board, moves).map { it.uci() }), moves, board))
+    }
+    return (line + pieces).take(4)
 }
 
 /** The pieces named with their square, or the squares asked about, as probes. */
@@ -533,8 +524,8 @@ private fun gapWords(gap: Double): String = when {
 
 /**
  * The engine's word on what the player asked about: one line per probe, or none when their
- * words name nothing to examine. Without a planner the moves named in the words are examined
- * as one line, or the pieces and squares named each on their own.
+ * words name nothing to examine. The moves named in the words are examined as one line, or the
+ * pieces and squares named each on their own.
  */
 fun analyseNamed(
     text: String,
@@ -542,13 +533,12 @@ fun analyseNamed(
     engine: EngineLike?,
     userColour: Boolean,
     level: DisclosureLevel,
-    plannedProbes: List<Probe>? = null,
     depth: Int = 14,
     static: Boolean = false,
     piecesBoard: Board? = null,
     known: List<Line> = emptyList(),
 ): List<String> {
-    var probes = plannedProbes ?: probesByWords(text, board)
+    var probes = probesByWords(text, board)
     if ((board.turn != userColour && engine != null) || (engine == null && !static)) {
         // Only the position the player faces is theirs to ask lines about; the board's pieces
         // are theirs to ask about at any time.
@@ -572,48 +562,4 @@ fun analyseNamed(
         }
     }
     return out
-}
-
-/**
- * The message `plan_probes` sends the planner: the position, whose move and whose side the
- * player is, the legal moves, and their words.
- */
-fun planRequest(text: String, board: Board, userColour: Boolean): String {
-    val side = if (board.turn == com.sidecoach.chess.WHITE) "White" else "Black"
-    val player = if (userColour == com.sidecoach.chess.WHITE) "White" else "Black"
-    val legal = board.legalMoves().map { board.san(it) }.sorted().joinToString(" ")
-    return "Position (FEN): ${board.fen()}\n$side to move. The player is $player.\n" +
-        "Legal moves: $legal\n\nThe player says: \"${text.trim()}\"\n\nJSON only."
-}
-
-/**
- * The planner's JSON turned into probes on the board, with the words as the fallback. The call
- * to the model itself belongs to the caller, which owns the provider.
- */
-fun probesFromPlan(json: String?, text: String, board: Board): List<Probe> {
-    // `json.loads(_JSON.search(completion.text or "").group(0))`, anything unreadable {}: read
-    // as Python reads it, strict, a null label None rather than "null" (the parity audit cc-05).
-    val found = JSON_BLOCK.find(json ?: "")?.value
-    val data = if (found != null) pyJsonOr(found, emptyMap<String, Any?>()) else emptyMap<String, Any?>()
-    val probes = ArrayList<Probe>()
-    val items = (data as? Map<*, *>)?.get("probes")
-    for (item in if (pyTruthy(items)) pyIter(items) else emptyList()) {
-        if (item !is Map<*, *>) continue
-        val squareRaw = item["square"]
-        val square = (if (pyTruthy(squareRaw)) pyStr(squareRaw) else "").trim().lowercase()
-        val labelRaw = item["label"]
-        if (square.isNotEmpty() && Regex("[a-h][1-8]").matches(square)) {
-            val label = if (pyTruthy(labelRaw)) pyStr(labelRaw) else square
-            probes.add(Probe(label = label, moves = emptyList(), square = parseSquare(square)))
-        } else {
-            // `item.get("moves", [])`: a null there is no list, and raises as Python's does.
-            val movesRaw = if (item.containsKey("moves")) item["moves"] else emptyList<Any?>()
-            val moves = pyIter(movesRaw).map { pyStr(it) }.filter { it.trim().isNotEmpty() }
-            if (moves.isEmpty()) continue
-            val label = if (pyTruthy(labelRaw)) pyStr(labelRaw) else moves.joinToString(" ")
-            probes.add(parseProbe(label, moves, board))
-        }
-        if (probes.size >= 4) break
-    }
-    return probes.ifEmpty { probesByWords(text, board) }
 }

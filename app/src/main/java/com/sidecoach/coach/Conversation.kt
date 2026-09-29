@@ -12,6 +12,8 @@ import com.sidecoach.chess.ROOK
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.parseSquare
+import com.sidecoach.chess.squareFile
+import com.sidecoach.chess.squareName
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.DisclosureLevel
 import com.sidecoach.events.GameEnded
@@ -56,27 +58,12 @@ import java.util.Locale
  */
 
 /**
- * What the first hint may say, as the disclosure line and the directive state it: the key fact
- * is named on the board (Tai, 2026-09-24), so "no square" -- the rule before the first hint was
- * a lesson -- told the model to say less than the template.
- */
-const val IDEA_LEVEL_WORDS =
-    "the idea: what is at stake and the key fact on the board -- the pieces, squares and " +
-        "their moves the facts name, the target's square too, even where the move goes -- with " +
-        "the principle behind it; never the player's move itself, or which of their own pieces " +
-        "makes it"
-
-/**
  * Below the move level the model sees everything -- the engine lines, the legal moves, the facts
- * past the rung -- and says only what the rung allows; the reply is checked for the answer before
- * it is spoken ([leakCheck]).
+ * past the rung -- so that the hint is precise; what a reply gives away of the answer is logged
+ * ([leakCheck]), never a reason to refuse it. The Task's level line says what the reply may give
+ * (`Coach._level_line`); the titles here say only what a section is.
  */
-const val BEYOND_TITLE =
-    "Past this level (for you to teach from; do not say the move, its square or the piece " +
-        "that makes it)"
-const val SEE_ALL_WORDS =
-    "You see everything, the answer included, so the hint can be precise and true: say what " +
-        "this level allows, built from what you know."
+const val BEYOND_TITLE = "Beyond this level: the answer and how it works"
 
 /** One move as it was seen, with the engine's word on it as it arrives. */
 class PlyRecord(val move: MovePlayed) {
@@ -107,6 +94,37 @@ private val PLACED_PIECE_TYPES = mapOf(
     "knight" to KNIGHT,
     "pawn" to PAWN,
 )
+
+/**
+ * Left and right as the player says them, seeing the board from their own side. Playing Black,
+ * "he will just move away to the right" (Kh1-g2) was answered "their King cannot move to the
+ * right" (Tai's puzzle, 2026-09-28): the model reads a board from White's side.
+ * `conversation.hands`.
+ */
+fun hands(side: Pieces.Side): String {
+    val (left, right) = if (side == Pieces.Side.WHITE) "a" to "h" else "h" to "a"
+    return "the $left-file is on their left and the $right-file on their right, so 'to the " +
+        "right' means toward the $right-file"
+}
+
+/**
+ * Which way each move of a line from [board] goes, as the player sees the board: "Kg2 (h1 to
+ * g2) goes to their right". Told which file is on which hand, Luna still answered "White cannot
+ * move to the right: the only legal reply is Kg2, toward the a-file". `conversation.ways`.
+ */
+fun ways(board: Board, sans: List<String>, side: Pieces.Side): String {
+    val rightward = if (side == Pieces.Side.WHITE) 1 else -1
+    val replay = board.copy(withStack = false)
+    val out = ArrayList<String>()
+    for (san in sans) {
+        val move = replay.parseSan(san) ?: break
+        val step = (squareFile(move.to) - squareFile(move.from)) * rightward
+        val way = if (step > 0) "to their right" else if (step < 0) "to their left" else "along the file"
+        out.add("$san (${squareName(move.from)} to ${squareName(move.to)}) goes $way")
+        replay.push(move)
+    }
+    return out.joinToString("; ")
+}
 
 /**
  * Whether [text] names a piece on a square that no longer holds that piece on [board].
@@ -200,7 +218,8 @@ class Conversation {
         records.clear()
         drained = 0
         val side = if (event.userSide == Pieces.Side.WHITE) "White" else "Black"
-        var text = "You coach $side."
+        var text = "You coach $side. They see the board from $side's side, their own pieces at the " +
+            "bottom: ${hands(event.userSide)}."
         if (control.isNotEmpty()) text += " Time control: $control."
         if (event.kind == "puzzle") {
             text += "\nThis is a puzzle the player is solving on the panel's board, $side to " +
@@ -566,9 +585,6 @@ class Conversation {
             // the heuristic sheet alone could only reword it).
             val beyond = beyondLines(record, board, level)
             if (beyond.isNotEmpty()) out.add(BEYOND_TITLE to beyond.joinToString("\n"))
-            out.add(
-                "Disclosure" to "Level ${level.name.lowercase()}: ${levelWords(level)}. $SEE_ALL_WORDS"
-            )
         }
         // The inventory lists the checks and captures on offer, the answer among them.
         out.add("On the board (complete lists)" to inventoryLines(board, colour).joinToString("\n"))
@@ -750,7 +766,7 @@ class Conversation {
         val userToMove = toMove == colour
         val whose = if (userToMove) "the player's" else "the opponent's"
         val answer = if (userToMove && level.value < DisclosureLevel.MOVE.value) {
-            "; the best first move is the answer they are finding: teach from it, never name it"
+            "; line 1's first move is the answer to the position they face"
         } else {
             ""
         }
@@ -853,10 +869,10 @@ class Conversation {
         val level = if (userToMove) wanted else DisclosureLevel.LINE
         val visible = visibleFacts(facts, level)
         if (!userToMove) {
-            // The hints are for the side to move: on the opponent's turn the first hint and the
-            // two questions are the opponent's, and labelled "to the player" the model asked the
-            // player the opponent's question (parity pass 2, 2026-09-25).
-            for (key in listOf("situation", "question", "nudge")) visible.remove(key)
+            // The hints are for the side to move: on the opponent's turn the first hint is the
+            // opponent's, and labelled "to the player" the model asked the player the opponent's
+            // question (parity pass 2, 2026-09-25).
+            visible.remove("situation")
         }
         val side = if (userToMove) "player" else "opponent"
         val out = ArrayList<String>()
@@ -895,8 +911,6 @@ class Conversation {
      */
     fun facedText(facts: PositionFacts, board: Board, after: Board? = null, played: Board? = null): String {
         val visible = visibleFacts(facts, DisclosureLevel.LINE)
-        // The hint's questions were for finding the move; the lesson is on the move made.
-        for (key in listOf("question", "nudge")) visible.remove(key)
         val ideas = visible["ideas"] as? List<*>
         if (after != null && !ideas.isNullOrEmpty()) {
             visible["ideas"] = ideas.filter { !gone(it.toString(), after) }
@@ -924,7 +938,7 @@ class Conversation {
             names = names + ("why" to "the opponent's best move now and what it does")
         }
         if (past) {
-            names = names + ("situation" to "the first hint for that position (to the player, as it stood)")
+            names = names + ("situation" to "what a first hint rested on there (to the player, as it stood)")
         }
         val out = ArrayList<String>()
         for (key in FACT_KEYS) {
@@ -1177,14 +1191,6 @@ class Conversation {
     private fun score(expected: Double, toMove: Boolean, colour: Boolean): String =
         format2(if (toMove == colour) expected else 1.0 - expected)
 
-    private fun levelWords(level: DisclosureLevel): String = when (level) {
-        DisclosureLevel.SILENT -> "say nothing about the position"
-        DisclosureLevel.IDEA -> IDEA_LEVEL_WORDS
-        DisclosureLevel.FOCUS -> "the idea, the target and the piece; not the move"
-        DisclosureLevel.MOVE -> "the move and why it works may be named"
-        DisclosureLevel.LINE -> "everything, the line included"
-    }
-
     private fun factsOwner(userToMove: Boolean): String = if (userToMove) {
         "the player to move"
     } else {
@@ -1278,7 +1284,10 @@ class Conversation {
 
         /**
          * The facts in the order a coach reads them: what kind of moment, the goal and the
-         * pattern, where to look, then the move.
+         * pattern, where to look, then the move. The templates' questions -- the idea rung's and
+         * the focus rung's -- are not among them: the model copied them word for word, and a
+         * question of its own is its to ask (the prompt audit, 2026-09-28). Nor the region: the
+         * ladder has had no region rung since 4b6f1b1.
          */
         val FACT_KEYS = listOf(
             "phase",
@@ -1290,11 +1299,8 @@ class Conversation {
             "theme",
             "mechanism",
             "plan",
-            "question",
             "target",
             "piece",
-            "nudge",
-            "region",
             "why",
             "tactic",
             "threats",
@@ -1306,13 +1312,12 @@ class Conversation {
         val FACT_NAMES = mapOf(
             // The template's first hint whole: its stakes, key fact, principle and trap, several
             // of which exist nowhere else on the sheet. Without it the model was asked for "the
-            // stakes" and "the trap" and never given them (parity pass, 2026-09-25).
-            "situation" to "the first hint in the board's own words, all of it true (to the player, as it " +
-                "stands): the least a hint says",
+            // stakes" and "the trap" and never given them (parity pass, 2026-09-25). Facts to
+            // teach from, not the least a reply says: told that, the model said it back, word for
+            // word in a third of the hints (the prompt audit, 2026-09-28).
+            "situation" to "what a first hint rests on (to the player, as it stands)",
             "theme" to "pattern",
             "mechanism" to "how it works",
-            "question" to "a question that sets them looking (to the player, as it stands)",
-            "nudge" to "a question from the target to the move (to the player, as it stands)",
             "why" to "the move and what it does",
             // Whose: the other side's moves, were the side to move to pass.
             // Named per side in [factLines]: whose threats, and at what moment.
@@ -1320,7 +1325,7 @@ class Conversation {
         )
 
         /** The facts addressed to the player, kept in the second person. */
-        val TO_THE_PLAYER = listOf("question", "nudge", "situation")
+        val TO_THE_PLAYER = listOf("situation")
 
         /**
          * `f"{value:.2f}"`: the exact binary value, rounded half to even.

@@ -301,9 +301,17 @@ fun sideLines(board: Board, colour: Boolean, own: String, their: String): List<S
     return out
 }
 
-/** What the side to move can do at once: checks and captures, in SAN, with what is taken. */
+/**
+ * The check it is in, and what the side to move can do at once: checks and captures, in SAN,
+ * with what is taken. The check in force was missing, and the empty list said "no check is on"
+ * with the King in check (Tai's puzzle, 2026-09-28).
+ */
 fun toMoveLines(board: Board, own: String): List<String> {
     val out = ArrayList<String>()
+    if (board.isCheck()) {
+        val by = squaresOf(board.checkersMask()).joinToString(" and the ") { nameOf(board, it) }
+        out.add("$own King in check, from the $by")
+    }
     val checks = ArrayList<String>()
     for (m in board.legalMoves()) {
         if (!board.givesCheck(m)) continue
@@ -352,14 +360,14 @@ fun inventoryLines(board: Board, userColour: Boolean): List<String> {
     val theirs = sideLines(board, !userColour, "The opponent's", "the player's")
     val mover = if (board.turn == userColour) "The player's" else "The opponent's"
     val lines = mine + theirs + toMoveLines(board, mover)
-    return lines.ifEmpty { listOf("Nothing hangs, nothing is pinned, no check or capture is on.") }
+    return lines.ifEmpty { listOf("Nothing hangs, nothing is pinned, and the side to move has no check or capture.") }
 }
 
 /** The inventory as one block, for a message that is not sectioned. */
 fun inventoryText(board: Board, userColour: Boolean): String {
     val lines = inventoryLines(board, userColour)
     if (lines.size == 1 && lines[0].startsWith("Nothing")) {
-        return "On the board now: nothing hangs, nothing is pinned, no check or capture is on."
+        return "On the board now: nothing hangs, nothing is pinned, and the side to move has no check or capture."
     }
     return "On the board now (complete lists): " + lines.joinToString(" | ") + "."
 }

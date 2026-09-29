@@ -443,6 +443,136 @@ def main() -> None:
         streams.append(entry)
     payload["streams"] = streams
 
+    # 4c. With tools (desktop c80b64b): the request with the engine tools' specs, the model's
+    # earlier calls and their results, and tool_choice; its calls read whole and streamed in
+    # pieces; the thinking a server hands back before </think> split off; and, under "prefill",
+    # a reply with tools read whole and handed on at once.
+    from sidecoach.coach.engine_tools import SPECS as TOOL_SPECS
+
+    tool_turns = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "analyse", "arguments": '{"moves": ["Kg2"]}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "After 4. Kg2 (from the board now): ..."},
+    ]
+    tool_bodies = []
+    for control, effort in (("prefill", None), ("effort", "none"), ("none", None)):
+        provider = provider_for(lambda r: (200, "{}"), control=control, effort=effort)
+        for choice in (None, "none"):
+            body = provider.request_body(
+                "SYSTEM",
+                CONVERSATIONS[1],
+                max_tokens=100,
+                temperature=0.1,
+                thinking=False,
+                tools=TOOL_SPECS,
+                turns=tool_turns,
+                tool_choice=choice,
+            )
+            tool_bodies.append(
+                {"control": control, "effort": effort, "tool_choice": choice, "body": canon(body)}
+            )
+    tool_chats = []
+    for label, text in (
+        (
+            "two calls, one unreadable",
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "c1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "analyse",
+                                            "arguments": '{"moves": ["Kg2", "Rg1+"]}',
+                                        },
+                                    },
+                                    {"function": {"name": "square", "arguments": "not json"}},
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                }
+            ),
+        ),
+        (
+            "thinking before </think>",
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "<think>draft Kg2.</think>\n\nKg2 is forced; Rg1+ wins.",
+                                "reasoning_content": "earlier",
+                            }
+                        }
+                    ]
+                }
+            ),
+        ),
+    ):
+        provider = provider_for(lambda r, t=text: (200, t), control="none")
+        completion = provider.chat("SYSTEM", CONVERSATIONS[1], tools=TOOL_SPECS)
+        tool_chats.append(
+            {
+                "label": label,
+                "reply": text,
+                "text": completion.text,
+                "reasoning": completion.reasoning,
+                "calls": [[c.id, c.name, canon(c.arguments)] for c in completion.tool_calls],
+            }
+        )
+    pieces = [
+        {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "analyse", "arguments": ""}}]},
+        {"tool_calls": [{"index": 0, "function": {"arguments": '{"moves": '}}]},
+        {"tool_calls": [{"index": 1, "id": "c2", "function": {"name": "square", "arguments": '{"square"'}}]},
+        {"tool_calls": [{"index": 0, "function": {"arguments": '["Kg2"]}'}}]},
+        {"tool_calls": [{"index": 1, "function": {"arguments": ': "g1"}'}}]},
+    ]
+    stream_text = "\n".join(
+        ["data: " + json.dumps({"choices": [{"delta": d}]}) for d in pieces]
+        + ["data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}), "data: [DONE]"]
+    )
+    tool_streams = []
+    for control, text in (("none", stream_text), ("prefill", tool_chats[1]["reply"])):
+        provider = provider_for(lambda r, t=text: (200, t), control=control)
+        heard: list[str] = []
+        completion = provider.chat_stream(
+            "SYSTEM",
+            CONVERSATIONS[1],
+            on_delta=lambda piece, heard=heard: heard.append(piece) or True,
+            tools=TOOL_SPECS,
+        )
+        tool_streams.append(
+            {
+                "control": control,
+                "reply": text,
+                "text": completion.text,
+                "deltas": heard,
+                "calls": [[c.id, c.name, canon(c.arguments)] for c in completion.tool_calls],
+            }
+        )
+    payload["tools"] = {
+        "specs": canon(TOOL_SPECS),
+        "turns": canon(tool_turns),
+        "bodies": tool_bodies,
+        "chats": tool_chats,
+        "streams": tool_streams,
+    }
+
     # 4b. What the healthcheck says of each answer to `GET /models`.
     healths = []
     for label, status, text in HEALTH_REPLIES:

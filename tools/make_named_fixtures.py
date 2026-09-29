@@ -237,82 +237,6 @@ def line_json(line: Line) -> dict:
     }
 
 
-# What a planner might answer (`plan_probes`), read as the desktop reads it (TG-06; the parity
-# audit cc-05): squares and lines, labels missing or null, a move that is null or a number,
-# the list cut at four, JSON that Python refuses, and no JSON at all.
-PLANNER_ASKS = [
-    ("what about Nf3 and my knight on c3?", [
-        '{"probes": [{"label": "Nf3", "moves": ["Nf3"]}, {"label": "my knight", "square": "c3"}]}',
-        'Sure: {"probes": [{"moves": ["e4", "e5", "Nf3"]}, {"square": "E4"}]} hope that helps',
-        '{"probes": [{"label": null, "moves": ["Nf3", null, 5]}, {"label": 0, "square": "d4"}]}',
-        '{"probes": [{"moves": ["Nf3"]}, {"moves": ["d4"]}, {"moves": ["e4"]}, {"moves": ["c4"]},'
-        ' {"moves": ["g3"]}]}',
-        '{"probes": [{"label": "pass first", "moves": ["pass", "e5"]}, {"square": "z9"}, "e4", 7]}',
-        '{"probes": [{"label": "nothing", "moves": []}, {"label": "blank", "moves": ["  "]}]}',
-        '{"probes": "e4"}',
-        '{"probes": {"moves": ["e4"]}}',
-        '{"probes": []}',
-        "{probes: [{moves: ['Nf3']}]}",
-        '{"probes": [{"moves": ["Nf3"]}]} {"extra": 1}',
-        '{"probes": [{"moves": "Nf3"}]}',
-        '{"probes": 5}',
-        '{"probes": [{"moves": null}]}',
-        "no JSON at all",
-        "",
-    ]),
-]
-
-
-def planner_cases() -> list[dict]:
-    """`plan_probes` on the opening board with each planner reply: the probes it hands over,
-    and the request the planner was sent. A reply Python cannot iterate raises, as there."""
-
-    class Stub:
-        name = "stub"
-
-        def __init__(self, reply: str) -> None:
-            self.reply = reply
-            self.calls: list[dict] = []
-
-        def chat(self, system, messages, *, max_tokens=1500, temperature=0.7, thinking=False):  # noqa: ANN001, ANN202
-            from sidecoach.llm.base import Completion
-
-            self.calls.append(
-                {
-                    "system": system,
-                    "content": messages[0]["content"],
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                }
-            )
-            return Completion(text=self.reply)
-
-    out = []
-    for fen in (chess.STARTING_FEN, "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"):
-        board = chess.Board(fen)
-        for text, replies in PLANNER_ASKS:
-            for reply in replies:
-                for user in (chess.WHITE, chess.BLACK):
-                    stub = Stub(reply)
-                    try:
-                        probes = [probe_json(p) for p in N.plan_probes(text, board, stub, user_colour=user)]
-                        raises = None
-                    except Exception as exc:  # noqa: BLE001
-                        probes, raises = [], type(exc).__name__
-                    out.append(
-                        {
-                            "fen": fen,
-                            "text": text,
-                            "user_white": user == chess.WHITE,
-                            "reply": reply,
-                            "request": stub.calls[0],
-                            "probes": probes,
-                            "raises": raises,
-                        }
-                    )
-    return out
-
-
 def desktop_tests() -> dict:
     """Every call `tests/test_named.py` and `tests/test_inventory.py` make to the named and
     inventory functions (and to check_draft), with what the desktop answered: their positions
@@ -320,7 +244,8 @@ def desktop_tests() -> dict:
     and undefended, a line recited from the examined one, the inventory's hanging pieces, pins,
     batteries and forks -- replayed on the phone (TG-04, TG-05)."""
     import importlib
-    import inspect
+
+    from desktop_tests import desktop_tests
 
     from sidecoach.coach import inventory as INV
 
@@ -402,7 +327,7 @@ def desktop_tests() -> dict:
         },
         "spoken": lambda fact: {"fact": fact},
         "disclosed_frames": lambda board, facts: {"fen": board_arg(board), "facts": list(facts)},
-        "analyse_named": lambda text, board, engine, *, user_colour, level, planner=None, depth=14,
+        "analyse_named": lambda text, board, engine, *, user_colour, level, depth=14,
         static=False, pieces_board=None, known=(): {
             "text": text,
             "fen": board_arg(board),
@@ -431,11 +356,7 @@ def desktop_tests() -> dict:
                 saved[fn] = getattr(tests, fn)
                 setattr(tests, fn, wrap(saved[fn], fn, show))
         try:
-            for name, test in inspect.getmembers(tests, inspect.isfunction):
-                if not name.startswith("test_") or test.__module__ != tests.__name__:
-                    continue
-                if inspect.signature(test).parameters:
-                    continue
+            for name, test in desktop_tests(tests):
                 current["test"] = f"{module_name}.{name}"
                 test()  # the desktop's own assertions hold as the calls are recorded
                 out["ran"].append(current["test"])
@@ -487,7 +408,7 @@ def main() -> None:
         cases.append(case_for(board))
 
     OUT.mkdir(parents=True, exist_ok=True)
-    payload = {"cases": cases, "planner": planner_cases(), "tests": desktop_tests()}
+    payload = {"cases": cases, "tests": desktop_tests()}
     (OUT / "named.json").write_text(json.dumps(payload), encoding="utf-8")
     size = (OUT / "named.json").stat().st_size
     print(f"{len(cases)} positions x {len(ASKS)} asks -> {OUT / 'named.json'} ({size/1e6:.1f} MB)")

@@ -1,5 +1,8 @@
 package com.sidecoach.llm
 
+import org.json.JSONArray
+import org.json.JSONObject
+
 /**
  * Provider interface. Every LLM backend implements this and nothing more: `llm/base.py`.
  *
@@ -12,12 +15,32 @@ package com.sidecoach.llm
 /** `llm.base.ChatMessage`: the role is "user" or "assistant". */
 data class ChatMessage(val role: String, val content: String)
 
-/** `llm.base.Completion`. `stats` carries whatever the backend reported about the call. */
+/** `llm.base.ToolCall`: a function the model asked to have run, and its arguments as it wrote them. */
+data class ToolCall(val id: String, val name: String, val arguments: JSONObject)
+
+/**
+ * `llm.base.Completion`. `stats` carries whatever the backend reported about the call;
+ * [toolCalls] the functions the model asked for instead of (or before) a reply -- empty when
+ * it replied, and always empty from a provider that takes no tools.
+ */
 data class Completion(
     val text: String,
     val reasoning: String = "",
     val stats: Map<String, Any?> = emptyMap(),
+    val toolCalls: List<ToolCall> = emptyList(),
 )
+
+private val STATUS = Regex("^(\\d{3}):")
+
+/**
+ * A request the server refused as it stands -- a 4xx other than 429 (bad request, too long, no
+ * access): asking again costs time and changes nothing. Providers throw with the status code
+ * heading the message. `llm.base.refused_for_good`.
+ */
+fun refusedForGood(error: Throwable): Boolean {
+    val status = STATUS.find(error.message ?: "")?.groupValues?.get(1) ?: return false
+    return status.startsWith("4") && status != "429"
+}
 
 interface LLMProvider {
     val name: String
@@ -49,5 +72,24 @@ interface StreamingProvider : LLMProvider {
         temperature: Double = 0.7,
         thinking: Boolean = false,
         onDelta: StreamCallback,
+    ): Completion
+}
+
+/**
+ * A provider that takes tools: the desktop's `tools_ok`, whose `chat` and `chat_stream` then
+ * accept `tools` (function specs in the OpenAI form), `turns` (the wire messages that follow the
+ * conversation: the model's earlier calls and what each returned) and `tool_choice`. Here one
+ * call: streamed to [onDelta] when given, read whole otherwise.
+ */
+interface ToolsProvider : LLMProvider {
+    fun chatTools(
+        system: String,
+        messages: List<ChatMessage>,
+        tools: JSONArray,
+        turns: JSONArray,
+        maxTokens: Int = 1500,
+        temperature: Double = 0.7,
+        toolChoice: String? = null,
+        onDelta: StreamCallback? = null,
     ): Completion
 }

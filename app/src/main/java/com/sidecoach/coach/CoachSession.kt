@@ -31,6 +31,8 @@ import com.sidecoach.llm.LLMProvider
 import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.profile.Causes
 import com.sidecoach.vision.Pieces
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * The second half of `coach/coach.py`: what the user's words mean for disclosure, and the
@@ -209,12 +211,6 @@ fun questionPart(text: String): String {
     return asked.joinToString(" ").replace("…", "...")
 }
 
-/** A request that asks for a reason as well: the model's to answer. */
-private val ASKS_WHY = Regex(
-    "\\b(?:why|how|explain|what does|what's the idea|idea)\\b",
-    RegexOption.IGNORE_CASE,
-)
-
 /** The opening asked for by name ("what opening is this?"), not judged ("how is my opening?"). */
 private val OPENING_FACT = Regex(
     "\\b(?:what|which)(?:'s| is| was)? (?:the |this |my )?opening\\b|" +
@@ -274,9 +270,24 @@ private val ASK_MOVE = Regex(
         "just tell me|what'?s the move|tell me the move|the answer)\\b",
     RegexOption.IGNORE_CASE,
 )
+/**
+ * How the position goes on is the line: "how would this position continues?" and "ok and after
+ * that?" after a puzzle's last move unlocked nothing (Tai's puzzle, 2026-09-28). "After that"
+ * only as a question: in a statement ("and after that I lost my queen") it asks for nothing.
+ */
 private val ASK_LINE = Regex(
-    "\\b(the line|a line|lines|variation|continuation|what happens (after|next)|" +
-        "and then what|what follows)\\b",
+    "\\b(?:the line|a line|lines|variation|continuation|what happens (?:after|next)|" +
+        "and then what|what follows|what(?:'s| is| comes) next|then what)\\b" +
+        "|\\bafter that\\s*\\?" +
+        "|\\bhow (?:would|will|does|do|could|can) (?:it|this|that|the game|(?:this|the) position|" +
+        "things) (?:continue|continues|go on|goes on|play out|proceed)\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+/** Left or right as a direction ("to the right", "on the left side"), not "is that right?". `coach._SIDEWAYS`. */
+internal val SIDEWAYS = Regex(
+    "\\b(?:to|on|toward|towards) (?:the|my|his|her|their) (?:left|right)\\b" +
+        "|\\b(?:left|right)(?:wards?|-hand| side| wing)\\b",
     RegexOption.IGNORE_CASE,
 )
 
@@ -644,7 +655,7 @@ class Coach(
         // template for the opening's name was all he got. The templates are the offline coach's,
         // and the model's fallback when a reply gets something wrong.
         val offline = this.offline
-        // Offline, the quick answer: the template for a bare "hint", the move or the line.
+        // Offline, the answer at once: the template for a bare "hint", the move or the line.
         // The move or the line asked for, or asked about where it is already open: "what
         // happens after the best move?" at the line level is the line, though it unlocks
         // nothing (the harness check of the test audit, 2026-09-26).
@@ -668,13 +679,13 @@ class Coach(
                 )
             )
         if (canned) {
-            val quick = instruction(
+            val answer = instruction(
                 Trigger.USER_ASK, where, level, text, emptyList(), null, null
             ).second
-            takeLeads(where, quick)
+            takeLeads(where, answer)
             queuePlain(
                 Trigger.USER_ASK,
-                quick,
+                answer,
                 ts,
                 ply = where.ply,
                 level = level,
@@ -683,13 +694,9 @@ class Coach(
                 now = true,
                 recordNow = true,
             )
-        }
-
-        if (canned && exact && !ASKS_WHY.containsMatchIn(text)) {
-            // Offline, the move or the line asked for bare: the template has said it.
             return
         }
-        if (offline && !canned && factQuestion(text)) {
+        if (offline && factQuestion(text)) {
             // The material, the opening, the standing: said by the template, exactly.
             val answer = instruction(
                 Trigger.USER_ASK, where, level, text, emptyList(), null, null
@@ -722,7 +729,7 @@ class Coach(
         fun examined(): List<String> {
             val found = namedAnalysis(asked.ifEmpty { text }, where, level)
             if (!offline) return found // the model answers, from these
-            // A probe the planner made of their words that is no legal move is the model's to
+            // A move named in their words that is no legal move is the model's to
             // know, not the player's to hear: "after pass, Kd1 is not a legal move" was read
             // out as the answer to "How does Qc7+ prevent Re8?" (the students).
             var said = found.filter { "is not a legal move" !in it }
@@ -748,38 +755,34 @@ class Coach(
         }
 
         val checker = claims
-        if (checker == null || !mayCarryClaims(text)) {
-            var verdicts: List<String> = emptyList()
-            if (mayCarryClaims(text)) verdicts = examined()
-            speak(
-                Trigger.USER_ASK,
-                where,
-                level,
-                ts,
-                userText = text,
-                verdicts = verdicts,
-                quick = canned || shownExamination,
-            )
+        // With the engine at the model's call its claims are the model's to check, with the whole
+        // conversation in view: checked beforehand against the board as it stands, "Rxf1+ check
+        // the white king" -- the move just played -- came back "false, Rxf1+ is not a move you can
+        // play next" (Tai's puzzle, 2026-09-28).
+        val tools = engine != null && !offline
+        if (checker == null || tools || !mayCarryClaims(text)) {
+            val verdicts = if (mayCarryClaims(text)) examined() else emptyList()
+            if (!shownExamination) { // offline, the engine's word on it was the answer
+                speak(Trigger.USER_ASK, where, level, ts, userText = text, verdicts = verdicts)
+            }
             return
         }
 
         fun checked() {
-            var verdicts = try {
+            val verdicts = try {
                 checker.check(text, where.board, where.facts)
             } catch (_: Exception) {
                 emptyList()
             }
-            // The engine on what they asked about, examined now and spoken first.
             val found = examined()
-            verdicts = verdicts + found
+            if (shownExamination) return // offline, the engine's word on it was the answer
             speak(
                 Trigger.USER_ASK,
                 where,
                 level,
                 ts,
                 userText = text,
-                verdicts = verdicts,
-                quick = shownExamination,
+                verdicts = verdicts + found,
             )
         }
 
@@ -1480,6 +1483,17 @@ class Coach(
     }
 
     /**
+     * A word on a sound move held to the rule budget: its pattern to keep asked for only while a
+     * rule may be said ([ruleOk]), and then counted as said, under [key] -- with a model, being
+     * asked for it is the saying (as in [freshLesson]). `Coach._budgeted`.
+     */
+    private fun budgeted(instruction: String, key: String): String {
+        if (!ruleOk(null)) return holdRule(instruction)
+        if (!offline) ruleSaid(key)
+        return instruction
+    }
+
+    /**
      * What a sound move's word may not teach now: the kinds of the last few lessons
      * ([TAUGHT_MEMORY]), and every principle that may not be said ([ruleOk]).
      * `Coach._verdict_taught`.
@@ -1509,29 +1523,21 @@ class Coach(
     }
 
     /**
-     * The engine's word on what the player asked about: the model decides what to examine,
-     * the engine examines it; one line per probe, none when nothing was named. A piece or
-     * square named needs no engine; a line does.
+     * The engine's word on the moves, pieces and squares the player's words name; one line per
+     * probe, none when nothing was named. A piece or square named needs no engine; a line does.
+     * What else the words mean is the model's to ask the engine about ([EngineTools]).
      */
     private fun namedAnalysis(
         text: String,
         position: CoachPosition,
         level: DisclosureLevel,
     ): List<String> = try {
-        // Without an engine only pieces and squares can be examined, and the words name
-        // those well enough: no planner call.
-        val planned = if (engine != null) {
-            probesFromPlan(planProbeJson(text, position.board), text, position.board)
-        } else {
-            null
-        }
         analyseNamed(
             text,
             position.board,
             engine,
             userColour = userColour,
             level = level,
-            plannedProbes = planned,
             // Pieces and squares as the board stands now, whatever position the question is
             // about.
             piecesBoard = board,
@@ -1579,26 +1585,6 @@ class Coach(
     }
 
     /**
-     * The planner's reply for [probesFromPlan]. The desktop's `plan_probes` makes this call
-     * inside `analyse_named`; here the provider belongs to the caller, so the call is here.
-     */
-    private fun planProbeJson(text: String, board: Board): String? {
-        val content = planRequest(text, board, userColour)
-        return try {
-            // Parsing their words into moves is no lesson: the routine effort, not the coach's
-            // (at medium it was a second model call's worth of waiting).
-            speaker.routineProvider.chat(
-                PLAN_SYSTEM,
-                listOf(ChatMessage("user", content)),
-                maxTokens = 400,
-                temperature = 0.0,
-            ).text
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    /**
      * The player's own move, when it is the last move played and has its verdict. Once the
      * opponent has replied, "that move" is theirs -- unless the words say it is the player's
      * ([mine]): "what should I have played?", "did I blunder?".
@@ -1621,16 +1607,24 @@ class Coach(
      * bot the reply comes at once, and "what should I have played?" then found the opponent's
      * move last and got a hint for the next one (the runtime audit). `coach._asked_own_move`.
      *
-     * Words said while the opponent is to move -- the player's own move the last one played --
-     * are about that move too, unless they ask about the opponent's threat or move, the material,
-     * the opening, the standing or the game: a simulated student's "I didn't even notice they
-     * were aiming for my rook" after 9.Nf3? was answered for the side to move, "You can win a
-     * knight. Their knight on f3 can simply be taken" -- the student's own knight (2026-09-26).
+     * Offline, words said while the opponent is to move -- the player's own move the last one
+     * played -- are about that move too, unless they ask about the opponent's threat or move, the
+     * material, the opening, the standing or the game: a simulated student's "I didn't even
+     * notice they were aiming for my rook" after 9.Nf3? was answered for the side to move, "You
+     * can win a knight. Their knight on f3 can simply be taken" -- the student's own knight
+     * (2026-09-26). With a model that guess is the model's to make, from the record: made here,
+     * "how would this position continue?" after a puzzle's last move was answered four times
+     * running as a question about that move, from the position before it ("Best, and it cost
+     * nothing: Rxf1+ ...", Tai's puzzle, 2026-09-28).
      */
     internal fun askedOwnMove(text: String): PlyRecord? {
-        if (ASK_LAST_MOVE.containsMatchIn(text)) return lastOwnMove(mine = MY_MOVE.containsMatchIn(text))
-        if (finished || userToMove) return null
-        val elsewhere = listOf(ASK_THREAT, ASK_OPPONENT_MOVE, ASK_MATERIAL, ASK_OPENING, ASK_EVAL, ASK_REVIEW)
+        if (ASK_LAST_MOVE.containsMatchIn(text) || ASK_COST.containsMatchIn(text)) {
+            return lastOwnMove(mine = MY_MOVE.containsMatchIn(text))
+        }
+        if (finished || userToMove || !offline) return null
+        val elsewhere = listOf(
+            ASK_THREAT, ASK_OPPONENT_MOVE, ASK_LINE, ASK_MATERIAL, ASK_OPENING, ASK_EVAL, ASK_REVIEW,
+        )
         if (elsewhere.any { it.containsMatchIn(text) }) return null
         return lastOwnMove()
     }
@@ -1751,25 +1745,18 @@ class Coach(
         verdicts: List<String> = emptyList(),
         assessment: MoveAssessment? = null,
         played: MovePlayed? = null,
-        quick: Boolean = false,
         candidates: Int? = null,
         routine: Boolean = false,
         elicit: Boolean = false,
     ) {
         val facts = position.facts!!
         var (instructionText, fallback) = instruction(
-            trigger, position, level, userText, verdicts, assessment, played,
-            quick = quick, elicit = elicit,
+            trigger, position, level, userText, verdicts, assessment, played, elicit = elicit,
         )
         takeLeads(position, fallback)
-        var mustName = mustName(trigger, position, level, fallback, assessment, played, userText)
-        if (quick) {
-            // The template is already out as the quick answer; a model reply that fails the
-            // checks adds nothing, rather than the same line a second time.
-            fallback = ""
-            mustName = emptyList()
-        } else if (trigger == Trigger.USER_ASK && fallback.isNotEmpty() && fallback in saidSinceMove()) {
-            // Nor is anything the coach said since the last move said again word for word: a
+        val mustName = mustName(trigger, position, level, fallback, assessment, played, userText)
+        if (trigger == Trigger.USER_ASK && fallback.isNotEmpty() && fallback in saidSinceMove()) {
+            // Nothing the coach said since the last move is said again word for word: a
             // student's answer to the hint got the same hint back, three times (round 5).
             fallback = ""
         }
@@ -1798,19 +1785,53 @@ class Coach(
         // the move allowed is the lesson, and "nothing about the position" forbade it.
         val facing = past && now != null && now.board.turn == userColour
         val line = levelLine(level, position, if (facing) renderLevel else null, past = past)
-        var directive = "$line$instructionText"
+        // A question is answered as asked: its words head the Task. Found only under "Said here",
+        // far above, "whose bishop? ... he will just move away to the right, no?" got the line
+        // again (Tai's puzzle, 2026-09-28).
+        var asked = if (!userText.isNullOrEmpty()) "Their words, which you answer: \"$userText\"\n\n" else ""
+        if (!userText.isNullOrEmpty() && SIDEWAYS.containsMatchIn(userText)) {
+            // Said once in the Setting, far above, left and right were still read from White's
+            // side: "from h1 there is no square to the right" (Tai's puzzle, both models). Told
+            // so, the model still wrote "the only legal reply is Kg2, toward the a-file" as no
+            // move to the right: the moves in question are given their way.
+            val side = if (userSide == Pieces.Side.WHITE) "White" else "Black"
+            asked += "They say left and right from $side's side: ${hands(userSide)}."
+            val seen = SAN.findAll(userText).map { ways(position.board, listOf(it.groupValues[1]), userSide) }
+                .toMutableList()
+            position.facts?.let { seen.add(ways(position.board, it.line.take(2), userSide)) }
+            val shown = seen.distinct().filter { it.isNotEmpty() }
+            if (shown.isNotEmpty()) asked += " Seen so: ${shown.joinToString("; ")}."
+            asked += "\n\n"
+        }
+        var directive = "$line$asked$instructionText"
         var faced = ""
         var frames: List<Board> = emptyList()
         var moved = if (trigger == Trigger.POST_MOVE || trigger == Trigger.POST_MISTAKE) played else null
+        var facedAt = position // the position `moved` was played from
         if (moved == null && trigger == Trigger.USER_ASK) {
             val own = askedOwnMove(userText ?: "")
-            if (own != null && own.move.ply == position.ply + 1) moved = own.move
+            val last = lastOwnMove()
+            if (own != null && own.move.ply == position.ply + 1) {
+                moved = own.move
+            } else if (own == null && last != null &&
+                (last.move.ply == position.ply || last.move.ply == position.ply + 1)
+            ) {
+                // The player's move is the last one played (its new position read, or not yet):
+                // its sheet goes with any question, and the model reads which position the
+                // words are about -- "why does the bishop check not work?" is about the move,
+                // "how would this position continue?" is not (Tai's puzzle, 2026-09-28).
+                val prior = if (last.move.ply == position.ply + 1) position else positions[last.move.ply - 1]
+                if (prior?.facts != null) {
+                    moved = last.move
+                    facedAt = prior
+                }
+            }
         }
         if (moved != null) {
             // The lesson after a move is taught from the position the player faced, which the
-            // record keeps as one line: its sheet goes with the request, and the template's
-            // lesson as the floor (parity pass, 2026-09-25).
-            val after = ArrayList(framesAfter(position, moved).take(2))
+            // record keeps as one line: its sheet goes with the request (parity pass,
+            // 2026-09-25).
+            val after = ArrayList(framesAfter(facedAt, moved).take(2))
             if (after.size == 1 && assessment != null && assessment.best.size > 1 &&
                 assessment.best[0] == moved.uci
             ) {
@@ -1824,18 +1845,14 @@ class Coach(
             }
             val sheet = synchronized(lock) {
                 conversation.facedText(
-                    position.facts!!,
-                    position.board,
+                    facedAt.facts!!,
+                    facedAt.board,
                     after.lastOrNull(),
                     after.firstOrNull(),
                 )
             }
             if (sheet.isNotEmpty()) faced = "\n\n# The position they faced, before ${moved.san}\n$sheet"
-            if (mustName.isNotEmpty() && fallback.isNotEmpty()) {
-                directive += "\n\nThe lesson in the board's own words, all of it true -- your reply says at " +
-                    "least this, in your own words, and may say more: $fallback"
-            }
-            frames = framesAfter(position, moved)
+            frames = framesAfter(facedAt, moved)
         }
         frames = frames + analysisFrames(position)
         // The earlier moments of the same idea, for a directive a link belongs in: found in the
@@ -1859,9 +1876,29 @@ class Coach(
         // And the board before the last move played: an answer about it says what it took
         // ("15...Qxe7 took your knight on e7"), which the board after it no longer shows.
         val records = synchronized(lock) { conversation.activeRecords() }
+        var lastBefore: Board? = null
         if (records.isNotEmpty()) {
             // `with suppress(ValueError)`: a record's FEN the board cannot read adds no frame.
-            runCatching { Board(records.last().move.fenBefore) }.getOrNull()?.let { frames = frames + it }
+            lastBefore = runCatching { Board(records.last().move.fenBefore) }.getOrNull()
+            lastBefore?.let { frames = frames + it }
+        }
+        // A question of the player's: the model may ask the engine what the messages do not show,
+        // from the board now or from before the last move ([EngineTools]).
+        val namedEngine = engine
+        val tools = if (trigger == Trigger.USER_ASK && namedEngine != null && !offline) {
+            EngineTools(this.board, lastBefore, namedEngine, userColour)
+        } else {
+            null
+        }
+        if (tools != null) {
+            val line = position.facts?.line.orEmpty()
+            if (LINE_GIVEN in directive && line.isNotEmpty()) {
+                // What comes after the line's end, asked of the engine here: left to the model,
+                // Luna at no effort called the tool one time in two and gave the line again.
+                val answer = tools.run("analyse", JSONObject().put("moves", JSONArray(line)))
+                directive += "\n\nThe engine, asked about the line's end:\n$answer"
+            }
+            directive += "\n\n$TOOL_WORDS"
         }
         val messages: List<ChatMessage>
         synchronized(lock) {
@@ -1873,7 +1910,7 @@ class Coach(
         val earlierMoves = before
         if (earlierMoves != null) {
             var shown = GAME_SO_FAR.replace(messages[0].content, "")
-            for (constant in listOf(NO_NUMBERS, NOT_THE_MOVE, NOT_THE_MOVE_HELD, TIE_LISTED, NO_EARLIER)) {
+            for (constant in listOf(NO_FIGURES, NOT_THE_MOVE, NOT_THE_MOVE_HELD, TIE_LISTED, NO_EARLIER)) {
                 shown = shown.replace(constant, " ")
             }
             val sanctioned = HashSet<String>()
@@ -1920,6 +1957,7 @@ class Coach(
             nowAnswer = nowAnswer,
             record = numberedMoves(),
             unlisted = unlisted,
+            tools = tools,
         )
         speaker.submit(request)
     }
@@ -2103,9 +2141,11 @@ class Coach(
     }
 
     /**
-     * What may be said about the position the player faces, stated on the directive; with
-     * [nowLevel], the reply is about a position already moved from, and the one on the board has
-     * its own level.
+     * What may be said about the position the player faces, stated on the directive, the one
+     * place it is stated; with [nowLevel], the reply is about a position already moved from, and
+     * the one on the board has its own level. Below the move, why the model sees the answer all
+     * the same: said as "never" in five places, it gave the vague hint Tai ranks below one that
+     * says a little too much (the prompt audit, 2026-09-28).
      */
     private fun levelLine(
         level: DisclosureLevel,
@@ -2129,7 +2169,12 @@ class Coach(
             return "The position this is about has been moved from: everything about it may be " +
                 "said, and what the opponent can do now.\n\n"
         }
-        return "Disclosure for the position the player faces: ${words(level)}.\n\n"
+        val why = if (level.value >= DisclosureLevel.IDEA.value && level.value < DisclosureLevel.MOVE.value) {
+            " $SEE_ALL_WORDS"
+        } else {
+            ""
+        }
+        return "Disclosure for the position the player faces: ${words(level)}.$why\n\n"
     }
 
     /**
@@ -2171,11 +2216,8 @@ class Coach(
     }
 
     /**
-     * The turn's instruction to the model, and the template used if it fails.
-     *
-     * [quick] means the template has already been shown as an immediate answer, so the model
-     * is asked to build on it rather than repeat it. [elicit] ends a mistake's lesson by
-     * asking what the player saw (see [elicitDue]).
+     * The turn's instruction to the model, and the template used if it fails. [elicit] ends a
+     * mistake's lesson by asking what the player saw (see [elicitDue]).
      */
     internal fun instruction(
         trigger: Trigger,
@@ -2185,7 +2227,6 @@ class Coach(
         verdicts: List<String>,
         assessment: MoveAssessment?,
         played: MovePlayed?,
-        quick: Boolean = false,
         elicit: Boolean = false,
     ): Pair<String, String> {
         val facts = position.facts!!
@@ -2204,7 +2245,7 @@ class Coach(
         }
         if (trigger == Trigger.DECISIVE_QUESTION) {
             val (template, note) = coolHint(facts, ideaTemplate(facts))
-            return "${ideaDirective(facts)} $NO_FIGURES$note" to template
+            return "$IDEA_DIRECTIVE $NO_FIGURES$note" to template
         }
         if (trigger == Trigger.STUCK) {
             // The hints unasked stop at the focus: the move is only for when they ask. The template
@@ -2212,8 +2253,7 @@ class Coach(
             // and every reply that obeyed went for the template (Tai's game, 2026-09-28: "d5: your
             // bishop on c8 is still shut in", twice).
             val rung = minOf(level, DisclosureLevel.FOCUS)
-            val directive =
-                if (rung.value >= DisclosureLevel.FOCUS.value) FOCUS_DIRECTIVE else ideaDirective(facts)
+            val directive = if (rung.value >= DisclosureLevel.FOCUS.value) FOCUS_DIRECTIVE else IDEA_DIRECTIVE
             val (template, note) = coolHint(facts, hintTemplate(facts, rung))
             return (
                 "The player has been thinking for a while and is stuck. " +
@@ -2257,11 +2297,8 @@ class Coach(
                     null
                 }
                 val opener = bags.draw("cost", COST_YOU).replace("{best}", best)
-                val (lessonText, held) = freshLesson(
-                    opener,
-                    ruleOf(facts, best, board = position.board, played = played.uci),
-                    facts,
-                ) { withRule ->
+                val rule = ruleOf(facts, best, board = position.board, played = played.uci)
+                val (lessonText, held) = freshLesson(opener, rule, facts) { withRule ->
                     lessonTemplate(
                         facts,
                         best,
@@ -2274,19 +2311,23 @@ class Coach(
                     )
                 }
                 fallback = lessonText
+                val given = if (!held && !strongPlayer) rule else null
+                var data = lessonData(position.board, best, played.uci, given)
+                if (!allowed.isNullOrEmpty()) {
+                    data += " What ${played.san} allowed, from the engine's line: $allowed."
+                }
+                // A question to close on is offered, not asked for: required, it was the one a
+                // lesson had room for once the pattern was said, and often a quiz on what the
+                // reply had just told them.
                 instructionText =
                     "The player just played ${played.san}, which was ${rated(label)}: it cost " +
                         "${percent(loss)} of the game. The better move was $best ($betterWords). " +
-                        "Teach the difference from the fact sheet of the position they faced -- " +
-                        "its goal, its pattern and the tactic when the sheet names one, why the " +
-                        "better move works, and what their move missed or allowed -- as a pattern " +
-                        "to remember, in three sentences at " +
-                        "most, then ask one question that makes them find on the board something " +
-                        "your reply has not said. " +
-                        "$TIE_TO_THE_GAME $NOT_THE_MOVE $NO_NUMBERS"
-                if (!allowed.isNullOrEmpty()) {
-                    instructionText += " What ${played.san} allowed, from the engine's line: $allowed."
-                }
+                        "Teach the difference so they spot it next time: why the better move works " +
+                        "and what their move missed or allowed, from the sheet of the position they " +
+                        "faced -- its goal, its pattern, the tactic when it names one -- as a " +
+                        "pattern to remember. Three sentences at most, then, if you like, one " +
+                        "question that sends them to find on the board something your reply has " +
+                        "not said. $TIE_TO_THE_GAME $NOT_THE_MOVE $NO_FIGURES$data"
                 if (elicit) {
                     // Sparingly: what they saw at that moment, for the profile's record
                     // (causes.from_words reads "I thought it would..." as a line misjudged,
@@ -2297,12 +2338,13 @@ class Coach(
                     instructionText =
                         "The player just played ${played.san}, which was ${rated(label)}: it cost " +
                             "${percent(loss)} of the game. The better move was $best " +
-                            "($betterWords). Teach the difference from the fact sheet of the " +
-                            "position they faced -- its goal, its pattern and the tactic when the " +
-                            "sheet names one, why the better move works -- as a pattern to " +
-                            "remember, in three sentences at most, then " +
-                            "-- instead of a check question -- ask, in one short question of your " +
-                            "own, what they expected their move to do. $NOT_THE_MOVE $NO_NUMBERS"
+                            "($betterWords). Teach the difference so they spot it next time: why " +
+                            "the better move works, from the sheet of the position they faced -- its " +
+                            "goal, its pattern, the tactic when it names one -- as a pattern to " +
+                            "remember, in three sentences at most, then -- instead of a check " +
+                            "question -- ask, in one short question of your own, what they " +
+                            "expected their move to do. $NOT_THE_MOVE $NO_FIGURES" +
+                            lessonData(position.board, best, played.uci, given)
                 }
                 if (held) instructionText = holdRule(instructionText)
             } else if (isExciting(assessment.label)) {
@@ -2343,7 +2385,11 @@ class Coach(
                         "the move -- $reason, and the idea it serves -- from the messages above, " +
                         "nothing invented. No question, no advice, and not the same words as your " +
                         "last such sentence. " +
-                        "$NOT_THE_MOVE $NO_NUMBERS"
+                        "$NOT_THE_MOVE $NO_FIGURES"
+                // The pattern to keep is a rule of thumb like any other, on the one budget: two
+                // great moves running got "Keep spotting this pattern ..." and "keep recognizing
+                // this pattern ..." back to back (Tai's puzzle, 2026-09-28).
+                instructionText = budgeted(instructionText, "verdict:$kind")
             } else if (routine) {
                 fallback = verdictWord(label)
                 val meaning = when (label) {
@@ -2362,8 +2408,8 @@ class Coach(
                         "the plan, the tactic -- and only when it is what the move is for. No " +
                         "question, no lecture, no advice, no guess at what it allows or risks, and " +
                         "not the same words as your last such sentence. " +
-                        "$NOT_THE_MOVE $NO_NUMBERS"
-                if (!ruleOk(null)) instructionText = holdRule(instructionText)
+                        "$NOT_THE_MOVE $NO_FIGURES"
+                instructionText = budgeted(instructionText, "verdict:$label")
             } else if (assessment.severity == Severity.MISTAKE || assessment.severity == Severity.BLUNDER ||
                 label == "miss"
             ) {
@@ -2373,7 +2419,7 @@ class Coach(
                 instructionText =
                     "The player just played ${played.san}, which was ${rated(label)}: $best " +
                         "($betterWords) was better. It is a fast game: one or two sentences, no " +
-                        "lesson, no question. $NOT_THE_MOVE $NO_NUMBERS"
+                        "lesson, no question. $NOT_THE_MOVE $NO_FIGURES"
             } else {
                 // The better move and what it does, when the sheet has it, is the lesson.
                 val opener = bags.draw("fine", FINE_TIGHTER).replace("{best}", best)
@@ -2392,13 +2438,15 @@ class Coach(
                     )
                 }
                 fallback = lessonText
+                // How it rated goes in passing: asked for first, it opened half these replies
+                // with "Fine", "Playable" or "That works, though" (the prompt audit, 2026-09-28).
                 instructionText =
-                    "The player just played ${played.san}, which was ${rated(label)}: " +
-                        "playable, not the strongest -- $best ($betterWords) was better, by a " +
-                        "little. One or two sentences: how it rated, in plain words, then the " +
-                        "better move, what it does, and the idea behind it as a lesson to keep. No " +
-                        "lecture, no question. " +
-                        "$TIE_TO_THE_GAME $NOT_THE_MOVE $NO_NUMBERS"
+                    "The player just played ${played.san}, which was ${rated(label)}: sound, a " +
+                        "little behind $best ($betterWords). One or two sentences: the better " +
+                        "move, what it does, and the idea behind it as a lesson to keep, with how " +
+                        "theirs rated in passing. No lecture, no question. " +
+                        "$TIE_TO_THE_GAME $NOT_THE_MOVE $NO_FIGURES" +
+                        lessonData(position.board, best, played.uci, null)
                 if (held) instructionText = holdRule(instructionText)
             }
             return instructionText to fallback
@@ -2414,12 +2462,16 @@ class Coach(
                 claimsChecked.joinToString("\n- ") + "\n\n"
         }
         if (engineWords.isNotEmpty()) {
-            // The engine on what they asked about: theirs to hear about in full, and already
-            // said out loud as the coach's last turn when `quick`.
+            // The engine on what they asked about: theirs to hear about in full.
             checks += engineWords.joinToString("\n") + "\n\n"
         }
-        // The rung's template: two hints, then the answer; the line when asked for it.
+        // The rung's template: two hints, then the answer; the line when asked for it. The hints
+        // speak to the side to move: on the opponent's turn a failed reply falls back to what they
+        // will play, never their hint in the player's voice.
         var fallback = hintTemplate(facts, level, position.board)
+        if (position.board.turn != userColour && level.value < DisclosureLevel.LINE.value) {
+            fallback = theirMoveNow(position.board, facts)
+        }
         // The position answered about is not the one on the board (its analysis has not
         // landed): say so, or the template speaks of a past position as the present -- "the
         // line is Bb3 ..." right after Bb3 was played (the offline pass, 2026-09-21).
@@ -2473,8 +2525,6 @@ class Coach(
         } else if (ASK_EVAL.containsMatchIn(said)) {
             fallback = standingTemplate(position, material)
         }
-        val shown = " Your last turn above is the quick answer they have already been shown; " +
-            "build on it, do not repeat it."
         // Their words answer the question the coach just asked: the thread is closed, not
         // carried on with another question. Every answer had earned a new question and none was
         // resolved -- the students' "what Nc4 was expected to do was asked but not answered"
@@ -2529,25 +2579,12 @@ class Coach(
             // claim") gave the model no lesson to give (parity pass 2, 2026-09-25).
             var aim = if (ASK_HINT.matchesAt(said, 0)) "" else "They asked what to aim for: answer with "
             aim += if (aim.isNotEmpty()) "the hint at this rung. " else ""
-            val hinted = when {
+            directive = when {
                 level.value >= DisclosureLevel.MOVE.value -> aim + MOVE_DIRECTIVE
                 level.value >= DisclosureLevel.FOCUS.value ->
                     aim.ifEmpty { "They asked for another hint. " } + FOCUS_DIRECTIVE
-                else -> aim.ifEmpty { "They asked for a hint. " } + ideaDirective(facts)
-            } + " " + NO_FIGURES
-            directive = if (quick && level.value < DisclosureLevel.MOVE.value) {
-                // The hint is out already, in the template's words: the model adds to it, in a
-                // sentence or two -- not the whole hint again, which the voice talked over the
-                // template with (the runtime audit, 2026-09-25).
-                "They asked for a hint and have just been shown it -- your last turn above. " +
-                    "In one or two sentences, build on it: a sharper angle on the same key fact " +
-                    "-- a piece or square of it, and what it does, threatens or allows, with the " +
-                    "principle behind it in a clause -- then the one question that sets them " +
-                    "looking. Do not repeat it, and give nothing the next hint would. Do not " +
-                    "comment on anything said earlier. " + NO_FIGURES
-            } else {
-                hinted + " Do not comment on anything said earlier." + (if (quick) shown else "")
-            }
+                else -> aim.ifEmpty { "They asked for a hint. " } + IDEA_DIRECTIVE
+            } + " $NO_FIGURES Do not comment on anything said earlier."
         } else if (level.value >= DisclosureLevel.LINE.value &&
             ASK_LINE.containsMatchIn(said) && facts.line.isNotEmpty()
         ) {
@@ -2561,47 +2598,22 @@ class Coach(
             } else {
                 ""
             }
-            directive = if (quick) {
-                "They asked to see the line and have just been shown it: " +
-                    "${facts.line.joinToString(" ")}. Give one or two short sentences on the " +
-                    "idea behind it." + byMove + " Do not answer with a question."
-            } else {
+            // Given once already, the line asked for again is what comes after it: "ok and after
+            // that?" got the same line back (Tai's puzzle, 2026-09-28). The engine's word on its
+            // end is put before the model ([speak]).
+            val lineStart = facts.line.take(3).map { it.trimEnd('+', '#') }
+            val given = saidSinceMove().any { said -> lineStart.all { it in said } }
+            directive =
                 "They asked to see the line: give it -- ${facts.line.joinToString(" ")} -- " +
                     "plainly, then one short sentence on the idea behind it." + byMove +
-                    " Do not answer with a question."
-            }
+                    " Do not answer with a question." + if (given) " $LINE_GIVEN" else ""
         } else if (level.value >= DisclosureLevel.MOVE.value &&
             ASK_MOVE.containsMatchIn(said) && facts.candidates.isNotEmpty()
         ) {
-            directive = if (quick) {
-                "They asked what to play and have just been shown that it is " +
-                    "${facts.candidates[0]}, with what it does. Build on it in one or two " +
-                    "sentences: why it works, from the fact sheet's why and pattern, and the " +
-                    "idea to keep. Do not answer with a question this time."
-            } else {
-                "They asked what to play: tell them plainly it is ${facts.candidates[0]}, " +
-                    "then why it works, from the fact sheet's why and pattern, correctly. Do " +
-                    "not answer with a question this time."
-            }
-        } else if (engineWords.isNotEmpty() && quick) {
-            // The examination is out already; the coach adds the lesson in it, not the
-            // numbers again.
             directive =
-                "They asked about a move or line and have just been shown the engine's word " +
-                    "on it -- your last turn above. Build on it in one or two sentences: what " +
-                    "their move does or allows, and what that means for their idea, in plain " +
-                    "chess words, saying only what that analysis and the messages state." +
-                    (
-                        if (followup) {
-                            " You have already told them the verdict on their move and the better one: " +
-                                "do not repeat either, and ask nothing."
-                        } else {
-                            " Then one question that points them at the idea."
-                        }
-                        ) +
-                    " Name no move the messages do not give. " +
-                    NO_FIGURES
-            fallback = ""
+                "They asked what to play: tell them plainly it is ${facts.candidates[0]}, then " +
+                    "why it works, from the fact sheet's why and pattern, correctly. Do not answer " +
+                    "with a question this time."
         } else if (ASK_OPPONENT_MOVE.containsMatchIn(said) && lastOpponent != null) {
             val theirs = lastOpponent.assessment!!
             val san = lastOpponent.move.san
@@ -2656,16 +2668,37 @@ class Coach(
                     )
                 }.first
                 fallback = withLine(fallback, opener, best, facts)
+                // What they ask is the answer; the verdict is its ground, said once: told "say so
+                // plainly" on every question about the move, the verdict came back four times
+                // running (Tai's puzzle, 2026-09-28).
                 directive =
                     "They ask about the move they already played, $san. It was $label: sound, " +
-                        "a little behind $best. Say so plainly -- it was fine, then the better move " +
-                        "and the idea behind it. Two sentences at most, no question."
+                        "a little behind $best. Answer what they ask" +
+                        (
+                            if (followup) {
+                                "; your turns above already gave the verdict and the better move, so " +
+                                    "repeat them only where that is what they ask."
+                            } else {
+                                "; where they ask how the move was, say so plainly -- it was fine -- " +
+                                    "then the better move and the idea behind it."
+                            }
+                            ) +
+                        " Two sentences at most, no question. $NO_FIGURES"
             } else if (own.severity == Severity.NONE) {
                 fallback = verdictWord(label)
                 directive =
-                    "They ask about the move they already played, $san. It was not bad: the " +
-                        "verdict was $label, and it cost nothing. Tell them so plainly, in one " +
-                        "or two sentences, and do not invent a fault. No question."
+                    "They ask about the move they already played, $san: its verdict was " +
+                        "$label, and it cost nothing. Answer what they ask, from the record and the " +
+                        "sheet of the position it was played from, and invent no fault" +
+                        (
+                            if (followup) {
+                                "; your turns above already gave the verdict, so repeat it only where " +
+                                    "that is what they ask."
+                            } else {
+                                "; where they ask how the move was, say so plainly."
+                            }
+                            ) +
+                        " One or two sentences, no question. $NO_FIGURES"
             } else {
                 // What it cost only when they ask: "It cost you 22% of the game." opened every
                 // answer, and Tai had said the figure is for when he asks (2026-09-20).
@@ -2682,28 +2715,21 @@ class Coach(
                     null
                 }
                 val faced = position.ply == lastOwn.move.ply - 1
+                val board = if (faced) position.board else null
                 var held = false
+                var data = if (!allowed.isNullOrEmpty()) " What $san allowed, from the engine's line: $allowed." else ""
                 if (best.isNotEmpty()) {
                     // The better move played out and the pattern to keep, as the lesson says it
                     // -- not "the idea was a pin" and nothing more -- and said whole, what the
                     // lesson after the move said or not: they asked.
                     val opener = "$best was better"
-                    val (written, wasHeld) = freshLesson(
-                        opener,
-                        ruleOf(
-                            facts,
-                            best,
-                            board = if (faced) position.board else null,
-                            played = lastOwn.move.uci,
-                        ),
-                        facts,
-                        asked = true,
-                    ) { withRule ->
+                    val rule = ruleOf(facts, best, board = board, played = lastOwn.move.uci)
+                    val (written, wasHeld) = freshLesson(opener, rule, facts, asked = true) { withRule ->
                         lessonTemplate(
                             facts,
                             best,
                             opener,
-                            board = if (faced) position.board else null,
+                            board = board,
                             played = lastOwn.move.uci,
                             allowed = allowed,
                             withRule = withRule,
@@ -2713,45 +2739,46 @@ class Coach(
                     held = wasHeld
                     val lesson = withLine(written, opener, best, facts)
                     fallback = (if (fallback.isNotEmpty()) "$fallback " else "") + lesson
+                    val given = if (!held && !strongPlayer) rule else null
+                    data += lessonData(board, best, lastOwn.move.uci, given)
                 } else if (!allowed.isNullOrEmpty()) {
                     fallback = (if (fallback.isNotEmpty()) "$fallback " else "") +
                         templateSentence(allowed[0].uppercaseChar() + allowed.substring(1))
                 }
                 if (fallback.isEmpty()) fallback = "That was ${rated(label)}."
                 val reason = if (best.isNotEmpty()) "what $best does, and " else ""
-                val cost = if (askedCost) {
-                    " that cost ${percent(loss)} of the game -- they asked, so say it"
-                } else {
-                    " (what it cost is not theirs to hear unless they ask: no figures)"
-                }
+                val cost = if (askedCost) " -- it cost ${percent(loss)} of the game: they asked, so say it" else ""
+                // A question of the coach's own after the answer is offered, not asked for: they
+                // asked theirs, and required, one came after every answer. On a follow-up the
+                // verdict is not said again: "say that plainly" beside "do not repeat either" asked
+                // for both (the prompt audit, 2026-09-28).
+                val tell = if (followup && !answering) "Say why" else "Say that plainly, and say why"
                 directive =
-                    "They ask about the move they already played, $san. Its verdict is in its " +
-                        "move message and is theirs in full: it was ${rated(label)}$cost" +
+                    "They ask about the move they already played, $san, from a position that " +
+                        "is past, so all of it may be said: it was ${rated(label)}$cost" +
                         (if (best.isNotEmpty()) ", $best was better" else "") +
                         (if (idea.isNotEmpty()) ", and the idea was $idea" else "") +
-                        ". Say that plainly -- the position it was played from is past, so " +
-                        "nothing about it is withheld; the disclosure level binds only the " +
-                        "position they face now -- and say why, concretely: ${reason}what $san " +
-                        "missed or allowed, naming the pieces, squares or moves, from the sheet of " +
-                        "the position they faced (its pattern, and its tactic when it names one)" +
+                        ". $tell, concretely: ${reason}what $san missed or allowed, with the " +
+                        "pieces, squares or moves from the sheet of the position they faced (its " +
+                        "pattern, and its tactic when it names one)" +
                         (if (held) " -- ${RULE_HELD_MARK.lowercase()}: they heard one lately." else "") +
                         (if (held) "" else " -- and the pattern to keep.") +
-                        (if (!allowed.isNullOrEmpty()) " What $san allowed, from the engine's line: $allowed." else "") +
+                        data +
                         (
                             if (answering) {
                                 "$close Three sentences at most."
                             } else if (followup) {
                                 follow
                             } else {
-                                " Three sentences at most, then one question that makes them find " +
-                                    "on the board something your reply has not said."
+                                " Three sentences at most, then, if you like, one question that " +
+                                    "sends them to find on the board something your reply has not said."
                             }
                             ) +
-                        " Name moves bare, never with a move number in front. " +
-                        TIE_TO_THE_GAME
-                if (followup && !asks) {
-                    fallback = "" // a nod needs no template: nothing, rather than the lesson again
-                }
+                        (if (askedCost) " Name moves bare, never with a move number in front." else " $NO_FIGURES") +
+                        " $TIE_TO_THE_GAME"
+            }
+            if (followup && !asks) {
+                fallback = "" // a nod needs no template: nothing, rather than the verdict again
             }
         } else if (ASK_MATERIAL.containsMatchIn(said) || OPENING_FACT.containsMatchIn(said) ||
             ASK_EVAL.containsMatchIn(said)
@@ -2806,18 +2833,19 @@ class Coach(
                     "none, say plainly that nothing is threatened. One or two sentences, no question. " +
                     NO_FIGURES
         } else {
+            // What is kept back is the level line's to say: "never reveal that unless the sheet
+            // lists it" stood here after the sheet had come to list everything (the prompt audit,
+            // 2026-09-28).
             directive =
-                "Answer them directly and be honest about their own claim. If they proposed a " +
-                    "move, or named a square or piece, you may say it back and tell them " +
-                    "plainly whether it holds up, and what it does or allows, as the engine's word " +
-                    "on it gives it -- when the engine does not rate their move, " +
-                    "say it is not the strongest and, in general terms, why. When the engine's " +
-                    "word on the move or line they named is given above, that analysis is " +
-                    "theirs to hear in full: the score after it, how far behind the best, the " +
-                    "reply, what the move does. Only the engine's better move or line is " +
-                    "withheld: never reveal that unless the sheet lists it, but do point them " +
-                    "toward the right idea" +
-                    (if (answering || (followup && !asks)) " in words." else " with a question.") +
+                "Answer them directly, and be honest about their own claim, taking it as they " +
+                    "meant it: say what in it is right as plainly as what is wrong. When they propose a " +
+                    "move, or name a square or piece, say plainly whether it holds up and what it " +
+                    "does or allows, from the engine's word on it where given above -- theirs to " +
+                    "hear in full: the score after it, how far behind the best, the reply, what the " +
+                    "move does; when the engine does not rate their move, say it is not the " +
+                    "strongest and, in general terms, why. Of the position they face, keep back only " +
+                    "what the level line does, and point them toward the right idea" +
+                    (if (answering || (followup && !asks)) " in words." else " -- with a question, if that serves.") +
                     " What you already said in this position is under 'Said here': do not say " +
                     "it again in other words; give them something it did not." +
                     when {
