@@ -219,19 +219,3 @@ class InterjectionPolicy:
             self.last_reason = reason
             return False
         return True
-
-
-# Lower is more important; when two triggers want the same moment, the coach speaks to the
-# lower one and folds the other in or drops it.
-PRIORITY: dict[Trigger, int] = {
-    Trigger.USER_ASK: 1,
-    Trigger.POST_MISTAKE: 2,
-    Trigger.POST_MOVE: 3,
-    Trigger.DECISIVE_QUESTION: 4,
-    Trigger.STUCK: 5,
-    Trigger.REVIEW: 6,
-}
-
-
-def in_priority(triggers: list[Trigger]) -> list[Trigger]:
-    return sorted(dict.fromkeys(triggers), key=lambda trigger: PRIORITY[trigger])

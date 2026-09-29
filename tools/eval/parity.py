@@ -318,7 +318,6 @@ def coverage(item: dict, reply: str) -> dict:
 
 
 OUTCOMES = ("both", "ai_only", "template_only", "neither")
-FACTS_OUTCOMES = ("fewer", "same", "more")
 
 
 def _facts_outcome(ai: float | None, floor: float | None) -> str | None:

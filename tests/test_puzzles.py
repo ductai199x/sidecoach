@@ -152,7 +152,8 @@ def test_a_review_brings_a_recommendation_for_the_weak_motif(tmp_path: Path) -> 
     assert "turning point" in rec.reason, "one game: the turning point's motif, not a cell yet"
     assert rec.puzzles and {p.id for p in rec.puzzles} <= {"000rO", "fork1"}
     assert all(p.url.startswith("https://lichess.org/training/") for p in rec.puzzles)
-    assert f.store.recommended_ids() == [p.id for p in rec.puzzles]
+    _, rows = f.store.query("SELECT puzzle_ids FROM recommendations")
+    assert rows[0][0].split() == [p.id for p in rec.puzzles]
 
 
 def _faced(puzzles: PuzzleStore, puzzle_id: str) -> chess.Board:

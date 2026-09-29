@@ -39,7 +39,6 @@ NAMES = {
     "king": chess.KING,
 }
 PIECE = re.compile(r"the (pawn|knight|bishop|rook|queen|king) on ([a-h][1-8])")
-TAKING = re.compile(r"taking the (pawn|knight|bishop|rook|queen|king) on ([a-h][1-8])")
 PIN = re.compile(
     r"the \w+ on ([a-h][1-8]) is pinned to the \w+ on ([a-h][1-8]) by the \w+ on ([a-h][1-8])"
 )

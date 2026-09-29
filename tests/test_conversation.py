@@ -174,7 +174,7 @@ def test_the_position_sections_on_the_opponents_turn() -> None:
         only_move=True,
     )
     convo.analysed(analysis, facts_from_analysis(board, analysis, user=chess.BLACK))
-    text = convo.render_ply(record, DisclosureLevel.QUESTION)
+    text = convo.render_ply(record, DisclosureLevel.IDEA)
     assert (
         "Material: the player is up a knight for a pawn before the expected recapture dxe6, "
         "then the player is down a pawn."

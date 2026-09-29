@@ -17,7 +17,6 @@ words, what is on the board and what the recommended move is for.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 import chess
@@ -1452,7 +1451,3 @@ def worst_piece_square(board: chess.Board, us: chess.Color) -> chess.Square | No
     if not facts or not facts[0].squares:
         return None
     return chess.parse_square(facts[0].squares[0])
-
-
-def facts_text(facts: Sequence[PositionalFact]) -> list[str]:
-    return [fact.text for fact in facts]

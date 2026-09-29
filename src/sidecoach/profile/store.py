@@ -700,17 +700,6 @@ class Store:
             )
             self._db.commit()
 
-    def recommended_ids(self, limit: int = 20) -> list[str]:
-        """The puzzles recommended lately, latest first."""
-        with self._lock:
-            rows = self._db.execute(
-                "SELECT puzzle_ids FROM recommendations ORDER BY ts DESC LIMIT ?", (limit,)
-            ).fetchall()
-        out: list[str] = []
-        for row in rows:
-            out += row["puzzle_ids"].split()
-        return out
-
     def add_attempt(
         self, puzzle_id: str, ts: float, motif: str | None, solved: bool, moves: list[str]
     ) -> None:

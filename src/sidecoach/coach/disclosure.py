@@ -109,7 +109,6 @@ class PositionFacts(BaseModel):
     candidates: list[str] = Field(default_factory=list)
     threats: list[str] = Field(default_factory=list)
     line: list[str] = Field(default_factory=list)
-    user_claims: list[dict[str, Any]] = Field(default_factory=list)
     # The first hint's parts (`coach/situation.py`), named on the board: what is at stake
     # ("only one move holds here: even the next best move loses a knight"), the key fact
     # ("they threaten Nxe5, winning your pawn on e5"), the trap ("hxg4 looks like it wins a
@@ -136,7 +135,6 @@ _ALWAYS: tuple[str, ...] = (
     "last_move",
     "decisive",
     "only_move",
-    "user_claims",
 )
 _IDEA = (
     "nature",

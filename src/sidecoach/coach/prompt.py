@@ -55,7 +55,6 @@ PERSONAS: dict[str, tuple[str, str]] = {
     ),
 }
 DEFAULT_PERSONA = "warm_direct"
-PERSONA = _COACH + PERSONAS[DEFAULT_PERSONA][1] + _AIM
 
 
 def persona_text(persona: str | None, rating: tuple[int, int] | None = None) -> str:

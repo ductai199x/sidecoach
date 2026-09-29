@@ -63,7 +63,7 @@ def test_a_piece_named_with_its_square_is_examined_without_an_engine() -> None:
         board,
         None,
         user_colour=chess.WHITE,
-        level=DisclosureLevel.QUESTION,
+        level=DisclosureLevel.IDEA,
     )
     assert fact.startswith(
         "Engine on my knight on c3, which the player asked about: "
@@ -74,7 +74,7 @@ def test_a_piece_named_with_its_square_is_examined_without_an_engine() -> None:
     assert "it is pinned to the king on e1 by the queen on a5" in fact
     # An empty square: who controls it.
     (fact,) = analyse_named(
-        "what about e5?", board, None, user_colour=chess.WHITE, level=DisclosureLevel.QUESTION
+        "what about e5?", board, None, user_colour=chess.WHITE, level=DisclosureLevel.IDEA
     )
     assert fact == (
         "Engine on e5, which the player asked about: e5 is empty; the player controls it with "
@@ -83,13 +83,13 @@ def test_a_piece_named_with_its_square_is_examined_without_an_engine() -> None:
     # Nothing named, nothing examined; a line needs an engine.
     assert (
         analyse_named(
-            "am I winning?", board, None, user_colour=chess.WHITE, level=DisclosureLevel.QUESTION
+            "am I winning?", board, None, user_colour=chess.WHITE, level=DisclosureLevel.IDEA
         )
         == []
     )
     assert (
         analyse_named(
-            "what about Nf3?", board, None, user_colour=chess.WHITE, level=DisclosureLevel.QUESTION
+            "what about Nf3?", board, None, user_colour=chess.WHITE, level=DisclosureLevel.IDEA
         )
         == []
     )

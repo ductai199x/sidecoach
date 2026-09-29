@@ -42,7 +42,7 @@ def _examined(
     best: Line,
     *,
     user_colour: chess.Color = chess.WHITE,
-    level: DisclosureLevel = DisclosureLevel.QUESTION,
+    level: DisclosureLevel = DisclosureLevel.IDEA,
 ) -> str:
     """`examine`'s own words on a probe, the engine answering the position after it with
     `reply` at `score` (for the side to move there): what the spoken form and the frames are
@@ -56,9 +56,7 @@ def _examined(
     return examine(probe, board, engine, best, user_colour=user_colour, level=level)
 
 
-def _your_bc4(
-    level: DisclosureLevel = DisclosureLevel.QUESTION, reply: tuple[str, ...] = ()
-) -> str:
+def _your_bc4(level: DisclosureLevel = DisclosureLevel.IDEA, reply: tuple[str, ...] = ()) -> str:
     """3.Bc4 asked about in the Italian, the engine preferring 3.Bb5."""
     best = Line(depth=14, moves=["f1b5"], expected_score=0.55, score_cp=20)
     line = list(reply) or ["f8c5", "d2d3"]

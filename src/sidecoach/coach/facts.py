@@ -20,7 +20,7 @@ from sidecoach.analysis.phase import phase_of
 from sidecoach.coach import idea as idea_of
 from sidecoach.coach import idea_words, plans, situation, story
 from sidecoach.coach.disclosure import PositionFacts
-from sidecoach.events import Analysis, MotifTag
+from sidecoach.events import Analysis
 
 # The best move's idea, as a square-free strategic theme the coach may teach at the theme
 # level: it orients toward the plan without naming the move. Keyed by the idea's kind.
@@ -105,7 +105,6 @@ THEMES: tuple[tuple[str, str], ...] = (
     ("interference", "a line that can be cut"),
     ("clearance", "a square that can be cleared"),
 )
-_THEME_RANK = {name: index for index, (name, _) in enumerate(THEMES)}
 
 PIECE_NAMES = {
     chess.PAWN: "pawn",
@@ -201,20 +200,6 @@ def material_text(board: chess.Board, perspective: chess.Color | None = None) ->
             )
         return f"you are {'up' if diff > 0 else 'down'} {what}"
     return f"you are {'up' if ours else 'down'} {_pieces_words(ours or theirs)}"
-
-
-# Tags that never headline: they hold on most quiet moves (a line that could be cut, a
-# square that could be cleared, a bishop eyeing f7 in a book Ruy Lopez), and as the theme
-# they sent the stuck hint asking "which line could be cut?" in positions about nothing.
-_NOT_A_THEME = frozenset({"interference", "clearance", "attackingF2F7", "quietMove"})
-
-
-def theme_of(tags: Sequence[MotifTag]) -> MotifTag | None:
-    """The tag a coach would name as the idea, most specific first."""
-    ranked = [tag for tag in tags if tag.name in _THEME_RANK and tag.name not in _NOT_A_THEME]
-    if not ranked:
-        return None
-    return min(ranked, key=lambda tag: _THEME_RANK[tag.name])
 
 
 def region_of(squares: Sequence[str]) -> str | None:

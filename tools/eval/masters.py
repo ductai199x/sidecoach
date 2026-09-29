@@ -69,10 +69,6 @@ RANK_ALTS = {
 _SQUARE = re.compile(r"([a-h])([1-8lI|iZzSsGB])")
 _CASTLE = re.compile(r"[0Oo]\s*-\s*[0Oo](\s*-\s*[0Oo])?")
 _DOTS = r"(?:\.\s*\.\s*\.|…|\.{3})"
-# A move token at the start of a line, after markdown: "12 Nf3", "12 ... Nf6", "12 Nf3 Nf6".
-_LINE_TOKEN = re.compile(
-    r"^\s*(?:#{1,6}\s*)?(?:\*\*\s*)?(?:\|\s*)?(\d{1,3})(?:\*\*)?\s*(" + _DOTS + r")?\s*(.*)$"
-)
 
 
 def _clean(line: str) -> str:

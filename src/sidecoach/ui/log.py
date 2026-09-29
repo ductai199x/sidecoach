@@ -19,7 +19,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
-CHANNELS = ("sys", "vision", "game", "engine", "coach", "voice", "user")
 LEVELS = ("debug", "info", "warn", "error")
 
 

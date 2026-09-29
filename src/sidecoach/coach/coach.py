@@ -127,11 +127,6 @@ def _great_meaning(facts: PositionFacts) -> str:
 # How many of the last lessons a sound move's word may not teach again (verdicts.lesson):
 # "develop first" after every developing move of an opening is a lecture, not a lesson.
 TAUGHT_MEMORY = 3
-# The praise, by the move's label, in the vocabulary chess.com uses (coach/verdicts.py has
-# it, with the lesson the board gives): said alone when there is no lesson to add.
-VERDICTS: dict[str, list[str]] = {
-    label: [opener + "." for opener in openers] for label, openers in OPENERS.items()
-}
 # The templates said without a model are the coach on a phone with no model, and the floor
 # the model must rise above (Tai, 2026-09-23: "the template coach must be good already").
 # Each rung says something true about this position that helps to find the answer: the
@@ -2612,12 +2607,6 @@ class Coach:
 
     def hint(self, ts: float) -> None:
         self.ask("hint", ts)
-
-    def ask_move(self, ts: float) -> None:
-        self.ask("what should I play", ts)
-
-    def ask_line(self, ts: float) -> None:
-        self.ask("show me the line", ts)
 
     def poll(self) -> list[CoachMessage]:
         out: list[CoachMessage] = []

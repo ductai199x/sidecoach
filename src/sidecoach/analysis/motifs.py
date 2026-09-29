@@ -130,7 +130,6 @@ _VALUE: dict[chess.PieceType, int] = {
 }
 
 _MINOR = 3
-_ROOK = 5
 
 # A sacrifice must give up at least this much: a pawn gambit is not a sacrifice.
 _SACRIFICE_THRESHOLD = 2

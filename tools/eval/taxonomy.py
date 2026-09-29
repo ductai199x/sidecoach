@@ -101,7 +101,6 @@ class Class:
     # Form constraints the judge checks.
     max_sentences: int | None = None
     ends_with_question: bool | None = None
-    no_names_below: DisclosureLevel | None = DisclosureLevel.MOVE
 
 
 def _loss_words(loss: float, *, figure: bool = True) -> str:
@@ -554,12 +553,6 @@ ABOUT_LAST_MOVE = frozenset(
     {"verdict", "verdict_weaker", "lesson", "ask_last_move", "ask_opponent_move"}
 )
 
-# The template questions that carry no claim about the board (a question is not a claim),
-# so the claims check need not ask a model about them; the ones naming a move do.
-PLAIN_QUESTIONS = frozenset(
-    q for cls in CLASSES.values() for q in cls.questions if "{san}" not in q
-)
-
 
 def question_for(cls: Class, rng: random.Random, san: str | None = None) -> str:
     text = rng.choice(cls.questions)
@@ -580,13 +573,6 @@ def pick_named_move(
     k = rng.choice(choices)
     san, score = lines[k]
     return san, k + 1, max(0.0, best - score)
-
-
-_SENTENCE_END = re.compile(r"[.!?…][\"'”’)\]]*(?=\s|$)")
-
-
-def sentence_count(text: str) -> int:
-    return len(_SENTENCE_END.findall(text)) or (1 if text.strip() else 0)
 
 
 def classify_trigger(

@@ -520,29 +520,6 @@ def apply_condense(pool, spec: str) -> None:
         d["lean_input"] = condense(d["input"], plies=plies, drop=drop, task_only=task_only)
 
 
-# The classes worth judging first, most instructive first: the ones where the coach most
-# often fabricates or omits. Plain verdicts on sound moves come last and are sampled.
-_JUDGE_FIRST = (
-    "lesson",
-    "ask_last_move",
-    "ask_opponent_move",
-    "ask_game_so_far",
-    "ask_line",
-    "ask_move",
-    "ask_eval",
-    "ask_threat",
-    "ask_plan",
-    "ask_named_move",
-    "ask_opening",
-    "ask_material",
-    "ask_hint",
-    "ask_free",
-    "verdict_weaker",
-    "stuck_hint",
-    "decisive_question",
-)
-
-
 # A plain verdict on a sound move is drawn with this weight against 1 for every other
 # class: it is half of all moments and the least often wrong.
 VERDICT_WEIGHT = 0.3

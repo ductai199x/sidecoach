@@ -264,12 +264,6 @@ class DisclosureLevel(IntEnum):
     FOCUS = 2
     MOVE = 3
     LINE = 4
-    # The old seven-rung names, for the evaluation tools that still speak them.
-    QUESTION = 1
-    THEME = 1
-    REGION = 2
-    PIECE = 2
-    CANDIDATE = 3
 
 
 class Trigger(StrEnum):

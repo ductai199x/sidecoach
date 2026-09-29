@@ -11,7 +11,7 @@ from sidecoach.events import Label
 
 def test_the_system_message_is_persona_contract_and_rules_in_order() -> None:
     text = prompt.system_message(with_corrections=False)
-    parts = (prompt.PERSONA, prompt.CONTRACT, prompt.RULES)
+    parts = (prompt.PERSONAS[prompt.DEFAULT_PERSONA][1], prompt.CONTRACT, prompt.RULES)
     order = [text.index(part) for part in parts]
     assert order == sorted(order)
     # The contract explains what the harness holds: its sections, the marks of who said what

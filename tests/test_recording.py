@@ -72,7 +72,7 @@ def test_roundtrip_stores_only_changes_and_replays_every_tick(tmp_path: Path) ->
     for (tick, frame), original in zip(replayed, frames, strict=True):
         assert frame.shape == original.shape
         assert np.array_equal(frame, original), f"tick {tick.frame_id} differs"
-    assert [t.frame_id for t, _ in rec.stored_frames()] == [0, 2, 5]
+    assert [t.frame_id for t, _ in replayed if t.stored is not None] == [0, 2, 5]
 
 
 def test_the_change_gate_stores_what_changed_in_its_region_and_keyframes_like_the_recorder(

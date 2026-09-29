@@ -15,7 +15,6 @@ from sidecoach.coach.facts import (
     material_text,
     phase_of,
     region_of,
-    theme_of,
 )
 from sidecoach.events import Analysis, Line, MotifTag
 from tests.coaching import SCHOLAR
@@ -91,20 +90,6 @@ def test_an_incidental_tactic_is_demoted_and_the_strategic_plan_leads() -> None:
     assert facts.theme is None and facts.focus == [] and facts.tactic is None
     assert facts.plan == "finishing your development"
     assert facts.ideas, "the position's static features are given as ideas"
-
-
-def test_theme_ranks_the_most_specific_tag_first() -> None:
-    tags = [
-        MotifTag(name="capture", squares=["e5"]),
-        MotifTag(name="hangingPiece", squares=["e5"]),
-        MotifTag(name="fork", squares=["c7", "e8", "a8"]),
-    ]
-    chosen = theme_of(tags)
-    assert chosen is not None and chosen.name == "fork"
-    assert theme_of([MotifTag(name="quietMove", squares=["e4"])]) is None
-    # Bookkeeping tags never headline: they hold on most quiet moves.
-    assert theme_of([MotifTag(name="interference", squares=["e4"])]) is None
-    assert theme_of([MotifTag(name="attackingF2F7", squares=["f7"])]) is None
 
 
 def test_regions_and_anchors() -> None:
@@ -328,7 +313,7 @@ def test_the_nature_of_the_best_move_is_forcing_a_tactic_or_quiet() -> None:
         return str(facts_from_analysis(chess.Board(fen), analysed(fen, line, score)).nature)
 
     mate = facts_from_analysis(chess.Board(SCHOLAR), analysed(SCHOLAR, ["h5f7"]))
-    shown = visible_facts(mate, DisclosureLevel.QUESTION)
+    shown = visible_facts(mate, DisclosureLevel.IDEA)
     assert shown["nature"] == "forcing -- the answer is a check, a capture or a promotion"
     # The first hint names the board -- the target may be named -- but never the move or
     # the piece that makes it (Tai, 2026-09-24).

@@ -333,12 +333,6 @@ class Recording:
         finally:
             capture.release()
 
-    def stored_frames(self) -> Iterator[tuple[Tick, np.ndarray]]:
-        """Only the ticks whose frame changed."""
-        for tick, frame in self.frames():
-            if tick.stored is not None:
-                yield tick, frame
-
 
 def _copy_ticks(
     src: Recording,

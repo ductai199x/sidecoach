@@ -9,6 +9,7 @@ import chess
 from sidecoach.coach.coach import Coach, unlock_for
 from sidecoach.coach.disclosure import PositionFacts, Unlock
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
+from sidecoach.coach.verdicts import OPENERS
 from sidecoach.events import (
     Analysis,
     DisclosureLevel,
@@ -313,20 +314,17 @@ def test_a_good_move_gets_one_sentence_from_the_model_with_the_template_to_fall_
     assert "best -- the engine's own choice" in directive
     assert "fifteen words at most" in directive and "give TWO different ways" in directive
     # When the reply fails, the two-word template stands in.
-    from sidecoach.coach.coach import VERDICTS
-
     coach, provider = scripted_coach(["", ""])
     coach.local_verdicts = False  # the model's word, not the board's
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
     mate_played(coach)
     out = drain(coach)
-    assert len(out) == 1 and out[0].text in [p.format(san="Qxf7#") for p in VERDICTS["best"]]
+    assert len(out) == 1 and out[0].text in [(o + ".").format(san="Qxf7#") for o in OPENERS["best"]]
     assert len(provider.prompts) == 2, "one call, one retry, then the template"
 
 
 def test_in_blitz_a_good_move_earns_two_words_without_the_model() -> None:
-    from sidecoach.coach.coach import VERDICTS
     from sidecoach.coach.policy import TimeControl
 
     coach, provider = scripted_coach(["never used"])
@@ -336,12 +334,11 @@ def test_in_blitz_a_good_move_earns_two_words_without_the_model() -> None:
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
     mate_played(coach)
     out = drain(coach)
-    assert len(out) == 1 and out[0].text in VERDICTS["best"]
+    assert len(out) == 1 and out[0].text in [o + "." for o in OPENERS["best"]]
     assert provider.prompts == [], "no model call for a good move in blitz"
     # The wording is by the label, drawn from its bag: every wording once before any comes
     # again, and never the same twice running -- "good, good, good" for a whole game wore
     # thin. Never the move: the player just played it.
-    from sidecoach.coach.verdicts import OPENERS
 
     fresh, _ = scripted_coach([])
     for label in ("good", "best"):
@@ -350,7 +347,7 @@ def test_in_blitz_a_good_move_earns_two_words_without_the_model() -> None:
         for start in range(0, len(said), len(wordings)):
             assert sorted(said[start : start + len(wordings)]) == wordings, label
         assert all(a != b for a, b in zip(said, said[1:], strict=False)), label
-    assert fresh._verdict("book") in VERDICTS["book"]
+    assert fresh._verdict("book") in [o + "." for o in OPENERS["book"]]
 
 
 def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
@@ -907,7 +904,7 @@ def test_the_buttons_are_the_models_to_answer_and_the_templates_offline() -> Non
     coach, _ = scripted_coach(["Qxf7# ends it: the queen takes with check and mate."])
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
-    coach.ask_move(8.0)
+    coach.ask("what should I play", 8.0)
     assert coach.poll() == [], "nothing before the model's answer"
     out = drain(coach)
     assert [m.text for m in out] == ["Qxf7# ends it: the queen takes with check and mate."]
@@ -916,7 +913,7 @@ def test_the_buttons_are_the_models_to_answer_and_the_templates_offline() -> Non
     coach = offline_coach()
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
-    coach.ask_move(8.0)
+    coach.ask("what should I play", 8.0)
     quick = coach.poll()  # at once
     assert len(quick) == 1 and quick[0].text.startswith("Qxf7#"), quick
     assert quick[0].level is DisclosureLevel.MOVE
