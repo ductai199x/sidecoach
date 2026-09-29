@@ -248,16 +248,27 @@ class CoachTest {
         assertEquals(asked.toString(), emptyList<String>(), asked)
     }
 
+    /**
+     * A reply off the engine's line brought the idea back: the stuck hint's "a tactic that wins a
+     * knight ... a pin" at a puzzle's start came again as the question after the move was found
+     * (Tai's phone, 2026-09-29: "Each level can only be said once and if the level higher was
+     * said then the lower one can't be said"). The next hint unasked is the focus
+     * (`test_no_new_question_while_the_line_is_played_out_nor_a_hint_said_twice`).
+     */
     @Test
-    fun anOpponentWhoLeavesTheLineBringsTheQuestionBack() {
+    fun aHintIsNeverSaidTwiceAlongTheCombination() {
         val (coach, _) = coach(emptyList())
         val board = puzzle(coach)
-        hintThen(coach, board)
+        analysed(coach, board, 0, QD1_LINE, 1.0, 3)
+        val first = messages(coach)
+        assertEquals(listOf(Trigger.DECISIVE_QUESTION to DisclosureLevel.IDEA), first.map { it.trigger to it.level })
         played(coach, board, 1, "c2d1", true, 3.0)
         played(coach, board, 2, "a5e1", false, 4.0) // blocks instead of taking: off the line
         analysed(coach, board, 2, listOf("d1e1"), 4.5, 1)
-        val asked = messages(coach).filter { it.trigger == Trigger.DECISIVE_QUESTION }
-        assertEquals(1, asked.size)
+        assertEquals(emptyList<CoachMessage>(), messages(coach).filter { it.trigger != Trigger.POST_MOVE })
+        coach.tick(4.0 + coach.policy.stuckThreshold() + 1)
+        val stuck = messages(coach).filter { it.trigger == Trigger.STUCK }
+        assertEquals(stuck.toString(), listOf(DisclosureLevel.FOCUS), stuck.map { it.level })
     }
 
     /**
@@ -281,6 +292,25 @@ class CoachTest {
         )
         analysed(coach, Board(QD1), 0, QD1_LINE, 21.0, 3)
         assertEquals(listOf(Trigger.DECISIVE_QUESTION), messages(coach).map { it.trigger })
+    }
+
+    /**
+     * The counts of what was said unasked were kept by ply, and every puzzle starts at ply 0:
+     * after one puzzle's question and focus there, the next puzzle's log said "gave the idea and
+     * the focus here" before a word of it (Tai's phone, 2026-09-29).
+     */
+    @Test
+    fun aNewPuzzleGetsItsHintsWhateverTheLastOneHad() {
+        val (coach, _) = coach(emptyList())
+        val board = puzzle(coach)
+        analysed(coach, board, 0, QD1_LINE, 1.0, 3)
+        coach.tick(1.0 + coach.policy.stuckThreshold() + 1)
+        assertEquals(listOf(DisclosureLevel.IDEA, DisclosureLevel.FOCUS), messages(coach).map { it.level })
+        val next = "6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1"
+        coach.onEvent(Resync(gameId = "g", fen = next, reason = "adopted"), 100.0)
+        analysed(coach, Board(next), 0, listOf("g8f8"), 101.0, null)
+        coach.tick(101.0 + coach.policy.stuckThreshold() + 1)
+        assertEquals(listOf(DisclosureLevel.IDEA, DisclosureLevel.FOCUS), messages(coach).map { it.level })
     }
 
     /** White, the user, to move with Qxf7# on the board, after black's Nf6 (`_play_to_scholar`). */
@@ -472,24 +502,22 @@ class CoachTest {
     }
 
     /**
-     * Tai's game, 2026-09-28: a question had opened the move's level, and the stuck hint after it
-     * told the model not to name the move while its template and its check were the move's; both
-     * replies, focus hints as asked, went for "d5: your bishop on c8 is still shut in", twice. A
-     * hint nobody asked for stays at the focus, template and check too (desktop 3ff672b).
+     * Tai, 2026-09-29: "Each level can only be said once and if the level higher was said then
+     * the lower one can't be said." Once a question had the move, no stuck hint follows: the
+     * focus is below it (on 2026-09-28 one did, and both replies went for "d5: your bishop on c8
+     * is still shut in", twice). A stuck template stays at the focus all the same
+     * (`test_no_hint_unasked_comes_after_the_move_was_given`).
      */
     @Test
-    fun aStuckHintAfterTheMoveWasAskedStaysAtTheFocus() {
-        val focus = "Use your queen: their king on e8 has one square left. Which check takes it away?"
-        val (coach, provider) = coach(listOf("Qxf7# is mate at once.", focus))
+    fun noHintUnaskedComesAfterTheMoveWasGiven() {
+        val (coach, provider) = coach(listOf("Qxf7# is mate at once."))
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
         coach.ask("what should I play?", 8.0)
         assertEquals(listOf("Qxf7# is mate at once."), messages(coach).map { it.text })
-        coach.tick(17.0)
-        val out = messages(coach)
-        assertTrue(out.map { it.text }.toString(), out.map { it.text } == listOf(focus) && out[0].trigger == Trigger.STUCK)
-        assertTrue("Do not name the move" in directiveOf(given(provider, 1)))
-        assertEquals("the focus hint is what its check asks for", emptyList<String>(), coach.spoken.last().notes)
+        for (ts in listOf(17.0, 40.0, 90.0)) coach.tick(ts)
+        assertEquals(emptyList<CoachMessage>(), messages(coach))
+        assertEquals(1, provider.prompts.size)
         val position = coach.positions.getValue(6) // the position on the board (`coach._current`)
         assertNotNull(position.facts)
         val template = coach.instruction(

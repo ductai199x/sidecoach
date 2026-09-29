@@ -246,6 +246,24 @@ class Disclosure(var level: DisclosureLevel = DisclosureLevel.SILENT) {
         history.add(unlock to level)
         return level
     }
+
+    /**
+     * The highest level said here before the player moved: every unlock but the move played,
+     * which opens a past position to its line. `Disclosure.hinted`.
+     */
+    val hinted: DisclosureLevel
+        get() = history.filter { it.first != Unlock.MOVE_PLAYED }.maxOfOrNull { it.second.value }
+            ?.let { DisclosureLevel.of(it) } ?: DisclosureLevel.SILENT
+
+    /**
+     * Start from the hints already given for the combination this position continues
+     * ([CoachSession.ladder]): each level is said once, and none below the highest (Tai,
+     * 2026-09-29: the stuck hint's idea at a puzzle's start came again as the question after
+     * the move was found and the reply left the engine's line). `Disclosure.carry`.
+     */
+    fun carry(carried: DisclosureLevel) {
+        if (carried.value > level.value) level = carried
+    }
 }
 
 private const val PIECE_RE = "(?:king|queen|rook|bishop|knight|pawn)"

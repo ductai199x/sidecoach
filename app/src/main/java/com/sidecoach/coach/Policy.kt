@@ -110,10 +110,14 @@ class InterjectionPolicy(
      * A new game, or a position adopted: move numbers start again, so the decisive stretch
      * pointed at in the last one says nothing about this one. A puzzle's first position was
      * skipped as part of the previous puzzle's stretch, which ended at a higher ply (Tai's
-     * desktop, 2026-09-24: the mate in three was never asked, only hinted 45 s later).
+     * desktop, 2026-09-24: the mate in three was never asked, only hinted 45 s later). Nor do
+     * its counts: kept by ply, the last puzzles' words at their first positions left a new
+     * puzzle "gave the idea and the focus here" before a hint (Tai's phone, 2026-09-29).
      */
     fun restart() {
         lastDecisivePly = null
+        spoken.clear()
+        saidTs = null
     }
 
     /** The user's clock, when the screen shows one. */
@@ -203,6 +207,14 @@ class InterjectionPolicy(
     fun said(ply: Int, ts: Double? = null) {
         spoken[ply] = (spoken[ply] ?: 0) + 1
         if (ply == plyValue && ts != null) saidTs = ts
+    }
+
+    /**
+     * The hints unasked for the position at [ply] are all given, here or earlier in the same
+     * combination: nothing more comes until they ask. `InterjectionPolicy.exhausted`.
+     */
+    fun exhausted(ply: Int) {
+        spoken[ply] = maxOf(spoken[ply] ?: 0, UNPROMPTED_PER_POSITION)
     }
 
     /** Seconds on the move before a hint, shorter as the clock runs down. */

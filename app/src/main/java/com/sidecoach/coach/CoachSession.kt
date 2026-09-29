@@ -584,7 +584,13 @@ class Coach(
         val position = current ?: return
         if (position.facts == null) return
         if (position.board.isGameOver()) return // nothing to be stuck on: the game is over on the board
-        val level = position.disclosure.apply(Unlock.STUCK) ?: position.disclosure.level
+        // A hint unasked only ever climbs: at the top of its ladder it is not said again.
+        position.disclosure.carry(ladder(position))
+        val level = position.disclosure.apply(Unlock.STUCK)
+        if (level == null) {
+            policy.exhausted(position.ply)
+            return
+        }
         policy.said(position.ply, ts)
         speak(trigger, position, level, ts)
     }
@@ -628,6 +634,8 @@ class Coach(
             return
         }
         val unlock = unlockFor(text, position.board, position.facts!!.candidates)
+        // A hint asked for climbs from what the combination has had already.
+        position.disclosure.carry(ladder(position))
         if (unlock != null) position.disclosure.apply(unlock)
         var level = maxOf(position.disclosure.level, DisclosureLevel.IDEA)
         if (finished || position.board.isGameOver()) {
@@ -1183,7 +1191,10 @@ class Coach(
                 !carryingOut(position)
             val trigger = policy.onPositionAnalysed(event.ply, decisive = decisive)
             if (trigger != null) {
-                val level = position.disclosure.apply(Unlock.DECISIVE) ?: position.disclosure.level
+                // The question is the combination's first word: once its idea was given, at
+                // this move or at an earlier one of it, it is not asked again.
+                position.disclosure.carry(ladder(position))
+                val level = position.disclosure.apply(Unlock.DECISIVE) ?: return
                 policy.said(position.ply, ts)
                 speak(trigger, position, level, ts)
             }
@@ -1191,11 +1202,41 @@ class Coach(
     }
 
     /**
+     * The highest hint the combination this position continues has had: back through the
+     * player's positions while the move they played there was the engine's best, the levels
+     * said before they moved (Tai, 2026-09-29: "Each level can only be said once and if the
+     * level higher was said then the lower one can't be said"). A move off the best line
+     * starts a new one; a puzzle's wrong moves are taken back. `Coach._ladder`.
+     */
+    private fun ladder(position: CoachPosition): DisclosureLevel {
+        var level = DisclosureLevel.SILENT
+        var ply = position.ply
+        while (true) {
+            val own = moves[ply - 1]
+            val before = positions[ply - 2]
+            if (own == null || !own.byUser || before == null || !wasBest(before, own)) return level
+            if (before.disclosure.hinted.value > level.value) level = before.disclosure.hinted
+            ply -= 2
+        }
+    }
+
+    /** Whether [move] was the engine's best from [position]. `Coach._was_best`. */
+    private fun wasBest(position: CoachPosition, move: MovePlayed): Boolean {
+        val analysis = position.analysis
+        if (analysis != null && analysis.lines.isNotEmpty() && analysis.lines[0].moves.isNotEmpty()) {
+            return analysis.lines[0].moves[0] == move.uci
+        }
+        val facts = position.facts ?: return false
+        return facts.candidates.isNotEmpty() && facts.candidates[0] == move.san
+    }
+
+    /**
      * The player's last move and the reply to it are the first two moves of the engine's line
      * from a decisive position: they found the idea and are playing it out, so a question about
      * the next step asks what they already know (Tai's desktop, 2026-09-24: after Qd1+ Rxd1
      * Rxd1+ Qe1, "You can mate in one move ... Which check leaves their king no square at
-     * all?", heard as the puzzle's hint). An opponent who leaves the line keeps the question.
+     * all?", heard as the puzzle's hint). An opponent who leaves the line gets the question,
+     * unless the combination's idea was given already ([ladder]).
      */
     private fun carryingOut(position: CoachPosition): Boolean {
         val own = moves[position.ply - 1]

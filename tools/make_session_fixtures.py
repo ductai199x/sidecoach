@@ -530,9 +530,9 @@ def run(annotator: GameAnnotator, with_verifier: bool) -> dict[str, Any]:
         asks,
     )
 
-    # A long think: the stuck hint, and a second one a full stuck spell later -- the idea,
-    # then the focus, and never more unasked -- with hints asked between: the rungs up to
-    # the move.
+    # A long think: the stuck hint (the idea), a hint asked for (the focus), and then no
+    # hint unasked, since the focus was said already (Tai, 2026-09-29: each level once, none
+    # below the highest), and the hint asked for after it gives the move.
     for op in ("tick", "hint", "tick", "tick", "another hint"):
         if op == "tick":
             ts += 200.0
