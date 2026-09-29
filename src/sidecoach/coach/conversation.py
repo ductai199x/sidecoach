@@ -152,6 +152,37 @@ _PIECE_TYPES = {
 }
 
 
+def hands(side: Side) -> str:
+    """Left and right as the player says them, seeing the board from their own side. Playing
+    Black, "he will just move away to the right" (Kh1-g2) was answered "their King cannot move
+    to the right" (Tai's puzzle, 2026-09-28): the model reads a board from White's side."""
+    left, right = ("a", "h") if side == Side.WHITE else ("h", "a")
+    return (
+        f"the {left}-file is on their left and the {right}-file on their right, so 'to the "
+        f"right' means toward the {right}-file"
+    )
+
+
+def ways(board: chess.Board, sans: Sequence[str], side: Side) -> str:
+    """Which way each move of a line from `board` goes, as the player sees the board: "Kg2
+    (h1 to g2) goes to their right". Told which file is on which hand, Luna still answered
+    "White cannot move to the right: the only legal reply is Kg2, toward the a-file"."""
+    rightward = 1 if side == Side.WHITE else -1
+    replay = board.copy(stack=False)
+    out: list[str] = []
+    for san in sans:
+        try:
+            move = replay.parse_san(san)
+        except ValueError:
+            break
+        step = (chess.square_file(move.to_square) - chess.square_file(move.from_square)) * rightward
+        way = "to their right" if step > 0 else "to their left" if step < 0 else "along the file"
+        squares = f"{chess.square_name(move.from_square)} to {chess.square_name(move.to_square)}"
+        out.append(f"{san} ({squares}) goes {way}")
+        replay.push(move)
+    return "; ".join(out)
+
+
 def _gone(text: str, board: chess.Board) -> bool:
     """Whether `text` names a piece on a square that no longer holds that piece on `board`."""
     for word, square in _PLACED_PIECE.findall(text.lower()):
@@ -226,13 +257,9 @@ class Conversation:
         self.records = []
         self._drained = 0
         side = "White" if event.user_side == Side.WHITE else "Black"
-        # Left and right as the player says them: playing Black, "he will just move away to the
-        # right" (Kh1-g2, seen from Black's side) was answered "their King cannot move to the
-        # right" (Tai's puzzle, 2026-09-28).
-        left = "a" if event.user_side == Side.WHITE else "h"
         text = (
-            f"You coach {side}. They see the board from {side}'s side, the {left}-file on their "
-            "left."
+            f"You coach {side}. They see the board from {side}'s side, their own pieces at the "
+            f"bottom: {hands(event.user_side)}."
         )
         if control:
             text += f" Time control: {control}."

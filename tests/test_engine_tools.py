@@ -44,11 +44,14 @@ def test_analyse_plays_the_moves_and_gives_the_standing_the_lines_and_the_board(
     out = tools.run("analyse", {"moves": ["4. Kg2", "4...Rg1+"]})
     assert out.startswith("After 4. Kg2 Rg1+ (from the board now): White to move, in check.")
     # The first move rated against the engine's best from the board now: Kg2 is the only move.
-    assert "Kg2 is the engine's best move there." in out
+    # Said as the first move's, never "best there": printed after the line's end, that read
+    # as the best move at its end ("White's best is 8. Kg2", Tai's puzzle).
+    assert "The first move given, 4. Kg2, is the engine's best move from the board now." in out
     # White to move and a little ahead: from the player's (Black's) side, a little behind.
     assert "Standing: it is about equal (0.40 from the player's side)." in out
     assert "The engine's lines, best first:" in out and "move by move:" in out
-    assert "On the board there (complete lists):" in out
+    # The lists one a line, as in the harness's section.
+    assert "\nOn the board there (complete lists):\n  The " in out
     # The boards it went through, for the draft check: after each move and along line 1.
     assert chess.Board(AFTER_RXF1).fen() not in [b.fen() for b in tools.frames]
     assert len(tools.frames) >= 2
@@ -152,6 +155,58 @@ def test_a_model_that_keeps_asking_answers_after_the_last_round() -> None:
     assert out and out[-1].text == "The pawn on f7 is defended only by the king."
     assert len(model.seen) == TOOL_ROUNDS + 1
     assert model.seen[-1]["tool_choice"] == "none"
+
+
+def test_the_line_asked_for_again_brings_the_engine_on_its_end() -> None:
+    """Asked "ok and after that?" with the line already given, the engine is asked about the
+    line's end before the model answers (Luna at no effort gave the same line back, Tai's
+    puzzle)."""
+    from sidecoach.coach.coach import LINE_GIVEN
+
+    model = ToolModel([], "Qxf7# -- it is mate at once.")
+    model.script = []
+    coach = Coach(model, policy=_policy(), engine=FirstLegal())
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    coach.ask("show me the line", 8.0)
+    drain(coach)
+    assert LINE_GIVEN not in coach.spoken[-1].calls[-1].prompt
+    coach.ask("ok and after that?", 9.0)
+    drain(coach)
+    prompt = coach.spoken[-1].calls[-1].prompt
+    assert LINE_GIVEN in prompt
+    assert "The engine, asked about the line's end:" in prompt
+    assert "The game is over there: checkmate, White wins." in prompt
+
+
+def test_a_server_that_refuses_the_tools_is_asked_without_them() -> None:
+    """Luna with a reasoning effort takes no tools on chat completions: the 400 left the coach
+    silent on every question. A refused request is asked again without the tools; a server
+    that is down is not asked twice."""
+
+    class Refusing(ToolModel):
+        def __init__(self, error: str) -> None:
+            super().__init__([], "The pawn on f7 is defended only by the king.")
+            self.error = error
+
+        def chat(self, system: str, messages: Sequence[ChatMessage], **kwargs: Any) -> Completion:
+            self.seen.append(kwargs)
+            if "tools" in kwargs:
+                raise RuntimeError(self.error)
+            return Completion(text=self.answer)
+
+    for error, answered in (("400: tools not supported", True), ("503: down", False)):
+        model = Refusing(error)
+        coach = Coach(model, policy=_policy(), engine=FirstLegal())
+        play_to_scholar(coach)
+        coach.on_event(mate_analysis(6, decisive=False), 7.0)
+        drain(coach)
+        model.seen.clear()
+        coach.ask("is f7 weak?", 8.0)
+        said = [m.text for m in drain(coach)]
+        assert ("The pawn on f7 is defended only by the king." in said) is answered, error
+        assert any("tools" not in k for k in model.seen) is answered, error
 
 
 def test_a_model_without_tools_is_asked_as_before() -> None:

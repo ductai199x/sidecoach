@@ -151,7 +151,7 @@ class EngineTools:
             return f"{head} The game is over there: {_result(after)}."
         try:
             lines = self.engine.analyse(after, depth=self.depth)[:LINES]
-            rating = self._rating(start, played[:1]) if played else ""
+            rating = self._rating(start, played[:1], _origin(where)) if played else ""
         except Exception as exc:  # noqa: BLE001 - the engine gone or a position it refused
             return f"{head} The engine could not look at that position ({type(exc).__name__})."
         parts = [
@@ -176,8 +176,8 @@ class EngineTools:
                         text += f" -- move by move: {notes}"
                     self._walk(after, line.moves[:LINE_PLIES])
                 parts.append(text)
-        board_lines = inventory_lines(after, self.player)
-        parts.append("On the board there (complete lists): " + " ".join(board_lines))
+        parts.append("On the board there (complete lists):")
+        parts.extend(f"  {line}" for line in inventory_lines(after, self.player))
         return "\n".join(parts)
 
     def _square(self, start: chess.Board, moves: list[str], name: str, where: str) -> str:
@@ -247,34 +247,34 @@ class EngineTools:
             replay.push(move)
             self.frames.append(replay.copy(stack=False))
 
-    def _rating(self, start: chess.Board, first: list[chess.Move]) -> str:
-        """How the first move rates against the engine's best from `start`."""
+    def _rating(self, start: chess.Board, first: list[chess.Move], origin: str) -> str:
+        """How the first move rates against the engine's best from `start`, said as the first
+        move's: "Kg2 is the engine's best move there", printed after the line's end, was read
+        as the best move there ("White's best is 8. Kg2", Tai's puzzle)."""
         best = self.engine.analyse(start, depth=self.depth)
         if not best:
             return ""
         after = start.copy(stack=False)
         after.push(first[0])
-        san = start.san(first[0])
+        san = san_line(start, [first[0].uci()])
+        head = f"The first move given, {san}, is"
         if best[0].moves and best[0].moves[0] == first[0].uci():
-            return f"{san} is the engine's best move there."
+            return f"{head} the engine's best move from {origin}."
         if after.is_game_over(claim_draw=True):
             return ""
         reply = self.engine.analyse(after, depth=self.depth)
         if not reply:
             return ""
         gap = best[0].expected_score - (1.0 - reply[0].expected_score)
-        top = start.san(chess.Move.from_uci(best[0].moves[0])) if best[0].moves else "?"
+        top = san_line(start, best[0].moves[:1]) if best[0].moves else "?"
         if gap <= 0.005:
-            return f"{san} is as good as the engine's best there ({top})."
-        return f"{san} is {gap:.2f} behind the engine's best there, {top}."
+            return f"{head} as good as the engine's best from {origin} ({top})."
+        return f"{head} {gap:.2f} behind the engine's best from {origin}, {top}."
 
     def _heading(self, start: chess.Board, played: list[chess.Move], where: str) -> str:
-        origin = (
-            "the position before the last move" if where == "before_last_move" else "the board now"
-        )
         if not played:
-            return f"From {origin}:"
-        return f"After {san_line(start, [m.uci() for m in played])} (from {origin}):"
+            return f"From {_origin(where)}:"
+        return f"After {san_line(start, [m.uci() for m in played])} (from {_origin(where)}):"
 
     def _from_player(self, expected: float, to_move: chess.Color) -> float:
         return expected if to_move == self.player else 1.0 - expected
@@ -289,6 +289,10 @@ def _tokens(moves: Sequence[Any]) -> list[str]:
             if token and token not in ("...", ".."):
                 out.append(token.replace("0-0-0", "O-O-O").replace("0-0", "O-O"))
     return out
+
+
+def _origin(where: str) -> str:
+    return "the position before the last move" if where == "before_last_move" else "the board now"
 
 
 def _side(colour: chess.Color) -> str:

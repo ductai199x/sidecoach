@@ -292,8 +292,13 @@ def side_lines(board: chess.Board, colour: chess.Color, *, own: str, their: str)
 
 
 def to_move_lines(board: chess.Board, *, own: str) -> list[str]:
-    """What the side to move can do at once: checks and captures, in SAN, with what is taken."""
+    """The check it is in, and what the side to move can do at once: checks and captures, in
+    SAN, with what is taken. The check in force was missing, and the empty list said "no check
+    is on" with the King in check (Tai's puzzle, 2026-09-28)."""
     out: list[str] = []
+    if board.is_check():
+        by = " and the ".join(name_of(board, s) for s in board.checkers())
+        out.append(f"{own} King in check, from the {by}")
     checks: list[str] = []
     for m in board.legal_moves:
         if not board.gives_check(m):
@@ -340,7 +345,9 @@ def inventory_lines(board: chess.Board, user_colour: chess.Color) -> list[str]:
     theirs = side_lines(board, not user_colour, own="The opponent's", their="the player's")
     mover = "The player's" if board.turn == user_colour else "The opponent's"
     lines = [*mine, *theirs, *to_move_lines(board, own=mover)]
-    return lines or ["Nothing hangs, nothing is pinned, no check or capture is on."]
+    return lines or [
+        "Nothing hangs, nothing is pinned, and the side to move has no check or capture."
+    ]
 
 
 def inventory_text(board: chess.Board, user_colour: chess.Color) -> str:
@@ -350,5 +357,8 @@ def inventory_text(board: chess.Board, user_colour: chess.Color) -> str:
     beside Inventory.kt's inventoryText): the two go together."""
     lines = inventory_lines(board, user_colour)
     if len(lines) == 1 and lines[0].startswith("Nothing"):
-        return "On the board now: nothing hangs, nothing is pinned, no check or capture is on."
+        return (
+            "On the board now: nothing hangs, nothing is pinned, and the side to move has no "
+            "check or capture."
+        )
     return "On the board now (complete lists): " + " | ".join(lines) + "."

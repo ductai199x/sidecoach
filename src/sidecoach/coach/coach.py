@@ -35,7 +35,7 @@ from sidecoach.analysis.exchange import VALUE, defenders
 from sidecoach.coach import draft_claims, idea_words, situation
 from sidecoach.coach.annotations import annotations_for, mentions_in
 from sidecoach.coach.bag import Bags
-from sidecoach.coach.conversation import Conversation, PlyRecord
+from sidecoach.coach.conversation import Conversation, PlyRecord, hands, ways
 from sidecoach.coach.disclosure import (
     Disclosure,
     PositionFacts,
@@ -80,7 +80,7 @@ from sidecoach.events import (
     Takeback,
     Trigger,
 )
-from sidecoach.llm.base import ChatMessage, Completion, LLMProvider
+from sidecoach.llm.base import ChatMessage, Completion, LLMProvider, refused_for_good
 from sidecoach.profile.causes import HABIT
 from sidecoach.profile.insights import motif_words
 
@@ -648,6 +648,11 @@ TIE_LISTED = (
     "earlier moment."
 )
 NO_EARLIER = "Speak of no earlier moment of the game: none had the same idea."
+# A line asked for once it was given: what they want is what comes after it.
+LINE_GIVEN = (
+    "You have given them this line already, in your turns above: they want what comes after "
+    "its end -- the next moves and the idea behind them."
+)
 
 
 FOCUS_DIRECTIVE = (
@@ -1646,7 +1651,9 @@ class Speaker:
         """The model's reply, streamed to `on_delta` when given. With engine tools on the
         request and a model that takes them, the engine calls it makes are answered and it is
         asked again, TOOL_ROUNDS times at most, the last time to answer with what it has; the
-        calls go in the stats, for the log."""
+        calls go in the stats, for the log. A server that refuses the tools is asked again
+        without them: Luna with a reasoning effort takes no tools on chat completions, and the
+        coach said nothing at all."""
         tools = request.tools if getattr(provider, "tools_ok", False) else None
         turns: list[dict[str, Any]] = []
         round_ = 0
@@ -1656,23 +1663,29 @@ class Speaker:
                 extra = {"tools": tools.specs, "turns": turns}
                 if round_ == TOOL_ROUNDS:
                     extra["tool_choice"] = "none"
-            if on_delta is not None:
-                completion = provider.chat_stream(  # type: ignore[attr-defined]
-                    request.system,
-                    messages,
-                    max_tokens=VS_MAX_TOKENS,
-                    temperature=VS_TEMPERATURE,
-                    on_delta=on_delta,
-                    **extra,
-                )
-            else:
-                completion = provider.chat(
-                    request.system,
-                    messages,
-                    max_tokens=VS_MAX_TOKENS,
-                    temperature=VS_TEMPERATURE,
-                    **extra,
-                )
+            try:
+                if on_delta is not None:
+                    completion = provider.chat_stream(  # type: ignore[attr-defined]
+                        request.system,
+                        messages,
+                        max_tokens=VS_MAX_TOKENS,
+                        temperature=VS_TEMPERATURE,
+                        on_delta=on_delta,
+                        **extra,
+                    )
+                else:
+                    completion = provider.chat(
+                        request.system,
+                        messages,
+                        max_tokens=VS_MAX_TOKENS,
+                        temperature=VS_TEMPERATURE,
+                        **extra,
+                    )
+            except Exception as exc:
+                if tools is None or not refused_for_good(exc):
+                    raise
+                tools = None
+                continue
             if tools is None or not completion.tool_calls or round_ == TOOL_ROUNDS:
                 break
             turns = [
@@ -1702,8 +1715,8 @@ class Speaker:
                 ),
             ]
             round_ += 1
-        if tools is not None and tools.log:
-            completion.stats["tools"] = list(tools.log)
+        if request.tools is not None and request.tools.log:
+            completion.stats["tools"] = list(request.tools.log)
         return completion
 
     @staticmethod
@@ -2142,6 +2155,12 @@ _ASK_LINE = re.compile(
     re.I,
 )
 _SAN = re.compile(r"\b(O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?)\b")
+# Left or right as a direction ("to the right", "on the left side"), not "is that right?".
+_SIDEWAYS = re.compile(
+    r"\b(?:to|on|toward|towards) (?:the|my|his|her|their) (?:left|right)\b"
+    r"|\b(?:left|right)(?:wards?|-hand| side| wing)\b",
+    re.I,
+)
 
 
 def unlock_for(text: str, board: chess.Board, candidates: Sequence[str]) -> Unlock | None:
@@ -3470,6 +3489,20 @@ class Coach:
         # here", far above, "whose bishop? ... he will just move away to the right, no?" got the
         # line again (Tai's puzzle, 2026-09-28).
         asked = f'Their words, which you answer: "{user_text}"\n\n' if user_text else ""
+        if user_text and _SIDEWAYS.search(user_text):
+            # Said once in the Setting, far above, left and right were still read from White's
+            # side: "from h1 there is no square to the right" (Tai's puzzle, both models).
+            # Told so, the model still wrote "the only legal reply is Kg2, toward the a-file" as
+            # no move to the right: the moves in question are given their way.
+            side = "White" if self.user_side == Side.WHITE else "Black"
+            asked += f"They say left and right from {side}'s side: {hands(self.user_side)}."
+            seen = [ways(position.board, [san], self.user_side) for san in _SAN.findall(user_text)]
+            if position.facts is not None:
+                seen.append(ways(position.board, position.facts.line[:2], self.user_side))
+            seen = [s for s in dict.fromkeys(seen) if s]
+            if seen:
+                asked += f" Seen so: {'; '.join(seen)}."
+            asked += "\n\n"
         directive = f"{line}{asked}{instruction}"
         faced = ""
         frames: list[chess.Board] = []
@@ -3557,6 +3590,11 @@ class Coach:
             else None
         )
         if tools is not None:
+            if LINE_GIVEN in directive and position.facts.line:
+                # What comes after the line's end, asked of the engine here: left to the model,
+                # Luna at no effort called the tool one time in two and gave the line again.
+                answer = tools.run("analyse", {"moves": list(position.facts.line)})
+                directive += f"\n\nThe engine, asked about the line's end:\n{answer}"
             directive += f"\n\n{TOOL_WORDS}"
         with self._lock:
             self.conversation.level = render_level
@@ -4219,13 +4257,12 @@ class Coach:
                 "one short sentence on the idea behind it." + by_move + " Do not answer with a "
                 "question."
             )
-            if any(" ".join(facts.line[:3]) in s for s in self._said_since_move()):
+            given = [m.rstrip("+#") for m in facts.line[:3]]
+            if any(all(m in s for m in given) for s in self._said_since_move()):
                 # Given once already, the line asked for again is what comes after it: "ok and
-                # after that?" got the same line back (Tai's puzzle, 2026-09-28).
-                directive += (
-                    " You have given them this line already, in your turns above: they want what "
-                    "comes after its end -- the next moves and the idea behind them."
-                )
+                # after that?" got the same line back (Tai's puzzle, 2026-09-28). The engine's
+                # word on its end is put before the model (`_speak`).
+                directive += f" {LINE_GIVEN}"
         elif level >= DisclosureLevel.MOVE and _ASK_MOVE.search(said) and facts.candidates:
             directive = (
                 f"They asked what to play: tell them plainly it is {facts.candidates[0]}, then why "
@@ -4467,11 +4504,12 @@ class Coach:
             # lists it" stood here after the sheet had come to list everything (the prompt
             # audit, 2026-09-28).
             directive = (
-                "Answer them directly, and be honest about their own claim. When they propose a "
-                "move, or name a square or piece, say plainly whether it holds up and what it "
-                "does or allows, from the engine's word on it where given above -- theirs to "
-                "hear in full: the score after it, how far behind the best, the reply, what the "
-                "move does; when the engine does not rate their move, say it is not the "
+                "Answer them directly, and be honest about their own claim, taking it as they "
+                "meant it: say what in it is right as plainly as what is wrong. When they "
+                "propose a move, or name a square or piece, say plainly whether it holds up and "
+                "what it does or allows, from the engine's word on it where given above -- "
+                "theirs to hear in full: the score after it, how far behind the best, the reply, "
+                "what the move does; when the engine does not rate their move, say it is not the "
                 "strongest and, in general terms, why. Of the position they face, keep back only "
                 "what the level line does, and point them toward the right idea"
                 + (

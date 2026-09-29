@@ -130,6 +130,37 @@ def test_the_verdict_says_what_the_move_does_and_what_the_better_move_would_do()
     assert "What Nc3 does:" not in text  # a quiet developing move: nothing the board can name
 
 
+def test_the_setting_says_left_and_right_as_the_player_sees_them() -> None:
+    """Playing Black, "he will just move away to the right" (Kh1-g2) was answered "their King
+    cannot move to the right" (Tai's puzzle, 2026-09-28)."""
+    for side, right in ((Side.WHITE, "h"), (Side.BLACK, "a")):
+        convo = Conversation()
+        convo.new_game(GameStarted(game_id="g", user_side=side, start_fen=chess.Board().fen()))
+        setting = convo.messages()[0]["content"]
+        assert f"'to the right' means toward the {right}-file" in setting, side
+
+
+def test_left_and_right_in_their_words_are_said_again_by_the_question() -> None:
+    """Said once in the Setting, far above, left and right were still read from White's side
+    ("from h1 there is no square to the right", both models): a question that says them
+    carries them."""
+    from sidecoach.coach.coach import _SIDEWAYS
+
+    for said in ("he will just move away to the right, no?", "on my left side", "rightwards"):
+        assert _SIDEWAYS.search(said), said
+    for said in ("is that right?", "right, so what now?", "what's left to do?"):
+        assert not _SIDEWAYS.search(said), said
+    # The moves in question given their way: Kh1-g2 is to Black's right, Rf1-g1 to its left.
+    from sidecoach.coach.conversation import ways
+
+    board = chess.Board("6k1/b1p2pp1/p7/1p6/1P6/P5pP/3R4/3N1r1K w - - 0 4")
+    assert ways(board, ["Kg2", "Rg1+"], Side.BLACK) == (
+        "Kg2 (h1 to g2) goes to their right; Rg1+ (f1 to g1) goes to their left"
+    )
+    assert ways(chess.Board(), ["e4"], Side.WHITE) == "e4 (e2 to e4) goes along the file"
+    assert ways(board, ["Rxf1+"], Side.BLACK) == ""  # not a move on this board
+
+
 def test_the_position_sections_on_the_opponents_turn() -> None:
     """After the player's capture, with the opponent to move: the facts heading closes its
     bracket and says whose plan they are; the weaker lines say whose; the material notes

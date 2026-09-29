@@ -44,8 +44,14 @@ def test_hanging_pinned_batteries_and_captures_are_read_off_the_board() -> None:
     assert skewer_target(board, chess.A1) == (chess.D1, chess.F1)
     assert forks_in_place(chess.Board(), chess.WHITE) == []
     assert inventory_lines(chess.Board(), chess.WHITE) == [
-        "Nothing hangs, nothing is pinned, no check or capture is on."
+        "Nothing hangs, nothing is pinned, and the side to move has no check or capture."
     ]
+    # The check in force is on the list: in Tai's puzzle it read "no check is on" with the
+    # King in check after Rxf1+.
+    board = chess.Board("6k1/b1p2pp1/p7/1p6/1P6/P5pP/3R4/3N1r1K w - - 0 4")
+    assert inventory_lines(board, chess.BLACK)[-1] == (
+        "The opponent's King in check, from the rook on f1"
+    )
 
 
 def test_a_piece_named_with_its_square_is_examined_without_an_engine() -> None:

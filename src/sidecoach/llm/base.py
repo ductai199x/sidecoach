@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypedDict
@@ -29,6 +30,17 @@ class Completion:
     # The functions the model asked for instead of (or before) a reply; empty when it
     # replied, and always empty from a provider that takes no tools.
     tool_calls: list[ToolCall] = field(default_factory=list)
+
+
+_STATUS = re.compile(r"^(\d{3}):")
+
+
+def refused_for_good(exc: BaseException) -> bool:
+    """A request the server refused as it stands -- a 4xx other than 429 (bad request, too
+    long, no access): asking again costs time and changes nothing. Providers raise with the
+    status code heading the message."""
+    found = _STATUS.match(str(exc))
+    return found is not None and found.group(1).startswith("4") and found.group(1) != "429"
 
 
 class LLMProvider(Protocol):

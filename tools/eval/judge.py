@@ -77,6 +77,7 @@ from sidecoach.coach.facts import ascii_board  # noqa: E402
 from sidecoach.coach.inventory import inventory_lines  # noqa: E402
 from sidecoach.coach.named import disclosed_frames  # noqa: E402
 from sidecoach.events import DisclosureLevel, MoveAssessment, Trigger  # noqa: E402
+from sidecoach.llm.base import refused_for_good  # noqa: E402
 
 JUDGMENTS = ROOT / "data" / "eval" / "judgments"
 USAGE = ROOT / "data" / "eval" / "usage.jsonl"
@@ -1878,16 +1879,6 @@ def score(
 class JudgeFailed(RuntimeError):
     """The judge model gave no usable answer (the server refused, or the JSON never
     parsed): not a judgment. The reply is left unjudged for a later pass, never scored."""
-
-
-_STATUS = re.compile(r"^(\d{3}):")
-
-
-def refused_for_good(exc: BaseException) -> bool:
-    """A request the server refused as it stands -- a 4xx other than 429 (bad request, too
-    long, no access): asking again costs time and changes nothing."""
-    found = _STATUS.match(str(exc))
-    return found is not None and found.group(1).startswith("4") and found.group(1) != "429"
 
 
 def _chat_with_backoff(provider, system: str, messages, ledger: Ledger, item_id: str, **kw):
