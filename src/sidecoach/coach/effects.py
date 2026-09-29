@@ -30,6 +30,11 @@ def _name(board: chess.Board, square: chess.Square) -> str:
     return f"the {word} on {chess.square_name(square)}"
 
 
+def _names(board: chess.Board, squares: list[chess.Square]) -> str:
+    """The pieces on `squares`, the first two: "the rook on g1 and the pawn on e5"."""
+    return " and ".join(_name(board, s) for s in squares[:2])
+
+
 def _hitters(board: chess.Board, colour: chess.Color, square: chess.Square) -> list[chess.Square]:
     """`colour`'s pieces that attack the enemy piece on `square`: those that could take it by
     a legal move (were it `colour`'s move); on the king, those that give it check.
@@ -184,13 +189,19 @@ def describe_effects(
 
     # The moved piece: was it attacked, and is it now? Attacked is a legal capture onto its
     # square, defended a legal recapture: a pinned piece neither threatens nor guards it.
+    # The attacker is named: "gets the knight out of attack" alone, the model guessed it, and
+    # guessed the pawn that had just moved rather than the rook on g1 (Luna on Tai's puzzle,
+    # 2026-09-29).
     if mover is not None and mover.piece_type != chess.KING:
-        was_attacked = bool(capturers(board, them, move.from_square))
-        is_attacked = bool(capturers(after, them, move.to_square))
+        was_attacked = capturers(board, them, move.from_square)
+        is_attacked = capturers(after, them, move.to_square)
         if was_attacked and not is_attacked:
-            out.append(f"gets the {mover_word} out of attack")
+            out.append(f"gets the {mover_word} out of attack from {_names(board, was_attacked)}")
         elif hazards and is_attacked and not defenders(after, us, move.to_square):
-            out.append(f"puts the {mover_word} where it is attacked and undefended")
+            out.append(
+                f"puts the {mover_word} where it is undefended and attacked by "
+                + _names(after, is_attacked)
+            )
 
     # Own pieces left undefended by the move, and attacked ones newly defended -- only when
     # the defence saves the piece: still attacked, and no longer to be won by the exchange
@@ -199,7 +210,8 @@ def describe_effects(
     after_loose = _undefended(after, us)
     left = [s for s in after_loose - before_loose if s != move.to_square] if hazards else []
     for s in sorted(left, key=lambda s: (-value_at(s), s)):
-        tail = ", and it is attacked" if capturers(after, them, s) else ""
+        hitters = capturers(after, them, s)
+        tail = f", and it is attacked by {_names(after, hitters)}" if hitters else ""
         out.append(f"leaves {_name(after, s)} undefended{tail}")
         break
     covered = [
@@ -208,7 +220,8 @@ def describe_effects(
         if s != move.from_square and capturers(after, them, s) and not can_be_won(after, s)
     ]
     for s in sorted(covered, key=lambda s: (-value_at(s), s)):
-        out.append(f"defends {_name(after, s)}, which was attacked")
+        by = _names(after, capturers(after, them, s))
+        out.append(f"defends {_name(after, s)}, which is attacked by {by}")
         break
 
     # A rook or queen onto a file with no pawn of its own on it.

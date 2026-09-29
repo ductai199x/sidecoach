@@ -87,6 +87,8 @@ def test_square_says_what_stands_there_and_who_attacks_it() -> None:
     assert "On g1: the player's rook." in out
     assert "Defended by the player's: bishop on a7." in out
     assert "Attacked by the opponent's: king on g2." in out
+    # And whether the side to move can take it: the king cannot, the bishop guards g1.
+    assert out.endswith("None of the opponent's pieces can move there.")
 
 
 class ToolModel:
@@ -133,10 +135,10 @@ def test_the_model_asks_the_engine_and_answers_from_what_it_returns() -> None:
     first, second = model.seen[0], model.seen[1]
     assert first["tools"] and not first["turns"]
     # The engine's answer went back to the model as the call's result.
-    call, result = second["turns"]
-    assert call["role"] == "assistant" and call["tool_calls"][0]["function"]["name"] == "analyse"
-    assert result["role"] == "tool" and result["tool_call_id"] == "c1"
-    assert "The game is over there: checkmate, White wins." in result["content"]
+    (turn,) = second["turns"]
+    assert [call.name for call in turn.reply.tool_calls] == ["analyse"]
+    (result,) = turn.results
+    assert "The game is over there: checkmate, White wins." in result
     # The Task says what the tools are for; the call is on the record for the log.
     assert TOOL_WORDS in coach.spoken[-1].calls[-1].prompt
     assert coach.spoken[-1].calls[-1].stats["tools"] == ["analyse(Qxf7#)"]
@@ -196,6 +198,10 @@ def test_a_server_that_refuses_the_tools_is_asked_without_them() -> None:
         said = [m.text for m in drain(coach)]
         assert ("The pawn on f7 is defended only by the king." in said) is answered, error
         assert any("tools" not in k for k in model.seen) is answered, error
+        if answered:
+            # The refusal on the record: asked without the tools, the reply had none of them.
+            stats = coach.spoken[-1].calls[-1].stats
+            assert stats["tools_refused"] == "400: tools not supported"
 
 
 def test_a_model_without_tools_is_asked_as_before() -> None:

@@ -282,7 +282,7 @@ Scoring is the paper's completeness and correctness (Nguyen & Stamm, arXiv 2606.
 | Capture | mss first; dxcam or windows-capture if needed |
 | Vision | OpenCV, numpy; small CNN in PyTorch exported to ONNX Runtime; RapidOCR |
 | Chess | python-chess, Stockfish release binary, Lichess chess-openings data, Polyglot book |
-| LLM | OpenAI-compatible provider over httpx: LM Studio locally, DashScope qwen3.8-max or qwen3.8-flash hosted; keys in `.env` |
+| LLM | OpenAI-compatible provider over httpx: LM Studio locally, DashScope qwen3.8-max or qwen3.8-flash hosted, OpenAI over its Responses API (tools with a reasoning effort); keys in `.env` |
 | Voice, later | Parakeet, Silero VAD, Kokoro |
 | Storage | SQLite, PGN files |
 | CLI and terminal UI | typer, rich |
@@ -328,7 +328,7 @@ The panel as an installed application -- a Tauri 2 shell around the Python pipel
 
 State of the milestones (2026-09-19):
 
-- M3 Coach: shipped and evaluated. The game is one conversation in a single harness message (section 5.5); disclosure, the policy, the fact bundle, claim verification both ways, and the coach's context C as twelve distilled lessons; `openai:gpt-5.6-luna` at medium effort by default with any OpenAI-compatible endpoint behind `sidecoach.llm`. Held-out pass rate .994 on 320 moments under the binary judge (docs/eval-results.md); the play-through ICR method and the judge are in `tools/eval/`.
+- M3 Coach: shipped and evaluated. The game is one conversation in a single harness message (section 5.5); disclosure, the policy, the fact bundle, claim verification both ways, and the coach's context C as twelve distilled lessons; `openai:gpt-5.6-luna` at medium effort by default (over OpenAI's Responses API since 2026-09-29: chat completions refused its engine tools at an effort) with any OpenAI-compatible endpoint behind `sidecoach.llm`. Held-out pass rate .994 on 320 moments under the binary judge (docs/eval-results.md); the play-through ICR method and the judge are in `tools/eval/`.
 - M5 Panel: shipped (`sidecoach panel`): board, coach messages, voice, orientation flip, cold analysis of a board joined mid-game, debug terminal; verified end to end in Chrome and in live bot games.
 - M7 Voice: shipped, optional (`uv sync --group voice`): Kokoro TTS, Parakeet STT on CPU with chess correction, Silero VAD, a speak/skip/supersede policy so the voice never talks about a position the board has left.
 - Vision after the synthetic sweep (section 5.2, 2026-09-18/19): the suite reads nothing under `data/`; 38 real piece sets, 8 themes, 44-144 px, every decoration; about one random game in seventy still fails, on the two tolerances documented in `sidecoach/vision/pieces.py`.

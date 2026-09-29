@@ -157,7 +157,8 @@ level — nature, theme, region, piece, candidate, line — and the level rises 
 ask, or find the move, or play it. Eval loss is measured in expected score (a move's
 cost in winning chances), never in centipawns.
 
-The model is any OpenAI-compatible endpoint: a preset (OpenAI, DashScope, a local server
+The model is any OpenAI-compatible endpoint: a preset (OpenAI, spoken to through its Responses
+API, the one on which its reasoning models take the coach's engine tools; DashScope; a local server
 such as LM Studio) or a custom one. The coach was evaluated on `gpt-5.6-luna` at medium
 effort; its prompt carries twelve distilled lessons produced by iterative context
 refinement over its own judged replies, and every draft is checked against the board

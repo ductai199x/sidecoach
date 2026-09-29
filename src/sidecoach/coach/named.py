@@ -18,12 +18,14 @@ puzzle, 2026-09-28).
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
 import chess
 
 from sidecoach.analysis import exchange
+from sidecoach.analysis.computed import rest_of_line
 from sidecoach.analysis.engine import san_line
 from sidecoach.coach.effects import effects_text
 from sidecoach.coach.facts import PIECE_NAMES, standing_words
@@ -143,6 +145,20 @@ def _controller(board: chess.Board, at: chess.Square, square: chess.Square) -> s
     return name_of(board, at)
 
 
+def who_can_move_there(board: chess.Board, square: chess.Square, player: chess.Color) -> str:
+    """Which pieces of the side to move can legally go to `square`, or that none can. Who
+    covers a square is not who can get there: asked why they cannot block a check on g1, the
+    model had "the player controls it with the king on h1" and answered that g1 was empty --
+    nothing said no piece of theirs could reach it (Luna on Tai's puzzle, 2026-09-29)."""
+    side = "the player" if board.turn == player else "the opponent"
+    movers = sorted({m.from_square for m in board.legal_moves if m.to_square == square})
+    if not movers:
+        return f"none of {side}'s pieces can move there"
+    return (
+        f"{side} can move the " + " or the ".join(name_of(board, s) for s in movers[:3]) + " there"
+    )
+
+
 def examine_piece(probe: Probe, board: chess.Board, *, user_colour: chess.Color) -> str:
     """The board on one piece or square: what stands there, where it can go, what it
     attacks and defends, what attacks and defends it, whether it is pinned. Static facts
@@ -169,6 +185,7 @@ def examine_piece(probe: Probe, board: chess.Board, *, user_colour: chess.Color)
             )
         if not holders and not theirs:
             parts.append("nobody controls it")
+        parts.append(who_can_move_there(board, square, user_colour))
         return f"{head} " + "; ".join(parts) + "."
     whose = "the player's" if piece.color == user_colour else "the opponent's"
     name = f"{whose} {PIECE_NAMES[piece.piece_type]} on {chess.square_name(square)}"
@@ -296,10 +313,11 @@ def examine(
     user_colour: chess.Color,
     level: DisclosureLevel,
     depth: int = 14,
+    known: Sequence[Line] = (),
 ) -> str:
-    """The engine's word on one probe, one line of text for the object. The coach's engine
-    answers a position the analyser's lines already reach from those lines
-    (`analysis.computed`)."""
+    """The engine's word on one probe, one line of text for the object. A probe that one of
+    the position's own lines (`known`, the sheet's) begins with is read from that line, as the
+    model was shown it (`analysis.computed.rest_of_line`); any other goes to the engine."""
     head = f"Engine on {probe.label}, which the player asked about:"
     if not probe.parsed:
         return f"{head} {probe.illegal} is not a legal move here."
@@ -317,7 +335,12 @@ def examine(
     if after.is_game_over():
         parts.append(f"the game is over after {played} ({after.result()}).")
         return " ".join(parts)
-    lines = engine.analyse(after, depth=depth)
+    own = (
+        rest_of_line(known, [m.uci() for m in probe.parsed])
+        if all(m != chess.Move.null() for m in probe.parsed)
+        else None
+    )
+    lines = [own] if own is not None else engine.analyse(after, depth=depth)
     if not lines:
         return f"{head} the engine has nothing to say about the position after {played}."
     score = lines[0].expected_score if after.turn == user_colour else 1.0 - lines[0].expected_score
@@ -452,6 +475,8 @@ def spoken(fact: str) -> str:
         .replace("the opponent's", "their")
         .replace("the player controls", "you control")
         .replace("the opponent controls", "they control")
+        .replace("the player can move", "you can move")
+        .replace("the opponent can move", "they can move")
     )
     piece = re.match(r"^(your|their) (\w+) on ([a-h][1-8]) stands there; it ", body)
     if piece:
@@ -498,13 +523,14 @@ def analyse_named(
     depth: int = 14,
     static: bool = False,
     pieces_board: chess.Board | None = None,
+    known: Sequence[Line] = (),
 ) -> list[str]:
     """The engine's word on what the player asked about: one line per probe, or none when
     their words name nothing to examine. The moves named in the words are examined as one
     line, or the pieces and squares named each on their own. A piece or square needs no
     engine; a move without one is dropped, unless `static`, when it gets the position it
     leads to and what it does, without a score (a FEN is for a reader of the object, not for
-    a coach to say)."""
+    a coach to say). `known`: the lines the sheet shows for `board`, read before the engine."""
     probes = probes_by_words(text, board)
     if (board.turn != user_colour and engine is not None) or (engine is None and not static):
         # Only the position the player faces is theirs to ask lines about; the board's
@@ -515,7 +541,7 @@ def analyse_named(
     out: list[str] = []
     best: Line | None = None
     if engine is not None and any(p.square is None for p in probes):
-        before = engine.analyse(board, depth=depth)
+        before = list(known) or engine.analyse(board, depth=depth)
         best = before[0] if before else None
     for p in probes:
         if p.square is not None:
@@ -535,6 +561,7 @@ def analyse_named(
                     user_colour=user_colour,
                     level=level,
                     depth=depth,
+                    known=known,
                 )
             )
     return out

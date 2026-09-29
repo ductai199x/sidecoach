@@ -24,7 +24,10 @@ EFFECTS: list[tuple[str, str, str, list[str]]] = [
         "a pinned blocker",
         "4k3/8/8/8/1b2n3/8/8/1N2K3 w - - 0 1",
         "Nd2",
-        ["puts the knight where it is attacked and undefended"],
+        [
+            "puts the knight where it is undefended and attacked by the bishop on b4 and the "
+            "knight on e4"
+        ],
     ),
     # The d5 pawn guards the knight: the king beside it cannot take it.
     ("the king cannot take", "4k3/8/8/3p4/4n3/8/6K1/8 w - - 0 1", "Kf3", []),
@@ -36,7 +39,8 @@ EFFECTS: list[tuple[str, str, str, list[str]]] = [
         "Bc5",
         [
             "uncovers an attack on the pawn on f7 by the rook on f1",
-            "puts the bishop where it is attacked and undefended",
+            "puts the bishop where it is undefended and attacked by the queen on g5 and the pawn "
+            "on d6",
         ],
     ),
     # --- attacked is a legal capture, defended a legal recapture
@@ -55,7 +59,7 @@ EFFECTS: list[tuple[str, str, str, list[str]]] = [
         "beside a king that cannot take",
         "b4k2/2p3pQ/n3p1p1/BK6/4PP2/8/PP6/R2N4 b - - 0 28",
         "c5",
-        ["gets the pawn out of attack"],
+        ["gets the pawn out of attack from the bishop on a5"],
     ),
     # --- a defence counts only when it saves the piece
     # The knight blocking on d2 is pinned: it cannot take back on e4.
@@ -67,7 +71,7 @@ EFFECTS: list[tuple[str, str, str, list[str]]] = [
         "a guard that holds",
         "4k3/8/8/1n6/8/2N5/8/2B1K3 w - - 0 1",
         "Bd2",
-        ["defends the knight on c3, which was attacked"],
+        ["defends the knight on c3, which is attacked by the knight on b5"],
     ),
     # --- a fork needs two targets it wins, from a square it keeps
     # Two knights the pawns guard: the queen attacks one and forks nothing.
@@ -98,7 +102,7 @@ EFFECTS: list[tuple[str, str, str, list[str]]] = [
         [
             "gives check",
             "attacks the king on e8",
-            "puts the knight where it is attacked and undefended",
+            "puts the knight where it is undefended and attacked by the bishop on b8",
         ],
     ),
     # --- a pin the pinned piece breaks at a profit is not named
@@ -109,7 +113,7 @@ EFFECTS: list[tuple[str, str, str, list[str]]] = [
         "Re1",
         [
             "attacks the rook on e7",
-            "puts the rook where it is attacked and undefended",
+            "puts the rook where it is undefended and attacked by the rook on e7",
             "takes the open e-file",
         ],
     ),
@@ -126,7 +130,11 @@ EFFECTS: list[tuple[str, str, str, list[str]]] = [
         "the rook takes the checker",
         QUEEN_ON_F2,
         "Rxf2",
-        ["takes the queen on f2", "attacks the pawn on f7", "gets the rook out of attack"],
+        [
+            "takes the queen on f2",
+            "attacks the pawn on f7",
+            "gets the rook out of attack from the queen on f2",
+        ],
     ),
 ]
 
@@ -147,13 +155,18 @@ def test_a_line_move_by_move_says_what_each_move_does_and_what_a_check_forces() 
 
     board = chess.Board("8/p1q1k2K/2p1p3/3p4/3P1R1P/6r1/1r6/8 w - - 0 49")
     notes = line_notes(board, ["Rf1", "Qd6", "Rf7+", "Kxf7"])
-    assert notes.startswith("Rf1 (gets the rook out of attack), Qd6, Rf7+ (gives check")
+    assert notes.startswith(
+        "Rf1 (gets the rook out of attack from the queen on c7), Qd6, Rf7+ (gives check"
+    )
     assert notes.endswith("Kxf7 (the king must move: Kd8, Ke8 or Kxf7; takes the rook on f7)")
     pinned = chess.Board("6rk/5prq/1p1p1n2/p1pP1B1p/P1P2P1n/2P1R1P1/2Q4K/2B2NR1 b - - 0 35")
     notes = line_notes(pinned, ["f6g4", "f5g4", "h7c2"])  # UCI, as the engine gives it
     assert "Bxg4 (one of 3 ways out of check; takes the knight on g4" in notes
     assert notes.split(", ")[-1].startswith("Qxc2+ (takes the queen on c2")
-    assert line_notes(board, ["Rf1", "Ke9"]) == "Rf1 (gets the rook out of attack)"
+    assert (
+        line_notes(board, ["Rf1", "Ke9"])
+        == "Rf1 (gets the rook out of attack from the queen on c7)"
+    )
 
 
 def test_a_line_said_aloud_gives_each_move_what_it_does() -> None:
@@ -163,7 +176,7 @@ def test_a_line_said_aloud_gives_each_move_what_it_does() -> None:
     board = chess.Board("1r3rk1/p4pp1/3p1q1p/1p1BnP2/2p1P3/1P2Q2P/P5P1/3R1RK1 w - - 0 22")
     assert line_spoken(board, ["Qxa7", "c3", "Rf2", "b4"]) == (
         "Qxa7, taking the pawn on a7 and attacking the rook on b8; c3, getting the pawn out "
-        "of attack; Rf2; b4"
+        "of attack from the pawn on b3 and the bishop on d5; Rf2; b4"
     )
     mate = chess.Board("6k1/5pp1/p2p4/1p3Pb1/2p1r1q1/P1P1p3/1P5K/4R3 b - - 1 48")
     assert line_spoken(mate, ["Qh4+", "Kg2", "Qf2+", "Kh3", "Rh4#", "Kg3"]).endswith(

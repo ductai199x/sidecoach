@@ -326,9 +326,9 @@ class LLMSettings(BaseModel):
         default=60.0,
         ge=5.0,
         le=600.0,
-        description="How long the coach waits for the model. Past this it gives up on that "
-        "reply and speaks from the board instead, so a slow service never stalls "
-        "the game.",
+        description="How long the coach waits for the model each time it asks. Past this it "
+        "gives up on that reply and speaks from the board instead, so a slow service never "
+        "stalls the game.",
         json_schema_extra=_extra(
             group="general",
             applies="now",

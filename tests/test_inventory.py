@@ -78,7 +78,8 @@ def test_a_piece_named_with_its_square_is_examined_without_an_engine() -> None:
     )
     assert fact == (
         "Engine on e5, which the player asked about: e5 is empty; the player controls it with "
-        "the knight on f3; the opponent controls it with the pawn on d6 and the bishop on g7."
+        "the knight on f3; the opponent controls it with the pawn on d6 and the bishop on g7; "
+        "the player can move the knight on f3 there."
     )
     # Nothing named, nothing examined; a line needs an engine.
     assert (

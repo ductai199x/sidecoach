@@ -415,6 +415,12 @@ def test_the_ledger_counts_dollars_and_stops_before_the_call_past_the_budget():
     # Cached tokens are priced as cached.
     usd = _ledger().record("x", {"prompt_tokens": 10_000, "cached_tokens": 8_000}, 0.1)
     assert usd == pytest.approx((2_000 * 0.20 + 8_000 * 0.02) / 1e6)
+    # And written to the cache at 1.25x the fresh price (GPT-5.6 and later).
+    written = {"prompt_tokens": 10_000, "cached_tokens": 2_000, "cache_write_tokens": 8_000}
+    usd = _ledger().record("y", written, 0.1)
+    assert usd == pytest.approx((8_000 * 0.20 * 1.25 + 2_000 * 0.02) / 1e6)
+    last = json.loads(judge.USAGE_MINE.read_text(encoding="utf-8").splitlines()[-1])
+    assert last["cache_write_tokens"] == 8_000
 
 
 def test_a_restarted_run_keeps_its_budget():

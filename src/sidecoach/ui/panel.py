@@ -486,22 +486,18 @@ class PanelEngine:
         )
 
     def _warm_engines(self) -> None:
-        """One search of the start position on each Stockfish (the analyser's, the coach's
-        for named moves), so the first real one does not pay the hash allocation and the
-        thread start (~0.3 s)."""
+        """One search of the start position on the analyser's Stockfish, so the first real
+        one does not pay the hash allocation and the thread start (~0.3 s). Not the coach's:
+        it starts only when a question needs a position nothing has computed (Tai,
+        2026-09-29), and warming it started it at every launch, as the phone never did."""
         import chess
 
         analyser = getattr(self._assessing, "analyser", None)
-        named = getattr(getattr(self._coaching, "coach", None), "engine", None)
-        if analyser is None and named is None:
+        if analyser is None:
             return
         begun = time.perf_counter()
-        if analyser is not None:
-            with contextlib.suppress(Exception):
-                analyser.annotator.engine.analyse(chess.Board(), depth=analyser.annotator.depth)
-        if named is not None:
-            with contextlib.suppress(Exception):
-                named.analyse(chess.Board(), depth=12)
+        with contextlib.suppress(Exception):
+            analyser.annotator.engine.analyse(chess.Board(), depth=analyser.annotator.depth)
         self._emit("sys", "info", f"engine: primed in {time.perf_counter() - begun:.1f}s")
 
     def _warm_model(self) -> None:

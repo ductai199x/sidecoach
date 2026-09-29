@@ -11,7 +11,8 @@ from sidecoach.coach import situation
 from sidecoach.coach.coach import _great_meaning, in_check_threat
 from sidecoach.coach.conversation import _also_stopped
 from sidecoach.coach.disclosure import PositionFacts
-from sidecoach.coach.effects import describe_effects
+from sidecoach.coach.effects import describe_effects, line_notes
+from sidecoach.coach.engine_tools import EngineTools
 from sidecoach.coach.facts import _threatens
 from sidecoach.coach.idea import Idea
 from sidecoach.coach.idea_words import (
@@ -21,7 +22,7 @@ from sidecoach.coach.idea_words import (
     nudge,
     question,
 )
-from sidecoach.coach.named import examine, parse_probe
+from sidecoach.coach.named import Probe, examine, examine_piece, parse_probe, spoken
 from sidecoach.events import DisclosureLevel, Line
 
 
@@ -119,8 +120,11 @@ def test_a_named_move_the_lines_play_is_read_from_them():
         Line(moves=["f4f5", "h1h3", "e3g5"], depth=20, expected_score=0.50),
         Line(moves=["e3d2", "h1h3", "f4f5", "h3g3"], depth=20, expected_score=0.50),
     ]
+    # The look-ahead's own search after Bd2, which answers it with Kh6: the sheet's line wins.
+    after = board.copy()
+    after.push_san("Bd2")
     computed = Computed()
-    computed.add(board, known)
+    computed.add(after, [Line(moves=["h7h6", "d2e3"], depth=18, expected_score=0.48)])
     text = examine(
         parse_probe("your Bd2", ["Bd2"], board),
         board,
@@ -128,9 +132,39 @@ def test_a_named_move_the_lines_play_is_read_from_them():
         known[0],
         user_colour=chess.WHITE,
         level=DisclosureLevel.LINE,
+        known=known,
     )
     assert "the opponent's reply would be 64... Rxh3" in text
     assert "0.50 from the player's side" in text
+
+
+RXF1_CHECK = "6k1/b1p2pp1/p7/1p6/1P6/P5pP/3R4/3N1r1K w - - 0 4"
+
+
+def test_a_square_says_whether_a_piece_of_theirs_can_get_there():
+    # Tai's puzzle, 3...Rxf1+: "Why can't I block on g1?" -- told only who controls g1, Luna
+    # answered that g1 was empty. No piece of White's can go there; after Kg2 two of Black's can.
+    board = chess.Board(RXF1_CHECK)
+    fact = examine_piece(
+        Probe(label="g1", moves=[], square=chess.G1), board, user_colour=chess.WHITE
+    )
+    assert fact.endswith("; none of the player's pieces can move there.")
+    assert spoken(fact).endswith("; none of your pieces can move there.")
+    tools = EngineTools(board, None, _NoSearch(), chess.WHITE)
+    assert tools.run("square", {"square": "g1"}).endswith(
+        "None of the player's pieces can move there."
+    )
+    assert tools.run("square", {"square": "g1", "moves": ["Kg2"]}).endswith(
+        "The opponent can move the rook on f1 or the bishop on a7 there."
+    )
+
+
+def test_a_piece_got_out_of_attack_names_what_attacked_it():
+    # The engine's line 4. Kg2 Rg1+ 5. Kf3 g2 6. Nb2: told "gets the knight out of attack",
+    # Luna said 5...g2 attacked the knight -- the rook on g1 did.
+    board = chess.Board(RXF1_CHECK)
+    notes = line_notes(board, ["h1g2", "f1g1", "g2f3", "g3g2", "d1b2"], player=chess.WHITE)
+    assert notes.endswith("the player's Nb2 (gets the knight out of attack from the rook on g1)")
 
 
 def test_a_passed_pawn_is_told_to_clear_its_way_only_when_the_move_does():

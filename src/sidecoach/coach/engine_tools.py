@@ -22,13 +22,15 @@ from typing import Any, Protocol
 
 import chess
 
+from sidecoach.analysis.computed import rest_of_line
 from sidecoach.analysis.engine import san_line
 from sidecoach.coach.effects import line_notes
 from sidecoach.coach.facts import PIECE_NAMES, standing_words
 from sidecoach.coach.inventory import inventory_lines
+from sidecoach.coach.named import who_can_move_there
 from sidecoach.events import Line
 
-# Rounds of calls a reply may make before it must answer: one to look, one to look further.
+# Rounds of tool calls a reply may make before it must answer with what it has.
 TOOL_ROUNDS = 3
 # What the Task says of them.
 TOOL_WORDS = (
@@ -51,8 +53,11 @@ _START = {
 _MOVES = {
     "type": "array",
     "items": {"type": "string"},
+    # "From the start position" was read as the game's first position: a model that knows a
+    # game begins with 1. e4 could send the whole game (the code review, 2026-09-29).
     "description": "Moves in standard notation, in order and for both sides, played from "
-    "the start position; empty for the start position itself.",
+    "the position `start` names (the board now by default) -- never the game's earlier "
+    "moves; empty for that position itself.",
 }
 SPECS: list[dict[str, Any]] = [
     {
@@ -76,9 +81,10 @@ SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "square",
-            "description": "What stands on a square and which pieces of each side attack it, "
-            "in the position reached by playing `moves` (as for analyse): whether a piece "
-            "there is defended, or a square is safe to go to.",
+            "description": "What stands on a square, which pieces of each side attack it, and "
+            "which pieces of the side to move can go there, in the position reached by "
+            "playing `moves` (as for analyse): whether a piece there is defended, whether a "
+            "square is safe to go to, whether a check can be blocked there.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -101,7 +107,11 @@ class EngineLike(Protocol):
 
 class EngineTools:
     """The tools of one request: the board now, the position before the last move, the
-    engine, and whose side "the player" is."""
+    engine, and whose side "the player" is; and the lines the record shows for each of the
+    two (`known_now`, `known_before`). Moves on one of those lines are read from it, as the
+    model was shown it, and the rest go to the engine: a second search after a move the lines
+    play can answer it differently, and the model, shown both, believed each in turn (the dev
+    audit, 2026-09-26; Tai, 2026-09-29: "only then invoke a call to stockfish")."""
 
     def __init__(
         self,
@@ -110,12 +120,15 @@ class EngineTools:
         engine: EngineLike,
         player: chess.Color,
         *,
+        known_now: Sequence[Line] = (),
+        known_before: Sequence[Line] = (),
         depth: int = 14,
     ) -> None:
         self.now = now.copy(stack=False)
         self.before = before.copy(stack=False) if before is not None else None
         self.engine = engine
         self.player = player
+        self.known = {"now": list(known_now), "before_last_move": list(known_before)}
         self.depth = depth
         self.frames: list[chess.Board] = []
         self.log: list[str] = []  # what was asked, one entry a call, for the record
@@ -150,9 +163,16 @@ class EngineTools:
             head += f" {illegal} is not a legal move there, so the analysis stops before it."
         if after.is_game_over(claim_draw=True):
             return f"{head} The game is over there: {_result(after)}."
+        known = self.known.get(where, [])
+        own = rest_of_line(known, [m.uci() for m in played]) if played else None
         try:
-            lines = self.engine.analyse(after, depth=self.depth)[:LINES]
-            rating = self._rating(start, played[:1], _origin(where)) if played else ""
+            if own is not None:
+                lines = [own]
+            elif not played and known:
+                lines = known[:LINES]
+            else:
+                lines = self.engine.analyse(after, depth=self.depth)[:LINES]
+            rating = self._rating(start, played[:1], _origin(where), known) if played else ""
         except Exception as exc:  # noqa: BLE001 - the engine gone or a position it refused
             return f"{head} The engine could not look at that position ({type(exc).__name__})."
         parts = [
@@ -166,7 +186,12 @@ class EngineTools:
                 f"Standing: {standing_words(score, third_person=True)} ({score:.2f} from the "
                 "player's side)."
             )
-            parts.append("The engine's lines, best first:")
+            # One line read off the sheet's is that line, not the engine's only move there.
+            parts.append(
+                "The rest of the engine's line through it, as given above:"
+                if own is not None
+                else "The engine's lines, best first:"
+            )
             for i, line in enumerate(lines, start=1):
                 moves_text = san_line(after, line.moves[:LINE_PLIES])
                 score_i = self._from_player(line.expected_score, after.turn)
@@ -210,6 +235,9 @@ class EngineTools:
                 + (", ".join(attackers) if attackers else "nothing")
                 + "."
             )
+        if piece is None or piece.color != after.turn:
+            there = who_can_move_there(after, square, self.player)
+            parts.append(there[0].upper() + there[1:] + ".")
         return " ".join(parts)
 
     # ---- the board ----------------------------------------------------------------------
@@ -248,11 +276,15 @@ class EngineTools:
             replay.push(move)
             self.frames.append(replay.copy(stack=False))
 
-    def _rating(self, start: chess.Board, first: list[chess.Move], origin: str) -> str:
+    def _rating(
+        self, start: chess.Board, first: list[chess.Move], origin: str, known: Sequence[Line]
+    ) -> str:
         """How the first move rates against the engine's best from `start`, said as the first
         move's: "Kg2 is the engine's best move there", printed after the line's end, was read
-        as the best move there ("White's best is 8. Kg2", Tai's puzzle)."""
-        best = self.engine.analyse(start, depth=self.depth)
+        as the best move there ("White's best is 8. Kg2", Tai's puzzle). A move one of `start`'s
+        lines plays is rated by that line's score, as the model was shown it; another by a
+        search after it."""
+        best = list(known) or self.engine.analyse(start, depth=self.depth)
         if not best:
             return ""
         after = start.copy(stack=False)
@@ -263,10 +295,15 @@ class EngineTools:
             return f"{head} the engine's best move from {origin}."
         if after.is_game_over(claim_draw=True):
             return ""
-        reply = self.engine.analyse(after, depth=self.depth)
-        if not reply:
-            return ""
-        gap = best[0].expected_score - (1.0 - reply[0].expected_score)
+        own = next((line for line in best if line.moves[:1] == [first[0].uci()]), None)
+        if own is not None:
+            score = own.expected_score
+        else:
+            reply = self.engine.analyse(after, depth=self.depth)
+            if not reply:
+                return ""
+            score = 1.0 - reply[0].expected_score
+        gap = best[0].expected_score - score
         top = san_line(start, best[0].moves[:1]) if best[0].moves else "?"
         if gap <= 0.005:
             return f"{head} as good as the engine's best from {origin} ({top})."

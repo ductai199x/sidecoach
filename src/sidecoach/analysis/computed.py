@@ -4,23 +4,25 @@ The analyser is the producer: it measures every position of the game, the one th
 faces early and then deeper, and the positions ahead of the game while it would otherwise
 idle. Each depth it finishes goes in here, and a reader takes the newest word on a position
 at any time (Tai, 2026-09-28: "stockfish is a reactive producer ... everything else just
-consumes it"). The coach's engine is such a reader (`ComputedFirst`): it searches only what
-is not here, and puts what it found here too (Tai, 2026-09-29: "our harness must first look
-at what was already computed, then if that's not computed only then invoke a call to
-stockfish to ask for analysis over that specific line").
+consumes it"). The coach's engine is such a reader (`ComputedFirst`): it searches only a
+position that is not here, and puts what it found here too (Tai, 2026-09-29: "our harness
+must first look at what was already computed, then if that's not computed only then invoke
+a call to stockfish to ask for analysis over that specific line").
 
-A position is here when it was measured, or when a line measured from another position
-passes through it: the rest of that line is the engine's word on it. Read so, a move the
-lines already play is answered as the lines play it -- a second, shallower search after 64.
-Bd2 answered it with Kh6 where the lines had Rxh3, and the model, shown both, said Bd2
-avoided Rxh3 (the dev audit, 2026-09-26).
+A move on a line the model was shown is read from that line, before any position is looked
+up (`rest_of_line`, the coach's own step): a separate search of the position after it -- the
+look-ahead's, deeper or not -- can answer differently, and a second search after 64. Bd2
+answered it with Kh6 where the lines had Rxh3, and the model, shown both, said Bd2 avoided
+Rxh3 (the dev audit, 2026-09-26). Only positions measured are kept here: the lines passing
+through a position went stale as the search deepened, a move refuted at depth 18 still read
+off its line at depth 12 (the code review, 2026-09-29).
 
-One thread writes (the analyser's, or the coach's own search) while others read; each
-dictionary operation is atomic under the GIL, and what goes in is never changed after.
+The analyser's thread and the coach's both write; a lock keeps each write whole.
 """
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
 from typing import Protocol
 
@@ -50,11 +52,13 @@ def line_after(line: Line, plies: int) -> Line:
     turned = plies % 2 == 1
     mate = None
     if line.mate:
-        # Whose mate it is, and how many of the mating side's moves the plies played.
+        # Whose mate it is, and how many of the mating side's moves the plies played; a mate
+        # past its count (a line carried on beyond it) is no mate this line knows.
         mover_mates = line.mate > 0
         played = (plies + 1) // 2 if mover_mates else plies // 2
         left = abs(line.mate) - played
-        mate = left if mover_mates != turned else -left
+        if left > 0:
+            mate = left if mover_mates != turned else -left
     return Line(
         moves=line.moves[plies:],
         depth=max(1, line.depth - plies),
@@ -65,80 +69,69 @@ def line_after(line: Line, plies: int) -> Line:
     )
 
 
+def rest_of_line(lines: Sequence[Line], moves: Sequence[str]) -> Line | None:
+    """The rest of the first of `lines` that begins with `moves` (UCI) and goes on past them,
+    from the side to move after them; None when none does."""
+    n = len(moves)
+    if not n:
+        return None
+    for line in lines:
+        if len(line.moves) > n and line.moves[:n] == list(moves):
+            return line_after(line, n)
+    return None
+
+
 class Computed:
-    """The engine's lines of each position measured, and where each line leads."""
+    """The engine's lines of each position measured."""
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         # Measured whole, the newest depth: the lines a coach's sheet shows.
         self._whole: dict[str, list[Line]] = {}
         # Measured for a verdict only: the best line alone, at the full depth.
         self._thin: dict[str, list[Line]] = {}
-        # The positions the lines pass through: the line, and how many of its plies lead there.
-        self._through: dict[str, tuple[Line, int]] = {}
 
     def clear(self) -> None:
         """A new game: none of this is about it."""
-        self._whole.clear()
-        self._thin.clear()
-        self._through.clear()
+        with self._lock:
+            self._whole.clear()
+            self._thin.clear()
 
     def add(self, board: chess.Board, lines: Sequence[Line], *, thin: bool = False) -> None:
         """The lines of `board`, as a search just gave them. A shallower search than the one
         here already is left out: the deeper word stands."""
         if not lines:
             return
-        store = self._thin if thin else self._whole
         key = position_key(board)
-        here = store.get(key)
-        if here is not None and here[0].depth > lines[0].depth:
-            return
-        store[key] = list(lines)
-        for line in lines:
-            self._index(board, line)
+        with self._lock:
+            store = self._thin if thin else self._whole
+            here = store.get(key)
+            if here is None or here[0].depth <= lines[0].depth:
+                store[key] = list(lines)
 
     def lines(self, board: chess.Board) -> list[Line]:
-        """What is known of `board`: its own lines -- measured whole, else for a verdict --
-        or else the rest of the deepest line through it; none when nothing reaches it."""
+        """What is known of `board`: its lines measured whole, else its verdict's line; none
+        when it was not measured. Measured whole first, as the sheet shows it."""
         key = position_key(board)
-        own = self._whole.get(key) or self._thin.get(key)
-        if own:
-            return list(own)
-        through = self._through.get(key)
-        if through is None:
-            return []
-        return [line_after(*through)]
-
-    def _index(self, board: chess.Board, line: Line) -> None:
-        """The positions `line` passes through with moves still to come, each kept with the
-        deepest line through it (the newest of equals)."""
-        replay = board.copy(stack=False)
-        for plies, uci in enumerate(line.moves[:-1], start=1):
-            try:
-                move = chess.Move.from_uci(uci)
-            except ValueError:
-                return
-            if move not in replay.legal_moves:
-                return
-            replay.push(move)
-            key = position_key(replay)
-            here = self._through.get(key)
-            if here is None or line.depth - plies >= here[0].depth - here[1]:
-                self._through[key] = (line, plies)
+        with self._lock:
+            return list(self._whole.get(key) or self._thin.get(key) or [])
 
 
 class ComputedFirst:
-    """The coach's engine: what is computed first (`Computed`), a search for the rest. The
+    """The coach's engine: a position computed read (`Computed`), a search for the rest. The
     engine starts at its first search (`Engine.analyse` opens it), so a coach whose questions
-    the analyser has answered never starts a second Stockfish."""
+    the analyser has answered never starts a second Stockfish; closed, it searches no more --
+    a question still being answered as the coach closes would start a process nobody closes."""
 
     def __init__(self, engine: Searcher, computed: Computed | None = None) -> None:
         self.engine = engine
         self.computed = computed if computed is not None else Computed()
         self.searches = 0  # positions searched, not found computed
+        self._closed = False
 
     def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
         known = self.computed.lines(board)
-        if known:
+        if known or self._closed:
             return known
         self.searches += 1
         lines = self.engine.analyse(board, depth=depth)
@@ -146,4 +139,5 @@ class ComputedFirst:
         return lines
 
     def close(self) -> None:
+        self._closed = True
         self.engine.close()

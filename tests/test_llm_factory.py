@@ -17,18 +17,21 @@ def test_the_default_is_luna_an_effort_provider_and_local_is_a_preset(
     named = make_provider(LLMSettings(provider="openai"))
 
     def preset(p):  # noqa: ANN001, ANN202
-        return (p.name, p.model, p.base_url, p.thinking_control, p.reasoning_effort)
+        return (p.name, p.model, p.base_url, p.thinking_control, p.reasoning_effort, p.wire)
 
     assert preset(named) == preset(provider), "the default is the openai preset"
     # The effort is the provider's: another effort is another provider of the same model.
     quiet = provider.with_effort("none")
     assert quiet is not provider and quiet.reasoning_effort == "none"
     assert quiet.model == provider.model and quiet.base_url == provider.base_url
+    # OpenAI's reasoning models take tools with an effort only on /v1/responses; every other
+    # preset speaks chat completions.
+    assert provider.wire == "responses" and quiet.wire == "responses"
     assert provider.with_effort("medium") is provider
     local = make_provider(LLMSettings(provider="local"))
     assert local.name == "local"
     assert local.base_url == "http://localhost:1234/v1"
-    assert local.thinking_control == "prefill"
+    assert local.thinking_control == "prefill" and local.wire == "chat"
 
 
 def test_dashscope_defaults_and_what_the_environment_and_settings_override(

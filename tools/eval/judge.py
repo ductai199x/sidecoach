@@ -78,6 +78,7 @@ from sidecoach.coach.inventory import inventory_lines  # noqa: E402
 from sidecoach.coach.named import disclosed_frames  # noqa: E402
 from sidecoach.events import DisclosureLevel, MoveAssessment, Trigger  # noqa: E402
 from sidecoach.llm.base import refused_for_good  # noqa: E402
+from sidecoach.llm.usage import CACHE_WRITE_FACTOR  # noqa: E402
 
 JUDGMENTS = ROOT / "data" / "eval" / "judgments"
 USAGE = ROOT / "data" / "eval" / "usage.jsonl"
@@ -259,22 +260,25 @@ class Ledger:
                 p = int(rec.get("prompt_tokens") or 0)
                 c = int(rec.get("completion_tokens") or 0)
                 cached = int(rec.get("cached_tokens") or 0)
+                written = int(rec.get("cache_write_tokens") or 0)
                 self.calls += 1
                 self.prompt += p
                 self.cached += cached
                 self.completion += c
                 usd = rec.get("usd")
-                self.usd += float(usd) if usd is not None else self.call_cost(p, cached, c)
+                self.usd += float(usd) if usd is not None else self.call_cost(p, cached, c, written)
             self.before = self.usd
 
     @property
     def total(self) -> int:
         return self.prompt + self.completion
 
-    def call_cost(self, prompt: int, cached: int, completion: int) -> float:
-        """Dollars for one call's tokens."""
+    def call_cost(self, prompt: int, cached: int, completion: int, written: int = 0) -> float:
+        """Dollars for one call's tokens; the prompt written to the cache at its own price
+        (`usage.CACHE_WRITE_FACTOR`)."""
         return (
-            (prompt - cached) / 1e6 * self.price_in
+            (prompt - cached - written) / 1e6 * self.price_in
+            + written / 1e6 * self.price_in * CACHE_WRITE_FACTOR
             + cached / 1e6 * self.price_cached
             + completion / 1e6 * self.price_out
         )
@@ -297,7 +301,8 @@ class Ledger:
         p = int(stats.get("prompt_tokens") or 0)
         c = int(stats.get("completion_tokens") or 0)
         cached = int(stats.get("cached_tokens") or 0)
-        usd = self.call_cost(p, cached, c)
+        written = int(stats.get("cache_write_tokens") or 0)
+        usd = self.call_cost(p, cached, c, written)
         with self._lock:
             self.calls += 1
             self.prompt += p
@@ -315,6 +320,7 @@ class Ledger:
                             "item": item_id,
                             "prompt_tokens": p,
                             "cached_tokens": cached,
+                            "cache_write_tokens": written,
                             "completion_tokens": c,
                             "usd": round(usd, 6),
                             "elapsed_s": round(elapsed, 2),

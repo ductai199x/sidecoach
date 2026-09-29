@@ -243,7 +243,7 @@ def test_a_question_about_the_plan_is_answered_with_the_first_hint() -> None:
     assert [m.text for m in out] == [reply] and out[0].level is DisclosureLevel.IDEA
     directive = directive_of(sent(provider, 0))
     assert "They asked what to aim for: answer with the hint at this rung." in directive
-    assert "be honest about their own claim" not in directive
+    assert "What they state or take for granted" not in directive
 
 
 def test_no_hint_unasked_comes_after_the_move_was_given() -> None:
@@ -1127,7 +1127,7 @@ def test_a_bare_hint_is_asked_as_a_hint_and_one_the_model_fails_twice_is_the_tem
     assert said[-1] == '    PLAYER said: "hint"'
     directive = directive_of(given)
     assert "They asked for a hint." in directive and "anything said earlier" in directive
-    assert "their own claim" not in directive
+    assert "What they state or take for granted" not in directive
     retry = sent(provider, 1)
     assert len(retry) == len(given)
     assert "Those replies are not allowed" in retry[-1]["content"]
@@ -1208,6 +1208,9 @@ def test_a_follow_up_gets_what_it_asks_and_a_nod_one_sentence() -> None:
     assert "# The position they faced, before Bxf7+" in request
     directive = directive_of(sent(provider))
     assert "Answer them directly" in directive and "do not say it again" in directive
+    # A question is no claim to agree with (Luna: "You are right that g1 is controlled by
+    # your King", Tai's puzzle, 2026-09-29).
+    assert "a question states nothing to agree with" in directive
     assert out and out[-1].text == reply
 
 

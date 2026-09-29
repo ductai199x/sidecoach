@@ -2,7 +2,8 @@
 
 Tai, 2026-09-29: "our harness must first look at what was already computed, then if that's
 not computed only then invoke a call to stockfish to ask for analysis over that specific
-line" -- the analyser is the producer, the coach's engine one of its readers.
+line" -- the analyser is the producer, the coach's engine one of its readers, and a move on a
+line the model was shown is read from that line.
 """
 
 from __future__ import annotations
@@ -12,7 +13,13 @@ from typing import Any
 import chess
 
 from sidecoach.analysis.annotator import EARLY_DEPTH, GameAnnotator
-from sidecoach.analysis.computed import Computed, ComputedFirst, line_after, position_key
+from sidecoach.analysis.computed import (
+    Computed,
+    ComputedFirst,
+    line_after,
+    position_key,
+    rest_of_line,
+)
 from sidecoach.coach.engine_tools import EngineTools
 from sidecoach.events import Line
 from tests.fakes import FakeEngine
@@ -68,6 +75,19 @@ def test_a_mate_is_counted_in_the_moves_still_to_come() -> None:
     # the mover is mated in 1, after A2 the other side mates in 1.
     mated = Line(moves=["a1", "b1", "a2", "b2"], depth=18, expected_score=0.0, mate=-2)
     assert [line_after(mated, k).mate for k in (1, 2, 3)] == [2, -1, 1]
+    # A line carried on past its mate (a slower one found from its end) has no count left.
+    carried = Line(moves=["a1", "b1", "a2", "b2", "a3"], depth=18, expected_score=1.0, mate=1)
+    assert line_after(carried, 2).mate is None
+
+
+def test_a_move_on_a_line_is_read_from_it() -> None:
+    (rest,) = [rest_of_line(LINES, ["e2e4", "e7e5"])]
+    assert rest is not None and rest.moves == ["g1f3", "b8c6"] and rest.expected_score == 0.55
+    assert rest_of_line(LINES, ["d2d4"]) == line_after(LINES[1], 1)
+    # Not on a line, a whole line (nothing after it), or nothing asked: none.
+    assert rest_of_line(LINES, ["a2a3"]) is None
+    assert rest_of_line(LINES, ["d2d4", "d7d5", "c2c4"]) is None
+    assert rest_of_line(LINES, []) is None
 
 
 def test_a_position_is_the_same_whatever_its_clocks() -> None:
@@ -79,13 +99,13 @@ def test_a_position_is_the_same_whatever_its_clocks() -> None:
     assert computed.lines(later)[0].moves == ["h1h8"]
 
 
-def test_the_positions_own_lines_come_first_then_a_verdicts_then_a_line_through_it() -> None:
+def test_a_position_measured_whole_comes_before_its_verdict_and_nothing_else_is_known() -> None:
     computed = Computed()
     after_e4 = _after("e4")
     computed.add(START, LINES)
-    # Through it only: the rest of the first line, one ply in.
-    (through,) = computed.lines(after_e4)
-    assert through.moves == ["e7e5", "g1f3", "b8c6"] and through.depth == 17
+    # A line passing through a position is no measure of it: a move refuted deeper still
+    # read off its line at depth 12 (the code review, 2026-09-29).
+    assert computed.lines(after_e4) == []
     thin = [Line(moves=["c7c5"], depth=18, expected_score=0.47)]
     computed.add(after_e4, thin, thin=True)
     assert computed.lines(after_e4) == thin
@@ -95,8 +115,6 @@ def test_the_positions_own_lines_come_first_then_a_verdicts_then_a_line_through_
     ]
     computed.add(after_e4, whole)
     assert computed.lines(after_e4) == whole
-    # Nothing reaches a position no line plays.
-    assert computed.lines(_after("a3")) == []
     computed.clear()
     assert computed.lines(START) == [] and computed.lines(after_e4) == []
 
@@ -111,50 +129,63 @@ def test_a_shallower_search_leaves_the_deeper_word_standing() -> None:
     assert computed.lines(START) == deeper
 
 
-def test_of_two_lines_through_a_position_the_deeper_one_answers() -> None:
-    # 1. e4 e5 is reached from the start, two plies in, and from after 1. e4, one ply in.
-    computed = Computed()
-    computed.add(START, LINES)
-    computed.add(
-        _after("e4"), [Line(moves=["e7e5", "b1c3", "g8f6"], depth=18, expected_score=0.45)]
-    )
-    (line,) = computed.lines(_after("e4", "e5"))
-    assert line.moves == ["b1c3", "g8f6"] and line.depth == 17
-
-
-def test_the_coachs_engine_searches_only_what_is_not_computed() -> None:
+def test_the_coachs_engine_searches_only_a_position_not_computed_and_never_once_closed() -> None:
     computed = Computed()
     computed.add(START, LINES)
     searcher = _Recording()
     engine = ComputedFirst(searcher, computed)
     assert engine.analyse(START, depth=14) == LINES
-    assert engine.analyse(_after("e4", "e5"), depth=14)[0].moves == ["g1f3", "b8c6"]
     assert searcher.seen == [] and engine.searches == 0
-    # A move no line plays: searched once, and known from then on.
+    # Not computed: searched once, and known from then on.
     engine.analyse(_after("a3"), depth=14)
     engine.analyse(_after("a3"), depth=14)
     assert searcher.seen == [_after("a3").fen()] and engine.searches == 1
+    # Closed with a question still being answered: what is known, and no new Stockfish.
+    engine.close()
+    assert engine.analyse(_after("h3"), depth=14) == [] and engine.searches == 1
+    assert engine.analyse(START, depth=14) == LINES
 
 
-def test_the_tools_answer_from_the_analysers_lines_and_search_a_move_they_do_not_play() -> None:
+def test_the_tools_read_the_sheets_lines_and_search_only_a_position_nothing_has() -> None:
     """Tai, 2026-09-29: "it only launches IF the move doesn't exist in the cached line or in
-    the line already computed". The analyser measured the board; the model asks the tools."""
+    the line already computed". The analyser measured the board, the sheet shows its lines,
+    and the model asks the tools."""
     annotator = GameAnnotator(engine=FakeEngine({START.fen(): LINES}), depth=18, with_threats=False)
     annotator.measure(START)
     searcher = _Recording()
-    tools = EngineTools(START, None, ComputedFirst(searcher, annotator.computed), chess.WHITE)
-    tools.run("analyse", {"moves": []})
-    tools.run("analyse", {"moves": ["e4", "e5"]})
-    tools.run("analyse", {"moves": ["d4"]})
-    assert searcher.seen == [], "a position the lines reach was searched"
-    # The rest of the line, as the sheet has it.
-    assert "1... e5 2. Nf3 Nc6" in tools.run("analyse", {"moves": ["e4"]})
-    # A move no line plays: its position searched once, the start's best read from the lines.
+    engine = ComputedFirst(searcher, annotator.computed)
+    tools = EngineTools(START, None, engine, chess.WHITE, known_now=LINES)
+    assert "The engine's lines, best first:" in tools.run("analyse", {"moves": []})
+    on_line = tools.run("analyse", {"moves": ["e4"]})
+    assert "The rest of the engine's line through it, as given above:" in on_line
+    assert "1... e5 2. Nf3 Nc6" in on_line
+    assert "The first move given, 1. e4, is the engine's best move" in on_line
+    # A move the second line plays: rated by that line's score, as the sheet shows it.
+    assert "0.01 behind the engine's best from the board now, 1. e4." in tools.run(
+        "analyse", {"moves": ["d4"]}
+    )
+    assert searcher.seen == [], "a move on the sheet's lines was searched"
+    # A move no line plays: its position searched once.
     out = tools.run("analyse", {"moves": ["a3"]})
     assert searcher.seen == [_after("a3").fen()]
     assert "The first move given, 1. a3, is" in out and "behind the engine's best" in out
     tools.run("analyse", {"moves": ["a3"]})
     assert len(searcher.seen) == 1
+
+
+def test_the_sheets_line_wins_over_a_separate_search_of_the_position_after_it() -> None:
+    """The look-ahead measures the position after each of the two best moves on its own, and
+    its search can answer the move differently from the sheet's line through it: the model,
+    shown both, believed each in turn (Bd2 answered with Kh6 where the lines had Rxh3, the dev
+    audit, 2026-09-26). A move on the sheet's line is read from the line."""
+    computed = Computed()
+    computed.add(START, LINES)
+    computed.add(_after("e4"), [Line(moves=["c7c5", "g1f3"], depth=18, expected_score=0.44)])
+    tools = EngineTools(
+        START, None, ComputedFirst(_Recording(), computed), chess.WHITE, known_now=LINES
+    )
+    out = tools.run("analyse", {"moves": ["e4"]})
+    assert "1... e5 2. Nf3 Nc6" in out and "c5" not in out.split("On the board there")[0]
 
 
 class _Streaming(FakeEngine):

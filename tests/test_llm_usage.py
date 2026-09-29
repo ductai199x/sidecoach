@@ -85,6 +85,24 @@ def test_a_stream_closed_early_is_estimated() -> None:
     assert u.calls == 2 and u.estimated == 1 and u.prompt == 600 and u.completion == 10
 
 
+def test_a_prompt_written_to_the_cache_costs_a_quarter_more() -> None:
+    """GPT-5.6 and later bill a prompt written to the server's cache at 1.25x the fresh price
+    (OpenAI's prompt-caching guide, 2026-09-29): 1000 prompt tokens, 200 read from the cache,
+    500 written to it, 300 fresh."""
+    usage = Usage()
+    usage.record(
+        {
+            "prompt_tokens": 1000,
+            "cached_tokens": 200,
+            "cache_write_tokens": 500,
+            "completion_tokens": 0,
+        }
+    )
+    assert usage.written == 500
+    # 300 fresh at $1, 500 written at $1.25, 200 cached at $0.1, per million.
+    assert abs((usage.cost(Prices(1.0, 0.1, 8.0)) or 0) - (0.0003 + 0.000625 + 0.00002)) < 1e-12
+
+
 def test_prices_come_from_the_settings_or_the_known_table() -> None:
     luna = prices_for(Settings(), "gpt-5.6-luna")
     assert luna.known and (luna.prompt, luna.cached, luna.completion) == (0.20, 0.02, 1.20)

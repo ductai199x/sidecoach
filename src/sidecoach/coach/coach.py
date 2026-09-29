@@ -31,6 +31,7 @@ from typing import Any
 
 import chess
 
+from sidecoach.analysis.computed import position_key
 from sidecoach.analysis.exchange import VALUE, defenders
 from sidecoach.coach import draft_claims, idea_words, situation
 from sidecoach.coach.annotations import annotations_for, mentions_in
@@ -66,6 +67,7 @@ from sidecoach.events import (
     GameReview,
     GameStarted,
     Label,
+    Line,
     MoveAssessment,
     MovePlayed,
     ProfileEvidence,
@@ -80,7 +82,7 @@ from sidecoach.events import (
     Takeback,
     Trigger,
 )
-from sidecoach.llm.base import ChatMessage, Completion, LLMProvider, refused_for_good
+from sidecoach.llm.base import ChatMessage, Completion, LLMProvider, ToolRound, refused_for_good
 from sidecoach.profile.causes import HABIT
 from sidecoach.profile.insights import motif_words
 
@@ -1647,10 +1649,12 @@ class Speaker:
         request and a model that takes them, the engine calls it makes are answered and it is
         asked again, TOOL_ROUNDS times at most, the last time to answer with what it has; the
         calls go in the stats, for the log. A server that refuses the tools is asked again
-        without them: Luna with a reasoning effort takes no tools on chat completions, and the
-        coach said nothing at all."""
+        without them, and the refusal goes in the stats: on chat completions Luna with a
+        reasoning effort took no tools, and the coach said nothing at all -- and then, asked
+        without them, the log still listed the calls as if they had been answered."""
         tools = request.tools if getattr(provider, "tools_ok", False) else None
-        turns: list[dict[str, Any]] = []
+        turns: list[ToolRound] = []
+        refused = ""
         round_ = 0
         while True:
             extra: dict[str, Any] = {}
@@ -1680,38 +1684,17 @@ class Speaker:
                 if tools is None or not refused_for_good(exc):
                     raise
                 tools = None
+                refused = str(exc)[:200]
                 continue
             if tools is None or not completion.tool_calls or round_ == TOOL_ROUNDS:
                 break
-            turns = [
-                *turns,
-                {
-                    "role": "assistant",
-                    "content": completion.text or None,
-                    "tool_calls": [
-                        {
-                            "id": call.id,
-                            "type": "function",
-                            "function": {
-                                "name": call.name,
-                                "arguments": json.dumps(call.arguments),
-                            },
-                        }
-                        for call in completion.tool_calls
-                    ],
-                },
-                *(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "content": tools.run(call.name, call.arguments),
-                    }
-                    for call in completion.tool_calls
-                ),
-            ]
+            results = [tools.run(call.name, call.arguments) for call in completion.tool_calls]
+            turns = [*turns, ToolRound(completion, results)]
             round_ += 1
         if request.tools is not None and request.tools.log:
             completion.stats["tools"] = list(request.tools.log)
+        if refused:
+            completion.stats["tools_refused"] = refused
         return completion
 
     @staticmethod
@@ -3262,6 +3245,18 @@ class Coach:
                     return record.analysis.opening
         return None
 
+    def _sheet_lines(self, board: chess.Board | None) -> list[Line]:
+        """The engine's lines the record shows for `board`, when it is one of the game's
+        positions still kept; none otherwise."""
+        if board is None:
+            return []
+        key = position_key(board)
+        with self._lock:
+            for position in self.positions.values():
+                if position.analysis is not None and position_key(position.board) == key:
+                    return list(position.analysis.lines)
+        return []
+
     def _named_analysis(self, text: str, position: _Position, level: DisclosureLevel) -> list[str]:
         """The engine's word on the moves, pieces and squares the player's words name; one
         line per probe, none when nothing was named. A piece or square named needs no
@@ -3277,6 +3272,8 @@ class Coach:
                 # Pieces and squares as the board stands now, whatever position the question
                 # is about.
                 pieces_board=self.board,
+                # The lines the sheet already shows: a move they start is read from them.
+                known=position.analysis.lines if position.analysis is not None else (),
             )
         except Exception as exc:  # noqa: BLE001
             self.speaker.last_error = f"named analysis: {type(exc).__name__}: {exc}"
@@ -3609,7 +3606,15 @@ class Coach:
         # A question of the player's: the model may ask the engine what the messages do not
         # show, from the board now or from before the last move (`engine_tools`).
         tools = (
-            EngineTools(self.board, last_before, self.engine, self.user_colour)
+            EngineTools(
+                self.board,
+                last_before,
+                self.engine,
+                self.user_colour,
+                # The lines the record shows for each: a move on one is read from it.
+                known_now=self._sheet_lines(self.board),
+                known_before=self._sheet_lines(last_before),
+            )
             if trigger is Trigger.USER_ASK and self.engine is not None and not self._offline
             else None
         )
@@ -4526,10 +4531,13 @@ class Coach:
         else:
             # What is kept back is the level line's to say: "never reveal that unless the sheet
             # lists it" stood here after the sheet had come to list everything (the prompt
-            # audit, 2026-09-28).
+            # audit, 2026-09-28). A claim is theirs only when they make one: told to be honest
+            # about "their own claim", Luna answered a plain question with "You are right that
+            # g1 is controlled by your King" (Tai's puzzle, 2026-09-29).
             directive = (
-                "Answer them directly, and be honest about their own claim, taking it as they "
-                "meant it: say what in it is right as plainly as what is wrong. When they "
+                "Answer them directly. What they state or take for granted, take as they meant "
+                "it: say what in it is right as plainly as what is wrong -- and credit them with "
+                "nothing they did not say: a question states nothing to agree with. When they "
                 "propose a move, or name a square or piece, say plainly whether it holds up and "
                 "what it does or allows, from the engine's word on it where given above -- "
                 "theirs to hear in full: the score after it, how far behind the best, the reply, "

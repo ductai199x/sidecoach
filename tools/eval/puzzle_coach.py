@@ -142,6 +142,7 @@ def run(provider_name: str, seed: int, budget: int, show_record: int) -> None:
         if ledger is not None and ledger.over_budget():
             print("-- budget reached; stopped")
             break
+        annotator.reset()  # a new puzzle shares no positions with the last
         coach = build_coach(provider_name, ledger, annotator.computed)
         board = chess.Board(puzzle["FEN"])
         moves = puzzle["Moves"].split()
@@ -204,6 +205,9 @@ def run(provider_name: str, seed: int, budget: int, show_record: int) -> None:
         if n < show_record:
             print("  --- what the model was given ---")
             print("  " + coach.conversation.render().replace("\n", "\n  "))
+        close = getattr(coach.engine, "close", None)
+        if close is not None:
+            close()  # its own Stockfish, started at its first search
     engine.close()
     if ledger is not None:
         print("\n" + ledger.summary())

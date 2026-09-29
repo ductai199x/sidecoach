@@ -30,6 +30,18 @@ class Completion:
     # The functions the model asked for instead of (or before) a reply; empty when it
     # replied, and always empty from a provider that takes no tools.
     tool_calls: list[ToolCall] = field(default_factory=list)
+    # The reply as its wire takes it back in a later request, where that is more than the
+    # text and the calls: the Responses API's output items, the model's reasoning among them.
+    items: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class ToolRound:
+    """One round of the model's calls: the reply that made them, and what each returned, in
+    the calls' order. Each provider puts it on its own wire."""
+
+    reply: Completion
+    results: list[str]
 
 
 _STATUS = re.compile(r"^(\d{3}):")
@@ -66,6 +78,6 @@ class LLMProvider(Protocol):
 # is there (`getattr(provider, "chat_stream", None)`) and `chat` otherwise.
 #
 # A provider may also take tools (`tools_ok = True`): `chat` and `chat_stream` then accept
-# `tools`, function specs in the OpenAI form, and `turns`, the wire messages that follow the
-# conversation -- the model's earlier calls and what each returned -- and a completion
-# carries the model's `tool_calls` when it asked for some.
+# `tools`, function specs in the chat-completions form, `turns`, the rounds that follow the
+# conversation (`ToolRound`: the model's earlier calls and what each returned), and
+# `tool_choice`; a completion carries the model's `tool_calls` when it asked for some.

@@ -272,7 +272,8 @@ PIECES: list[tuple[str, str, str, chess.Color, str]] = [
         "4k3/8/8/8/1b6/2N5/8/4K3 w - - 0 1",
         "d5",
         chess.BLACK,
-        "d5 is empty; the opponent controls it with the knight on c3 (pinned).",
+        "d5 is empty; the opponent controls it with the knight on c3 (pinned); none of the "
+        "opponent's pieces can move there.",
     ),
 ]
 
@@ -297,5 +298,5 @@ def test_a_piece_examined_is_said_to_the_player() -> None:
     empty = spoken(_piece(fen, "d4", chess.WHITE))
     assert empty == (
         "d4 is empty; you control it with the pawn on e3 and the knight on f3; they control it"
-        " with the knight on c6."
+        " with the knight on c6; you can move the pawn on d2 or the knight on f3 there."
     )

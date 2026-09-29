@@ -4,6 +4,9 @@ State as of 2026-09-18. Everything below was measured with the tools in `tools/e
 on data under `data/eval/` (not committed; layout in `data/eval/README.md`); the raw runs
 that produced numbers not needed again are in `data/eval-archive-2026-09-18.zip`.
 
+Not re-measured since: the engine tools for questions (2026-09-28) and the switch of the
+OpenAI preset to its Responses API (2026-09-29), on which the tools run at medium effort.
+
 ## What ships
 
 - **C = twelve distilled lessons** (`src/sidecoach/coach/context/corrections.md`, ~0.8k

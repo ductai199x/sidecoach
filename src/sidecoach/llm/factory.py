@@ -22,7 +22,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from sidecoach.config import LLMSettings
-from sidecoach.llm.openai_compat import THINKING_CONTROLS, OpenAICompatProvider, ThinkingControl
+from sidecoach.llm.openai_compat import (
+    THINKING_CONTROLS,
+    OpenAICompatProvider,
+    ThinkingControl,
+    Wire,
+)
 
 
 @dataclass(frozen=True)
@@ -32,6 +37,8 @@ class ProviderDefaults:
     api_key_env: str | None
     thinking_control: ThinkingControl
     reasoning_effort: str | None = None
+    # The API spoken (openai_compat.Wire): chat completions, or OpenAI's responses.
+    wire: Wire = "chat"
     # An env var that overrides base_url: a hosted provider's endpoint can be per account.
     base_url_env: str | None = None
 
@@ -60,6 +67,8 @@ PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         api_key_env="OPENAI_API_KEY",
         thinking_control="effort",
         reasoning_effort="medium",
+        # Its reasoning models take function tools with an effort only on /v1/responses.
+        wire="responses",
         base_url_env="OPENAI_BASE_URL",
     ),
 }
@@ -112,6 +121,7 @@ def make_provider(settings: LLMSettings, *, timeout_s: float | None = None) -> A
         api_key=api_key,
         thinking_control=control,  # type: ignore[arg-type]
         reasoning_effort=effort,
+        wire=defaults.wire,
         timeout_s=timeout_s if timeout_s is not None else settings.timeout_s,
         extra_body=dict(settings.extra_body),
     )

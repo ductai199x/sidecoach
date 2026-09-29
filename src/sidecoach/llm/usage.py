@@ -15,6 +15,10 @@ from typing import Any
 
 # The estimate for a call the server sent no usage for.
 CHARS_PER_TOKEN = 4.0
+# A prompt written to the server's cache is billed at 1.25x the fresh prompt price on
+# GPT-5.6 and later (OpenAI's prompt-caching guide, 2026-09-29), in place of the fresh
+# price; a server that reports no cache writes (`cache_write_tokens`) writes none.
+CACHE_WRITE_FACTOR = 1.25
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,7 @@ class Usage:
         self.estimated = 0  # calls whose tokens are an estimate
         self.prompt = 0
         self.cached = 0  # of the prompt tokens, the ones the server served from its cache
+        self.written = 0  # of the prompt tokens, the ones it wrote to its cache
         self.completion = 0
         self.reasoning = 0  # of the completion tokens, the reasoning ones
 
@@ -64,8 +69,8 @@ class Usage:
         self, stats: dict[str, Any], *, prompt_chars: int = 0, completion_chars: int = 0
     ) -> None:
         """Add one call. `stats` is the provider's (prompt_tokens, cached_tokens,
-        completion_tokens, reasoning_tokens); missing counts are estimated from the
-        character counts."""
+        cache_write_tokens, completion_tokens, reasoning_tokens); missing counts are
+        estimated from the character counts."""
         prompt = stats.get("prompt_tokens")
         completion = stats.get("completion_tokens")
         estimated = prompt is None or completion is None
@@ -78,6 +83,7 @@ class Usage:
             self.estimated += int(estimated)
             self.prompt += int(prompt)
             self.cached += int(stats.get("cached_tokens") or 0)
+            self.written += int(stats.get("cache_write_tokens") or 0)
             self.completion += int(completion)
             self.reasoning += int(stats.get("reasoning_tokens") or 0)
 
@@ -87,10 +93,11 @@ class Usage:
             return None
         assert prices.prompt is not None and prices.completion is not None
         with self._lock:
-            fresh = max(0, self.prompt - self.cached)
+            fresh = max(0, self.prompt - self.cached - self.written)
             cached_price = prices.cached if prices.cached is not None else prices.prompt
             return (
                 fresh / 1e6 * prices.prompt
+                + self.written / 1e6 * prices.prompt * CACHE_WRITE_FACTOR
                 + self.cached / 1e6 * cached_price
                 + self.completion / 1e6 * prices.completion
             )
