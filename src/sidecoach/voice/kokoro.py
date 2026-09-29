@@ -260,7 +260,7 @@ class KokoroTTS:
         this line in another voice (a preview) without changing the coach's."""
         if self._failed:
             return
-        spoken = speak_notation(text).strip()
+        spoken = speak_notation(text, voice=True).strip()
         if not spoken:
             return
         self._ensure_worker()

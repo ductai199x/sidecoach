@@ -39,3 +39,44 @@ from sidecoach.voice.notation import speak_notation
 )
 def test_notation_is_spoken_and_the_prose_around_it_kept(text: str, spoken: str) -> None:
     assert speak_notation(text) == spoken
+
+
+@pytest.mark.parametrize(
+    ("text", "spoken"),
+    [
+        # A capital, as the model starts a sentence: spelled out letter by letter before
+        # ("dee ex ee five", Tai 2026-09-29), now the move or the square it is.
+        ("Dxe5 was better.", "d takes e five was better."),
+        ("G4 was a miss, costing you 28%.", "g four was a miss, costing you 28%."),
+        ("B5 was a mistake", "b five was a mistake"),
+        ("Exd8=Q+ wins", "e takes d eight promotes to queen check wins"),
+        # ...but a capital B before a capture is the bishop's, as SAN writes it, and an
+        # opening's code is no square.
+        ("Bxc6 doubles them", "bishop takes c six doubles them"),
+        ("the A40 Horwitz Defense", "the A40 Horwitz Defense"),
+        # P for a pawn, as the model writes it now and then.
+        ("defended by Rf8 and Pg7", "defended by rook f eight and pawn g seven"),
+    ],
+)
+def test_capitals_and_pawn_letters_read_as_the_moves_they_are(text: str, spoken: str) -> None:
+    assert speak_notation(text) == spoken
+
+
+@pytest.mark.parametrize(
+    ("text", "voiced"),
+    [
+        ("Ra4", "rook eh four"),
+        ("bxa5", "b takes eh five"),
+        ("Nad7", "knight eh d seven"),
+        ("the pawn on a2", "the pawn on eh two"),
+        ("Axb5!", "eh takes b five!"),
+        # The article stays the article, and a file named in prose stays as written.
+        ("a plan on the a-file", "a plan on the a-file"),
+    ],
+)
+def test_the_voice_says_the_a_file_as_the_letter(text: str, voiced: str) -> None:
+    """The letter a alone is the article to the voice's phonemizer: "rook a four" came back
+    from the app's own ear as "rook of fours", "rook eh four" as "rook A4" (2026-09-29). The
+    voice gets "eh"; the words the speech correction matches keep "a", as a person says it."""
+    assert speak_notation(text, voice=True) == voiced
+    assert "eh" not in speak_notation(text)
