@@ -243,23 +243,25 @@ object PanelEngine {
     /**
      * Queue a control action for the loop (ask, flip, analyse, end). `panel.command`. With no
      * session running there is no loop to take an ask: it is answered on the spot rather than
-     * kept for a Start minutes later, about another game.
+     * kept for a Start minutes later, about another game -- in the caption box too, where a
+     * question asked from its buttons looks for its answer.
      */
     fun command(name: String, payload: Any? = null) {
         if (!running && (name == "ask" || name == "ask_spoken")) {
             heard(payload.toString(), spoken = name == "ask_spoken")
+            val text = "Press Start first: I can only answer about a game I am watching."
             emit(
                 "coach",
                 "info",
-                "user_ask · not watching — Press Start first: I can only answer about a " +
-                    "game I am watching.",
+                "user_ask · not watching — $text",
                 JSONObject().apply {
-                    put("full", "Press Start first: I can only answer about a game I am watching.")
+                    put("full", text)
                     put("trigger", "user_ask")
                     put("ply", JSONObject.NULL)
                     put("voice", "text")
                 },
             )
+            Captions.show(text)
             return
         }
         commands.put(name to payload)

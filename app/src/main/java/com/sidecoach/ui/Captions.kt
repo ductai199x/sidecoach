@@ -40,7 +40,7 @@ import kotlin.math.roundToInt
 
 /**
  * The coach's words in a box over other apps, the way Live Caption shows speech (Tai,
- * 2026-09-23: "behave like Live Caption"; the phone's own, the desktop has none). While you
+ * 2026-09-23: "behave like Live Caption"; the desktop's `routes/captions` is its port). While you
  * play in another app the voice is all the panel gives you; this puts its words on screen too.
  *
  * The box comes up with the coach's words the moment the coach has them, newest at the bottom,
@@ -49,8 +49,9 @@ import kotlin.math.roundToInt
  * come whenever" -- the words used to wait for their audio, seconds on the phone). It fades a
  * few seconds after, or stays up with the last words when the setting keeps it on screen.
  * Touch and hold to move it anywhere; double-tap to see more lines; drag the bar at its foot
- * for more or fewer; tap for its buttons -- mute, and the panel's three quick pills -- and the game's
- * moves; drag it onto the cross at the bottom of the screen to turn captions off. Taps
+ * for more or fewer; tap for the game's moves. Its buttons -- mute, and the panel's three quick
+ * pills -- are always up (Tai, 2026-09-29: "they are handy"). Drag it onto the cross at the
+ * bottom of the screen to turn captions off. Taps
  * anywhere else go to the app underneath. It keeps off the chess board -- the vision reads the
  * board from the screen, and a box over it would hide squares -- and it is not shown while
  * Sidecoach's own panel is in front, which shows the words already.
@@ -65,7 +66,7 @@ object Captions {
     /** How long the box stays after the voice stops, as Live Caption's does. */
     internal const val HIDE_AFTER_MS = 5000L
 
-    /** How long the buttons a tap shows stay, after the tap or the last button pressed. */
+    /** How long the moves a tap shows stay, after the tap or the last touch on them. */
     internal const val CONTROLS_MS = 4000L
 
     /**
@@ -184,6 +185,11 @@ object Captions {
             if (box == null || saying.isNotEmpty()) return@post
             hideSoon(speechMs)
         }
+    }
+
+    /** The voice muted or not, wherever that was said: the box's speaker follows. */
+    fun muted(on: Boolean) {
+        main.post { box?.showMuted(on) }
     }
 
     /** A line of the coach's, shown whole the moment it comes: its voice follows. */
@@ -320,6 +326,9 @@ object Captions {
     /** Where each of the box's buttons is on the screen, by name, for the tests. */
     internal fun buttonsAt(): Map<String, Rect> = box?.buttonBounds() ?: emptyMap()
 
+    /** Whether the game's moves are up under the words, for the tests. */
+    internal fun movesUp(): Boolean = box?.movesShown ?: false
+
     /** Whether captions are on. */
     internal val enabled: Boolean get() = on
 
@@ -414,7 +423,8 @@ object Captions {
         PixelFormat.TRANSLUCENT,
     ).apply { gravity = Gravity.TOP or Gravity.START }
 
-    /** The caption box: the words, the buttons a tap shows, and the bar that sets its height. */
+    /** The caption box: its buttons, the words, the moves a tap shows, and the bar that sets its
+     * height. */
     @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
     private class Box(private val ctx: Context, touchable: Boolean = true) : LinearLayout(ctx) {
         private val windows = ctx.getSystemService(WindowManager::class.java)
@@ -465,7 +475,6 @@ object Captions {
             // move or the line without leaving the game, the answer spoken and captioned here.
             buttons.orientation = HORIZONTAL
             buttons.gravity = Gravity.CENTER_VERTICAL
-            buttons.visibility = GONE
             val round = dp(ctx, 34f)
             val inset = dp(ctx, 7f)
             mute.setPadding(inset, inset, inset, inset)
@@ -475,6 +484,7 @@ object Captions {
             }
             mute.tag = "mute"
             mute.setOnClickListener { toggleMute() }
+            showMuted(PanelVoice.muted)
             buttons.addView(mute, LayoutParams(round, round).apply { marginEnd = dp(ctx, 8f) })
             for ((name, label) in listOf("hint" to "Hint", "move" to "Best move", "line" to "Line")) {
                 buttons.addView(chip(label).apply {
@@ -503,9 +513,9 @@ object Captions {
             strip.setOnTouchListener { _, event ->
                 // Swiping through the moves keeps them up.
                 when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> main.removeCallbacks(hideButtons)
+                    MotionEvent.ACTION_DOWN -> main.removeCallbacks(hideMoves)
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        main.postDelayed(hideButtons, controlsMs)
+                        main.postDelayed(hideMoves, controlsMs)
                         rest()
                     }
                 }
@@ -539,7 +549,7 @@ object Captions {
             val gestures = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
                 override fun onDown(e: MotionEvent) = true
                 override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                    toggleButtons()
+                    toggleMoves()
                     return true
                 }
                 override fun onDoubleTap(e: MotionEvent): Boolean {
@@ -595,7 +605,7 @@ object Captions {
         private var asked = 0
 
         /**
-         * The box's height about to change -- more lines, the buttons, the moves, a text size.
+         * The box's height about to change -- more lines, the moves, a text size.
          * Low on the screen it grows upward, its foot where it was, as Live Caption's does; it
          * stays on the screen either way. The new height is measured here and the new place
          * asked for before the window grows, so the two come in one step: moved once it had
@@ -652,7 +662,10 @@ object Captions {
 
         private fun shownLines() = if (expanded) max(lines, EXPANDED_LINES) else lines
 
-        private fun boxHeight() = paddingTop + paddingBottom + lineHeight * shownLines() + dp(ctx, 20f)
+        /** The box's height before it is laid out: the padding, the buttons' row, the words and
+         * the bar. */
+        private fun boxHeight() =
+            paddingTop + paddingBottom + dp(ctx, 34f + 10f) + lineHeight * shownLines() + dp(ctx, 20f)
 
         private fun centre(): Pair<Int, Int> = (params.x + width / 2) to (params.y + height / 2)
 
@@ -754,13 +767,12 @@ object Captions {
         }
 
         /** The speaker as the voice stands: struck through while it is muted. */
-        private fun showMuted(muted: Boolean) {
+        fun showMuted(muted: Boolean) {
             mute.setImageResource(if (muted) R.drawable.ic_voice_off else R.drawable.ic_voice_on)
             mute.contentDescription = if (muted) "Unmute the coach's voice" else "Mute the coach's voice"
         }
 
         fun buttonBounds(): Map<String, Rect> {
-            if (buttons.visibility != VISIBLE) return emptyMap()
             val at = IntArray(2)
             return (0 until buttons.childCount).associate { i ->
                 val button = buttons.getChildAt(i)
@@ -769,19 +781,19 @@ object Captions {
             }
         }
 
-        private fun toggleButtons() {
-            val show = buttons.visibility != VISIBLE
-            showMuted(PanelVoice.muted)
-            buttons.visibility = if (show) VISIBLE else GONE
-            if (show) showMoves() else strip.visibility = GONE
-            reflow()
-            main.removeCallbacks(hideButtons)
-            if (show) main.postDelayed(hideButtons, controlsMs)
+        private fun toggleMoves() {
+            main.removeCallbacks(hideMoves)
+            if (movesShown) {
+                strip.visibility = GONE
+                reflow()
+            } else {
+                showMoves()
+                main.postDelayed(hideMoves, controlsMs)
+            }
             rest()
         }
 
-        private val hideButtons = Runnable {
-            buttons.visibility = GONE
+        private val hideMoves = Runnable {
             strip.visibility = GONE
             reflow()
         }
@@ -793,19 +805,12 @@ object Captions {
             val now = !PanelVoice.muted
             Thread({ runCatching { PanelVoice.setMuted(now) } }, "captions-mute").start()
             showMuted(now)
-            keepButtons()
+            rest()
         }
 
-        /** A quick pill: what the panel's own asks (`store.quick`), the buttons kept up. */
+        /** A quick pill: what the panel's own asks (`store.quick`); the box stays its full time. */
         private fun quick(name: String) {
             PanelEngine.ask(PanelApi.QUICK.getValue(name))
-            keepButtons()
-        }
-
-        /** A button pressed: the buttons stay their full time again, and the box its own. */
-        private fun keepButtons() {
-            main.removeCallbacks(hideButtons)
-            main.postDelayed(hideButtons, controlsMs)
             rest()
         }
 

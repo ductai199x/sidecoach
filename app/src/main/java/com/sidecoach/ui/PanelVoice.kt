@@ -140,6 +140,7 @@ object PanelVoice {
     fun setMuted(on: Boolean) {
         muted = on
         PanelEngine.set("muted" to on)
+        Captions.muted(on)
         if (on) voiceOut()?.stop()
         PanelEngine.emit("voice", "info", if (on) "muted" else "unmuted")
     }

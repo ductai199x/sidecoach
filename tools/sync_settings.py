@@ -48,88 +48,22 @@ def main() -> None:
     # and more, never inside the five-second cap, and depth 14 in 2.6 s (3.7 warm). Three
     # threads were no faster, the phone warmer. Tai: "2 threads and depth 14".
     defaults["engine"]["depth"] = 14
-    # The phone's own setting: the coach's words in a box over other apps, the way Live Caption
-    # shows speech (Tai, 2026-09-23). The desktop has no such box, so the field is added here,
-    # to the phone's schema alone, and the desktop's page never shows it.
+    # The captions, the phone's first (Tai, 2026-09-23) and the desktop's since 2026-09-29: the
+    # desktop's words say windows and clicks; the phone's, apps, touches and Android's leave to
+    # draw over other apps.
     voice = schema["$defs"]["VoiceSettings"]["properties"]
-    voice["captions"] = {
-        "default": False,
-        "description": "Shows what the coach says in a small box over other apps, like Live "
-        "Caption, so you can read it while you play. Touch and hold the box to move it; "
-        "double-tap it to see more; tap it for its buttons; drag it onto the cross at the "
-        "bottom of the screen to turn captions off. The first time, Android asks you to let "
-        "Sidecoach display over other apps.",
-        "title": "Captions",
-        "type": "boolean",
-        "applies": "now",
-        "label": "Captions over other apps",
-        "section": "Captions",
-    }
-    # Whether the box stays up between lines (Tai, 2026-09-24: "the caption box is always
-    # on screen if true and if false then fade away after some time").
-    voice["captions_keep"] = {
-        "default": False,
-        "description": "Keeps the caption box on screen all the time, with the coach's last "
-        "words in it. Off, the box fades a few seconds after the coach stops talking and comes "
-        "back when it speaks again. Either way it steps aside while Sidecoach itself is open.",
-        "title": "Captions Keep",
-        "type": "boolean",
-        "applies": "now",
-        "label": "Keep captions on screen",
-        "section": "Captions",
-    }
-    # How the box looks (Tai, 2026-09-23: "the user can tune things like text color, bg
-    # color, opacity, and text size").
-    voice["captions_text_color"] = {
-        "default": "#FFFFFF",
-        "description": "The colour of the captions' words.",
-        "title": "Captions Text Color",
-        "type": "string",
-        "applies": "now",
-        "kind": "color",
-        "label": "Text colour",
-        "section": "Captions",
-    }
-    voice["captions_background"] = {
-        "default": "#1F1F1F",
-        "description": "The colour of the box behind the words.",
-        "title": "Captions Background",
-        "type": "string",
-        "applies": "now",
-        "kind": "color",
-        "label": "Background colour",
-        "section": "Captions",
-    }
-    voice["captions_opacity"] = {
-        "default": 92,
-        "minimum": 20,
-        "maximum": 100,
-        "description": "How solid the box is, in percent: 100 hides what is behind it, lower "
-        "lets it show through.",
-        "title": "Captions Opacity",
-        "type": "integer",
-        "applies": "now",
-        "label": "Background opacity (%)",
-        "section": "Captions",
-    }
-    voice["captions_text_size"] = {
-        "default": 17,
-        "minimum": 12,
-        "maximum": 32,
-        "description": "How big the captions' words are; 17 is the usual size.",
-        "title": "Captions Text Size",
-        "type": "integer",
-        "applies": "now",
-        "label": "Text size",
-        "section": "Captions",
-    }
-    defaults["voice"].update(
-        captions=False,
-        captions_keep=False,
-        captions_text_color="#FFFFFF",
-        captions_background="#1F1F1F",
-        captions_opacity=92,
-        captions_text_size=17,
+    voice["captions"]["label"] = "Captions over other apps"
+    voice["captions"]["description"] = (
+        "Shows what the coach says in a small box over other apps, like Live Caption, so you "
+        "can read it while you play. Touch and hold the box to move it; double-tap it to see "
+        "more; tap it for its buttons; drag it onto the cross at the bottom of the screen to "
+        "turn captions off. The first time, Android asks you to let Sidecoach display over "
+        "other apps."
+    )
+    voice["captions_keep"]["description"] = (
+        "Keeps the caption box on screen all the time, with the coach's last words in it. Off, "
+        "the box fades a few seconds after the coach stops talking and comes back when it "
+        "speaks again. Either way it steps aside while Sidecoach itself is open."
     )
     # What the phone does not honour is not on its page (Tai's rule of 2026-09-21: no dead
     # option shown; 2026-09-24: the phone's page showed the desktop's devices, folders, GPU
